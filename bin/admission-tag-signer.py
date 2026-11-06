@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Which verifier source admission runs for a release tag (automatic patch releases rule 3; REQ-REL-009-AC6).
+"""Which verifier source admission runs for a release tag (REQ-REL-009-AC6; handoff 0713 P8).
 
 Read by stage-admission.yml from protected main (never from the tagged commit). It only ROUTES: the chosen verifier
-must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on any tag. "gitsign":
-the release workflow's keyless identity, accepted only on a patch tag (vX.Y.Z, Z >= 1, whose previous patch vX.Y.(Z-1)
-is already released, so a line always starts from an owner-signed tag). Everything else is refused: an unsigned tag (an
-App-pushed tag carries no signature of its own), a PGP signature, two signature blocks, or the CI identity on a minor,
-major or rc tag or on a tag that already exists.
+must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on any tag (a patch tag
+included: the owner's own key still signs minor, major and patch tags). Everything else is refused: an unsigned tag, a
+PGP signature, two signature blocks, and a keyless (x509) signature, because the release chain signs with the release
+key and no keyless signer is left (KMS rule 2).
 """
 import argparse, datetime, hashlib, os, re, subprocess, sys
 
@@ -15,7 +14,8 @@ PATCH = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.([1-9][0-9]*)$")
 
 
 def kind(tag_object):
-    """The signature format of an annotated tag object: ssh, x509 (gitsign), pgp, none, or ambiguous. A signature is a
+    """The signature format of an annotated tag object: ssh, x509 (a keyless signature), pgp, none, or ambiguous. A
+    signature is a
     PEM-style block with a signature label (BLOCKS) that git appends at the END of the object; any other PEM-style block
     (a key or certificate quoted in the notes) is message text (Codex #163 r1, B03). Two signature-labelled blocks, or one
     that is not at the end, are ambiguous."""
@@ -32,23 +32,17 @@ def kind(tag_object):
     return BLOCKS[label]
 
 
-def route(tag, tag_object, released):
-    """(route, why) with route in ssh / gitsign / refuse."""
+def route(tag_object):
+    """(route, why) with route in ssh / refuse. Only the owner's key is routed, so nothing but the tag object's
+    signature is read:
+    no rule about the tag's name, its kind or the previous patch is left here."""
     k = kind(tag_object)
     if k == "ssh":
         return "ssh", "an SSH signature: the owner's allowed-signers list decides"
-    if k != "x509":
-        return "refuse", {"none": "the tag is unsigned", "pgp": "a PGP signature is not an accepted signer",
-                          "ambiguous": "the tag object carries an ambiguous signature"}[k]
-    m = PATCH.match(tag)
-    if not m:
-        return "refuse", "the CI identity signs patch tags only (vX.Y.Z with Z >= 1); %s is the owner's" % tag
-    if tag in released:
-        return "refuse", "%s is already released" % tag
-    prev = "v%s.%s.%d" % (m.group(1), m.group(2), int(m.group(3)) - 1)
-    if prev not in released:
-        return "refuse", "the CI identity cuts only the next patch: %s is not released" % prev
-    return "gitsign", "a patch tag signed keylessly: the release workflow's identity on main decides"
+    if k == "x509":
+        return "refuse", "a keyless signature is not accepted: the release chain signs with the release key"
+    return "refuse", {"none": "the tag is unsigned", "pgp": "a PGP signature is not an accepted signer",
+                      "ambiguous": "the tag object carries an ambiguous signature"}[k]
 
 
 # REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + the owner's 0126 amendment (Oct 3) + advisor 0150's
@@ -178,19 +172,26 @@ def owner_baselines(tag, repo, allowed_signers, out):
     if not m:
         return []
 
-    def git(*a):
-        return subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers] + list(a),
-                              capture_output=True, text=True)
     got = []
-    for v in git("tag", "-l", "v%s.%s.*" % m.group(1, 2)).stdout.split():
+    tag_list = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "tag", "-l",
+        "v%s.%s.*" % m.group(1, 2)], capture_output=True, text=True)
+    for v in tag_list.stdout.split():
         b = PATCH.match(v) or re.match(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0)$", v)
         if not b or b.group(1, 2) != m.group(1, 2) or int(b.group(3)) >= int(m.group(3)):
             continue
-        if git("cat-file", "-t", "refs/tags/" + v).stdout.strip() != "tag":
+        tag_kind = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "cat-file",
+            "-t", "refs/tags/" + v], capture_output=True, text=True)
+        if tag_kind.stdout.strip() != "tag":
             continue
-        if kind(git("cat-file", "tag", "refs/tags/" + v).stdout) != "ssh" or git("verify-tag", v).returncode != 0:
+        tag_object = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers,
+            "cat-file", "tag", "refs/tags/" + v], capture_output=True, text=True)
+        if kind(tag_object.stdout) != "ssh":
             continue
-        f = git("show", "%s:requirements/releases/%s.yaml" % (v, v))
+        if subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "verify-tag", v],
+            capture_output=True, text=True).returncode != 0:
+            continue
+        f = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show",
+            "%s:requirements/releases/%s.yaml" % (v, v)], capture_output=True, text=True)
         if f.returncode != 0:
             continue
         with open(os.path.join(out, v + ".yaml"), "w") as fh:
@@ -200,7 +201,8 @@ def owner_baselines(tag, repo, allowed_signers, out):
         # itself reads fine, this version must still appear as a candidate -- so baseline(), if it picks this
         # as the latest approved one, correctly refuses outright (no requirements to compare) rather than
         # silently falling back to an older, fully-readable baseline instead
-        req = git("show", "%s:requirements/requirements.yaml" % v)
+        req = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show",
+            "%s:requirements/requirements.yaml" % v], capture_output=True, text=True)
         if req.returncode == 0:
             with open(os.path.join(out, v + ".requirements.yaml"), "w") as fh:
                 fh.write(req.stdout)
@@ -224,10 +226,12 @@ def _load_baselines(directory):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="admission-tag-signer")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("route")
-    r.add_argument("--tag", required=True)
+    r = sub.add_parser("route", allow_abbrev=False)      # `--tag` must not be read as a short `--tag-object`
     r.add_argument("--tag-object", required=True, help="file holding `git cat-file tag <tag>`")
-    r.add_argument("--tags", required=True, help="file listing the released tags, one per line (excluding this one)")
+    # Older tagged callers (the workflow at v0.2.2 and the chain's earlier admission caller) still pass these two;
+    # admission runs the tagged commit's caller against this router from main. Accepted, never read.
+    r.add_argument("--tag", help=argparse.SUPPRESS)
+    r.add_argument("--tags", help=argparse.SUPPRESS)
     b = sub.add_parser("baseline")
     b.add_argument("--tag", required=True)
     b.add_argument("--owner-baselines", required=True, help="the directory owner-baselines wrote")
@@ -247,8 +251,7 @@ def main(argv=None):
         v, why = baseline(a.tag, freeze, reqs, open(a.requirements, "rb").read())
         print(("use %s" % v) if v else "no", why)
         return 0
-    released = [t.strip() for t in open(a.tags) if t.strip() and t.strip() != a.tag]
-    r, why = route(a.tag, open(a.tag_object).read(), released)
+    r, why = route(open(a.tag_object).read())
     print(r, why)
     return 0
 

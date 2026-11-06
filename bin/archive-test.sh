@@ -225,6 +225,8 @@ rm -rf "${work:?}/o-t"; reset; run "$P_PULL" --pointer "$work/ptr.json" --out "$
 t AC4 "an artifact that is not in the registry: exit 1, nothing at the output path, no partial directory beside it" bash -c "test '$(rc)' = 1 && ! test -e '$work/o-t' && ! ls '$work'/o-t.partial.* >/dev/null 2>&1"
 reset; run "$P_PULL" --pointer "$work/ptr.json" --out "$work/o-tag" --digest "latest"
 t AC4 "--digest that is not sha256:<64 hex> (a tag) is refused (exit 2)" bash -c "test '$(rc)' = 2"
+rm -rf "${work:?}/o-empty"; reset; run "$P_PULL" --pointer "$work/ptr.json" --out "$work/o-empty" --digest ""
+t AC4 "an explicit empty --digest is refused (exit 2) before crane runs, nothing is written (a supplied value is never treated as omitted)" bash -c "test '$(rc)' = 2 && ! test -e '$work/o-empty' && ! test -s '$STUB_CALLS'"
 
 # ===== AC5: verify: no missing, extra or altered file ===============================================================================
 vrun() { run python3 -I -B "$1/archive-verify.py" verify --pointer "$work/ptr.json" --dir "$2"; }
@@ -397,7 +399,7 @@ for p in sys.argv[1:]:
             n += 1; assert re.match(r"\s+-I\s+-B\b", m.group(1)), (p, ln)
 assert n >= 3, n
 P
-t AC9 "archive-verify.py runs no subprocess and opens no socket (hashlib, json, os, re, sys only)" bash -c "! grep -Eq '^ *(import|from) +(subprocess|socket|urllib|http|ssl|shutil|tempfile|ctypes|requests)' '$VER' && grep -Eq '^import' '$VER'"
+t AC9 "archive-verify.py runs no subprocess and opens no socket (hashlib, json, os, re, signal, sys only)" bash -c "! grep -Eq '^ *(import|from) +(subprocess|socket|urllib|http|ssl|shutil|tempfile|ctypes|requests)' '$VER' && grep -Eq '^import' '$VER'"
 t AC9 "no test hook: neither script mentions a test mode or a TEST_ or ARCHIVE_ variable" bash -c "! grep -v TEST-SUBST '$PUSH' '$PULL' '$VER' | grep -En 'TEST_MODE|FSCACHE_TEST|ARCHIVE_[A-Z]+|TEST_[A-Z]+'"
 t AC9 "the copy the suite runs differs from each production file ONLY in occurrences of the four fixed paths, each replaced one for one by the dispatcher of that tool (any other byte difference fails)" python3 - "$root/bin" "$CP" "$work/tools" <<'P'
 import re, sys
@@ -483,6 +485,54 @@ else:
     raise SystemExit("the injected failure did not stop the extraction")
 assert n[0] >= 2, "the injection point was never reached"
 assert not os.path.lexists(out + ".stage"), "the stage directory was left behind"
+assert not os.path.lexists(out), "a partial output was left behind"
+P
+for SIG in SIGTERM SIGINT; do
+t AC6 "$SIG during the extraction (after the first file) leaves no <out>.stage and no <out> behind, and the process exits through SystemExit" python3 - "$VER" "$work/ptr.json" "$work/layout-keep" "$work/o-sig-$SIG" "$SIG" <<'P'
+import importlib.util, os, signal, sys
+spec = importlib.util.spec_from_file_location("av", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ptr, layout, out, name = sys.argv[2:6]
+n = [0]; real = os.chmod
+def interrupted(p, mode, *a, **k):
+    n[0] += 1
+    if n[0] == 2: os.kill(os.getpid(), getattr(signal, name))   # a real signal, delivered to this process in the middle of the extraction
+    return real(p, mode, *a, **k)
+os.chmod = interrupted
+try:
+    m.cmd_unpack({"--pointer": ptr, "--layout": layout, "--out": out})
+except SystemExit as e:
+    assert e.code not in (0, None), "the interrupted extraction exited as a success"
+else:
+    raise SystemExit("the signal did not stop the extraction")
+assert n[0] >= 2, "the injection point was never reached"
+assert not os.path.lexists(out + ".stage"), "the stage directory was left behind"
+assert not os.path.lexists(out), "a partial output was left behind"
+P
+done
+t AC6 "a SECOND signal during the cleanup does not stop it: no <out>.stage and no <out> are left" python3 - "$VER" "$work/ptr.json" "$work/layout-keep" "$work/o-sig-twice" <<'P'
+import importlib.util, os, signal, sys
+spec = importlib.util.spec_from_file_location("av", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ptr, layout, out = sys.argv[2:5]
+n = [0]; real_chmod, real_unlink = os.chmod, os.unlink
+def second(p, *a, **k):
+    os.kill(os.getpid(), signal.SIGTERM)   # the second signal, in the middle of the cleanup
+    return real_unlink(p, *a, **k)
+def first(p, mode, *a, **k):
+    n[0] += 1
+    if n[0] == 2:
+        os.unlink = second
+        os.kill(os.getpid(), signal.SIGINT)   # the first signal, during the extraction
+    return real_chmod(p, mode, *a, **k)
+os.chmod = first
+try:
+    m.cmd_unpack({"--pointer": ptr, "--layout": layout, "--out": out})
+except SystemExit:
+    pass
+else:
+    raise SystemExit("the signal did not stop the extraction")
+os.unlink = real_unlink
+assert n[0] >= 2, "the injection point was never reached"
+assert not os.path.lexists(out + ".stage"), "a second signal left the stage directory behind"
 assert not os.path.lexists(out), "a partial output was left behind"
 P
 echo "archive-test: $pass passed, $failn failed"

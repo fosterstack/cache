@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
 
 # A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
 # its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels
@@ -17,13 +18,12 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read   # the allowlist job's merge-queue lookup (a block on that job would end its plain-job trust)
 
 jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -36,6 +36,8 @@ jobs:
         run: go test -race -shuffle=on ./...
       - name: static build (CGO_ENABLED=0)
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/fscache
+      - name: the cache's own code and the built binary have no HTTP client and no outbound dial (REQ-IMAGE-001-AC13)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-no-outbound-test.sh bin/check-no-outbound-test.sh
 
   # REQ-VEND-001-AC3: the vendored tree is what CI regenerates, on every pull request (Dependabot's included; no actor or branch
   # condition). It only compares: no token, no commit, no sumdb opt-out. The whole history is fetched so origin/main is readable:
@@ -137,6 +139,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2   # on a pull request the checkout is the merge commit, so HEAD^1 is the base tip
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
@@ -151,9 +155,16 @@ jobs:
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
       - name: golangci-lint (staticcheck, gofmt, goimports, md5/sha1 import ban)
         run: |
-          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally
           golangci-lint config verify   # the action ran this before every run (its verify input defaults to true)
           golangci-lint run ./...
+      - name: no shop words added to a file a customer can read
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: git diff -U0 --no-renames --no-color HEAD^1 HEAD | python3 -I bin/check-customer-words.py
 
   gosec:
     name: gosec
@@ -190,7 +201,7 @@ jobs:
           go build -o "$gobin/gosec" github.com/securego/gosec/v2/cmd/gosec
       - name: run gosec
         run: |
-          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally
           gosec -fmt sarif -out gosec-results.sarif ./...
       # Fork PRs get a read-only GITHUB_TOKEN that `permissions:` cannot
       # elevate, so security-events: write is not granted and this upload
@@ -206,7 +217,7 @@ jobs:
         with:
           sarif_file: gosec-results.sarif
 
-  # The mechanical oracle for our FIPS claim (punch list #10a). GOFIPS140
+  # The mechanical oracle for the FIPS check. GOFIPS140
   # selects Go's CMVP-validated cryptographic module (cert #5247) at build
   # time; GODEBUG=fips140=only makes that module REFUSE any non-approved
   # algorithm at runtime rather than quietly computing it. Running the full
@@ -248,13 +259,15 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
+      - name: install the pinned Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-      - name: govulncheck
-        run: govulncheck ./...
+      - name: govulncheck (the same judgment as Check)
+        run: python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"
 
   # ---------------------------------------------------------------------------------------------------------------
-  # Merged from hygiene.yml, requirements.yml and dependency-review.yml (workflow consolidation 2 of 4, owner RATIFIED
+  # Merged from hygiene.yml, requirements.yml and dependency-review.yml (workflow consolidation 2 of 4
   # Oct 2). Same events (push to main, pull_request); every job keeps its name, top-level placement and own
   # permissions; dependency-review runs on pull requests only, the only scope it is required on.
   allowlist:
@@ -268,8 +281,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           # empty on a push (nothing to compare against); on a pull request refuse an odd base name before the fetch
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
@@ -279,18 +294,26 @@ jobs:
 
       - name: check every tracked file against the allowlist
         env:
-          # head repo vs this repo decides whether an auditor/* head is the real lane (a fork can name a branch anything)
+          # head repo vs this repo decides whether an auditor/* head is the real auditor branch (a fork can name a branch anything)
           GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          # the queue's commit has no head branch: the script reads the pull request from the queue ref (one call)
+          GITHUB_QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          GH_TOKEN: ${{ github.token }}
         run: git ls-files | ./bin/check-file-allowlist.sh
 
-      - name: allowlist branch-scoping regressions (auditor suppression lane)
-        run: bash bin/check-file-allowlist-test.sh
+      - name: allowlist branch-scoping regressions
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-file-allowlist-test.sh bin/check-file-allowlist-test.sh
+
+      - name: customer-word check regressions
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-customer-words-test.sh bin/check-customer-words-test.sh
+
+
 
       - name: branch sweep and local prune regressions
-        run: bash bin/branch-sweep-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json branch-sweep-test.sh bin/branch-sweep-test.sh
 
       - name: govulncheck fixture modules materialize (never indexed by the dependency graph)
-        run: bash .github/agent/tests/govulncheck-fixtures-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json govulncheck-fixtures-test.sh .github/agent/tests/govulncheck-fixtures-test.sh
 
       - name: set up Python for the workflow-permission check
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -307,7 +330,7 @@ jobs:
           pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
           REQ
           python3 bin/check-workflow-permissions.py
-      # REQ-SCAN-015 (advisor-accepted Oct 9; serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
+      # REQ-SCAN-015 (serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
       # main-candidate-rescan.yml by file, so neither may be callable as a reusable workflow. Runs here, in the required
       # `allowlist` job, so a violation blocks the merge; it reads the checked-out workflow files with the PyYAML installed above.
       - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
@@ -316,17 +339,17 @@ jobs:
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.
       - name: the pin checker's own cases (row 78)
-        run: bash .github/agent/tests/check-action-pins-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-action-pins-test.sh .github/agent/tests/check-action-pins-test.sh
       - name: every GitHub Action is pinned to a commit digest (row 78)
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/agent/bin/check-action-pins.py --verify-tags .
       - name: the pin check's wiring cannot be skipped or weakened (REQ-REL-005-AC1)
-        run: bash .github/agent/tests/pin-wiring-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-wiring-test.sh .github/agent/tests/pin-wiring-test.sh
       - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
-        run: bash .github/agent/tests/pip-pin-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pip-pin-test.sh .github/agent/tests/pip-pin-test.sh
       - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
-        run: bash .github/agent/tests/docs-snippets-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json docs-snippets-test.sh .github/agent/tests/docs-snippets-test.sh
 
       # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
       # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled
@@ -343,21 +366,27 @@ jobs:
 
       - name: auditor suites — parser unit tests and the requirements-matrix suite
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
-          # REQ-SUP-001-AC28: when a pull request changes the Gradle wrapper pin, the online test compares it with Gradle's published sum
-          if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties; then
+          BASE="${BASE#refs/heads/}"
+          # REQ-SUP-001-AC28, AC31: when a pull request changes the Gradle wrapper pin or jar, the online tests compare them with Gradle's published sum
+          if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar .github/policy/gradle-wrapper-jar-sha256.txt; then
             export GRADLE_SUM_ONLINE=1
           fi
           # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           bash .github/agent/tests/auditor-parser-tests.sh
-          bash .github/agent/tests/auditor-matrix-test.sh
-          bash .github/agent/tests/auditor-labels-test.sh
+
+      - name: auditor requirements-matrix suite (REQ-CI-005, a counting step)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json auditor-matrix-test.sh .github/agent/tests/auditor-matrix-test.sh
+
+      - name: auditor report-label suite (REQ-CI-005, a counting step)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json auditor-labels-test.sh .github/agent/tests/auditor-labels-test.sh
 
       # The scanner-panel probe's request cap against the PINNED SDKs (Codex #155 phase-2 r2): both re-send once after a
       # 401 outside max_retries, so the cap is proven on the real SDK code, offline (a mock transport serves every request).
-      - name: the probe's one-request-per-seat cap against the hash-pinned SDKs (scanner panel rule 8; REQ-SCAN-008)
+      - name: the probe's one-request-per-seat cap against the hash-pinned SDKs (REQ-SCAN-008)
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/panel-sdk"
@@ -380,7 +409,7 @@ jobs:
       # Punch list #3c/#6c. Version literals in prose and commands rot at
       # the next release, and this class has bitten twice: a README
       # "Release pipeline (v0.1.0)" line, and an entire RELEASING.md
-      # verification section built around one tag. Owner doctrine is that
+      # verification section built around one tag. The standing rule is that
       # "we need not forget" resolves to a mechanical check, never to
       # memory. This is that check, and it lands only now that every doc is
       # already clean, so it goes green on arrival rather than as a
@@ -397,6 +426,29 @@ jobs:
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   # persona UAT suites (split out of the allowlist job; the driver suite is the long one)
   allowlist-persona:
     name: allowlist-persona
@@ -408,8 +460,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -432,17 +486,17 @@ jobs:
       # The persona UAT (REQ-UAT-001): its three suites run here like their neighbours. Their fixtures pick free ports per run, so they never collide with
       # each other or with a developer's machine. The driver suite is the long one (it runs the real driver through hundreds of cases).
       - name: persona UAT — agent and provider suite
-        run: bash bin/persona-uat-agent-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json persona-uat-agent-test.sh bin/persona-uat-agent-test.sh
 
       - name: persona UAT — wiring suite (workflows, tools file, installer, identity refresher)
-        run: bash bin/persona-uat-wiring-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json persona-uat-wiring-test.sh bin/persona-uat-wiring-test.sh
 
       - name: persona UAT — driver suite
-        run: bash bin/persona-uat-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json persona-uat-test.sh bin/persona-uat-test.sh
 
   # build, archive, assembly, VEX and scanner-gate regression suites (split out of the allowlist job)
-  allowlist-chain:
-    name: allowlist-chain
+  allowlist-chain-1:
+    name: allowlist-chain-1
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -451,8 +505,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -463,25 +519,146 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+
       - name: pin pip (hash-checked)
         run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
           python3 -m pip --version
+
       - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
         run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
+      - name: "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-sign-wiring-test.sh bin/chain-sign-wiring-test.sh
+
+  allowlist-chain-2:
+    name: allowlist-chain-2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
+        run: |
+          BASE="${BASE#refs/heads/}"
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+
+      - name: image assembly, lock proof and sealed proof regressions
+        run: bash bin/assemble-image-test.sh
+
+      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json go-bump-open-pr-test.sh bin/go-bump-open-pr-test.sh
+
+      - name: same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)
+        run: bash bin/inspector-reuse-test.sh
+
+  allowlist-chain-3:
+    name: allowlist-chain-3
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
+        run: |
+          BASE="${BASE#refs/heads/}"
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+
+      - name: apk build driver and release signing regressions
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json build-apk-test.sh bin/build-apk-test.sh
+
+      - name: input refresh script regressions
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json refresh-inputs-test.sh bin/refresh-inputs-test.sh
+
+      # The v0.3.0 release chain's four suites (REQ-CHAIN-001..003). The pin-wiring judge requires each step exactly as written here.
+      # The verifier's cases run with the network cut and must prove the cut (CHAIN_TEST_REQUIRE_NETCUT=1).
+      - name: "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)"
+        run: CHAIN_TEST_REQUIRE_NETCUT=1 python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-verify-test.sh bin/chain-verify-test.sh
+
+  allowlist-chain-4:
+    name: allowlist-chain-4
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
+        run: |
+          BASE="${BASE#refs/heads/}"
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
       - name: build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)
         run: bash bin/build-helpers-test.sh
 
       - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
         run: bash bin/vendoring-test.sh </dev/null
-      - name: apk build driver and release signing regressions
-        run: bash bin/build-apk-test.sh
-
-      - name: input refresh script regressions
-        run: bash bin/refresh-inputs-test.sh
 
       - name: archive push, pull and verify regressions
         run: bash bin/archive-test.sh
@@ -491,39 +668,163 @@ jobs:
 
       - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
         run: bash bin/vendor-provenance-test.sh </dev/null
-      - name: image assembly, lock proof and sealed proof regressions
-        run: bash bin/assemble-image-test.sh
 
       - name: privacy candidate-trace analyzer regressions (B03)
-        run: bash bin/analyze-egress-trace-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json analyze-egress-trace-test.sh bin/analyze-egress-trace-test.sh
 
       - name: scanner installer failure-path regressions (pinned-checksum contract)
-        run: bash bin/install-scanner-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json install-scanner-test.sh bin/install-scanner-test.sh
 
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
-        run: bash bin/inspector-gate-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh
+
+      - name: install the pinned grype for the VEX product-scope regressions and the suites after them (shard 4 keeps it with its consumers)
+        run: ./bin/install-scanner.sh grype
 
       - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
-        run: |
-          ./bin/install-scanner.sh grype
-          bash bin/vex-scope-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-scope-test.sh bin/vex-scope-test.sh
 
       - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
-        run: bash bin/vex-both-scanners-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-both-scanners-test.sh bin/vex-both-scanners-test.sh
 
-      - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
-        run: bash bin/vex-forms-test.sh
+      - name: the candidate's OCI layout turned into a scan tar, digests checked (REQ-REL-004-AC1)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json layout-archive-test.sh bin/layout-archive-test.sh
 
-      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
-        run: bash bin/scout-root-cause-test.sh
+      - name: our VEX in three forms — the same statements, generated before the signed manifest
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-forms-test.sh bin/vex-forms-test.sh
 
-      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
+      - name: the monthly evidence letter — made from the release assets, refused on any mismatch (REQ-REL-013)
+        run: >-
+          python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json
+          evidence-letter-test.sh bin/evidence-letter-test.sh
+
+      - name: the monthly evidence letter's jobs — key, no overwrite, closed, presence (REQ-REL-013-AC9 to AC11)
+        run: >-
+          python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json
+          evidence-letter-job-test.sh bin/evidence-letter-job-test.sh
+
+      - name: the Docker Scout root-cause round's documents, matrix and judge
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json scout-root-cause-test.sh bin/scout-root-cause-test.sh
+
+      - name: the Docker Scout older-versions sweep — table logic with docker stubbed, installer pins, dispatch-only job
         run: bash bin/scout-older-versions-test.sh
 
-      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
-        run: bash bin/go-bump-open-pr-test.sh
+      - name: suite guard (no tracked test file is empty; the guard's own regressions)
+        run: bash bin/suite-guard.sh files
 
-  # supply-chain, panel, release-wiring and dependency-lane suites (split out of the allowlist job)
+      - name: the suite guard's own regressions (REQ-CI-005, a counting step)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json suite-guard-test.sh bin/suite-guard-test.sh
+
+      - name: suite floors only rise (against the merge base on a pull request)
+        if: ${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}
+        env:
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          BASE="${BASE#refs/heads/}"
+          bash bin/suite-guard.sh floors-vs-base --allow-from-body "$(git merge-base HEAD "origin/${BASE}")" \
+            test-evidence/suite-floors.json
+
+      - name: "the release chain's Rekor check in key form: entries, retries, the pinned log key"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-rekor-key-test.sh bin/chain-rekor-key-test.sh
+
+      - name: "the release chain's trust files: exactly what the key and Rekor path reads"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-trust-files-test.sh bin/chain-trust-files-test.sh
+
+      - name: "the release key manifest: the root key's signature, the window, the revocation"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-manifest-test.sh bin/chain-manifest-test.sh
+
+      - name: "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json witness-kms-test.sh bin/witness-kms-test.sh
+
+      - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
+
+      - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
+
+      - name: "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json build-sandbox-hostile-test.sh bin/build-sandbox-hostile-test.sh
+
+      - name: "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-records-test.sh bin/chain-records-test.sh
+
+      - name: "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-build-wiring-test.sh bin/chain-build-wiring-test.sh
+
+      - name: "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-build-admit-test.sh bin/chain-build-admit-test.sh
+
+      - name: "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-bind-test.sh bin/chain-bind-test.sh
+
+      - name: "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-rebuild-test.sh bin/chain-rebuild-test.sh
+
+      - name: "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-snapshot-test.sh bin/chain-snapshot-test.sh
+
+      - name: "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-install-witness-test.sh bin/chain-install-witness-test.sh
+
+      - name: "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-check-scripts-test.sh bin/chain-check-scripts-test.sh
+
+      - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-check-wiring-test.sh bin/chain-check-wiring-test.sh
+
+      - name: "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null
+
+      - name: "the pinned crane install (REQ-CHAIN-007-AC7)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-install-crane-test.sh bin/chain-install-crane-test.sh
+
+      - name: "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-release-wiring-test.sh bin/chain-release-wiring-test.sh
+
+      - name: "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-release-scripts-test.sh bin/chain-release-scripts-test.sh
+
+      - name: "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-release-metadata-test.sh bin/chain-release-metadata-test.sh
+
+      - name: the customer guide — every scanner's file, check and exact command, no competitor named
+        run: bash bin/vex-guide-test.sh
+
+      - name: the live test's plan, test copy, fixture and wiring, offline
+        run: bash bin/vex-live-test-test.sh
+
+      - name: the live test's page and its driver are read by the action-pin checker
+        run: bash .github/agent/tests/vex-live-pins-test.sh
+
+      # Round 1 F7: the floors of test-evidence/suite-floors.json are held at REAL counts. Every suite the file names runs again through the guard (stdin closed,
+      # its case count read from its own output, at or above its floor); --count-only because suites with known reds (known-red.json) exit non-zero by design:
+      # their reds are judged by their own steps above, here only that they still run and still count.
+      - name: every suite runs at or above its committed floor (real counts)
+        env:
+          CHAIN_TEST_REQUIRE_NETCUT: '1'
+        run: python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json .
+
+  # The required check `allowlist-chain` (REQ-CI-001): the four shards above run the one job's steps in parallel; this gate keeps the name, needs every
+  # shard, always runs, takes no checkout and no action, and fails unless every shard's result is exactly `success` (failed, skipped, cancelled, missing or empty fails).
+
+  allowlist-chain:
+    name: allowlist-chain
+    runs-on: ubuntu-latest
+    needs: [allowlist-chain-1, allowlist-chain-2, allowlist-chain-3, allowlist-chain-4]
+    if: ${{ always() }}
+    steps:
+      - name: every shard of allowlist-chain succeeded (a failed, skipped, cancelled or missing result fails)
+        env:
+          R1: ${{ needs.allowlist-chain-1.result }}
+          R2: ${{ needs.allowlist-chain-2.result }}
+          R3: ${{ needs.allowlist-chain-3.result }}
+          R4: ${{ needs.allowlist-chain-4.result }}
+        run: |-
+          for r in "$R1" "$R2" "$R3" "$R4"; do [ "$r" = success ] || { echo "a shard of allowlist-chain did not succeed: [$r]"; exit 1; }; done
+
+  # supply-chain, panel, release-wiring and dependency-path suites (split out of the allowlist job)
   allowlist-pins-auditor:
     name: allowlist-pins-auditor
     runs-on: ubuntu-latest
@@ -534,8 +835,10 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          # the queue names its base as refs/heads/<branch>
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -556,48 +859,50 @@ jobs:
 
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
-        run: bash bin/dependabot-reviewer-test.sh
-      - name: dependency lanes wiring — reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)
-        run: bash bin/dependency-lanes-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependabot-reviewer-test.sh bin/dependabot-reviewer-test.sh
+      - name: dependency paths wiring — reviewer hourly from main, guard on every PR/push, patch/minor path after the guard
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependency-lanes-test.sh bin/dependency-lanes-test.sh
       - name: the Dependabot reviewer's bundle carries the diff, every in-range release note and our usage (row 75 b)
-        run: bash bin/dependabot-reviewer-gather-test.sh
-      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
-        run: bash bin/panel-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependabot-reviewer-gather-test.sh bin/dependabot-reviewer-gather-test.sh
+      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json panel-test.sh bin/panel-test.sh
       - name: the final image index that carries our OpenVEX for Docker Scout — the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)
-        run: bash bin/vex-index-test.sh </dev/null
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-index-test.sh bin/vex-index-test.sh </dev/null
       - name: the auditor's fixtures and tests follow the panel's image set — the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)
         run: bash .github/agent/tests/auditor-variants-test.sh
-      - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
-        run: bash bin/patch-decide-test.sh
-      - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
+      - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json patch-decide-test.sh bin/patch-decide-test.sh
+      - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012)
         run: bash bin/audit-record-test.sh
-      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
-        run: bash bin/admission-tag-signer-test.sh
+      - name: the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json queue-gate-judge-test.sh .github/agent/tests/queue-gate-judge-test.sh
+      - name: admission's tag signer — the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
-      - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
-        run: bash bin/release-patch-wiring-test.sh
+      - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json release-patch-wiring-test.sh bin/release-patch-wiring-test.sh
       - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
-        run: bash bin/acceptance-maven-413-test.sh
-      - name: release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)
-        run: bash .github/agent/tests/release-notes-signed-test.sh
-      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)
-        run: bash bin/go-freshness-wiring-test.sh
-      - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)
-        run: bash bin/workflow-consolidation-test.sh
-      - name: a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json acceptance-maven-413-test.sh bin/acceptance-maven-413-test.sh
+      - name: release.yml's notes commit runs exactly the committed signed-commit CLI (the literal path is judged under .github/agent/)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json release-notes-signed-test.sh .github/agent/tests/release-notes-signed-test.sh
+      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json go-freshness-wiring-test.sh bin/go-freshness-wiring-test.sh
+      - name: the workflow consolidation (mutation runs weekly inside go-freshness)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json workflow-consolidation-test.sh bin/workflow-consolidation-test.sh
+      - name: a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011)
         run: bash bin/job-isolation-test.sh
       - name: the daily rescan covers the current release only (REQ-REL-004-AC5)
-        run: bash bin/rescan-current-only-test.sh
-      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
-        run: bash bin/panel-wiring-test.sh
-      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
-        run: bash .github/agent/tests/k8s-harness-fence-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json rescan-current-only-test.sh bin/rescan-current-only-test.sh
+      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json panel-wiring-test.sh bin/panel-wiring-test.sh
+      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json k8s-harness-fence-test.sh .github/agent/tests/k8s-harness-fence-test.sh
       - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
-        run: bash .github/agent/tests/pin-age-check-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-age-check-test.sh .github/agent/tests/pin-age-check-test.sh
       - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)
-        run: bash .github/agent/tests/pin-audit-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-audit-test.sh .github/agent/tests/pin-audit-test.sh
       - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
-        run: bash .github/agent/tests/supply-chain-wiring-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json supply-chain-wiring-test.sh .github/agent/tests/supply-chain-wiring-test.sh
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
@@ -606,11 +911,8 @@ jobs:
   required-check-guard:
     name: required-check guard
     runs-on: ubuntu-latest
-    outputs:
-      drift_issue: ${{ steps.drift-issue.outputs.issue }}
     permissions:
       contents: read
-      issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -624,12 +926,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/required-check-guard.sh .github/policy/required-checks.json
 
-      # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
-      # first; one open issue, updated in place, never duplicated. Best effort: a
-      # Dependabot or fork run has no issues:write, and the red check above still stands.
-      - name: open or update the `required-check drift` issue when main's list has drifted
-        id: drift-issue
-        if: always()
+  # On a push to main, drift between main's list and the ruleset opens (or updates) the `required-check drift`
+  # issue. Only on push to main: the issue write is held by a job that runs main's own code, never by a job that runs a pull
+  # request's or a queue group's scripts. A drift first seen on a PR run stays a red check there and is picked up by the
+  # next push to main. Best effort: a failed call is a warning; the issue is the record.
+  drift-issue:
+    name: open the required-check drift issue
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # One open issue, updated in place, never duplicated.
+      - name: open the required-check drift issue
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -648,7 +961,7 @@ jobs:
           {
             echo 'The ruleset on `main` and `.github/policy/required-checks.json` on `main` differ (contexts and integration IDs must both match, exactly). Until they agree the Dependabot auto-merge guard refuses every patch/minor PR and every PR ci run is red.'
             echo
-            echo 'Fix whichever is wrong: the ruleset (owner, GitHub UI) or the list (a PR).'
+            echo 'Fix whichever is wrong: the ruleset (GitHub UI) or the list (a PR).'
             echo
             echo "Seen by ${RUN_URL}"
             echo
@@ -662,36 +975,38 @@ jobs:
           else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
           if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
 
-  # Row 76: a drift issue dispatches the fixer in the ops repository. Only on push to main: the
-  # App secrets live in the main-only `agent` environment, which a PR run cannot use. A drift first
-  # seen on a PR run is dispatched by the next push to main (or by hand). Best effort: no token or
-  # a failed call is a warning; the issue is the record.
-  drift-fixer-dispatch:
-    name: dispatch the fixer for required-check drift
-    needs: required-check-guard
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}
+  # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
+  # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
+  # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
+  # secret; a fork's token is read-only and enough. LIMIT: a pull request that also rewrites THIS job is stopped by the workflow-change rule (both reviews and the maintainers'
+  # merge), not by the job; bin/marker-gate-test.sh pins the job's text so an edit fails the suite on the same pull request.
+  marker-gate:
+    name: marker-gate
     runs-on: ubuntu-latest
-    environment: agent
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: head
+          fetch-depth: 0
           persist-credentials: false
-      - name: mint the App token for dispatching the fixer (ops, contents:write only)
-        id: app-ops
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: ops
-          permission-contents: write
-      - name: dispatch
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: the marker pull request's files, and the run its marker names
         env:
-          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
-          ISSUE: ${{ needs.required-check-guard.outputs.drift_issue }}
-        run: bash bin/dispatch-fixer.sh fix-required-check-drift "$ISSUE" || true
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
+          python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
 
   requirements:
     name: requirements
@@ -725,14 +1040,6 @@ jobs:
       # here, in PR CI. Approval is checked only at release admission.
       - name: frozen baseline consistency (approval-agnostic)
         run: go -C tools/requirements run . verify-freeze v0.2.1
-      # Repeatable semantic regressions for the authorization stage's
-      # acceptance-content policy (audit B02b): the extracted validator is
-      # exercised here against the frozen baseline with valid/empty/
-      # missing/skip/invalid/fail/duplicate/unknown fixtures, so a
-      # weakening of the policy is caught in PR CI, not only by an
-      # external probe.
-      - name: authorization acceptance-content policy regressions
-        run: bash bin/authorize-acceptance-check-test.sh
       # Repeatable regressions for the daily image rescan's merge,
       # classification and platform-enumeration logic (audit B04d/B04e/B04f):
       # the extracted bin/rescan-statement.py is exercised against real
@@ -742,14 +1049,121 @@ jobs:
       # cases), so a scanner-evidence regression is caught in PR CI. Pure
       # python3 + jq — no network, gh or scanners.
       - name: daily-rescan merge/classification/enumeration regressions
-        run: bash bin/rescan-statement-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json rescan-statement-test.sh bin/rescan-statement-test.sh
 
   dependency-review:
-    if: ${{ github.event_name == 'pull_request' }}   # required on pull requests only; the action needs a PR
+    # required on pull requests and in the merge queue; never on a push (nothing to compare)
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
+      - name: the merge queue's base and head are named (REQ-DEP-005-AC2)
+        if: github.event_name == 'merge_group'
+        env:
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          [ -n "$QUEUE_BASE_SHA" ] && [ -n "$QUEUE_HEAD" ] || {
+            echo "::error::the merge queue named no base or head commit:" \
+              "nothing to compare, so this check fails"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # a pull request leaves both empty (the action reads the PR); the queue's two commits are read in its place
+          base-ref: ${{ github.event.merge_group.base_sha }}
+          head-ref: ${{ github.event.merge_group.head_sha }}
+
+  # (REQ-SCAN-012-AC4): on main, a change to the guide, the VEX file or its generator runs the live test against the newest published
+  # release that carries the VEX files (never on a pull request or a schedule); until a v0.3 release exists the test announces a skip.
+  live-test-gate:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"   # no usable base: run rather than miss a change
+            exit 0
+          fi
+          git diff --name-only "$BEFORE" "$GITHUB_SHA" > "$RUNNER_TEMP/changed.txt"   # complete before it is read
+          if grep -qE '^(docs/using-our-vex\.md|docs/using-our-vex\.cannot-run\.json|docs/using-our-vex\.live-blocks\.json|docs/using-our-vex\.live-fixture\.json|\.vex/.+|bin/vex-forms\.py|bin/vex-live-(run\.sh|test\.py))$' "$RUNNER_TEMP/changed.txt"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  live-test:
+    needs: live-test-gate
+    if: github.event_name == 'push' && needs.live-test-gate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
+      group: vex-live-test
+      cancel-in-progress: false
+    environment: live-test   # holds the five LIVE_TEST_* identifiers; its tag policy must admit rc and final v tags
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install crane, Grype and cosign (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh crane
+          bash bin/install-scanner.sh cosign
+          mkdir -p "$RUNNER_TEMP/tools"
+          bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: install docker-scout (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
+          mkdir -p "$HOME/.docker/cli-plugins" && install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
+      - name: AWS, as the live-test role (federated; the test ECR repository and live-test Inspector filters only)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.LIVE_TEST_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Google, as the live-test service account (federated; the test Artifact Registry repository and VEX notes)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.LIVE_TEST_GCP_PROVIDER }}
+          service_account: ${{ vars.LIVE_TEST_GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: '587.0.0'
+      - name: the live test, every guide command as written, the fixture's finding shown before and gone after
+        env:
+          MODE: main
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          GH_TOKEN: ${{ github.token }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
+        run: bash bin/vex-live-run.sh run
+      - name: cleanup, delete every image, live-test filter and VEX note the run created
+        if: always()
+        env:
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+        run: bash bin/vex-live-run.sh cleanup

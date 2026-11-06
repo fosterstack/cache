@@ -31,19 +31,27 @@ class NormRef(unittest.TestCase):
 
 
 class RemoveIgnores(unittest.TestCase):
-    """(b) an OpenVEX-named file that is not an object in the suppression dir is not a VEX document — no crash, and the real
-    statement beside it is still removed (the VEX is the only exception there is)."""
-    def test_array_json_is_skipped(self):
+    """(b) an OpenVEX-named file in the suppression dir that is not a JSON object is NOT a VEX document and not "nothing to remove" either: the removal stops with
+    ReviewedInputInvalid (cache#701 ruling: invalid input is a stop, poam never reports a removal it did not check), and no file is touched."""
+    def test_array_json_is_a_stop(self):
         d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
         with open(os.path.join(d, "list.openvex.json"), "w") as fh:
             json.dump([1, 2], fh)
+        with open(os.path.join(d, "ig.json"), "w") as fh:
+            json.dump({"id": "CVE-1"}, fh)                              # not a VEX file: untouched
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid):
+            P._remove_ignores(d, {"CVE-1"})
+        self.assertTrue(os.path.exists(os.path.join(d, "list.openvex.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "ig.json")))
+
+    def test_a_valid_vex_beside_is_removed(self):
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
         with open(os.path.join(d, "a.openvex.json"), "w") as fh:
             json.dump({"statements": [{"vulnerability": {"name": "CVE-1"}}]}, fh)
         with open(os.path.join(d, "ig.json"), "w") as fh:
-            json.dump({"id": "CVE-1"}, fh)                              # not a VEX file: untouched
+            json.dump({"id": "CVE-1"}, fh)
         removed = P._remove_ignores(d, {"CVE-1"})
         self.assertEqual([os.path.basename(x) for x in removed], ["a.openvex.json"])
-        self.assertTrue(os.path.exists(os.path.join(d, "list.openvex.json")))
         self.assertTrue(os.path.exists(os.path.join(d, "ig.json")))
 
 

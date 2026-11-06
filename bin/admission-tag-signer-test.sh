@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-009-AC6, REQ-REL-009-AC13
-# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057): the owner's
-# SSH signature (allowed-signers) on any tag; the release.yml-on-main gitsign identity on a PATCH tag only (vX.Y.Z,
-# Z >= 1, the previous patch vX.Y.(Z-1) already released); an unsigned tag, any other signature format, an ambiguous
-# tag object, or the CI identity on a minor, major or rc tag is refused. The route only picks the verifier; the
-# verifier (git verify-tag against allowed-signers, or gitsign verify-tag with the identity pinned) still has to pass.
-# The second half reads stage-admission.yml: the policy comes from protected main, and gitsign verify-tag pins the
-# exact identity, issuer, repository, ref and the tagged commit.
+# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057; KMS rule 2): only the owner's
+# SSH signature (allowed-signers), on any tag. An unsigned tag, any other signature format (PGP, or a keyless x509 signature such as the
+# release.yml gitsign identity), or an ambiguous tag object is refused. The route only picks the verifier; the verifier
+# (git verify-tag against allowed-signers) still has to pass.
+# The second half of this file judged the wiring of stage-admission.yml (policy from protected main; gitsign verify-tag pinning the identity,
+# issuer, repository, ref and tagged commit; the baseline rules). PR 2 of the v0.3.0 chain removed that workflow: admission is the first step of
+# Build's apk job (bin/build-admit.py) and the same properties are judged by bin/chain-build-admit-test.sh (REQ-CHAIN-004-AC4, AC5).
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
@@ -36,27 +36,40 @@ for obj, want in [(SSH, "ssh"), (X509, "x509"), (PGP, "pgp"), (HEAD, "none"),
     check("kind -> %s" % want, got == want, got)
 REL = ["v0.1.0", "v0.2.0", "v0.2.1"]
 for tag, obj, tags, want, why in [
-    ("v0.2.2", X509, REL, "gitsign", "the CI identity on the next patch"),
+    ("v0.2.2", X509, REL, "refuse", "a keyless signature on the next patch (handoff 0713 P8: no keyless route is left)"),
     ("v0.3.0", X509, REL, "refuse", "the CI identity on a minor tag"),
     ("v1.0.0", X509, REL, "refuse", "the CI identity on a major tag"),
     ("v0.2.3", X509, REL, "refuse", "the CI identity skipping a patch (v0.2.2 not released)"),
     ("v0.2.2-rc.1", X509, REL, "refuse", "the CI identity on an rc"),
     ("v0.4.1", X509, REL, "refuse", "the CI identity on a line with no owner release"),
-    ("v0.2.2", SSH, REL, "ssh", "the owner on a patch"),
+    ("v0.2.2", SSH, REL, "ssh", "the owner's own signature on a patch tag (advisor 09:52Z: KMS rule 2 removes keyless signing, not the owner's key)"),
+    ("v0.2.1", SSH, REL, "ssh", "the owner's own signature on an existing patch tag (a re-tag is for the other admission checks to refuse)"),
+    ("v0.3.1", SSH, REL + ["v0.3.0"], "ssh", "the owner's own signature on the first patch of a released minor"),
+    ("v0.3.0-rc1", SSH, REL, "ssh", "the owner on a release candidate"),
+    ("v0.3.0-rc1", X509, REL, "refuse", "a keyless signature on a release candidate"),
     ("v0.3.0", SSH, REL, "ssh", "the owner on a minor"),
     ("v0.2.2", HEAD, REL, "refuse", "an unsigned tag (the App pushed it unsigned)"),
     ("v0.2.2", PGP, REL, "refuse", "a PGP signature"),
     ("v0.2.2", SSH + "-----BEGIN SIGNED MESSAGE-----\nB\n-----END SIGNED MESSAGE-----\n", REL, "refuse", "two signatures"),
     ("v0.2.1", X509, REL, "refuse", "the CI identity re-signing an existing tag"),
 ]:
-    got = T.route(tag, obj, tags)
+    got = T.route(obj)
     check("route: %s -> %s" % (why, want), got[0] == want, got)
 import hashlib, json, os, tempfile, io, contextlib
 d = tempfile.mkdtemp(); o = os.path.join(d, "obj"); open(o, "w").write(X509); t = os.path.join(d, "tags"); open(t, "w").write("\n".join(REL) + "\n")
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
-    rc = T.main(["route", "--tag", "v0.2.2", "--tag-object", o, "--tags", t])
-check("CLI prints the route first", rc == 0 and buf.getvalue().split()[0] == "gitsign", buf.getvalue())
+    rc = T.main(["route", "--tag-object", o])
+check("CLI prints the route first (a keyless patch tag is refused)", rc == 0 and buf.getvalue().split()[0] == "refuse", buf.getvalue())
+# older tagged callers (v0.2.2's workflow, the chain's earlier build-admit.py) pass --tag and --tags: both are accepted
+# and ignored, so the route is the same as without them
+for extra in ([], ["--tag", "v0.2.2"], ["--tags", t], ["--tag", "v0.2.2", "--tags", t]):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = T.main(["route", "--tag-object", o] + extra)
+    check("CLI: route %s gives the same answer as the bare call" % (" ".join(extra) or "alone"),
+          rc == 0 and out.getvalue().split()[0] == "refuse", out.getvalue())
+check("no route named gitsign is left in the router", 'return "gitsign"' not in open(sys.argv[1]).read(), "the router still returns the gitsign route")
 
 # --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2) + 0126/0150: which approved ACs baseline a CI patch uses
 def req_yaml(entries):
@@ -257,92 +270,3 @@ check("B01 the old --releases-dir (a directory of any origin) is gone", got == "
 print("admission-tag-signer: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
-
-# --- stage-admission.yml wiring
-pass=0; failn=0; work=$(mktemp -d); trap 'rm -rf "$work" "$TMPDIR"' EXIT
-judge() { python3 - "$1" <<'PY'
-import re, sys, yaml
-d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
-steps = d["jobs"]["admit"]["steps"]
-bad = []
-pol = next((s for s in steps if "fetch policy from protected main" in s.get("name", "")), {})
-for f in ("bin/admission-tag-signer.py", "bin/install-scanner.sh"):
-    if "git show origin/main:%s" % f not in pol.get("run", ""):
-        bad.append("%s is not read from protected main" % f)
-sig = [s for s in steps if s.get("id") == "tagsig"]
-run = sig[0].get("run", "") if sig else ""
-if "/tmp/policy/admission-tag-signer.py" not in run or "/tmp/policy/install-scanner.sh gitsign" not in run:
-    bad.append("the route or the gitsign install does not come from the policy copy")
-if re.search(r"(^|[\s;(])(\./)?bin/", run):
-    bad.append("the signature step runs a script from the tagged commit")
-want = ["--certificate-identity https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/main",
-        "--certificate-oidc-issuer https://token.actions.githubusercontent.com",
-        "--certificate-github-workflow-repository fosterstack/cache",
-        "--certificate-github-workflow-ref refs/heads/main",
-        '--certificate-github-workflow-sha "${GITHUB_SHA}"']
-flat = re.sub(r"\s*\\\n\s*", " ", run)
-for w in want:
-    if w not in flat:
-        bad.append("gitsign verify-tag does not pin: %s" % w)
-if "regexp" in run or "insecure" in run:
-    bad.append("a loose gitsign flag appears")
-if "gitsign verify-tag" not in run or 'git verify-tag "${GITHUB_REF_NAME}"' not in run:
-    bad.append("one of the two verifiers is missing")
-if not re.search(r'case "\$\{route\}" in\s+ssh\)', run) or not re.search(r"gitsign\)", run) or not re.search(r"\*\)\s*echo \"::error::", run):
-    bad.append("the route does not pick exactly one verifier and refuse otherwise")
-base = [s for s in steps if "baseline" in s.get("name", "") and "APPROVED" in s.get("name", "")]
-brun = base[0].get("run", "") if base else ""
-# Codex #163 r1 B01: the keyless path's baselines come only from owner-signed tags (verified against main's allowed
-# signers by main's copy of the script), and the tagged commit's copy of the chosen baseline must equal the owner's
-if "/tmp/policy/admission-tag-signer.py owner-baselines" not in brun or "--allowed-signers /tmp/policy/allowed_signers" not in brun \
-        or 'git ls-tree --name-only "${GITHUB_SHA}" requirements/releases/' in brun or "--owner-baselines" not in brun:
-    bad.append("the keyless path's baselines do not come only from owner-signed tags")
-if 'cmp -s' not in brun or 'git show "${BASE}:${f}"' not in brun:
-    bad.append("the tagged commit's copy of the chosen baseline is not checked against the owner tag's")
-if '/tmp/policy/admission-tag-signer.py baseline' not in brun or "steps.tagsig.outputs.method" not in str(base[0].get("env", {})) if base else True:
-    bad.append("the keyless path does not take its baseline from the policy's baseline rule (REQ-REL-009-AC13)")
-if 'release-workflow-keyless' not in brun or 'BASE="${GITHUB_REF_NAME}"' not in brun:
-    bad.append("owner-signed tags no longer need their own baseline, or the keyless branch is missing")
-if 'verify-freeze "${BASE}"' not in brun or "d.get('version') != base" not in brun:
-    bad.append("the chosen baseline is not verified and approval-checked")
-adm = [s for s in steps if s.get("id") == "admission"]
-if not adm or "baseline_version" not in adm[0].get("run", "") or "BASELINE" not in str(adm[0].get("env", {})):
-    bad.append("admission.json does not record the baseline used")
-print("; ".join(bad) or "ok")
-sys.exit(1 if bad else 0)
-PY
-}
-case_() {
-  local f="$work/$1.yml"
-  cp "$root/.github/workflows/stage-admission.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
-import sys, yaml
-p, edit = sys.argv[1], sys.argv[2]
-d = yaml.load(open(p), Loader=yaml.BaseLoader)
-S = d["jobs"]["admit"]["steps"]
-sig = [s for s in S if s.get("id") == "tagsig"][0]
-exec(edit)
-yaml.safe_dump(d, open(p, "w"), sort_keys=False)
-PY
-  fi
-  if out=$(judge "$f" 2>&1); then got=ok; else got=bad; fi
-  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS wiring:$1 → $got ($out)"
-  else failn=$((failn+1)); echo "FAIL wiring:$1 → $got, want $2 ($out)"; fi
-}
-case_ real               ok  ""
-case_ identity-regexp    bad "sig['run'] = sig['run'].replace('--certificate-identity ', '--certificate-identity-regexp ')"
-case_ any-issuer         bad "sig['run'] = sig['run'].replace('--certificate-oidc-issuer https://token.actions.githubusercontent.com', '--certificate-oidc-issuer-regexp .*')"
-case_ any-commit         bad "sig['run'] = sig['run'].replace('--certificate-github-workflow-sha \"\${GITHUB_SHA}\"', '')"
-case_ any-branch         bad "sig['run'] = sig['run'].replace('release.yml@refs/heads/main', 'release.yml@refs/heads/dev')"
-case_ route-from-tag     bad "sig['run'] = sig['run'].replace('/tmp/policy/admission-tag-signer.py', 'bin/admission-tag-signer.py')"
-case_ gitsign-from-tag   bad "sig['run'] = sig['run'].replace('/tmp/policy/install-scanner.sh gitsign', './bin/install-scanner.sh gitsign')"
-case_ keyless-own-baseline bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('/tmp/policy/admission-tag-signer.py baseline', 'echo')"
-case_ owner-borrows       bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('BASE=\"\${GITHUB_REF_NAME}\"', 'BASE=v0.2.1')"
-case_ unverified-base     bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('verify-freeze \"\${BASE}\"', 'verify-freeze \"\${GITHUB_REF_NAME}\"')"
-case_ unrecorded-base     bad "A = [s for s in S if s.get('id') == 'admission'][0]; A['run'] = A['run'].replace('baseline_version', 'unused')"
-case_ baselines-from-commit bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('owner-baselines', 'owner-baselinez')"
-case_ any-signer-baselines bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('--allowed-signers /tmp/policy/allowed_signers', '--allowed-signers allowed_signers')"
-case_ copy-unchecked      bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('cmp -s', 'true')"
-case_ no-refuse-default  bad "sig['run'] = sig['run'].replace('*) echo \"::error::', '*) echo \"::notice::')"
-echo "admission-tag-signer wiring: $pass passed, $failn failed"
-[ "$failn" = 0 ]

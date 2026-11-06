@@ -335,6 +335,96 @@ refresh)
   [ -x /usr/bin/openssl ] || die "openssl is required to verify the package index signature and was not found (/usr/bin/openssl)"
   [ -s "$archived_key" ] || die "the archive has no Wolfi signing key at keys/wolfi-signing.rsa.pub"
 
+  # REQ-REFRESH-001-AC39 to AC42: the lists, locks and the kernel row are read whole
+  # before the first network call of the run
+  for f in build/apko.yaml build/apko-fips.yaml build/melange.yaml build/melange-fips.yaml build/locks/apko.base.lock.json \
+           build/locks/apko-fips.base.lock.json build/locks/melange.lock build/melange.yaml.tmpl build/locks/fips-module.txt build/host-tools.yaml build/locks/host-tools.lock; do
+    [ -f "$repo/$f" ] || die "missing $f in $repo"
+  done
+  for f in build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-guest.lock \
+           build/locks/vm-kernel.lock build/vm-keys/kernel-key-6165ee59.rsa.pub; do
+    [ -f "$repo/$f" ] || die "missing $f in $repo"
+  done
+
+  /bin/mkdir -p "$tmp/host" "$tmp/vm-host" "$tmp/vm-guest"
+  /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY' || exit $?
+import hashlib, os, re, sys, yaml
+repo, tmp = sys.argv[1:3]
+# REQ-REFRESH-001-AC35 and AC39: the lists of packages that run on the runner itself (bubblewrap) or for the VM build
+# (the emulator, the guest), resolved like melange's build tools
+def refuse(msg):
+    print("refresh-inputs.sh: refused: %s" % msg, file=sys.stderr); sys.exit(2)
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~-]*")
+def read_list(yaml_rel, lock_rel):
+    """The names in a package list file, after the strict reading of the file and of its committed lock."""
+    class StrictLoader(yaml.SafeLoader):
+        pass
+    def _no_dup(loader, node, deep=False):
+        seen = set()
+        for k, _ in node.value:
+            key = loader.construct_object(k, deep=True)
+            if not isinstance(key, str):
+                refuse("%s has a key that is not a plain string: %r" % (yaml_rel, key))
+            if key in seen:
+                refuse("%s has the key %r twice" % (yaml_rel, key))
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+    StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup)
+    try:
+        h = yaml.load(open(repo + "/" + yaml_rel), Loader=StrictLoader)
+    except yaml.YAMLError as e:
+        refuse("%s is not valid YAML (%s)" % (yaml_rel, str(e).splitlines()[0]))
+    # a closed shape: exactly one key, packages, a non-empty list of unique plain package names
+    # (no version, no path: the lock pins the versions)
+    if not isinstance(h, dict) or set(h) != {"packages"}:
+        refuse("%s must hold exactly one key, packages" % yaml_rel)
+    names = h["packages"]
+    plain = isinstance(names, list) and all(isinstance(n, str) and NAME.fullmatch(n) and ".." not in n for n in names)
+    if not plain or not names or len(set(names)) != len(names):
+        refuse("%s packages must be a non-empty list of unique plain package names (no version, no path)" % yaml_rel)
+    # the committed lock: name=version rows in the closed grammar, each name once
+    seen_n = set()
+    text = open(repo + "/" + lock_rel, newline="").read()   # no newline translation: a CR is a bad row, not a line end
+    if text and not text.endswith("\n"):
+        refuse("%s must end with a line end" % lock_rel)
+    for row in (text.split("\n")[:-1] if text else []):
+        n, eq, v = row.partition("=")
+        if not eq or not NAME.fullmatch(n) or not VERSION.fullmatch(v) or ".." in n or ".." in v or n in seen_n:
+            refuse("%s has a row that is not a name=version of the closed grammar, or a name twice: %r"
+                   % (lock_rel, row))
+        seen_n.add(n)
+    return names
+hnames = read_list("build/host-tools.yaml", "build/locks/host-tools.lock")
+yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": hnames}, "archs": ["x86_64", "aarch64"]},
+               open(tmp + "/host/host-tools-env.yaml", "w"))
+for vm in ("vm-host", "vm-guest"):
+    vnames = read_list("build/%s.yaml" % vm, "build/locks/%s.lock" % vm)
+    yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": vnames}, "archs": ["x86_64"]},
+                   open("%s/%s/%s-env.yaml" % (tmp, vm, vm), "w"))
+# REQ-REFRESH-001-AC40: the kernel lock is read whole, before the first network call of the run
+KEY_FILE = "kernel-key-6165ee59.rsa.pub"
+KEY_SHA256 = "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f"
+k_text = open(repo + "/build/locks/vm-kernel.lock", newline="").read()
+k_rows = k_text.split("\n")[:-1] if k_text.endswith("\n") else []
+m = re.fullmatch(r"(linux-virt)=(%s) sha256:([0-9a-f]{64})" % VERSION.pattern, k_rows[0]) if len(k_rows) == 1 else None
+if not m or ".." in m.group(2):
+    refuse("build/locks/vm-kernel.lock must end with a line end and hold exactly one row, "
+           "'linux-virt=<version> sha256:<64 lower-case hex>': %r" % k_text[:200])
+open(tmp + "/vm-kernel.rows", "w").write("%s %s %s\n" % m.groups())
+# REQ-REFRESH-001-AC41: the committed kernel package key is the pinned one before anything is checked with it
+if hashlib.sha256(open(repo + "/build/vm-keys/" + KEY_FILE, "rb").read()).hexdigest() != KEY_SHA256:
+    print("refresh-inputs.sh: build/vm-keys/%s is not the key whose sha256 this script states (%s); "
+          "stopping, a human must look" % (KEY_FILE, KEY_SHA256), file=sys.stderr); sys.exit(3)
+# REQ-REFRESH-001-AC42: every VM lock is written inside the repository (the file and its temporary sibling's directory)
+root = os.path.realpath(repo)
+for vm in ("vm-host", "vm-guest"):
+    lock_path = "%s/build/locks/%s.lock" % (repo, vm)
+    for real in (os.path.realpath(os.path.dirname(lock_path)), os.path.realpath(lock_path)):
+        if os.path.commonpath([root, real]) != root:
+            refuse("%s resolves to %s, outside the repository; nothing was written" % (lock_path, real))
+PY
+
   # rules 32 and 46: every run, before anything else, compare the live key to the archived one
   /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
@@ -358,13 +448,8 @@ PY
     exit 3
   fi
 
-  for f in build/apko.yaml build/apko-fips.yaml build/melange.yaml build/melange-fips.yaml build/locks/apko.base.lock.json \
-           build/locks/apko-fips.base.lock.json build/locks/melange.lock build/melange.yaml.tmpl build/locks/fips-module.txt build/host-tools.yaml build/locks/host-tools.lock; do
-    [ -f "$repo/$f" ] || die "missing $f in $repo"
-  done
-
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
-  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange" "$tmp/host"
+  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
   /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY'
 import re, sys, yaml
 repo, tmp = sys.argv[1:3]
@@ -378,54 +463,22 @@ m = yaml.safe_load(open(repo + "/build/melange.yaml"))
 names = [str(p).split("=")[0] for p in m["environment"]["contents"]["packages"]]
 yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": names}, "archs": ["x86_64", "aarch64"]},
                open(tmp + "/melange/melange-env.yaml", "w"))
-# REQ-REFRESH-001-AC35: the packages the Build jobs run on the runner itself (bubblewrap and its libraries), resolved like melange's build tools
-def refuse(msg):
-    print("refresh-inputs.sh: refused: %s" % msg, file=sys.stderr); sys.exit(2)
-class StrictLoader(yaml.SafeLoader):
-    pass
-def _no_dup(loader, node, deep=False):
-    seen = set()
-    for k, _ in node.value:
-        key = loader.construct_object(k, deep=True)
-        if not isinstance(key, str):
-            refuse("build/host-tools.yaml has a key that is not a plain string: %r" % (key,))
-        if key in seen:
-            refuse("build/host-tools.yaml has the key %r twice" % (key,))
-        seen.add(key)
-    return yaml.SafeLoader.construct_mapping(loader, node, deep)
-StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup)
-try:
-    h = yaml.load(open(repo + "/build/host-tools.yaml"), Loader=StrictLoader)
-except yaml.YAMLError as e:
-    refuse("build/host-tools.yaml is not valid YAML (%s)" % str(e).splitlines()[0])
-# a closed shape: exactly one key, packages, a non-empty list of unique plain package names (no version, no path: the lock pins the versions)
-NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
-if not isinstance(h, dict) or set(h) != {"packages"}:
-    refuse("build/host-tools.yaml must hold exactly one key, packages")
-hnames = h["packages"]
-if not isinstance(hnames, list) or not hnames or not all(isinstance(n, str) and NAME.fullmatch(n) and ".." not in n for n in hnames) or len(set(hnames)) != len(hnames):
-    refuse("build/host-tools.yaml packages must be a non-empty list of unique plain package names (no version, no path)")
-# the committed lock: name=version rows in the closed grammar, each name once
-seen_n = set()
-_lock_text = open(repo + "/build/locks/host-tools.lock", newline="").read()   # no newline translation: a carriage return is a bad row, not a line end
-if _lock_text and not _lock_text.endswith("\n"):
-    refuse("build/locks/host-tools.lock must end with a line end")
-for _row in (_lock_text.split("\n")[:-1] if _lock_text else []):
-    _n, _eq, _v = _row.partition("=")
-    if not _eq or not NAME.fullmatch(_n) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~-]*", _v) or ".." in _n or ".." in _v or _n in seen_n:
-        refuse("build/locks/host-tools.lock has a row that is not a name=version of the closed grammar, or a name twice: %r" % _row)
-    seen_n.add(_n)
-yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": hnames}, "archs": ["x86_64", "aarch64"]},
-               open(tmp + "/host/host-tools-env.yaml", "w"))
 PY
   lock() { /usr/local/bin/apko lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
   lock "$tmp/production/apko.yaml" "$tmp/production.lock.json"
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
   lock "$tmp/host/host-tools-env.yaml" "$tmp/host-tools.lock.json"
+  lock_x86() {
+    /usr/local/bin/apko lock --arch x86_64 --repository-append "$WOLFI" --keyring-append "$archived_key" \
+      --output "$2" "$1"
+  }
+  lock_x86 "$tmp/vm-host/vm-host-env.yaml" "$tmp/vm-host.lock.json"
+  lock_x86 "$tmp/vm-guest/vm-guest-env.yaml" "$tmp/vm-guest.lock.json"
 
   # The embedded program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
-  # ruled download lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
+  # ruled download lines below and runs the program again (it starts from the same state each time, up to five passes:
+  # packages, kernel, Go, index, the rest).
   refresh_py() { /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY'
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, yaml, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
@@ -584,15 +637,16 @@ def check_entry(e, where):
         fail("refused: the url of %s in %s is not a plain https://packages.wolfi.dev/os/ address (host check before anything is fetched)" % (e.get("name"), where), 2)
 
 
-def load_live(path):
+def load_live(path, archs=ARCHS):
     pk = json.load(open(path))["contents"]["packages"]
     for e in pk:
         check_entry(e, os.path.basename(path))
+    pk = [e for e in pk if e["architecture"] in archs]
     per = {a: {e["name"]: e["version"] for e in pk if e["architecture"] == a} for a in ARCHS}
-    for a in ARCHS:
+    for a in archs:
         if not per[a]:
             fail("the live lock %s has no package for %s" % (os.path.basename(path), a))
-    if per["x86_64"] != per["aarch64"]:
+    if len(archs) == len(ARCHS) and per["x86_64"] != per["aarch64"]:
         diff = sorted(n for n in set(per["x86_64"]) | set(per["aarch64"]) if per["x86_64"].get(n) != per["aarch64"].get(n))
         fail("the live lock %s resolves different versions on the two architectures (%s)" % (os.path.basename(path), ", ".join(diff)))
     return pk
@@ -608,10 +662,14 @@ for kind, f in (("production", "apko.base.lock.json"), ("fips", "apko-fips.base.
     base[kind] = {"path": path, "doc": json.load(open(path))}
 old_mel = [l for l in open(repo + "/build/locks/melange.lock").read().splitlines() if l]
 old_host = [l for l in open(repo + "/build/locks/host-tools.lock").read().splitlines() if l]
+old_vm = {}
+for _k in ("vm-host", "vm-guest"):
+    old_vm[_k] = [l for l in open("%s/build/locks/%s.lock" % (repo, _k)).read().splitlines() if l]
 
 live = {"production": load_live(tmp + "/production.lock.json"), "fips": load_live(tmp + "/fips.lock.json")}
 live_mel = load_live(tmp + "/melange.lock.json")
 live_host = load_live(tmp + "/host-tools.lock.json")
+live_vm = {k: load_live("%s/%s.lock.json" % (tmp, k), ("x86_64",)) for k in ("vm-host", "vm-guest")}
 
 # ---- the archive's index is re-checked on EVERY run against build/locks/archive-index.sha256 ----
 # Damage is unconditional: a stored index that does not hash to its own name, a pointer file that is not the recorded index, or a missing
@@ -678,6 +736,69 @@ def verify_integrity(path, what):
         fail("checksum mismatch: %s is damaged, truncated or not an apk (%s)%s" % (what, str(ex)[:120], HINT))
 
 
+KEY_FILE = "kernel-key-6165ee59.rsa.pub"
+KEY_SHA256 = "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f"
+# the key name written in a package's signature header
+HEADER_KEY = "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"
+
+
+def verify_kernel(path, name, ver, want_sha):
+    """REQ-REFRESH-001-AC41: an Alpine kernel package is kept only when the whole file hashes to the lock's sha256,
+    its signature header names the committed Alpine key and verifies over the control segment, its control segment
+    names the lock's package, and its datahash is the sha256 of its data segment. Alpine's package format is not
+    read by bin/apk-tool.py, so this is its own step."""
+    what = "%s-%s.apk" % (name, ver)
+    if os.path.islink(path) or not os.path.isfile(path):
+        fail("%s (%s) is a symlink or not a regular file; delete it and run again" % (what, path))
+    raw = open(path, "rb").read()
+    if hashlib.sha256(raw).hexdigest() != want_sha:
+        fail("checksum mismatch: %s does not have the sha256 build/locks/vm-kernel.lock records (hash mismatch)" % what)
+    parts, rest, budget = [], raw, INFLATE_CAP
+    try:
+        while rest:
+            if len(parts) == 3:
+                raise ValueError("more than three gzip streams")
+            comp, data, rest = inflate(rest, what, budget)
+            budget -= len(data)
+            parts.append((comp, data))
+        if len(parts) != 3:
+            raise ValueError("a signed Alpine package has a signature, a control and a data stream")
+        sig_tar = tarfile.open(fileobj=io.BytesIO(parts[0][1]))
+        sig_member = sig_tar.getmembers()[0]
+        sig = sig_tar.extractfile(sig_member).read()
+        pkginfo = tarfile.open(fileobj=io.BytesIO(parts[1][1])).extractfile(".PKGINFO").read().decode()
+    except SystemExit:
+        raise
+    except Exception as ex:
+        fail("%s is not a signed Alpine package (%s)" % (what, str(ex)[:120]))
+    m = re.fullmatch(r"\.SIGN\.RSA(256)?\.(.+)", sig_member.name)
+    if not m or m.group(2) != HEADER_KEY:
+        fail("the signature header of %s (%s) does not name the committed kernel key %s"
+             % (what, sig_member.name, HEADER_KEY))
+    sp, cp = "%s/kernel.sig" % stage, "%s/kernel.control" % stage
+    os.makedirs(stage, exist_ok=True)
+    open(sp, "wb").write(sig)
+    open(cp, "wb").write(parts[1][0])
+    alg = "-sha256" if m.group(1) else "-sha1"
+    key_path = "%s/build/vm-keys/%s" % (repo, KEY_FILE)
+    if hashlib.sha256(open(key_path, "rb").read()).hexdigest() != KEY_SHA256:
+        fail("the committed kernel key %s is not the key whose sha256 this script states; refused" % KEY_FILE)
+    cmd = ["/usr/bin/openssl", "dgst", alg, "-verify", key_path, "-signature", sp, cp]
+    r = subprocess.run(cmd, capture_output=True)
+    if r.returncode != 0:
+        fail("the signature of %s does not verify against the committed kernel key %s; refused" % (what, KEY_FILE))
+    lines = pkginfo.splitlines()
+    for field in ("pkgname", "pkgver", "datahash"):
+        if sum(1 for l in lines if l.startswith(field + " = ")) != 1:
+            fail("%s: its control segment must hold exactly one %s line" % (what, field))
+    info = dict(l.split(" = ", 1) for l in lines if " = " in l)
+    if info.get("pkgname") != name or info.get("pkgver") != ver:
+        fail("%s: its control segment names %s-%s, the lock row is %s-%s"
+             % (what, info.get("pkgname"), info.get("pkgver"), name, ver))
+    if info.get("datahash") != hashlib.sha256(parts[2][0]).hexdigest():
+        fail("%s: the sha256 of its data segment is not the datahash its control segment records" % what)
+
+
 # ---- whatever the record says (even when there is none yet): every index file in the archive hashes to its own name, a pointer is a plain file or a link to such a file ----
 for _a in ARCHS:
     _idir, _cur = "%s/%s/index" % (archive, _a), "%s/%s/APKINDEX.tar.gz" % (archive, _a)
@@ -742,7 +863,7 @@ if ahead:
 # The archive is checked on EVERY run, for production, FIPS and melange alike: a damaged or truncated file under an unchanged lock is found here
 # (a human stop naming the file), not later at build time. The locks must agree with each other about the same package.
 groups = {}
-for lk in (live["production"], live["fips"], live_mel, live_host):
+for lk in (live["production"], live["fips"], live_mel, live_host, live_vm["vm-host"], live_vm["vm-guest"]):
     for e in lk:
         groups.setdefault((e["name"], e["version"], e["architecture"]), []).append(e)
 seen_file = {}
@@ -784,6 +905,7 @@ FIRST_FILL = first_fill_state()
 ff_locked = {}   # (name, version, arch) -> the committed lock entry (checksums): verified like any package
 ff_mel = []      # (name, version, arch) named only by the committed melange.lock (name=version): verified against the signed live index
 ff_host = []     # the same for the committed host-tools.lock (REQ-REFRESH-001-AC35, AC36)
+ff_vm = []       # the same for the committed vm-host.lock and vm-guest.lock (REQ-REFRESH-001-AC39), x86_64 only
 for k, es in sorted(committed.items()):
     if len({ident(e) for e in es}) != 1:
         fail("the committed production and FIPS locks disagree about %s-%s (%s): the same package has different checksums; refusing" % k)
@@ -803,10 +925,13 @@ for k, es in sorted(committed.items()):
     verify(dest, es[0])
     HINT = ""
 # the committed melange.lock and host-tools.lock (name=version, no checksums) name archived packages too: while an upgrade PR waits, the OLD versions they name are still what main builds from
-for _lockname, _old, _ff in (("melange.lock", old_mel, ff_mel), ("host-tools.lock", old_host, ff_host)):
+for _lockname, _old, _ff, _archs in (("melange.lock", old_mel, ff_mel, ARCHS),
+                                     ("host-tools.lock", old_host, ff_host, ARCHS),
+                                     ("vm-host.lock", old_vm["vm-host"], ff_vm, ["x86_64"]),
+                                     ("vm-guest.lock", old_vm["vm-guest"], ff_vm, ["x86_64"])):
   for _l in _old:
     _n, _, _v = _l.partition("=")
-    for _a in ARCHS:
+    for _a in _archs:
         if (_n, _v, _a) in committed or (_n, _v, _a) in fresh:
             continue   # checked against its lock checksums
         dest = "%s/%s/%s-%s.apk" % (archive, _a, _n, _v)
@@ -876,8 +1001,21 @@ for f_, sha_ in sorted(go_pin.items()):
             fail("go/%s is in the archive but does not have the sha256 its recipe pins (%s): delete that file and run again, or find out how it got damaged" % (f_, sha_), 1)
     else:
         go_missing.append(f_)
+# REQ-REFRESH-001-AC41: an archived kernel package is checked on every run, also while a refresh pull request waits
+kernel_missing = []   # (name, version, sha256) of the kernel packages the archive does not hold yet
+for _row in open(tmp + "/vm-kernel.rows").read().splitlines():
+    k_name, k_ver, k_sha = _row.split(" ")
+    k_dest = "%s/x86_64/%s-%s.apk" % (archive, k_name, k_ver)
+    if os.path.lexists(k_dest):
+        HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again)" % k_dest
+        verify_kernel(k_dest, k_name, k_ver, k_sha)
+        HINT = ""
+        print("checked the archived kernel package %s-%s.apk (sha256, signature, datahash)" % (k_name, k_ver))
+    else:
+        kernel_missing.append((k_name, k_ver, k_sha))
 # only now, before any download: a waiting refresh PR means "wait" (a missing package is fetched by that PR's own run), so a flaky download can never turn a wait into a red run
-if ahead or go_missing or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh):
+pkg_missing = any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh)
+if ahead or go_missing or kernel_missing or pkg_missing:
     open_prs_guard("refresh")
 
 
@@ -931,7 +1069,7 @@ for (name, ver, arch), e in sorted(list(fresh.items()) + list(ff_locked.items())
     verify(part, e)
     keep.append((part, dest, name, ver, arch))
 ff_mel_parts = []
-for (name, ver, arch) in sorted(set(ff_mel) | set(ff_host)):
+for (name, ver, arch) in sorted(set(ff_mel) | set(ff_host) | set(ff_vm)):
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
     if not os.path.exists(part):
@@ -941,6 +1079,22 @@ for (name, ver, arch) in sorted(set(ff_mel) | set(ff_host)):
     ff_mel_parts.append((part, "%s/%s/%s-%s.apk" % (archive, arch, name, ver), name, ver, arch))
 if want_pk:
     open(tmp + "/want-packages", "w").write("".join(l + "\n" for l in want_pk))
+    sys.exit(75)
+# REQ-REFRESH-001-AC41: a kernel package the archive lacks is fetched, checked and kept
+want_kn, kernel_added = [], []
+for k_name, k_ver, k_sha in kernel_missing:
+    k_file = "%s-%s.apk" % (k_name, k_ver)
+    k_part = "%s/x86_64/%s" % (stage, k_file)
+    os.makedirs(os.path.dirname(k_part), exist_ok=True)
+    if not os.path.exists(k_part):
+        want_kn.append(k_file)   # the name passed the plain-set grammar of the lock reader
+        continue
+    verify_kernel(k_part, k_name, k_ver, k_sha)
+    print("checked the downloaded kernel package %s (sha256, signature, datahash)" % k_file)
+    keep.append((k_part, "%s/x86_64/%s" % (archive, k_file), k_name, k_ver, "x86_64"))
+    kernel_added.append(k_file)
+if want_kn:
+    open(tmp + "/want-kernel", "w").write("".join(f + "\n" for f in want_kn))
     sys.exit(75)
 keep_go, want_go = [], []
 for f_ in go_missing:
@@ -1006,6 +1160,17 @@ if sorted(old_host) != new_host:
     for n, v in sorted(dict(l.split("=", 1) for l in old_host).items()):
         if host_names.get(n) != v:
             notes.append("%s %s is no longer in live Wolfi's resolution (host tools); the archived copy is kept" % (n, v))
+vm_new = {}
+for _k in ("vm-host", "vm-guest"):
+    _names = {e["name"]: e["version"] for e in live_vm[_k] if e["architecture"] == "x86_64"}
+    _path = "%s/build/locks/%s.lock" % (repo, _k)
+    vm_new[_path] = sorted("%s=%s" % p for p in _names.items())
+    if sorted(old_vm[_k]) != vm_new[_path]:
+        changed.append(_path)
+        for n, v in sorted(dict(l.split("=", 1) for l in old_vm[_k]).items()):
+            if _names.get(n) != v:
+                notes.append("%s %s is no longer in live Wolfi's resolution (%s); the archived copy is kept"
+                             % (n, v, _k))
 recipes = {}
 if sorted(old_mel) != new_mel:
     changed.append(mel_path)
@@ -1020,11 +1185,11 @@ if sorted(old_mel) != new_mel:
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
-r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--baselayout-template", repo + "/build/melange-baselayout.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
                      "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
-for rf in ("melange.yaml", "melange-fips.yaml"):
+for rf in ("melange.yaml", "melange-fips.yaml", "melange-baselayout.yaml"):
     path = "%s/build/%s" % (repo, rf)
     out = open("%s/%s" % (gen_dir, rf)).read()
     if out != open(path).read():
@@ -1033,14 +1198,21 @@ for rf in ("melange.yaml", "melange-fips.yaml"):
 
 for n in notes:
     print("note: " + n)
+gains = []
 if go_missing:
     notes.append("the archive gains the Go toolchain tarball(s) the recipes pin: %s" % ", ".join(go_missing))
+    gains.append("Go tarballs")
+if kernel_added:
+    notes.append("the archive gains the kernel package(s) the VM build boots: %s" % ", ".join(kernel_added))
+    gains.append("the kernel package")
+if gains:
     _ptr = repo + "/build/archive.json"
     if os.path.exists(_ptr):
         if _ptr not in changed:
             changed.append(_ptr)      # the pointer is rewritten by open-pr once the archive is stored; the pull request exists because the archive gained files
-    elif not changed:
-        fail("the archive gains Go tarballs but there is no pointer and nothing else changes, so no pull request could carry it; a human must look", 1)
+    elif not changed and go_missing:   # a kernel package alone, with no pointer yet, is just put into the archive
+        fail("the archive gains Go tarballs but there is no pointer and nothing else changes, so no pull request could carry it; "
+             "a human must look", 1)
 record_path = repo + "/build/locks/archive-index.sha256"
 if not changed and os.path.exists(record_path) and not ahead:
     if keep:
@@ -1073,7 +1245,7 @@ def verify_index(path, arch):
     for (_n, _v, _a), _e in sorted(ff_locked.items()):   # a committed version fetched by the first fill is backed by the signed index like every locked package
         if _a == arch and (_n, _v, _e["checksum"]) not in listed:
             fail("the signed %s package index does not list the committed package %s-%s (%s); it cannot be checked against the index, a human must look" % (arch, _n, _v, _e["checksum"]))
-    for lockpk in (live["production"], live["fips"], live_mel, live_host):
+    for lockpk in (live["production"], live["fips"], live_mel, live_host, live_vm["vm-host"], live_vm["vm-guest"]):
         for e in lockpk:
             if e["architecture"] == arch and (e["name"], e["version"], e["checksum"]) not in listed:
                 fail("the signed %s package index does not list the locked package %s-%s (%s); the lock is not backed by the index, refused" % (arch, e["name"], e["version"], e["checksum"]))
@@ -1157,6 +1329,9 @@ if mel_path in changed:
     write_atomic(mel_path, "".join(l + "\n" for l in new_mel))
 if host_path in changed:
     write_atomic(host_path, "".join(l + "\n" for l in new_host))
+for _path, _rows in vm_new.items():
+    if _path in changed:
+        write_atomic(_path, "".join(l + "\n" for l in _rows))
 for path, out in recipes.items():
     write_atomic(path, out)
 
@@ -1189,7 +1364,7 @@ open(tmp + "/sig", "w").write(sig)
 open(tmp + "/body", "w").write(body)
 PY
   }
-  for _pass in 1 2 3 4; do
+  for _pass in 1 2 3 4 5; do
     _rc=0; refresh_py || _rc=$?
     [ "$_rc" = 75 ] || break
     if [ -s "$tmp/want-packages" ]; then
@@ -1198,6 +1373,12 @@ PY
         /usr/bin/curl -q -fsSL -g --max-filesize 536870912 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download a package from live Wolfi" 1
       done <"$tmp/want-packages"
       /bin/rm -f "$tmp/want-packages"
+    elif [ -s "$tmp/want-kernel" ]; then
+      while read -r f; do
+        echo "refresh-inputs.sh: fetching the kernel package $f"
+        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f" || die "could not download the kernel package from the Alpine mirror" 1
+      done <"$tmp/want-kernel"
+      /bin/rm -f "$tmp/want-kernel"
     elif [ -s "$tmp/want-go" ]; then
       while read -r f; do
         echo "refresh-inputs.sh: fetching the Go toolchain $f"
@@ -1224,29 +1405,20 @@ fips-module)
   [ -n "$goroot" ] || die "--go-root is required"
   # The refresh and this check edit the same recipe files in one working tree and their pull requests are opened only after the archive is stored: a
   # second plan would be built on the first one's uncommitted edits. With a plan already staged this check stages nothing and runs again tomorrow.
+  # REQ-REFRESH-001-AC12 (rc-3 astra F4): the strict reading of the certified-module file and of build/locks/fips-module.txt below runs in this case too;
+  # the staged case then only says pending / nothing pending and stages nothing.
+  staged=0
   if [ -n "$plan_dir" ] && [ -d "$plan_dir" ] && ! dir_empty "$plan_dir"; then
     echo "fips-module: a pull request is already staged in $plan_dir; this check stages nothing now and runs again tomorrow (each pull request is built from the committed files alone)"
-    _mf=$repo/build/locks/fips-module.txt _cf=$goroot/lib/fips140/certified.txt _cur= _cert= _l=
-    if [ -r "$_cf" ] && [ -r "$_mf" ]; then
-      read -r _cur <"$_mf" || true
-      while IFS= read -r _l || [ -n "$_l" ]; do case $_l in ''|'#'*) continue;; esac; _cert=$_l; break; done <"$_cf"
-      [ -n "$_cert" ] && [ -n "$_cur" ] || die "$_cf or $_mf holds no module value: the certified-module check cannot tell whether a newer module is pending" 1
-      if [ -n "$_cert" ] && [ -n "$_cur" ] && [ "$_cert" != "$_cur" ]; then
-        echo "fips-module: pending: Go's certified module file names $_cert, the FIPS build uses $_cur; its pull request is staged on the next run without a staged refresh"
-      else
-        echo "fips-module: nothing pending: the certified module is the one the FIPS build uses ($_cur)"
-      fi
-    else
-      die "cannot read $_cf or $_mf: the certified-module check cannot tell whether a newer module is pending" 1
-    fi
-    exit 0
+    staged=1
   fi
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
-  [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY' || exit $?
+  [ "$staged" = 1 ] || [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
+  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" "$staged" <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
-goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR = sys.argv[1:7]
+goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR, STAGED = sys.argv[1:8]
+STAGED = STAGED == "1"   # a plan is already staged: the checks below run, then the answer is only pending / nothing pending
 cert = os.path.join(goroot, "lib", "fips140", "certified.txt")
 
 
@@ -1288,6 +1460,12 @@ if tuple(int(x) for x in cm.groups()) > max(mods)[0]:
     fail("%s names %s, older than the %s the FIPS build uses; refusing to move backward" % (cert, newest, cur))
 if cm.groups() == PAT.match(newest).groups() and cur != newest:
     fail("%s names %s, the SAME version as the %s the FIPS build uses with a different hash; refusing, a human must look" % (cert, newest, cur))
+if STAGED:
+    if cur != newest:
+        print("fips-module: pending: Go's certified module file names %s, the FIPS build uses %s; its pull request is staged on the next run without a staged refresh" % (newest, cur))
+    else:
+        print("fips-module: nothing pending: the certified module is the one the FIPS build uses (%s)" % cur)
+    sys.exit(0)
 if cur == newest:
     print("up to date: Go's certified module %s is the one the FIPS build already uses; no pull request" % cur)
     open(tmp + "/new", "w").write("")
@@ -1334,12 +1512,12 @@ open_prs_guard("fips-module")   # before any file is changed
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/fips-module.new", "w").write(newest + "\n")
-r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--baselayout-template", repo + "/build/melange-baselayout.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
                      "--fips-module", tmp + "/fips-module.new", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
 writes = []
-for rf in ("melange.yaml", "melange-fips.yaml"):
+for rf in ("melange.yaml", "melange-fips.yaml", "melange-baselayout.yaml"):
     path = "%s/build/%s" % (repo, rf)
     out = open("%s/%s" % (gen_dir, rf)).read()
     if out != open(path).read():
@@ -1364,7 +1542,7 @@ PY
   { IFS= read -r newest; IFS= read -r cur; } <"$tmp/new"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/paths"
   open_pr "refresh/fips-module-$newest" "Move the FIPS build to the newer certified Go Cryptographic Module $newest" \
-    "The daily check found $newest in Go's own certified-module file; the FIPS build used $cur. This pull request was only opened, not merged. It goes through all the normal checks and the rebuild-from-archive test; there is no shortcut." \
+    "The daily check found $newest in Go's own certified-module file; the FIPS build used $cur. This pull request was only opened, not merged. It goes through all the normal checks and the rebuild-from-archive test; there is no shortcut. A new certificate number is a human fact that no tool can read from Go, so this pull request cannot pass the release checks until a person also changes these files: bin/check-artifacts.sh (the GOFIPS140 value it requires), bin/check-fips.sh (the certificate note), internal/buildinfo/buildinfo.go (the module it recognises and the certificate note), internal/buildinfo/buildinfo_test.go (the certificate it expects), .github/workflows/ci.yml (the GOFIPS140 value of the fips140-only job; a workflow file, so its pin rules and review apply) and docs/install.md (the certificate it names), bin/check-govulncheck.py (the GOFIPS140 value its recipe grammar requires and sets), and the public pages that name the module or certificate: SECURITY.md, RELEASING.md, docs/offline-install.md and docs/verify-images.md; the requirement text that names the certificate (requirements/requirements.yaml, REQ-FIPS-001) is an owner-ratified rule, so a change to its words goes to the owner. Search the tree for the current module and certificate number and review every hit." \
     "${paths[@]}"
   ;;
 

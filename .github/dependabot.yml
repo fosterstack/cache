@@ -18,30 +18,63 @@ updates:
     # construction and none can ever merge. Grouping makes them one PR that
     # moves all pins together. (Found Sep 7, 2026: PRs #12/#13/#15.)
     groups:
+      # Major only: a codeql-action major stays its own lane task. It must come first and be major-only:
+      # Dependabot gives a dependency to the first group that matches it, so its minor and patch fall through
+      # to actions-minor-patch below.
       codeql-action:
         patterns:
           - "github/codeql-action*"
+        update-types:
+          - "major"
+      # Minor and patch updates of all actions, codeql-action included, arrive as ONE pull request
+      # instead of one each; a major never joins (it stays a lane task).
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    # Minor and patch updates of Go modules arrive as ONE pull request instead of one each;
+    # a major never joins (it stays a lane task).
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
-  # The distroless base digests. CRITICAL (owner, Sep 8): nothing had
-  # watched these since Sprint 3 — the pins lived in .goreleaser.yaml and
-  # .ko.yaml where no ecosystem looks. The FROM lines are written
-  # image:tag@sha256 because Dependabot's docker ecosystem does not update
-  # a bare image@sha256 line; with a tag to track it bumps the digest. A
-  # base bump is patch/minor for the auto-merge lane; the reproducibility
-  # check and release-artifact acceptance are the gates that catch a bad
-  # base. The debug image's busybox comes from static:debug-nonroot and
-  # moves with it — no separate tracking.
-  - package-ecosystem: "docker"
-    directory: "/build/docker"
+  # tools/requirements is its own Go module (ci.yml runs it with go -C tools/requirements); same shape as the root module.
+  - package-ecosystem: "gomod"
+    directory: "/tools/requirements"
     schedule:
-      # daily so a base-image CVE fix waits a day, not a week (auditor defers base
-      # rebuilds to Dependabot per REQ-AUD-2 AC3; the auditor never edits a base digest).
-      interval: "daily"
+      interval: "weekly"
+    # Same 7-day wait as the govulncheck tool module: its bumps change what validates the requirements.
+    cooldown:
+      default-days: 7
+    # Minor and patch updates arrive as ONE pull request instead of one each; a major never joins (it stays a lane task).
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The pinned Go source scanner of the release chain's Check stage (advisor Oct 12, ruling G): tools/govulncheck is its own module (go.mod and go.sum are the pin), so a
+  # new version reaches it through this reviewed path, with the same 7-day wait as the actions and the pip pins. Dependabot moves go.mod and go.sum; ci.yml's `go install
+  # golang.org/x/vuln/cmd/govulncheck@vX` is by hand, and bin/chain-install-witness-test.sh is red until the two agree (so a bump cannot merge half done).
+  - package-ecosystem: "gomod"
+    directory: "/tools/govulncheck"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
 
   # The hash-pinned adjudicator SDK (anthropic) the auditor's real model client imports.
   # Dependabot bumps the pin + regenerates hashes; the workflow installs it with
@@ -50,7 +83,7 @@ updates:
     directory: "/.github/agent"
     schedule:
       interval: "weekly"
-    # REQ-SUP-001-AC1: the same 7-day wait as github-actions; gomod and docker keep their CVE-fix targets.
+    # REQ-SUP-001-AC1: the same 7-day wait as github-actions; gomod keeps its CVE-fix target.
     cooldown:
       default-days: 7
     # pydantic pins pydantic-core EXACTLY. The group bundles them when both update; it does NOT
@@ -62,3 +95,13 @@ updates:
         patterns:
           - "pydantic"
           - "pydantic-core"
+      # Minor and patch updates of the other agent packages arrive as ONE pull request instead of one each (audit
+      # ruling Oct 31): one head, one review, one audit record. A major never joins (it stays a lane task, bump rule 3).
+      # It comes after pydantic: Dependabot gives a dependency to the first group that matches it.
+      # pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any other pin): a pip bump never joins.
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+        exclude-patterns:
+          - "pip"

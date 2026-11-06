@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# proves: REQ-SBOM-001-AC1, REQ-SBOM-001-AC2, REQ-SBOM-001-AC3, REQ-SBOM-001-AC4, REQ-SBOM-001-AC5, REQ-BUILDTOOLS-001-AC1, REQ-BUILDTOOLS-001-AC2, REQ-BUILDTOOLS-001-AC3, REQ-BUILDTOOLS-001-AC4, REQ-BUILDTOOLS-001-AC5, REQ-BUILDTOOLS-001-AC6, REQ-BUILDTOOLS-001-AC7, REQ-BUILDTOOLS-001-AC8, REQ-BUILDTOOLS-001-AC9, REQ-BUILDTOOLS-001-AC10, REQ-SUP-001-AC18
+# proves: REQ-SBOM-001-AC1, REQ-SBOM-001-AC2, REQ-SBOM-001-AC3, REQ-SBOM-001-AC4, REQ-SBOM-001-AC5, REQ-BUILDTOOLS-001-AC1, REQ-BUILDTOOLS-001-AC2, REQ-BUILDTOOLS-001-AC3, REQ-BUILDTOOLS-001-AC4, REQ-BUILDTOOLS-001-AC5, REQ-BUILDTOOLS-001-AC6, REQ-BUILDTOOLS-001-AC7, REQ-BUILDTOOLS-001-AC8, REQ-BUILDTOOLS-001-AC9, REQ-BUILDTOOLS-001-AC10, REQ-SUP-001-AC18, REQ-IMAGE-001-AC15
 # Tests of the PR: helpers: module SBOM tool, apk tool, recipe compare, tool installer, lock tool.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
+NONROOT="p['SPDXID']!='SPDXRef-fscache'"      # a module package of a go-module-sbom document: not the root
 # ---- begin verbatim sections ----
 # ===== rule 21: bin/gen-recipes.py (both recipes are generated from one template; CI checks the committed files are exactly its output) =================
 gt="$fx/melange.yaml.tmpl"; ga="$fx/melange.yaml"; gb="$fx/melange-fips.yaml"
-GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt"   # the fixture data files
-GRX="env FSCACHE_TEST_MODE=1 FSCACHE_GEN_PIN=$(shasum -a 256 "$gt" | cut -d" " -f1)"   # the fixture template's own pin (the real one is in gen-recipes.py and is checked in build-apk-test.sh)
+gbt="$fx/melange-baselayout.yaml.tmpl"; gbl="$fx/melange-baselayout.yaml"
+GRD="--melange-lock $fx/melange.lock --fips-module $fx/fips-module.txt --baselayout-template $gbt --baselayout $gbl"   # the fixture data files and the third recipe
+GR_PROD="$GR"; GR="$fx/gen-recipes.py"; GRX=env   # the fixtures run a copy of the generator whose TEMPLATE_SHA256 line holds the fixture template's own pin (the real one is checked in build-apk-test.sh)
 t "rule 21" "gen-recipes --check passes on a pair the generator wrote" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
-t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -q 'GOFIPS140=v1.0.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
+t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -Eqx '.build.GOFIPS140=v1\.0\.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
 t "rule 21" "the standard recipe holds no GOFIPS140 at all" bash -c "! grep -q GOFIPS140 '$ga'"
 t "rule 21" "the FIPS proof reads a file, not a pipe (no SIGPIPE under pipefail)" bash -c "grep -q 'go version -m .* > /tmp/fscache-gobuildinfo.txt' '$gb' && ! grep -q 'fscache | grep' '$gb'"
 gr=$(mktemp -d "$work/gr.XXXXXX"); mv "$gr" "$work/gr"   # this file's own scratch, made by mktemp; kept at the fixed name the fixture lines use
@@ -106,6 +108,97 @@ fails "rule 20" "go-module-sbom: a module the binary embeds that is not in vendo
 fails "rule 20" "go-module-sbom: an embedded module in vendor/modules.txt but NOT in dependency-provenance.json fails and names it" 'golang\.org/x/sys' python3 "$GS" --modules "$sb/modules.txt" --provenance "$sb/provenance-nosys.json" --buildinfo "$sb/ok.txt" --out "$work/m3b.json"
 fails "rule 20" "go-module-sbom: a version that differs from vendor/modules.txt fails and names the module" 'golang\.org/x/sys' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ver.txt" --out "$work/m4.json"
 t "rule 20" "go-module-sbom: compares path and version only (the vendor-mode binary list has no hashes)" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sb/ok.txt' --out '$work/m6.json'"
+# 0707 fix 3 (NTIA minimum elements): the root package and its supplier, DESCRIBES, DEPENDS_ON each module,
+# the creators, the fixed created time
+python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name fscache-fips --version 0.3.0 --out "$work/m7.json"
+# melange v0.61.2 pkg/sbom/package.go:182-183 writes the supplier as "Organization: " + Title(namespace), so the
+# namespace fosterstack reads "Organization: Fosterstack"; the root package here must carry the same string
+SUPPLIER="Organization: Fosterstack"; export SUPPLIER
+t "0707-fix3" "go-module-sbom: the root package is the shipped package, with its supplier, apk version and purl" \
+  python3 - "$work/m7.json" <<'PY'
+import json, os, sys
+SUPPLIER = os.environ["SUPPLIER"]
+d = json.load(open(sys.argv[1])); r = [p for p in d["packages"] if p["SPDXID"] == "SPDXRef-fscache"]
+assert len(r) == 1, r
+r = r[0]
+assert r["name"] == "fscache-fips" and r["versionInfo"] == "0.3.0-r0" and r["supplier"] == SUPPLIER, r
+assert r["externalRefs"][0]["referenceLocator"] == "pkg:apk/fosterstack/fscache-fips@0.3.0-r0", r
+PY
+t "0707-fix3" "go-module-sbom: the document DESCRIBES the root; the root DEPENDS_ON every module once, nothing else" \
+  python3 - "$work/m7.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); rel = d["relationships"]
+mods = sorted(p["SPDXID"] for p in d["packages"] if p["SPDXID"] != "SPDXRef-fscache")
+assert mods, "no modules"
+assert rel[0] == {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
+                  "relatedSpdxElement": "SPDXRef-fscache"}, rel[0]
+assert sorted(r["relatedSpdxElement"] for r in rel[1:]) == mods, rel
+assert all(r["spdxElementId"] == "SPDXRef-fscache" and r["relationshipType"] == "DEPENDS_ON" for r in rel[1:]), rel
+PY
+t "0707-fix3" "go-module-sbom: the creators are the organization and the tool; the created time is the fixed epoch" \
+  python3 - "$work/m7.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))["creationInfo"]
+assert c == {"created": "1970-01-01T00:00:00Z", "creators": ["Organization: Fosterstack", "Tool: go-module-sbom"]}, c
+PY
+t "0707-fix3" "go-module-sbom: without --version the root has no version and no purl; the supplier is still named" \
+  python3 - "$work/m1.json" <<'PY'
+import json, sys
+r = [p for p in json.load(open(sys.argv[1]))["packages"] if p["SPDXID"] == "SPDXRef-fscache"][0]
+assert "versionInfo" not in r and "externalRefs" not in r, r
+assert r["supplier"] == "Organization: Fosterstack" and r["name"] == "fscache", r
+PY
+t "0707-fix3" "go-module-sbom: deterministic with --name and --version too" \
+  bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sb/ok.txt' --name fscache-fips --version 0.3.0 \
+    --out '$work/m8.json' && cmp '$work/m7.json' '$work/m8.json'"
+t "0707-fix3" "go-module-sbom: an apk release-candidate version (0.3.0_rc1, with an underscore) is accepted" \
+  python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version 0.3.0_rc1 --out "$work/m10.json"
+fails "0707-fix3" "go-module-sbom: a --name that is not a plain package-name word is refused" \
+  'plain package-name' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name 'a b' --out "$work/m9.json"
+fails "0707-fix3" "go-module-sbom: there is no --epoch option (the recipes say epoch: 0)" 'unrecognized arguments' \
+  python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version 0.3.0 --epoch 1 --out "$work/m9.json"
+for bad in FSCACHE a/b a@b; do
+  fails "0707-fix3" "go-module-sbom: --name $bad is refused (lower-case package-name words only)" 'plain package-name' \
+    python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name "$bad" --out "$work/m9.json"
+done
+for bad in 0.3.0+meta 0.3.0-r1; do
+  fails "0707-fix3" "go-module-sbom: --version $bad is refused (digits, dots and underscores only)" \
+    'plain package-name' \
+    python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version "$bad" --out "$work/m9.json"
+done
+for v in 0.3.0 0.3.0-rc1 0.0.0-rc.1; do
+  av=$(python3 -I -B "$root/bin/build-apk-helper.py" arg apkver --version "$v")
+  t "0707-fix3" "go-module-sbom: the apk form $av of the driver's version $v is accepted" \
+    python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version "$av" --out "$work/m11.json"
+done
+# SPDX 2.3: one document namespace URI per document, so each package and version names its own
+python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --name fscache --version 0.3.0 --out "$work/m12.json"
+t "0707-fix3" "go-module-sbom: the fscache and fscache-fips documents have different documentNamespace values" \
+  python3 - "$work/m12.json" "$work/m7.json" <<'PY'
+import json, sys
+a, b = (json.load(open(f))["documentNamespace"] for f in sys.argv[1:3])
+base = "https://fosterstack.invalid/spdx/go-modules/"
+assert a == base + "fscache@0.3.0-r0" and b == base + "fscache-fips@0.3.0-r0", (a, b)
+PY
+t "0707-fix3" "go-module-sbom: without --version the documentNamespace names only the package" \
+  python3 - "$work/m1.json" <<'PY'
+import json, sys
+ns = json.load(open(sys.argv[1]))["documentNamespace"]
+assert ns == "https://fosterstack.invalid/spdx/go-modules/fscache", ns
+PY
+t "0707-fix3" "go-module-sbom: the root version is VERSION-r0" python3 - "$work/m7.json" <<'PY'
+import json, sys
+r = [p for p in json.load(open(sys.argv[1]))["packages"] if p["SPDXID"] == "SPDXRef-fscache"][0]
+assert r["versionInfo"] == "0.3.0-r0", r
+PY
+t "0707-fix3" "go-module-sbom: a module package names no supplier (the binary's module list has none): NOASSERTION" \
+  python3 - "$work/m7.json" <<'PY'
+import json, sys
+mods = [p for p in json.load(open(sys.argv[1]))["packages"] if p["SPDXID"] != "SPDXRef-fscache"]
+assert mods and all(p["supplier"] == "NOASSERTION" for p in mods), mods
+PY
+fails "0707-fix3" "go-module-sbom: a --version with a slash is refused (it goes into a purl)" \
+  'plain package-name' python3 "$GS" "${gsa[@]}" --buildinfo "$sb/ok.txt" --version '1/2' --out "$work/m9.json"
 # ===== rule 16: installing melange and apko on the VM ===================================================================
 t "rule 16" "install-build-tools.sh pins a version and a sha256 per tool and arch, verifies before extracting, no container digest" y pins "$IT"
 sf "rule 16" "unknown tool refused" 'unknown' "$IT" bogus "$work/bin"
@@ -219,21 +312,27 @@ for mut in "variable:not literal" "repovar:not literal" "mismatch:versions do no
 done
 
 # ===== apko-lock.sh: compare / arch-check / verify-archive / evidence (rules 28 29 33 37) ================================
-BL="$fx/base.lock.json" FL="$fx/full.lock.json"
-t "rule 37" "compare: full lock = base + our apk (reordered, other urls, other config checksum) -> equal" "$LK" compare "$BL" "$FL" --apk fscache
+BL="$fx/base.lock.json" FL="$fx/full.lock.json" OWN=fscache,fscache-baselayout   # our two apks (0710)
+t "rule 37" "compare: full lock = base + our apk (reordered, other urls, other config checksum) -> equal" "$LK" compare "$BL" "$FL" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-urls.json" urls-only
-t "rule 37" "compare: ignores url and config checksum (package entries only)" "$LK" compare "$BL" "$work/f-urls.json" --apk fscache
+t "rule 37" "compare: ignores url and config checksum (package entries only)" "$LK" compare "$BL" "$work/f-urls.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-sum.json" datasum tzdata
-fails "rule 37" "compare: a changed checksum fails and names the package" 'tzdata' "$LK" compare "$BL" "$work/f-sum.json" --apk fscache
+fails "rule 37" "compare: a changed checksum fails and names the package" 'tzdata' "$LK" compare "$BL" "$work/f-sum.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-extra.json" extra bash
-fails "rule 37" "compare: an extra package in the full lock fails and names it" 'bash' "$LK" compare "$BL" "$work/f-extra.json" --apk fscache
+fails "rule 37" "compare: an extra package in the full lock fails and names it" 'bash' "$LK" compare "$BL" "$work/f-extra.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-drop.json" drop tzdata
-fails "rule 37" "compare: a base package missing from the full lock fails and names it" 'tzdata' "$LK" compare "$BL" "$work/f-drop.json" --apk fscache
+fails "rule 37" "compare: a base package missing from the full lock fails and names it" 'tzdata' "$LK" compare "$BL" "$work/f-drop.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-noapk.json" drop fscache
-fails "rule 37" "compare: a full lock without our apk fails and names it" 'fscache' "$LK" compare "$BL" "$work/f-noapk.json" --apk fscache
+fails "rule 37" "compare: a full lock without our apk fails and names it" 'fscache' "$LK" compare "$BL" "$work/f-noapk.json" --apk "$OWN"
 python3 "$work/lib.py" mutate "$FL" "$work/f-oneapk.json" dropone fscache
-fails "rule 37" "compare: our apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-oneapk.json" --apk fscache
-t "rule 37" "compare: a base lock that already holds our apk is refused (exit 2)" bash -c "'$LK' compare '$FL' '$FL' --apk fscache >/dev/null 2>&1; test \$? -eq 2"
+fails "rule 37" "compare: our apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-oneapk.json" --apk "$OWN"
+python3 "$work/lib.py" mutate "$FL" "$work/f-nobase.json" drop fscache-baselayout
+fails "rule 37" "compare: a full lock without our base-layout apk fails and names it" 'fscache-baselayout' "$LK" compare "$BL" "$work/f-nobase.json" --apk "$OWN"
+python3 "$work/lib.py" mutate "$FL" "$work/f-onebase.json" dropone fscache-baselayout
+fails "rule 37" "compare: our base-layout apk present for one arch only fails and names the arch" 'aarch64' "$LK" compare "$BL" "$work/f-onebase.json" --apk "$OWN"
+fails "rule 37" "compare: naming only fscache leaves the base-layout apk an unexpected extra, named" 'fscache-baselayout' "$LK" compare "$BL" "$FL" --apk fscache
+python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); x["contents"]["packages"]=[e for e in x["contents"]["packages"] if e["name"]=="fscache-baselayout"]; json.dump(x,open(sys.argv[2],"w"))' "$FL" "$work/f-baseonly.json"
+fails "rule 37" "compare: a base lock holding only our base-layout apk is refused, naming it" 'fscache-baselayout' "$LK" compare "$work/f-baseonly.json" "$FL" --apk "$OWN"
 t "rule 33" "arch-check: both archs resolve the same versions -> pass" "$LK" arch-check "$BL"
 python3 "$work/lib.py" mutate "$BL" "$work/b-arch.json" archver
 fails "rule 33" "arch-check: a package whose version differs between archs fails and names it" 'tzdata' "$LK" arch-check "$work/b-arch.json"
@@ -253,7 +352,7 @@ n = 0
 for l in sys.stdin:
     h, p = l.rstrip('\n').split('  ', 1)
     assert hashlib.sha256(open(p, 'rb').read()).hexdigest() == h, p; n += 1
-assert n >= 10, n\""
+assert n >= 6, n\""
 rm -rf "$work/ev2"; mkdir -p "$work/ev2"; "$LK" evidence --lock "$BL" --archive "$fx/archive" --out "$work/ev2" >/dev/null 2>&1
 t "rule 29" "evidence: deterministic (two runs, same list)" bash -c "cmp '$ev/archive-checksums.txt' '$work/ev2/archive-checksums.txt'"
 fails "rule 29" "evidence: a lock package missing from the archive fails and names it" 'tzdata' "$LK" evidence --lock "$BL" --archive "$work/arch-m" --out "$work/ev3"
@@ -401,7 +500,10 @@ for n in empty garbage spaces nover crlf bom nohead nopath unknown stray; do
   fails "rule 20" "go-module-sbom: the input '$n' is refused (exit 2), never an empty SBOM" 'go-module-sbom' python3 "$GS" "${gsa[@]}" --buildinfo "$sx/$n.txt" --out "$work/sx-$n.json"
   t "rule 20" "...$n: exit code 2 and no SBOM file written" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sx/$n.txt' --out '$work/sx2-$n.json' >/dev/null 2>&1; test \$? = 2 && test ! -e '$work/sx2-$n.json'"
 done
-t "rule 20" "go-module-sbom: a stdlib-only binary (a build-info header, path and mod lines, no dependencies) gives an explicit SBOM with zero packages" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sx/stdlib.txt' --out '$work/sx-stdlib.json' && python3 -c \"import json,sys; d=json.load(open('$work/sx-stdlib.json')); assert d['packages']==[], d\""
+t "rule 20" "go-module-sbom: a stdlib-only binary (no dependencies) gives an explicit SBOM with zero module packages" \
+  bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$sx/stdlib.txt' --out '$work/sx-stdlib.json' \
+    && python3 -c \"import json,sys; d=json.load(open('$work/sx-stdlib.json')); \
+    assert [p for p in d['packages'] if $NONROOT]==[], d\""
 fails "rule 14" "apk-tool: a gzip stream missing its CRC/size trailer is refused (not accepted by digest)" 'trailer|complete|truncated|eof' python3 "$AT" digest "$sx/notrailer.apk"
 fails "rule 14" "apk-tool: ...and by signer" 'trailer|complete|truncated|eof' python3 "$AT" signer "$sx/notrailer.apk"
 fails "rule 14" "apk-tool: a data section that is itself gzip(tar) is not read as a tar (binary-check refuses)" 'tar|malformed|compress|plain|header' python3 "$AT" binary-check "$sx/doublegz.apk" "$pr/binA"
@@ -437,8 +539,8 @@ open(d + "/ctrlsign.apk", "wb").write(ctrl_with_sign + data)
 # apko-lock fixtures
 lk = json.load(open(bl))
 def w_(name, doc): json.dump(doc, open("%s/%s" % (d, name), "w"))
-x = json.loads(json.dumps(lk))
-x["contents"]["packages"] = [e for e in x["contents"]["packages"] if not (e["name"] == "wolfi-baselayout" and e["architecture"] == "aarch64")]
+x = json.load(open(fx + "/full.lock.json"))   # the base lock holds one package, so a package on one architecture only is made from the full lock
+x["contents"]["packages"] = [e for e in x["contents"]["packages"] if not (e["name"] == "fscache-baselayout" and e["architecture"] == "aarch64")]
 w_("arch-missing-pkg.json", x)
 x = json.loads(json.dumps(lk)); x["contents"]["packages"] = [e for e in x["contents"]["packages"] if e["architecture"] == "x86_64"]; w_("arch-one.json", x)
 x = json.loads(json.dumps(lk)); e0 = dict(x["contents"]["packages"][0]); e0["architecture"] = "riscv64"; x["contents"]["packages"].append(e0); w_("arch-riscv.json", x)
@@ -463,7 +565,7 @@ r4="$work/r4"
 fails "rule 22" "apk-tool: stream 0 that holds a .PKGINFO and a .SIGN member is read as the CONTROL (first header), so a 'signed' mixed apk is not equal to the honest one" 'signature|control|stream' python3 "$AT" same "$r4/honest.apk" "$r4/mixed.apk"
 fails "rule 22" "apk-tool: a signature stream with any member besides the one .SIGN member is refused" 'signature' python3 "$AT" digest "$r4/sigextra.apk"
 fails "rule 22" "apk-tool: a control section that also holds a .SIGN member is refused" 'signature|\.SIGN' python3 "$AT" digest "$r4/ctrlsign.apk"
-fails "rule 33" "arch-check: a package present on one architecture only is refused" 'wolfi-baselayout' "$LK" arch-check "$r4/arch-missing-pkg.json"
+fails "rule 33" "arch-check: a package present on one architecture only is refused" 'fscache-baselayout' "$LK" arch-check "$r4/arch-missing-pkg.json"
 fails "rule 33" "arch-check: a lock with only x86_64 is refused (the set must be exactly x86_64 and aarch64)" 'architect' "$LK" arch-check "$r4/arch-one.json"
 fails "rule 33" "arch-check: a third architecture is refused" 'architect|riscv64' "$LK" arch-check "$r4/arch-riscv.json"
 fails "rule 37" "compare: a second entry for our apk (another version, other checksums) is refused" 'fscache' "$LK" compare "$BL" "$r4/full-dupe-ours.json" --apk fscache
@@ -575,7 +677,10 @@ fails "rule 22" "apk-tool: a first block of type K (GNU long link) is refused" '
 for n in slashes dotdir dotslash2 dotdot; do
   fails "rule 14" "apk-tool: the entry spelled as '$n' that aliases usr/bin/fscache is refused (names must be canonical)" 'canonical|twice|duplicate' python3 "$AT" binary-check "$r6a/alias-$n.apk" "$pr/binA"
 done
-t "rule 20" "go-module-sbom: a dep line with an EMPTY sum field (what a -mod=vendor build prints) is accepted" bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$r6a/emptysum.txt' --out '$work/es.json' && python3 -c \"import json; d=json.load(open('$work/es.json')); assert [p['name'] for p in d['packages']]==['github.com/example/x','golang.org/x/sys'], d\""
+t "rule 20" "go-module-sbom: a dep line with an EMPTY sum field (what a -mod=vendor build prints) is accepted" \
+  bash -c "python3 '$GS' ${gsa[*]} --buildinfo '$r6a/emptysum.txt' --out '$work/es.json' \
+    && python3 -c \"import json; d=json.load(open('$work/es.json')); \
+    assert [p['name'] for p in d['packages'] if $NONROOT]==['github.com/example/x', 'golang.org/x/sys'], d\""
 t "rule 20" "go-module-sbom: a dep line with an h1: sum is accepted too" python3 "$GS" "${gsa[@]}" --buildinfo "$r6a/h1sum.txt" --out "$work/hs.json"
 
 # inputs-manifest: an apk whose build environment lists no packages is refused (not a vacuous pass)
@@ -606,7 +711,11 @@ cat >"$work/real-vendored.txt" <<'CAPTURE'
 CAPTURE
 printf '# gopkg.in/yaml.v3 v3.0.1\n## explicit\ngopkg.in/yaml.v3\n' >"$work/real-modules.txt"
 printf '{"modules":[{"path":"gopkg.in/yaml.v3","version":"v3.0.1"}]}' >"$work/real-prov.json"
-t "rule 20" "go-module-sbom: the committed REAL vendored-build capture (empty sum fields) is accepted and lists gopkg.in/yaml.v3 v3.0.1" bash -c "python3 '$GS' --modules '$work/real-modules.txt' --provenance '$work/real-prov.json' --buildinfo '$work/real-vendored.txt' --out '$work/real-sbom.json' && python3 -c \"import json; d=json.load(open('$work/real-sbom.json')); assert [(p['name'],p['versionInfo']) for p in d['packages']]==[('gopkg.in/yaml.v3','v3.0.1')], d\""
+t "rule 20" "go-module-sbom: the committed REAL vendored-build capture (empty sums) is accepted, lists yaml.v3" \
+  bash -c "python3 '$GS' --modules '$work/real-modules.txt' --provenance '$work/real-prov.json' \
+    --buildinfo '$work/real-vendored.txt' --out '$work/real-sbom.json' \
+    && python3 -c \"import json; d=json.load(open('$work/real-sbom.json')); \
+    assert [(p['name'],p['versionInfo']) for p in d['packages'] if $NONROOT]==[('gopkg.in/yaml.v3','v3.0.1')], d\""
 
 # ---- snapshot-7 round 7 (Sonnet/Opus P2): EVERY header of every section is checked the way Go reads it; a melange-shaped data section is accepted -------------------
 python3 - "$work" <<'P'
@@ -782,7 +891,8 @@ p = sys.argv[1]; s = open(p).read(); open(p, "w").write(s + "#")
 P
 fails "rule 21" "gen-recipes: a ONE-BYTE edit of the template fails --check, naming the pin and saying to update it in the same reviewed change" 'update TEMPLATE_SHA256 in the same reviewed change' trule
 t "rule 21" "gen-recipes: the pin passes for the unchanged template" $GRX python3 "$GR" $GRD --template "$gt" --regular "$ga" --fips "$gb" --check
-fails "rule 21" "gen-recipes: an override of the pin is refused outside test mode" 'test mode' env FSCACHE_GEN_PIN=0000 python3 "$GR" --template "$gt" --regular "$ga" --fips "$gb" --check
+t "rule 21" "gen-recipes: no environment variable changes the pin (FSCACHE_GEN_PIN and FSCACHE_TEST_MODE are ignored: a wrong pin in the environment cannot fail the check, a right one cannot rescue a changed template)" bash -c "env FSCACHE_GEN_PIN=0000 FSCACHE_TEST_MODE=1 python3 '$GR' $GRD --template '$gt' --regular '$ga' --fips '$gb' --check"
+t "rule 21" "bin/gen-recipes.py carries no test hook: no FSCACHE_ name, and exactly one TEMPLATE_SHA256 line marked TEST-SUBST (the copies the fixtures run differ from it in that line only)" bash -c "! grep -E 'FSCACHE_[A-Z_]+' '$GR_PROD' && test \$(grep -c '^TEMPLATE_SHA256 = .*# TEST-SUBST' '$GR_PROD') = 1 && diff <(grep -v '^TEMPLATE_SHA256 = ' '$GR_PROD') <(grep -v '^TEMPLATE_SHA256 = ' '$GR')" 
 
 # ruling of review round 9: melange writes only types '0' and '5': type NUL is refused, and a directory header carries no data
 python3 - "$work" <<'P'
@@ -816,14 +926,17 @@ fails "rule 22" "apk-tool: a directory header with a non-zero size (data hiding 
 # ---- ruling of review round 9 (P3 finding 1): the package pins and the FIPS module are DATA files the generator reads; the daily job edits only those ----------------
 rm -rf "$work/gd"; mkdir -p "$work/gd"
 gdata() { cp "$fx/melange.lock" "$work/gd/lock"; cp "$fx/fips-module.txt" "$work/gd/fips"; }
-gen_with() { $GRX python3 "$GR" --template "$gt" --regular "$work/gd/a.yaml" --fips "$work/gd/b.yaml" --melange-lock "$work/gd/lock" --fips-module "$work/gd/fips" "$@"; }
+gen_with() { $GRX python3 "$GR" --template "$gt" --regular "$work/gd/a.yaml" --fips "$work/gd/b.yaml" --baselayout-template "$gbt" --baselayout "$work/gd/c.yaml" --melange-lock "$work/gd/lock" --fips-module "$work/gd/fips" "$@"; }
 gdata; gen_with --write
 t "rule 21" "gen-recipes: the package pins in BOTH recipes are the lines of the melange lock, in the lock's order" bash -c "n=\$(grep -c . '$work/gd/lock'); test \"\$(grep -c '^      - [a-z0-9][^ ]*=[0-9]' '$work/gd/a.yaml')\" = \$n && test \"\$(grep -c '^      - [a-z0-9][^ ]*=[0-9]' '$work/gd/b.yaml')\" = \$n"
+gdata; gen_with --write; echo "# edited by hand" >>"$work/gd/c.yaml"
+fails "rule 21" "gen-recipes: a committed base-layout recipe that differs from its template makes --check fail and names the file" 'c\.yaml' gen_with --check
+gdata; gen_with --write
 gdata; printf 'newpkg=9.9-r0\n' >>"$work/gd/lock"
 fails "rule 21" "gen-recipes: a melange lock that gained a line makes --check fail until the recipes are regenerated (the recipes follow the data)" 'generator' gen_with --check
 gen_with --write; t "rule 21" "...after --write the new pin is in both recipes and --check passes" bash -c "grep -q 'newpkg=9.9-r0' '$work/gd/a.yaml' && grep -q 'newpkg=9.9-r0' '$work/gd/b.yaml'" ; t "rule 21" "...--check passes again" gen_with --check
 gdata; printf 'v1.1.0-deadbeef\n' >"$work/gd/fips"; gen_with --write
-t "rule 21" "gen-recipes: the FIPS module file feeds the export line and the proof line of the FIPS recipe only (the generator holds no FIPS constant)" bash -c "grep -q 'export GOFIPS140=v1.1.0\$' '$work/gd/b.yaml' && grep -q \"GOFIPS140=v1.1.0-deadbeef'\" '$work/gd/b.yaml' && ! grep -q GOFIPS140 '$work/gd/a.yaml' && ! grep -q 'c2097c7c' '$work/gd/b.yaml'"
+t "rule 21" "gen-recipes: the FIPS module file feeds the export line and the proof line of the FIPS recipe only (the generator holds no FIPS constant)" bash -c "grep -q 'export GOFIPS140=v1.1.0\$' '$work/gd/b.yaml' && grep -q -F \"GOFIPS140=v1\\\\.1\\\\.0-deadbeef'\" '$work/gd/b.yaml' && ! grep -q GOFIPS140 '$work/gd/a.yaml' && ! grep -q 'c2097c7c' '$work/gd/b.yaml'"
 t "rule 21" "gen-recipes: no FIPS version or hash constant remains in the generator" bash -c "! grep -n 'c2097c7c\|v1\.0\.0' '$GR'"
 gdata; gen_with --emit "$work/gd" ; t "rule 21" "gen-recipes --emit DIR writes melange.yaml and melange-fips.yaml there and touches no committed file" bash -c "test -s '$work/gd/melange.yaml' && test -s '$work/gd/melange-fips.yaml' && cmp -s '$work/gd/melange.yaml' '$work/gd/a.yaml' || true"
 for bad in "no-final-newline" "crlf" "dup" "badline" "empty" "upper" "nonascii"; do

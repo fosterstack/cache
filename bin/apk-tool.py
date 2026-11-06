@@ -14,8 +14,16 @@ section (.PKGINFO, .melange.yaml) and the data section (the files).
                                           is an RSA signature over the compressed CONTROL stream: .SIGN.RSA.<name> is SHA-1, .SIGN.RSA256.<name>
                                           SHA-256); prints verified:<name> and exits 0 only when the signature is valid for that key.
                                           exit 1 if unsigned, the signature does not verify, or its algorithm is not RSA/RSA256; 2 unreadable
+  apk-tool.py control APK OUT             writes the CONTROL stream of APK to OUT exactly as stored (the gzip bytes the signature covers); OUT must not
+                                          exist yet
+  apk-tool.py attach-signature APK SIG OUT
+                                          writes to OUT (which must not exist yet) a copy of APK whose signature stream is replaced by a gzip of a tar
+                                          holding the one member .SIGN.RSA256.release.rsa.pub = the bytes of SIG; the control and data streams are copied
+                                          unchanged, so the digest of the result equals the digest of APK and the result has exactly one .SIGN member
   apk-tool.py cat APK MEMBER              writes the bytes of MEMBER from the data section to standard output
                                           (exit 2 if it is not there)
+  apk-tool.py members APK                 one line per entry of the data section, in archive order: <d|f> <mode in octal> <name>
+                                          (the same checks as cat run first: a link is refused)
   apk-tool.py binary-check APK FILE       rule 14: exit 0 if FILE equals usr/bin/fscache in APK, 1 if not (prints both
                                           sha256 digests), 2 if APK has no usr/bin/fscache
   apk-tool.py inputs-manifest --apk APK --melange-lock FILE --out FILE
@@ -25,9 +33,11 @@ section (.PKGINFO, .melange.yaml) and the data section (the files).
                                           exit 0 | 1 a package of the environment is not in the lock (names it) | 2 bad input
 Exit codes: 0 ok, 1 the check failed, 2 refused (unreadable or malformed input).
 """
+import gzip
 import hashlib
 import io
 import json
+import os
 import posixpath
 import re
 import sys
@@ -244,6 +254,40 @@ def cmd_same(a):
         refuse("%s has a different control or data section from %s" % (a[1], a[0]), 1)
 
 
+def _write_new(path, data):
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as e:
+        refuse("cannot create %s: %s" % (path, e))
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
+def cmd_control(a):
+    _, ctrl, _ = sections(a[0])
+    _write_new(a[1], ctrl[0])
+
+
+def cmd_attach_signature(a):
+    """the apk with its signature stream replaced: one gzip of a tar with the one member .SIGN.RSA256.release.rsa.pub, then the control and data streams as stored"""
+    try:
+        sig = open(a[1], "rb").read()
+    except OSError as e:
+        refuse("cannot read the signature %s: %s" % (a[1], e))
+    if not sig:
+        refuse("the signature file %s is empty" % a[1])
+    _, ctrl, data = sections(a[0])
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w", format=tarfile.GNU_FORMAT) as t:
+        i = tarfile.TarInfo(".SIGN.RSA256.release.rsa.pub")
+        i.size, i.mtime, i.mode = len(sig), 0, 0o644
+        t.addfile(i, io.BytesIO(sig))
+    gz = io.BytesIO()
+    with gzip.GzipFile(fileobj=gz, mode="wb", mtime=0) as g:
+        g.write(tar.getvalue()[:512 + (len(sig) + 511) // 512 * 512])   # header and data blocks only: apk reads the three streams as ONE tar, so an end-of-archive block here would hide .PKGINFO
+    _write_new(a[2], gz.getvalue() + ctrl[0] + data[0])
+
+
 def cmd_signer(a):
     sig = sections(a[0])[0]
     names = [n for n in members(sig[1])] if sig else []
@@ -260,7 +304,6 @@ def cmd_signer(a):
 
 def _openssl():
     """The OpenSSL this check trusts: a fixed location, never whatever the caller's search path holds (REQ-BUILDAPK-001-AC4)."""
-    import os
     for p in ("/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"):
         if os.access(p, os.X_OK):
             return p
@@ -270,9 +313,11 @@ def _openssl():
 def cmd_verify(a):
     """The signer command reads a NAME; this checks the bytes: openssl dgst verifies the member's RSA signature over the control stream exactly as
     stored (REQ-BUILDAPK-001-AC4, AC7). PUBKEY may carry comment lines before its PEM block; the first PUBLIC KEY block is the key."""
-    import os, subprocess, tempfile
+    import subprocess, tempfile
     sig, ctrl, data = sections(a[0])
     names = list(members(sig[1])) if sig else []
+    if sig and len(sig[1]) != 512 + (int(sig[1][124:136].rstrip(b"\0 ") or b"0", 8) + 511) // 512 * 512:
+        refuse("%s: the signature segment has bytes after its one member (end-of-archive blocks): apk-tools reads the signature, control and data streams as one tar and would stop before .PKGINFO; refusing" % a[0], 1)
     if len(names) != 1:
         refuse("%s is %s: nothing to verify" % (a[0], "unsigned" if not names else "signed by %d members" % len(names)), 1)
     m = re.fullmatch(r"\.SIGN\.(RSA|RSA256)\.(.+)", names[0])
@@ -298,9 +343,11 @@ def cmd_verify(a):
         for n, b in (("key.pem", pem.group(0).encode()), ("sig.bin", members(sig[1])[names[0]]), ("ctrl.bin", ctrl[0])):
             with open(os.path.join(d, n), "wb") as f:
                 f.write(b)
+        openssl = _openssl()
         try:
-            r = subprocess.run([_openssl(), "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "sig.bin"),
-                                os.path.join(d, "ctrl.bin")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={"LC_ALL": "C", "PATH": "/nonexistent"})
+            r = subprocess.run([openssl, "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature",
+                os.path.join(d, "sig.bin"), os.path.join(d, "ctrl.bin")], capture_output=True, text=True,
+                stdin=subprocess.DEVNULL, env={"LC_ALL": "C", "PATH": "/nonexistent"})
         except OSError as e:
             refuse("cannot run openssl: %s" % e)
     if r.returncode != 0 or "Verified OK" not in r.stdout:
@@ -318,6 +365,14 @@ def cmd_cat(a):
     if b is None:
         refuse("%s is not in %s" % (a[1], a[0]))
     sys.stdout.buffer.write(b)
+
+
+def cmd_members(a):
+    data = sections(a[0])[2][1]
+    members(data)   # the same checks as cat: a link, a doubled name or a tar the readers disagree on is refused first
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as t:
+        for m in t.getmembers():
+            print("%s %04o %s" % ("d" if m.isdir() else "f", m.mode, norm(m.name).rstrip("/")))
 
 
 def cmd_binary_check(a):
@@ -364,12 +419,13 @@ def cmd_inputs_manifest(a):
 
 
 CMDS = {"digest": (cmd_digest, 1), "same": (cmd_same, 2), "signer": (cmd_signer, 1), "verify": (cmd_verify, 2), "cat": (cmd_cat, 2),
+        "control": (cmd_control, 2), "attach-signature": (cmd_attach_signature, 3), "members": (cmd_members, 1),
         "binary-check": (cmd_binary_check, 2), "inputs-manifest": (cmd_inputs_manifest, None)}
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:
-        refuse("usage: apk-tool.py digest|same|signer|verify|cat|binary-check|inputs-manifest ...")
+        refuse("usage: apk-tool.py digest|same|signer|verify|control|attach-signature|cat|members|binary-check|inputs-manifest ...")
     fn, n = CMDS[sys.argv[1]]
     args = sys.argv[2:]
     if n is not None and len(args) != n:

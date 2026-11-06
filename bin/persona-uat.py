@@ -44,6 +44,7 @@ import uuid
 import shlex as _shlex
 
 warnings.simplefilter("ignore")        # nothing but the fixed lines is ever printed: no interpreter warning either
+RC_PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator")   # the release candidate runs these three; compliance-reviewer and on-call-engineer run weekly only
 PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
@@ -1399,9 +1400,11 @@ def cosign_operation(argv):
     return (sub, pos, flags) if sub else None
 
 
-# the ONLY flags a proving `cosign verify` may carry (docs/verify-images.md shows exactly the identity and the issuer; the rest is presentation). Anything else - a --key,
+# the ONLY flags a proving `cosign verify` may carry (docs/verify-images.md shows exactly the identity and the issuer, or `--key release.rsa.pub` from v0.3.0; the rest is presentation). Anything else - another --key,
 # --certificate, --offline, --insecure-ignore-*, a trusted root or Rekor override - changes WHAT is verified, so it proves nothing about FosterStack's signature.
 PROOF_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "-o", "--output", "--verbose", "-d", "--platform", "-a", "--annotations"}
+RELEASE_KEY_FILE = "release.rsa.pub"                                  # docs/verify-images.md: the release public key, fetched as build/keys/release.rsa.pub at the tag
+IDENTITY_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer"}
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"       # docs/verify-images.md: --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 PROMOTION_WORKFLOW = "stage-promote.yml"                           # docs/verify-images.md: the current chain signs the public image in stage-promote.yml
 
@@ -1432,7 +1435,7 @@ def verified_digest(answer, image):
     """the compliance reviewer's proof of exercising the RC image, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
     PARSES as `cosign verify` (never verify-attestation alone: the guide verifies provenance with gh, and a bare attestation proves nothing about the signature) of exactly ONE
     image argument that IS the image under test (the same registry and repository, @sha256:<the candidate digest>: not another repository with the same digest), carrying the
-    documented promotion-workflow identity and the documented OIDC issuer, with no flag that changes what is verified (--key, --certificate, --offline, --insecure-ignore-*...),
+    documented promotion-workflow identity and the documented OIDC issuer (or, from v0.3.0, exactly `--key release.rsa.pub` and no identity or issuer), with no flag that changes what is verified (--certificate, --offline, --insecure-ignore-*...),
     no help/version spelling, exit 0. Words in echo, comments or shell actions are never proof."""
     digest = image.split("@")[-1]
     if not digest.startswith("sha256:") or "@" not in image:
@@ -1446,6 +1449,11 @@ def verified_digest(answer, image):
             continue
         sub, pos, flags = op
         if sub != "verify" or len(pos) != 1 or pos[0] != image:
+            continue
+        keys = [v for name, v in flags if name == "--key"]
+        if keys:   # v0.3.0 and later (docs/verify-images.md): the image is verified with the release public key, exactly `--key release.rsa.pub`, and with no certificate identity or issuer beside it
+            if keys == [RELEASE_KEY_FILE] and all(name in PROOF_FLAGS - IDENTITY_FLAGS or name == "--key" for name, _ in flags):
+                return True
             continue
         if any(name not in PROOF_FLAGS for name, _ in flags):
             continue
@@ -1656,12 +1664,15 @@ def main():
             return 1
 
 
+ACTIVE = list(PERSONAS)   # the personas this run covers: all five, or RC_PERSONAS in rc mode
+
+
 def last_resort():
     """every persona without a result gets an encrypted blocking report saying the driver failed; then the usual pass/fail lines"""
     results, out_dir, recipient = STATE.get("results"), STATE.get("out_dir"), STATE.get("recipient")
     if results is None or not out_dir or not recipient:
         return 1
-    for persona in PERSONAS:
+    for persona in ACTIVE:
         if persona in results:
             continue
         text = report_text(persona, "blocking", [{"kind": "blocking", "text": "the driver failed before this persona could be recorded (driver error)"}], None, False,
@@ -1673,6 +1684,7 @@ def last_resort():
 
 def _main():
     a = parse_args()
+    ACTIVE[:] = RC_PERSONAS if a.mode == "rc" else PERSONAS
     try:
         models, budget, tools = configure(a)
     except Refuse as e:
@@ -1807,7 +1819,7 @@ def _main():
         sys.stderr.write("persona-uat: %s: %s\n" % (persona, "fail" if verdict == "blocking" else "pass"))
 
     def all_did_not_run(reason):
-        for p in PERSONAS:
+        for p in ACTIVE:
             if p not in results:
                 record(p, None, "did not run: %s\n" % reason, reason)
 
@@ -1821,14 +1833,14 @@ def _main():
             all_did_not_run("the public README.md is missing")
             finish(results, out_dir)
             return 3
-        for persona in PERSONAS:
+        for persona in ACTIVE:
             if persona in results:
                 continue
             if teardown_failed:         # a survivor may still be sending traffic: no window after it is attributable, and nothing new is started
                 record(persona, None, "did not run: %s\n" % TD, "%s (an earlier teardown failed)" % TD)
                 continue
             # the job's time budget: this persona's agent timeout is what is left of the budget over the personas still to run (itself included), never above --agent-timeout
-            left = len([q for q in PERSONAS if q not in results])
+            left = len([q for q in ACTIVE if q not in results])
             persona_timeout = persona_time_limit(persona, a.agent_timeout, a.evaluator_seconds, a.job_budget, time.time() - job_t0, left)
             if persona_timeout < min(a.min_persona_seconds, a.agent_timeout):      # an explicitly short --agent-timeout is the caller's choice, not a lack of budget
                 why_ = "cannot prove: the job's time budget left no time for this persona (%d seconds each, %d needed)" % (max(persona_timeout, 0), a.min_persona_seconds)
@@ -2036,8 +2048,8 @@ def _main():
 
 
 def finish(results, out_dir=None):
-    blocking = [p for p in PERSONAS if results[p]["verdict"] == "blocking"]
-    enc_failed = [p for p in PERSONAS if results[p].get("encfail")]
+    blocking = [p for p in ACTIVE if results[p]["verdict"] == "blocking"]
+    enc_failed = [p for p in ACTIVE if results[p].get("encfail")]
     if out_dir is not None:
         publish_artifacts(out_dir, not enc_failed)
     line = "persona-uat: overall: %s\n" % ("fail" if blocking else "pass")
@@ -2045,7 +2057,7 @@ def finish(results, out_dir=None):
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
         with open(summ, "a") as fh:
-            for p in PERSONAS:
+            for p in ACTIVE:
                 fh.write("persona-uat: %s: %s\n" % (p, "fail" if results[p]["verdict"] == "blocking" else "pass"))
             fh.write(line)
     return 1 if blocking else 0

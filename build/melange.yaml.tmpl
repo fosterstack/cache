@@ -1,28 +1,38 @@
-# The FosterStack Cache package (melange recipe). The two recipes (standard and FIPS) are GENERATED from this template by bin/gen-recipes.py and differ only
-# in the package name, the package description and the two FIPS lines (the FIPS setting and its proof): rule 21. Edit THIS file, then update TEMPLATE_SHA256 in
-# bin/gen-recipes.py in the same reviewed change and run bin/gen-recipes.py --write. CI runs bin/gen-recipes.py --check: both committed recipes must be exactly
-# the generator's output AND this template must match its pin. The generator does not read the shell below: behaviour parity of the two builds rests on this file
-# being reviewed and pinned, and the final control is build-apk.sh's check of the packaged binary (mandatory in CI).
+# The FosterStack Cache package (melange recipe). The two recipes (standard and FIPS) are GENERATED from this
+# template by bin/gen-recipes.py and differ only in the package name, the package description and the two FIPS
+# lines (the FIPS setting and its proof): rule 21. Edit THIS file, then update TEMPLATE_SHA256 in
+# bin/gen-recipes.py in the same reviewed change and run bin/gen-recipes.py --write. CI runs
+# bin/gen-recipes.py --check: both committed recipes must be exactly the generator's output AND this template must
+# match its pin. The generator does not read the shell below: behaviour parity of the two builds rests on this
+# file being reviewed and pinned, and the final control is build-apk.sh's check of the packaged binary
+# (mandatory in CI).
 #
 # TEMPLATE CHECKLIST (the human and the reviewer go through it on EVERY change to this file):
-#  - no case, if, test, [, &&, ||, $( or backtick in the build script step (the runs step that holds the go build and the proof): plain commands, one per line;
-#    the one other place with shell logic is the last step (the devel/modified refusal), which only reads buildinfo.txt and must stay that way;
-#  - no use of melange-out, and no literal "fips" in any case, anywhere in a runs step (the name must never steer the build);
-#  - the targets.destdir substitution is only ever the path prefix of an argument (never inside a quoted test or a comparison);
+#  - no case, if, test, [, &&, ||, $( or backtick in the build script step (the runs step that holds the go build
+#    and the proof): plain commands, one per line; the one other place with shell logic is the last step (the
+#    devel/modified refusal), which only reads buildinfo.txt and must stay that way;
+#  - no use of melange-out, and no literal "fips" in any case, anywhere in a runs step (the name must never steer
+#    the build);
+#  - the targets.destdir substitution is only ever the path prefix of an argument (never inside a quoted test or a
+#    comparison);
 #  - exactly one go build; nothing after the proof touches usr/bin or rebuilds the binary;
 #  - nothing is appended to .git/info/exclude except the one line already there;
-#  - the package pins and the certified module are NOT in this file: they come from build/locks/melange.lock and build/locks/fips-module.txt (the only files the daily job edits);
-#  - NEGATIVE EXAMPLES that passed the old text checks and must never appear again: (1) a shell case on the package name that sets another GOFLAGS only for the
-#    FIPS name; (2) a step conditioned on the package name that copies another binary over usr/bin/fscache after the proof.
+#  - the package pins and the certified module are NOT in this file: they come from build/locks/melange.lock and
+#    build/locks/fips-module.txt (the only files the daily job edits);
+#  - NEGATIVE EXAMPLES that passed the old text checks and must never appear again: (1) a shell case on the
+#    package name that sets another GOFLAGS only for the FIPS name; (2) a step conditioned on the package name
+#    that copies another binary over usr/bin/fscache after the proof.
 #
 # Modelled on: melange pkg/build/pipelines/fetch.yaml:4-6 (the fetch step needs wget), :78-90 (a checksum
-# is required; the tarball is looked up in /var/cache/melange/sha256:<hex> before any download) @ b49e34ca1fd8; and
-# wolfi-dev/os package files (package/environment/pipeline layout) @ 19c1f6955340.
+# is required; the tarball is looked up in /var/cache/melange/sha256:<hex> before any download) @ b49e34ca1fd8;
+# and wolfi-dev/os package files (package/environment/pipeline layout) @ 19c1f6955340.
 #
-# Rules (v0.3.0): 11 built from source here, never a Dockerfile; 12 Go from go.dev pinned by sha256 and kept in the archive, never Wolfi's go package;
-# 13 only the FIPS recipe sets the FIPS option (module v1.0.0) and proves the binary records the certified module (the value melange's SCA recognises,
-# melange pkg/sca/sca.go:732); 15 the build tools come from the archive only and are pinned name=version (build/locks/melange.lock holds the same list); 20 the build
-# records `go version -m` in the apk; 21 the two recipes are generated from this one pinned template and differ only in name, description and the FIPS lines; 24 the stamped source tree and the
+# Rules (v0.3.0): 11 built from source here, never a container build file; 12 Go from go.dev pinned by sha256 and
+# kept in the archive, never Wolfi's go package; 13 only the FIPS recipe sets the FIPS option (module v1.0.0) and proves
+# the binary records the certified module (the value melange's SCA recognises, melange pkg/sca/sca.go:732);
+# 15 the build tools come from the archive only and are pinned name=version (build/locks/melange.lock holds the
+# same list); 20 the build records `go version -m` in the apk; 21 the two recipes are generated from this one
+# pinned template and differ only in name, description and the FIPS lines; 24 the stamped source tree and the
 # (devel)/modified refusal.
 package:
   name: @NAME@
@@ -60,7 +70,8 @@ pipeline:
       mkdir -p .git/refs/heads .git/refs/tags
       git config --global --add safe.directory "$PWD"
       printf '.melange*\n.config\n.gitconfig\n' >> .git/info/exclude
-  # The build script holds ONLY simple commands, one per line (bin/gen-recipes.py generates both recipes from this template): it is the script in which the two recipes may differ.
+  # The build script holds ONLY simple commands, one per line: it is the one script in which the two recipes
+  # may differ (bin/gen-recipes.py generates both from this template).
   - runs: |
       export PATH=/usr/local/go/bin:$PATH
       export GOPATH=/tmp/gopath GOCACHE=/tmp/gocache
@@ -72,4 +83,8 @@ pipeline:
       mkdir -p ${{targets.destdir}}/usr/share/fscache
       go version -m ${{targets.destdir}}/usr/bin/fscache > ${{targets.destdir}}/usr/share/fscache/buildinfo.txt
   - runs: |
-      if grep -Eq '\(devel\)|vcs.modified=true' ${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat ${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi
+      if grep -Eq '\(devel\)|vcs.modified=true' ${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then
+        cat ${{targets.destdir}}/usr/share/fscache/buildinfo.txt
+        echo 'the binary says (devel) or vcs.modified=true' >&2
+        exit 1
+      fi

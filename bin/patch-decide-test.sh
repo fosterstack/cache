@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15, REQ-CHAIN-001-AC6
+# Rules 61 and 65 (advisor Oct 12): there is no Dockerfile; the base inputs are the committed apko base locks, the melange lock and the archive records listed in
+# .github/policy/base-inputs.json (one list, read by the decide job and by this script); a change in them is the "base input changed" signal, fix-class.
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
 # classified fix-class / neutral / not patch-clean by the files they change (a patch-fix label admits a source change);
 # the next tag is vX.Y.(Z+1); the daily rule cuts at most once a day; release notes list each fix and name no vendor or
@@ -18,18 +20,21 @@ def check(name, ok, got=""):
 
 def c(sha, files, labels=(), diffs=None):
     """diffs: {path: the commit's changed lines ("-old" / "+new")}"""
-    return {"sha": sha, "files": list(files), "labels": list(labels), "diffs": dict(diffs or {})}
+    return {"sha": sha, "files": list(files), "labels": list(labels), "diffs": dict(diffs or {}), "modes": {f: "100644" for f in files}}   # git always gives a mode
 BUMP = {"go.mod": " require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys v0.47.0\n )\n",
         "go.sum": "-golang.org/x/sys v0.46.0 h1:a=\n+golang.org/x/sys v0.47.0 h1:b=\n"}
 NEWMOD = {"go.mod": "+\tgithub.com/evil/new v1.0.0\n"}
-DIGEST = {"build/docker/Dockerfile.production": "-FROM gcr.io/distroless/static@sha256:" + "a" * 64 + "\n+FROM gcr.io/distroless/static@sha256:" + "b" * 64 + "\n"}
-RUNLINE = {"build/docker/Dockerfile.production": "+RUN echo hi\n"}
+LOCK = {"build/locks/apko.base.lock.json": '-    "version": "1.2.3-r0"\n+    "version": "1.2.4-r0"\n'}
+BASE_INPUTS = ["build/locks/apko.base.lock.json", "build/locks/apko-fips.base.lock.json", "build/locks/melange.lock", "build/locks/archive-keys.sha256",
+               "build/locks/archive-index.sha256", "build/locks/fips-module.txt"]
 # --- AC1: classification by changed files
 for files, diff, want in [
     (["go.mod", "go.sum"], BUMP, "fix"),
     (["go.mod"], NEWMOD, "dirty"),                           # a new module is not a version-pin fix
-    (["build/docker/Dockerfile.production"], DIGEST, "fix"), # the base-image digest pin only
-    (["build/docker/Dockerfile.production"], RUNLINE, "dirty"),
+    (["build/locks/apko.base.lock.json"], LOCK, "fix"),      # a base lock moved: the "base input changed" signal (rules 61, 65)
+    (BASE_INPUTS, {}, "fix"),                                # the daily refresh PR changes exactly these
+    (["build/apko.yaml"], {}, "dirty"),                      # a recipe is a build input, not a base signal
+    (["build/docker/Dockerfile.production"], {}, "dirty"),   # there is no Dockerfile any more: a file by that name is shipped configuration, not a base signal
     ([".vex/fosterstack-cache.openvex.json"], {}, "fix"),
     ([".snyk", "osv-scanner.toml", ".auditor/accepted-items.json"], {}, "fix"),
     ([".github/workflows/ci.yml", "docs/x.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml"], {}, "neutral"),
@@ -76,7 +81,7 @@ A64, B64 = "a" * 64, "b" * 64
 # B01: a changed go.mod or Dockerfile without diff evidence is never fix-class
 check("B01 go.mod without a diff -> not patch-clean", P.classify(c("x", ["go.mod"]))[0] == "dirty")
 check("B01 go.mod with an empty diff -> not patch-clean", P.classify(c("x", ["go.mod"], diffs={"go.mod": ""}))[0] == "dirty")
-check("B01 Dockerfile without a diff -> not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"]))[0] == "dirty")
+check("B01 a base lock without a diff is fix-class (the whole file is the signal; no line parsing)", P.classify(c("x", ["build/locks/melange.lock"]))[0] == "fix")
 # B02: only require-version changes (with context) and the go/toolchain line; never replace, exclude or a checksum rewrite
 REQ_CTX = {"go.mod": " module x\n \n require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys v0.47.0\n )\n"}
 check("B02 a require-block version bump with context is a fix", P.classify(c("x", ["go.mod"], diffs=REQ_CTX))[0] == "fix")
@@ -92,19 +97,18 @@ SUMONLY = {"go.sum": "-example.org/m v1.0.0 h1:" + "a" * 43 + "=\n+example.org/m
 check("B02 a go.sum checksum rewrite of the same version is not patch-clean", P.classify(c("x", ["go.sum"], diffs=SUMONLY))[0] == "dirty")
 BUMP_CTX = {"go.mod": REQ_CTX["go.mod"], "go.sum": "-golang.org/x/sys v0.46.0 h1:a=\n-golang.org/x/sys v0.46.0/go.mod h1:b=\n+golang.org/x/sys v0.47.0 h1:c=\n+golang.org/x/sys v0.47.0/go.mod h1:d=\n"}
 check("B02 go.mod + go.sum moving one module's version together is a fix", P.classify(c("x", ["go.mod", "go.sum"], diffs=BUMP_CTX))[0] == "fix")
-# B03: a Dockerfile change is fix-class only when each FROM keeps its image, tag, alias and flags and only the digest moves
-def df(old, new):
-    return {"build/docker/Dockerfile.production": "-" + old + "\n+" + new + "\n"}
-ok_df = df("FROM gcr.io/distroless/static:nonroot@sha256:%s AS runtime" % A64, "FROM gcr.io/distroless/static:nonroot@sha256:%s AS runtime" % B64)
-check("B03 the same image, tag and alias with a new digest is a fix", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=ok_df))[0] == "fix")
-for name, old, new in [
-    ("a different image", "FROM gcr.io/distroless/static@sha256:" + A64, "FROM example.org/different-os@sha256:" + B64),
-    ("a renamed stage", "FROM gcr.io/distroless/static@sha256:%s AS runtime" % A64, "FROM gcr.io/distroless/static@sha256:%s AS replaced" % B64),
-    ("a changed tag", "FROM gcr.io/distroless/static:nonroot@sha256:" + A64, "FROM gcr.io/distroless/static:debug@sha256:" + B64),
-]:
-    check("B03 %s is not patch-clean" % name, P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=df(old, new)))[0] == "dirty")
-added = {"build/docker/Dockerfile.production": "+FROM example.org/new-final@sha256:" + B64 + "\n"}
-check("B03 an added stage is not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=added))[0] == "dirty")
+# B03 (rules 61, 65): the base inputs are the committed locks and records of .github/policy/base-inputs.json and nothing else
+for f in BASE_INPUTS:
+    check("B03 %s alone is a fix (a base input moved)" % f, P.classify(c("x", [f], diffs={f: "-a\n+b\n"}))[0] == "fix")
+for name, f in [("a backup of a lock", "build/locks/apko.base.lock.json.bak"), ("another file of the directory", "build/locks/other.json"),
+                ("a lock of another directory", "locks/apko.base.lock.json"), ("a recipe", "build/melange.yaml"), ("the fips recipe", "build/apko-fips.yaml"),
+                ("the melange template", "build/melange.yaml.tmpl")]:
+    check("B03 %s (%s) is no base signal: not patch-clean" % (f, name), P.classify(c("x", [f], diffs={f: "-a\n+b\n"}))[0] == "dirty")
+for mode, what in (("100755", "executable"), ("120000", "a symlink"), ("000000", "deleted")):
+    cm = {"sha": "x", "files": [BASE_INPUTS[0]], "labels": [], "diffs": {BASE_INPUTS[0]: "-a\n+b\n"}, "modes": {BASE_INPUTS[0]: mode}}
+    check("B03 a base lock that is %s is not a refresh: not patch-clean" % what, P.classify(cm)[0] == "dirty")
+check("B03 the list itself is read by the release chain: changing it is not patch-clean (a patch cannot widen its own signal)",
+      P.classify(c("x", [".github/policy/base-inputs.json"], diffs={".github/policy/base-inputs.json": "+x\n"}))[0] == "dirty")
 # B04: the release chain's build workflows shape the shipped image: never neutral
 for f in (".github/workflows/stage-image.yml", ".github/workflows/stage-build.yml", ".github/workflows/release.yml",
           ".goreleaser.yaml"):
@@ -147,7 +151,7 @@ OTHER_MOD = {"go.mod": REQ_CTX["go.mod"], "go.sum": "-golang.org/x/sys v0.46.0 h
 check("B02 go.sum lines for a module whose version did not move are not patch-clean", P.classify(c("x", ["go.mod", "go.sum"], diffs=OTHER_MOD))[0] == "dirty")
 MOVED = ("@@ -1,4 +1,4 @@\n FROM example.org/base:stable@sha256:%s AS build\n-FROM example.org/base:stable@sha256:%s AS runtime\n"
          " USER 65532\n+FROM example.org/base:stable@sha256:%s AS runtime\n COPY fscache /usr/local/bin/fscache\n") % (A64, A64, B64)
-check("B03 a FROM moved past another instruction is not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs={"build/docker/Dockerfile.production": MOVED}))[0] == "dirty")
+check("B03 a file named like the removed Dockerfile with a moved FROM is not a base signal: not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs={"build/docker/Dockerfile.production": MOVED}))[0] == "dirty")
 for f in (".github/agent/bin/auditor-release-authz.py", ".github/policy/scanners.json", ".github/policy/allowed_signers",
           ".github/actions/x/action.yml"):
     check("B04 %s (read by the release chain, or not reviewed) is not neutral" % f, P.classify(c("x", [f]))[0] == "dirty")
@@ -275,6 +279,62 @@ with contextlib.redirect_stdout(io.StringIO()):
     P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--released", RL, "--out", out])
 raw = open(out).read()
 check("decision.json names no vendor or model (the issue body reads it)", "openai" not in raw.lower() and "<redacted>" in raw, raw)
+# --- rules 61 and 65: the base inputs are ONE committed list, read by the decide job and by this script (advisor Oct 12)
+real_list = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", ".github", "policy", "base-inputs.json")
+check("the committed list names exactly the base locks, the melange lock, the archive records and the fips module record (cache-ce's names)",
+      sorted(P.load_base_inputs(real_list)) == sorted(BASE_INPUTS), P.load_base_inputs(real_list) if os.path.exists(real_list) else "no file")
+bi = tempfile.mkdtemp()
+def bil(obj, raw=None):
+    f = os.path.join(bi, "l%d.json" % len(os.listdir(bi)))
+    open(f, "w").write(raw if raw is not None else json.dumps(obj))
+    return f
+def refused(f):
+    try:
+        P.load_base_inputs(f)
+    except ValueError:
+        return True
+    return False
+check("B07 a list file that is not there is refused (no patch decision on an unreadable list)", refused(os.path.join(bi, "absent.json")))
+for what, f in [("not JSON", bil(None, raw="{")), ("no base_inputs key", bil({"x": []})), ("an empty list", bil({"base_inputs": []})),
+                ("a duplicate", bil({"base_inputs": ["a/b", "a/b"]})), ("an absolute path", bil({"base_inputs": ["/etc/passwd"]})),
+                ("a parent segment", bil({"base_inputs": ["build/../x"]})), ("a glob", bil({"base_inputs": ["build/locks/*"]})),
+                ("a directory", bil({"base_inputs": ["build/locks/"]})), ("a non-string", bil({"base_inputs": [1]})),
+                ("a backslash", bil({"base_inputs": ["build\\locks"]})), ("a leading dot segment", bil({"base_inputs": ["./build/locks/a"]}))]:
+    check("B07 a list with %s is refused (fail closed)" % what, refused(f))
+check("B07 a well-formed list is read", P.load_base_inputs(bil({"base_inputs": ["build/locks/a.lock"]})) == ["build/locks/a.lock"])
+# classification follows the list handed in, not a copy kept in the code
+L2 = P.load_base_inputs(bil({"base_inputs": ["locks/only.txt"]}))
+check("B07 the classifier reads the list it is given (a path in it is fix-class, a real lock not in it is not)",
+      P.classify(c("x", ["locks/only.txt"]), base_inputs=L2)[0] == "fix" and P.classify(c("x", ["build/locks/melange.lock"]), base_inputs=L2)[0] == "dirty")
+# base-moved: the decide job's read of the same list since the latest release
+bm = tempfile.mkdtemp(); g(bm, "init", "-q", "-b", "main")
+os.makedirs(os.path.join(bm, "build", "locks")); open(os.path.join(bm, "build/locks/melange.lock"), "w").write("1\n"); open(os.path.join(bm, "build/locks/apko.base.lock.json"), "w").write("1\n")
+g(bm, "add", "build"); g(bm, "commit", "-q", "-m", "locks"); g(bm, "tag", "v0.2.1")
+lst = bil({"base_inputs": ["build/locks/apko.base.lock.json", "build/locks/melange.lock", "build/locks/not-there.txt"]})
+def bmoved(*extra):
+    r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", lst, "--since", "v0.2.1", "--repo", bm] + list(extra), capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+rc_, so_, se_ = bmoved()
+check("base-moved: nothing moved since the release is said so", rc_ == 0 and "no base input moved since v0.2.1" in so_, (rc_, so_, se_))
+open(os.path.join(bm, "build/locks/melange.lock"), "w").write("2\n"); os.makedirs(os.path.join(bm, "docs")); open(os.path.join(bm, "docs/x.md"), "w").write("x\n")
+g(bm, "add", "build", "docs"); g(bm, "commit", "-q", "-m", "refresh")
+rc_, so_, se_ = bmoved()
+check("base-moved: a moved lock is named, an unrelated file is not", rc_ == 0 and "build/locks/melange.lock" in so_ and "docs/x.md" not in so_ and "apko.base" not in so_, (rc_, so_, se_))
+rc_, so_, se_ = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", os.path.join(bi, "absent.json"), "--since", "v0.2.1", "--repo", bm],
+                               capture_output=True, text=True).returncode, "", ""
+check("base-moved: an unreadable list is exit 2 (the job stops; no fallback)", rc_ == 2, rc_)
+rc_ = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", lst, "--since", "v9.9.9", "--repo", bm], capture_output=True, text=True).returncode
+check("base-moved: a release that is not a tag here is exit 2, never 'nothing moved'", rc_ == 2, rc_)
+dd = tempfile.mkdtemp(); outd = os.path.join(dd, "d.json")
+RLd = os.path.join(dd, "rel.json"); json.dump(["v0.2.1"], open(RLd, "w"))
+rc_ = subprocess.run([sys.executable, sys.argv[1], "decide", "--event", "schedule", "--repo", bm, "--cut-today", "false", "--released", RLd,
+                      "--base-inputs", lst, "--out", outd], capture_output=True, text=True)
+dec_ = json.load(open(outd)) if os.path.exists(outd) else {}
+check("decide: a moved base lock (and a neutral file) is a patch-clean fix that cuts v0.2.2", rc_.returncode == 0 and dec_.get("cut") and dec_.get("version") == "v0.2.2" and dec_.get("not_clean") == [], (rc_.returncode, rc_.stdout, rc_.stderr, dec_))
+os.remove(outd)
+rc_ = subprocess.run([sys.executable, sys.argv[1], "decide", "--event", "schedule", "--repo", bm, "--cut-today", "false", "--released", RLd,
+                      "--base-inputs", os.path.join(bi, "absent.json"), "--out", outd], capture_output=True, text=True)
+check("decide: an unreadable base list is exit 2 and no decision file", rc_.returncode == 2 and not os.path.exists(outd), (rc_.returncode, rc_.stderr))
 # --- `removed`: from grype's JSON for the release and the new base image, and HEAD's go.mod
 def gm(id_, name, ver, fix, sev, typ):
     return {"vulnerability": {"id": id_, "severity": sev, "fix": {"versions": [fix] if fix else []}},
@@ -504,25 +564,108 @@ NRN = """# Notes for the next release
 Behavior changes since the last release, carried into its notes.
 
 - Go 1.27: a request with more than 500 header values is rejected with 431 before it
-  reaches the cache (owner accepted; advisor 0115).
-- Second change, one line (advisor 0130).
+  reaches the cache (decided 2026-10-03).
+- Second change, one line (decided 2026-10-05).
 """
 ents = P.behavior_entries(NRN)
-check("0130 entries parsed, continuation lines joined", ents == [
-    "Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).",
-    "Second change, one line (advisor 0130)."], ents)
-check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
+check("DATE entries parsed, continuation lines joined", ents == [
+    "Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (decided 2026-10-03).",
+    "Second change, one line (decided 2026-10-05)."], ents)
+check("DATE an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
 for bad in ["- A change nobody judged.\n", "- A change (owner said so).\n", "- A change (advisor 15).\n"]:
     try:
         P.behavior_entries(bad); raised = False
     except ValueError:
         raised = True
-    check("0130 an entry without a cited handoff is refused: %r" % bad, raised)
+    check("DATE an entry without a decision date is refused: %r" % bad, raised)
 nb = P.notes("v0.2.2", fixes, vex, behavior=ents)
-check("0130 notes list behavior changes under their heading", "### Behavior changes\n- Go 1.27: a request" in nb, nb)
-check("0130 with behavior changes the no-behavior-change line is dropped", "No behavior change" not in nb, nb)
-check("0130 without them the no-behavior-change line stays", "No behavior change" in P.notes("v0.2.2", fixes, vex, behavior=[]))
-check("0130 behavior entries are cleaned of vendor names too", "Gemini" not in P.notes("v0.2.2", [], [], behavior=["Gemini x (advisor 0130)."]))
+check("DATE notes list behavior changes under their heading", "### Behavior changes\n- Go 1.27: a request" in nb, nb)
+check("DATE with behavior changes the no-behavior-change line is dropped", "No behavior change" not in nb, nb)
+check("DATE without them the no-behavior-change line stays", "No behavior change" in P.notes("v0.2.2", fixes, vex, behavior=[]))
+check("DATE behavior entries are cleaned of vendor names too", "Gemini" not in P.notes("v0.2.2", [], [], behavior=["Gemini x (decided 2026-10-05)."]))
+# --- an entry cites the date it was decided: it ends exactly "(decided YYYY-MM-DD)", with an optional final "." (nothing before the date inside the parentheses)
+for cite_, ok_ in (("- A change (decided 2026-10-03).\n", True), ("- A change (decided 2026-10-03)\n", True),
+                   ("- A change (advisor 0115).\n", False), ("- A change (handoff 0130)\n", False),
+                   ("- A change (owner accepted; decided 2026-10-03).\n", False), ("- A change (decided 2026-1-3)\n", False),
+                   ("- A change (decided 2026-02-30)\n", False)):
+    try:
+        P.behavior_entries(cite_); got_ = True
+    except ValueError:
+        got_ = False
+    check("DATE %r is %s" % (cite_, "accepted" if ok_ else "refused"), got_ == ok_)
+try:
+    P.behavior_entries("- A change (advisor 0115).\n"); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE the refusal says the entry cites no decision date", "cites no decision date" in msg_, msg_)
+# round 1 findings (cache#833): an internal reference earlier in an entry, a non-ASCII date and a trailing newline are refused too
+for cite_, why_ in (("- A change (advisor 0115) (decided 2026-10-03).\n", "holds an internal reference"),
+                    ("- Fixed per handoff 0130 (decided 2026-10-03).\n", "holds an internal reference"),
+                    ("- A change (HANDOFF 0130) (decided 2026-10-03).\n", "holds an internal reference"),
+                    ("- A change (decided \uff12\uff10\uff12\uff16-\uff11\uff10-\uff10\uff13)\n", "cites no decision date"),
+                    ("- A change (decided\t2026-10-03)\n", "cites no decision date"),
+                    ("- A change (decided\u00a02026-10-03)\n", "cites no decision date"),
+                    ("- A change (Decided 2026-10-03)\n", "cites no decision date")):
+    try:
+        P.behavior_entries(cite_); msg_ = ""
+    except ValueError as x_:
+        msg_ = str(x_)
+    check("DATE %r is refused: %s" % (cite_, why_), why_ in msg_, msg_)
+try:
+    P.notes("v0.2.3", [], [], behavior=["x (decided 2026-10-05)\n"]); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE an entry handed to notes() with a trailing newline is refused: cites no decision date", "cites no decision date" in msg_, msg_)
+# round 2 findings (cache#833): an internal reference in any spelling is refused, an ordinary use of the word is not
+for ref_ in ("advisor **0115**", "handoff \uff10\uff11\uff13\uff10", "advisor \uff10\uff11\uff11\uff15", "(advisor #0115)", "advisor-0115",
+             "handoff:0130", "advisors 0115", "handoffs 0130", "per_advisor 0115", "advisor 0115a", "advisor `0115`"):
+    cite_ = "- A change " + ref_ + " (decided 2026-10-03).\n"
+    try:
+        P.behavior_entries(cite_); msg_ = ""
+    except ValueError as x_:
+        msg_ = str(x_)
+    check("DATE %r is refused: holds an internal reference" % cite_, "holds an internal reference" in msg_, msg_)
+for ok_text_ in ("- Improved handoff (decided 2026-10-03).\n", "- Faster handoff of keys (decided 2026-10-03).\n"):
+    try:
+        P.behavior_entries(ok_text_); got_ = True
+    except ValueError:
+        got_ = False
+    check("DATE %r is accepted: the word alone is not an internal reference" % ok_text_, got_)
+# round 3 findings (cache#833): the separator between the word and the number has no length cap; a word + number in prose is refused on purpose
+for ref_ in ("advisor **__0115__**", "advisor     0115", "advisor ~~**`0115`**~~"):
+    cite_ = "- A change (" + ref_ + ") (decided 2026-10-03).\n"
+    try:
+        P.behavior_entries(cite_); msg_ = ""
+    except ValueError as x_:
+        msg_ = str(x_)
+    check("DATE %r is refused: holds an internal reference" % cite_, "holds an internal reference" in msg_, msg_)
+try:
+    P.notes("v0.2.3", [], [], behavior=["- A change (advisor **__0115__**) (decided 2026-10-03)."]); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE notes() refuses an entry with advisor **__0115__**: holds an internal reference", "holds an internal reference" in msg_, msg_)
+try:
+    P.behavior_entries("- The handoff 2 seconds after startup now succeeds (decided 2026-10-03).\n"); msg_ = ""
+except ValueError as x_:
+    msg_ = str(x_)
+check("DATE a word + number in prose is refused on purpose (handoff 2 seconds): holds an internal reference", "holds an internal reference" in msg_, msg_)
+for ok_text_ in ("- Faster key handoff. (decided 2026-10-03).\n", "- handoff... (decided 2026-10-03).\n"):
+    try:
+        P.behavior_entries(ok_text_); got_ = True
+    except ValueError:
+        got_ = False
+    check("DATE %r is accepted: no digit follows the word" % ok_text_, got_)
+REAL_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", "docs", "next-release-notes.md")
+real_text = open(REAL_FILE).read()
+real_ents = P.behavior_entries(real_text)
+check("DATE the real docs/next-release-notes.md parses to its two entries, each ending with a decided date",
+      len(real_ents) == 2 and all(re.search(r"\(decided \d{4}-\d{2}-\d{2}\)\.$", e) for e in real_ents), real_ents)
+real_nt = P.notes("v0.2.2", [], [], behavior=real_ents)
+check("DATE both real entries print unchanged through notes()", all("- " + e + "\n" in real_nt for e in real_ents), real_nt)
+real_cl, real_nn = P.changelog(real_nt, None, real_text)
+check("DATE both real entries leave docs/next-release-notes.md through changelog()", not any(e in real_nn for e in real_ents) and all(e in real_cl for e in real_ents), real_nn)
+BANNED_ = re.compile(r"\b(owners?|lanes?|orchestrators?|advisors?|handoffs?)\b|ratif|\brules? \d|docs/ratify|handoffs/|audits/|ops#\d", re.I)
+check("DATE the real file and its notes() output hold no shop word", not BANNED_.search(real_text) and not BANNED_.search(real_nt), [BANNED_.findall(real_text), BANNED_.findall(real_nt)])
 # --- AC8 wired (advisor 0135): the notes are built from the scans, the VEX diff and docs/next-release-notes.md
 rel_v = {"": [{"id": "CVE-2099-1", "package": "golang.org/x/net", "installed": "v0.30.0", "fixed": "v0.33.0", "severity": "High", "type": "go-module"},
               {"id": "CVE-2099-2", "package": "golang.org/x/text", "installed": "v0.20.0", "fixed": "v0.21.0", "severity": "Low", "type": "go-module"},
@@ -547,6 +690,33 @@ check("AC8w VEX: added, changed and removed statements, unchanged ones left out"
     {"cve": "CVE-9", "status": "not_affected", "change": "removed"}], vc)
 check("AC8w VEX: no old document (first patch) lists every statement as added",
       [v["change"] for v in P.vex_changes(None, vdoc(("CVE-1", "affected")))] == ["added"])
+# round 1 (Codex A, R2): the statement's scope and fields are compared, not only the CVE's status
+def sdoc(*st):
+    return {"statements": [dict({"vulnerability": {"name": n}, "status": stt, "products": [{"@id": pid}]}, **extra) for n, stt, pid, extra in st]}
+A_ = "pkg:oci/cache@sha256:" + "a" * 64; B_ = "pkg:oci/cache@sha256:" + "b" * 64
+vs = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: the same CVE and status for another product is a change, not lost (main's AC8 form: the changed field is named, products)",
+      [(v["cve"], v["change"]) for v in vs] == [("CVE-1", "changed: products")], vs)
+vj = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"justification": "vulnerable_code_not_present"})),
+                   sdoc(("CVE-1", "not_affected", A_, {"justification": "component_not_present"})))
+check("R2 VEX: a changed justification is a change (main's AC8 form)", [v["change"] for v in vj] == ["changed: justification"], vj)
+vi = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "x"})), sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "y"})))
+check("R2 VEX: a changed impact statement is a change (main's AC8 form)", [v["change"] for v in vi] == ["changed: impact_statement"], vi)
+vm = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "affected", B_, {})), sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: two statements for one CVE are both kept (one does not overwrite the other): the changed one is named with its product",
+      [(v["change"], v.get("products")) for v in vm] == [("changed from affected", [B_])], vm)
+def adoc(assoc):   # one statement whose products each carry subcomponents: assoc = {product: [subcomponent, ...]}
+    return {"statements": [{"vulnerability": {"name": "CVE-1"}, "status": "affected",
+                            "products": [{"@id": p, "subcomponents": [{"@id": c} for c in cs]} for p, cs in assoc.items()]}]}
+vsw = P.vex_changes(adoc({"P": ["A"], "Q": ["B"]}), adoc({"P": ["B"], "Q": ["A"]}))
+check("R2 VEX: moving subcomponents between products is a scope change (the product and its subcomponents stay associated)", vsw != [], vsw)
+vco = P.vex_changes(adoc({"P": ["urn:a,urn:b"]}), adoc({"P": ["urn:a", "urn:b"]}))
+check("R2 VEX: one component id that contains a comma is not two components", vco != [], vco)
+vdual = P.vex_changes({"statements": adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]},
+                      {"statements": [dict(s_, status="not_affected") for s_ in adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]]})
+check("R2 VEX: two scopes that differ only by how ids are split are displayed as two different scopes", len(vdual) == 2 and vdual[0]["products_shown"] != vdual[1]["products_shown"], vdual)
+vu = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", A_, {})))
+check("R2 VEX: an identical statement is no change", vu == [], vu)
 # AC8 (handoff 0389 (d); rule 0254 "names the statements that changed"): a statement changed in any field, not only its
 # status, is a changed statement; the notes name the CVE and which fields changed; two statements for one CVE stay two
 VS = {"vulnerability": {"name": "CVE-7"}, "status": "not_affected", "justification": "component_not_present",
@@ -1229,7 +1399,7 @@ for ch in CTRLS:
               **{"version": 1, "d" + ch: 1})
     fx_ = [{"cve": "CVE-9" + ch, "package": "p" + ch, "old": "v1" + ch, "new": "v2" + ch, "severity": "high" + ch, "variants": ["v" + ch]}]
     try:
-        nt_ = P.notes("v0.2.3", fx_, P.vex_changes(o_, n_), behavior=["A change" + ch + " here (advisor 0130)."])
+        nt_ = P.notes("v0.2.3", fx_, P.vex_changes(o_, n_), behavior=["A change" + ch + " here (decided 2026-10-05)."])
         enc_ = nt_.encode("utf-8") is not None
     except Exception as e:      # noqa: BLE001 -- the finding is that it raised
         nt_, enc_ = repr(e), False
@@ -1238,7 +1408,7 @@ for ch in CTRLS:
           "no control character, UTF-8 writable" % ch,
           enc_ and no_ctrl(nt_) and len(vlines(nt_)) == 4 and all(l.startswith("- ") for l in vlines(nt_))
           and len(secs_) == 4 and secs_[1].count("\n") == 1 and secs_[3].count("\n") == 2
-          and resolves(nt_, o_, n_, fixes=fx_, behavior=["A change" + ch + " here (advisor 0130)."])[0], nt_)
+          and resolves(nt_, o_, n_, fixes=fx_, behavior=["A change" + ch + " here (decided 2026-10-05)."])[0], nt_)
 # A2 / B2: an @id shaped like a position label never reads as one
 U7 = vs(products=[{"@id": PC}], status="fixed", status_notes="u")
 C7 = vs(products=[{"@id": PC}], status="fixed", status_notes="c", **{"@id": "1 of the new document"})
@@ -1478,7 +1648,7 @@ check("AC8 VEX oracle (r4): a dropped line and an extra '- no change' are refuse
 # r5 (A R4-3 low, B F1 medium): the oracle reads the WHOLE notes; a line inserted after a blank line is refused
 SA_, SB_ = vs(products=[{"@id": "pkg:a"}], status="fixed"), vs(products=[{"@id": "pkg:b"}], status="fixed")
 o_, n_ = vd(SA_, SB_), vd(SA_, dict(SB_, status_notes="n2"))
-for beh_ in ([], ["A change (advisor 0130)."]):
+for beh_ in ([], ["A change (decided 2026-10-05)."]):
     nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_), behavior=beh_)
     l_ = vlines(nt_)[0]
     ok_ = resolves(nt_, o_, n_, behavior=beh_)
@@ -1594,7 +1764,7 @@ def _r9_refuses(f, *a):
 check("AC14 (r9; was r4/r5 'an older tag's <redacted> shown escaped'): '- <redacted>: fixed (added)' under a '### VEX' heading "
       "the generator does not write there, outside the VEX line grammar, is refused as changelog input",
       _r9_refuses(P.changelog, old_, None, ""))
-ent_ = ["A gpt-assisted fix (advisor 0130)."]
+ent_ = ["A gpt-assisted fix (decided 2026-10-05)."]
 # r8 (REQ-REL-009-AC14, advisor step 5): the historical forms are cut back; an entry is published only as the line
 # notes() prints for it (no published text ever held another marker form: no CHANGELOG.md on main, no v* tag says 'redacted')
 check("0135 + r8: an entry is not published again once the line notes() prints for it was published (whole line)",
@@ -1630,12 +1800,12 @@ def esc_line(l):
 def mktag(tag, body):
     return ("object 0123\ntype commit\ntag %s\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" % tag + body
             + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
-nt_ = P.notes("v0.2.3", [], [], behavior=["[click]gpt (advisor 0130)."])
+nt_ = P.notes("v0.2.3", [], [], behavior=["[click]gpt (decided 2026-10-05)."])
 check("AC8 redaction marker (r5, A R4-4 / B F3): '[click]gpt' in a behavior entry prints '\\[click\\]\\(redacted\\)', never a link",
-      "- \\[click\\]\\(redacted\\) \\(advisor 0130\\)\\.\n" in nt_ and "](redacted)" not in nt_, nt_)
+      "- \\[click\\]\\(redacted\\) \\(decided 2026\\-10\\-05\\)\\.\n" in nt_ and "](redacted)" not in nt_, nt_)
 # r8: '<gpt>' and '<!-- gpt -->' left this list: a '<' before a letter or '!' is refused in a source (REQ-REL-009-AC14)
-BEH_ = ["[click]gpt (advisor 0130).", "![x](gpt) (advisor 0130).", "[a](https://gpt.example) (advisor 0130).",
-        "[x][gpt] and `gpt` (advisor 0130).", "gpt in google.golang.org/protobuf (advisor 0130)."]
+BEH_ = ["[click]gpt (decided 2026-10-05).", "![x](gpt) (decided 2026-10-05).", "[a](https://gpt.example) (decided 2026-10-05).",
+        "[x][gpt] and `gpt` (decided 2026-10-05).", "gpt in google.golang.org/protobuf (decided 2026-10-05)."]
 FX_ = [{"cve": "CVE-1", "package": "[click]gpt", "old": "v1", "new": "v2", "severity": "high", "variants": ["default"]}]
 nt_ = P.notes("v0.2.3", FX_, [], behavior=BEH_)
 secs_ = nt_.split("\n\n")
@@ -1643,9 +1813,9 @@ check("AC8 redaction marker (r5): every fix line and behavior entry holding a ma
       len(secs_) == 4 and all(esc_line(l) for l in secs_[1].split("\n")[1:] + secs_[3].rstrip("\n").split("\n")[1:])
       and "<redacted>" not in nt_, nt_)
 check("AC8 redaction marker (r5): an unredacted line keeps its Markdown as written",
-      "- Go 1.27 [see](https://example.invalid) (advisor 0130).\n" in P.notes("v0.2.3", [], [], behavior=["Go 1.27 [see](https://example.invalid) (advisor 0130)."]))
+      "- Go 1.27 [see](https://example.invalid) (decided 2026-10-05).\n" in P.notes("v0.2.3", [], [], behavior=["Go 1.27 [see](https://example.invalid) (decided 2026-10-05)."]))
 old_tag_ = ("## v0.2.2 — patch release\n\n### Fixes\n- CVE-1 in [click]<redacted>: v1 → v2 (severity high; variants: default)\n\n### VEX\n"
-            "- no change\n\n### Behavior changes\n- [click]<redacted> (advisor 0130).\n")
+            "- no change\n\n### Behavior changes\n- [click]<redacted> (decided 2026-10-05).\n")
 def refused(f, *a, **k):
     """'ValueError: <message>' when f refuses, else what it returned"""
     try:
@@ -1658,12 +1828,12 @@ check("AC14 (r8; was r5 'older tag shown escaped'): a fix line or behavior entry
       str(got_).startswith("ValueError") and str(cl_).startswith("ValueError"), (got_, cl_))
 check("AC8 redaction marker (r5): the escaped form is stable: a tag of the notes reads back as the notes byte for byte",
       P.tag_notes(mktag("v0.2.3", nt_)) == nt_, P.tag_notes(mktag("v0.2.3", nt_)))
-cl1_, nn1_ = P.changelog(nt_, None, "- [click]gpt (advisor 0130).\n- Another change (advisor 0131).\n")
+cl1_, nn1_ = P.changelog(nt_, None, "- [click]gpt (decided 2026-10-05).\n- Another change (decided 2026-10-06).\n")
 check("0130 + r5: a published entry holding a marker leaves next-release-notes; an unpublished one stays",
-      nn1_ == "- Another change (advisor 0131).\n", nn1_)
+      nn1_ == "- Another change (decided 2026-10-06).\n", nn1_)
 check("0135 + r5 (r8: the escaped form only, the older forms cut back): an entry holding a marker is not published again",
-      P.unpublished(["[click]gpt (advisor 0130)."], nt_) == []
-      and P.unpublished(["[click]gpt (advisor 0130)."], "") == ["[click]gpt (advisor 0130)."])
+      P.unpublished(["[click]gpt (decided 2026-10-05)."], nt_) == []
+      and P.unpublished(["[click]gpt (decided 2026-10-05)."], "") == ["[click]gpt (decided 2026-10-05)."])
 # r5 (B low): a generated tag's heading ends in LF and nothing else: CR, CRLF, VT, FF, FS, GS, RS, NEL, LS or PS after it is
 # refused (as in round 3)
 for t_ in TERMS:
@@ -1691,11 +1861,11 @@ for what_, h_ in (("a CR line end", HIST_.replace("\n### VEX", "\r\n### VEX")), 
 cd5_ = tempfile.mkdtemp()
 open(os.path.join(cd5_, "n.md"), "w").write(nt_)
 open(os.path.join(cd5_, "CL.md"), "w", newline="").write(HIST_ + "- gpt helper\n")
-open(os.path.join(cd5_, "nn.md"), "w").write("- [click]gpt (advisor 0130).\n")
+open(os.path.join(cd5_, "nn.md"), "w").write("- [click]gpt (decided 2026-10-05).\n")
 rc_ = P.main(["changelog", "--notes", os.path.join(cd5_, "n.md"), "--changelog", os.path.join(cd5_, "CL.md"), "--next-notes", os.path.join(cd5_, "nn.md")])
 check("AC8 CLI changelog (r5): an unclean history exits 2 and writes nothing",
       rc_ == 2 and open(os.path.join(cd5_, "CL.md"), newline="").read() == HIST_ + "- gpt helper\n"
-      and open(os.path.join(cd5_, "nn.md")).read() == "- [click]gpt (advisor 0130).\n", rc_)
+      and open(os.path.join(cd5_, "nn.md")).read() == "- [click]gpt (decided 2026-10-05).\n", rc_)
 import shutil; shutil.rmtree(cd5_)
 # r6 (Codex #300 r6: A R5-1 / B F1, B F2, A R5-5, A (d) / B F6, B F4's newly admitted channels, A (c) / B F3)
 # R5-1 / F1: the marker in EVERY historical form — origin/main's '<redacted>', round 4's '(redacted)', the escaped
@@ -1726,7 +1896,7 @@ def esc_all(l):
     body = l[m_.end():] if m_ else l
     return (re.fullmatch(r"(?:\\[%s]|[^%s])*" % (PUNCT_, PUNCT_), body) is not None
             and any(m in re.sub(r"\\([%s])" % PUNCT_, r"\1", body) for m in ("(redacted)", "\\(redacted\\)")))
-LEG_ = ["[click](redacted) (advisor 0130).", "[click](\\(redacted\\)) (advisor 0130).", "[click](gpt) (advisor 0130).",
+LEG_ = ["[click](redacted) (decided 2026-10-05).", "[click](\\(redacted\\)) (decided 2026-10-05).", "[click](gpt) (decided 2026-10-05).",
         "![x](redacted)", "[x](/u \"(redacted)\")", "[x][(redacted)]", "https://x.example/(redacted)", "www.x.example/(redacted)",
         "`(redacted)` and [y](redacted)", "(redacted)[^1]", "| (redacted) |", "$(redacted)$", "*(redacted)*", "_(redacted)_",
         "\\[click\\](redacted)", "[click]\\(redacted\\)", "(redacted)\\", "[x](gpt \"t\")", "`gpt`"]
@@ -1738,9 +1908,9 @@ for l_ in LEG_:
             bad_.append((x_, y_))
 check("AC8 escape-whole-line (r6, A R5-1 / B F1; r8 the current marker only): %d free-text lines carrying the marker inside "
       "link, image, code, footnote, table, math or emphasis syntax: each is fully escaped, stably" % (3 * len(LEG_)), bad_ == [], bad_[:4])
-check("AC8 redaction marker (r6, A R5-1 / B F1): A's and B's round-4 line '- [click](redacted) (advisor 0130).' is written escaped",
-      P._clean_free("- [click](redacted) (advisor 0130).") == "- \\[click\\]\\(redacted\\) \\(advisor 0130\\)\\.",
-      P._clean_free("- [click](redacted) (advisor 0130)."))
+check("AC8 redaction marker (r6, A R5-1 / B F1): A's and B's round-4 line '- [click](redacted) (decided 2026-10-05).' is written escaped",
+      P._clean_free("- [click](redacted) (decided 2026-10-05).") == "- \\[click\\]\\(redacted\\) \\(decided 2026\\-10\\-05\\)\\.",
+      P._clean_free("- [click](redacted) (decided 2026-10-05)."))
 for l_ in ("- (redacted): fixed (added) — statement 2 of the new document", "- CVE-7 [pkg:(redacted)]: fixed (changed: status_notes)",
            "- document fields changed ((redacted))", "- CVE-7: not_affected (changed: (redacted), status_notes)",
            '- `"(redacted)"`: fixed (added) — statement 1 of the new document'):
@@ -1752,27 +1922,27 @@ for l_ in ("- (redacted): fixed (added) — statement 2 of the new document", "-
           "shows the marker: %r" % l_, P._clean_free(l_) != l_ and vshown(P._clean_free(l_)) == l_ and P._clean_lines(blk_) == blk_
           and P.tag_notes(mktag("v0.2.3", blk_)) == blk_ and P._clean_lines(raw_) == blk_, P._clean_lines(blk_))
 R4T_ = ("## v0.2.2 — patch release\n\n### Fixes\n- CVE-1 in [click](redacted): v1 → v2 (severity high; variants: default)\n\n### VEX\n"
-        "- (redacted): fixed (added) — statement 2 of the new document\n\n### Behavior changes\n- [click](redacted) (advisor 0130).\n")
+        "- (redacted): fixed (added) — statement 2 of the new document\n\n### Behavior changes\n- [click](redacted) (decided 2026-10-05).\n")
 got_ = P.tag_notes(mktag("v0.2.2", R4T_)) or ""
 check("AC8 redaction marker (r6, B F1; r10 no VEX exemption): a round-4 tag's '[click](redacted)' (fix line and behavior entry) "
-      "reads escaped, its VEX line too", "](redacted)" not in got_ and "- \\[click\\]\\(redacted\\) \\(advisor 0130\\)\\.\n" in got_
+      "reads escaped, its VEX line too", "](redacted)" not in got_ and "- \\[click\\]\\(redacted\\) \\(decided 2026\\-10\\-05\\)\\.\n" in got_
       and "\\[click\\]\\(redacted\\)\\: v1" in got_ and "- \\(redacted\\)\\: fixed \\(added\\) — statement 2 of the new document\n" in got_, got_)
 try:
-    cl_, nn_ = P.changelog(R4T_, None, "- [click]gpt (advisor 0130).\n- Another change (advisor 0131).\n")
+    cl_, nn_ = P.changelog(R4T_, None, "- [click]gpt (decided 2026-10-05).\n- Another change (decided 2026-10-06).\n")
 except ValueError as e:
     cl_, nn_ = repr(e), None
 check("0130 + r6 (B F1): a round-4 tag's '[click](redacted)' entry is shown escaped in the changelog and leaves next-release-notes",
-      "](redacted)" not in cl_ and nn_ == "- Another change (advisor 0131).\n", (cl_, nn_))
+      "](redacted)" not in cl_ and nn_ == "- Another change (decided 2026-10-06).\n", (cl_, nn_))
 try:
-    _, nn_ = P.changelog(R4T_.replace("- [click](redacted) (advisor 0130).", "- (redacted) helper updated (advisor 0130)."), None,
-                         "- gpt helper updated (advisor 0130).\n")
+    _, nn_ = P.changelog(R4T_.replace("- [click](redacted) (decided 2026-10-05).", "- (redacted) helper updated (decided 2026-10-05)."), None,
+                         "- gpt helper updated (decided 2026-10-05).\n")
 except ValueError as e:
     nn_ = repr(e)
 check("0130 + r6 (B F1): an entry a round-4 tag published as '(redacted) helper updated' leaves next-release-notes too", nn_ == "", nn_)
 try:
     # r8: the line sits under a Behavior changes heading (a free-text line); a bullet run on from the VEX section is a VEX
     # line, exempt by advisor step 5 (1) and trusted as reviewed history
-    P.changelog(nt_, HIST_ + "\n### Behavior changes\n- [click](redacted) (advisor 0130).\n", ""); got_ = "accepted"
+    P.changelog(nt_, HIST_ + "\n### Behavior changes\n- [click](redacted) (decided 2026-10-05).\n", ""); got_ = "accepted"
 except ValueError:
     got_ = "ValueError"
 check("AC8 changelog history (r6, A R5-1): a history whose '(redacted)' a link takes is refused, not rewritten", got_ == "ValueError", got_)
@@ -1780,7 +1950,7 @@ check("AC8 changelog history (r6, A R5-1): a history whose '(redacted)' a link t
 # '<redacted>', '\<redacted\>' and any case left the generator; a marker-bearing line is fully escaped)
 FREE_P_ = ["gpt", "google", "google.com", "(redacted)", "\\(redacted\\)", "notredacted",
            "[", "]", "(", ")", "<", ">", "!", "`", "\\", "*", "_", "&#97;", ".", " ", "a", "- ", "#", ":", "//", "www.", "\"",
-           "(advisor 0130)", "x", "~", "|", "$", "@", "—"]
+           "(decided 2026-10-05)", "x", "~", "|", "$", "@", "—"]
 rng6_ = random.Random(306)
 bad_, n_marked = [], 0
 for _ in range(6000):
@@ -1799,11 +1969,11 @@ check("AC8 escape-whole-line (r6; r8): 6000 random free-text lines (%d holding a
 # tag's notes (tag-notes exits 2), the changelog's new notes and its history. A context with no refused form is not
 # refused as notes; its marker line is still written fully escaped, and a history holding an unescaped marker is still
 # refused as not clean.
-CTX_ = [("B's HTML comment", "<!--\ngpt\n-->\n", True), ("an HTML comment around a bullet", "<!--\n- gpt helper (advisor 0130).\n-->\n", True),
+CTX_ = [("B's HTML comment", "<!--\ngpt\n-->\n", True), ("an HTML comment around a bullet", "<!--\n- gpt helper (decided 2026-10-05).\n-->\n", True),
         ("a raw HTML block", "<details>\n\n- gpt\n\n</details>\n", True), ("a fenced block", "```mermaid\n- gpt\n```\n", False),
         ("a link title over lines", "- [a](/u \"\nx gpt\n\")\n", True), ("a reference definition", "[x]:\n- gpt\n", True),
         ("an indented line", "    - gpt\n", False), ("a block quote", "> a\n- gpt\n", False), ("a paragraph line", "text\n- gpt\n", False),
-        ("a marker in a comment", "<!--\n- (redacted) helper (advisor 0130).\n-->\n", True)]
+        ("a marker in a comment", "<!--\n- (redacted) helper (decided 2026-10-05).\n-->\n", True)]
 for what_, ctx_, refuse_ in CTX_:
     body_ = "## v0.2.3 — patch release\n\n" + ctx_
     got_ = refused(P.tag_notes, mktag("v0.2.3", body_))
@@ -1830,7 +2000,7 @@ check("AC8 changelog history (r6, A R5-5): extra blank lines after the title are
       cl_.endswith("\n" + H4_[len("# Changelog\n\n"):]), cl_)
 # A (d) / B F6: a line without the marker is never read as this cleaner's escaped output: '\.' in it is not unescaped
 # to make a name a module path or a domain (redacted as before round 5)
-for x_ in ("google\\.com", "aws\\.com", "google\\.golang\\.org\\/protobuf \\(advisor 0130\\)\\."):
+for x_ in ("google\\.com", "aws\\.com", "google\\.golang\\.org\\/protobuf \\(decided 2026\\-10\\-05\\)\\."):
     y_ = P._clean_free(x_)
     check("AC8 redaction (r6, A (d) / B F6): %r without a marker is redacted as before round 5" % x_,
           MARK_.search(y_) and not re.search(r"(?i)google|aws", y_) and P._clean_free(y_) == y_, y_)
@@ -1869,7 +2039,7 @@ for it_ in range(300):
     names_ = [rname() for _ in range(rng6_.randint(1, 3))]
     o_ = {"statements": [rstmt(names_) for _ in range(rng6_.randint(0, 3))]}
     n_ = {"statements": [rstmt(names_) for _ in range(rng6_.randint(0, 3))]}
-    beh_ = "%s (advisor 0130)." % rname(1).replace("\n", " ")
+    beh_ = "%s (decided 2026-10-05)." % rname(1).replace("\n", " ")
     try:
         nt6_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_), behavior=[beh_])
     except ValueError as e:
@@ -1904,9 +2074,9 @@ for fab_ in ("- CVE-(redacted): fixed (changed: status_notes) — statement 1 of
           vlines(nt_) == ["- CVE-1: fixed (changed: status_notes)"] and resolves(nt_, o_, n_)[0]
           and not resolves(nt_.replace(vlines(nt_)[0], fab_), o_, n_)[0], resolves(nt_.replace(vlines(nt_)[0], fab_), o_, n_))
 FXS_ = [{"cve": "CVE-9", "package": "p", "old": "v1", "new": "v2", "severity": "high", "variants": ["default"]}]
-BEHS_ = ["First change (advisor 0130).", "Second change (advisor 0131)."]
+BEHS_ = ["First change (decided 2026-10-05).", "Second change (decided 2026-10-06)."]
 nt_ = P.notes("v0.2.3", FXS_, P.vex_changes(o_, n_), behavior=BEHS_)
-fx_l_, b1_, b2_ = "- CVE-9 in p: v1 → v2 (severity high; variants: default)", "- First change (advisor 0130).", "- Second change (advisor 0131)."
+fx_l_, b1_, b2_ = "- CVE-9 in p: v1 → v2 (severity high; variants: default)", "- First change (decided 2026-10-05).", "- Second change (decided 2026-10-06)."
 swap_ = nt_.replace(fx_l_, "\x01").replace(b1_, fx_l_).replace("\x01", b1_)
 check("AC8 VEX oracle (r6, A (c) / B F3): the true notes resolve against their fix and behavior inputs; a fix line swapped "
       "with a behavior entry, a duplicated entry and a count passed for the inputs are refused",
@@ -1919,9 +2089,9 @@ try:
 except TypeError:
     got_ = "TypeError"
 check("AC8 VEX oracle (r6): a count in place of the inputs is not accepted", got_ == "TypeError", got_)
-pub ="## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
+pub ="## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (decided 2026-10-03).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
-      P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
+      P.unpublished(ents, pub) == ["Second change, one line (decided 2026-10-05)."], P.unpublished(ents, pub))
 check("0135 nothing published yet: every entry stays", P.unpublished(ents, "") == ents)
 tagraw = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + pub
           + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
@@ -1933,10 +2103,10 @@ check("AC8w tag-notes: a look-alike heading for another version is refused",
 cl, nn = P.changelog(pub, "# Changelog\n\n## v0.2.1 — patch release\n\nold\n", NRN)
 check("AC8w changelog: the notes go on top, newest first", cl.startswith("# Changelog\n\n## v0.2.2 — patch release\n") and cl.index("v0.2.2") < cl.index("v0.2.1"), cl)
 check("0130 changelog: the published entry leaves next-release-notes, an unpublished one stays",
-      "Go 1.27" not in nn and "Second change, one line (advisor 0130)." in nn and nn.startswith("# Notes for the next release"), nn)
+      "Go 1.27" not in nn and "Second change, one line (decided 2026-10-05)." in nn and nn.startswith("# Notes for the next release"), nn)
 cl0, _ = P.changelog(pub, None, NRN)
 check("AC8w changelog: a missing CHANGELOG.md is created with its heading", cl0.startswith("# Changelog\n\n## v0.2.2"), cl0)
-nts = P.notes("v0.2.2", fx, vc, behavior=["Gemini helper changed (advisor 0130)."])
+nts = P.notes("v0.2.2", fx, vc, behavior=["Gemini helper changed (decided 2026-10-05)."])
 check("AC8w/row 48 the built notes name no vendor or model", not re.search(r"(?i)gemini|claude|openai", nts), nts)
 # the signed tag keeps the notes' markdown headings: git tag's default cleanup would strip every '#' line
 tg = tempfile.mkdtemp(); g(tg, "init", "-q", "-b", "main"); open(os.path.join(tg, "f"), "w").write("x")
@@ -1993,7 +2163,7 @@ args = ["notes", "--version", "v0.2.3", "--variant-grype", "=" + J_("r.json", gr
 rc = P.main(args); out_ = open(os.path.join(cd_, "notes.md")).read() if rc == 0 else ""
 check("AC8w CLI notes: heading, the fix with its variants, the VEX change, only the unpublished entry",
       rc == 0 and out_.startswith("## v0.2.3 — patch release\n") and "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: default, fips)" in out_
-      and "CVE-1: not_affected (changed from affected)" in out_ and "- Second change, one line (advisor 0130)." in out_ and "Go 1.27" not in out_, out_)
+      and "CVE-1: not_affected (changed from affected)" in out_ and "- Second change, one line (decided 2026-10-05)." in out_ and "Go 1.27" not in out_, out_)
 os.remove(os.path.join(cd_, "notes.md"))
 args_null_ = [x if x != os.path.join(cd_, "o.json") else J_("null.json", None) for x in args]
 check("AC8 CLI notes (Codex #300 r2, B): a --vex-old file holding JSON null is refused (exit 2, no notes), never 'every statement added'",
@@ -2015,22 +2185,22 @@ for bad_b in (["Some change nobody judged."], ["A change (owner said so)."]):
     except ValueError:
         raised = True
     check("SEC-2 notes() refuses an uncited behavior entry %r" % bad_b[0], raised)
-for split in ("- Goo\n  gle now rejects long headers (advisor 0130).\n", "- Op enAI client changed (advisor 0130).\n",
-              "- the Clau de helper (advisor 0130).\n"):
+for split in ("- Goo\n  gle now rejects long headers (decided 2026-10-05).\n", "- Op enAI client changed (decided 2026-10-05).\n",
+              "- the Clau de helper (decided 2026-10-05).\n"):
     try:
         P.behavior_entries(split); raised = False
     except ValueError:
         raised = True
     check("SEC-1 a vendor name split by whitespace is refused: %r" % split, raised)
-for split in ("- G o o g l e rejects long headers (advisor 0130).\n", "- the D e e p S e e k path (advisor 0130).\n",
-              "- An thro pic changed (advisor 0130).\n", "- C\n  l a u\n  de helper (advisor 0130).\n"):
+for split in ("- G o o g l e rejects long headers (decided 2026-10-05).\n", "- the D e e p S e e k path (decided 2026-10-05).\n",
+              "- An thro pic changed (decided 2026-10-05).\n", "- C\n  l a u\n  de helper (decided 2026-10-05).\n"):
     try:
         P.behavior_entries(split); raised = False
     except ValueError:
         raised = True
     check("SEC-1 (Sonnet r2b) a name split into three or more pieces is refused: %r" % split, raised)
 check("SEC-1 the real entries still pass (Go 1.27; metadata; to 1.2)", len(P.behavior_entries(NRN)) == 2 and
-      P.behavior_entries("- metadata handling for a meta tag moved to 1.2 (advisor 0130).\n") != [])
+      P.behavior_entries("- metadata handling for a meta tag moved to 1.2 (decided 2026-10-05).\n") != [])
 # Codex #159 AC1(h) r1, B01: data is not executable — a changed file Git records as executable or as a symlink, or whose
 # added content starts a script (#!), is never neutral or fix-class; B02: a reviewed workflow by its full path only
 sh_ = "+#!/bin/sh\n+test 1 = 1 && printf AC1_EXECUTED\n"
@@ -2053,6 +2223,92 @@ check("B01 gather_commits records each file's new mode; a mode-only chmod +x is 
 for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
     got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
     check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
+# Codex 4b-4 r1 (A B3, B B2): a rename of a listed base input is the deletion of its source and the addition of a destination; rename detection must not hide the
+# deletion (the classifier and base-moved both read the history without it)
+rn = tempfile.mkdtemp(); g(rn, "init", "-q", "-b", "main"); os.makedirs(os.path.join(rn, "build/locks")); os.makedirs(os.path.join(rn, "docs"))
+open(os.path.join(rn, "build/locks/melange.lock"), "w").write("lock content that is long enough to be recognised as a rename %s\n" % ("x" * 200))
+open(os.path.join(rn, "build/locks/apko.base.lock.json"), "w").write("1\n")
+g(rn, "add", "-A"); g(rn, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "locks"); g(rn, "tag", "v0.2.1")
+g(rn, "mv", "build/locks/melange.lock", "docs/retired-lock.json"); g(rn, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename a base input away")
+rlist = bil({"base_inputs": ["build/locks/apko.base.lock.json", "build/locks/melange.lock"]})
+gcr = P.gather_commits("v0.2.1", cwd=rn)
+got = P.classify(gcr[0], base_inputs=P.load_base_inputs(rlist)) if gcr else None
+check("B3 a listed base input renamed to a data file is a deletion: the commit is not patch-clean", gcr and gcr[0].get("modes", {}).get("build/locks/melange.lock") == "000000" and got and got[0] == "dirty", (gcr, got))
+r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", rlist, "--since", "v0.2.1", "--repo", rn], capture_output=True, text=True)
+check("B3 base-moved names the listed source of a rename away, not only a destination", r.returncode == 0 and "build/locks/melange.lock" in r.stdout, (r.returncode, r.stdout, r.stderr))
+rn2 = tempfile.mkdtemp(); g(rn2, "init", "-q", "-b", "main"); os.makedirs(os.path.join(rn2, "build/locks"))
+open(os.path.join(rn2, "build/locks/melange.lock"), "w").write("lock content that is long enough to be recognised as a rename %s\n" % ("y" * 200))
+g(rn2, "add", "-A"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "locks"); g(rn2, "tag", "v0.2.1")
+g(rn2, "mv", "build/locks/melange.lock", "build/locks/apko.base.lock.json"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename between two listed inputs")
+r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", rlist, "--since", "v0.2.1", "--repo", rn2], capture_output=True, text=True)
+check("B3 a rename between two listed base inputs names both the source and the destination in base-moved", r.returncode == 0 and "build/locks/melange.lock" in r.stdout and "build/locks/apko.base.lock.json" in r.stdout, (r.returncode, r.stdout, r.stderr))
+# Codex 4b-4 r2 (A M1, B R2): the patch-fix label upgrades a not-clean commit, but it never upgrades a deleted, executable or symlinked base input (a base input
+# removed is an image change, not "no behavior change"), and a base input with no mode evidence is not a refresh
+for mode in ("000000", "100755", "120000"):
+    got = P.classify(dict(c("x", ["build/locks/melange.lock"], labels=["patch-fix"]), modes={"build/locks/melange.lock": mode}), base_inputs=P.load_base_inputs(rlist))
+    check("M1 a labelled commit that makes the base input %s is still dirty" % mode, got[0] == "dirty", got)
+got = P.classify({"sha": "x", "files": ["build/locks/melange.lock"], "labels": [], "diffs": {}, "modes": {}}, base_inputs=P.load_base_inputs(rlist))
+check("M1 a base input with no mode evidence is dirty, never a refresh", got[0] == "dirty" and "mode" in got[1], got)
+got = P.classify(dict(c("x", ["build/locks/melange.lock", "docs/a.md"], labels=["patch-fix"]), modes={"build/locks/melange.lock": "100644", "docs/a.md": "100644"}), base_inputs=P.load_base_inputs(rlist))
+check("M1 an ordinary refresh with its mode stays fix-class", got[0] == "fix", got)
+got = P.classify(dict(c("x", ["bin/x.sh"], labels=["patch-fix"], diffs={"bin/x.sh": "+echo\n"}), modes={"bin/x.sh": "100644"}), base_inputs=P.load_base_inputs(rlist))
+check("M1 the label still upgrades a not-clean commit that touches no base input (the owner's override is unchanged)", got[0] == "fix", got)
+# a merge commit is read against its first parent (the same three reads), so a base input refreshed on a side branch is judged with its mode
+mg = tempfile.mkdtemp(); g(mg, "init", "-q", "-b", "main"); os.makedirs(os.path.join(mg, "build/locks"))
+open(os.path.join(mg, "build/locks/melange.lock"), "w").write("1\n"); g(mg, "add", "-A"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(mg, "tag", "v0.2.1")
+g(mg, "checkout", "-q", "-b", "side"); open(os.path.join(mg, "build/locks/melange.lock"), "w").write("2\n"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "refresh on a side branch")
+g(mg, "checkout", "-q", "main"); open(os.path.join(mg, "docs.md"), "w").write("d\n"); g(mg, "add", "-A"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge side", "side")
+gm = P.gather_commits("v0.2.1", cwd=mg)
+msha = subprocess.run(["git", "-C", mg, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+mrec = [x for x in gm if x["sha"] == msha]
+# the merge's own record: it changes the lock relative to its first parent? no: the first parent (main) did not have the side branch's refresh, so the merge brings it in
+check("M1 the merge commit is its own record, with its changed path, its mode and its classification (read against the first parent)",
+      len(mrec) == 1 and mrec[0]["files"] == ["build/locks/melange.lock"] and mrec[0]["modes"] == {"build/locks/melange.lock": "100644"}
+      and P.classify(mrec[0], base_inputs=P.load_base_inputs(rlist))[0] == "fix", (msha, mrec))
+# --- AC3 (immediate cut): the images of the latest release are the ones that exist for its version (v0.3.0 dropped the debug variant)
+import subprocess
+def variants(ver):
+    r = subprocess.run([sys.executable, sys.argv[1], "variants", "--version", ver], capture_output=True, text=True); return r.returncode, r.stdout.split()
+for ver, want in (("0.2.2", ["0.2.2", "0.2.2-debug", "0.2.2-fips"]), ("0.1.0", ["0.1.0", "0.1.0-debug", "0.1.0-fips"]), ("0.3.0", ["0.3.0", "0.3.0-fips"]), ("0.3.1", ["0.3.1", "0.3.1-fips"]),
+                  ("0.10.0", ["0.10.0", "0.10.0-fips"]), ("1.0.0", ["1.0.0", "1.0.0-fips"]), ("0.2.10", ["0.2.10", "0.2.10-debug", "0.2.10-fips"])):
+    rc, got = variants(ver); check("AC3 the images scanned for release %s are exactly %s" % (ver, want), rc == 0 and got == want, (rc, got))
+for bad in ("v0.3.0", "0.3", "0.3.0-rc1", "", "0.3.0 -debug", "x.y.z"):
+    rc, got = variants(bad); check("AC3 a version that is not X.Y.Z (%r) is refused and prints nothing" % bad, rc != 0 and got == [], (rc, got))
+# --- REQ-CHAIN-001-AC6 (advisor Oct 12): the decide job refuses, naming the marker, unless .github/policy/rc-proof.json validates for the commit being tagged
+import shutil
+rp = tempfile.mkdtemp(prefix="rcproof-")
+bindir = os.path.dirname(os.path.abspath(sys.argv[1]))
+def rg(*a): return subprocess.run(["git", "-C", rp, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + list(a), check=True, capture_output=True, text=True).stdout.strip()
+rg("init", "-q", "-b", "main")
+for d in (".github/workflows", ".github/policy", "bin"): os.makedirs(os.path.join(rp, d))
+open(os.path.join(rp, ".github/workflows/release.yml"), "w").write("name: Release\n")
+if os.path.exists(os.path.join(bindir, "chain-bytes-sha.py")): shutil.copy(os.path.join(bindir, "chain-bytes-sha.py"), os.path.join(rp, "bin/chain-bytes-sha.py"))
+else: open(os.path.join(rp, "bin/chain-bytes-sha.py"), "w").write("x\n")
+open(os.path.join(rp, ".github/policy/chain-scripts.json"), "w").write('{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n')
+rg("add", "-A"); rg("commit", "-q", "-m", "chain"); rg("tag", "v0.3.0-rc1"); rc_commit = rg("rev-parse", "HEAD")
+bs = subprocess.run([sys.executable, os.path.join(bindir, "chain-bytes-sha.py"), "sha", "--commit", rc_commit, "--repo", rp], capture_output=True, text=True).stdout.strip() or "0" * 64
+keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict"]
+good = {"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": bs, "records": {k: "0" * 64 for k in keys}}
+marker = os.path.join(rp, ".github/policy/rc-proof.json")
+def put(m): open(marker, "w").write(m if isinstance(m, str) else json.dumps(m))
+put(good); rg("add", "-A"); rg("commit", "-q", "-m", "marker"); head = rg("rev-parse", "HEAD")
+def rcp(commit=None, mpath=None, extra=()):
+    r = subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", mpath or marker, "--commit", commit or head, "--repo", rp] + list(extra), capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+rc, msg = rcp(); check("AC6 decide: a marker for the bytes of the commit, with an rc tag that is an ancestor, lets the decision proceed (exit 0)", rc == 0, (rc, msg))
+rc, msg = rcp(mpath=os.path.join(rp, "no-such-marker.json"))
+check("AC6 decide: a missing marker is refused (exit 1), naming the marker, never skipped", rc == 1 and "marker" in msg and "missing" in msg, (rc, msg))
+put("{not json"); rc, msg = rcp(); check("AC6 decide: an unreadable marker is refused", rc == 1 and "marker" in msg, (rc, msg)); put(good)
+open(os.path.join(rp, ".github/workflows/release.yml"), "a").write("# edited\n"); rg("add", "-A"); rg("commit", "-q", "-m", "edit"); edited = rg("rev-parse", "HEAD")
+rc, msg = rcp(edited); check("AC6 decide: a marker for other bytes (a chain file changed since the proof) is refused, naming the bytes", rc == 1 and "marker" in msg and "bytes" in msg, (rc, msg))
+rg("checkout", "-q", "-b", "side", rc_commit); rg("commit", "-q", "--allow-empty", "-m", "side"); rg("tag", "v0.3.0-rc2"); rg("checkout", "-q", "main")
+put(dict(good, rc_tag="v0.3.0-rc2")); rc, msg = rcp(head)
+check("AC6 decide: an rc tag that is not an ancestor of the commit is refused", rc == 1 and "ancestor" in msg, (rc, msg)); put(good)
+put(dict(good, rc_tag="v0.3.0")); rc, msg = rcp(head); check("AC6 decide: a final tag as the rc tag is refused", rc == 1 and "rc_tag" in msg, (rc, msg)); put(good)
+rc, msg = rcp(); check("AC6 decide: the check does not change the repository (the marker file is unchanged)", rc == 0 and json.load(open(marker)) == good, (rc, msg))
+check("AC6 decide: the subcommand refuses without a commit (usage, never a default)", subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", marker], capture_output=True).returncode == 2)
+shutil.rmtree(rp, ignore_errors=True)
 # ===== REQ-REL-009-AC14 (advisor step 5, Oct 11; owner rule 5 engineering AC): the notes sources are refused outright,
 # never decoded, escaped or rewritten, when a line holds (1) '<' before a letter (any Unicode letter), '/', '!' or '?';
 # (2) a link-reference-definition shape; (3) a character reference; (4) '-----BEGIN '; and (5) two entries whose published
@@ -2103,34 +2359,34 @@ def refused_at(rc_, err_, out_, where_):
     return rc_ == 2 and out_ is None and where_ in err_ and LAST_STDOUT[0] == ""
 # R14-1 the '<' opener
 for s_ in ("<b>", "</x", "<!--", "<?php", "<http://a>", "<redacted>", "<é", "<Ж"):
-    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- a %s b (advisor 0130).\n" % s_)
+    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- a %s b (decided 2026-10-05).\n" % s_)
     check("AC14 R14-1: an entry holding %r is refused (exit 2, no notes, file:line)" % s_, refused_at(rc_, err_, out_, p_["nn"] + ":3:"), (rc_, err_))
 for s_ in ("a < b", "<3", "<=", "x <\n  y", "1<2"):
-    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- %s (advisor 0130).\n" % s_)
+    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- %s (decided 2026-10-05).\n" % s_)
     check("AC14 R14-1: %r is not refused" % s_, rc_ == 0 and out_ is not None, (rc_, err_))
 # R14-2 the reference-definition shape (on a file line, inside an entry after its bullet, and after list or quote markers)
-for nrn_, n_ in (("# Notes\n[x]: /u\n", 2), ("# Notes\n   [x]: /u\n", 2), ("# Notes\n[]: y\n", 2), ("- a\n  [x]: /u (advisor 0130).\n", 2),
-                 ("# Notes\n\n- [x]: y (advisor 0130).\n", 3), ("# Notes\n\n-  [x]: y (advisor 0130).\n", 3),
-                 ("# Notes\n    [x]: /u\n", 2), ("# Notes\n- - [x]: /u (advisor 0130).\n", 2), ("# Notes\n> [x]: /u\n", 2),
-                 ("# Notes\n1. [x]: /u\n", 2), ("# Notes\n\n- [x\n  ]: /u (advisor 0130).\n", 3), ("# Notes\n[a\\]b]: /u\n", 2)):
+for nrn_, n_ in (("# Notes\n[x]: /u\n", 2), ("# Notes\n   [x]: /u\n", 2), ("# Notes\n[]: y\n", 2), ("- a\n  [x]: /u (decided 2026-10-05).\n", 2),
+                 ("# Notes\n\n- [x]: y (decided 2026-10-05).\n", 3), ("# Notes\n\n-  [x]: y (decided 2026-10-05).\n", 3),
+                 ("# Notes\n    [x]: /u\n", 2), ("# Notes\n- - [x]: /u (decided 2026-10-05).\n", 2), ("# Notes\n> [x]: /u\n", 2),
+                 ("# Notes\n1. [x]: /u\n", 2), ("# Notes\n\n- [x\n  ]: /u (decided 2026-10-05).\n", 3), ("# Notes\n[a\\]b]: /u\n", 2)):
     rc_, err_, out_, p_ = notes_cli(nrn_)
     check("AC14 R14-2: a reference-definition shape is refused: %r (line %d)" % (nrn_, n_), refused_at(rc_, err_, out_, p_["nn"] + ":%d:" % n_), (rc_, err_))
 for s_ in ("a [x]: y", "[x] y", "\\[x]: y"):
-    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- %s (advisor 0130).\n" % s_)
+    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- %s (decided 2026-10-05).\n" % s_)
     check("AC14 R14-2: %r is not refused" % s_, rc_ == 0 and out_ is not None, (rc_, err_))
 # R14-3 character references, any length, real entity names or not
 for s_ in ("&#97;", "&#x61;", "&#X61;", "&amp;", "&bogus;", "&#99999999;"):
-    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- a %s b (advisor 0130).\n" % s_)
+    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- a %s b (decided 2026-10-05).\n" % s_)
     check("AC14 R14-3: %r is refused" % s_, refused_at(rc_, err_, out_, p_["nn"] + ":3:"), (rc_, err_))
 for s_ in ("a & b", "&;", "&#;", "AT&T", "&x"):
-    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- %s (advisor 0130).\n" % s_)
+    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- %s (decided 2026-10-05).\n" % s_)
     check("AC14 R14-3: %r is not refused" % s_, rc_ == 0 and out_ is not None, (rc_, err_))
 # R14-4 the signature delimiter: an entry, an entry whose continuation joins it, a fix field (R14-5), the history (R14-6)
-for nrn_, n_ in (("# Notes\n\n- a -----BEGIN x (advisor 0130).\n", 3), ("# Notes\n\n- a -----BEGIN\n  x (advisor 0130).\n", 3)):
+for nrn_, n_ in (("# Notes\n\n- a -----BEGIN x (decided 2026-10-05).\n", 3), ("# Notes\n\n- a -----BEGIN\n  x (decided 2026-10-05).\n", 3)):
     rc_, err_, out_, p_ = notes_cli(nrn_)
     check("AC14 R14-4: '-----BEGIN ' in an entry (%r) is refused" % nrn_, refused_at(rc_, err_, out_, p_["nn"] + ":%d:" % n_), (rc_, err_))
 for s_ in ("----BEGIN x", "-----BEGINX"):
-    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- a %s (advisor 0130).\n" % s_)
+    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- a %s (decided 2026-10-05).\n" % s_)
     check("AC14 R14-4: %r is not refused" % s_, rc_ == 0 and out_ is not None, (rc_, err_))
 # R14-5 fix sources: each field of a printed fix record, by scan file and JSON key path; the composed line; go.mod; a variant
 for key_, path_ in (("id", "matches[0].vulnerability.id"), ("package", "matches[0].artifact.name"),
@@ -2158,9 +2414,9 @@ unfixed_ = R8_FIND + [{"id": "CVE <b>", "package": "a&amp;", "installed": "v1", 
 rc_, err_, out_, p_ = notes_cli(finds=unfixed_)
 check("AC14 R14-5: a finding HEAD does not fix is not printed and not refused", rc_ == 0 and "CVE <b>" not in (out_ or ""), (rc_, err_))
 # R14-6 changelog inputs: each form in the new notes' behavior or fix line and in a history line: exit 2, nothing changed
-GOOD_NT = P.notes("v0.2.3", fixes, vex, behavior=["Second change (advisor 0130)."])
+GOOD_NT = P.notes("v0.2.3", fixes, vex, behavior=["Second change (decided 2026-10-05)."])
 HIST6 = "# Changelog\n\n## v0.2.2 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n\nNo behavior change: this release contains fixes only.\n"
-NN6 = "# Notes\n\n- Second change (advisor 0130).\n- Third change (advisor 0131).\n"
+NN6 = "# Notes\n\n- Second change (decided 2026-10-05).\n- Third change (decided 2026-10-06).\n"
 def changelog_cli(nt, hist, nn):
     n_, c_, x_ = r8p("cl-notes.md", nt), r8p("CHANGELOG.md", hist, raw=True), r8p("cl-nn.md", nn)
     if hist is None and os.path.exists(c_):
@@ -2171,15 +2427,15 @@ def changelog_cli(nt, hist, nn):
 check("AC14 R14-6 control: clean inputs pass", changelog_cli(GOOD_NT, HIST6, NN6)[0] == 0)
 for t_ in ("<b>", "[x]: y", "&amp;", "-----BEGIN x"):
     for where_, nt_, hist_, nn_, key_, n_ in (
-            ("the new notes' behavior line", GOOD_NT.replace("- Second change (advisor 0130).", "- %s (advisor 0130)." % t_), HIST6, NN6, "notes", 10),
+            ("the new notes' behavior line", GOOD_NT.replace("- Second change (decided 2026-10-05).", "- %s (decided 2026-10-05)." % t_), HIST6, NN6, "notes", 10),
             ("the new notes' fix line", GOOD_NT.replace("- CVE-2099-0001 in", "- %s in" % t_), HIST6, NN6, "notes", 4),
             ("a history behavior line", GOOD_NT, HIST6.replace("No behavior change: this release contains fixes only.",
-                                                               "### Behavior changes\n- %s (advisor 0129)." % t_), NN6, "cl", 12),
-            ("a next-release-notes line", GOOD_NT, HIST6, NN6 + "- %s (advisor 0132).\n" % t_, "nn", 5)):
+                                                               "### Behavior changes\n- %s (decided 2026-10-07)." % t_), NN6, "cl", 12),
+            ("a next-release-notes line", GOOD_NT, HIST6, NN6 + "- %s (decided 2026-10-08).\n" % t_, "nn", 5)):
         rc_, err_, cl_, nnout_, p_ = changelog_cli(nt_, hist_, nn_)
         check("AC14 R14-6: %r in %s: exit 2, CHANGELOG.md and next-release-notes.md unchanged, file:line named, no stdout" % (t_, where_),
               rc_ == 2 and LAST_STDOUT[0] == "" and cl_ == hist_ and nnout_ == nn_ and "%s:%d:" % (p_[key_], n_) in err_, (rc_, err_))
-rc_, err_, cl_, nnout_, p_ = changelog_cli(GOOD_NT.replace("- Second change (advisor 0130).", "- <b> (advisor 0130)."), None, NN6)
+rc_, err_, cl_, nnout_, p_ = changelog_cli(GOOD_NT.replace("- Second change (decided 2026-10-05).", "- <b> (decided 2026-10-05)."), None, NN6)
 check("AC14 R14-6: with no CHANGELOG.md, a refusal creates none", rc_ == 2 and cl_ is None and nnout_ == NN6, (rc_, err_))
 # R14-7 (r10, advisor decision Oct 11: no VEX exemption): values printed through _lit hold no refused form ('<' and '&'
 # written \u003c and \u0026), so they pass notes, tag-notes and changelog unchanged; the raw text in a behavior line is refused
@@ -2188,42 +2444,42 @@ nt7_ = refused(P.notes, "v0.2.3", [], P.vex_changes(o7_, n7_))
 check("AC14 R14-7 (r10): VEX values '<b>', '&amp;', '[x]: y' print quoted, JSON-escaped, and pass notes, tag-notes and changelog",
       isinstance(nt7_, str) and '`"\\u003cb>"`' in nt7_ and '`"\\u0026amp;"`' in nt7_ and '`"[x]: y"`' in nt7_
       and P.tag_notes(mktag("v0.2.3", nt7_)) == nt7_ and P.changelog(nt7_, None, "")[0] == "# Changelog\n\n" + nt7_, nt7_)
-rc_, err_, out_, p_ = notes_cli("# Notes\n\n- `\"<b>\"` (advisor 0130).\n")
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- `\"<b>\"` (decided 2026-10-05).\n")
 check("AC14 R14-7: the same text as a behavior entry is refused", refused_at(rc_, err_, out_, p_["nn"] + ":3:"), (rc_, err_))
-mv_ = nt7_.replace("No behavior change: this release contains fixes only.", "### Behavior changes\n- `\"<b>\"` (advisor 0130).")
+mv_ = nt7_.replace("No behavior change: this release contains fixes only.", "### Behavior changes\n- `\"<b>\"` (decided 2026-10-05).")
 check("AC14 R14-7: the same text moved to a behavior line of the changelog's notes or a tag's notes is refused",
       str(refused(P.changelog, mv_, None, "")).startswith("ValueError") and str(refused(P.tag_notes, mktag("v0.2.3", mv_))).startswith("ValueError"))
 # R14-8 collisions: two entries (or fix records) whose published lines are the same line, refused before any is dropped
-rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt helper (advisor 0130).\n- claude helper (advisor 0130).\n")
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt helper (decided 2026-10-05).\n- claude helper (decided 2026-10-05).\n")
 check("AC14 R14-8: two entries that redact to the same published line are refused, both lines named",
       refused_at(rc_, err_, out_, p_["nn"] + ":3:") and p_["nn"] + ":4:" in err_, (rc_, err_))
-rc_, err_, out_, p_ = notes_cli("# Notes\n\n- Same change (advisor 0130).\n- Other (advisor 0131).\n- Same change (advisor 0130).\n")
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- Same change (decided 2026-10-05).\n- Other (decided 2026-10-06).\n- Same change (decided 2026-10-05).\n")
 check("AC14 R14-8: two identical bullets are refused", refused_at(rc_, err_, out_, p_["nn"] + ":3:") and p_["nn"] + ":5:" in err_, (rc_, err_))
-rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt helper (advisor 0130).\n- claude helper (advisor 0130).\n",
-                                published="## v0.2.2 — patch release\n\n### Behavior changes\n" + P._entry_line("gpt helper (advisor 0130).") + "\n")
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt helper (decided 2026-10-05).\n- claude helper (decided 2026-10-05).\n",
+                                published="## v0.2.2 — patch release\n\n### Behavior changes\n" + P._entry_line("gpt helper (decided 2026-10-05).") + "\n")
 check("AC14 R14-8: one of the two already published: still refused, never one silently dropped", refused_at(rc_, err_, out_, ":4:"), (rc_, err_))
 fx8_ = [dict(fixes[0], package="gpt.example/x"), dict(fixes[0], package="claude.example/x")]
 check("AC14 R14-8: two fix records printing the same line are refused", str(refused(P.notes, "v0.2.3", fx8_, [])).startswith("ValueError"))
-nn8_ = "# Notes\n\n- gpt helper (advisor 0130).\n- claude helper (advisor 0130).\n"
-rc_, err_, cl_, nnout_, p_ = changelog_cli(P.notes("v0.2.3", [], [], behavior=["gpt helper (advisor 0130)."]), HIST6, nn8_)
+nn8_ = "# Notes\n\n- gpt helper (decided 2026-10-05).\n- claude helper (decided 2026-10-05).\n"
+rc_, err_, cl_, nnout_, p_ = changelog_cli(P.notes("v0.2.3", [], [], behavior=["gpt helper (decided 2026-10-05)."]), HIST6, nn8_)
 check("AC14 R14-8: the changelog refuses colliding next-release-notes entries before clearing any (exit 2, nothing written)",
       rc_ == 2 and cl_ == HIST6 and nnout_ == nn8_ and p_["nn"] + ":3:" in err_ and p_["nn"] + ":4:" in err_, (rc_, err_))
 # R14-9 'already published' by whole line (only trailing whitespace ignored, both sides), never a substring
 check("AC14 R14-9: a line that only contains the entry's line does not publish it",
-      P.unpublished(["x (advisor 0130)."], "- foo - x (advisor 0130).\n") == ["x (advisor 0130)."])
+      P.unpublished(["x (decided 2026-10-05)."], "- foo - x (decided 2026-10-05).\n") == ["x (decided 2026-10-05)."])
 check("AC14 R14-9: the entry's own line publishes it, trailing space or tab ignored on either side",
-      P.unpublished(["x (advisor 0130)."], "- x (advisor 0130). \t\n") == [] and P.unpublished(["x (advisor 0130).  "], "- x (advisor 0130).\n") == [])
-rc_, err_, out_, p_ = notes_cli("# Notes\n\n- x (advisor 0130).\t\n- y (advisor 0131).\n", published="## v0.2.2 — patch release\n\n- x (advisor 0130). \n")
+      P.unpublished(["x (decided 2026-10-05)."], "- x (decided 2026-10-05). \t\n") == [] and P.unpublished(["x (decided 2026-10-05).  "], "- x (decided 2026-10-05).\n") == [])
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- x (decided 2026-10-05).\t\n- y (decided 2026-10-06).\n", published="## v0.2.2 — patch release\n\n- x (decided 2026-10-05). \n")
 check("AC14 R14-9: through the CLI, an entry with a trailing tab in next-release-notes is published by its line with a trailing space",
-      rc_ == 0 and "- x (advisor 0130)." not in (out_ or "") and "- y (advisor 0131)." in (out_ or ""), (rc_, err_, out_))
+      rc_ == 0 and "- x (decided 2026-10-05)." not in (out_ or "") and "- y (decided 2026-10-06)." in (out_ or ""), (rc_, err_, out_))
 check("AC14 R14-9: interior or leading whitespace differs: not published (shown, never dropped)",
-      P.unpublished(["x  y (advisor 0130)."], "- x y (advisor 0130).\n") == ["x  y (advisor 0130)."]
-      and P.unpublished(["x (advisor 0130)."], " - x (advisor 0130).\n") == ["x (advisor 0130)."])
-_, nn9_ = P.changelog("## v0.2.3 — patch release\n\n### Behavior changes\n- foo - x (advisor 0130).\n", None, "- x (advisor 0130).\n")
-check("AC14 R14-9: the changelog keeps an entry whose line the notes only contain", nn9_ == "- x (advisor 0130).\n", nn9_)
-_, nn9_ = P.changelog("## v0.2.3 — patch release\n\n### Behavior changes\n- x (advisor 0130). \n", None, "- x (advisor 0130).\t\n- y (advisor 0131).\n")
+      P.unpublished(["x  y (decided 2026-10-05)."], "- x y (decided 2026-10-05).\n") == ["x  y (decided 2026-10-05)."]
+      and P.unpublished(["x (decided 2026-10-05)."], " - x (decided 2026-10-05).\n") == ["x (decided 2026-10-05)."])
+_, nn9_ = P.changelog("## v0.2.3 — patch release\n\n### Behavior changes\n- foo - x (decided 2026-10-05).\n", None, "- x (decided 2026-10-05).\n")
+check("AC14 R14-9: the changelog keeps an entry whose line the notes only contain", nn9_ == "- x (decided 2026-10-05).\n", nn9_)
+_, nn9_ = P.changelog("## v0.2.3 — patch release\n\n### Behavior changes\n- x (decided 2026-10-05). \n", None, "- x (decided 2026-10-05).\t\n- y (decided 2026-10-06).\n")
 check("AC14 R14-9: the changelog clears an entry whose whole line the notes published, trailing whitespace ignored",
-      nn9_ == "- y (advisor 0131).\n", nn9_)
+      nn9_ == "- y (decided 2026-10-06).\n", nn9_)
 # R14-10 no false refusal: the real docs/next-release-notes.md, the fixtures
 real_nn_ = open(os.path.join(os.path.dirname(sys.argv[1]), "..", "docs", "next-release-notes.md")).read()
 rc_, err_, out_, p_ = notes_cli(real_nn_)
@@ -2233,11 +2489,11 @@ check("AC14 R14-10: the NRN fixture passes", rc_ == 0 and out_ is not None, (rc_
 rc_, err_, sout_ = cli(["tag-notes"], stdin=tagraw)
 check("AC14 R14-10: the tagraw fixture's notes are read (exit 0)", rc_ == 0 and sout_ == pub, (rc_, err_))
 # R14-11 message hygiene: a refusal message never prints a vendor name
-rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt <b> claude helper (advisor 0130).\n")
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt <b> claude helper (decided 2026-10-05).\n")
 check("AC14 R14-11: a refusal for an entry holding a vendor name prints no name", rc_ == 2 and out_ is None
       and not re.search(r"(?i)gpt|claude", err_), err_)
 # tag-notes: a refused form in a generated patch tag's notes exits 2 (like notes and changelog); another tag exits 1 as before
-rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", "## v0.2.3 — patch release\n\n### Behavior changes\n- <!-- (advisor 0130).\n"))
+rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", "## v0.2.3 — patch release\n\n### Behavior changes\n- <!-- (decided 2026-10-05).\n"))
 check("AC14 tag-notes: a refused form exits 2 with the line named, nothing printed", rc_ == 2 and sout_ == "" and ":4:" in err_, (rc_, err_))
 rc_, _, _ = cli(["tag-notes"], stdin="object 1\ntype commit\ntag v0.3.0\ntagger o <o@x> 1 +0000\n\nv0.3.0\n")
 check("AC14 tag-notes: an owner's tag still exits 1 (no notes, not a refusal)", rc_ == 1, rc_)
@@ -2249,7 +2505,7 @@ def rpiece():
     return rngp_.choice(TRIG_P if rngp_.random() < 0.12 else SAFE_P)
 bad_, made_, ref_ = [], 0, 0
 for it_ in range(1500):
-    ents_ = ["".join(rpiece() for _ in range(rngp_.randint(1, 6))) + " (advisor %04d)." % i for i in range(rngp_.randint(1, 3))]
+    ents_ = ["".join(rpiece() for _ in range(rngp_.randint(1, 6))) + " (decided 2026-10-%02d)." % (i + 1) for i in range(rngp_.randint(1, 3))]
     pkg_ = "".join(rpiece() for _ in range(rngp_.randint(1, 4)))
     try:
         nt_ = P.notes("v0.2.3", [dict(fixes[0], package=pkg_)], [], behavior=ents_)
@@ -2265,10 +2521,10 @@ for it_ in range(1500):
 check("AC14 property: 1500 random notes from fix and entry text built of the refused forms (%d generated, %d refused): no line "
       "of the notes, the tag's notes or the changelog holds a refused form" % (made_, ref_), bad_ == [] and made_ > 100 and ref_ > 100, bad_[:3])
 # ===== round 7 findings (Codex #300 r7): each is refused or inert under REQ-REL-009-AC14 and the escape-whole-line rule
-A1_ = ["<!-- (advisor 0130).", "gpt helper (advisor 0131)."]
-A1_BODY = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n\n### Behavior changes\n- <!-- (advisor 0130).\n- \\(redacted\\) helper \\(advisor 0131\\)\\.\n"
-rc_, err_, out_, p_ = notes_cli("# Notes\n\n- <!-- (advisor 0130).\n- gpt helper (advisor 0131).\n")
-check("r7 A High / B F3: '- <!-- (advisor 0130).' before another entry: refused by notes() and the CLI (exit 2, line 3), by tag-notes "
+A1_ = ["<!-- (decided 2026-10-05).", "gpt helper (decided 2026-10-06)."]
+A1_BODY = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n\n### Behavior changes\n- <!-- (decided 2026-10-05).\n- \\(redacted\\) helper \\(decided 2026-10-06\\)\\.\n"
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- <!-- (decided 2026-10-05).\n- gpt helper (decided 2026-10-06).\n")
+check("r7 A High / B F3: '- <!-- (decided 2026-10-05).' before another entry: refused by notes() and the CLI (exit 2, line 3), by tag-notes "
       "and by the changelog", str(refused(P.notes, "v0.2.3", [], [], behavior=A1_)).startswith("ValueError")
       and refused_at(rc_, err_, out_, p_["nn"] + ":3:") and str(refused(P.tag_notes, mktag("v0.2.3", A1_BODY))).startswith("ValueError")
       and str(refused(P.changelog, A1_BODY, None, "")).startswith("ValueError"), (rc_, err_))
@@ -2278,16 +2534,16 @@ for l_ in ("-  [(redacted)]: /url", "-  [x]: (redacted)"):
           str(refused(P.tag_notes, mktag("v0.2.3", body_))).startswith("ValueError")
           and str(refused(P.changelog, body_, None, "")).startswith("ValueError")
           and str(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, "")).startswith("ValueError"))
-check("r7 A medium: notes() refuses the behavior entry ' [redacted]: /url (advisor 0130)'",
-      str(refused(P.notes, "v0.2.3", [], [], behavior=[" [redacted]: /url (advisor 0130)"])).startswith("ValueError"))
-nt_ = P.notes("v0.2.3", [], [], behavior=["Update gpt (advisor 0130). Follow-up (advisor 0131)."])
-_, nn_ = P.changelog(nt_, None, "- Update gpt (advisor 0130).\n")
+check("r7 A medium: notes() refuses the behavior entry ' [redacted]: /url (decided 2026-10-05)'",
+      str(refused(P.notes, "v0.2.3", [], [], behavior=[" [redacted]: /url (decided 2026-10-05)"])).startswith("ValueError"))
+nt_ = P.notes("v0.2.3", [], [], behavior=["Update gpt (decided 2026-10-05). Follow-up (decided 2026-10-06)."])
+_, nn_ = P.changelog(nt_, None, "- Update gpt (decided 2026-10-05).\n")
 check("r7 A medium: an entry whose line is only a prefix of a published line stays in next-release-notes",
-      nn_ == "- Update gpt (advisor 0130).\n" and P.unpublished(["Update gpt (advisor 0130)."], nt_) == ["Update gpt (advisor 0130)."], nn_)
-ntf_ = P.notes("v0.2.3", [], P.vex_changes({"statements": []}, {"statements": [], "x-note- gpt helper (advisor 0130).": 1}))
-_, nn_ = P.changelog(ntf_, None, "- gpt helper (advisor 0130).\n")
+      nn_ == "- Update gpt (decided 2026-10-05).\n" and P.unpublished(["Update gpt (decided 2026-10-05)."], nt_) == ["Update gpt (decided 2026-10-05)."], nn_)
+ntf_ = P.notes("v0.2.3", [], P.vex_changes({"statements": []}, {"statements": [], "x-note- gpt helper (decided 2026-10-05).": 1}))
+_, nn_ = P.changelog(ntf_, None, "- gpt helper (decided 2026-10-05).\n")
 check("r7 B F2: a VEX field name holding an entry's text neither publishes nor clears the entry",
-      P.unpublished(["gpt helper (advisor 0130)."], ntf_) == ["gpt helper (advisor 0130)."] and nn_ == "- gpt helper (advisor 0130).\n", (ntf_, nn_))
+      P.unpublished(["gpt helper (decided 2026-10-05)."], ntf_) == ["gpt helper (decided 2026-10-05)."] and nn_ == "- gpt helper (decided 2026-10-05).\n", (ntf_, nn_))
 nr_ = "## v0.2.3 — patch release\n\nThis record is notredacted.\nNext line.\n"
 check("r7 A medium: 'notredacted' is not the marker: two prose lines in a tag's notes read back unchanged; as history they are kept",
       P.tag_notes(mktag("v0.2.3", nr_)) == nr_ and P.changelog(GOOD_NT, "# Changelog\n\n" + nr_, "")[0].endswith(nr_), P.tag_notes(mktag("v0.2.3", nr_)))
@@ -2334,16 +2590,16 @@ def notes_cli2(scans, nrn="# Notes\n", gomod="module x\n\nrequire golang.org/x/n
 def is_ve(x):
     return str(x).startswith("ValueError")
 GEN_ = P.notes("v0.2.2", [], [])
-GEN_B = P.notes("v0.2.3", [], [], behavior=["x (advisor 0130)."])
+GEN_B = P.notes("v0.2.3", [], [], behavior=["x (decided 2026-10-05)."])
 # R9-1 (A High / B F1): a VEX section line is exempt only when it is an exact member of the grammar notes() prints for a
 # VEX line (each quoted value exactly _lit's form), under a '### VEX' heading at the place the generator writes it
-A_HIST = "# Changelog\n\n## v0.2.2 — patch release\n\n### VEX\n- <!--\n\n### Behavior changes\n- Important fix (advisor 0130).\n"
+A_HIST = "# Changelog\n\n## v0.2.2 — patch release\n\n### VEX\n- <!--\n\n### Behavior changes\n- Important fix (decided 2026-10-05).\n"
 A_HIST2 = "# Changelog\n\n" + GEN_.replace("- no change", "- <!--").replace(
-    "No behavior change: this release contains fixes only.", "### Behavior changes\n- Important fix (advisor 0130).")
+    "No behavior change: this release contains fixes only.", "### Behavior changes\n- Important fix (decided 2026-10-05).")
 for what_, h_, n_ in (("A's history (no Fixes section)", A_HIST, 6), ("A's line in a generated-shape history", A_HIST2, 9)):
-    rc_, err_, cl_, nnout_, p_ = changelog_cli(GOOD_NT, h_, "- Important fix (advisor 0130).\n")
+    rc_, err_, cl_, nnout_, p_ = changelog_cli(GOOD_NT, h_, "- Important fix (decided 2026-10-05).\n")
     check("r9 A High: %s with '- <!--' after '### VEX' is refused (exit 2, line %d named, nothing written, no stdout)" % (what_, n_),
-          rc_ == 2 and cl_ == h_ and nnout_ == "- Important fix (advisor 0130).\n" and "%s:%d:" % (p_["cl"], n_) in err_
+          rc_ == 2 and cl_ == h_ and nnout_ == "- Important fix (decided 2026-10-05).\n" and "%s:%d:" % (p_["cl"], n_) in err_
           and LAST_STDOUT[0] == "", (rc_, err_))
 for l_ in ("- <!--", "- [x]: /url", "- &amp;", "- -----BEGIN injected"):
     body_ = GEN_B.replace("- no change", l_)
@@ -2377,31 +2633,31 @@ check("r9 A medium: an unfixed match in the default scan, the fixed one in fips 
       refused_at(rc_, err_, out_, p_["fips"] + ":matches[0].vulnerability.severity"), (rc_, err_))
 # R9-3 (B medium / A (b)): ONE collision set across every published line (fix, behavior, VEX); a fix record is named by
 # its scan file and key path
-FXC_ = [{"cve": "CVE-1", "package": "pkg", "old": "1", "new": "2", "severity": "Low", "variants": ["(advisor 0130"]}]
+FXC_ = [{"cve": "CVE-1", "package": "pkg", "old": "1", "new": "2", "severity": "Low", "variants": ["(decided 2026-10-05"]}]
 check("r9 B medium / A (b): a fix line and a behavior entry printing the same bullet are refused",
-      is_ve(refused(P.notes, "v0.2.3", FXC_, [], behavior=["CVE-1 in pkg: 1 → 2 (severity Low; variants: (advisor 0130)"])),
-      refused(P.notes, "v0.2.3", FXC_, [], behavior=["CVE-1 in pkg: 1 → 2 (severity Low; variants: (advisor 0130)"]))
+      is_ve(refused(P.notes, "v0.2.3", FXC_, [], behavior=["CVE-1 in pkg: 1 → 2 (severity Low; variants: (decided 2026-10-05)"])),
+      refused(P.notes, "v0.2.3", FXC_, [], behavior=["CVE-1 in pkg: 1 → 2 (severity Low; variants: (decided 2026-10-05)"]))
 check("r9 B medium: a VEX line and a behavior entry printing the same bullet are refused",
-      is_ve(refused(P.notes, "v0.2.3", [], [{"cve": "CVE-1", "status": "fixed", "change": "added", "statement": "statement x (advisor 0130)"}],
-                    behavior=["CVE-1: fixed (added) — statement x (advisor 0130)"])))
-rc_, err_, out_, p_ = notes_cli2({"(advisor 0130": {"matches": [M("CVE-2099-1", "golang.org/x/net", "v0.30.0", sev="High", fixv=["v0.33.0"], typ="go-module")]}},
-                                 nrn="# Notes\n\n- CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: (advisor 0130)\n")
+      is_ve(refused(P.notes, "v0.2.3", [], [{"cve": "CVE-1", "status": "fixed", "change": "added", "statement": "statement x (decided 2026-10-05)"}],
+                    behavior=["CVE-1: fixed (added) — statement x (decided 2026-10-05)"])))
+rc_, err_, out_, p_ = notes_cli2({"(decided 2026-10-05": {"matches": [M("CVE-2099-1", "golang.org/x/net", "v0.30.0", sev="High", fixv=["v0.33.0"], typ="go-module")]}},
+                                 nrn="# Notes\n\n- CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: (decided 2026-10-05)\n")
 check("r9 B medium: through the CLI, a fix line and an entry colliding are refused, the scan key path and file:line both named",
-      refused_at(rc_, err_, out_, p_["(advisor 0130"] + ":matches[0]:") and p_["nn"] + ":3:" in err_, (rc_, err_))
+      refused_at(rc_, err_, out_, p_["(decided 2026-10-05"] + ":matches[0]:") and p_["nn"] + ":3:" in err_, (rc_, err_))
 rc_, err_, out_, p_ = notes_cli2({"": {"matches": [M("CVE-2099-7", "gpt.helper", "1", fixv=["2"]), M("CVE-2099-7", "claude.helper", "1", fixv=["2"])]}}, base=[])
 check("r9 B F3: two fix records printing the same line are refused, both named by scan file and key path",
       refused_at(rc_, err_, out_, p_[""] + ":matches[0]:") and p_[""] + ":matches[1]:" in err_, (rc_, err_))
 # R9-4 (A (c) / B F4): '-----BEGIN ' in the notes region of a generated tag exits 2 naming the line; a tag that is not
 # ours still exits 1
-for l_ in ("- -----BEGIN BAD", "- -----BEGIN injected (advisor 0130)."):
-    rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", l_)))
+for l_ in ("- -----BEGIN BAD", "- -----BEGIN injected (decided 2026-10-05)."):
+    rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", l_)))
     check("r9 A (c) / B F4: %r in a generated tag's notes: exit 2, line 10 named, nothing printed" % l_,
           rc_ == 2 and sout_ == "" and "tag message:10:" in err_, (rc_, err_, sout_))
-for what_, raw_ in (("an owner's tag", mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- -----BEGIN BAD")).replace(
+for what_, raw_ in (("an owner's tag", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")).replace(
                         "fosterstack release <release@users.noreply.github.com>", "Owner <o@x>")),
-                    ("an SSH signature last", mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- -----BEGIN BAD")).replace(
+                    ("an SSH signature last", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")).replace(
                         "SIGNED MESSAGE", "SSH SIGNATURE")),
-                    ("another version's heading", mktag("v0.2.4", GEN_B.replace("- x (advisor 0130).", "- -----BEGIN BAD")))):
+                    ("another version's heading", mktag("v0.2.4", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")))):
     rc_, err_, sout_ = cli(["tag-notes"], stdin=raw_)
     check("r9 A (c): %s holding a second '-----BEGIN ' is not ours: exit 1 as before" % what_, rc_ == 1 and sout_ == "", (rc_, err_))
 # R9-5 (B F2): every line of a source value is checked before it is made one line
@@ -2420,7 +2676,7 @@ rc_, err_, out_, p_ = notes_cli2({"a\n[x]: y": {"matches": [M("CVE-2099-8", "lib
 check("r9 B F2: a variant name whose second line is a reference definition is refused", refused_at(rc_, err_, out_, "--variant-grype"), (rc_, err_))
 check("r9 B F2: notes() refuses a fix field and a behavior entry whose second line is a reference definition",
       is_ve(refused(P.notes, "v0.2.3", [dict(fixes[0], old="v1\n[x]: y")], []))
-      and is_ve(refused(P.notes, "v0.2.3", [], [], behavior=["a\n[x]: /u (advisor 0130)."])))
+      and is_ve(refused(P.notes, "v0.2.3", [], [], behavior=["a\n[x]: /u (decided 2026-10-05)."])))
 rc_, err_, out_, p_ = notes_cli(gomod="module x\n\nrequire golang.org/x/net v0.33.0 // <b>\n")
 check("r9 B F2: the go.mod line a fix is read from is checked whole (a comment holding '<b>'), named go.mod:3",
       refused_at(rc_, err_, out_, p_["gomod"] + ":3:"), (rc_, err_))
@@ -2454,9 +2710,9 @@ def noisy_main_(argv=None):
     return rc
 P.main = noisy_main_
 try:
-    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- <b> (advisor 0130).\n")
+    rc_, err_, out_, p_ = notes_cli("# Notes\n\n- <b> (decided 2026-10-05).\n")
     caught_n = not refused_at(rc_, err_, out_, p_["nn"] + ":3:")
-    changelog_cli(GOOD_NT.replace("- Second change (advisor 0130).", "- <b> (advisor 0130)."), HIST6, NN6)
+    changelog_cli(GOOD_NT.replace("- Second change (decided 2026-10-05).", "- <b> (decided 2026-10-05)."), HIST6, NN6)
     caught_c = LAST_STDOUT[0] != ""
 finally:
     P.main = orig_main_
@@ -2492,27 +2748,27 @@ check("r9 self-review VEX forgery control (r10: printed \\u003c, no refused form
       and all(P._refused_form(l) is None for l in nt_.splitlines()), vex_part(nt_))
 # family 2, collision sets: any two published lines that are the same line — fix, behavior or VEX, after redaction and
 # escaping, from the API or the CLI — are refused, both named
-FX1_ = {"cve": "CVE-1", "package": "pkg", "old": "1", "new": "2", "severity": "Low", "variants": ["(advisor 0130"]}
-ENT1_ = "CVE-1 in pkg: 1 → 2 (severity Low; variants: (advisor 0130)"
+FX1_ = {"cve": "CVE-1", "package": "pkg", "old": "1", "new": "2", "severity": "Low", "variants": ["(decided 2026-10-05"]}
+ENT1_ = "CVE-1 in pkg: 1 → 2 (severity Low; variants: (decided 2026-10-05)"
 COLL_ = [("two identical fix records", [FX1_, dict(FX1_)], []),
          ("two fix records alike after redaction", [dict(FX1_, package="gpt"), dict(FX1_, package="claude")], []),
          ("a fix line and an entry", [FX1_], [ENT1_]),
          ("a fix line and an entry alike after redaction", [dict(FX1_, package="gpt")], [ENT1_.replace("pkg", "claude")]),
          ("a fix line and an entry alike after escaping", [dict(FX1_, package="[click]gpt")], [ENT1_.replace("pkg", "[click]claude")]),
-         ("two identical entries", [], ["Same (advisor 0130).", "Same (advisor 0130)."]),
-         ("two entries alike after redaction", [], ["gpt helper (advisor 0130).", "claude helper (advisor 0130)."])]
+         ("two identical entries", [], ["Same (decided 2026-10-05).", "Same (decided 2026-10-05)."]),
+         ("two entries alike after redaction", [], ["gpt helper (decided 2026-10-05).", "claude helper (decided 2026-10-05)."])]
 for what_, fx_, beh_ in COLL_:
     check("r9 self-review collision: %s is refused by notes()" % what_, is_ve(refused(P.notes, "v0.2.3", fx_, [], behavior=beh_)),
           refused(P.notes, "v0.2.3", fx_, [], behavior=beh_))
-GO1_ = {"(advisor 0130": {"matches": [M("CVE-2099-1", "golang.org/x/net", "v0.30.0", sev="High", fixv=["v0.33.0"], typ="go-module")]}}
-ENT_GO = "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: (advisor 0130)"
+GO1_ = {"(decided 2026-10-05": {"matches": [M("CVE-2099-1", "golang.org/x/net", "v0.30.0", sev="High", fixv=["v0.33.0"], typ="go-module")]}}
+ENT_GO = "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: (decided 2026-10-05)"
 rc_, err_, out_, p_ = notes_cli2(GO1_, nrn="# Notes\n\n- %s\n" % ENT_GO.replace("(severity", "\n  (severity"))
 check("r9 self-review collision: an entry over two lines joining to a fix line: refused, the key path and the entry line named",
-      refused_at(rc_, err_, out_, p_["(advisor 0130"] + ":matches[0]:") and p_["nn"] + ":3:" in err_, (rc_, err_))
+      refused_at(rc_, err_, out_, p_["(decided 2026-10-05"] + ":matches[0]:") and p_["nn"] + ":3:" in err_, (rc_, err_))
 rc_, err_, out_, p_ = notes_cli2(GO1_, nrn="# Notes\n\n- %s\n" % ENT_GO, published="## v0.2.2 — patch release\n\n- %s\n" % ENT_GO)
 check("r9 self-review collision: a fix line and an entry already published: still refused before the entry is dropped",
       refused_at(rc_, err_, out_, p_["nn"] + ":3:"), (rc_, err_))
-rc_, err_, out_, p_ = notes_cli2(GO1_, nrn="# Notes\n\n- Same (advisor 0130).  \n- Same (advisor 0130).\n")
+rc_, err_, out_, p_ = notes_cli2(GO1_, nrn="# Notes\n\n- Same (decided 2026-10-05).  \n- Same (decided 2026-10-05).\n")
 check("r9 self-review collision: two entries differing by trailing spaces: refused, both lines named",
       refused_at(rc_, err_, out_, p_["nn"] + ":3:") and p_["nn"] + ":4:" in err_, (rc_, err_))
 # family 3, selection: the source judged is the match that produced the printed record (the first fixed match, variants
@@ -2564,18 +2820,18 @@ check("r9 self-review selection property: 300 random multi-variant scans: every 
 # family 4, exit codes: a generated tag's notes region holding a refused form exits 2 naming the line; a tag that is not
 # ours exits 1; notes and changelog refusals exit 2 with nothing on stdout
 SIGB_ = "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n"
-EXM_ = [("a behavior line", mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- a -----BEGIN b (advisor 0130).")), 2, ":10:"),
+EXM_ = [("a behavior line", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- a -----BEGIN b (decided 2026-10-05).")), 2, ":10:"),
         ("the Fixes line", mktag("v0.2.3", GEN_B.replace("- none (dependency or VEX maintenance only)", "- -----BEGIN x")), 2, ":4:"),
         ("a VEX line", mktag("v0.2.3", GEN_B.replace("- no change", "- -----BEGIN x")), 2, ":7:"),
         ("a prose line", mktag("v0.2.3", GEN_B + "\nsee -----BEGIN x\n"), 2, ":12:"),
         ("a whole second signed block before the real one", mktag("v0.2.3", GEN_B + "\n" + SIGB_), 2, ":12:"),
         ("a second signed block after the real one", mktag("v0.2.3", GEN_B) + SIGB_, 2, ":11:"),
-        ("'<b>' in a behavior line", mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- <b> (advisor 0130).")), 2, ":10:"),
+        ("'<b>' in a behavior line", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- <b> (decided 2026-10-05).")), 2, ":10:"),
         ("a marker line continuing the line above", mktag("v0.2.3", GEN_B + "\n[a](/u \"\nx gpt\n\")\n"), 2, ":13:"),
         ("an owner's tag with two delimiters", (mktag("v0.2.3", GEN_B) + SIGB_).replace("fosterstack release <release@users.noreply.github.com>", "O <o@x>"), 1, None),
-        ("the release tagger with an SSH signature last", (mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- -----BEGIN x")))
+        ("the release tagger with an SSH signature last", (mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN x")))
          .replace("SIGNED MESSAGE", "SSH SIGNATURE"), 1, None),
-        ("another version's heading with a delimiter", mktag("v0.2.4", GEN_B.replace("- x (advisor 0130).", "- -----BEGIN x")), 1, None),
+        ("another version's heading with a delimiter", mktag("v0.2.4", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN x")), 1, None),
         ("no signature at all", mktag("v0.2.3", GEN_B).split("-----BEGIN")[0], 1, None)]
 for what_, raw_, want_rc, line_ in EXM_:
     rc_, err_, sout_ = cli(["tag-notes"], stdin=raw_)
@@ -2694,20 +2950,20 @@ check("r10: the go directive of go.mod is read with its line (stdlib)", pg_["go"
     open(os.path.join(ROOT_, "go.mod")).read())["stdlib"] == "go" + pg_["go"][0], pg_["go"])
 # R10-4 (B 4): two bullets that publish the same line in one release block of a reader input are refused, both named; the
 # same bullet in two release blocks is a legitimate repetition
-DUP_ = GEN_B.replace("- x (advisor 0130).\n", "- x (advisor 0130).\n- x (advisor 0130).\n")
+DUP_ = GEN_B.replace("- x (decided 2026-10-05).\n", "- x (decided 2026-10-05).\n- x (decided 2026-10-05).\n")
 rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", DUP_))
 check("r10 B 4: a generated tag's notes with one behavior bullet twice: exit 2, lines 10 and 11 named, nothing printed",
       rc_ == 2 and sout_ == "" and "tag message:10:" in err_ and "tag message:11:" in err_, (rc_, err_, sout_))
-rc_, err_, cl_, nnout_, p_ = changelog_cli(DUP_, HIST6, "# Notes\n\n- x (advisor 0130).\n")
+rc_, err_, cl_, nnout_, p_ = changelog_cli(DUP_, HIST6, "# Notes\n\n- x (decided 2026-10-05).\n")
 check("r10 B 4: the changelog's notes with one behavior bullet twice: exit 2, both lines named, CHANGELOG.md and "
-      "next-release-notes.md unchanged", rc_ == 2 and LAST_STDOUT[0] == "" and cl_ == HIST6 and nnout_ == "# Notes\n\n- x (advisor 0130).\n"
+      "next-release-notes.md unchanged", rc_ == 2 and LAST_STDOUT[0] == "" and cl_ == HIST6 and nnout_ == "# Notes\n\n- x (decided 2026-10-05).\n"
       and p_["notes"] + ":10:" in err_ and p_["notes"] + ":11:" in err_, (rc_, err_))
 HDUP_ = "# Changelog\n\n" + DUP_
 rc_, err_, cl_, nnout_, p_ = changelog_cli(P.notes("v0.2.4", [], []), HDUP_, NN6)
 check("r10 B 4: history with one bullet twice in one release block: exit 2, both lines named, nothing written",
       rc_ == 2 and cl_ == HDUP_ and nnout_ == NN6 and p_["cl"] + ":12:" in err_ and p_["cl"] + ":13:" in err_, (rc_, err_))
-HTWO_ = "# Changelog\n\n" + GEN_B + "\n" + P.notes("v0.2.2", [], [], behavior=["x (advisor 0130)."])
-rc_, err_, cl_, nnout_, p_ = changelog_cli(P.notes("v0.2.4", [], [], behavior=["x (advisor 0130)."]), HTWO_, NN6)
+HTWO_ = "# Changelog\n\n" + GEN_B + "\n" + P.notes("v0.2.2", [], [], behavior=["x (decided 2026-10-05)."])
+rc_, err_, cl_, nnout_, p_ = changelog_cli(P.notes("v0.2.4", [], [], behavior=["x (decided 2026-10-05)."]), HTWO_, NN6)
 check("r10 B 4: the same bullet in separate release blocks (new notes and two history releases) is not refused",
       rc_ == 0, (rc_, err_))
 # R10-5 (advisor decision (1), option A): no VEX-line exemption. _lit writes '<' and '&' as JSON escapes (\u003c, \u0026),
@@ -2744,15 +3000,15 @@ check("r10 cut: the exemption code is gone (no _vex_flags, _vex_stmt, _vex_head)
 # R11-1 (A Medium / B Medium 2): the duplicate check reads the CLEANED, PUBLISHED line (_clean_free), the source line numbers
 # kept: two bullets of one release block that publish the same line once cleaned are refused before anything is written
 for what_, body_, n1_, n2_ in (
-        ("'- gpt' and '- claude'", GEN_B.replace("- x (advisor 0130).\n", "- gpt\n- claude\n"), 10, 11),
+        ("'- gpt' and '- claude'", GEN_B.replace("- x (decided 2026-10-05).\n", "- gpt\n- claude\n"), 10, 11),
         ("'- CVE-1: fixed (changed: (redacted))' and its escaped spelling",
          GEN_B.replace("- no change\n", "- CVE-1: fixed (changed: (redacted))\n- CVE\\-1\\: fixed \\(changed\\: \\(redacted\\)\\)\n"), 7, 8),
-        ("two differently named behavior bullets", GEN_B.replace("- x (advisor 0130).\n", "- gpt (advisor 0130).\n- claude (advisor 0130).\n"), 10, 11)):
+        ("two differently named behavior bullets", GEN_B.replace("- x (decided 2026-10-05).\n", "- gpt (decided 2026-10-05).\n- claude (decided 2026-10-05).\n"), 10, 11)):
     rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", body_))
     check("r11 R11-1: a generated tag's notes with %s in one release block: exit 2, lines %d and %d named, nothing printed"
           % (what_, n1_, n2_), rc_ == 2 and sout_ == "" and "tag message:%d:" % n1_ in err_ and "tag message:%d:" % n2_ in err_,
           (rc_, err_, sout_))
-    NNP_ = "# Notes\n\n- gpt (advisor 0130).\n"
+    NNP_ = "# Notes\n\n- gpt (decided 2026-10-05).\n"
     rc_, err_, cl_, nnout_, p_ = changelog_cli(body_, HIST6, NNP_)
     check("r11 R11-1: the changelog's notes with %s: exit 2, both lines named, CHANGELOG.md and the pending entry unchanged"
           % what_, rc_ == 2 and LAST_STDOUT[0] == "" and cl_ == HIST6 and nnout_ == NNP_
@@ -2762,11 +3018,11 @@ for what_, body_, n1_, n2_ in (
     check("r11 R11-1: the history with %s: exit 2, both lines named, nothing written" % what_,
           rc_ == 2 and cl_ == H_ and nnout_ == NN6 and p_["cl"] + ":%d:" % (n1_ + 2) in err_ and p_["cl"] + ":%d:" % (n2_ + 2) in err_,
           (rc_, err_))
-OKB_ = GEN_B.replace("- x (advisor 0130).\n", "- gpt x (advisor 0130).\n- gpt y (advisor 0130).\n")
+OKB_ = GEN_B.replace("- x (decided 2026-10-05).\n", "- gpt x (decided 2026-10-05).\n- gpt y (decided 2026-10-05).\n")
 rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", OKB_))
 check("r11 R11-1 control: two bullets that publish different lines once cleaned are read (exit 0)", rc_ == 0, (rc_, err_))
 check("r11 R11-1 control: a raw refused form is still refused on the raw bullet (raw check kept)",
-      is_ve(refused(P.tag_notes, mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- <b>gpt (advisor 0130).")))))
+      is_ve(refused(P.tag_notes, mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- <b>gpt (decided 2026-10-05).")))))
 # R11-2 (B Medium 1): a document value is redacted BEFORE its JSON encoding: a name right after a character the quoted form
 # escapes ('<' -> <, '&' -> &, '`' -> `, '\n' -> \n, a control or non-ASCII character -> \uXXXX) is still
 # redacted, and a statement whose name redaction changes is named by its position. Oracle: every value the redactor
@@ -3063,8 +3319,8 @@ check("r12 R12-3: a vendor name is still redacted to the visible marker in a quo
 check("r12 R12-3: 'redacted' alone, 'redacted>' and '<redacted' are not marker forms: printed as before",
       all(P._lit(v_) == old_lit_(v_) for v_ in ("redacted", "redacted>", "<redacted", "(redacted", "redacted)", "<redacted)")),
       [P._lit(v_) for v_ in ("redacted", "<redacted)")])
-# R12-4 the real .vex document: the notes are byte-identical to the pre-cut printer's in every scenario
-REAL12_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".vex", "fosterstack-cache.openvex.json")))
+# R12-4 the multi-statement fixture document (the retired real one): the notes are byte-identical to the pre-cut printer's in every scenario
+REAL12_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", "test-evidence", "vex-scope", "busybox.openvex.json")))
 def real_scenarios_():
     out_ = [P.notes("v0.2.3", [], P.vex_changes(None, REAL12_))]
     for i_ in range(len(REAL12_["statements"])):
@@ -3083,7 +3339,7 @@ try:
     was_ = refused(real_scenarios_)
 finally:
     P._lit = real_lit_
-check("r12 R12-4: the real .vex document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
+check("r12 R12-4: the multi-statement fixture document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
       % (len(now_) if isinstance(now_, list) else 0), isinstance(now_, list) and now_ == was_ and len(now_) > 4, (now_, was_))
 # R12-5 the round trip property with marker forms: random documents whose printed values sometimes hold a marker form are
 # refused exactly then (naming the statement or document field); every other one prints and reads back as before
@@ -3200,6 +3456,186 @@ check("r14 R14-3: the refusal and the readers share one definition of the readin
       names_(P._marker_form.__code__) >= {"_readings"} and names_(P._marked.__code__) >= {"_readings"}
       and "_own_form" in names_(P._clean_free.__code__), None)
 shutil.rmtree(r8_)
+# --- REQ-REL-009-AC15 (advisor 0254, 0257; text approved in #212): the auditor's own data and .vex/README.md are neutral, only as data
+def ac15_():
+    # neutral-path commits carry the data they commit: a neutral path is neutral only when the committed content is data
+    def nc(f, body=None, mode="100644", old_mode=None, labels=()):
+        body = body if body is not None else ("{}\n" if f.endswith(".json") else "# notes\n")
+        d = dict(c("n", [f], labels=labels, diffs={f: "".join("+%s\n" % l for l in body.split("\n")[:-1])} if mode != "000000" else {f: ""}), modes={f: mode})
+        old_mode = old_mode or ("100644" if mode != "000000" else None)
+        if old_mode:
+            d["old_modes"] = {f: old_mode}
+        d["contents"] = {f: {"old": None if old_mode in (None, "000000") else "# notes\n", "new": None if mode == "000000" else body}}
+        return d
+    VEXF = ".vex/fosterstack-cache.openvex.json"
+    VEXC = c("v1", [VEXF])
+    check("AC15 auditor work classifies neutral, one by one",
+          all(P.classify(nc(f))[0] == "neutral" for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json")),
+          [P.classify(nc(f)) for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json")])
+    check("AC15 a range of only auditor work ships no bytes", not P.ships_bytes([nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md"), nc(".auditor/proposals/p1.json")]))
+    D = P.decide("schedule", [nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md")], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 decide: nothing shipped, no cut, no issue", not D["cut"] and not D["not_clean"] and "nothing shipped" in D["reason"], D)
+    check("AC15 the suppression file .auditor/accepted-items.json stays fix-class", P.classify(c("a", [".auditor/accepted-items.json"]))[0] == "fix")
+    check("AC15 an auditor script is never data: still not patch-clean", P.classify(c("a", [".auditor/run.sh"]))[0] == "dirty")
+    D = P.decide("schedule", [nc(".auditor/panel-state.json"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 auditor work beside a VEX change does not block that patch", D["cut"] and not D["not_clean"], D)
+    # AC15: the neutral auditor set is exactly three names; the neutral .vex file is only its README
+    for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json", ".vex/README.md"):
+        check("AC15 %s is neutral" % f, P.classify(nc(f))[0] == "neutral", P.classify(nc(f)))
+    for f, want in ((".auditor/accepted-items.json", "fix"), (".auditor/gate.json", "fix"), (".auditor/notes.md", "fix"), (".auditor/proposals/sub/x.json", "fix"),
+                    (".auditor/proposals/README.md", "fix"), (".vex/fosterstack-cache.openvex.json", "fix"), (".vex/other.json", "fix"), (".vex/sub/README.md", "fix"),
+                    (".auditor/proposals/hook.sh", "dirty"), (".auditor/run.sh", "dirty"), (".auditor/proposals/p_test.go", "dirty"), (".auditor/proposals/test_p.py", "dirty"),
+                    (".auditor/panel-state.sh", "dirty")):
+        check("AC15 %s keeps its classification: %s" % (f, want), P.classify(c("n", [f]))[0] == want, P.classify(c("n", [f])))
+    for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".vex/README.md"):
+        for mode in ("100755", "120000"):
+            got = P.classify(dict(c("n", [f], diffs={f: "+x\n"}), modes={f: mode}))
+            check("AC15 %s with mode %s is dirty" % (f, mode), got[0] == "dirty", got)
+        got = P.classify(c("n", [f], diffs={f: "+#!/bin/sh\n+echo x\n"}))
+        check("AC15 %s carrying a script is dirty" % f, got[0] == "dirty", got)
+    check("AC15 a range of README-only .vex changes ships no bytes", not P.ships_bytes([nc(".vex/README.md")]))
+    D = P.decide("schedule", [nc(".vex/README.md")], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a .vex README edit alone cuts no patch", not D["cut"] and not D["not_clean"], D)
+    D = P.decide("schedule", [nc(".vex/README.md"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a .vex README edit beside the VEX file does not block that patch", D["cut"], D)
+    D = P.decide("schedule", [c("a", [".auditor/proposals/hook.sh"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a script under .auditor/proposals beside a VEX change blocks the patch (named)", not D["cut"] and D["not_clean"] and ".auditor/proposals/hook.sh" in D["not_clean"][0], D)
+    def put_(r_, files):
+        for path, (content, mode) in files.items():
+            full = os.path.join(r_, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+            if os.path.lexists(full): os.remove(full)
+            if mode == "120000": os.symlink(content, full)
+            else:
+                open(full, "w").write(content); os.chmod(full, 0o755 if mode == "100755" else 0o644)
+    def mv_(r_, a, b):
+        os.makedirs(os.path.dirname(os.path.join(r_, b)), exist_ok=True); g(r_, "mv", a, b)
+    def gitrepo(base):
+        r_ = tempfile.mkdtemp(); g(r_, "init", "-q", "-b", "main"); put_(r_, base)
+        g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "base"); g(r_, "tag", "v0.1.0"); return r_
+    def verdict_(base, act, labels=()):
+        r_ = gitrepo(base); act(r_); g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "range")
+        cs_ = P.gather_commits("v0.1.0", cwd=r_, labels=lambda sha: list(labels))
+        return P.classify(cs_[-1]), cs_[-1]
+    KN, PS, PJ, RD = ".auditor/knowledge.md", ".auditor/panel-state.json", ".auditor/proposals/p.json", ".vex/README.md"
+    BASE0 = {"docs/keep.md": ("x\n", "100644")}
+    def verdict_new(path, content, mode="100644"):
+        return verdict_(BASE0, lambda r_: put_(r_, {path: (content, mode)}))[0][0]
+    for path, good in ((PS, '{"a": 1}\n'), (PS, "[1, 2]\n"), (PJ, '{"a": 1}\n'), (PJ, "[]\n"), (KN, "# knowledge\ntext\n"), (RD, "# readme\n")):
+        check("AC15 git: a new %s with data content is neutral" % path, verdict_new(path, good) == "neutral", verdict_new(path, good))
+    for path in (PS, PJ):
+        for bad in ("#!/bin/sh\necho x\n",):
+            check("AC15 git: a new %s holding %r is not data: dirty" % (path, bad[:12]), verdict_new(path, bad) == "dirty", verdict_new(path, bad))
+        for odd in ("{", "3\n", "null\n", "", "print('x')\n"):
+            check("AC15 git: a new %s holding %r is data (AC15 names scripts, executables and shebang lines, not content shapes): neutral" % (path, odd[:12]), verdict_new(path, odd) == "neutral", verdict_new(path, odd))
+    for path in (KN, RD):
+        check("AC15 git: a new %s starting with a shebang line is dirty" % path, verdict_new(path, "#!/bin/sh\necho x\n") == "dirty")
+        check("AC15 git: a new %s with a NUL byte is dirty" % path, verdict_new(path, "text\0binary\n") == "dirty")
+        base = dict(BASE0, **{path: ("#!/bin/sh\nold body\n", "100644")})
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nnew body\n", "100644")}))[0][0]
+        check("AC15 git: %s whose first line is an unchanged shebang and whose body is edited is dirty" % path, got == "dirty", got)
+        base = dict(BASE0, **{path: ("plain\nold body\n", "100644")})
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("plain\nnew body\n", "100644")}))[0][0]
+        check("AC15 git: an ordinary edit of %s is neutral" % path, got == "neutral", got)
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nplain\nnew body\n", "100644")}))[0][0]
+        check("AC15 git: an edit of %s that makes line 1 a shebang is dirty" % path, got == "dirty", got)
+    for path in (PS, PJ, KN, RD):
+        good = '{"a": 1}\n' if path.endswith(".json") else "text\n"
+        for mode in ("100755", "120000"):
+            got = verdict_new(path, good if mode == "100755" else "docs/keep.md", mode)
+            check("AC15 git: a new %s with mode %s is dirty" % (path, mode), got == "dirty", got)
+            base = dict(BASE0, **{path: (good if mode == "100755" else "docs/keep.md", mode)})
+            got = verdict_(base, lambda r_, path=path: (os.remove(os.path.join(r_, path))))[0][0]
+            check("AC15 git: deleting %s whose old mode was %s is dirty" % (path, mode), got == "dirty", got)
+        base = dict(BASE0, **{path: (good, "100755")})
+        got = verdict_(base, lambda r_, path=path: os.chmod(os.path.join(r_, path), 0o644))[0][0]
+        check("AC15 git: taking the executable bit off %s is not a clean data change: dirty" % path, got == "dirty", got)
+        base = dict(BASE0, **{path: (good, "100755")})
+        got = verdict_(base, lambda r_, path=path: (put_(r_, {path: (good + ("\n" if path.endswith(".json") else "more text\n"), "100644")})))[0][0]
+        check("AC15 git: an executable %s turned into a data file with new content in one commit is dirty (its old mode)" % path, got == "dirty", got)
+        base = dict(BASE0, **{path: (good, "100644")})
+        got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+        check("AC15 git: deleting an ordinary %s is neutral" % path, got == "neutral", got)
+    check("AC15 git: renaming an executable neutral-named file away is dirty",
+          verdict_(dict(BASE0, **{KN: ("x\n", "100755")}), lambda r_: mv_(r_, KN, "docs/y.md"))[0][0] == "dirty")
+    check("AC15 git: renaming source code onto a neutral path is dirty (the deleted source shows)",
+          verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[0][0] == "dirty")
+    check("AC15 git: renaming the production Dockerfile onto a proposals path is dirty",
+          verdict_(dict(BASE0, **{"build/docker/Dockerfile.production": ("FROM x@sha256:" + "a" * 64 + "\nCOPY a b\n", "100644")}),
+                   lambda r_: mv_(r_, "build/docker/Dockerfile.production", PJ))[0][0] == "dirty")
+    check("AC15 git: renaming a docs file onto a neutral path is neutral",
+          verdict_(dict(BASE0, **{"docs/a.md": ("text\n", "100644")}), lambda r_: mv_(r_, "docs/a.md", KN))[0][0] == "neutral")
+    rn_commit = verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[1]
+    check("AC15 gather_commits lists the deleted source of a rename", "internal/cache/store.go" in rn_commit["files"] and KN in rn_commit["files"], rn_commit["files"])
+    check("AC15 gather_commits records the old mode of every path", rn_commit.get("old_modes", {}).get("internal/cache/store.go") == "100644", rn_commit.get("old_modes"))
+    # the patch-fix label never makes a non-data neutral path fix-class
+    for mode in ("120000", "100755"):
+        d_ = nc(PS, mode=mode, labels=("patch-fix",))
+        check("AC15 the patch-fix label does not clear a mode-%s change at a neutral path" % mode, P.classify(d_)[0] == "dirty", P.classify(d_))
+        got = verdict_(BASE0, lambda r_, mode=mode: put_(r_, {KN: ("docs/keep.md" if mode == "120000" else "x\n", mode)}), labels=("patch-fix",))[0][0]
+        check("AC15 git: the label does not clear a mode-%s new neutral file" % mode, got == "dirty", got)
+    check("AC15 unit: a neutral path without a mode is not proven data: dirty", P.classify(dict(c("n", [PS], diffs={PS: "+{}"}), modes={}))[0] == "dirty")
+    check("AC15 unit: mode 100664 is not 100644: dirty", P.classify(nc(PS, mode="100664"))[0] == "dirty")
+    check("AC15 unit: a deletion whose old mode is unknown is dirty (fail closed)", P.classify(nc(PS, mode="000000"))[0] == "dirty")
+    check("AC15 unit: a deletion of an ordinary file is neutral", P.classify(nc(PS, mode="000000", old_mode="100644"))[0] == "neutral")
+    D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: ("#!/bin/sh\nold\n", "100644")}), lambda r_: put_(r_, {KN: ("#!/bin/sh\nnew\n", "100644")}))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 an edited script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+    SHEBANG_SCRIPT = "#!/bin/sh\necho run\n"
+    PY_NO_SHEBANG = "import os\nprint(os.getcwd())\n\ndef main():\n    pass\n"
+    for path in (KN, RD):
+        got = verdict_new(path, PY_NO_SHEBANG)
+        check("AC15 git: %s holding script-looking text without any shebang line is data (neutral, documented rule)" % path, got == "neutral", got)
+        for label, body in (("a shebang after a comment line", "# a comment\n#!/bin/sh\necho x\n"), ("a shebang in the middle", "intro\ntext\n#!/usr/bin/env python3\nmore\n"),
+                            ("a shebang on the last line", "text\n#!/bin/sh")):
+            got = verdict_new(path, body)
+            check("AC15 git: a new %s with %s is dirty" % (path, label), got == "dirty", got)
+        base = dict(BASE0, **{path: (SHEBANG_SCRIPT, "100644")})
+        got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+        check("AC15 git: deleting %s whose removed lines hold a shebang line is dirty" % path, got == "dirty", got)
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}))[0][0]
+        check("AC15 git: replacing the shebang script %s by ordinary text is dirty (the removed lines held a shebang)" % path, got == "dirty", got)
+        got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}), labels=("patch-fix",))[0][0]
+        check("AC15 git: the patch-fix label does not clear the replacement of the shebang script %s" % path, got == "dirty", got)
+        got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)), labels=("patch-fix",))[0][0]
+        check("AC15 git: the patch-fix label does not clear the deletion of the shebang script %s" % path, got == "dirty", got)
+        got = verdict_(dict(BASE0, **{path: (PY_NO_SHEBANG, "100644")}), lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+        check("AC15 git: deleting a text file with script-looking lines but no shebang is neutral", got == "neutral", got)
+        big = "#!/bin/sh\n" + "".join("line %d\n" % i for i in range(150000))
+        bigger = big.replace("line 140000\n", "line 140000 edited\n")
+        got = verdict_(dict(BASE0, **{path: (big, "100644")}), lambda r_, path=path: put_(r_, {path: (bigger, "100644")}))[0][0]
+        check("AC15 git: %s of 150k lines with an unchanged shebang first line, edited far from line 1, is dirty" % path, got == "dirty", got)
+        bigt = "plain\n" + "".join("line %d\n" % i for i in range(150000))
+        got = verdict_(dict(BASE0, **{path: (bigt, "100644")}), lambda r_, path=path: put_(r_, {path: (bigt.replace("line 140000\n", "line 140000 edited\n"), "100644")}))[0][0]
+        check("AC15 git: the same 150k-line file without a shebang is neutral", got == "neutral", got)
+    D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: (SHEBANG_SCRIPT, "100644")}), lambda r_: os.remove(os.path.join(r_, KN)))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a deleted shebang script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+    # fail closed on missing evidence about the OLD file (Codex #425 r1, seat B, P2): a neutral path is data only when its old and new file types are known and every blob that exists was read
+    check("AC15 unit: a replacement without the old file type is dirty", P.classify(dict(nc(PS), old_modes={}))[0] == "dirty")
+    check("AC15 unit: a replacement whose old file type is a submodule (160000) is dirty", P.classify(nc(PS, old_mode="160000"))[0] == "dirty")
+    check("AC15 unit: a deletion with an unreadable or missing old file type is dirty even with the label", P.classify(nc(PS, mode="000000", labels=("patch-fix",)))[0] == "dirty")
+    cd_ = dict(nc(KN), contents={KN: {"old": None, "new": "text\n"}})
+    check("AC15 unit: a replacement whose old blob was not read is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN, mode="000000", old_mode="100644"), contents={KN: {"old": None, "new": None}})
+    check("AC15 unit: a deletion whose old blob was not read is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN), contents={KN: {"old": "\0unreadable", "new": "text\n"}})
+    check("AC15 unit: an old blob that failed to read (not text) is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN, mode="000000", old_mode="100644"), contents={KN: {"old": "plain\n", "new": None}})
+    check("AC15 unit: a deletion of a text file whose old blob was read is neutral", P.classify(cd_)[0] == "neutral", P.classify(cd_))
+    cd_ = dict(nc(KN, old_mode="000000"), contents={KN: {"old": None, "new": ""}})
+    check("AC15 unit: a new empty Markdown file is data: neutral", P.classify(cd_)[0] == "neutral", P.classify(cd_))
+    D = P.decide("schedule", [nc(PS, body="null\n"), c("a", [".auditor/accepted-items.json"])], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a JSON value that is not an object beside an accepted-items fix does not block the patch", D["cut"] and not D["not_clean"], D)
+    # the classifier asks for whole-blob evidence itself (Codex #425 r2, both seats): a record without `contents` is not proven data
+    check("AC15 unit: a replacement record without blob contents is dirty", P.classify({k: v for k, v in nc(KN).items() if k != "contents"})[0] == "dirty")
+    check("AC15 unit: a deletion record without blob contents is dirty", P.classify({k: v for k, v in nc(KN, mode="000000", old_mode="100644").items() if k != "contents"})[0] == "dirty")
+    check("AC15 unit: a contents record without the old side is dirty", P.classify(dict(nc(KN), contents={KN: {"new": "text\n"}}))[0] == "dirty")
+    D = P.decide("schedule", [{k: v for k, v in nc(KN, mode="000000", old_mode="100644").items() if k != "contents"}, c("a", [".auditor/accepted-items.json"])], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a deletion record without blob contents beside a fix blocks the patch", not D["cut"] and D["not_clean"], D)
+    # the VEX statement file under .vex/ is NOT neutral (advisor 0254/0257 read-back): a change to it is a fix and cuts a patch; only .vex/README.md is data
+    check("AC15 a change to the VEX statement file is a fix, never neutral", P.classify(nc(VEXF))[0] != "neutral" and P.classify(c("v", [VEXF]))[0] == "fix", [P.classify(nc(VEXF)), P.classify(c("v", [VEXF]))])
+    check("AC15 a change to the VEX statement file ships bytes and cuts a patch", P.ships_bytes([VEXC]) and P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=False, removed=None)["cut"])
+    check("AC15 a change to the VEX statement file with the patch-fix label is still fix, not neutral", P.classify(nc(VEXF, labels=("patch-fix",)))[0] == "fix", P.classify(nc(VEXF, labels=("patch-fix",))))
+
+ac15_()
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

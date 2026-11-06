@@ -8,9 +8,9 @@
 # policy forbids (SECURITY.md; .vex/README.md).
 #
 # This file stays so that a future entry has to displace this comment to
-# exist, and because a bare `grype` run without --vex (a contributor's
-# local scan) will report the :debug image's busybox findings — that is
-# expected; the published VEX is the disposition. History: until Sep 10,
-# 2026 this file carried the CVE-2025-60876 analysis; it is now statement
-# 2 of the VEX document, unchanged in substance.
+# exist. A bare `grype` run without --vex (a contributor's local scan) does
+# not apply the published disposition; the VEX document is the disposition.
+# History: until Sep 10, 2026 this file carried an analysis that moved into
+# the VEX document; the document today holds one statement (CVE-2024-51744,
+# scoped to the golang-jwt/jwt/v4 module).
 ignore: []

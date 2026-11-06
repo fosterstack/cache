@@ -6,12 +6,27 @@ must be in BOTH vendor/modules.txt and dependency-provenance.json (a subset chec
 equality): a vendored module the binary does not embed is in the dependency list, not here.
 Path and version are compared; the vendor-mode binary list carries no hashes. Anything this
 tool cannot resolve (a replace line, an unparseable line, a missing input) refuses. No
-scanner makes or gates this file. The output has no timestamp, so two runs are byte-equal.
+scanner makes or gates this file. The output has a fixed creation time, so two runs are byte-equal.
+
+NTIA minimum elements (0707 fix 3): the root package (the binary, SPDXRef-fscache) names its supplier; the document
+DESCRIBES the root package and the root DEPENDS_ON each embedded module; the creators are the organization and this
+tool. The supplier string is the one melange v0.61.2 writes for --namespace fosterstack into the apk's own SBOM
+(pkg/sbom/package.go:182-183: "Organization: " and the title-cased namespace), so both SBOMs of one package name one
+supplier. A module package names NOASSERTION: the binary's module list (go version -m) carries no supplier. SPDX
+states no rule for modules compiled into one binary: its text (v2.3.1, relationship type definitions) defines
+DEPENDS_ON as "A depends on B", and DEPENDS_ON is chosen because the NTIA element is a "dependency relationship". The
+created time stays the fixed epoch below: a real build time would give two builds of the same inputs different bytes,
+which the Rebuild comparison refuses. That is a deviation from the NTIA timestamp element, and it is stated here on
+purpose.
 """
 import argparse
 import json
 import re
 import sys
+
+# melange v0.61.2 pkg/sbom/package.go:182-183: "Organization: " + the title-cased namespace (fosterstack)
+SUPPLIER = "Organization: Fosterstack"
+NAMESPACE_BASE = "https://fosterstack.invalid/spdx/go-modules/"
 
 
 def refuse(msg):
@@ -100,7 +115,18 @@ def main():
     ap.add_argument("--provenance", required=True)
     ap.add_argument("--buildinfo", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--name", default="fscache")    # the package the binary ships in (fscache or fscache-fips)
+    ap.add_argument("--version", default=None)      # its apk version, e.g. 0.3.0 or 0.3.0_rc1
+    # The root version is VERSION-r0: the recipes say epoch: 0, and the build driver expects the apk as VERSION-r0 (its
+    # apk path, line 174) and fails if melange wrote any other.
     a = ap.parse_args()
+    # Every apk form of the build helper's VERSION_GRAMMAR (X.Y.Z, X.Y.Z_rcN, 0.0.0_rc1) fits the version pattern below.
+    # The pattern is a word check and also admits e.g. 01.2.3; the driver checks the grammar before it calls this tool.
+    # name: fscache-fips (refused: FSCACHE); version: 0.3.0_rc1 (refused: 0.3.0+meta)
+    name_ok = re.fullmatch(r"[a-z0-9][a-z0-9._-]*", a.name)
+    version_ok = a.version is None or re.fullmatch(r"[0-9][A-Za-z0-9._]*", a.version)
+    if not (name_ok and version_ok):
+        refuse("--name and --version must be plain package-name and version words")
     vend, prov, emb = read_vendored(a.modules), read_provenance(a.provenance), read_embedded(a.buildinfo)
     bad = []
     for p, v in sorted(emb.items()):
@@ -112,15 +138,28 @@ def main():
                 p, v, "absent" if p not in prov else "recorded as " + prov[p], a.provenance))
     if bad:
         refuse("module list does not match the binary:\n  " + "\n  ".join(bad))
-    pkgs = [{"SPDXID": "SPDXRef-gomod-%d" % i, "name": p, "versionInfo": v,
+    ident = a.name if a.version is None else "%s@%s-r0" % (a.name, a.version)   # one URI per document (SPDX 2.3)
+    root = {"SPDXID": "SPDXRef-fscache", "name": a.name, "supplier": SUPPLIER,
+            "downloadLocation": "NOASSERTION", "filesAnalyzed": False}
+    if a.version is not None:
+        full = a.version + "-r0"
+        root["versionInfo"] = full
+        root["externalRefs"] = [{"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
+                                 "referenceLocator": "pkg:apk/fosterstack/%s@%s" % (a.name, full)}]
+    mods = [{"SPDXID": "SPDXRef-gomod-%d" % i, "name": p, "versionInfo": v, "supplier": "NOASSERTION",
              "downloadLocation": "NOASSERTION", "filesAnalyzed": False,
              "externalRefs": [{"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
                                "referenceLocator": "pkg:golang/%s@%s" % (p, v)}]}
             for i, (p, v) in enumerate(sorted(emb.items()))]
+    rels = [{"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
+             "relatedSpdxElement": "SPDXRef-fscache"}]
+    rels += [{"spdxElementId": "SPDXRef-fscache", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": m["SPDXID"]}
+             for m in mods]
     doc = {"spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0", "SPDXID": "SPDXRef-DOCUMENT",
-           "name": "fscache-go-modules", "documentNamespace": "https://fosterstack.invalid/spdx/fscache-go-modules",
-           "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": ["Tool: go-module-sbom"]},
-           "packages": pkgs}
+           "name": "fscache-go-modules", "documentNamespace": NAMESPACE_BASE + ident,
+           "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": [SUPPLIER,
+                                                                                "Tool: go-module-sbom"]},
+           "packages": [root] + mods, "relationships": rels}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1, sort_keys=True)
         f.write("\n")

@@ -122,6 +122,11 @@
       "context": "vendor",
       "integration_id": 15368,
       "scope": "push"
+    },
+    {
+      "context": "marker-gate",
+      "integration_id": 15368,
+      "scope": "pull_request"
     }
   ]
 }

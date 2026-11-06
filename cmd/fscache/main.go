@@ -81,17 +81,22 @@ func loadConfig() (config, error) {
 	}
 	if cfg.roUsername != "" {
 		if cfg.username == "" {
-			return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD require FSCACHE_USERNAME and FSCACHE_PASSWORD: a read-only pair with no read-write pair would leave nothing able to write")
+			return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD require " +
+				"FSCACHE_USERNAME and FSCACHE_PASSWORD: " +
+				"a read-only pair with no read-write pair would leave nothing able to write")
 		}
 		if cfg.roUsername == cfg.username {
-			return cfg, errors.New("FSCACHE_RO_USERNAME must differ from FSCACHE_USERNAME: identical usernames make the credential tier ambiguous")
+			return cfg, errors.New("FSCACHE_RO_USERNAME must differ from FSCACHE_USERNAME: " +
+				"identical usernames make the credential tier ambiguous")
 		}
 	}
 	if cfg.tlsCert != "" && cfg.tlsKey == "" {
-		return cfg, fmt.Errorf("FSCACHE_TLS_CERT=%q is set without FSCACHE_TLS_KEY: set both (HTTPS) or neither (plain HTTP)", cfg.tlsCert)
+		return cfg, fmt.Errorf("FSCACHE_TLS_CERT=%q is set without FSCACHE_TLS_KEY: "+
+			"set both (HTTPS) or neither (plain HTTP)", cfg.tlsCert)
 	}
 	if cfg.tlsKey != "" && cfg.tlsCert == "" {
-		return cfg, fmt.Errorf("FSCACHE_TLS_KEY=%q is set without FSCACHE_TLS_CERT: set both (HTTPS) or neither (plain HTTP)", cfg.tlsKey)
+		return cfg, fmt.Errorf("FSCACHE_TLS_KEY=%q is set without FSCACHE_TLS_CERT: "+
+			"set both (HTTPS) or neither (plain HTTP)", cfg.tlsKey)
 	}
 	return cfg, nil
 }
@@ -121,7 +126,8 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 	}
 	defer func() {
 		if recover() != nil {
-			cert, err = tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q could not be parsed as a certificate and private key", certPath, keyPath)
+			cert, err = tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q "+
+				"could not be parsed as a certificate and private key", certPath, keyPath)
 		}
 	}()
 	certDER := firstPEMBlock(certPEM, func(typ string) bool { return typ == "CERTIFICATE" })
@@ -131,7 +137,9 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 	if _, err := x509.ParseCertificate(certDER); err != nil {
 		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q: the certificate does not parse", certPath)
 	}
-	keyDER := firstPEMBlock(keyPEM, func(typ string) bool { return typ == "PRIVATE KEY" || strings.HasSuffix(typ, " PRIVATE KEY") })
+	keyDER := firstPEMBlock(keyPEM, func(typ string) bool {
+		return typ == "PRIVATE KEY" || strings.HasSuffix(typ, " PRIVATE KEY")
+	})
 	if keyDER == nil {
 		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_KEY=%q holds no PEM PRIVATE KEY block", keyPath)
 	}
@@ -140,7 +148,8 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 	}
 	cert, err = x509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q are not a usable pair: the private key does not match the certificate, or is of a type TLS cannot use", certPath, keyPath)
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q are not a usable pair: "+
+			"the private key does not match the certificate, or is of a type TLS cannot use", certPath, keyPath)
 	}
 	return cert, nil
 }
@@ -414,6 +423,47 @@ func run(log *slog.Logger) error {
 	return serve(ctx, log, nil)
 }
 
+// reconcileAfterCrash repairs the stores after an unclean shutdown, before
+// anything is served, and logs what it adopted, dropped and removed.
+func reconcileAfterCrash(c *cache.Cache, log *slog.Logger) error {
+	log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
+	began := time.Now()
+	stats, err := cacheReconcile(c, context.Background())
+	if err != nil {
+		return fmt.Errorf("startup reconciliation: %w", err)
+	}
+	log.Info("fscache: reconciled",
+		"duration", reconcileDuration(time.Since(began)),
+		"adopted_blobs", stats.AdoptedBlobs,
+		"dropped_records", stats.DroppedRecords,
+		"removed_temp_files", stats.RemovedTempFiles)
+	return nil
+}
+
+// logStarting is the startup line: the address actually bound (":0" shows
+// the real port), the data directory and what is switched on. fips140
+// announces the one property the -fips build exists for, so an assessor
+// can see it at runtime.
+func logStarting(log *slog.Logger, ln net.Listener, cfg config, tlsOn bool) {
+	bi := buildinfo.Read()
+	log.Info("fscache: starting",
+		"version", bi.Version,
+		"addr", ln.Addr().String(),
+		"data_dir", cfg.dataDir,
+		"max_bytes", cfg.maxBytes,
+		"auth", enabledOrDisabled(cfg.username != ""),
+		"tls", enabledOrDisabled(tlsOn),
+		"fips140", bi.FIPSNote(),
+	)
+}
+
+func enabledOrDisabled(on bool) string {
+	if on {
+		return "enabled"
+	}
+	return "disabled"
+}
+
 // serve is the full server lifecycle under an injectable shutdown
 // context. ready, when non-nil, is called once the HTTP server has been
 // handed off to its goroutine — tests use it to drive a deterministic
@@ -510,17 +560,9 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	}()
 
 	if wasUnclean {
-		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
-		began := time.Now()
-		stats, err := cacheReconcile(c, context.Background())
-		if err != nil {
-			return fmt.Errorf("startup reconciliation: %w", err)
+		if err := reconcileAfterCrash(c, log); err != nil {
+			return err
 		}
-		log.Info("fscache: reconciled",
-			"duration", reconcileDuration(time.Since(began)),
-			"adopted_blobs", stats.AdoptedBlobs,
-			"dropped_records", stats.DroppedRecords,
-			"removed_temp_files", stats.RemovedTempFiles)
 	}
 
 	// The store sample (writable, free bytes) is taken once here, before the
@@ -546,33 +588,11 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	// Go's own server errors (TLS handshake failures and the like) go
 	// through the process logger at DEBUG, not as bare lines on stderr: they
 	// carry only client-supplied values, and a client can cause them at will,
-	// so at the default level a flood of them writes nothing.
-	httpServer.ErrorLog = slog.NewLogLogger(log.Handler(), slog.LevelDebug)
+	// so at the default level a flood of them writes nothing. NewErrorLog
+	// also strips the socket addresses from each line (REQ-OBS-006).
+	httpServer.ErrorLog = server.NewErrorLog(log.Handler())
 
-	authNote := "disabled"
-	if cfg.username != "" {
-		authNote = "enabled"
-	}
-	tlsNote := "disabled"
-	if tlsCfg != nil {
-		tlsNote = "enabled"
-	}
-	// fips140 announces the one property the -fips build exists for.
-	// Until now the startup line reported addr, data_dir, max_bytes and
-	// auth and said nothing about FIPS, so the property a compliance buyer
-	// chose this build for was unobservable at runtime. Same
-	// posture-announcement shape as the auth field beside it; this is the
-	// line an assessor screenshots.
-	bi := buildinfo.Read()
-	log.Info("fscache: starting",
-		"version", bi.Version,
-		"addr", ln.Addr().String(), // the address actually bound (":0" shows the real port)
-		"data_dir", cfg.dataDir,
-		"max_bytes", cfg.maxBytes,
-		"auth", authNote,
-		"tls", tlsNote,
-		"fips140", bi.FIPSNote(),
-	)
+	logStarting(log, ln, cfg, tlsCfg != nil)
 
 	errCh := make(chan error, 1)
 	served = true // Serve owns and closes the listener from here on

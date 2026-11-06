@@ -3,10 +3,10 @@
 # The Maven capped scenario recognises the server's 413 in the build log whichever way the runner's Maven resolver words it:
 # older images log "HttpResponseException: status code: 413, reason phrase: Request Entity Too Large (413)", newer ones
 # "HttpTransporterException: HTTP Status: 413" (runner image 20261002 vs 20260901; the acceptance-maven job failed on the newer
-# wording, alternating with passes as images rolled). The pattern is read from the committed workflow, never copied here.
+# wording, alternating with passes as images rolled). The pattern is read from the committed suite script, never copied here.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-wf="$here/../.github/workflows/acceptance.yml"
+wf="$here/acceptance-maven-capped.sh"   # the suite moved from acceptance.yml into this script, unchanged (REQ-CHAIN-006-AC5, advisor ruling Q7)
 pat=$(python3 - "$wf" <<'PYX'
 import re, sys
 t = open(sys.argv[1]).read()

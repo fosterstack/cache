@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-DEP-005-AC1, REQ-BUILDAPK-001-AC10
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
 # scoping of the daily CVE auditor's suppression outputs (.snyk,
 # osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
@@ -58,11 +59,15 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 53 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 86 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
-  loaded="$(bash -c 'eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"; echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]})); printf "%s\n" "${ALLOW_PATTERNS[@]}" "${SUPPRESSION_PATTERNS[@]}"' _ "$f" 2>&1)"
+  loaded="$(bash -c '
+    eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"
+    echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]}))
+    printf "%s\n" "${ALLOW_PATTERNS[@]}" "${SUPPRESSION_PATTERNS[@]}"
+  ' _ "$f" </dev/null 2>&1)"
   python3 - "$f" "$loaded" <<'PYEOF'
 import re, sys, itertools
 path = sys.argv[1]
@@ -87,12 +92,18 @@ DECLARED = set("""
 dependency-provenance.json
 bin/vendor-check.sh bin/vendor-provenance.py bin/vendor-provenance-records.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
+bin/check-no-outbound.py bin/check-no-outbound-test.sh
+build/melange-baselayout.yaml build/melange-baselayout.yaml.tmpl build/baselayout/members.txt bin/baselayout-test.sh bin/build-baselayout-apk.sh bin/build-baselayout-apk-test.sh
+build/baselayout/etc/group build/baselayout/etc/hosts build/baselayout/etc/nsswitch.conf build/baselayout/etc/os-release
+build/baselayout/etc/passwd build/baselayout/etc/protocols build/baselayout/etc/services
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/host-tools.yaml build/locks/host-tools.lock
+build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-guest.lock build/locks/vm-kernel.lock
+build/vm-keys/kernel-key-6165ee59.rsa.pub
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
-bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
-bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py
+bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh bin/with-aws-token.sh
+bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py
 bin/melange-apko-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
 bin/oci-digest.py bin/net-probe.py
@@ -102,8 +113,15 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
+bin/layout-archive.sh bin/layout-archive-test.sh
+bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
+build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
+build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
+bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signatory.txt
+bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
+bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 53: errs.append("declared list is not 53 paths: %d" % len(DECLARED))
+if len(DECLARED) != 95: errs.append("declared list is not 95 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -113,7 +131,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 157, 6   # 157: + ^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$ (REQ-REL-012, the audit record writer); 156: + ^bin/vendor-provenance-records\.py$ (REQ-VEND-001-AC15, the records step); 155: + ^bin/job-isolation-test\.sh$ (REQ-REL-011, owner Oct 21 isolation rule); 154: + ^bin/release-layout\.py$ (the rescan checks its attested layouts with the chain's own layout check, handoff 0521); 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$ (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+# 228 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 228, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -160,7 +179,8 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "d594d9961eed6fcb6ec7c8d69de4e47df730fa46d2b52d12e338d3e53f3b1dcf"   # + the bin/audit-record* pattern (REQ-REL-012); + the bin/job-isolation-test.sh pattern (REQ-REL-011); + the bin/release-layout.py pattern (handoff 0521); - the two suppression/set-01 .snyk and osv-scanner.toml fixture patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
+# the script text outside the v0.3.0 region; history is in git
+PINNED_SHA256 = "523a4aef7cf439f0b8a66fd139bc0638c4e16dc7a4f0736c08ab7e14b23fc488"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -217,7 +237,7 @@ mutcheck() { # <desc> <sed-expr>
   if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" "$2"; else gp "struct check kills mutant: $1"; fi
 }
 mutcheck "suffix on one alternative"      "s/\(build-apk\|assemble-image\|/(build-apk|assemble-image[a-z]+|/"
-mutcheck "extension widened"              "s/\(apk-tool\|gen-recipes\|go-module-sbom\)\\\\\.py\\$/(apk-tool|gen-recipes|go-module-sbom)\\\\.(json|py|sh)\$/"
+mutcheck "extension widened"              "s/\(apk-tool\|gen-recipes\|go-module-sbom\|install-host-bwrap\)\\\\\.py\\$/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\\\\.(json|py|sh)\$/"
 mutcheck "group made optional"            "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)?(-x)?/"
 mutcheck "group repeated with +"          "s/\^build\/apko\(-fips\)\?/^build\/apko(-fips)+/"
 mutcheck "? turned into *"                "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)*/"
@@ -245,6 +265,19 @@ mutins "unset an element"                   2 "unset 'ALLOW_PATTERNS[3]'"
 mutins "declare -n alias then append"       2 "declare -n alias=ALLOW_PATTERNS; alias+=('^evil/.*\$')"
 mutins "printf -v element"                  2 "printf -v 'ALLOW_PATTERNS[200]' '%s' '^evil/.*\$'"
 mutins "re-assignment with a new element"   2 "ALLOW_PATTERNS=(\"\${ALLOW_PATTERNS[@]}\" '^evil/.*\$')"
+# The Oct 24 hang: the mutant above opens an ALLOW_PATTERNS=( that never closes, so the extraction in struct_check also
+# prints the rest of the real script, whose read loop then read the CALLER's stdin. With an open pipe on stdin the whole
+# suite stopped here for hours. struct_check must not read its caller's stdin.
+_open_array='ALLOW_PATTERNS=("${ALLOW_PATTERNS[@]}" '"'"'^evil/.*$'"'"')'
+awk -v t="$_open_array" '{print} /^\)$/{c++; if(c==2) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+( struct_check "$_mut_dir/m.sh" >/dev/null 2>&1 ) < <(sleep 25) & _sp=$!
+for _i in $(seq 1 40); do kill -0 "$_sp" 2>/dev/null || break; sleep 0.25; done
+if kill -0 "$_sp" 2>/dev/null; then
+  kill "$_sp" 2>/dev/null
+  gf "struct_check read the caller's stdin" "still running 10 s after it was started with an open stdin"
+else
+  gp "struct_check does not read the caller's stdin (an open pipe on stdin does not stop it)"
+fi
 awk '/^  # v0.3.0 build chain/{r=1} {print} r&&/^$/{print "  \x27^evil/.*$\x27"; r=0}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
 if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: wide pattern after the region blank line" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern after the region blank line" ""; else gp "struct check kills mutant: wide pattern after the region blank line"; fi
 # a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)
@@ -722,6 +755,11 @@ runeach fail "feature/x" "v030: uppercase key refused"   "build/keys/Assembly.rs
 runeach fail "feature/x" "v030: key one directory up refused" "build/assembly.rsa" "assembly.rsa" "keys/assembly.rsa.pub"
 runeach fail "feature/x" "v030: key traversal refused"   "build/keys/../assembly.rsa"
 runeach fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.rsa.bak" "build/keys/assembly.rsa.pub.old"
+passfam "feature/x" "v030: a retired release key public half under the day it was retired (SECURITY.md)" "build/keys/retired/2027-11-01/release.rsa.pub"
+runeach fail "feature/x" "v030: a retired key outside a dated directory refused" "build/keys/retired/release.rsa.pub" "build/keys/retired/x/release.rsa.pub" "build/keys/retired/27-11-01/release.rsa.pub" "build/keys/retired/2027-11-01-extra/release.rsa.pub"
+runeach fail "feature/x" "v030: only release.rsa.pub is admitted in a retired directory" "build/keys/retired/2027-11-01/other.rsa.pub" "build/keys/retired/2027-11-01/release.rsa" "build/keys/retired/2027-11-01/assembly.rsa.pub" "build/keys/retired/2027-11-01/release.rsa.pub.bak"
+runeach fail "feature/x" "v030: nothing nested below a dated retired directory" "build/keys/retired/2027-11-01/sub/release.rsa.pub" "build/keys/retired/2027-11-01/release.rsa.pub/x"
+runeach fail "feature/x" "v030: retired traversal refused" "build/keys/retired/../release.rsa" "build/keys/retired/2027-11-01/../x.rsa"
 
 passfam "feature/x" "v030: the recipe template" "build/melange.yaml.tmpl"
 runeach fail "feature/x" "v030: other template names refused" "build/melange-fips.yaml.tmpl" "build/apko.yaml.tmpl" "build/melange.yaml.tmpl.bak" "build/x/melange.yaml.tmpl" "melange.yaml.tmpl" "build/Melange.yaml.tmpl" "build/../melange.yaml.tmpl"
@@ -732,9 +770,17 @@ passfam "feature/x" "v030: the FIPS module data file" "build/locks/fips-module.t
 runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build/locks/fips-module.txt.bak" "build/locks/fips-module.json" "build/locks/x/fips-module.txt" "build/fips-module.txt" "build/locks/Fips-module.txt" "build/locks/../fips-module.txt" "build/locks/fips-modules.txt"
 runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
 runeach fail "feature/x" "v030: other archive record names refused" "build/locks/archive-other.sha256" "build/locks/archive-keys.sha256.bak" "build/locks/x/archive-keys.sha256" "build/locks/archive-keys.sha512" "build/locks/../archive-keys.sha256"
+passfam "feature/x" "queue gate: the merge queue judge script (cache#542)" ".github/agent/bin/queue-gate-judge.sh"
+runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
+  ".github/agent/bin/queue-gate-judge.sh.bak" ".github/agent/bin/queue-gate-judgeX.sh" \
+  ".github/agent/bin/queue-gate-judge.shx" ".github/agent/bin/Queue-gate-judge.sh" \
+  ".github/agent/bin/x/queue-gate-judge.sh" "bin/queue-gate-judge.sh" ".github/agent/queue-gate-judge.sh" \
+  ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
+passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
+passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
-passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py"
+passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py" "bin/install-host-bwrap.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
 runeach fail "feature/x" "v030: bin/apk-tool.sh (swapped extension) refused"  "bin/apk-tool.sh"
 runeach fail "feature/x" "v030: bin/Build-apk.sh uppercase refused"           "bin/Build-apk.sh"
@@ -747,11 +793,13 @@ runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "b
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
 # it is NOT part of the v0.3.0 build plan.
 passfam "feature/x" "v030: the split build-chain test files and library" "bin/melange-apko-lib.sh" "bin/build-helpers-test.sh" "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
+passfam "feature/x" "REQ-CHAIN-001-AC5: the sandbox wall probe, its offline test and its six recipe templates" "bin/chain-sandbox-probe.sh" "bin/build-sandbox-hostile-test.sh" "build/probe/control.yaml.tmpl" "build/probe/read-record.yaml.tmpl" "build/probe/write-record.yaml.tmpl" "build/probe/read-keydir.yaml.tmpl" "build/probe/read-token.yaml.tmpl" "build/probe/network.yaml.tmpl"
+runeach fail "feature/x" "REQ-CHAIN-001-AC5: sandbox probe near-miss siblings refused" "bin/chain-sandbox-probe.py" "bin/chain-sandbox-probes.sh" "bin/build-sandbox-hostile-test.py" "bin/build-sandbox-hostile-tests.sh" "build/probe/other.yaml.tmpl" "build/probe/control.yaml" "build/probe/control.yaml.tmpl.bak" "build/probe/sub/control.yaml.tmpl"
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
 passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed environment list" "bin/build-apk-helper.py" "build/sealed-env.json"
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"
-passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.sh" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
-runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
+passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.py" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
+runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-run.sh" "bin/suite-guard-run.pyc" "bin/suite-guard-run-other.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
 passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
 passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "secret_scanning.yml"
@@ -786,6 +834,128 @@ run pass "feature/x" "REQ-GUIDE-001: the cannot-run list" "docs/verify-release.c
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-miss refused" "docs/verify-release.cannot-run.json.bak" "docs/verify-release.cannot-run.jsonx" "docs/verify-release.cannot-run.yaml" "docs/x/verify-release.cannot-run.json" "./docs/verify-release.cannot-run.json" "verify-release.cannot-run.json" "docs/verify-release.cannot-runXjson" "docs/verify-release.cannot-run.json/" "x/docs/verify-release.cannot-run.json" "docs/../verify-release.cannot-run.json" "docs/verify-release.cannot-run.json "
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
+
+# round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
+passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
+runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
+
+# The merge queue (REQ-DEP-005-AC1): the queue's commit has no pull request head branch, so the script looks up the
+# pull request named by GITHUB_QUEUE_REF through the API, with one call, and applies the same lane rule: only an
+# auditor/* branch of this repository may change a suppression file. A lookup that fails or is unclear fails the check.
+QSHA="$(printf 'a%.0s' $(seq 40))"
+QREF="refs/heads/gh-readonly-queue/main/pr-12-$QSHA"
+mkdir -p "$TMPROOT/qgh"
+cat > "$TMPROOT/qgh/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$QGH_LOG"
+[ "${QGH_FAIL:-}" = 1 ] && { echo "gh: HTTP 500" >&2; exit 1; }
+printf '%b' "${QGH_OUT-}"
+EOF
+chmod +x "$TMPROOT/qgh/gh"
+# qrun <expect> <desc> <queue ref> <gh output> <paths...>: the queue case, run inside $R
+# (GITHUB_HEAD_REF is empty there)
+qrun() {
+  local expect="$1" desc="$2" qref="$3" ghout="$4"; shift 4
+  local out rc
+  : > "$TMPROOT/qgh.log"
+  out="$(cd "$R" && printf '%s\n' "$@" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
+    QGH_OUT="$ghout" QGH_FAIL="${QGH_FAIL:-}" \
+    GITHUB_HEAD_REF="" GITHUB_REF_NAME="${qref#refs/heads/}" GITHUB_QUEUE_REF="$qref" GITHUB_REPOSITORY=o/r \
+    "$ABS_SCRIPT" 2>&1)"; rc=$?
+  # QWANT: the refusal text a failing case must print, so it cannot fail for another reason
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } \
+     || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && { [ -z "${QWANT:-}" ] || grep -qF -- "$QWANT" <<<"$out"; }; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+mkrepo "$R"; ( cd "$R" && echo '{"a":9}' > $PS && mkdir -p internal && echo 'package y' > internal/other.go \
+    && g add -A && g commit -qm edit )
+qrun pass "queue: an auditor/* branch of this repository may change a suppression file" "$QREF" 'auditor/x\to/r\n' "$PS"
+qrun fail "queue: any other branch may not change a suppression file" "$QREF" 'feature/x\to/r\n' "$PS"
+qrun fail "queue: main as the head branch is not the suppression lane" "$QREF" 'main\to/r\n' "$PS"
+qrun fail "queue: an auditor/* branch of a fork may not change a suppression file" "$QREF" 'auditor/x\tfork/r\n' "$PS"
+qrun fail "queue: an auditor/* look-alike prefix may not change a suppression file" "$QREF" 'auditorX/x\to/r\n' "$PS"
+qrun pass "queue: an ordinary file passes for any branch" "$QREF" 'feature/x\to/r\n' internal/other.go
+
+# A queue group is a chain of merges: each entry merges one pull request into the entry before it (the first into
+# main), and is judged on its own queue ref under its own pull request's lane. mkgroup <dir> <kind>...: main, then one
+# merge per kind. aud: an auditor pull request changes a suppression file; feat: a pull request changes only code;
+# featps: a pull request that is not an auditor's changes a suppression file (.snyk)
+mkgroup() {
+  local d="$1" k n=0; shift
+  mkrepo "$d"
+  ( cd "$d" && g checkout -q -b queue refs/remotes/origin/main
+    for k in "$@"; do
+      n=$((n+1)); g checkout -q -b "pr$n" refs/remotes/origin/main
+      case "$k" in
+        aud) echo '{"a":2}' > .auditor/panel-state.json ;;
+        feat) mkdir -p internal && echo 'package y' > internal/other.go ;;
+        featps) echo 'ignore: {x: 1}' > .snyk ;;
+      esac
+      g add -A && g commit -qm "pr$n" && g checkout -q queue && g merge -q --no-ff -m "entry$n" "pr$n" || exit 1
+    done ) || { echo "mkgroup failed: $*" >&2; exit 1; }
+}
+G="$TMPROOT/grp"; ALLPATHS=("$PS" .snyk internal/other.go)
+R_SAVED="$R"; R="$G"
+mkgroup "$G" aud feat
+qrun pass "queue group: a code entry behind an auditor entry is judged on its own change" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" feat aud
+qrun pass "queue group: an auditor entry behind a code entry may change a suppression file" \
+    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
+qrun fail "queue group: the same auditor entry named as a feature branch may not" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" feat featps
+qrun fail "queue group: a non-auditor entry that changes a suppression file is refused" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" aud featps
+qrun fail "queue group: the same change behind an auditor entry is refused too" \
+    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
+mkgroup "$G" featps aud
+qrun pass "queue group: an earlier entry's change is that entry's own run, not this one's" \
+    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
+rm -rf "$G"; mkdir -p "$G/.auditor"
+( cd "$G" && g init -q -b main . && echo '{"a":1}' > "$PS" && g add -A && g commit -q -m root \
+    && g update-ref refs/remotes/origin/main HEAD )
+qrun fail "queue group: a head with no first parent is refused" "$QREF" 'feature/x\to/r\n' "$PS"
+R="$R_SAVED"
+
+QGH_FAIL=1 qrun fail "queue: a failed lookup (gh exits 1) fails the check, even for an ordinary file" \
+    "$QREF" '' internal/other.go
+# each refusal runs on an ordinary file, which every lane allows, and must print its own reason
+QWANT="could not be looked up" QGH_FAIL=1 qrun fail "queue: a failed lookup never falls back to the queue ref's name" \
+    "$QREF" 'auditor/x\to/r\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an empty answer is a failure" "$QREF" '' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: two answers are ambiguous, a failure" \
+    "$QREF" 'auditor/x\to/r\nauditor/y\to/r\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an answer with no repository is a failure" \
+    "$QREF" 'auditor/x\t\n' internal/other.go
+QWANT="did not name one head branch" qrun fail "queue: an answer with no branch is a failure" \
+    "$QREF" '\to/r\n' internal/other.go
+QWANT="not a merge queue ref" qrun fail "queue: a queue ref with no pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' internal/other.go
+QWANT="no pull request number" qrun fail "queue: a queue ref with a non-numeric pull request number is refused" \
+    "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' internal/other.go
+QWANT="not a merge queue ref" qrun fail "queue: a ref that is not a queue ref is refused" \
+    "refs/heads/feature/x" 'auditor/x\to/r\n' internal/other.go
+qrun pass "queue: the ref without refs/heads/ (the workflow_run form) is accepted" \
+    "gh-readonly-queue/main/pr-12-$QSHA" 'auditor/x\to/r\n' "$PS"
+qrun pass "queue: one lookup" "$QREF" 'auditor/x\to/r\n' "$PS"
+[ "$(wc -l < "$TMPROOT/qgh.log")" -eq 1 ] && gp "queue: the lookup is exactly one gh call" \
+    || gf "queue: the lookup is exactly one gh call" "$(cat "$TMPROOT/qgh.log")"
+grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call reads pull request 12 of this repository" \
+    || gf "queue: the call reads pull request 12 of this repository" "$(cat "$TMPROOT/qgh.log")"
+: > "$TMPROOT/qgh.log"
+( cd "$R" && printf '%s\n' "$PS" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
+    GITHUB_HEAD_REF=auditor/x GITHUB_REF_NAME="" GITHUB_BASE_REF=main \
+    GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO=o/r "$ABS_SCRIPT" >/dev/null 2>&1 )
+[ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" \
+    || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
+# pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
+runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
+runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 

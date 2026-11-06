@@ -1,0 +1,29 @@
+{
+  "_note": "Who signs each third-party image outside ghcr.io and Docker Hub, pinned by hand: adding an image needs its publisher's identity here, never discovered at run time. A keyed publisher is its published public key; a keyless one is an OIDC issuer and subject.",
+  "gcr.io/projectsigstore/cosign": {
+    "key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhyQCx0E9wQWSFI9ULGwy3BuRklnt\nIqozONbbdbqz11hlRJy9c7SG+hdcFl9jE9uE/dwtuwU2MqU9T/cN0YkWww==\n-----END PUBLIC KEY-----\n",
+    "key_source": "https://github.com/sigstore/cosign/blob/main/release/release-cosign.pub (sha256 of the DER key, base64: rbgIqwcUgkJ7ehNbmfZAWAVTdXxGRUtJ1tryJ8Ga748=)"
+  },
+  "gcr.io/distroless/static-debian12": {
+    "keyless": [
+      {
+        "issuer": "https://accounts.google.com",
+        "subject": "keyless@distroless.iam.gserviceaccount.com"
+      }
+    ],
+    "source": "the Fulcio certificate of the recorded signature (tests/fixtures/image-publishers/distroless.sig.json); the publisher is Google's distroless project"
+  },
+  "registry.k8s.io/kubectl": {
+    "keyless": [
+      {
+        "issuer": "https://accounts.google.com",
+        "subject": "krel-staging@k8s-releng-prod.iam.gserviceaccount.com"
+      },
+      {
+        "issuer": "https://accounts.google.com",
+        "subject": "krel-trust@k8s-releng-prod.iam.gserviceaccount.com"
+      }
+    ],
+    "source": "the Fulcio certificates of the two recorded signatures (tests/fixtures/image-publishers/kubectl.sig.json); the image is accepted when any one pinned identity verifies fully; it is dated by the earliest such signature"
+  }
+}

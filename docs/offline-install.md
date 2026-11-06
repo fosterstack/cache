@@ -7,7 +7,7 @@ Cache](install.md); nothing on that page needs connectivity once the file
 is across the gap.
 
 FosterStack Cache is a single static binary with zero runtime dependencies
-(`CGO_ENABLED=0`, `FROM scratch`/distroless — nothing to `apt-get` on the
+(`CGO_ENABLED=0`, a minimal image — nothing to `apt-get` on the
 host, nothing the binary reaches out for at startup), so an air-gapped
 install is cheap: move the artifact across, verify it, run it. This page is
 the DISA CHPG §2.1(7) deliverable ("no build-time downloads; dependencies
@@ -36,19 +36,18 @@ curl -fsSLO "${BASE}/checksums.txt.bundle"
 Verify before the transfer, while you still have a network. Both steps matter:
 
 ```sh
-# 1. Prove the checksums file is ours
-cosign verify-blob \
-  --bundle checksums.txt.bundle \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  checksums.txt
+# 1. Prove the checksums file is ours (the release key is in the repository at the release tag)
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/build/keys/release.rsa.pub"
+cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
 # 2. Prove your archive matches it — just the one line you care about
-sha256sum -c <(grep "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt)
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 `sha256sum -c checksums.txt` on its own fails on the archives you did not
-download. The `grep` form checks only what you have.
+download. The `grep` form checks only what you have, and stops with no output
+if `checksums.txt` has no line for your archive, so a wrong `BIN`, `VERSION` or
+`PLATFORM` cannot pass as a successful check.
 
 **Bring `cosign` too.** It is a single static binary, and it will not be on a
 fresh air-gapped box — download it from
@@ -104,14 +103,13 @@ Sigstore/Rekor infrastructure rather than something you'd need connectivity
 for on the disconnected side too:
 
 ```sh
-cosign verify-blob \
-  --bundle checksums.txt.bundle \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  checksums.txt
+curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/build/keys/release.rsa.pub"
+cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt   # confirms the archive(s) you're about to move
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -   # confirms the archive(s) you're about to move
 ```
+
+A release before v0.3.0 carries a short-lived certificate instead of a key: verify it as shown in [Install FosterStack Cache](install.md). <!-- pinned: historical -->
 
 For a container tarball, verify the pulled image before exporting it (same
 `cosign verify` invocation as [Verify our images](verify-images.md)) — do
@@ -165,10 +163,10 @@ It announces itself at startup, which matters in an air gap where you cannot
 check anything against a registry after the fact:
 
 ```json
-{"msg":"fscache: starting","fips140":"active (Go validated module, CMVP cert #5247)", ...}
+{"msg":"fscache: starting","fips140":"active (Go validated module ..., CMVP cert #5247)", ...}
 ```
 
 The Compliance tier sells the authored analysis that pairs with this build for
 a CMMC or NIST SP 800-171 assessment boundary — the applicability statement,
-vendor-signed attestation letters, and questionnaire support. The bytes, the
-evidence, and this binary are free.
+a monthly attestation letter signed by FosterStack LLC, and questionnaire
+support. The bytes, the evidence, and this binary are free.

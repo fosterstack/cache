@@ -29,6 +29,7 @@ def _rj(path):
     return json.loads(_rd(path))
 
 
+C40 = "c" * 40
 TOOLS = ("grype", "trivy", "osv-scanner", "syft", "snyk", "govulncheck", "skopeo")
 
 FAKE = r'''#!%s
@@ -36,6 +37,10 @@ import json, os, sys
 tool = os.path.basename(sys.argv[0]); args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write(json.dumps([tool] + args) + "\n")
+if os.environ.get("FAKE_ENVLOG"):
+    with open(os.environ["FAKE_ENVLOG"], "a") as fh:
+        fh.write(json.dumps({"tool": tool, "args": args, "cwd": os.path.realpath(os.getcwd()),
+                             "GOTOOLCHAIN": os.environ.get("GOTOOLCHAIN"), "GOFLAGS": os.environ.get("GOFLAGS"), "GOPROXY": os.environ.get("GOPROXY"), "CGO_ENABLED": os.environ.get("CGO_ENABLED"), "GOENV": os.environ.get("GOENV")}) + "\n")
 TAG = ":ghcr.io/fosterstack/cache:cand-production"
 for r in json.load(open(os.environ["FAKE_CFG"])):
     if r["tool"] != tool:
@@ -114,11 +119,12 @@ class Harness(unittest.TestCase):
         self.source = os.path.join(self.tmp, "src"); os.makedirs(self.source)
         _wr(os.path.join(self.source, "go.mod"), "// c\nmodule github.com/fosterstack/cache\n\ngo 1.22\n")
         self.rescan = os.path.join(self.tmp, "rescan", "a", "b"); os.makedirs(self.rescan)
-        self.prod_oci = os.path.join(self.rescan, "production.oci"); _wr(self.prod_oci, "x")
+        self.prod_oci = os.path.join(self.rescan, "production"); os.makedirs(os.path.join(self.prod_oci, "blobs", "sha256")); _wr(os.path.join(self.prod_oci, "oci-layout"), "{}")   # the OCI layout directory of the images artifact
         self.kdl = os.path.join(self.tmp, "kdl.json"); _wr(self.kdl, "{}")
         self.out = os.path.join(self.tmp, "out", "manifest.json")
         self.oci = os.path.join(self.reports, "candidate.oci"); self.tar = os.path.join(self.reports, "candidate.tar")
-        self.env = {"PATH": self.fb, "FAKE_LOG": self.log, "FAKE_CFG": self.cfg, "AUDITOR_TODAY": "2026-09-27"}
+        self.envlog = os.path.join(self.tmp, "env.log"); _wr(self.envlog, "")
+        self.env = {"PATH": self.fb, "FAKE_LOG": self.log, "FAKE_ENVLOG": self.envlog, "FAKE_CFG": self.cfg, "AUDITOR_TODAY": "2026-09-27"}
 
     def rules(self, rules):
         _wr(self.cfg, json.dumps(rules))
@@ -155,14 +161,14 @@ class MainHappy(Harness):
     def test_full_run_rescan_dir(self):
         self.rules(GOOD_RULES)
         pd = self.panel_dir()
-        out = self.run_main(self.base_args("--kev", "/k/kev.json", "--panel-dir", pd), env_extra={"GITHUB_SHA": "abc123"})
+        out = self.run_main(self.base_args("--kev", "/k/kev.json", "--panel-dir", pd, "--commit", C40))
         m = _rj(self.out)
         calls = self.argv()
         copies = [c for c in calls if c[:2] == ["skopeo", "copy"]]
         self.assertEqual(copies, [
-            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci-archive:" + self.prod_oci,
+            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci:" + self.prod_oci,
              "oci-archive:%s:%s" % (self.oci, M.TAG)],
-            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci-archive:" + self.prod_oci,
+            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci:" + self.prod_oci,
              "docker-archive:%s:%s" % (self.tar, M.TAG)]])
         self.assertIn(["syft", "oci-archive:" + self.oci, "-o", "syft-json"], calls)
         self.assertIn(["govulncheck", "-json", "./..."], calls)
@@ -170,16 +176,16 @@ class MainHappy(Harness):
         inspects = [c for c in calls if c[:2] == ["skopeo", "inspect"]]
         self.assertEqual(inspects, [["skopeo", "inspect", "--format", "{{.Digest}}", "docker-archive:" + self.tar]])
         # manifest content
-        self.assertEqual(m["commit"], "abc123")
+        self.assertEqual(m["commit"], C40)
         self.assertEqual(m["module"], "github.com/fosterstack/cache")
         self.assertEqual(m["base_os"], "debian 12.0")
         self.assertEqual(m["candidate_digests"], {"production": "sha256:deadbeef"})
         self.assertEqual(m["known_defect_log"], self.kdl)
         self.assertEqual(m["kev_catalog"], "/k/kev.json")
-        self.assertEqual(m["provenance"], {"source": "own-scan", "candidate": "production.oci", "scanned": "docker-archive"})
+        self.assertEqual(m["provenance"], {"source": "own-scan", "candidate": "production", "scanned": "docker-archive"})
         self.assertEqual(m["scanner_set"], "panel")
         self.assertEqual(m["govulncheck"], {"path": os.path.join(self.reports, "govulncheck.json"),
-                                            "module": "github.com/fosterstack/cache", "commit": "abc123",
+                                            "module": "github.com/fosterstack/cache", "commit": C40,
                                             "complete": True, "scan_level": "symbol"})
         self.assertEqual(m["carriers"], [{"component": "openssl", "component_purl": "pkg:generic/openssl@3.0.2",
                                           "component_version": "3.0.2", "carrier": "node",
@@ -215,7 +221,7 @@ class MainHappy(Harness):
         # 0600 option A, PR 2b-1: with --panel-dir the auditor reads the panel's four scanners from the rescan's verdict and runs none of its own
         self.rules([r for r in GOOD_RULES if r["tool"] in ("skopeo", "syft", "govulncheck")])
         pd = self.panel_dir()
-        self.run_main(self.base_args("--panel-dir", pd), env_extra={"GITHUB_SHA": "abc123"})
+        self.run_main(self.base_args("--panel-dir", pd, "--commit", C40))
         m = _rj(self.out)
         tools = {c[0] for c in self.argv()}
         self.assertFalse(tools & {"grype", "trivy", "osv-scanner", "snyk"}, tools)
@@ -256,8 +262,98 @@ class MainHappy(Harness):
         with self.assertRaises(SystemExit) as cm:
             self.run_main(self.base_args(), runner=lambda: runpy.run_path(SRC, run_name="__main__"))
         self.assertEqual(str(cm.exception),
-                         "auditor-manifest: cannot ingest the candidate — no production.oci in the rescan artifacts")
+                         "auditor-manifest: cannot ingest the candidate — no production OCI layout directory (images/production) in the rescan artifacts")
         self.assertEqual(self.argv(), [])
+
+
+HEAD40 = "0123456789abcdef0123456789abcdef01234567"
+
+
+class SourceBinding(Harness):
+    """rc-5b fix 4 (handoff 0663, ruling A2): the source scan runs on the tree it is told to (the selected rescan's head), stamps that head,
+    and is recorded 'did not run' when there is no such tree."""
+
+    panel_dir = MainHappy.panel_dir
+
+    def gv(self):
+        return [json.loads(l) for l in _rd(self.envlog).splitlines() if l.strip() and json.loads(l)["tool"] == "govulncheck" and "-json" in json.loads(l)["args"]]
+
+    def test_the_scan_runs_in_the_source_dir_and_stamps_the_given_head(self):
+        self.rules(GOOD_RULES)
+        self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40), env_extra={"GITHUB_SHA": "f" * 40})
+        m = _rj(self.out)
+        self.assertEqual(m["commit"], HEAD40)
+        self.assertEqual(m["govulncheck"]["commit"], HEAD40)
+        (call,) = self.gv()
+        self.assertEqual(call["cwd"], os.path.realpath(self.source))      # never the process's own directory
+
+    def test_a_foreign_tree_cannot_fetch_a_toolchain_or_modules(self):
+        self.rules(GOOD_RULES)
+        self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        (call,) = self.gv()
+        self.assertEqual((call["GOTOOLCHAIN"], call["GOFLAGS"], call["GOPROXY"], call["CGO_ENABLED"], call["GOENV"]), ("local", "-mod=vendor", "off", "0", "off"))
+
+    def test_a_commit_that_is_not_40_hex_is_refused(self):
+        self.rules(GOOD_RULES)
+        for bad in ("abc123", "", "unknown", HEAD40.upper(), HEAD40 + "0", HEAD40[:-1] + "g", "HEAD", HEAD40[:-1] + "\n"):
+            with self.assertRaises(SystemExit, msg=repr(bad)):
+                self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", bad))
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_the_runs_own_sha_is_never_the_stamped_head(self):
+        self.rules(GOOD_RULES)
+        self.run_main(self.args_without_source_or_commit(), env_extra={"GITHUB_SHA": "f" * 40})
+        m = _rj(self.out)
+        self.assertEqual(m["commit"], "unknown")
+        self.assertIsNone(m["govulncheck"])
+
+    def test_a_tree_with_no_govulncheck_installed_is_did_not_run(self):
+        self.rules(GOOD_RULES)
+        real = M._version
+
+        def no_govulncheck(tool, args=("--version",)):
+            return None if tool == "govulncheck" else real(tool, args)
+        with mock.patch.object(M, "_version", no_govulncheck):
+            out = self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        self.assertEqual(self.gv(), [])                      # the tool is never run
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not run: the tool is not installed", out)
+
+    def test_a_scan_that_fails_says_why(self):
+        self.rules([r for r in GOOD_RULES if r.get("has") != ["-json"]] + [{"tool": "govulncheck", "has": ["-json"], "stdout": "", "stderr": "go: inconsistent vendoring in /src", "rc": 1}])
+        out = self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not complete (rc 1)", out)
+        self.assertIn("inconsistent vendoring", out)
+
+    def test_a_source_tree_with_no_govulncheck_installed_says_so(self):
+        self.rules([r for r in GOOD_RULES if r.get("tool") != "govulncheck"])
+        out = self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not run: the tool is not installed", out)
+
+    def args_without_source_or_commit(self):
+        return self.base_args("--panel-dir", self.panel_dir())
+
+    def args_without_source(self):
+        a = self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40)
+        i = a.index("--source-dir")
+        return a[:i] + a[i + 2:]
+
+    def test_no_source_dir_is_did_not_run_never_the_current_directory(self):
+        self.rules(GOOD_RULES)
+        out = self.run_main(self.args_without_source())
+        self.assertEqual(self.gv(), [])
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not run", out)
+
+    def test_a_source_dir_that_is_not_a_directory_is_did_not_run(self):
+        self.rules(GOOD_RULES)
+        for bad in (os.path.join(self.tmp, "nope"), ""):
+            a = self.args_without_source() + ["--source-dir", bad]
+            self.run_main(a)
+            self.assertIsNone(_rj(self.out)["govulncheck"], repr(bad))
+        self.assertEqual(self.gv(), [])
 
 
 class MainDegraded(Harness):
@@ -326,7 +422,7 @@ class MainDegraded(Harness):
             def today(cls):
                 raise OSError("no clock")
         with mock.patch("datetime.date", _NoToday), mock.patch.object(M, "_lifecycle", wraps=M._lifecycle) as lc:
-            out = self.run_main(self.base_args(), env_extra={}, drop=("AUDITOR_TODAY",))
+            out = self.run_main(self.base_args("--commit", C40), env_extra={}, drop=("AUDITOR_TODAY",))
         self.assertEqual(lc.call_args.args[3], "1970-01-01")
         self.assertEqual(lc.call_args.args[0], "debian")
         m = _rj(self.out)
@@ -377,14 +473,14 @@ class Helpers(Harness):
 
     def test_archives_rescan_failure_paths(self):
         empty = os.path.join(self.tmp, "empty"); os.makedirs(empty)
-        self.assertEqual(M._archives(empty, "", self.oci, self.tar), (None, "no production.oci in the rescan artifacts"))
+        self.assertEqual(M._archives(empty, "", self.oci, self.tar), (None, "no production OCI layout directory (images/production) in the rescan artifacts"))
         self.rules([{"tool": "skopeo", "rc": 1}])
         with mock.patch.dict(os.environ, self.env), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(M._archives(os.path.join(self.tmp, "rescan"), "", self.oci, self.tar),
                              (None, "skopeo convert failed"))
             self.rules([{"tool": "skopeo", "has_prefix": ["docker-archive:"]}, {"tool": "skopeo", "rc": 1}])
             self.assertEqual(M._archives(os.path.join(self.tmp, "rescan"), "", self.oci, self.tar),
-                             ("production.oci", None))
+                             ("production", None))
 
     def test_norm_ref(self):
         self.assertEqual(M._norm_ref("debian:12.0@sha256:X"), "debian@sha256:X")
