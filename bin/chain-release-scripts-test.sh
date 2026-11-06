@@ -910,6 +910,20 @@ check(digest == "d8c38764f45d912a00a98e1072c42f75685d0f4ce8e4ca15b97709ad1010ae0
 t, rc, so, se = pva([PBF, "jq -e '.ok \u00e9' provenance.bundle.json"], assets={"provenance.bundle.json": OK})
 check(rc != 0 and not calls(t) and "Traceback" not in se and "closed grammar" in se,
       "owner rule 6: a letter outside ASCII in a jq filter is a refusal, not a crash", first(se))
+# ---- 0710 (the proof that the base-layout apk is not released): the released SET only, read from release-apks.sh's
+# fixed table (its variants and
+# pattern()); nothing here names a key, a signer or a signing call, so a rewrite of how the apks are signed does not
+# touch these cases ----------------
+_ra = open(os.path.join(BIN, "release-apks.sh")).read()
+_variants = re.search(r'^variants="([^"]*)"$', _ra, re.M)
+_pattern = re.search(r"^pattern\(\) \{.*\}$", _ra, re.M)
+check(_variants is not None and _variants.group(1).split() == ["standard", "fips"], "0710 the released variants of the fixed table are exactly standard and fips")
+_names = ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk", "fscache-baselayout-0.3.0-r0.apk")
+_probe = subprocess.run(["bash", "-c", _pattern.group(0) + '\nfor v in standard fips; do p=$(pattern "$v"); for n in "$@"; do case $n in $p) echo "$v $n";; esac; done; done'
+                         , "probe"] + list(_names), capture_output=True, text=True) if _pattern else None
+check(_probe is not None and _probe.stdout.split("\n")[:-1] == ["standard fscache-0.3.0-r0.apk", "fips fscache-fips-0.3.0-r0.apk"],
+      "0710 the patterns of the fixed table match fscache's two variants and do not match fscache-baselayout", _probe.stdout if _probe else "no pattern() line")
+check("baselayout" not in _ra, "0710 release-apks.sh names no base-layout package: the apk is assembled into the images only, it is neither signed nor attached")
 # ---- AC10: no script prints a credential, anywhere ---------------------------------------------------------------------------------------------
 for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publish", REG), ("release-sign", REG), ("release-assets", ["GH_TOKEN"]), ("release-postverify", ["GH_TOKEN"])):
     t = full_assets() if s == "release-assets" else tree(); rc, so, se = run(t, s, creds=creds)
@@ -917,7 +931,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "401"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "404"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

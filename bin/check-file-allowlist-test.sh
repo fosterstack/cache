@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 67 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 86 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -92,8 +92,13 @@ dependency-provenance.json
 bin/vendor-check.sh bin/vendor-provenance.py bin/vendor-provenance-records.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
 bin/check-no-outbound.py bin/check-no-outbound-test.sh
+build/melange-baselayout.yaml build/melange-baselayout.yaml.tmpl build/baselayout/members.txt bin/baselayout-test.sh bin/build-baselayout-apk.sh bin/build-baselayout-apk-test.sh
+build/baselayout/etc/group build/baselayout/etc/hosts build/baselayout/etc/nsswitch.conf build/baselayout/etc/os-release
+build/baselayout/etc/passwd build/baselayout/etc/protocols build/baselayout/etc/services
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/host-tools.yaml build/locks/host-tools.lock
+build/vm-host.yaml build/vm-guest.yaml build/locks/vm-host.lock build/locks/vm-guest.lock build/locks/vm-kernel.lock
+build/vm-keys/kernel-key-6165ee59.rsa.pub
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh
@@ -112,7 +117,7 @@ bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
 build/probe/control.yaml.tmpl build/probe/read-record.yaml.tmpl build/probe/write-record.yaml.tmpl
 build/probe/read-keydir.yaml.tmpl build/probe/read-token.yaml.tmpl build/probe/network.yaml.tmpl
 """.split())
-if len(DECLARED) != 67: errs.append("declared list is not 67 paths: %d" % len(DECLARED))
+if len(DECLARED) != 86: errs.append("declared list is not 86 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -122,8 +127,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 211 allow patterns: chain-v030's 210, plus bin/build-freeze.sh (the freeze job)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 211, 6
+# 221 allow patterns: the merge of #816 (0710) and #840 (VM build inputs); the number is read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 221, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0

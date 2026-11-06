@@ -13,6 +13,9 @@ the datahash the control segment records), unpacked into the NEW directory --roo
 Nothing is fetched, no other program is started and nothing needs a privilege: the apk is read as data (gzip and the archive format as a library). Everything is
 checked and unpacked in a staging directory beside --root and renamed to --root only when every check passed; a refusal leaves nothing at --root and
 no wrapper. An existing --root is refused untouched.
+A hard link is copied, never linked, and only when its target is a regular file the same package already
+unpacked (REQ-CHAIN-004-AC18). A symlink directory such as usr/lib64 -> lib lets another package place files
+below it (they land in lib) while no file path has two owners.
 Exit codes: 0 done | 1 a file is missing, does not match its record or is unsafe, the loader or bwrap is missing (nothing written) | 2 refused: bad
 arguments, a lock that is empty or not closed, an unsupported architecture, an existing --root.
 """
@@ -111,6 +114,45 @@ def inside(root_parts_target):
 SKIPPED = set()   # the paths of absolute links that were not created
 
 
+def real_dir_parts(stage, parts, what):
+    """The directory parts of an entry with every relative symlink followed (usr/lib64/x is usr/lib/x
+    when lib64 -> lib). A link that leaves the staging directory, an absolute link, a link that was not
+    created, or a loop is refused."""
+    done, pending, hops = [], list(parts), 0
+    while pending:
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not done:
+                die("%s: a symlink leads above the staging directory" % what)
+            done.pop()
+            continue
+        done.append(part)
+        if "/".join(done) in SKIPPED:
+            die("%s: %s is an absolute symlink that was not created" % (what, "/".join(done)))
+        if os.path.islink(os.path.join(stage, *done)):
+            hops += 1
+            target = os.readlink(os.path.join(stage, *done))
+            if hops > 40 or target.startswith("/"):
+                die("%s: the symlink %s loops or is absolute" % (what, "/".join(done)))
+            done.pop()
+            pending = target.split("/") + pending
+    return done
+
+
+def hard_link_source(stage, target, owner, owners, what):
+    """The file a hard link copies: a regular file this same package already placed, named by a plain relative path."""
+    parts = target.split("/")
+    if not target or "\0" in target or target.startswith("/") or any(p in ("", ".", "..") for p in parts):
+        die("%s: the hard link target %r is not a plain relative path" % (what, target))
+    tnorm = "/".join(real_dir_parts(stage, parts[:-1], what) + parts[-1:])
+    src = os.path.join(stage, tnorm)
+    if owners.get(tnorm) != owner or os.path.islink(src) or not os.path.isfile(src):
+        die("%s: the hard link target %s is not a regular file this package already unpacked" % (what, tnorm))
+    return src
+
+
 def check_place(stage, norm, what, kind):
     """Nothing is written through a symlink or over something that is not what the entry is: every directory above the entry must be a real directory inside the
     staging directory (never a symlink an earlier entry made), and the entry's own place must be free (a directory entry may meet a real directory)."""
@@ -130,6 +172,17 @@ def check_place(stage, norm, what, kind):
         die("%s: the place of %s is already taken" % (what, norm))
 
 
+def check_skipped(norm, what, kind):
+    """The skipped-absolute-link guard of check_place, for the path as the package names it."""
+    for i in range(1, len(norm.split("/"))):
+        if "/".join(norm.split("/")[:i]) in SKIPPED:
+            die("%s: %s is written below an absolute symlink that was not created" % (what, norm))
+    if norm in SKIPPED:
+        die("%s: %s is the path of an absolute symlink that was not created" % (what, norm))
+    if kind != "dir" and any(sk.startswith(norm + "/") for sk in SKIPPED):
+        die("%s: %s is not a directory but an absolute symlink that was not created lies below it" % (what, norm))
+
+
 def unpack(data, stage, owner, owners, what):
     try:
         t = tarfile.open(fileobj=io.BytesIO(data), mode="r:")
@@ -144,6 +197,10 @@ def unpack(data, stage, owner, owners, what):
         norm = "/".join(p for p in parts if p not in ("", "."))
         if not norm:
             continue
+        if m.isfile() or m.islnk():   # only files pass through a symlinked directory; the rest keep their path
+            check_skipped(norm, what, "other")
+            names = norm.split("/")
+            norm = "/".join(real_dir_parts(stage, names[:-1], what) + names[-1:])
         dest = os.path.join(stage, norm)
         check_place(stage, norm, what, "dir" if m.isdir() else "other")
         if m.isdir():
@@ -172,8 +229,14 @@ def unpack(data, stage, owner, owners, what):
             with open(dest, "wb") as out:
                 out.write(src.read())
             os.chmod(dest, 0o755 if m.mode & 0o111 else 0o644)
+        elif m.islnk():
+            src = hard_link_source(stage, m.linkname, owner, owners, what)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(src, "rb") as f, open(dest, "wb") as out:
+                out.write(f.read())
+            os.chmod(dest, 0o755 if os.stat(src).st_mode & 0o111 else 0o644)
         else:
-            die("%s: %s is a hard link, a device or another kind of entry that is not unpacked" % (what, norm))
+            die("%s: %s is a device, a fifo or another kind of entry that is not unpacked" % (what, norm))
         owners[norm] = owner
 
 

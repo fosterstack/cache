@@ -39,7 +39,7 @@ def pkgver(tag):
 
 
 def apk_name(variant, tag):
-    return ("fscache-%s-r0.apk" if variant == "standard" else "fscache-fips-%s-r0.apk") % pkgver(tag)
+    return {"standard": "fscache-%s-r0.apk", "fips": "fscache-fips-%s-r0.apk", "baselayout": "fscache-baselayout-%s-r0.apk"}[variant] % pkgver(tag)
 
 
 def apk_bytes(variant, arch, tag, key="assembly"):
@@ -70,6 +70,8 @@ def out_files(arch, tag):
         s = "" if v == "standard" else "-fips"
         f["fscache-modules%s.spdx.json" % s] = ("sbom|" + v).encode()
         f["inputs-manifest%s.json" % s] = ("inputs|" + v).encode()
+    f["%s/%s" % (arch, apk_name("baselayout", tag))] = apk_bytes("baselayout", arch, tag)      # 0710: the base-layout apk and its inputs manifest
+    f["inputs-manifest-baselayout.json"] = b"inputs|baselayout"
     return f
 
 
@@ -80,6 +82,8 @@ def fragment(arch, tag):
         items["binary-%s-%s" % (v, arch)] = "sha256:" + sha(apk_binary(apk_bytes(v, arch, tag)))
         items["modules-sbom-" + v] = "sha256:" + sha(("sbom|" + v).encode())
         items["inputs-manifest-" + v] = "sha256:" + sha(("inputs|" + v).encode())
+    items["apk-baselayout-" + arch] = apk_digest(apk_bytes("baselayout", arch, tag))
+    items["inputs-manifest-baselayout"] = "sha256:" + sha(b"inputs|baselayout")
     items["apkindex-" + arch] = "sha256:" + sha(("idx|" + arch).encode())
     return {"arch": arch, "items": items}
 
@@ -259,6 +263,19 @@ printf 'idx|%s' "$arch" > "$out/$arch/APKINDEX.tar.gz"
 printf 'sbom|%s' "$variant" > "$out/fscache-modules$suffix.spdx.json"
 printf 'inputs|%s' "$variant" > "$out/inputs-manifest$suffix.json"
 '''
+FAKE_BUILD_BASELAYOUT = '''#!/usr/bin/env bash
+echo "baselayout $* SDE=${SOURCE_DATE_EPOCH:-unset}" >> calls.log
+[ "${FAKE_BASELAYOUT_RC:-0}" = 0 ] || exit "$FAKE_BASELAYOUT_RC"
+arch=x86_64; out=out; version=0.3.0
+while [ $# -gt 0 ]; do
+  case "$1" in --arch) arch=$2;; --out) out=$2;; --version) version=$2;; esac
+  shift
+done
+pk=$(printf '%s' "$version" | sed -E 's/-rc\\.?([0-9]+)$/_rc\\1/')
+mkdir -p "$out/$arch"
+printf 'SIG:assembly\\napk|baselayout|%s|%s|%s' "$arch" "${SOURCE_DATE_EPOCH:-unset}" "$pk" > "$out/$arch/fscache-baselayout-$pk-r0.apk"
+printf 'inputs|baselayout' > "$out/inputs-manifest-baselayout.json"
+'''
 FAKE_ASSEMBLE = '''#!/usr/bin/env python3
 import glob, hashlib, os, sys
 a = sys.argv[1:]
@@ -372,6 +389,7 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
     for name, body in (("build-admit.py", FAKE_ADMIT), ("build-version-check.py", FAKE_VERSION_CHECK), ("build-archives.py", FAKE_ARCHIVES),
                        ("apk-tool.py", FAKE_APKTOOL), ("git", FAKE_GIT), ("gh", FAKE_GH), ("build-apk.sh", FAKE_BUILD_APK),
+                       ("build-baselayout-apk.sh", FAKE_BUILD_BASELAYOUT),
                        ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
     shutil.copy(script, d + "/bin/build-stage-%s.sh" % kind); os.chmod(d + "/bin/build-stage-%s.sh" % kind, 0o755)
