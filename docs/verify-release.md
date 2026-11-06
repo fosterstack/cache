@@ -7,14 +7,14 @@ Every image and file of a v0.3.0 and later release is signed with the release ke
 You need cosign, gh and jq. The steps cover both images: production and -fips.
 Set these once:
 
-- `<IMAGE_REF>`: the production image by digest, as repository@sha256:digest. TO-VERIFY: where the release names it.
+- `<IMAGE_REF>`: the production image by digest, as repository@sha256:digest, with the digest from `image-production` in `digests.json` on the release page (`image-fips` for the -fips image).
 - `<IMAGE_REF_FIPS>`: the -fips image by digest, as repository@sha256:digest.
 - `<TAG>`: the release tag, for example v0.3.0.
 - `release.rsa.pub`: the release public key, `build/keys/release.rsa.pub` at the release tag. Fetch it once: `curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<TAG>/build/keys/release.rsa.pub`.
 
 ## 1. Image signatures
 
-Did our release workflow sign these exact images? TO-VERIFY: the signing workflow.
+Did our release workflow sign these exact images? The signer is the Release stage, `stage-promote.yml`, at the release tag.
 
 ```sh
 # Not run before release: it needs the image in a registry.
@@ -37,13 +37,13 @@ cosign verify-blob-attestation --key release.rsa.pub --bundle provenance.bundle.
 
 ## 3. Digests
 
-The provenance names each image by digest. The first command succeeds only if the subject named image-production is the production image you set; the second lists every image and digest, so you can compare the -fips digest with yours. TO-VERIFY: the field names against a real bundle.
+The provenance names each image by digest. The first command succeeds only if the subject named image-production is the production image you set; the second lists every image and SBOM digest, so you can compare them with yours. TO-VERIFY: the field names against a real bundle.
 
 ```sh
 # Not run before release.
 jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == "https://slsa.dev/provenance/v1" and any(.subject[]; .name == "image-production" and (.digest.sha256 as $d | $ref | endswith("@sha256:" + $d)))' provenance.bundle.json
 # Not run before release.
-jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + " sha256:" + .digest.sha256' provenance.bundle.json
+jq -r '.dsseEnvelope.payload | @base64d | fromjson | (.subject[], .predicate.runDetails.byproducts[]) | .name + " sha256:" + .digest.sha256' provenance.bundle.json
 ```
 
 ## 4. The SBOM and the inputs

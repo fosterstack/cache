@@ -1,6 +1,6 @@
 name: supply-chain
 
-# REQ-SUP-001 (owner ratified Oct 5): the actions supply-chain checks.
+# REQ-SUP-001: the actions supply-chain checks.
 #   pin-age        every pull request: a version the PR moves must be public 7 days by a server-side time (AC2-AC4). It runs the base branch's
 #                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
 #   image-signatures  every pull request: `cosign verify` (reads only) of each pinned third-party image, run by the
@@ -9,7 +9,7 @@ name: supply-chain
 #   rerun-held     once a day: re-runs the pin-age check of a held PR whose moved versions have reached 7 days (AC6). The only job with actions: write.
 #   evidence-letter-present  once a day: from the 3rd of the month, last month's evidence letter must be on a
 #                  published release and verify (REQ-REL-013). Read-only.
-# It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
+# It never produces a run, environment or secret name (AC8): the private details are written on a maintainer's machine, not here.
 
 on:
   pull_request: {}
@@ -65,10 +65,10 @@ jobs:
           HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"
           : "${BASE_SHA:?no base commit to compare: this check fails}" \
             "${HEAD_SHA:?no head commit to compare: this check fails}"
-          # 540 s, then pin-audit.py's 600 s (once cache#788 is in the base): fits the 20-minute job; -v names a stop
+          # 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop
           timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \
             --head "$HEAD_SHA" || status=1
-          # the advisor's rulings come from the base branch too: a pull request must not bring its own
+          # the reviewers' rulings come from the base branch too: a pull request must not bring its own
           exceptions=trusted/.github/supply-chain-exceptions.json
           if [ ! -f "$exceptions" ]; then
             exceptions="$RUNNER_TEMP/no-exceptions.json"

@@ -320,7 +320,7 @@ if (ps.get("permissions") or {}) != {"contents": "read", "packages": "read"}:
 st_text = text("panel-scout")
 if re.search(r"--vex-location|local://|docker-daemon:|skopeo", st_text):
     bad.append("panel-scout reads a local image or a local VEX file (Scout applies our statements only through the index's attestation)")
-sc, scan, diag = step("rule 4 self-check"), step("Docker Scout every image"), step("attestation diagnostics")
+sc, scan, diag = step("Scout applies our attestation to a fixture index"), step("Docker Scout every image"), step("attestation diagnostics")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
 else:
@@ -646,13 +646,13 @@ case_ google-secret           bad "[s.__setitem__('with', {'credentials_json': '
 case_ google-literal-provider bad "[s['with'].__setitem__('workload_identity_provider', 'projects/1/locations/global/workloadIdentityPools/p/providers/q') for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
 case_ google-no-idtoken       bad "$J['panel-google']['permissions'].pop('id-token')"
 case_ grype-no-vex            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('--vex .vex/fosterstack-cache.openvex.json', '')"
-case_ scout-no-author         bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"
-case_ scout-no-selfcheck      bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'self-check' not in (s.get('name') or '')]"
-case_ scout-selfcheck-soft    bad "[s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]['continue-on-error'] = 'true'"
-case_ scout-selfcheck-exit0   bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = 'exit 0\n' + s['run']"
-case_ scout-selfcheck-nojudge bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('python3 bin/scout-selfcheck.py', 'true')"
-case_ scout-selfcheck-same    bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('.\"fixture-ours\"', '.\"fixture-before\"')"
-case_ scout-selfcheck-other-repo bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('ghcr.io/fosterstack/cache-scout-probe', 'ghcr.io/another-vendor/cache-scout-probe')"
+case_ scout-no-author         bad "s = [s for s in $J['panel-scout']['steps'] if 'fixture index' in (s.get('name') or '')][0]; s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"
+case_ scout-no-selfcheck      bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'fixture index' not in (s.get('name') or '')]"
+case_ scout-selfcheck-soft    bad "[s for s in $J['panel-scout']['steps'] if 'fixture index' in (s.get('name') or '')][0]['continue-on-error'] = 'true'"
+case_ scout-selfcheck-exit0   bad "s = [s for s in $J['panel-scout']['steps'] if 'fixture index' in (s.get('name') or '')][0]; s['run'] = 'exit 0\n' + s['run']"
+case_ scout-selfcheck-nojudge bad "s = [s for s in $J['panel-scout']['steps'] if 'fixture index' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('python3 bin/scout-selfcheck.py', 'true')"
+case_ scout-selfcheck-same    bad "s = [s for s in $J['panel-scout']['steps'] if 'fixture index' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('.\"fixture-ours\"', '.\"fixture-before\"')"
+case_ scout-selfcheck-other-repo bad "s = [s for s in $J['panel-scout']['steps'] if 'fixture index' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('ghcr.io/fosterstack/cache-scout-probe', 'ghcr.io/another-vendor/cache-scout-probe')"
 case_ scout-scan-other-repo   bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('ghcr.io/fosterstack/cache-scout-probe', 'ghcr.io/fosterstack/cache')"
 case_ scout-scan-local-vex    bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--vex-author', '--vex-location .vex/fosterstack-cache.openvex.json --vex-author')"
 case_ scout-scan-no-author    bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"

@@ -1,4 +1,4 @@
-# The Check stage of the v0.3.0 release chain (rules 55, 58, 66, 68, 70; REQ-CHAIN-006). Called only from release.yml, after Build, beside Rebuild and Sign.
+# The Check stage of the v0.3.0 release chain (REQ-CHAIN-006). Called only from release.yml, after Build, beside Rebuild and Sign.
 # It downloads Build's artifacts (the candidate images as OCI layout directories, the digest list, the dist archives to scan alongside the images),
 # then installs the listed scanners (grype, osv-scanner) by checksum and the pinned Go, takes govulncheck from the govulncheck-build job (below), and runs three Witness steps through the one helper: scanners, acceptance and runtime. Each step first verifies Build's record (bin/check-stage.sh),
 # then runs its checks as listed plain scripts. No registry login, no packages permission, no secret: the stage only reads what the earlier stages made.

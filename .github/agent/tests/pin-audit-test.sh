@@ -1212,6 +1212,15 @@ for _ in range(3):
         inv.inventory(dict(long_line)); raise SystemExit("no raise")
     except RuntimeError:
         pass
+# the kernel lock's items (label, src, sums, step) are the same with no memo, with a cold memo and with a warm one
+lock_text = "linux-virt=6.18.60-r0 sha256:" + "a" * 64 + "\n"
+def lock_dump():
+    return sorted((k, i.label, i.src, tuple(i.sums), i.step) for k, i in inv.inventory({inv.KERNEL_LOCK: lock_text}).items())
+inv._MEMO_ON[0] = False
+no_memo = lock_dump()
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+cold, warm = lock_dump(), lock_dump()
+assert no_memo and no_memo == cold == warm, ("the lock's items differ between no memo, a cold memo and a warm memo", no_memo, cold, warm)
 PY
 CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
 check_bg python3 - "$aud" "$here/../../.." <<'PY'
@@ -1231,15 +1240,76 @@ paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":
 revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
 assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
-def run(mod, r):
+def lock_keys(r, repo=None):      # the items the kernel lock of that revision adds: the memo-time oracle predates the lock and cannot know them
+    # the revision's own kernel lock, read by the inventory's own row parser; whatever it would refuse fails here, naming the revision
+    repo = repo or root
+    ls = subprocess.run(["git", "-C", repo, "ls-tree", "-z", r, "--", inv.KERNEL_LOCK], capture_output=True)
+    assert ls.returncode == 0, "cannot list %s at %s" % (inv.KERNEL_LOCK, r)
+    if not ls.stdout:
+        return set()                          # no lock at this revision: nothing the oracle cannot see
+    mode = ls.stdout.split()[0]
+    assert mode != b"120000", "%s at %s is a symbolic link" % (inv.KERNEL_LOCK, r)
+    if mode not in (b"100644", b"100755"):
+        return set()                          # a directory or a submodule at the path is no lock file: the inventory reads none
+    p = subprocess.run(["git", "-C", repo, "show", r + ":" + inv.KERNEL_LOCK], capture_output=True)
+    assert p.returncode == 0, "cannot read %s at %s" % (inv.KERNEL_LOCK, r)
     try:
-        return dump(mod.load_at(root, r))
+        text = p.stdout.decode("utf-8")
+        assert len(text) <= inv.MAX_FILE, "the file is too large to read safely"
+        items = inv._kernel_lock_items(inv.KERNEL_LOCK, text)
+    except (UnicodeDecodeError, RuntimeError, AssertionError) as e:
+        raise AssertionError("%s at %s cannot be read as the inventory reads it (%s)" % (inv.KERNEL_LOCK, r, e))
+    return {i.key for i in items}
+def _tree(repo, mode, data):
+    blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"], input=data, capture_output=True, check=True).stdout.decode().strip()
+    idx = tempfile.mktemp(prefix="cache1-idx.", dir=repo)
+    env = dict(os.environ, GIT_INDEX_FILE=idx)
+    subprocess.run(["git", "-C", repo, "update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, blob, inv.KERNEL_LOCK)], env=env, check=True)
+    t = subprocess.run(["git", "-C", repo, "write-tree"], env=env, capture_output=True, check=True).stdout.decode().strip()
+    os.unlink(idx)
+    return t
+with tempfile.TemporaryDirectory(prefix="cache1-lockkeys.") as lk:
+    subprocess.run(["git", "init", "-q", lk], check=True)
+    row = b"linux-virt=6.18.60-r0 sha256:" + b"a" * 64 + b"\n"
+    ok = lambda data, mode="100644": lock_keys(_tree(lk, mode, data), repo=lk)
+    assert ok(row) == {"apk:linux-virt@6.18.60-r0"}, "a plain row"
+    assert ok(b"# a comment\n\n" + row) == {"apk:linux-virt@6.18.60-r0"}, "a comment and a blank line"
+    assert ok(b"   # an indented comment\n" + row) == {"apk:linux-virt@6.18.60-r0"}, "an INDENTED comment is a comment (the inventory strips first)"
+    assert ok(b"  " + row.strip() + b"  \n") == {"apk:linux-virt@6.18.60-r0"}, "a padded row"
+    assert ok(b"x86_64/linux-virt=6.18.60-r0 sha256:" + b"b" * 64 + b"\n") == {"apk:x86_64/linux-virt@6.18.60-r0"}, "a row with an arch prefix"
+    for what, data, mode in (("a row without '='", b"linux-virt sha256:" + b"a" * 64 + b"\n", "100644"),
+                             ("a row without a sha256", b"linux-virt=6.18.60-r0\n", "100644"),
+                             ("a version that is not a pin (latest)", b"linux-virt=latest sha256:" + b"a" * 64 + b"\n", "100644"),
+                             ("a short digest", b"linux-virt=6.18.60-r0 sha256:" + b"a" * 40 + b"\n", "100644"),
+                             ("a duplicate row", row + b"linux-virt=6.18.60-r0 sha256:" + b"b" * 64 + b"\n", "100644"),
+                             ("a lock with only a comment", b"# nothing here\n", "100644"),
+                             ("a lock that is not UTF-8", row + b"\xff\xfe\n", "100644"),
+                             ("a symbolic link", b"build/locks/other", "120000")):
+        tr = _tree(lk, mode, data)
+        try:
+            lock_keys(tr, repo=lk)
+        except AssertionError as e:
+            assert tr in str(e), ("the error must name the revision", what, str(e))
+        else:
+            raise SystemExit("lock_keys accepted " + what)
+    assert lock_keys("4b825dc642cb6eb9a060e54bf8d69288fbee4904", repo=lk) == set(), "a revision with no lock names no keys"
+    # a TREE at the lock's path is no lock file (the inventory reads none): no keys and no false red
+    sub = subprocess.run(["git", "-C", lk, "hash-object", "-w", "--stdin"], input=b"x", capture_output=True, check=True).stdout.decode().strip()
+    idx2 = tempfile.mktemp(prefix="cache1-idx.", dir=lk); env2 = dict(os.environ, GIT_INDEX_FILE=idx2)
+    subprocess.run(["git", "-C", lk, "update-index", "--add", "--cacheinfo", "100644,%s,%s/inner" % (sub, inv.KERNEL_LOCK)], env=env2, check=True)
+    tree_at_path = subprocess.run(["git", "-C", lk, "write-tree"], env=env2, capture_output=True, check=True).stdout.decode().strip(); os.unlink(idx2)
+    assert lock_keys(tree_at_path, repo=lk) == set(), "a directory at the lock path names no keys"
+def run(mod, r, skip=()):
+    try:
+        d = mod.load_at(root, r)
     except RuntimeError as e:
         return "raise:" + str(e)
+    assert all(k in d for k in skip), ("a kernel lock row is not an item of the revision", r)
+    return dump({k: i for k, i in d.items() if k not in skip})
 want = {r: run(parent, r) for r in revs}
 inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 for r in revs + list(reversed(revs)):
-    assert run(inv, r) == want[r], r
+    assert run(inv, r, lock_keys(r)) == want[r], r
 PY
 
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
@@ -2096,5 +2166,295 @@ assert "inv.KERNEL_LOCK" in src, src
 PY
 CASE="background checks: the three long cases were each started once and each reported once"
 check test "$BG_N" -eq 3
+
+# --- the total deadline and the phase markers (cache supply-chain.yml timed out at 15 and 20 minutes with an empty log: no scheduled run since Oct 7) --------------
+# A hanging gh: every call sleeps. With --deadline 2 the audit must end by itself: exit 2 within seconds, stderr naming the phase it was in, and the phase
+# lines it had printed must have reached the file. A rate limit is not this case: gh answers at once and the audit fails at once (the "rate-limited GitHub
+# API" case above), so no retry and no sleep is added anywhere.
+# The cases below are offline: a git shim first on PATH answers `git ls-remote` with an empty list (the tag reads would otherwise reach GitHub before the
+# hang) and runs every other git command for real.
+REALGIT=$(command -v git); mkdir -p "$work/shim"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim/git"; chmod +x "$work/shim/git"
+printf '#!/bin/sh\nsleep 60\n' >"$work/gh-hang"; chmod +x "$work/gh-hang"
+mkrepo "$work/r-hang" "5:$CLEANSHA"
+start=$(date +%s); rc=0
+( cd "$work" && PATH="$work/shim:$PATH" timeout 40 python3 "$aud" --root "$work/r-hang" --now "$NOW" --gh "$work/gh-hang" --deadline 2 >"$work/hang.out" 2>"$work/hang.err" ) || rc=$?
+elapsed=$(( $(date +%s) - start ))
+CASE="deadline: a hanging gh ends the audit by itself with exit 2 in seconds, not at the job timeout"
+check test "$rc" -eq 2 -a "$elapsed" -le 15 -a "$(grep -c '^audit: phase: ' "$work/hang.out")" -ge 1
+CASE="deadline: stderr names the phase it was in and the deadline: 'audit: could not finish: still in judging after 2 s'"
+check grep -qx 'audit: could not finish: still in judging after 2 s' "$work/hang.err"
+CASE="deadline: the phase lines printed before the kill are in the file, in order"
+check python3 - "$work/hang.out" <<'PY'
+import sys
+lines = [l.strip() for l in open(sys.argv[1]) if l.startswith("audit: phase: ")]
+assert lines == ["audit: phase: history", "audit: phase: judging"], lines
+PY
+CASE="deadline: defaults are 900 s for the daily run and 600 s for --rerun-held and for pull request mode; --deadline overrides"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys, argparse
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+ns = lambda **k: argparse.Namespace(**{"deadline": None, "rerun_held": False, "base": None, **k})
+assert pa.deadline_for(ns()) == 900
+assert pa.deadline_for(ns(rerun_held=True)) == 600
+assert pa.deadline_for(ns(base="abc")) == 600
+assert pa.deadline_for(ns(deadline=7, base="abc")) == 7 and pa.deadline_for(ns(deadline=7)) == 7
+PY
+echo "$CLEAN" >"$work/clean.fx.json"
+BIGDIGITS=$(python3 -c "print('9' * 5000)")
+for bad in 0 -3 86401 9223372037 abc 1.5 "$BIGDIGITS"; do
+  rc=0; ( cd "$work" && python3 "$aud" --root "$work/r-clean" --now "$NOW" --gh "$work/gh" --fixtures "$work/clean.fx.json" --deadline "$bad" >"$work/dl.out" 2>"$work/dl.err" ) || rc=$?
+  CASE="deadline: --deadline ${bad:0:12} is refused with exit 2, nothing is audited, and nothing is a traceback"
+  check test "$rc" -eq 2 -a ! -s "$work/dl.out" -a -s "$work/dl.err" -a "$(grep -c Traceback "$work/dl.err")" -eq 0
+done
+CASE="deadline: the values 1 and 86400 (one day, the largest) are accepted and the run is audited as before"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
+import subprocess, sys
+aud, repo, fx, now, gh = sys.argv[1:6]
+for v in ("1", "86400"):
+    r = subprocess.run([sys.executable, aud, "--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--deadline", v], capture_output=True, text=True)
+    assert r.returncode == 0 and "audit: phase: history" in r.stdout, (v, r.returncode, r.stderr)
+PY
+# a run that finishes cannot also report the deadline: cancel() does not stop a callback that has already started, so the end of main waits for it (join)
+CASE="deadline: a callback already running when the run finishes decides the exit: 2, not a 0 that carries the deadline line"
+rc=0; python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" >/dev/null 2>&1 <<'PY' || rc=$?
+import importlib.util, sys, threading, time
+aud, repo, fx, now, gh = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("pa", aud); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+started, original = threading.Event(), pa._deadline_passed
+def slow_callback(seconds):
+    started.set()
+    time.sleep(0.5)       # the callback is mid-way when main reaches its end
+    original(seconds)
+pa._deadline_passed = slow_callback
+pa.FixtureNet.prs = lambda self: (started.wait(10), [])[1]   # the run finishes only after the callback has started
+sys.exit(pa.main(["--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--rerun-held", "--deadline", "1"]))
+PY
+check test "$rc" -eq 2
+# a deadline in the middle of the observations write must not leave a half-written state.json at the published path
+CASE="observations: a deadline during the write leaves no partial file at the published path (a temp file, then os.replace)"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" "$work/obs-partial" <<'PY'
+import os, subprocess, sys
+aud, repo, fx, now, gh, out = sys.argv[1:7]
+code = """
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+def partial(obj, f, **kw):
+    f.write('{"first_seen": {"half')
+    f.flush()
+    time.sleep(30)
+pa.json.dump = partial
+sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--observations-out", %r, "--deadline", "1"]))
+""" % (aud, repo, fx, now, gh, out + "/state.json")
+r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=25)
+assert r.returncode == 2, (r.returncode, r.stdout[-300:], r.stderr[-300:])
+assert not os.path.exists(out + "/state.json"), "a partial state.json is at the published path"
+PY
+# the deadline must not depend on stdout: with the pipe full and nobody reading, the callback still ends the run
+CASE="deadline: stdout full and undrained does not stop the callback: exit 2 within seconds, the diagnostic on stderr"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
+import subprocess, sys
+aud, repo, fx, now, gh = sys.argv[1:6]
+code = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+def noisy(*a, **k):
+    print("x" * 1000000)     # a megabyte into a pipe nobody drains: this print blocks
+    return {}
+pa.history_items = noisy
+sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--deadline", "1"]))
+""" % (aud, repo, fx, now, gh)
+p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    p.wait(timeout=6)
+except subprocess.TimeoutExpired:
+    p.kill()
+    raise SystemExit("the run was still alive after 6 s: the callback waited on stdout")
+err = p.stderr.read().decode()
+assert p.returncode == 2 and "could not finish" in err, (p.returncode, err)
+PY
+# the same for stderr: with fd 2 a pipe that is full and never read, the one write of the diagnostic must not wait either
+CASE="deadline: stderr full and never read does not stop the callback: exit 2 within seconds"
+check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
+import subprocess, sys
+aud, repo, fx, now, gh = sys.argv[1:6]
+code = """
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+os.set_blocking(2, False)
+try:
+    while True:
+        os.write(2, b"x" * 4096)      # fill the pipe: nobody reads it
+except BlockingIOError:
+    pass
+os.set_blocking(2, True)              # as the step has it: a write now waits
+pa.history_items = lambda *a, **k: time.sleep(30)
+sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--deadline", "1"]))
+""" % (aud, repo, fx, now, gh)
+p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    p.wait(timeout=6)
+except subprocess.TimeoutExpired:
+    p.kill()
+    raise SystemExit("the run was still alive after 6 s: the callback waited on a full stderr")
+assert p.returncode == 2, p.returncode
+PY
+# stdout is a pipe under Actions: without line buffering a run killed from OUTSIDE (the job timeout's SIGKILL) loses what it printed since its last full
+# buffer. The audit is killed here by the test, not by its own deadline (--deadline 60); the information line it prints after the judging marker must
+# have reached the pipe by then. Removing sys.stdout.reconfigure(line_buffering=True) from main makes this case fail.
+CASE="output: a run killed from outside (SIGKILL) with stdout on a pipe has delivered every line it printed (line-buffered stdout)"
+check python3 - "$aud" "$work/gh-hang" "$work/r-hang" "$NOW" "$work/shim" <<'PY'
+import os, select, signal, subprocess, sys, time
+aud, gh, repo, now, shim = sys.argv[1:6]
+env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"])
+p = subprocess.Popen([sys.executable, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+got, end = b"", time.time() + 20
+while time.time() < end and b"not checked against the advisory lists" not in got:
+    if select.select([p.stdout], [], [], 0.5)[0]:
+        chunk = os.read(p.stdout.fileno(), 65536)
+        if not chunk:
+            break
+        got += chunk
+os.kill(p.pid, signal.SIGKILL)
+p.wait()
+got += p.stdout.read()
+text = got.decode()
+assert "audit: phase: judging" in text and "not checked against the advisory lists" in text, text
+PY
+# The child waits (stdin) at a known point before its first write, the parent closes the reader, then releases it: so the write always meets a closed pipe.
+CASE="output: a run whose stdout reader has gone away ends with exit 120 and without a traceback"
+check python3 - "$aud" "$work/gh" "$work/r-clean" "$NOW" <<'PY'
+import select, subprocess, sys
+aud, gh, repo, now = sys.argv[1:5]
+code = ("import os, runpy, sys; os.write(2, b'ready\\n'); sys.stdin.readline(); sys.path.insert(0, os.path.dirname(sys.argv[1])); "
+        "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+p = subprocess.Popen([sys.executable, "-c", code, aud, "--root", repo, "--now", now, "--gh", gh, "--deadline", "60"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    assert select.select([p.stderr], [], [], 30)[0] and p.stderr.readline() == b"ready\n", "the child never reached its wait"
+    p.stdout.close()
+    p.stdout = None
+    _, err = p.communicate(b"\n", timeout=60)
+finally:
+    if p.poll() is None:
+        p.kill()
+        p.wait()
+err = err.decode()
+assert p.returncode == 120, (p.returncode, err)
+assert "Traceback" not in err and "BrokenPipeError" not in err, err
+PY
+# the deadline sets stderr non-blocking so a full pipe cannot stop the exit; the flag sits on the pipe the whole step shares, so it must be put back
+CASE="deadline: the audit leaves the caller's stderr in the blocking mode it found it"
+check python3 - "$aud" <<'PY'
+import os, subprocess, sys
+aud = sys.argv[1]
+r, w = os.pipe()
+code = ("import importlib.util, os, sys; sys.path.insert(0, os.path.dirname(sys.argv[1])); "
+        "s = importlib.util.spec_from_file_location('pa', sys.argv[1]); m = importlib.util.module_from_spec(s); "
+        "s.loader.exec_module(m); m._deadline_passed(1)")
+p = subprocess.run([sys.executable, "-c", code, aud], stderr=w, timeout=60)
+msg = os.read(r, 4096)
+assert p.returncode == 2 and b"could not finish" in msg, (p.returncode, msg)
+assert os.get_blocking(w), "the deadline left O_NONBLOCK on the caller's stderr"
+PY
+CASE="output: a real exit code becomes 120, quietly, when the final flush of a closed stdout fails; with the reader open it stays"
+check python3 - "$aud" <<'PY'
+import subprocess, sys
+aud = sys.argv[1]
+# the child runs the file's own __main__ block with a main() that leaves text in the buffer and returns 1
+code = ("import os, sys; src = open(sys.argv[1]).read(); block = src[src.index('if __name__ == \"__main__\":'):]\n"
+        "def main():\n    sys.stdout.write('pending')\n    return 1\n"
+        "sys.stdin.readline()\n"
+        "exec(block, {'__name__': '__main__', 'main': main, 'sys': sys, 'os': os})")
+def run(close_reader):
+    p = subprocess.Popen([sys.executable, "-c", code, aud], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if close_reader:
+        p.stdout.close()
+        p.stdout = None
+    _, err = p.communicate(b"\n", timeout=60)
+    return p.returncode, err.decode()
+rc, err = run(False)
+assert rc == 1, ("with the reader open the real exit code stays", rc, err)
+rc, err = run(True)
+assert rc == 120 and "Traceback" not in err and "BrokenPipeError" not in err, ("a failed final flush ends with 120", rc, err)
+PY
+# the markers, in order, on a clean day and on a day with a hit (fixtures: nothing hangs)
+phases() { python3 - "$1" <<'PY'
+import sys
+print(",".join(l.strip()[len("audit: phase: "):] for l in open(sys.argv[1]) if l.startswith("audit: phase: ")))
+PY
+}
+run phclean "$CLEAN" "$work/r-clean"
+CASE="markers: a clean daily run prints history, judging, open pull requests, open pull request pins, nested references, exceptions, in that order; exit 0 as before"
+check test "$rc" -eq 0 -a "$(phases "$work/phclean.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions"
+run phobs "$CLEAN" "$work/r-clean" --observations-out "$work/obs/state.json"
+CASE="markers: with --observations-out the history phase is printed again after the tag observations, so a stalled history read names history"
+check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,history,judging,open pull requests,open pull request pins,nested references,exceptions"
+# a history read that stalls on a day that records observations: the deadline must name the history, not the phase before it
+mkdir -p "$work/shim-log"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && exec sleep 60; done\nexec %s "$@"\n' "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
+echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
+( cd "$work" && PATH="$work/shim-log:$PATH" exec setsid timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 2 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) &
+grp=$!; wait "$grp" || rc=$?
+# the audit's os._exit leaves the stalled git child behind: end the whole process group this run started, pass or fail
+kill -- "-$grp" 2>/dev/null || true; sleep 1
+CASE="markers: a daily run with --observations-out whose history read passes --deadline exits 2 and its stderr says still in history"
+check test "$rc" -eq 2 -a "$(grep -cx 'audit: could not finish: still in history after 2 s' "$work/phstall.err")" -eq 1
+CASE="markers: no stalled git child of that run is left running"
+gone='! kill -0 -- "-$1" 2>/dev/null'
+check bash -c "$gone" _ "$grp"
+# the same check must fail while a group is alive (it ran under dash once, where kill rejects "--" and the check could not fail)
+# start_live DELAY: a sleeping process group that begins DELAY seconds from now; sets $live to its group id once the
+# group itself has written it to a marker file (a fixed wait could probe before the group exists)
+start_live() {
+  local m="$work/live.$1.marker" i
+  ( sleep "$1"; exec setsid sh -c 'echo $$ >"$0"; exec sleep 30' "$m" ) >/dev/null 2>&1 &
+  live_job=$!
+  for i in $(seq 100); do [ -s "$m" ] && break; sleep 0.1; done
+  live=$(cat "$m" 2>/dev/null)
+}
+for delay in 0 1; do
+  start_live "$delay"
+  CASE="markers: the no-child check fails while its process group is still alive (group starts after ${delay} s)"
+  check bash -c '! bash -c "$0" _ "$1"' "$gone" "$live"
+  [ -n "$live" ] && kill -- "-$live" 2>/dev/null
+  wait "$live_job" 2>/dev/null || true
+  CASE="markers: the no-child check passes once that group is ended (group started after ${delay} s)"
+  check bash -c "[ -n \"\$1\" ] && $gone" _ "$live"
+done
+run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
+CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
+check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
+run phrh "$CLEAN" "$work/r-clean" --rerun-held
+CASE="markers: --rerun-held prints its own phase and exits 0 as before"
+check test "$rc" -eq 0 -a "$(phases "$work/phrh.out")" = "re-run of held pull requests"
+run phrh2 '{"lists": {}, "upstream": {}, "nested": {}, "versions": {}, "prs": [{"number": 7, "title": "t", "run_id": 5, "moved": []}, {"number": 9, "title": "u", "run_id": 6, "moved": []}]}' "$work/r-clean" --rerun-held
+CASE="markers: --rerun-held prints one line per held pull request, so a slow one is named"
+check test "$rc" -eq 0 -a "$(phases "$work/phrh2.out")" = "re-run of held pull requests,pull request #7,pull request #9"
+run phbase "$CLEAN" "$work/r-pr" --base HEAD~1 --head HEAD --report-only
+CASE="markers: pull request mode (--base) prints history, judging, nested references and exceptions, never the daily-only phases"
+check test "$(phases "$work/phbase.out")" = "history,judging,nested references,exceptions"
+# one line per pull request in both live walks: the PR walk is the lead suspect of the hang
+CASE="markers: both live open-pull-request walks print 'audit: phase: pull request #N' for every PR before they fetch it"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, subprocess, sys, contextlib, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+os.environ["GITHUB_REPOSITORY"] = "o/r"
+def fail_fetch(cmd, **kw):
+    if cmd[:2] == ["gh", "pr"] or (len(cmd) > 2 and cmd[1:3] == ["pr", "list"]):
+        return subprocess.CompletedProcess(cmd, 0, stdout='[{"number": 7, "title": "a", "headRefOid": "a", "baseRefName": "main"}, {"number": 9, "title": "b", "headRefOid": "b", "baseRefName": "main"}]', stderr="")
+    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no")   # every fetch fails: the PR is skipped, after its marker
+pa._run = fail_fetch
+pa.age._gh_pages = lambda path, rows=None: [{"number": 7, "base": {"ref": "main"}, "head": {"sha": "a"}},
+                                              {"number": 9, "base": {"ref": "main"}, "head": {"sha": "b"}}]
+net = pa.LiveNet(["gh"], ".")
+for walk in (net.open_pr_items, net.prs):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        walk()
+    got = [l for l in buf.getvalue().splitlines() if l.startswith("audit: phase: pull request")]
+    assert got == ["audit: phase: pull request #7", "audit: phase: pull request #9"], (walk.__name__, got)
+PY
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

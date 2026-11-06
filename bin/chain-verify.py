@@ -117,7 +117,7 @@ def manifest_date(m, field, required):
 def check_manifest(keys_dir):
     """The release key manifest, checked before anything else is read (handoff 0713 P1): the offline root key's
     signature over the exact
-    bytes of the manifest file, then the closed field list, the key (ECDSA P-256) and its key_id, and the window against
+    bytes of the manifest file, then the closed field list, the key (RSA-4096) and its key_id, and the window against
     the clock of this run.
     No time inside a record is trusted (ruling R3), so a revoked_at at or before now refuses the manifest. Returns
     {key_id, public_key}."""
@@ -185,8 +185,22 @@ def is_p256_spki(der):
     return len(der) == n + 65 and der.startswith(P256_SPKI_PREFIX) and der[n] == 4
 
 
+# SubjectPublicKeyInfo of an RSA-4096 key with exponent 65537, up to its modulus (512 bytes, high bit set) and the exponent
+RSA4096_SPKI_PREFIX = bytes.fromhex("30820222300d06092a864886f70d01010105000382020f003082020a0282020100")
+RSA4096_SPKI_SUFFIX = bytes.fromhex("0203010001")
+
+
+def is_rsa4096_spki(der):
+    """True for the DER of an RSA-4096 public key with exponent 65537 (the release key in KMS, RSASSA_PKCS1_V1_5_SHA_256):
+    the 33-byte SPKI prefix, a 512-byte modulus whose top bit is set (so it is 4096 bits, not fewer), the exponent
+    (550 bytes in all)."""
+    n = len(RSA4096_SPKI_PREFIX)
+    return (len(der) == n + 512 + len(RSA4096_SPKI_SUFFIX) and der.startswith(RSA4096_SPKI_PREFIX)
+            and der[n] & 0x80 != 0 and der.endswith(RSA4096_SPKI_SUFFIX))
+
+
 def manifest_key(m, tmp):
-    """The manifest's key: one PEM public key block, ECDSA P-256 (the KMS key's type), and key_id = the lower-case
+    """The manifest's key: one PEM public key block, RSA-4096 (the KMS key's type), and key_id = the lower-case
     sha256 of its DER."""
     pem = m["public_key"]
     if not (isinstance(pem, str) and ONE_PUBLIC_KEY_PEM.fullmatch(pem)):
@@ -194,8 +208,8 @@ def manifest_key(m, tmp):
     der = public_key_der(pem)
     if der is None:
         refuse("manifest", "public_key is not a public key")
-    if not is_p256_spki(der):
-        refuse("manifest", "public_key is not an ECDSA P-256 key")
+    if not is_rsa4096_spki(der):
+        refuse("manifest", "public_key is not an RSA-4096 key")
     if m["key_id"] != hashlib.sha256(der).hexdigest():
         refuse("manifest", "key_id is not the lower-case sha256 of the public key")
     return {"key_id": m["key_id"], "public_key": pem}
@@ -327,7 +341,7 @@ def release_key_pem(stage, pol):
 
 
 def check_signature(stage, pol, ptype, payload, sig, tmp):
-    """The record's one signature is the release key's ECDSA P-256 signature over the DSSE PAE. A record signed by
+    """The record's one signature is the release key's RSASSA-PKCS1-v1_5 SHA-256 signature (RSA-4096) over the DSSE PAE. A record signed by
     another key, by the
     building job's throwaway key, or by nobody ends here (ruling F2: one refusal, the same words)."""
     for n, data in (("release.pub", release_key_pem(stage, pol).encode()), ("pae.bin", pae(ptype, payload)),

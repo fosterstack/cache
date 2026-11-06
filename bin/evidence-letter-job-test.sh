@@ -42,7 +42,8 @@ def judge(doc, text):
     """Everything the workflow must keep; the list of what it does not."""
     bad = []
     on = doc.get(True, doc.get("on"))
-    if sorted(on) != ["schedule", "workflow_dispatch"] or len(on["schedule"]) != 1:
+    if (sorted(on) != ["schedule", "workflow_dispatch"] or len(on["schedule"]) != 1
+            or on["schedule"] != [{"cron": "17 6 2 * *"}]):
         bad.append("it must start only on one monthly schedule or by hand")
     if doc["permissions"] != {"contents": "read"}:
         bad.append("the workflow token must only read")
@@ -146,6 +147,14 @@ mutated("KA-2 p4 group 4: sign no longer installs the aws CLI", lambda d: d["job
 mutated("KA-2 p4 group 4: sign installs the aws CLI after the publish script", lambda d: d["jobs"]["sign"]["steps"].append(
     {"name": "install the aws CLI (pinned by checksum)", "run": "bash bin/install-scanner.sh aws-cli"}) or d["jobs"]["sign"]["steps"].remove(
     [s for s in d["jobs"]["sign"]["steps"] if "install-scanner.sh aws-cli" in str(s.get("run", ""))][0]))
+# B-6: the triggers are the one monthly schedule and the hand dispatch, nothing else
+for trig in ("workflow_call", "pull_request_target", "workflow_run", "issue_comment"):
+    mutated("the trigger %s is added" % trig, lambda d, t=trig: (d.get(True) or d["on"]).update({t: {}}))
+mutated("a second schedule is added", lambda d: (d.get(True) or d["on"])["schedule"].append({"cron": "0 0 * * *"}))
+mutated("the schedule is removed", lambda d: (d.get(True) or d["on"]).pop("schedule"))
+mutated("the hand dispatch is removed", lambda d: (d.get(True) or d["on"]).pop("workflow_dispatch"))
+mutated("the schedule is daily", lambda d: (d.get(True) or d["on"])["schedule"][0].update(cron="0 0 * * *"))
+mutated("a pull_request text appears", lambda d: None, lambda t: t + "\n# pull_request\n")
 
 pub, ver = read("bin/evidence-letter-publish.sh"), read("bin/evidence-letter-verify.sh")
 check("AC9/KA-2: the key comes from RELEASE_KMS_KEY_REF (kms-sign --key-ref), the signing config is the committed one and the public key is the committed release public key",
@@ -300,7 +309,7 @@ def throwaway_repo(tmp):
     keys = os.path.join(tmp, "keys")
     os.makedirs(keys)
     for name in ("root", "rel"):
-        openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", keys + "/%s.key" % name)
+        openssl("genpkey", *(("-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256") if name == "root" else ("-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")), "-out", keys + "/%s.key" % name)
         openssl("pkey", "-in", keys + "/%s.key" % name, "-pubout", "-out", keys + "/%s.pub" % name)
     pub = open(keys + "/rel.pub").read()
     der = openssl("pkey", "-pubin", "-in", keys + "/rel.pub", "-outform", "DER")
@@ -703,7 +712,7 @@ for label, edit in (("a missing release public key", key_unreadable),):
           pk_.returncode == 1 and upk_ == [] and not any(x.startswith("cosign verify-blob") for x in lk_) and any("kms-sign" in x for x in lk_), (pk_.returncode, pk_.stderr, lk_))
 def keys_differ(fix, env):      # KA-2 p4: the letter is signed with the committed build/keys/release.rsa.pub, the policy (and verify) holds the manifest key: here they are two different keys
     k = os.path.join(os.path.dirname(env["REPO_DIR"]), "other.key")
-    openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", k)
+    openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", k)
     open(os.path.join(env["REPO_DIR"], "build/keys/release.rsa.pub"), "wb").write(openssl("pkey", "-in", k, "-pubout"))
 pkd, lkd, upkd, _l = publish(edit=keys_differ)
 check("KA-2 p4 key compare: a committed release public key that is not the manifest (KMS) key is refused by kms-sign in its one line naming the file and 'does not match the KMS key' (the publish script adds its own one-line 'not published' end), exit 1, BEFORE any KMS Sign and any Rekor POST; verify-blob is not run and nothing is uploaded",

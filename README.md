@@ -1,5 +1,7 @@
 # FosterStack Cache
 
+We build tools that help you secure your build pipeline. It made sense to start with the build cache. We built FosterStack Cache by meticulously following the security guidance that matters: CISA Secure by Design, NIST SP 800-204C and 800-204D, and SLSA. Where the guidance stops, we kept going: hermetic, reproducible builds, a distroless image, and more. [Read the full list](docs/everything-we-do-for-security.md).
+
 [![CI](https://github.com/fosterstack/cache/actions/workflows/ci.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/fosterstack/cache/actions/workflows/codeql.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fosterstack/cache/badge)](https://scorecard.dev/viewer/?uri=github.com/fosterstack/cache)
@@ -52,7 +54,7 @@ Shipped:
   govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
   public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
-  (production and `-fips`) on GHCR, plus bare binaries and a signed
+  (production and `-fips`) on GHCR, plus bare Linux binaries and a signed
   checksums file. Every release is built only by CI, once. The images are assembled
   once, and the scans, the acceptance tests and an independent
   reproducibility rebuild all run on that exact digest; the published
@@ -97,9 +99,9 @@ Actions history for the CI claims, the commands in
 [`RELEASING.md`](RELEASING.md) for signatures and provenance. What those
 commands prove, and what they do not, is stated in RELEASING.md itself.
 
-Full core (eviction, size limits, metrics) is free forever under MIT — see
-[`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
-SLA, and compliance support on top of the same open core; nothing is
+Full core (eviction, size limits, metrics) is free under MIT — see
+[`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a 48-hour CVE
+response target, and compliance support on top of the same open core; nothing is
 withheld from the free tier for security.
 
 The security evidence itself is public and free: SBOMs, SLSA provenance,
@@ -144,7 +146,7 @@ run — there is no primary platform.
 | Tag | Shell | Use |
 |---|---|---|
 | `X.Y.Z` | none | Production |
-| `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
+| `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module ([details](docs/fips.md)) |
 
 Both images hold only the `fscache` binary and the few packages it needs
 (base layout, time zone data): there is no base image, no CA certificate
@@ -153,9 +155,14 @@ any outside certificate; it serves HTTPS from the certificate and key you give i
 container from the outside ([below](#debugging-a-running-container)); see also
 [the variant docs](docs/verify-images.md).
 
-FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
-Linux, so a macOS FIPS build would double CI time for a configuration nobody
-assesses. Container images ship as multi-arch manifests, so `docker pull`
+There is no debug image from v0.3.0 <!-- pinned: historical -->; see
+[the images have no shell](docs/verify-images.md#the-images-have-no-shell) and
+[troubleshooting without a shell](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
+
+The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High), where FedRAMP accepts FIPS-validated modules. Details: [FIPS 140-3](docs/fips.md).
+
+There are no macOS or Windows binaries: all release archives are Linux, and on
+a Mac you run the container image. Container images ship as multi-arch manifests, so `docker pull`
 resolves the right image by itself on Apple Silicon and Graviton. Windows is
 not built and not planned — this is a server that lives next to your CI
 runners; develop on Windows via WSL2, which is `linux/amd64`.
@@ -209,7 +216,8 @@ Desktop may still need one. See
 
 **Docker without `docker debug`** works on any Docker, with no plan or sign-in:
 start a tools container that shares the cache container's network and process
-namespaces. (This is the no-shell route; the images have no shell of their own.)
+namespaces. (This is the no-shell route; the images have no shell of their own; see also the
+[troubleshooting section](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).)
 
 ```sh
 docker run --rm -it --network=container:<name> --pid=container:<name> \
@@ -285,20 +293,20 @@ before implementation. CI fails if the matrix drifts from its sources.
 - [Install (binaries, systemd, platforms)](docs/install.md)
 - [One-command Docker deploy](docs/docker-deploy.md) · [Deploying on Kubernetes](docs/kubernetes.md)
 - [Installing on disconnected networks](docs/offline-install.md)
+- [FIPS 140-3](docs/fips.md) · [Verify a release](docs/verify-release.md) · [Using our VEX](docs/using-our-vex.md)
 - [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
 - [Releasing](RELEASING.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 ## Security
 
-- Static binary, zero CGO, and a small OS package surface (base layout, CA certificates,
+- Static binary, zero CGO, no shell and no package manager in the image, and a small OS package surface (base layout, CA certificates,
   time zone data), patched by a new image, not on a running one.
-- Approved-only cryptography is enforced by the validated module itself, not
-  by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
-  Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A
-  `depguard` allowlist covers the static side, permitting only in-boundary
-  crypto imports and denying third-party crypto outright. Both are described
-  in [`SECURITY.md`](SECURITY.md), including what each does and does not
-  prove.
+- CI runs the full test suite under `GODEBUG=fips140=only`, where Go's FIPS 140-3
+  module makes non-approved algorithms fail. That mode is a best-effort test
+  aid, and the released `-fips` build runs with FIPS mode on. A `depguard`
+  allowlist covers the static side, permitting only in-boundary crypto imports
+  and denying third-party crypto outright. Both are described in
+  [`SECURITY.md`](SECURITY.md), including what each does and does not prove.
 - **No telemetry and no required FosterStack connection.** The server
   reports nothing to us — no usage reporting, no licence check, no update
   ping — and today's free core initiates no outbound connections at all, so
@@ -309,7 +317,7 @@ before implementation. CI fails if the matrix drifts from its sources.
   `lsof -nP -a -p <pid> -i` against a running server shows one listening
   socket and accepted inbound connections, nothing else.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
-  and patch SLA once published.
+  and the 48-hour response target.
 
 ## License
 

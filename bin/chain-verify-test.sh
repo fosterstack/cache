@@ -14,7 +14,7 @@
 # fails the case) AND by words the message must contain. The key manifest itself is tested in bin/chain-manifest-test.sh.
 #
 # What a record is now: a DSSE envelope with exactly one signature {keyid, sig} (keyid optional, a string; Witness 0.12.0 writes the KMS
-# reference there and the verifier never looks a key up by it) made by the release key over the DSSE PAE (ECDSA P-256, SHA-256, DER). The
+# reference there and the verifier never looks a key up by it) made by the release key over the DSSE PAE (RSASSA-PKCS1-v1_5, SHA-256). The
 # envelope has no certificate, intermediates or timestamps field: a record that still carries one is an old-form record and is refused.
 # A record is bound to its stage by its TYPE and its collection name, never by who signed it (S2: step name, digest chain, and the AWS role's
 # trust on the workflow file); the signing key is the same for every stage.
@@ -144,7 +144,9 @@ def genkey(name, *opts):
     sh("openssl", "genpkey", *opts, "-out", p(name + ".key"))
     sh("openssl", "pkey", "-in", p(name + ".key"), "-pubout", "-out", p(name + ".pub"))
 EC = ("-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
-for _k in ("root", "otherroot", "rel", "other"): genkey(_k, *EC)      # root / otherroot sign manifests, rel is the release key, other is a key the manifest does not name
+RSA4096 = ("-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")
+for _k in ("root", "otherroot"): genkey(_k, *EC)      # root / otherroot sign manifests
+for _k in ("rel", "other"): genkey(_k, *RSA4096)       # rel is the release key (RSA-4096, as in KMS), other is a key the manifest does not name
 genkey("rekor", *EC)                                                   # the Rekor log's key for this run (ratify B); rekor.pub sits next to template.json with its sigstore-trust.json pin
 def der_sha_early(name): return hashlib.sha256(sh("openssl", "pkey", "-pubin", "-in", p(name + ".pub"), "-outform", "DER")).hexdigest()
 json.dump({"_note": "throwaway trust file for this test run", "rekor_sha256": der_sha_early("rekor")}, open(p("sigstore-trust.json"), "w"))
@@ -795,7 +797,7 @@ NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # fixture self-checks: the inputs are what the cases claim they are (so a refusal is about the claimed cause)
 O=$OPENSSL
 grep -F -q "fixtures ok" "$work/fx.log" && ok "fixture: the generator ran to its end" || bad "fixture: the generator did not finish"
-[ "$($O pkey -pubin -in "$work/rel.pub" -text -noout | grep -c 'ASN1 OID: prime256v1')" = 1 ] && ok "fixture: the release key is ECDSA P-256" || bad "fixture: the release key"
+[ "$($O pkey -pubin -in "$work/rel.pub" -text -noout | grep -c 'Public-Key: (4096 bit)')" = 1 ] && ok "fixture: the release key is RSA-4096" || bad "fixture: the release key"
 [ "$($O pkey -in "$work/throwaway.key" -text -noout | head -n 1)" = "ED25519 Private-Key:" ] && ok "fixture: the building job's throwaway key is ed25519" || bad "fixture: the throwaway key"
 python3 - "$work" <<'PY' && ok "fixture: the real envelope shape (one signature {keyid, sig}, no certificate, Statement v0.1 collection, policy payloadType)" || bad "fixture: envelope shape"
 import base64, hashlib, json, sys

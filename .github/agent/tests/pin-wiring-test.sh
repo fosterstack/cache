@@ -221,11 +221,11 @@ CHAIN_STEPS = {
     "the suite guard's own regressions (REQ-CI-005, a counting step)": "bash bin/suite-guard-test.sh",
     "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
-    "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)": "bash bin/chain-no-keyless-tag-test.sh",
     "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)": "bash bin/chain-rekor-key-test.sh",
     "the release chain's trust files: exactly what the key and Rekor path reads (ratify B)": "bash bin/chain-trust-files-test.sh",
     "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)": "bash bin/chain-manifest-test.sh",
-    "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup (handoff 0713)": "bash bin/witness-kms-test.sh",
+    "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup": "bash bin/witness-kms-test.sh",
+    "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)": "bash bin/chain-no-keyless-tag-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)": "bash bin/build-sandbox-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
@@ -243,9 +243,9 @@ CHAIN_STEPS = {
     "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)": "bash bin/chain-release-wiring-test.sh",
     "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)": "bash bin/chain-release-scripts-test.sh",
     "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)": "bash bin/chain-release-metadata-test.sh",
-    "the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)": "bash bin/vex-guide-test.sh",
-    "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)": "bash bin/vex-live-test-test.sh",
-    "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)": "bash .github/agent/tests/vex-live-pins-test.sh",
+    "the customer guide — every scanner's file, check and exact command, no competitor named": "bash bin/vex-guide-test.sh",
+    "the live test's plan, test copy, fixture and wiring, offline": "bash bin/vex-live-test-test.sh",
+    "the live test's page and its driver are read by the action-pin checker": "bash .github/agent/tests/vex-live-pins-test.sh",
 }
 # the two guard steps of the suite floors carry an `if` or an `env` on purpose: judged as whole steps, every key and value
 GUARD_STEPS = [
@@ -255,10 +255,10 @@ GUARD_STEPS = [
         "env": {
             "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}",
             "PR_BODY": "${{ github.event.pull_request.body }}"
-          },
-          "run": "BASE=\"${BASE#refs/heads/}\"\n"
-                 "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n"
-                 "  test-evidence/suite-floors.json\n"
+        },
+        "run": "BASE=\"${BASE#refs/heads/}\"\n"
+               "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n"
+               "  test-evidence/suite-floors.json\n"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",
@@ -429,7 +429,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/layout-archive-test.sh"
   },
   {
-   "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest (scanner-panel rule 10)",
+   "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest",
    "run": "bash bin/vex-forms-test.sh"
   },
   {
@@ -441,11 +441,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/evidence-letter-job-test.sh"
   },
   {
-   "name": "the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)",
+   "name": "the Docker Scout root-cause round's documents, matrix and judge",
    "run": "bash bin/scout-root-cause-test.sh"
   },
   {
-   "name": "the Docker Scout older-versions sweep (advisor 0520) \u2014 table logic with docker stubbed, installer pins, dispatch-only job",
+   "name": "the Docker Scout older-versions sweep \u2014 table logic with docker stubbed, installer pins, dispatch-only job",
    "run": "bash bin/scout-older-versions-test.sh"
   },
   {
@@ -478,10 +478,6 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"
   },
   {
-   "name": "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)",
-   "run": "bash bin/chain-no-keyless-tag-test.sh"
-  },
-  {
    "name": "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)",
    "run": "bash bin/chain-rekor-key-test.sh"
   },
@@ -494,8 +490,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/chain-manifest-test.sh"
   },
   {
-   "name": "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup (handoff 0713)",
+   "name": "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup",
    "run": "bash bin/witness-kms-test.sh"
+   "name": "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)",
+   "run": "bash bin/chain-no-keyless-tag-test.sh"
   },
   {
    "name": "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)",
@@ -566,15 +564,15 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/chain-release-metadata-test.sh"
   },
   {
-   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)",
+   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named",
    "run": "bash bin/vex-guide-test.sh"
   },
   {
-   "name": "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)",
+   "name": "the live test's plan, test copy, fixture and wiring, offline",
    "run": "bash bin/vex-live-test-test.sh"
   },
   {
-   "name": "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)",
+   "name": "the live test's page and its driver are read by the action-pin checker",
    "run": "bash .github/agent/tests/vex-live-pins-test.sh"
   },
   {
@@ -661,7 +659,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/dependabot-reviewer-test.sh"
   },
   {
-   "name": "dependency lanes wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)",
+   "name": "dependency paths wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor path after the guard",
    "run": "bash bin/dependency-lanes-test.sh"
   },
   {
@@ -669,7 +667,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/dependabot-reviewer-gather-test.sh"
   },
   {
-   "name": "the scanner panel's judge \u2014 counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)",
+   "name": "the scanner panel's judge \u2014 counts and quorum, the VEX, seen by N of M, unique findings audited",
    "run": "bash bin/panel-test.sh"
   },
   {
@@ -681,11 +679,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/auditor-variants-test.sh"
   },
   {
-   "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)",
+   "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags",
    "run": "bash bin/patch-decide-test.sh"
   },
   {
-   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)",
+   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012)",
    "run": "bash bin/audit-record-test.sh"
   },
   {
@@ -693,12 +691,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/queue-gate-judge-test.sh"
   },
   {
-   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
-   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)",
+   "name": "admission's tag signer \u2014 the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)",
    "run": "bash bin/admission-tag-signer-test.sh"
   },
   {
-   "name": "release.yml's automatic patch wiring \u2014 decide on main only, no tag signed or cut, failures open an issue (owner Oct 2; handoff 0713 P8)",
+   "name": "release.yml's automatic patch wiring \u2014 decide on main only, no tag signed or cut, failures open an issue (handoff 0713 P8)",
    "run": "bash bin/release-patch-wiring-test.sh"
   },
   {
@@ -706,19 +703,19 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/acceptance-maven-413-test.sh"
   },
   {
-   "name": "release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)",
+   "name": "release.yml's notes commit runs exactly the committed signed-commit CLI (the literal path is judged under .github/agent/)",
    "run": "bash .github/agent/tests/release-notes-signed-test.sh"
   },
   {
-   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)",
+   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise",
    "run": "bash bin/go-freshness-wiring-test.sh"
   },
   {
-   "name": "the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)",
+   "name": "the workflow consolidation (mutation runs weekly inside go-freshness)",
    "run": "bash bin/workflow-consolidation-test.sh"
   },
   {
-   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)",
+   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011)",
    "run": "bash bin/job-isolation-test.sh"
   },
   {
@@ -726,11 +723,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/rescan-current-only-test.sh"
   },
   {
-   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)",
+   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception",
    "run": "bash bin/panel-wiring-test.sh"
   },
   {
-   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md (advisor 0084)",
+   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md",
    "run": "bash .github/agent/tests/k8s-harness-fence-test.sh"
   },
   {

@@ -1,14 +1,14 @@
 name: 'Stage: sign'
 
-# The Sign stage of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0), three jobs of ONE file so that one workflow file at the tag (with release.yml as the
+# The Sign stage of the v0.3.0 release chain (the one new workflow file of v0.3.0), three jobs of ONE file so that one workflow file at the tag (with release.yml as the
 # top-level workflow) holds the release signing role: no job that builds can reach the release key. Every signature here is made with the one release key in AWS KMS, through the job's federation role,
 # and keeps its Rekor entry; there is no keyless signing and no certificate identity.
-# The building jobs hold no identity token (owner, Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness records are made with a throwaway
+# The building jobs hold no identity token (Oct 22 2026): their Witness records are made with a throwaway
 # key and leave as *.local.json files that nothing trusts. THIS stage checks each record against the artifacts it receives and signs it with the release key held in AWS KMS, keeping its Rekor entry beside it; every later stage trusts
 # only a record signed here.
 #   sign:         receives Build's records (witness-build, witness-apk-<runner>) and the artifacts those records name (images, dist, the apks), checks them (bin/chain-verify.py
 #                 sign-records), signs the records, then checks Build's digest list against the signed record and has kms-sign sign the provenance.
-#   sign-rebuild: receives Rebuild's records (witness-rapk-<runner>, witness-rebuild with its verdict) and NO Rebuild apk or image (the owner's separation rule: Rebuild's
+#   sign-rebuild: receives Rebuild's records (witness-rapk-<runner>, witness-rebuild with its verdict) and NO Rebuild apk or image (the separation rule: Rebuild's
 #                 outputs never reach a job that signs); the Release stage's compare job, which holds both builds' apks, checks the signed rapk records' product digests.
 #   sign-check:   receives the records of the Check jobs (witness-check, witness-check-arm64) and the results they name (check-results, check-results-arm64), nothing else and
 #                 nothing built by them (REQ-REL-011-AC1: the Check jobs build tools and run workloads, so they hold no identity token); checks the records against the results and

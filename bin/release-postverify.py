@@ -4,12 +4,13 @@ Reads docs/verify-release.cannot-run.json (rows {command, reason}, the exact-tex
 each command against what was just published, in BOTH registries (ghcr.io/fosterstack/cache, then
 docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
 registry, with the image-production / image-fips digest of witness-build/digests.json filled in; any other command
-runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME, <IDENTITY> = Sign's
-workflow identity at the tag.
+runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME.
 
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
-verify-attestation, verify-blob, verify-blob-attestation, gh attestation verify) and jq, with at least one verify
-form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. A command that fails
+verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify
+form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. Every verify form carries
+exactly one key flag whose value is release.rsa.pub (the release key, placed by place_release_key) and no flag but
+--key, --bundle, --type and --check-claims. A command that fails
 fails the run (exit 1) after all have run. The step holds no token and no registry credential.
 
 Every command runs with release-published/ (the assets just downloaded from the published release) as its working
@@ -36,7 +37,10 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 HOST = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]+(:[0-9]+)?/")   # ghcr.io/x yes, x/y no: a registry host written out
 FORMS = (("cosign", "verify"), ("cosign", "verify-attestation"), ("cosign", "verify-blob"),
-         ("cosign", "verify-blob-attestation"), ("gh", "attestation", "verify"))
+         ("cosign", "verify-blob-attestation"))
+# A verify form carries only --key, --bundle, --type and --check-claims (read_flags below): any other flag
+# (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes which log or trust root the default check reads,
+# or skips it.
 SYNTAX = "();<>|&"   # a shell word made only of these is an operator; "|" alone is the one we allow
 
 
@@ -82,6 +86,11 @@ def quote_error(c):
     quote, i = None, 0
     while i < len(c):
         ch = c[i]
+        # A backslash before a newline or CR is refused first: shlex keeps that newline in the next word, bash removes
+        # both, so
+        # a flag after it would reach cosign unseen by the judge.
+        if ch == "\\" and quote != "'" and i + 1 < len(c) and c[i + 1] in "\n\r":
+            return "a newline outside quotes (bash runs what follows as another command)"
         # A backslash outside single quotes turns the next character into a literal: it never opens or closes a quote.
         if ch == "\\" and quote != "'" and i + 1 < len(c) and c[i + 1] != "$":
             i += 2
@@ -142,6 +151,55 @@ def form_error(c, jq_only=False):
     return None if (verify or jq_only) else "no verify form in it"
 
 
+def read_flags(words):
+    """Reads the words after the verify form as cosign does: --key, --bundle and --type take a value (the =value part,
+    else the next word, which is never a flag: it does not start with "-"); --check-claims takes only its =value
+    spelling and never the next word; any other word starting with "-" is a flag outside the closed set. Returns (the
+    values of the key flags, the first value-taking flag with no value, the first flag outside the set)."""
+    keys, novalue, unknown, i = [], None, None, 0
+    while i < len(words):
+        flag, eq, value = words[i].partition("=")
+        if not words[i].startswith("-"):
+            i += 1
+        elif flag in ("--key", "--bundle", "--type"):
+            if eq:
+                val, i = value, i + 1
+            elif i + 1 < len(words) and not words[i + 1].startswith("-"):
+                val, i = words[i + 1], i + 2
+            else:
+                val, i = "", i + 1
+            if val == "" or val.startswith("-"):
+                novalue = novalue or flag
+            elif flag == "--key":
+                keys.append(val)
+        elif flag == "--check-claims":
+            i += 1
+        else:
+            unknown, i = unknown or flag, i + 1
+    return keys, novalue, unknown
+
+
+def key_error(c):
+    """None when every verify segment of the (already judged) command has exactly one key flag (--key X or --key=X)
+    whose value is release.rsa.pub and no flag outside --key, --bundle, --type and --check-claims; else why not. The words
+    are the shell's
+    (a quoted spelling like --insecure-ignore-tlo''g is the flag); the placeholder is a marker no file name equals."""
+    for seg in split_pipe(words_of(c, PHM)):
+        if seg[0] == "jq":
+            continue
+        keys, novalue, unknown = read_flags(seg[2:])
+        if novalue:
+            return "the %sflag %s has no value: the next word is a flag" % (
+                "key " if novalue == "--key" else "", novalue)
+        if len(keys) != 1:
+            return "it needs exactly one key flag whose value is release.rsa.pub (found %d)" % len(keys)
+        if keys[0] != "release.rsa.pub":
+            return "its key flag names %r, not release.rsa.pub" % keys[0]
+        if unknown:
+            return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % unknown
+    return None
+
+
 # ---- jq-only commands (REQ-CHAIN-007-AC20): a CLOSED grammar, fail closed -----------------------------------------
 # A jq-only command is accepted only when it is spelled in this small grammar and every file it reads is a plain file
 # name that an EARLIER verify form of the list named as a file operand (and, at run time, only after that verify exited
@@ -163,8 +221,7 @@ JQ_BUILTINS = {
 JQ_FORMATS = {"@base64d", "@base64", "@json", "@text"}
 # The flags of the verify forms whose value is a file. The value of any other flag (an identity, an issuer, a type)
 # never counts as a file the command verified.
-FILE_FLAGS = {"--bundle", "--signature", "--certificate", "--certificate-chain", "--trusted-root",
-              "--custom-trusted-root"}
+FILE_FLAGS = {"--bundle"}   # the closed set of flags leaves only --bundle naming a file
 
 
 def jq_filter_why(f, names):
@@ -408,7 +465,7 @@ def judge(c, verified):
                 refuse("`%s` is not an allowed verify form (no verify form in it): "
                        "no earlier command of the list is a verify form that names %s" % (c, f))
         return files
-    why = form_error(c)
+    why = form_error(c) or key_error(c)
     if why:
         refuse("`%s` is not an allowed verify form (%s)" % (c, why))
     verified.append(verify_files(c))
@@ -431,9 +488,6 @@ def fill(c, values):
 def make_plan(cmds, digests, tag):
     """[(registry, command, filled command, files a jq-only command reads)]: one pass per registry, in order."""
     base = {"TAG": tag}
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    if repo:
-        base["IDENTITY"] = "https://github.com/%s/.github/workflows/stage-sign.yml@refs/tags/%s" % (repo, tag)
     plan = []
     for reg in REPOSITORIES:
         values = dict(base, IMAGE_REF="%s@%s" % (reg, digests["image-production"]),

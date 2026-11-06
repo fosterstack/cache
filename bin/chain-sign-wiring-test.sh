@@ -24,8 +24,7 @@
 #   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
 #               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
 #   judge_tree  001-AC1 over the tracked files of .github/ and bin/ plus the pinned build configuration, one function per AC1 clause:
-#               only_new_workflow (stage-sign.yml, and at most evidence-letter.yml and customer-words-edited.yml, are the only files added since
-#               v0.2.2); listed_signers + direct_signers (every workflow and
+#               only_new_workflow (stage-sign.yml is the only new signing file since v0.2.2; customer-words-edited.yml is the one other added file; evidence-letter.yml is the monthly letter's, the owner's Oct 3 amendment); listed_signers + direct_signers (every workflow and
 #               composite action matched against the signer table; provenance only in stage-sign.yml, every other signer listed with a
 #               reason in .github/policy/chain-signers.json); stage_grammars (every stage-*.yml over the closed key, env, uses and run-line
 #               grammar, running only scripts listed in .github/policy/chain-scripts.json by path and sha256); listed_scripts (each listed
@@ -385,14 +384,13 @@ stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-pr
 stage-verify.yml supply-chain.yml""".split())
 
 def only_new_workflow(files, bad):
-    """001-AC1: stage-sign.yml (rule 52), evidence-letter.yml (the monthly evidence letter; the owner's Oct 3
-    amendment, ops/docs/ratify/2026-10-02-owner-load.md) and customer-words-edited.yml (decision 98, Oct 3) are the only
-    workflow files v0.3.0 adds beyond the files that existed at v0.2.2. The tree under judgement holds stage-sign.yml always;
-    the other two may be there or not (listed_signers and direct_signers still judge them)."""
+    """001-AC1: stage-sign.yml (rule 52) is the only new signing file v0.3.0 adds beyond the files that existed at v0.2.2. customer-words-edited.yml is
+    the added file that holds no signer (listed_signers and direct_signers still judge it; decision 98, Oct 3), and evidence-letter.yml (the monthly evidence
+    letter; the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md) may be there or not."""
     new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
-    if "stage-sign.yml" not in new or set(new) - {"stage-sign.yml", "evidence-letter.yml", "customer-words-edited.yml"}:
-        bad.append("AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52) and at most "
-                   "evidence-letter.yml (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md) and customer-words-edited.yml (decision 98, Oct 3), "
+    if not {"stage-sign.yml", "customer-words-edited.yml"} <= set(new) or set(new) - {"stage-sign.yml", "customer-words-edited.yml", "evidence-letter.yml"}:
+        bad.append("AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52), customer-words-edited.yml (decision 98, Oct 3) and at most "
+                   "evidence-letter.yml (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md), "
                    "found %s" % new)
 
 def listed_signers(base, bad):
@@ -2869,7 +2867,11 @@ expect caught "AC1 notation sign is a known signer that must be listed" tree "$d
 d=$(mk t_intoto); printf 'jobs:\n  b:\n    steps:\n      - run: in-toto-run --step-name build -- ./x\n' > "$d/.github/workflows/scan.yml"
 expect caught "AC1 in-toto-run is a known signer that must be listed" tree "$d"
 d=$(mk t_new); cp "$good" "$d/.github/workflows/stage-extra.yml"
-expect caught "AC1 a new workflow file other than the two named" tree "$d"
+expect caught "AC1 a second new workflow file" tree "$d"
+d=$(mk t_cwsigner); printf 'jobs:\n  b:\n    steps:\n      - run: notation sign "$IMG"\n' > "$d/.github/workflows/customer-words-edited.yml"
+expect caught "AC1 customer-words-edited.yml is no exemption: a signer in it is still found" tree "$d"
+d=$(mk t_cwgone); rm "$d/.github/workflows/customer-words-edited.yml"
+expect caught "AC1 the added set is exact: without customer-words-edited.yml it is wrong too" tree "$d"
 # the monthly evidence letter's workflow is the second new file (rule 52 and the owner's Oct 3 amendment,
 # ops/docs/ratify/2026-10-02-owner-load.md):
 # admitted with its one signing job on the id-token list; unlisted, or with a third new file beside it, refused
@@ -2896,15 +2898,13 @@ printf 'jobs:\n  b:\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$sha
 printf '        with:\n          persist-credentials: false\n' >> "$extra"
 listletter "$d"
 out=$(judge tree "$d" 2>/dev/null) || true
-want="AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52) and at most evidence-letter.yml"
-want="$want (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md) and customer-words-edited.yml (decision 98, Oct 3),"
+want="AC1: workflow files added since v0.2.2 must be stage-sign.yml (rule 52), customer-words-edited.yml (decision 98, Oct 3) and at most evidence-letter.yml"
+want="$want (the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md),"
 want="$want found ['customer-words-edited.yml', 'evidence-letter.yml', 'stage-extra.yml', 'stage-sign.yml']"
 if [ "$out" = "$want" ]; then
   pass=$((pass + 1))
   echo "ok   AC1 a third new workflow file is refused by the workflow-name rule alone, with evidence-letter.yml listed"
 else failn=$((failn + 1)); echo "FAIL AC1 third new workflow file -> ${out:0:500}"; fi
-d=$(mk t_cwsigner); printf 'jobs:\n  b:\n    steps:\n      - run: notation sign "$IMG"\n' > "$d/.github/workflows/customer-words-edited.yml"
-expect caught "AC1 customer-words-edited.yml is no exemption: a signer in it is still found" tree "$d"
 d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"reason":" "/' "$d/.github/policy/chain-signers.json"
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
@@ -3459,7 +3459,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='b05d93b00fa2efd67ef4e3c0bf8b2ffdf4680eb039c6f6b5c65906ee489a396c'
+FX_PIN='ea4b29464d310b092c0e35b6b83cbbfa562aa04c1eaeee1416ca5d80241c733a'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5252,7 +5252,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2137
+EXPECT=2138
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"

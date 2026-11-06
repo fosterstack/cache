@@ -131,6 +131,7 @@ lndir() {
 lndir .vex/guides cmd/guides-src;       check 2 "T5b a new link .vex/guides to a folder of pages exits 2" 'symbolic link at a customer file: \.vex/guides$'
 lndir docs cmd/docs-src docs/a.md;      check 2 "T5b docs/ replaced by a link to a folder exits 2" 'symbolic link at a customer file: docs$'
 lndir .vex/pages.json cmd/pages-src; check 2 "T5b a new link .vex/pages.json to a folder of pages exits 2" 'symbolic link at a customer file: \.vex/pages\.json$'
+lndir .vex cmd/vex-src .vex/README.md;  check 2 "T5b .vex replaced by a link to a folder exits 2" 'symbolic link at a customer file: \.vex$'
 lndir cmd/sub cmd/sub-src;              check 0 "T5b a link to a folder outside the customer paths passes"
 # a link at .github itself: only the PULL_REQUEST_TEMPLATE.md probe refuses it (the template is the one customer file in that folder)
 rm -rf "$work/r"; mkdir -p "$work/r/.github/policy" "$work/r/cmd/gh-src/policy"; cd "$work/r" || exit 2; git init -q
@@ -148,6 +149,8 @@ mk notes/x.md $'the owner\n' docs/x.md $'the owner\n';                 check 1 "
 mk - "" docs/quality/traceability.md $'approved by the owner\n';       check 1 "T6 owner added in docs/quality/traceability.md fails"
 mk - "" docs/a.md $'++ owner\n';                                        check 1 "T6 an added line that starts with ++ is still read" 'docs/a.md'
 mk - "" .vex/README.md $'owner\n';                                      check 1 "T6 .vex markdown fails"
+mk - "" .vex/fosterstack-cache.openvex.json $'{"note": "the owner"}\n'; check 1 "T6 a .vex json file fails"
+mk - "" .vex/fosterstack-cache.openvex.json $'{"note": "fine"}\n';     check 0 "T6 a clean .vex json file passes"
 mk - "" .github/PULL_REQUEST_TEMPLATE.md $'owner\n';                    check 1 "T6 the PR template fails"
 mk - "" docs/x.json $'{"t": "lane"}\n';                                 check 1 "T6 any extension under docs/ fails"
 mk - "" ".vex/a b.md" $'owner\n';                                      check 1 "T6 a .vex path with a space is read"
@@ -160,6 +163,28 @@ mk - "" cmd/x.bin $'fine\n'; printf 'a\0' > cmd/x.bin; git commit -qam bin; git 
 check 0 "T6b a deleted binary file passes"
 mk - "" cmd/x.bin $'fine\n'; printf 'a\0' > cmd/x.bin; git commit -qam bin
 check 0 "T6b a binary file outside the customer paths passes"
+# T10 the workflow files are read like a page: a person reads their comments, job and step names, error text and issue text
+for w in "# the owner decides" "# the lane guard" "echo '::error::see rule 9'" "- name: step (advisor 0084)" "# ops#794"; do
+  add .github/workflows/ci.yml "$w" 1 "T10 added '$w' to a workflow fails"
+done
+add .github/workflows/x.yaml "# the lane" 1 "T10 a .yaml workflow fails"
+add .github/workflows/ci.yml "# REQ-REL-001 and a plain comment" 0 "T10 a clean workflow line passes"
+add .github/workflows/ci.yml "uses: actions/checkout@v4  # a pinned action" 0 "T10 an action reference passes"
+add .github/other/x.yml "# the owner" 0 "T10 a .yml outside .github/workflows passes"
+add .github/workflows/sub/x.yml "# the owner" 0 "T10 a nested file under .github/workflows passes"
+# T10b a stray parenthesis left by an edit of a workflow's comments, names or quoted text fails; the same text elsewhere does not
+for w in "# fixed ). then" "# a ( b" "- name: a step ( b" "name: a step ) b" 'body = "not fix-only ). A minor release"'; do
+  add .github/workflows/ci.yml "$w" 1 "T10b a stray parenthesis '$w' in a workflow fails"
+done
+add .github/workflows/ci.yml "# a clean (REQ-REL-001) comment, and f(x)" 0 "T10b a closed parenthesis in a comment passes"
+add .github/workflows/ci.yml '  run: echo "a (b) c"' 0 "T10b a closed parenthesis in quoted text passes"
+add docs/a.md "text ( x ) text" 0 "T10b the same text in a page is not read for parentheses"
+# T11 the real workflow files, added whole on an empty base, are clean (the exact-line allowlist excuses the GitHub field names)
+rm -rf "$work/r"; mkdir -p "$work/r/.github/workflows" "$work/r/.github/policy"; cd "$work/r" || exit 2; git init -q
+printf '# header\n' > .github/policy/customer-words-allow.txt; git add -A && git commit -qm base
+cp "$ROOT"/.github/workflows/*.yml .github/workflows/; cp "$ROOT/.github/policy/customer-words-allow.txt" .github/policy/; git add -A && git commit -qm pr
+ALLOW=.github/policy/customer-words-allow.txt check 0 "T11 every real workflow file is clean when added whole"
+cd "$ROOT" || exit 2
 # T7 allowlist: exact path|line
 mk - "" README.md $'Fix the file owner or mode\n'
 printf '# header\nREADME.md|Fix the file owner or mode\n' > .github/policy/customer-words-allow.txt

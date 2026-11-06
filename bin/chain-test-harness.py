@@ -393,7 +393,7 @@ def make_test_manifest(dest):
     def ssl(*a):
         return subprocess.run(("openssl",) + a, check=True, capture_output=True).stdout
     for n in ("root", "rel"):
-        ssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", "%s/%s.key" % (dest, n))
+        ssl("genpkey", *(("-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256") if n == "root" else ("-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")), "-out", "%s/%s.key" % (dest, n))
         ssl("pkey", "-in", "%s/%s.key" % (dest, n), "-pubout", "-out", "%s/%s.pub" % (dest, n))
     der = ssl("pkey", "-pubin", "-in", dest + "/rel.pub", "-outform", "DER")
     body = json.dumps({"public_key": open(dest + "/rel.pub").read(), "key_id": hashlib.sha256(der).hexdigest(), "valid_from": "2026-01-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n"

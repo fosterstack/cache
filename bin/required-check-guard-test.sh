@@ -76,6 +76,14 @@ assert disp["permissions"] == {"contents": "read", "issues": "write"}, "the drif
 assert "needs" not in disp and "outputs" not in disp and "environment" not in disp and not any("create-github-app-token" in str(st.get("uses", "")) or "AUDITOR_APP" in str(st) for st in disp["steps"]), "the drift-issue job holds an App token or an environment"
 open(sys.argv[2], "w").write(run[0])
 PY
+# the guard job exports nothing: the fixer dispatch that read its output is gone, so an output nobody reads is dead surface
+if python3 - "$repo/.github/workflows/ci.yml" <<'PY'
+import sys, yaml
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]
+assert "outputs" not in job, "the guard job still exports %s" % sorted(job["outputs"])
+PY
+then echo "ok: the required-check guard job exports no output nobody reads"; pass=$((pass+1))
+else echo "FAIL: the required-check guard job exports an output nobody reads"; fail=$((fail+1)); fi
 mkdir -p "$w/stub"
 cat > "$w/stub/gh" <<'EOF'
 #!/usr/bin/env bash

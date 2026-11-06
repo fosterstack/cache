@@ -4,7 +4,7 @@ name: Daily CVE auditor
 # (selected by TODAY'S main head, regardless of the rescan's conclusion — a red rescan is
 # exactly the day that needs adjudication), installs the pinned scanners, scans the
 # candidate image and the source of the rescan's scanned head ON THE RUNNER, builds a validated run
-# manifest, audits the findings and (when not dry) opens the PRs and owner-decision issues.
+# manifest, audits the findings and (when not dry) opens the PRs and decision issues.
 #
 # Two dispatch knobs (workflow_dispatch only): dry_run (default true) does everything except
 # gh pr create / gh issue create; adjudicator (real|stub, default real) chooses the model
@@ -48,7 +48,7 @@ permissions:
 jobs:
   # govulncheck publishes no release binary, so it is built here, in a job that holds no credential (no secret, no environment, contents: read
   # only). The audit job below holds the model-federation identity and the App's key: it downloads this binary and uses it only when its
-  # sha256 equals this job's output (REQ-REL-011-AC1; owner, Oct 21 2026: a builder and a credential never share a machine).
+  # sha256 equals this job's output (REQ-REL-011-AC1; Oct 21 2026: a builder and a credential never share a machine).
   govulncheck-build:
     name: build govulncheck (no credential)
     if: ${{ !inputs.panel_probe }}
@@ -134,7 +134,7 @@ jobs:
           runs=$(gh run list --workflow main-candidate-rescan.yml --branch main --limit 50 \
                    --json databaseId,headSha,conclusion,createdAt)
           # the newest rescan of main, whatever head it scanned and whatever its conclusion (a red rescan is the day that
-          # needs us): the panel's judgment is bound to THAT run's head and image digests (owner RATIFIED Oct 3, item a)
+          # needs us): the panel's judgment is bound to THAT run's head and image digests
           rid=$(printf '%s' "$runs" | jq -r 'sort_by(.createdAt)|last|.databaseId // empty')
           [ -n "$rid" ] || { echo "::error::no main-candidate-rescan run to consume" >&2; exit 1; }
           echo "main_head=${main_head}" >> "$GITHUB_OUTPUT"
@@ -155,7 +155,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/rescan"
           gh run download "$rid" -n images -D "${RUNNER_TEMP}/rescan" \
             || gh run download "$rid" -D "${RUNNER_TEMP}/rescan"
-          # the scanner panel's tally (scanner-panel rules 3-6): its unique findings are judged below (rules 7-9)
+          # the scanner panel's tally: its unique findings are judged below
           gh run download "$rid" -n panel-evidence -D "${RUNNER_TEMP}/panel" \
             || echo "::warning::selected run has no panel-evidence artifact; the scanner panel's audits cannot run"
           # REQ-AUD-3 AC3 (no-change day, zero model calls): yesterday's verdicts and narrative ride in a small artifact, `auditor-state`,
@@ -343,12 +343,12 @@ jobs:
           # the App installation token (delivery) for THIS step only — git push + gh pr create;
           # falls back to the read-only job token on a dry run where no delivery happens.
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          # the App has Contents + Pull requests only (no Issues), so owner-decision issues
+          # the App has Contents + Pull requests only (no Issues), so decision issues
           # MUST use the job token's issues:write, passed separately.
           AUDITOR_ISSUES_TOKEN: ${{ github.token }}
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           AUDITOR_ALLOW_REAL_GH: '1'   # this workflow is the ONLY context allowed to run real git/gh
-          # REQ-AUD-17 AC3: the owner's repo variable flips auditor PRs from draft to auto-merge
+          # REQ-AUD-17 AC3: the maintainers' repo variable flips auditor PRs from draft to auto-merge
           # (squash). Unset/anything-but-on keeps drafts (the dry week + the first live week). The
           # merge still waits on all required checks + the main rulesets — the App has no bypass.
           AUDITOR_AUTOMERGE: ${{ vars.AUDITOR_AUTOMERGE }}
@@ -383,14 +383,14 @@ jobs:
           cp -r "${RUNNER_TEMP}/reports" "${RUNNER_TEMP}/auditor-out/scanner-reports" 2>/dev/null || true
           cp "${AUDITOR_KEV_CATALOG}" "${RUNNER_TEMP}/auditor-out/kev.json" 2>/dev/null || true
 
-      # The scanner panel's audits (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 3: "the audits run in the
+      # The scanner panel's audits ("the audits run in the
       # auditor's daily run, right after the rescan, in one of its steps"). The rescan tallied the scanners and listed
       # the findings only one scanner reported; this judges them with two auditor seats, each reached through keyless
       # federation: seat A is the provider above, seat B the second vendor's workload identity. The step mints each
       # seat's GitHub identity token itself, fresh for every exchange (the job's id-token: write), so a long debate
       # never outlives its tokens. Identifiers and model names come only from the environment's secrets
       # (REQ-AUD-6 AC1); nothing public names a vendor. The panel's own per-run token budget is written below.
-      - name: Judge the rescan's unique findings (scanner panel rules 7-9, 8(c), 13, 14)
+      - name: Judge the rescan's unique findings
         id: panel
         if: ${{ always() && steps.rescan.outcome == 'success' }}
         env:
@@ -414,7 +414,7 @@ jobs:
           set -euo pipefail
           # the panel judges only a COMPLETED rescan of main (finished, any conclusion, with its evidence) from the last
           # day, bound to the head and image digests it scanned; main having moved past it is a warning, never a failure
-          # (owner RATIFIED Oct 3, item a; advisor 0113/0136). A stale, unfinished or evidence-less run fails visibly.
+          # A stale, unfinished or evidence-less run fails visibly.
           [ "${RESCAN_STATUS}" = completed ] || { echo "::error::scanner panel: the rescan run did not finish in time" >&2; exit 1; }
           age=$(( $(date -u +%s) - $(date -u -d "${RESCAN_CREATED}" +%s) ))
           [ "$age" -le 86400 ] || { echo "::error::scanner panel: the rescan run is ${age}s old (more than a day)" >&2; exit 1; }
@@ -434,14 +434,14 @@ jobs:
             --state "$state" --profiles .github/policy/scanner-profiles.json --oci "${RUNNER_TEMP}/rescan" \
             --out "${RUNNER_TEMP}/panel-out" --seats "$seats" --today "$(date -u +%F)" --token-budget 200000
 
-      - name: Deliver the panel audits — a pull request from the auditor lane, the tracking issue, the owner report
+      - name: Deliver the panel audits — a pull request from the auditor, the tracking issue, the maintainer report
         if: ${{ always() && steps.panel.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           AUDITOR_ISSUES_TOKEN: ${{ github.token }}
           AUDITOR_CHECKS_TOKEN: ${{ github.token }}   # the guard's check run is read with the job token (checks: read), not the App's
           AUDITOR_ALLOW_REAL_GH: '1'
-          AUDITOR_AUTOMERGE: ${{ vars.AUDITOR_AUTOMERGE }}   # REQ-AUD-17 AC3: the owner's switch, as for the CVE auditor's PRs
+          AUDITOR_AUTOMERGE: ${{ vars.AUDITOR_AUTOMERGE }}   # REQ-AUD-17 AC3: the maintainers' switch, as for the CVE auditor's PRs
         run: |
           set -euo pipefail
           dry='${{ github.event_name == 'schedule' && (vars.AUDITOR_SCHEDULE_MODE == 'live' && 'false' || 'true') || inputs.dry_run }}'
@@ -484,7 +484,7 @@ jobs:
           if-no-files-found: ignore
           path: ${{ runner.temp }}/auditor-out/.auditor/auditor-state.json
 
-  # The scanner panel's seat probe (REQ-SCAN-008-AC3, live proof; advisor 0051): on request, from main only, in its own
+  # The scanner panel's seat probe (REQ-SCAN-008-AC3, live proof): on request, from main only, in its own
   # job so nothing else of the auditor runs. It installs the pinned SDKs and sends each seat ONE fixed audit over a
   # committed synthetic bundle, with retries disabled (at most two model requests). It publishes nothing; the summary
   # names only the seats, scrubbed; a failing seat fails the job with its masked error.

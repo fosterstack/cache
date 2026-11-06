@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-009-AC6, REQ-REL-009-AC13
-# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057): the owner's
-# SSH signature (allowed-signers) on any tag; the release.yml-on-main gitsign identity on a PATCH tag only (vX.Y.Z,
-# Z >= 1, the previous patch vX.Y.(Z-1) already released); an unsigned tag, any other signature format, an ambiguous
-# tag object, or the CI identity on a minor, major or rc tag is refused. The route only picks the verifier; the
-# verifier (git verify-tag against allowed-signers, or gitsign verify-tag with the identity pinned) still has to pass.
+# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057; KMS rule 2): only the owner's
+# SSH signature (allowed-signers), on any tag. An unsigned tag, any other signature format (PGP, or a keyless x509 signature such as the
+# release.yml gitsign identity), or an ambiguous tag object is refused. The route only picks the verifier; the verifier
+# (git verify-tag against allowed-signers) still has to pass.
 # The second half of this file judged the wiring of stage-admission.yml (policy from protected main; gitsign verify-tag pinning the identity,
 # issuer, repository, ref and tagged commit; the baseline rules). PR 2 of the v0.3.0 chain removed that workflow: admission is the first step of
 # Build's apk job (bin/build-admit.py) and the same properties are judged by bin/chain-build-admit-test.sh (REQ-CHAIN-004-AC4, AC5).
@@ -60,12 +59,16 @@ import hashlib, json, os, tempfile, io, contextlib
 d = tempfile.mkdtemp(); o = os.path.join(d, "obj"); open(o, "w").write(X509); t = os.path.join(d, "tags"); open(t, "w").write("\n".join(REL) + "\n")
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
-    rc = T.main(["route", "--tag", "v0.2.2", "--tag-object", o, "--tags", t])
+    rc = T.main(["route", "--tag-object", o])
 check("CLI prints the route first (a keyless patch tag is refused)", rc == 0 and buf.getvalue().split()[0] == "refuse", buf.getvalue())
-buf2 = io.StringIO()
-with contextlib.redirect_stdout(buf2):
-    rc2 = T.main(["route", "--tag-object", o])
-check("CLI routes with only --tag-object (--tag and --tags are optional and ignored)", rc2 == 0 and buf2.getvalue().split()[0] == "refuse", buf2.getvalue())
+# older tagged callers (v0.2.2's workflow, the chain's earlier build-admit.py) pass --tag and --tags: both are accepted
+# and ignored, so the route is the same as without them
+for extra in ([], ["--tag", "v0.2.2"], ["--tags", t], ["--tag", "v0.2.2", "--tags", t]):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = T.main(["route", "--tag-object", o] + extra)
+    check("CLI: route %s gives the same answer as the bare call" % (" ".join(extra) or "alone"),
+          rc == 0 and out.getvalue().split()[0] == "refuse", out.getvalue())
 check("no route named gitsign is left in the router", 'return "gitsign"' not in open(sys.argv[1]).read(), "the router still returns the gitsign route")
 
 # --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2) + 0126/0150: which approved ACs baseline a CI patch uses

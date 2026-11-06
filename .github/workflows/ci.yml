@@ -155,7 +155,7 @@ jobs:
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
       - name: golangci-lint (staticcheck, gofmt, goimports, md5/sha1 import ban)
         run: |
-          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally
           golangci-lint config verify   # the action ran this before every run (its verify input defaults to true)
           golangci-lint run ./...
       - name: no shop words added to a file a customer can read
@@ -201,7 +201,7 @@ jobs:
           go build -o "$gobin/gosec" github.com/securego/gosec/v2/cmd/gosec
       - name: run gosec
         run: |
-          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally
           gosec -fmt sarif -out gosec-results.sarif ./...
       # Fork PRs get a read-only GITHUB_TOKEN that `permissions:` cannot
       # elevate, so security-events: write is not granted and this upload
@@ -217,7 +217,7 @@ jobs:
         with:
           sarif_file: gosec-results.sarif
 
-  # The mechanical oracle for our FIPS claim (punch list #10a). GOFIPS140
+  # The mechanical oracle for the FIPS check. GOFIPS140
   # selects Go's CMVP-validated cryptographic module (cert #5247) at build
   # time; GODEBUG=fips140=only makes that module REFUSE any non-approved
   # algorithm at runtime rather than quietly computing it. Running the full
@@ -267,7 +267,7 @@ jobs:
         run: python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"
 
   # ---------------------------------------------------------------------------------------------------------------
-  # Merged from hygiene.yml, requirements.yml and dependency-review.yml (workflow consolidation 2 of 4, owner RATIFIED
+  # Merged from hygiene.yml, requirements.yml and dependency-review.yml (workflow consolidation 2 of 4
   # Oct 2). Same events (push to main, pull_request); every job keeps its name, top-level placement and own
   # permissions; dependency-review runs on pull requests only, the only scope it is required on.
   allowlist:
@@ -294,14 +294,14 @@ jobs:
 
       - name: check every tracked file against the allowlist
         env:
-          # head repo vs this repo decides whether an auditor/* head is the real lane (a fork can name a branch anything)
+          # head repo vs this repo decides whether an auditor/* head is the real auditor branch (a fork can name a branch anything)
           GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           # the queue's commit has no head branch: the script reads the pull request from the queue ref (one call)
           GITHUB_QUEUE_REF: ${{ github.event.merge_group.head_ref }}
           GH_TOKEN: ${{ github.token }}
         run: git ls-files | ./bin/check-file-allowlist.sh
 
-      - name: allowlist branch-scoping regressions (auditor suppression lane)
+      - name: allowlist branch-scoping regressions
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-file-allowlist-test.sh bin/check-file-allowlist-test.sh
 
       - name: customer-word check regressions
@@ -330,7 +330,7 @@ jobs:
           pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
           REQ
           python3 bin/check-workflow-permissions.py
-      # REQ-SCAN-015 (advisor-accepted Oct 9; serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
+      # REQ-SCAN-015 (serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
       # main-candidate-rescan.yml by file, so neither may be callable as a reusable workflow. Runs here, in the required
       # `allowlist` job, so a violation blocks the merge; it reads the checked-out workflow files with the PyYAML installed above.
       - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
@@ -386,7 +386,7 @@ jobs:
 
       # The scanner-panel probe's request cap against the PINNED SDKs (Codex #155 phase-2 r2): both re-send once after a
       # 401 outside max_retries, so the cap is proven on the real SDK code, offline (a mock transport serves every request).
-      - name: the probe's one-request-per-seat cap against the hash-pinned SDKs (scanner panel rule 8; REQ-SCAN-008)
+      - name: the probe's one-request-per-seat cap against the hash-pinned SDKs (REQ-SCAN-008)
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/panel-sdk"
@@ -409,7 +409,7 @@ jobs:
       # Punch list #3c/#6c. Version literals in prose and commands rot at
       # the next release, and this class has bitten twice: a README
       # "Release pipeline (v0.1.0)" line, and an entire RELEASING.md
-      # verification section built around one tag. Owner doctrine is that
+      # verification section built around one tag. The standing rule is that
       # "we need not forget" resolves to a mechanical check, never to
       # memory. This is that check, and it lands only now that every doc is
       # already clean, so it goes green on arrival rather than as a
@@ -690,7 +690,7 @@ jobs:
       - name: the candidate's OCI layout turned into a scan tar, digests checked (REQ-REL-004-AC1)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json layout-archive-test.sh bin/layout-archive-test.sh
 
-      - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
+      - name: our VEX in three forms — the same statements, generated before the signed manifest
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-forms-test.sh bin/vex-forms-test.sh
 
       - name: the monthly evidence letter — made from the release assets, refused on any mismatch (REQ-REL-013)
@@ -703,10 +703,10 @@ jobs:
           python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json
           evidence-letter-job-test.sh bin/evidence-letter-job-test.sh
 
-      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
+      - name: the Docker Scout root-cause round's documents, matrix and judge
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json scout-root-cause-test.sh bin/scout-root-cause-test.sh
 
-      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
+      - name: the Docker Scout older-versions sweep — table logic with docker stubbed, installer pins, dispatch-only job
         run: bash bin/scout-older-versions-test.sh
 
       - name: suite guard (no tracked test file is empty; the guard's own regressions)
@@ -726,9 +726,6 @@ jobs:
           bash bin/suite-guard.sh floors-vs-base --allow-from-body "$(git merge-base HEAD "origin/${BASE}")" \
             test-evidence/suite-floors.json
 
-      - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)"
-        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
-
       - name: "the release chain's Rekor check in key form: entries, retries, the pinned log key (ratify B)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-rekor-key-test.sh bin/chain-rekor-key-test.sh
 
@@ -738,8 +735,10 @@ jobs:
       - name: "the release key manifest: the root key's signature, the window, the revocation (handoff 0713)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-manifest-test.sh bin/chain-manifest-test.sh
 
-      - name: "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup (handoff 0713)"
+      - name: "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json witness-kms-test.sh bin/witness-kms-test.sh
+      - name: "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow (handoff 0713 P8)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-no-keyless-tag-test.sh bin/chain-no-keyless-tag-test.sh
 
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-hostile-test.sh bin/chain-hostile-test.sh
@@ -789,13 +788,13 @@ jobs:
       - name: "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-release-metadata-test.sh bin/chain-release-metadata-test.sh
 
-      - name: the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)
+      - name: the customer guide — every scanner's file, check and exact command, no competitor named
         run: bash bin/vex-guide-test.sh
 
-      - name: the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)
+      - name: the live test's plan, test copy, fixture and wiring, offline
         run: bash bin/vex-live-test-test.sh
 
-      - name: the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)
+      - name: the live test's page and its driver are read by the action-pin checker
         run: bash .github/agent/tests/vex-live-pins-test.sh
 
       # Round 1 F7: the floors of test-evidence/suite-floors.json are held at REAL counts. Every suite the file names runs again through the guard (stdin closed,
@@ -824,7 +823,7 @@ jobs:
         run: |-
           for r in "$R1" "$R2" "$R3" "$R4"; do [ "$r" = success ] || { echo "a shard of allowlist-chain did not succeed: [$r]"; exit 1; }; done
 
-  # supply-chain, panel, release-wiring and dependency-lane suites (split out of the allowlist job)
+  # supply-chain, panel, release-wiring and dependency-path suites (split out of the allowlist job)
   allowlist-pins-auditor:
     name: allowlist-pins-auditor
     runs-on: ubuntu-latest
@@ -860,42 +859,42 @@ jobs:
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependabot-reviewer-test.sh bin/dependabot-reviewer-test.sh
-      - name: dependency lanes wiring — reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)
+      - name: dependency paths wiring — reviewer hourly from main, guard on every PR/push, patch/minor path after the guard
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependency-lanes-test.sh bin/dependency-lanes-test.sh
       - name: the Dependabot reviewer's bundle carries the diff, every in-range release note and our usage (row 75 b)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependabot-reviewer-gather-test.sh bin/dependabot-reviewer-gather-test.sh
-      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
+      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json panel-test.sh bin/panel-test.sh
       - name: the final image index that carries our OpenVEX for Docker Scout — the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-index-test.sh bin/vex-index-test.sh </dev/null
       - name: the auditor's fixtures and tests follow the panel's image set — the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)
         run: bash .github/agent/tests/auditor-variants-test.sh
-      - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
+      - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json patch-decide-test.sh bin/patch-decide-test.sh
-      - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
+      - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012)
         run: bash bin/audit-record-test.sh
       - name: the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json queue-gate-judge-test.sh .github/agent/tests/queue-gate-judge-test.sh
-      - name: admission's tag signer — the owner's SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)
+      - name: admission's tag signer — the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused (handoff 0713 P8)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json admission-tag-signer-test.sh bin/admission-tag-signer-test.sh
 
-      - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue (owner Oct 2; handoff 0713 P8)
+      - name: release.yml's automatic patch wiring — decide on main only, no tag signed or cut, failures open an issue (handoff 0713 P8)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json release-patch-wiring-test.sh bin/release-patch-wiring-test.sh
       - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json acceptance-maven-413-test.sh bin/acceptance-maven-413-test.sh
-      - name: release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)
+      - name: release.yml's notes commit runs exactly the committed signed-commit CLI (the literal path is judged under .github/agent/)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json release-notes-signed-test.sh .github/agent/tests/release-notes-signed-test.sh
-      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)
+      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json go-freshness-wiring-test.sh bin/go-freshness-wiring-test.sh
-      - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)
+      - name: the workflow consolidation (mutation runs weekly inside go-freshness)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json workflow-consolidation-test.sh bin/workflow-consolidation-test.sh
-      - name: a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)
+      - name: a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011)
         run: bash bin/job-isolation-test.sh
       - name: the daily rescan covers the current release only (REQ-REL-004-AC5)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json rescan-current-only-test.sh bin/rescan-current-only-test.sh
-      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
+      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json panel-wiring-test.sh bin/panel-wiring-test.sh
-      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
+      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json k8s-harness-fence-test.sh .github/agent/tests/k8s-harness-fence-test.sh
       - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-age-check-test.sh .github/agent/tests/pin-age-check-test.sh
@@ -926,10 +925,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/required-check-guard.sh .github/policy/required-checks.json
 
-  # Row 76: on a push to main, drift between main's list and the ruleset opens (or updates) the `required-check drift`
-  # issue. Only on push to main: the issue write is held by a job that runs main's own code, never by a job that runs a
-  # pull request's or a queue group's scripts, and that job holds no App token. A drift first seen on a PR run stays a
-  # red check there and is picked up by the next push to main. Best effort: a failed call is a warning; the issue is the record.
+  # On a push to main, drift between main's list and the ruleset opens (or updates) the `required-check drift`
+  # issue. Only on push to main: the issue write is held by a job that runs main's own code, never by a job that runs a pull
+  # request's or a queue group's scripts. A drift first seen on a PR run stays a red check there and is picked up by the
+  # next push to main. Best effort: a failed call is a warning; the issue is the record.
   drift-issue:
     name: open the required-check drift issue
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -961,7 +960,7 @@ jobs:
           {
             echo 'The ruleset on `main` and `.github/policy/required-checks.json` on `main` differ (contexts and integration IDs must both match, exactly). Until they agree the Dependabot auto-merge guard refuses every patch/minor PR and every PR ci run is red.'
             echo
-            echo 'Fix whichever is wrong: the ruleset (owner, GitHub UI) or the list (a PR).'
+            echo 'Fix whichever is wrong: the ruleset (GitHub UI) or the list (a PR).'
             echo
             echo "Seen by ${RUN_URL}"
             echo
@@ -973,11 +972,12 @@ jobs:
                 | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
           if [ -n "$n" ]; then gh issue edit "$n" --body-file "${RUNNER_TEMP}/drift-body.md" >/dev/null && echo "updated #${n}"
           else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
+          if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
 
-  # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6; orchestrator ruling Oct 13). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
+  # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
   # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
   # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
-  # secret; a fork's token is read-only and enough. LIMIT: a pull request that also rewrites THIS job is stopped by the workflow-change rule (both reviews and the owner's
+  # secret; a fork's token is read-only and enough. LIMIT: a pull request that also rewrites THIS job is stopped by the workflow-change rule (both reviews and the maintainers'
   # merge), not by the job; bin/marker-gate-test.sh pins the job's text so an edit fails the suite on the same pull request.
   marker-gate:
     name: marker-gate
@@ -1073,8 +1073,8 @@ jobs:
           base-ref: ${{ github.event.merge_group.base_sha }}
           head-ref: ${{ github.event.merge_group.head_sha }}
 
-  # Scanner-panel rule 12 (REQ-SCAN-012-AC4): on main, a change to the guide, the VEX file or its generator runs the live test against the newest published
-  # release that carries the rule-10 files (never on a pull request or a schedule); until a v0.3 release exists the test announces a skip.
+  # (REQ-SCAN-012-AC4): on main, a change to the guide, the VEX file or its generator runs the live test against the newest published
+  # release that carries the VEX files (never on a pull request or a schedule); until a v0.3 release exists the test announces a skip.
   live-test-gate:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -1110,7 +1110,7 @@ jobs:
     concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
       group: vex-live-test
       cancel-in-progress: false
-    environment: live-test   # holds the five LIVE_TEST_* identifiers (advisor 0078); its tag policy must admit rc and final v tags
+    environment: live-test   # holds the five LIVE_TEST_* identifiers; its tag policy must admit rc and final v tags
     permissions:
       contents: read
       id-token: write

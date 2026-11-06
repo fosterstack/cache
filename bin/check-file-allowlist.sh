@@ -149,10 +149,9 @@ ALLOW_PATTERNS=(
   '^bin/chain-verify\.py$'
   '^bin/chain_(common|hostile)\.py$'
   '^bin/chain-hostile-step\.sh$'
-  '^bin/chain-(verify|hostile|records|sign-wiring|no-keyless-tag|manifest|rekor-key|trust-files)-test\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files|no-keyless-tag)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
-  '^\.github/policy/release-key-(root\.pub|manifest\.(json|sig))$'
   '^\.github/policy/rekor\.pub$'
   '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
@@ -296,6 +295,11 @@ ALLOW_PATTERNS=(
   # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
   '^build/host-tools\.yaml$'
   '^build/locks/host-tools\.lock$'
+  # The VM build inputs (REQ-REFRESH-001-AC39 to AC41): the two package lists, their locks,
+  # the kernel lock and the kernel package key.
+  '^build/vm-(host|guest)\.yaml$'
+  '^build/locks/vm-(host|guest|kernel)\.lock$'
+  '^build/vm-keys/kernel-key-6165ee59\.rsa\.pub$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'

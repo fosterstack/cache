@@ -267,7 +267,7 @@ count=$(gh pr list --head "$branch" --base main --state open --json number,headR
 [ "$count" -le 1 ] || { echo "more than one open PR from $branch into main; refusing" >&2; exit 1; }
 if [ "$count" -eq 0 ]; then
 gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
---body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
+--body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
 fi
 number=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].number")
 head=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].headRefOid")

@@ -41,11 +41,13 @@ curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/bui
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
 # 2. Prove your archive matches it — just the one line you care about
-sha256sum -c <(grep "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt)
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 `sha256sum -c checksums.txt` on its own fails on the archives you did not
-download. The `grep` form checks only what you have.
+download. The `grep` form checks only what you have, and stops with no output
+if `checksums.txt` has no line for your archive, so a wrong `BIN`, `VERSION` or
+`PLATFORM` cannot pass as a successful check.
 
 **Bring `cosign` too.** It is a single static binary, and it will not be on a
 fresh air-gapped box — download it from
@@ -104,7 +106,7 @@ for on the disconnected side too:
 curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/build/keys/release.rsa.pub"
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt   # confirms the archive(s) you're about to move
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -   # confirms the archive(s) you're about to move
 ```
 
 A release before v0.3.0 carries a short-lived certificate instead of a key: verify it as shown in [Install FosterStack Cache](install.md). <!-- pinned: historical -->
@@ -161,10 +163,10 @@ It announces itself at startup, which matters in an air gap where you cannot
 check anything against a registry after the fact:
 
 ```json
-{"msg":"fscache: starting","fips140":"active (Go validated module, CMVP cert #5247)", ...}
+{"msg":"fscache: starting","fips140":"active (Go validated module ..., CMVP cert #5247)", ...}
 ```
 
 The Compliance tier sells the authored analysis that pairs with this build for
 a CMMC or NIST SP 800-171 assessment boundary — the applicability statement,
-vendor-signed attestation letters, and questionnaire support. The bytes, the
-evidence, and this binary are free.
+a monthly attestation letter signed by FosterStack LLC, and questionnaire
+support. The bytes, the evidence, and this binary are free.
