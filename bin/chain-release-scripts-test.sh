@@ -886,6 +886,7 @@ t, rc, so, se = pv([PV1, PV2, PV3, PV4]); C = calls(t)
 P, F = refs("image-production"), refs("image-fips")
 check(rc == 0, "AC7 post-publish: a good list of four commands passes in both registries", se)
 check(len(C) == 7, "AC7 post-publish: the three image commands run twice and the verify-blob (no image placeholder) once: seven runs, not eight", str(len(C)))
+kp = lambda t: "release.rsa.pub"   # the key flag the post-publish run passes: the release key placed in the working directory
 mk = lambda ref: "cosign verify %s --key %s" % (ref, kp(t))
 check(C[:1] == [mk(P[0])] and mk(P[1]) in C, "AC7 post-publish: <IMAGE_REF> is the repository@digest, once per registry (ghcr.io first, then docker.io), with the SAME digest", str(C[:2]))
 check(any(c.startswith("cosign verify " + F[0] + " ") for c in C) and any(c.startswith("cosign verify " + F[1] + " ") for c in C), "AC7 post-publish: <IMAGE_REF_FIPS> is substituted in both registries with the one -fips digest", str(C))
@@ -992,7 +993,7 @@ def pva(rows, assets=None, nodir=False, cv=None, links=None, **kw):
         for n, target in (links or {}).items(): os.symlink(target, os.path.join(rp, n))
     os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     json.dump([{"command": c, "reason": "needs a release file"} for c in rows], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
-    e = {"GITHUB_REPOSITORY": "fosterstack/cache", "RUNNER_TEMP": KEYOF[t]}; e.update(kw.get("env") or {})
+    e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(kw.get("env") or {})
     rc, so, se = run(t, "release-postverify", env=e, creds=["GH_TOKEN"])
     return t, rc, so, se
 # a bundle signed with a key (what release-postverify.py accepts); messageSignature is the field the jq filters below read, OKF lacks it
@@ -1177,16 +1178,16 @@ check(rc == 1 and not calls(t) and "chain_common.py does not match" in se, "KL-1
 # unknown-flag rule of the licensing walk
 for flag in ("--offline", "--insecure-ignore-tlog", "--new-bundle-format"):
     for form in (" cert.json", "=cert.json"):
-        t, rc, so, se = pva(["cosign verify-blob --key k.pub %s --bundle%s x.txt" % (flag, form)], assets={"cert.json": KCERT, "x.txt": "x"})
+        t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub %s --bundle%s x.txt" % (flag, form)], assets={"cert.json": KCERT, "x.txt": "x"})
         check(rc == 1 and not calls(t) and CERTMSG in se, "KL-1 post-publish: a boolean flag (%s) before --bundle%s (the file named after it) does not hide the bundle: the certificate bundle is refused" % (flag, form), "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
-t, rc, so, se = pva(["cosign verify-blob --key k.pub {--bundle,cert.json} x.txt"], assets={"cert.json": KCERT, "x.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub {--bundle,cert.json} x.txt"], assets={"cert.json": KCERT, "x.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
 check(rc != 0 and any("{--bundle,cert.json}" in l for l in calls(t)) and not any(" --bundle " in l + " " for l in calls(t)), "KL-1 post-publish: a brace that would build the --bundle flag reaches the verifier as the literal word (no shell expands it), never as --bundle, and the run fails", "rc=%s %s" % (rc, calls(t)))
-t, rc, so, se = pva(["cosign verify-blob --key k.pub --bun\\\ndle cert.json x.txt"], assets={"cert.json": KCERT, "x.txt": "x"})
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub --bun\\\ndle cert.json x.txt"], assets={"cert.json": KCERT, "x.txt": "x"})
 lg = open(os.path.join(t, "calls.log")).read() if os.path.exists(os.path.join(t, "calls.log")) else ""
 check("--bundle" not in lg, "KL-1 post-publish: a backslash-newline inside the flag does not join into --bundle (no shell removes it): the verifier never receives --bundle", "rc=%s log=%r" % (rc, lg[:120]))
-t, rc, so, se = pva(["cosign verify-blob --key k.pub x.txt --bundle"], assets={"x.txt": "x"})
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub x.txt --bundle"], assets={"x.txt": "x"})
 check(rc == 1 and not calls(t) and "--bundle" in se, "KL-1 post-publish: a trailing --bundle with no file name is refused and nothing runs", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
-t, rc, so, se = pva(["cosign verify-blob --key k.pub x*.txt"], assets={"x1.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
+t, rc, so, se = pva(["cosign verify-blob --key release.rsa.pub x*.txt"], assets={"x1.txt": "x"}, env={"FAKE_NEEDFILES": "1"})
 check(rc != 0 and any("x*.txt" in l for l in calls(t)), "KL-1 post-publish: a glob in an operand reaches the verifier as the literal word (the commands run without a shell), so it names no file and the run fails", "rc=%s %s" % (rc, calls(t)))
 # an EMPTY list still requires the assets directory (nothing is skipped by listing nothing)
 t, rc, so, se = pva([], nodir=True); check(rc != 0 and "release-published" in se, "AC20 round 1: an empty list with no release-published/ fails (the directory is required whatever the list holds)", "rc=%s %s" % (rc, first(se)))
@@ -1204,7 +1205,7 @@ judge = {"__name__": "judge"}
 exec(compile(src, "release-postverify.py", "exec"), judge)
 BASES = [PV1, PV2, PV3, PV4, PBF, PJ, J1, J2OLD, VID, VT, VP, VB, VU, "jq -r --arg ref 'a b' '.a | .b' f.json",
          "jq -c '.ok' f.json | jq -e '. == true'", PBF + " | jq -e '.ok' x.json",
-         "cosign verify-attestation --key k.pub <IMAGE_REF_FIPS>"]
+         "cosign verify-attestation --key release.rsa.pub <IMAGE_REF_FIPS>"]
 SNIPS = ["`", "$", "$(id)", "${X}", "#", "\n", "\r", "\\", "\\$", "'", '"', ";", "&", "&&", ">", "<", "(", ")", "|",
          " | ", " || ", "ghcr.io/x/y", "docker.io/o/r@sha256:aa", "oci://ghcr.io/o/r", "<IMAGE_REF>", "<X>", "<tag>",
          "jq", "-e", "--arg a b", "--from-file", "-L.", "-f f", "/etc/passwd", "../x", "*", "{a,b}", "~", "@sh",

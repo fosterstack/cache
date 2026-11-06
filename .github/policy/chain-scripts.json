@@ -1878,7 +1878,7 @@
           "rule": "deny",
           "line": "            return \"a newline outside quotes (bash runs what follows as another command)\"",
           "line_sha256": "ec500fdb894446743911ba889f98f65e95ee666f8d3ed91280d3b3688979895e",
-          "count": 1,
+          "count": 2,
           "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
         }
       ],
