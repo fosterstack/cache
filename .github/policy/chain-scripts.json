@@ -1726,7 +1726,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: every signature is made by chain-verify.py kms-sign (RSASSA_PKCS1_V1_5_SHA_256 named on the KMS call with the release key RELEASE_KMS_KEY_REF, the one Rekor entry posted by the same call; KA-2): the images in both registries and the manifest referrer are signed as DSSE statements whose bundles cosign attach attestation attaches (cosign signs nothing here: its login and attach calls only reach the registries), the SBOMs, lock files, dependency evidence, checksums, release policy and release-files list as digests (REQ-CHAIN-007-AC8); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); before its first signing call it runs chain-verify.py key-ref-check with the algorithm guard: RELEASE_KMS_KEY_REF must be the verifier's own key reference, byte for byte, and the key must list RSASSA_PKCS1_V1_5_SHA_256, else exit 2 (kms-sign asserts it again on every signing call)",
-      "sha256": "03cf36d94939df1afa32c33a7cdb17e864c9d357d65b9a715532028e6e1c7598",
+      "sha256": "ff0192d5c26d26cc3b3930c46cb6594515798e51bb4029240d13416d58d5230d",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1761,7 +1761,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "1c30cdf7477937993532a9774fd86df95e1c94183a1e6222bb745b1c65666a4b",
+      "sha256": "a8e4d06800fa7897bf30471df00c2093025a323dbed5079cefc2ff7ebe8a58de",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1900,7 +1900,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "0da39b1df891aec539bbe73aa36023d6ae516a5773f1bbcbbb60e3cc064367cd"
+      "sha256": "9639953d932d81037990feee2e023398dc39e5c5a7677a4e693f740e441ccd78"
     },
     {
       "path": "bin/vex-forms.py",

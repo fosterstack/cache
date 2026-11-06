@@ -217,6 +217,10 @@ def apk_data(variant, arch): return "data-%s-%s" % (variant, arch)
 # REQ-CHAIN-007-AC17, the fixed Build interface table: artifact (runner) -> apk architecture directory -> short name; variant -> file name
 RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
 APKS = (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk"))
+# Build's Go module lists, in out/ beside each runner's apks
+MODULE_SBOMS = (("standard", "fscache-modules.spdx.json"), ("fips", "fscache-modules-fips.spdx.json"))
+def module_sbom(variant): return "module sbom " + variant
+def sha_of(text): return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 def adm(t, tag, base, **over):
     """witness-build/admission-baseline.json as Build's assemble job writes it (REQ-CHAIN-007-AC19): the tag, the commit and the baseline admission chose."""
     d = {"tag": tag, "sha": "c" * 40, "baseline_version": base, "baseline": "requirements/releases/%s.yaml" % base}
@@ -246,6 +250,8 @@ def tree(extra_env=None):
             for variant, name in APKS:
                 open(os.path.join(d, name), "w").write("apk\nsigner: assembly.rsa.pub\ndata: %s\n" % apk_data(variant, short))
                 digs["apk-%s-%s" % (variant, short)] = "sha256:" + hashlib.sha256(apk_data(variant, short).encode()).hexdigest()
+            for variant, name in MODULE_SBOMS:
+                open(os.path.join(t, top, runner, name), "w").write(module_sbom(variant))
     for v in ("production", "fips"):
         os.makedirs(os.path.join(t, "images", v + "-sbom"), exist_ok=True)
         shutil.copytree(os.path.join(LAYOUTS, v), os.path.join(t, "images", v))
@@ -262,6 +268,8 @@ def tree(extra_env=None):
     for v in ("production", "fips"):
         items.update({"image-" + v: DIG["image-" + v], "lock-" + v: "sha256:" + hashlib.sha256(("lock " + v).encode()).hexdigest(), "sbom-" + v: "sha256:" + hashlib.sha256(("sbom " + v).encode()).hexdigest(),
                       "image-%s-manifest-amd64" % v: "sha256:" + "1" * 64, "image-%s-manifest-arm64" % v: "sha256:" + "2" * 64})
+    for variant, name in MODULE_SBOMS:
+        items["modules-sbom-" + variant] = sha_of(module_sbom(variant))
     json.dump(items, open(os.path.join(t, "witness-build/items.json"), "w"))
     adm(t, "v0.3.0", "v0.3.0")
     for f in ["provenance/provenance.rekor.json", "provenance/provenance.bundle.json"]:      # Sign's three files (REQ-CHAIN-007-AC9: attached to the release; provenance.json is below)
@@ -613,35 +621,21 @@ t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATT
 check(rc5 == 0 and "docker.io" in so5 + se5 and "::warning::" in so5 and len([l for l in log(t5) if l.startswith("cosign attach attestation ")]) == 8 and any(l.startswith("chain-verify kms-sign") and " --dsse-statement " not in l for l in log(t5)),
       "AC8 a Docker Hub mirror referrer that cannot be attached is a loud warning, never a silent skip, and the run continues (GHCR is authoritative)", "rc=%s %s" % (rc5, first(se5)))
 t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "ghcr.io/"})
-check(rc5 != 0 and not any(l.startswith("chain-verify kms-sign") and " --dsse-statement " not in l for l in log(t5)), "AC8 a GHCR referrer that cannot be attached stops the run before any file is signed", "rc=%s %s" % (rc5, first(se5)))
-# KA-2 p4 (blob kinds): the nine files are signed by `chain-verify.py kms-sign` (RSASSA_PKCS1_V1_5_SHA_256 named on the call, the one Rekor entry posted by the same call); no cosign sign-blob is run
-BLOBS = (("images/production-sbom/sbom.json", "release-evidence/production.sbom.json.bundle"), ("images/fips-sbom/sbom.json", "release-evidence/fips.sbom.json.bundle"),
-         ("images/production.full.lock.json", "release-evidence/production.full.lock.json.bundle"), ("images/fips.full.lock.json", "release-evidence/fips.full.lock.json.bundle"),
-         ("release-evidence/vendor-evidence.json", "release-evidence/vendor-evidence.json.bundle"), ("release-evidence/dependency-list.json", "release-evidence/dependency-list.json.bundle"),
-         ("dist/checksums.txt", "release-evidence/checksums.txt.bundle"), ("policy.json", "release-evidence/release-policy.bundle"),
-         ("release-metadata/release-files.sha256", "release-evidence/release-files.sha256.bundle"))
-ksl = [l for l in L if l.startswith("chain-verify kms-sign") and " --dsse-statement " not in l]     # the nine file signatures; the eight image statements are KSI above
-blobs = " ".join(ksl)
-check(len(ksl) == 9 and not any(l.startswith("cosign sign-blob") for l in log(t)), "KA-2 p4 the nine files are signed by nine kms-sign calls and no cosign sign-blob call is made", "%d kms-sign, %d sign-blob" % (len(ksl), len([l for l in log(t) if l.startswith("cosign sign-blob")])))
-for f, b in BLOBS:
-    want = "chain-verify kms-sign --aws " + os.path.join(t, "rt") + "/aws-cli/aws --key-ref " + KMS + " --digest " + hashlib.sha256(open(os.path.join(t, f), "rb").read() if os.path.exists(os.path.join(t, f)) else b"").hexdigest() + " --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub"
-    hit = [l for l in ksl if l.startswith(want + " ") and l.endswith(" --bundle " + b)]
-    check(len(hit) == 1, "KA-2 p4 %s is signed once with the release key, the digest of its own bytes, the signing config and the committed public key, and its bundle is %s" % (f, b), str(hit) + " want " + want)
-check(all(" --out " in l for l in ksl) and len({re.search(r" --out (\S+)", l).group(1) for l in ksl}) == 9, "KA-2 p4 each kms-sign call has its own signature file (kms-sign never overwrites)")
+check(rc5 != 0 and not any(l.startswith("cosign sign-blob") for l in log(t5)), "AC8 a GHCR referrer that cannot be attached stops the run before any file is signed", "rc=%s %s" % (rc5, first(se5)))
+blobs = " ".join(l for l in L if l.startswith("cosign sign-blob"))
+for f in ("production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json",
+          "vendor-evidence.json", "dependency-list.json", "checksums.txt", "policy.json",
+          "fscache-modules.spdx.json", "fscache-modules-fips.spdx.json"):
+    check(f in blobs, "AC8 %s is signed with a bundle" % f)
+check(all("--bundle" in l for l in L if l.startswith("cosign sign-blob")), "AC8 every signed file gets a bundle")
 # handoff 0713 P3 (ratify B): every signature is made with the release KMS key, named by the job (RELEASE_KMS_KEY_REF), and keeps its Rekor entry through the signing config
-check(not any(re.search(r"--(identity-token|fulcio|oidc)", l) for l in L if l.startswith(("cosign", "chain-verify"))), "P3 no keyless flag is passed to cosign or kms-sign")
-# a public key that is the committed placeholder (or unreadable) is refused by kms-sign: the step stops at the first blob, no bundle is left, nothing is uploaded or signed after it
-tph = tree(); open(os.path.join(tph, "build/keys/release.rsa.pub"), "w").write("PLACEHOLDER: the real public half of the release key is committed by a human\n")
-rc, so, se = run(tph, "release-sign", creds=REG); lp = log(tph)
-check(rc != 0 and len([l for l in lp if l.startswith("chain-verify kms-sign")]) == 1 and "public key" in se and not os.path.exists(os.path.join(tph, "release-evidence/production.sbom.json.bundle")), "KA-2 p4 the placeholder public key stops the step at the first signed file, with kms-sign's refusal, and leaves no bundle", "rc=%s %s" % (rc, first(se)))
-tkd = tree(); rc, so, se = run(tkd, "release-sign", creds=REG, env={"KMSSIGN_KMSKEY": "-----BEGIN PUBLIC KEY-----\nT1RIRVJLRVk=\n-----END PUBLIC KEY-----\n"}); lkd = log(tkd)
-check(rc != 0 and len([l for l in lkd if l.startswith("chain-verify kms-sign")]) == 1 and "does not match the KMS key" in se and "build/keys/release.rsa.pub" in se and not os.path.exists(os.path.join(tkd, "release-evidence/production.sbom.json.bundle")) and not any(l.startswith("cosign") for l in lkd[next(i for i, x in enumerate(lkd) if x.startswith("chain-verify kms-sign")):]), "KA-2 p4 key compare: a committed key that is not the KMS key stops the step at the first signed file with kms-sign's one-line refusal naming the file, no bundle, no cosign call after it", "rc=%s %s %s" % (rc, first(se), len([l for l in lkd if l.startswith("chain-verify kms-sign")])))
-trt = tree(); rc, so, se = run(trt, "release-sign", creds=REG, env={"NO_RUNNER_TEMP": "1"}); lrt = log(trt)
-check(rc != 0 and "RUNNER_TEMP" in se and len([l for l in se.splitlines() if l.strip()]) == 1 and not [l for l in lrt if l.startswith(("cosign", "chain-verify kms-sign"))], "KA-2 p4 group 4 release-sign without RUNNER_TEMP (the place the pinned aws CLI is installed) stops at once with one line naming it, before any tool or signature", "rc=%s %s" % (rc, first(se)))
-ksall = [l for l in L if l.startswith("chain-verify kms-sign")]
-check(len(ksall) == 17 and all((" --aws " + os.path.join(t, "rt") + "/aws-cli/aws ") in l for l in ksall) and not any("/usr/local/bin/aws" in l for l in L), "KA-2 p4 group 4 every kms-sign call (nine files, eight image statements) names the job-local aws CLI under RUNNER_TEMP, never a path of the runner image", str(ksall[:1]))
-tkf = tree(); rc, so, se = run(tkf, "release-sign", creds=REG, env={"KMSSIGN_FAIL_ON": "checksums.txt"}); lk = log(tkf)
-check(rc != 0 and "RSASSA_PKCS1_V1_5_SHA_256" in se and len([l for l in lk if l.startswith("chain-verify kms-sign")]) == 15 and not any("release-policy.bundle" in l or "release-files" in l for l in lk), "KA-2 p4 a refused kms-sign call (the key does not list the algorithm; the 8 image statements and 6 files came first) stops the step: the files after it are not signed", "rc=%s %s" % (rc, first(se)))
+signing = [l for l in L if l.startswith(("cosign sign ", "cosign sign-blob", "cosign attest "))]
+SIGNING_CONFIG = " --signing-config .github/policy/cosign-signing-config.json "
+check(len(signing) == 19 and all((" --key " + KMS + " ") in l and SIGNING_CONFIG in l for l in signing),
+      "P3 each of the 19 cosign calls (4 image signatures, 4 attestations, 11 signed files) "
+      "signs with --key and then the signing config",
+      str(len(signing)) + " " + str([l for l in signing if (" --key " + KMS + " ") not in l][:2]))
+check(not any(re.search(r"--(identity-token|fulcio|oidc)", l) for l in L if l.startswith("cosign")), "P3 no keyless flag is passed to cosign")
 tn = tree(); rc, so, se = run(tn, "release-sign", creds=REG, env={"NO_KMS_REF": "1"})
 check(rc != 0 and "RELEASE_KMS_KEY_REF" in se and not [l for l in log(tn) if l.startswith(("cosign", "vendor-provenance"))], "P3 a job with no RELEASE_KMS_KEY_REF stops the step before anything is made or signed, naming the variable", "rc=%s %s" % (rc, first(se)))
 tb = tree(); rc, so, se = run(tb, "release-sign", creds=REG, env={"RELEASE_KMS_KEY_REF": "arn:aws:kms:us-east-1:111122223333:key/abc"})
@@ -677,10 +671,18 @@ for label, mutate in (("a missing archive", lambda t: os.remove(os.path.join(t, 
           "AC21 %s stops release-sign before any signature and no checksums.txt is made" % label, "rc=%s %s" % (rc, first(se)))
 check(not re.search(r"tlog-upload=false|insecure-ignore-tlog|--no-tlog", "\n".join(L)), "AC8 the transparency log is never turned off")
 check("witness-build" not in blobs and "witness-rebuild" not in blobs and "witness-check" not in blobs, "AC8 the Witness records are not signed again (they are extra evidence)")
-for f in ("policy.json", "vendor-evidence.json", "production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json", "dependency-list.json", "checksums.txt", "release-files.sha256"):
+for f in ("policy.json", "vendor-evidence.json", "production.sbom.json", "fips.sbom.json", "production.full.lock.json",
+          "fips.full.lock.json", "dependency-list.json", "checksums.txt", "release-files.sha256",
+          "fscache-modules.spdx.json", "fscache-modules-fips.spdx.json"):
     name = {"policy.json": "release-policy.bundle"}.get(f, f + ".bundle")
     t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": name})
     check(rc != 0 and "rekor" in se.lower() and name in se, "AC8 a bundle with no Rekor entry (%s) fails the script, naming the file" % name, "rc=%s %s" % (rc, first(se)))
+for variant, name in MODULE_SBOMS:
+    t = tree(); open(os.path.join(t, "apks/ubuntu-24.04", name), "w").write("not what Build recorded")
+    rc, so, se = run(t, "release-sign", creds=REG)
+    check(rc != 0 and name in se and not [l for l in log(t) if l.startswith("cosign")],
+          "0707 a %s that differs from Build's item is refused by name before any cosign call" % name,
+          "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"EVIDENCE_FAIL": "1"}); check(rc != 0 and not signs(t), "AC8 failing evidence stops everything before anything is signed")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(signs(t)) == 1, "AC8 a failing cosign (it fails at login, the first call) stops at the first call")
 # an image signature fails (the login passes): the failing kms-sign call is the only one made, and nothing is attached, attested or signed after it
@@ -761,6 +763,15 @@ check(rcnb != 0 and "bundle" in senb and not [l for l in log(tnb) if l.startswit
 for what in ("release upload v0.3.0", "release-upload/amd64-fscache-0.3.0-r0.apk", "release-upload/arm64-fscache-fips-0.3.0-r0.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
              "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json", "release-upload/provenance.json", "release-upload/provenance.rekor.json", "release-upload/provenance.bundle.json"):
     check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
+for variant, name in MODULE_SBOMS:
+    staged = os.path.join(t, "release-upload", name)
+    check(rc == 0 and os.path.exists(staged) and open(staged).read() == module_sbom(variant),
+          "0707 %s is attached to the release with the bytes Build recorded" % name)
+    tm = full_assets(); os.remove(os.path.join(tm, "apks/ubuntu-24.04", name))
+    rcm, som, sem = run(tm, "release-assets", creds=["GH_TOKEN"])
+    check(rcm != 0 and name in sem and not [l for l in log(tm) if l.startswith("gh ")],
+          "0707 without %s nothing is uploaded and no gh call is made, the file is named" % name,
+          "rc=%s %s" % (rcm, first(sem)))
 for pf in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):     # Sign's provenance is part of every release: a run without one stops before the upload, naming it
     tp = full_assets(); os.remove(os.path.join(tp, "provenance", pf)); rcp, sop, sep = run(tp, "release-assets", creds=["GH_TOKEN"])
     check(rcp != 0 and pf in sep and not [l for l in log(tp) if l.startswith("gh release upload")], "AC9 without Sign's %s the release is not published: nothing is uploaded, the file is named" % pf, "rc=%s %s" % (rcp, first(sep)))

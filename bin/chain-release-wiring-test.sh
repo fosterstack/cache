@@ -561,6 +561,8 @@ sg m_attnohub 'kms_image attest "docker\.io[^\n]*\n' ''                         
 sg m_attearly '(for host in ghcr.io docker.io; do\n  for digest in "\$prod" "\$fips"; do\n    kms_image sign[^\n]*\n  done\ndone\n)((?:#[^\n]*\n)*for digest in[^\n]*\n  kms_image attest[^\n]*\n  kms_image attest[^\n]*\ndone\n)' '\2\1' 'must come after every image signature' "AH the kms_image attest lines before the kms_image sign lines (the manifest attested before the image signatures)"
 sg m_nolist  'python3 bin/release-metadata\.py list [^\n]*\n'                                   ''                              'no list step'       "AC13 release-files.sha256 is not made"
 sg m_early   '(python3 bin/release-metadata\.py images [^\n]*\n)'                              'cosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\n\1' 'must come before' "AC13 a registry login (the first cosign call) before the metadata exists"
+sg m_modkey  '--key "\$RELEASE_KMS_KEY_REF" (--signing-config [^\n]*--bundle release-evidence/fscache-modules\.spdx\.json\.bundle)' '\1' 'every cosign signing line' "0707 a Go module SBOM signed without the release KMS key"
+sg m_moddir  ' --modules-dir apks/ubuntu-24\.04 '  ' --modules-dir apks/ubuntu-24.04-arm '  'must carry --modules-dir' "0707 the manifest checks another directory than the one the module SBOMs are signed from"
 python3 - "$root/bin/release-sign.sh" "$work/m_swap.sh" <<'PY'
 import sys
 L = open(sys.argv[1]).read().split("\n")
