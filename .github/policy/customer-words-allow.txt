@@ -1,2 +1,33 @@
 # Exact lines a customer-facing file may keep although they contain a banned word.
 # One entry per line: <path>|<the added line, trimmed>. No globs, no word-only entries. See bin/check-customer-words.py.
+# Workflow files: GitHub's own field names (repository_owner, context.repo.owner), program and file names that carry the word, and one check name other files read.
+.github/workflows/auditor.yml|for (const k of ['sub','aud','ref','job_workflow_ref','environment','repository','repository_owner_id']) {
+.github/workflows/ci.yml|run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependency-lanes-test.sh bin/dependency-lanes-test.sh
+.github/workflows/dependabot-auto-merge.yml|# heredoc because this workflow checks out nothing and fetches no script; bin/dependency-lanes-test.sh
+.github/workflows/dependabot-reviewer.yml|('sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id')}))
+.github/workflows/go-freshness.yml|REGISTRY_OWNER: ${{ github.repository_owner }}
+.github/workflows/go-freshness.yml|digest=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")
+.github/workflows/go-freshness.yml|echo "image=ghcr.io/${REGISTRY_OWNER}/cache@${digest}" >> "$GITHUB_OUTPUT"
+.github/workflows/go-freshness.yml|for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
+.github/workflows/main-candidate-rescan.yml|pkg="orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/cache-scout-probe"
+.github/workflows/main-candidate-rescan.yml|ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
+.github/workflows/main-candidate-rescan.yml|--repo "ghcr.io/${{ github.repository_owner }}/cache" \
+.github/workflows/main-candidate-rescan.yml|--image-ref "ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}" \
+.github/workflows/main-candidate-rescan.yml|const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+.github/workflows/main-candidate-rescan.yml|owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan', per_page: 100,
+.github/workflows/main-candidate-rescan.yml|const comment = await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+.github/workflows/main-candidate-rescan.yml|try { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, description, color }); } catch (e) { /* exists, or the create below reports it */ }
+.github/workflows/main-candidate-rescan.yml|const created = await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+.github/workflows/main-candidate-rescan.yml|const issue = await github.rest.issues.get({ owner: context.repo.owner, repo: context.repo.repo, issue_number: number });
+.github/workflows/release.yml|python3 bin/admission-tag-signer.py owner-baselines --tag "${VERSION}" \
+.github/workflows/release.yml|--allowed-signers "$RUNNER_TEMP/allowed_signers" --out "$RUNNER_TEMP/owner-baselines"
+.github/workflows/release.yml|b=$(python3 bin/admission-tag-signer.py baseline --tag "${VERSION}" --owner-baselines "$RUNNER_TEMP/owner-baselines" \
+.github/workflows/release.yml|for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
+.github/workflows/reserved-branch-guard.yml|name: only-the-app-pushes-auditor-lane
+.github/workflows/agent-review-gate.yml|# REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+.github/workflows/agent-review-gate.yml|# REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes
+.github/workflows/agent-review-gate.yml|# through the App's token scoped to contents write and pull-requests read (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.
+.github/workflows/dependabot-reviewer.yml|# patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
+.github/workflows/dependabot-reviewer.yml|# bound to the head that was reviewed: a later push voids the verdict (owner, Oct 1)
+.github/workflows/dependabot-reviewer.yml|echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
+.github/workflows/go-freshness.yml|( cd "$wd" && gremlins unleash --output "$out" "$@" . ) 2>&1 | tee "$log"

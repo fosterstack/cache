@@ -27,7 +27,7 @@
  "chain-trust-files-test.sh": 24,
  "chain-verify-test.sh": 855,
  "check-action-pins-test.sh": 1318,
- "check-customer-words-test.sh": 112,
+ "check-customer-words-test.sh": 131,
  "check-file-allowlist-test.sh": 991,
  "check-no-outbound-test.sh": 135,
  "dependabot-reviewer-gather-test.sh": 20,

@@ -1,6 +1,6 @@
 name: Reserved branch guard
 
-# The `auditor/*` prefix is the daily CVE auditor's own delivery lane: the public-repo
+# The `auditor/*` prefix is the daily CVE auditor's own delivery branch: the public-repo
 # allowlist relaxes the suppression outputs (.snyk, osv-scanner.toml, .auditor/accepted-items.json)
 # on it (bin/check-file-allowlist.sh). Only the delivery App may push there — a human/dev branch
 # must never use `auditor/*` (use feat/ or req/). This fails closed on any other pusher.
@@ -35,9 +35,9 @@ jobs:
           echo "pusher of an auditor/* branch: ${ACTOR}"
           case "${ACTOR}" in
             fosterstack-automation\[bot\]|fosterstack-automation)
-              echo "ok: the delivery App owns the auditor/* lane" ;;
+              echo "ok: the delivery App owns the auditor/* branches" ;;
             *)
-              echo "::error::auditor/* is the auditor's delivery lane — only the fosterstack-automation App may push it (got ${ACTOR}). Development branches must use feat/ or req/." >&2
+              echo "::error::auditor/* is the auditor's delivery branch prefix — only the fosterstack-automation App may push it (got ${ACTOR}). Development branches must use feat/ or req/." >&2
               exit 1 ;;
           esac
 

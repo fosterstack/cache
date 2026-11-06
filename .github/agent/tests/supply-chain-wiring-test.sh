@@ -54,7 +54,7 @@ CANONICAL_RUNS = {
         "# 540 s, then pin-audit.py's 600 s --base deadline (deadline_for): fits the 20-minute job; -v names a stop\n"
         'timeout -v 540 python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" \\\n'
         '  --head "$HEAD_SHA" || status=1\n'
-        "# the advisor's rulings come from the base branch too: a pull request must not bring its own\n"
+        "# the reviewers' rulings come from the base branch too: a pull request must not bring its own\n"
         'exceptions=trusted/.github/supply-chain-exceptions.json\n'
         'if [ ! -f "$exceptions" ]; then\n'
         '  exceptions="$RUNNER_TEMP/no-exceptions.json"\n'
