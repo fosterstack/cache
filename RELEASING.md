@@ -9,16 +9,19 @@ laptop cannot forge a release that GitHub's own runners never built).
 ## Pipeline (`.github/workflows/release.yml`)
 
 From v0.3.0 the release is five stages, each one reusable workflow file with its <!-- pinned: historical -->
-own job on a fresh GitHub-hosted runner. Sign signs the records and the provenance of Build, Rebuild and
-Check under its own identity (`stage-sign.yml`); Release signs what it makes under its own:
+own job, on a fresh GitHub-hosted runner (Sign is called three times: for Build's, Rebuild's and Check's
+records). The jobs that build or run workloads (Build, Rebuild and Check)
+hold no signing identity; the Sign stage signs their Witness records:
 
 ```
-Build -> { Sign, Rebuild } ; { Build, Sign } -> Check ; { Check, Rebuild, Sign } -> Release
+Build -> Sign -> { Rebuild, Check } ; Rebuild -> Sign (second call) ; Check -> Sign (third call) ; { Check, Sign, Sign (second call), Sign (third call) } -> Release
 ```
 
 The chain starts on a pushed `v*` tag (or a branch dry run, which publishes
-nothing). Every stage first verifies the signed record of the stage before it
-and ties its work to the digest list Build attested; Release publishes by
+nothing). Rebuild, Check and Release each first verify the signed records of the stages
+before them and tie their work to the digest list Build made; Sign checks
+the building jobs' records (Build's against the artifacts it receives, Rebuild's
+against Build's digest list) and signs them. Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
 rebuilds. Release is the only job that holds a registry credential, the apk
 signing key or `packages: write`.
@@ -26,24 +29,24 @@ signing key or `packages: write`.
 - **Build** (`stage-build.yml`): admits the tagged commit (tag signature,
   ancestry of `main`, required checks, approved requirements baseline), builds
   the apks on two native runners (amd64 and arm64) and assembles the images
-  and archives. Witness (pinned by checksum, set up first) wraps every step
-  and writes Build's record; Build signs its records only with a throwaway key
-  that nothing trusts, and Sign signs them (below);
+  and archives. Witness (pinned by checksum, set up first) wraps every
+  building step; the building jobs hold no identity token, so those records
+  are made with a throwaway key (`bin/witnessed-local.sh`) and leave Build as
+  local files that nothing trusts until the Sign stage has signed them.
   `digests.json` is the list of everything Build made. Before
   `digests.json`, Build makes each image's final index from the built index
   and the committed VEX file: the platform manifests plus one VEX attestation
   child per platform. The final index's digest is the one that is signed,
   attested, tested and promoted.
-- **Sign** (`stage-sign.yml`): its own job and workflow file; it receives
-  Build's records and the artifacts they name, never runs code from the build,
-  checks the records against those artifacts, signs the records keyless under
-  its own identity, then checks Build's digest list against the signed record
-  and signs the SLSA provenance.
+- **Sign** (`stage-sign.yml`): its own job and workflow file; it never runs
+  code from the build. It receives Build's records and the artifacts they name,
+  checks each record against them, signs the records keyless under its own
+  identity, and writes and signs the SLSA provenance. A second call of the same
+  file signs Rebuild's records; it receives no Rebuild apk or image. A third call
+  signs Check's records; it receives only those records and the results they name.
 - **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
-  machines and compares its items with Build's; any difference blocks the
-  release. Its items include the apks' digests. The `compare` job of
-  `stage-promote.yml` compares the apks once more (control and data sections;
-  the job has `contents: read` only: no key, no write token, no identity token).
+  machines and compares every item with Build's; any difference blocks the
+  release. Its records are signed by the Sign stage, not by Rebuild.
 - **Check** (`stage-verify.yml`): runs every scanner of
   [`.github/policy/scanners.json`](.github/policy/scanners.json), the Gradle
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check
@@ -220,7 +223,7 @@ a file that anyone could have written.
 | `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each, with the release signing key | its own bundle |
 | `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
 | apks | the release key, inside the file | the apk signature |
-| Witness records | Witness envelope, signed with the KMS key; its Rekor entry is recorded | `stage-sign.yml` for Build, Rebuild and Check; `stage-promote.yml` for Release's own |
+| Witness records | Witness envelope, signed with the KMS key; its Rekor entry is recorded | Build's, Rebuild's and Check's: `stage-sign.yml` at the tag; Release's: the Release stage (`stage-promote.yml`) |
 
 ### VEX statements
 
