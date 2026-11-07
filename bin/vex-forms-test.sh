@@ -173,9 +173,17 @@ except ValueError:
 check("all three variants' digests are required", ok)
 # --- the real OpenVEX file generates cleanly
 real = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
-check("the real OpenVEX file: CSAF carries all its statements", len(V.csaf(real, IMAGES, "v0.3.0")["vulnerabilities"]) == len(real["statements"]))
-rc = V.csaf(real, IMAGES, "v0.3.0")
-# each package statement stays scoped to the one component version it names: busybox 1.37.0 and the Go standard library 1.27.2 (GO-2026-6809)
+# the real file's GO-2026-6809 statement names the nine v0.2.2 image digests, so the real-file checks generate for the v0.2.2 release's own images
+REAL_IMAGES = {"production": {"index": "sha256:f2b330cf27b3814405230cc001a771909ae5bbf3b1e223a90ee7a9ee5d0e53dd", "children": {
+                   "linux/amd64": "sha256:87b9d6badf3d50357f8b0e4e7d16dc28b13eef6e32d4fffe8c455318888948d9", "linux/arm64": "sha256:b3b30da550e73bd185d72b0f50d22884048811fbce655a43bf0a48c87fb14acd"}},
+               "debug": {"index": "sha256:87887f55ffa41cc63d4aa6f6d9459fd0dbf919491b83f1d3c8b7fc5444b5a081", "children": {
+                   "linux/amd64": "sha256:9e8268329d7266b64a1a4258c83b23140ff8f266b283b835ce591deb1e3efad2", "linux/arm64": "sha256:ecc1d78cb8227f7c0496afc3db453c3e75fccebfa1ac631f54b2d4624ced4cab"}},
+               "fips": {"index": "sha256:92fae7f20616e553c5fe24e9b92f186c3d3f28ad89cee5c24864911032e6c05e", "children": {
+                   "linux/amd64": "sha256:ce6ed3d88dde71e5dbea01ccb9328155f662ca588630b6c7dd4753ca60dc404c", "linux/arm64": "sha256:e5cfd3249fa4d751f5fe2e56a2b3e36e2e45b15d1d29534f22833bc4cf7535b6"}}}
+check("the real OpenVEX file: CSAF carries all its statements", len(V.csaf(real, REAL_IMAGES, "v0.2.2")["vulnerabilities"]) == len(real["statements"]))
+rc = V.csaf(real, REAL_IMAGES, "v0.2.2")
+check("the real file's GO-2026-6809 statement does not reach another release's images: its CSAF there has no product for it",
+      not any(v["cve"] == "CVE-2026-111943" and v["product_status"] for v in V.csaf(real, IMAGES, "v0.3.0")["vulnerabilities"]))
 check("the real file's CSAF passes the loader's checks; its package statements stay scoped to busybox 1.37.0 and the Go standard library 1.27.2",
       bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-busybox@1.37.0", "component-stdlib@1.27.2"})
 # cache#772 round 1 (A2, ruled): the relationship SET above does not say which statement points at which component. For every vulnerability of the real
