@@ -25,10 +25,11 @@ import subprocess
 import sys
 import tempfile
 
-# The eleven checks, in order. Each is the counterpart of a step of the old stage-admission.yml (bin/chain-admission-old-steps.txt).
+# The twelve checks, in order. Each is the counterpart of a step of the old stage-admission.yml (bin/chain-admission-old-steps.txt).
 CHECKS = [
     "tag-ref", "tag-syntax", "policy-from-main", "tag-annotated", "tag-signature",
-    "commit-signature", "ancestor-of-main", "required-checks", "baseline", "rc-proof", "admission-evidence",
+    "commit-signature", "ancestor-of-main", "audit-approval", "required-checks", "baseline", "rc-proof",
+    "admission-evidence",
 ]
 
 TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")  # fullmatch: no trailing newline slips through
@@ -46,6 +47,8 @@ RC_BYTES = "bin/chain-bytes-sha.py"
 RC_TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SIGNER = "bin/admission-tag-signer.py"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
+# gate 7 (REQ-REL-012-AC7): main's judge, its helper and the writers policy, read from origin/main into a scratch root and never taken from the tagged commit
+AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
 POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER)
 
 
@@ -106,6 +109,7 @@ class Context:
         self.policy = os.path.join(tmp, "policy")
         self.allowed = os.path.join(self.policy, "allowed_signers")
         self.method = None
+        self.tag_object = None
         self.principal = None
         self.fingerprint = None
         self.commit_signer = None
@@ -181,6 +185,7 @@ def route_tag(ctx):
     obj_file = os.path.join(ctx.tmp, "tag-object")
     with open(obj_file, "wb") as fh:
         fh.write(obj)
+    ctx.tag_object = obj_file
     rc, out, err = outcome(lambda: subprocess.run(["python3", "-I", os.path.join(ctx.policy, os.path.basename(SIGNER)),
         "route", "--tag-object", obj_file], capture_output=True, check=False))
     if rc != 0:
@@ -261,7 +266,33 @@ def check_ancestor_of_main(ctx):
         raise Refusal("ancestor-of-main", "the tagged commit %s is not an ancestor of origin/main" % ctx.sha)
 
 
-# ---------------------------------------------------------------- 8. required-checks (audit F02, F03)
+# ---------------------------------------------------------------- 8. audit-approval (REQ-REL-012-AC7)
+
+def check_audit_approval(ctx):
+    """Release process rule 7: a tag that is not a patch tag needs the passed-audit record of the tagged commit AND the owner's
+    `Audit-approved: <record commit>` line in the signed tag message (the signature was verified above, so the line is the owner's).
+    The decision is main's judge (bin/audit-record-judge.sh --release), the only place that knows what a patch tag is: it reads no record
+    for one. Exit 0 passes; exit 1 (no or bad record, no or ambiguous line), exit 3 (a GitHub API error) and anything else refuse."""
+    root = os.path.join(ctx.tmp, "audit-root")
+    for path in AUDIT_FILES:
+        data = git_show("origin/main:" + path)
+        if data is None:
+            raise Refusal("audit-approval", "%s is not on origin/main, so the whole-release audit cannot be judged" % path)
+        os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
+        with open(os.path.join(root, path), "wb") as fh:
+            fh.write(data)
+    judge = os.path.join(root, AUDIT_FILES[0])
+    rc, out, err = outcome(lambda: subprocess.run(["bash", judge, ctx.sha, "main", "--release", ctx.tag, ctx.tag_object],
+        capture_output=True, check=False))
+    why = one_line(text(out) or text(err), 300)
+    if rc == 3:
+        raise Refusal("audit-approval", "a GitHub API error stopped the whole-release audit check: %s" % why)
+    if rc != 0:
+        raise Refusal("audit-approval", "%s" % (why or "the judge exited %d" % rc))
+    print("audit-approval %s: %s" % (ctx.tag, why))
+
+
+# ---------------------------------------------------------------- 9. required-checks (audit F02, F03)
 
 def decode_json_stream(raw):
     """gh api --paginate prints the pages one after the other: decode every JSON value in the stream."""
@@ -379,7 +410,7 @@ def check_required_checks(ctx):
         raise Refusal("required-checks", "verified %d of %d required checks" % (len(ctx.verified), len(reqs)))
 
 
-# ---------------------------------------------------------------- 9. baseline (REQ-REL-009-AC13)
+# ---------------------------------------------------------------- 10. baseline (REQ-REL-009-AC13)
 
 def baseline_problems(d, base, tag):
     """Structural validation of an approved baseline: version match, boolean approval, a real date, a non-empty blocking set."""
@@ -446,7 +477,7 @@ def check_baseline(ctx):
         raise Refusal("baseline", "release baseline invalid: " + "; ".join(errs))
 
 
-# ---------------------------------------------------------------- 10. rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12)
+# ---------------------------------------------------------------- 11. rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12)
 
 def check_rc_proof(ctx):
     """A final or patch tag is admitted only when the committed marker of origin/main validates for the tagged commit: it names an rc tag that is an
@@ -471,7 +502,7 @@ def check_rc_proof(ctx):
         raise Refusal("rc-proof", "the rc-proof marker %s does not validate for %s: %s" % (RC_MARKER, ctx.sha, one_line(text(err), 300)))
 
 
-# ---------------------------------------------------------------- 11. admission-evidence
+# ---------------------------------------------------------------- 12. admission-evidence
 
 def check_admission_evidence(ctx, out_path):
     """Write the canonical admission.json (sorted keys, jq -S layout) so its digest is stable."""
@@ -520,6 +551,7 @@ def admit(out_path):
         check_tag_signature(ctx)
         check_commit_signature(ctx)
         check_ancestor_of_main(ctx)
+        check_audit_approval(ctx)
         check_required_checks(ctx)
         check_baseline(ctx)
         check_rc_proof(ctx)
