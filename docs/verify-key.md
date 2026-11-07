@@ -14,6 +14,6 @@ Run the second command only if the first prints Verified OK. The second command 
 
 The first command has `--insecure-ignore-tlog` because the root key is kept offline, so its signature has no log entry.
 
-A key is refused at or after `valid_to` (`valid_to` is optional) or before `valid_from`. Compare the release's publish date with `valid_to` in the manifest.
+Check `valid_from` and `valid_to` in the manifest against the current time. Stop if the current time is at or after `valid_to` (`valid_to` is optional) or before `valid_from`, whatever the release's publish date.
 
 The newest manifest and its signature for the same `key_id` are among the release assets. Verify them the same way as the first. Stop if the manifest has a `revoked_at` that is at or before the current time.
