@@ -4199,37 +4199,37 @@ requirements:
         when: "the manifest is signed by the root key, in its validity window and not revoked"
         then: "the verifier returns the manifest's key_id and public key; it is the one implementation that Rebuild, stage-start and Check call, and bin/release-postverify.py holds no manifest check of its own (proved by bin/chain-manifest-test.sh and bin/chain-release-scripts-test.sh)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-008-AC2
         given: "the release assets that bin/release-assets.sh uploads"
         when: "it publishes a release"
         then: "release-key-manifest.json and release-key-manifest.sig are among the uploaded assets, and a release whose manifest or signature file is missing is refused before the upload (proved by bin/chain-release-scripts-test.sh)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-008-AC3
         given: "release-published/ holding the assets downloaded from the published release, and the committed .github/policy/release-key-root.pub"
         when: "bin/release-postverify.py runs"
         then: "it verifies release-key-manifest.json and release-key-manifest.sig against the committed root key with the verifier of AC1 before it runs any listed command, and it no longer takes build/keys/release.rsa.pub as the key of those commands (proved by bin/chain-release-scripts-test.sh)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-008-AC4
         given: "release-published/ with the manifest missing, its signature missing, the manifest unsigned, signed by another root key, altered after signing, expired, not yet valid, or revoked"
         when: "bin/release-postverify.py runs"
         then: "it exits non-zero naming the manifest and the reason, runs no listed command, and writes no release.rsa.pub (proved by bin/chain-release-scripts-test.sh)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-008-AC5
         given: "a manifest that passed the check of AC3"
         when: "bin/release-postverify.py prepares the working folder of the listed commands"
         then: "release.rsa.pub in that folder holds exactly the public key of the verified manifest and comes from nowhere else (proved by bin/chain-release-scripts-test.sh)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-008-AC6
         given: "two manifests signed by the same root key, the old one whose validity window has ended and the new one whose window is open, each with its own release key"
         when: "the key rotation cutover case of bin/chain-build-wiring-test.sh checks a record signed by each key at a time after the old valid_to"
         then: "the old manifest is refused as expired and its key verifies nothing, the new manifest is accepted and a record signed by the new key passes, so an old key is refused after its valid_to (proved by bin/chain-build-wiring-test.sh)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-BUILDTOOLS-002
     title: The image digest is the OCI index digest and a sealed namespace is checked by a probe
