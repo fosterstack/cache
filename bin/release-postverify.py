@@ -623,17 +623,17 @@ def refuse_certificate_bundles(plan):
         for key in sorted(set(bundle) - BUNDLE_KEYS):
             refuse("%s: %s is not allowed at the top of a bundle (%s)" % (n, key, ", ".join(sorted(BUNDLE_KEYS))))
 def copy_keeping_links(src, dst):
-    """Copies a file; a link is copied as a link, so the verifier refuses it as it would in place. A missing file is
-    left missing, for the verifier to name."""
+    """Copies a file; a link is copied as a link and a directory as an empty directory, so the verifier refuses each
+    as it would in place. A missing file is left missing, for the verifier to name."""
     if os.path.islink(src):
         os.symlink(os.readlink(src), dst)
+    elif os.path.isdir(src):
+        os.mkdir(dst)
     elif os.path.exists(src):
         shutil.copyfile(src, dst)
 
 
 def place_release_key():
-    """Writes release-published/release.rsa.pub from the manifest's public_key, once the verifier has accepted the
-    manifest with the committed root key. No other file is the key."""
     key_file = ASSETS + "/release.rsa.pub"
     if os.path.lexists(key_file):
         refuse("%s exists: a published asset must not stand in for the key of the manifest" % key_file)

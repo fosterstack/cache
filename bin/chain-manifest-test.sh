@@ -206,7 +206,6 @@ rm -f "$work/policy.json"; rc=0; run policy make --template "$work/edited/templa
 [ "$rc" = 1 ] && [ ! -e "$work/policy.json" ] && ok "a refused manifest leaves no policy file behind" || bad "a policy file exists after a refusal (exit $rc)"
 
 # ---- REQ-CHAIN-008-AC1: the verifier function itself returns the key_id and the public key ----------------------------------------------------
-# Rebuild, stage-start and Check (bin/release-postverify.py) all call this one function, so what it returns is what each of them gets.
 python3 -I - "$cv" "$work/good" "$KID" "$work/rel.pub" > "$work/ret.out" 2>&1 <<'PY' && ok "check_manifest returns exactly the manifest's key_id and public key" || bad "check_manifest return value: $(head -c 300 "$work/ret.out")"
 import importlib.util, sys
 cv, keys_dir, key_id, pub = sys.argv[1:5]

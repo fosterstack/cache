@@ -1865,7 +1865,7 @@
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "19b079b6be5347ef60570df87c364dae6386c5fa595bfc1ee8a65e6b8c2107a0",
+      "sha256": "a60cfe1b566e72caaf84319c47930978881acf76266e900de42298e90adbde81",
       "exceptions": [
         {
           "rule": "deny",

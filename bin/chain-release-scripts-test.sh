@@ -902,9 +902,9 @@ def sig_of(signer, body):
     if signer == "edroot": return base64.b64encode(os.urandom(64)).decode() + "\n"      # openssl dgst cannot sign with Ed25519
     open(kfile("body.tmp"), "wb").write(body)
     return base64.b64encode(openssl("dgst", "-sha256", "-sign", kfile(signer + ".key"), kfile("body.tmp"))).decode() + "\n"
-def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(), link=None, no_root=False):
+def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(), link=None, as_dir=None, no_root=False):
     """A good release's key files: the committed root key in .github/policy/, the manifest and its signature as downloaded into release-published/.
-    body: a dict (made into JSON) or the file's bytes; sig: the signature file's text, else made by `signer`; drop: file names to remove; link: a file name made a symlink."""
+    body: a dict (made into JSON) or the file's bytes; sig: the signature file's text, else made by `signer`; drop: file names to remove; link: a file name made a symlink; as_dir: a file name made an empty directory."""
     body = body_of(manifest()) if body is None else body_of(body) if isinstance(body, dict) else body
     os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)
     if not no_root: open(os.path.join(t, ".github/policy/release-key-root.pub"), "w").write(kpem(root_pub))
@@ -915,6 +915,8 @@ def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(
     for n in drop: os.remove(os.path.join(rp, n))
     if link:
         os.replace(os.path.join(rp, link), os.path.join(t, "elsewhere-" + link)); os.symlink(os.path.join(t, "elsewhere-" + link), os.path.join(rp, link))
+    if as_dir:
+        os.remove(os.path.join(rp, as_dir)); os.mkdir(os.path.join(rp, as_dir))
 def real_verifier(t):
     """release-postverify.py loads the verifier and the verifier loads its helpers, each by the sha256 in chain-scripts.json: the real files go over the fake chain-verify.py the other scripts' tests use"""
     for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
@@ -1148,6 +1150,8 @@ MUTANTS = (
     ("a key_id that is not the hash of the key", dict(body=manifest(key_id=hashlib.sha256(b"x").hexdigest())), ("key_id",)),
     ("a manifest that is a symlink", dict(link="release-key-manifest.json"), ("manifest", "link")),
     ("a signature that is a symlink", dict(link="release-key-manifest.sig"), ("signature", "link")),
+    ("a manifest that is a directory", dict(as_dir="release-key-manifest.json"), ("manifest", "regular file")),
+    ("a signature that is a directory", dict(as_dir="release-key-manifest.sig"), ("signature", "regular file")),
 )
 for label, seed, words in MUTANTS:
     t, rc, so, se = pva([PVK, PVKB], seed=seed); low = se.lower()
@@ -1358,7 +1362,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "532"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "534"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
