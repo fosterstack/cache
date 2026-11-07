@@ -117,6 +117,8 @@ sha256sum -c checksums.txt 2>/dev/null | grep OK
 
 The signature proves the checksums file was signed with our release key; the checksums then cover every archive transitively.
 
+To check that this key is the one the release names, follow [Check the release key](verify-key.md).
+
 Releases before v0.3.0 carry a short-lived certificate instead of a key: <!-- pinned: historical -->
 
 ```sh

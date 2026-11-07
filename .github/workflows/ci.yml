@@ -777,6 +777,9 @@ jobs:
       - name: "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null
 
+      - name: "the release key page: its two commands, setup text and customer words (REQ-CHAIN-008-AC7)"
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json verify-key-page-test.sh bin/verify-key-page-test.sh </dev/null
+
       - name: "the pinned crane install (REQ-CHAIN-007-AC7)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-install-crane-test.sh bin/chain-install-crane-test.sh
 

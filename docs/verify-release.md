@@ -10,7 +10,8 @@ Set these once:
 - `<IMAGE_REF>`: the production image by digest, as repository@sha256:digest. The digest is `image-production` in `digests.json` on the release page.
 - `<IMAGE_REF_FIPS>`: the -fips image by digest. The digest is `image-fips` in the same file.
 - `<TAG>`: the release tag, for example v0.3.0.
-- `release.rsa.pub`: the release public key. Fetch it once: `curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<TAG>/build/keys/release.rsa.pub`.
+
+Make `release.rsa.pub`, the release key, by the steps in [Check the release key](verify-key.md).
 
 ## 1. Image signatures
 

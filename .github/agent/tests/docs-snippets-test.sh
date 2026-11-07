@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Docs drift guard (no requirement covers it, so there is no AC declaration; docs drift guard, advisor handoffs 0309 and 0310) the Gradle and Maven snippets documented in docs/ have the
+# proves: REQ-CHAIN-008-AC9
+# Docs drift guard (REQ-CHAIN-008-AC9 covers only its release key pointer cases; docs drift guard, advisor handoffs 0309 and 0310) the Gradle and Maven snippets documented in docs/ have the
 # same STRUCTURE as the client configuration the acceptance jobs run (not identical text: ids, URLs, the schema version and how uploads
 # are switched on differ), and the Kubernetes reset runs in the right order. It does not run Gradle or Maven.
 # Gradle: the documented local snippet addresses the cache by the loopback address 127.0.0.1 (Gradle refuses plain http for the NAME
@@ -19,6 +20,7 @@ export GRADLE_SAMPLE="${GRADLE_SAMPLE:-bench/gradle-sample/settings.gradle.kts}"
 export VERIFY_DOCS="${VERIFY_DOCS:-docs/install.md docs/using-our-vex.md docs/verify-images.md RELEASING.md}"
 export KEYLESS_UNTIL_DOCS_FOLD="${KEYLESS_UNTIL_DOCS_FOLD-}"
 export VERIFY_ONE="${VERIFY_ONE:-docs/verify-images.md}"
+export INSTALL_DOC="${INSTALL_DOC:-docs/install.md}" OFFLINE_DOC="${OFFLINE_DOC:-docs/offline-install.md}" VEX_DOC="${VEX_DOC:-docs/using-our-vex.md}"
 export VERIFY_RELEASE_DOC="${VERIFY_RELEASE_DOC:-docs/verify-release.md}" VERIFY_CANNOT_RUN="${VERIFY_CANNOT_RUN:-docs/verify-release.cannot-run.json}"
 export MAVEN_SAMPLE="${MAVEN_SAMPLE:-bench/maven-sample/.mvn/maven-build-cache-config.xml}"
 export ACCEPTANCE="${ACCEPTANCE:-bin/acceptance-maven.sh}"   # the Maven suite, moved unchanged from acceptance.yml (REQ-CHAIN-006-AC5, Q7)
@@ -164,6 +166,30 @@ ok(any(c.startswith("cosign verify ") and "<IMAGE_REF>" in c and CLEAN(c) for c 
 cnr_cos = [e["command"] for e in json.load(open(cnr_file)) if str(e.get("command", "")).startswith("cosign ")]
 ok(len(cnr_cos) >= 3 and all(CLEAN(c) for c in cnr_cos), "%s: each cosign command of the cannot-run list (%d found) verifies with --key release.rsa.pub and names no certificate identity, no OIDC issuer and no switch that turns the log check off" % (cnr_file, len(cnr_cos)))
 ok(all(c in rel_cmds for c in cnr_cos), "%s: every cosign command of the cannot-run list is a command of %s" % (cnr_file, rel_doc))
+# Release key pointer (REQ-CHAIN-008-AC9): next to each release key step (a fenced curl of build/keys/release.rsa.pub) of install.md (1),
+# offline-install.md (2) and using-our-vex.md (1) there is one plain line outside any fence, within 6 lines of that fence, that links to
+# verify-key.md; no other such line; and the fenced text of each file is the text it had before the pointer (a hash), so no command changed.
+import hashlib
+POINTER = re.compile(r"\]\((?:\./|docs/)?verify-key\.md(#[^)]*)?\)")
+for var, steps, digest in (("INSTALL_DOC", 1, "b623026bc52bebda"), ("OFFLINE_DOC", 2, "fcc1055c6fc8f6c4"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
+    path = os.environ[var]
+    text = open(path).read()
+    lines = text.split("\n")
+    fences, start = [], None          # (first line, last line) of each fence, 0-based
+    for i, l in enumerate(lines):
+        if l.startswith("```"):
+            if start is None: start = i
+            else: fences.append((start, i)); start = None
+    infence = {k for a, b in fences for k in range(a, b + 1)}
+    ptrs = [i for i, l in enumerate(lines) if POINTER.search(l) and i not in infence]   # a link inside a fence is no pointer
+    keysteps = [(a, b) for a, b in fences if any("build/keys/release.rsa.pub" in lines[k] and lines[k].startswith("curl") for k in range(a, b))]
+    ok(len(keysteps) == steps, "%s: %d fenced release key step(s) (found %d)" % (path, steps, len(keysteps)))
+    ok(len(ptrs) == steps, "%s: %d pointer line(s) to verify-key.md outside a fence (found %d)" % (path, steps, len(ptrs)))
+    ok(all(re.match(r"[A-Za-z]", lines[i]) for i in ptrs), "%s: each pointer is a plain line (starts with a letter, no list, quote, heading or table)" % path)
+    for a, b in keysteps:
+        near = [i for i in ptrs if a - 6 <= i <= b + 6]
+        ok(len(near) == 1, "%s: one pointer within 6 lines of the release key step at line %d (found %d)" % (path, a + 1, len(near)))
+    ok(hashlib.sha256("\n".join(re.findall(r"^```.*?^```", text, re.S | re.M)).encode()).hexdigest()[:16] == digest, "%s: its fenced commands are unchanged" % path)
 sys.exit(fails)
 PY
 }
@@ -215,5 +241,14 @@ mutant "release guide: the last cosign step without the release key" VERIFY_RELE
 mutant "cannot-run list: the first cosign command back to the keyless identity" VERIFY_CANNOT_RUN 's=s.replace("'"$KEYF"'","'"$IDENT"'",1)'
 mutant "cannot-run list: the first cosign command without the release key" VERIFY_CANNOT_RUN 's=s.replace("'"$KEYF"'","",1)'
 mutant "cannot-run list: a command the release guide does not hold" VERIFY_CANNOT_RUN 's=s.replace("<IMAGE_REF>","<IMAGE_REF_X>",1)'
+# Release key pointer mutants (REQ-CHAIN-008-AC9): each file loses its pointer, has it moved far away, has it moved into the fence, or has the command of its release key step changed.
+PTR='import re; P=re.compile(r"^.*\]\((?:\./|docs/)?verify-key\.md[^)]*\).*\n",re.M)'
+for v in INSTALL_DOC OFFLINE_DOC VEX_DOC; do
+  mutant "$v: the pointer to verify-key.md missing" "$v" "$PTR"'; s=P.sub("",s)'
+  mutant "$v: the pointer moved to the end of the file" "$v" "$PTR"'; m=P.search(s); s=P.sub("",s)+m.group(0)'
+  mutant "$v: the pointer moved into the fence as a comment" "$v" "$PTR"'; s=P.sub("",s,count=1); s=s.replace("build/keys/release.rsa.pub\"\n","build/keys/release.rsa.pub\"\n# see [the key page](verify-key.md)\n",1)'
+  mutant "$v: the release key command changed, its key name kept" "$v" 's=s.replace("-fsSLO","-fsSL",1)'
+done
+mutant "offline-install.md: only the second pointer missing" OFFLINE_DOC "$PTR"'; ms=list(P.finditer(s)); s=s[:ms[-1].start()]+s[ms[-1].end():]'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]

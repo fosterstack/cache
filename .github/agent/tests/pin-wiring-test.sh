@@ -239,6 +239,7 @@ CHAIN_STEPS = {
     "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)": "bash bin/chain-check-scripts-test.sh",
     "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)": "bash bin/chain-check-wiring-test.sh",
     "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)": "bash bin/verify-release-guide-test.sh </dev/null",
+    "the release key page: its two commands, setup text and customer words (REQ-CHAIN-008-AC7)": "bash bin/verify-key-page-test.sh </dev/null",
     "the pinned crane install (REQ-CHAIN-007-AC7)": "bash bin/chain-install-crane-test.sh",
     "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)": "bash bin/chain-release-wiring-test.sh",
     "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)": "bash bin/chain-release-scripts-test.sh",
@@ -548,6 +549,10 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)",
    "run": "bash bin/verify-release-guide-test.sh </dev/null"
+  },
+  {
+   "name": "the release key page: its two commands, setup text and customer words (REQ-CHAIN-008-AC7)",
+   "run": "bash bin/verify-key-page-test.sh </dev/null"
   },
   {
    "name": "the pinned crane install (REQ-CHAIN-007-AC7)",
@@ -1100,7 +1105,7 @@ if m:
 print(r)
 PYA
 }
-for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-no-keyless-tag-test.sh" "bash bin/chain-rekor-key-test.sh" "bash bin/chain-trust-files-test.sh" "bash bin/chain-manifest-test.sh" "bash bin/witness-kms-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/build-sandbox-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-no-keyless-tag-test.sh" "bash bin/chain-rekor-key-test.sh" "bash bin/chain-trust-files-test.sh" "bash bin/chain-manifest-test.sh" "bash bin/witness-kms-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/build-sandbox-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/verify-key-page-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
   ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"

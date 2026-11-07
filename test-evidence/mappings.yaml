@@ -1509,6 +1509,15 @@ mappings:
   - ac: REQ-CHAIN-008-AC6
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-008-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/verify-key-page-test.sh" }
+  - ac: REQ-CHAIN-008-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-CHAIN-008-AC9
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/docs-snippets-test.sh" }
   - ac: REQ-VEND-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }

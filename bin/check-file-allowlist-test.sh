@@ -111,7 +111,7 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/secret_scanning.yml
 .github/agent/supply-chain/harness-manifest.json
 .github/release-identity.json
-docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
+docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh bin/verify-key-page-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 bin/layout-archive.sh bin/layout-archive-test.sh
 bin/chain-sandbox-probe.sh bin/build-sandbox-hostile-test.sh
@@ -121,7 +121,7 @@ bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signator
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 95: errs.append("declared list is not 95 paths: %d" % len(DECLARED))
+if len(DECLARED) != 96: errs.append("declared list is not 96 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -131,8 +131,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 228 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 228, 6
+# 229 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 229, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -834,6 +834,8 @@ run pass "feature/x" "REQ-GUIDE-001: the cannot-run list" "docs/verify-release.c
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-miss refused" "docs/verify-release.cannot-run.json.bak" "docs/verify-release.cannot-run.jsonx" "docs/verify-release.cannot-run.yaml" "docs/x/verify-release.cannot-run.json" "./docs/verify-release.cannot-run.json" "verify-release.cannot-run.json" "docs/verify-release.cannot-runXjson" "docs/verify-release.cannot-run.json/" "x/docs/verify-release.cannot-run.json" "docs/../verify-release.cannot-run.json" "docs/verify-release.cannot-run.json "
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
+passfam "feature/x" "REQ-CHAIN-008: the key page checker" "bin/verify-key-page-test.sh"
+runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused" "bin/verify-key-page-test.sh.bak" "bin/verify-key-page-test.shx" "bin/Verify-Key-Page-Test.sh" "bin/VERIFY-KEY-PAGE-TEST.SH" "bin/sub/verify-key-page-test.sh" "./bin/verify-key-page-test.sh" "bin/verify-key-page-test.py" "bin/verify-key-page.sh" "verify-key-page-test.sh" "bin/../verify-key-page-test.sh" "bin/verify-key-page-test.sh "
 
 # round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
