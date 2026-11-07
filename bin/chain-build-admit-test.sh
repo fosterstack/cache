@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6
+# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7
 # Written before bin/build-admit.py and bin/build-version-check.py existed (tests before implementation, step 4 of the nine-step process).
 #
 # Build's first action: bin/build-admit.py keeps EVERY check the old stage-admission.yml made, none dropped (v0.3.0 rules 51, 58;
@@ -37,9 +37,10 @@
 # for bin/admission-tag-signer.py and bin/install-scanner.sh, the re-tag race, pagination (--paginate in either argument order) and the CI patch /
 # keyless baseline path with a REAL PKCS7 block (openssl) are cases now; the AC5 comparison reads the committed snapshot
 # bin/chain-admission-old-steps.txt (the step names of the old stage-admission.yml, so the test keeps working after PR 2 deletes that file).
-# THE ELEVEN CHECKS, in order (names are the counterpart of each step of stage-admission.yml, and rc-proof, REQ-CHAIN-001-AC6: a final or patch tag is admitted only
+# THE TWELVE CHECKS, in order (names are the counterpart of each step of stage-admission.yml, and rc-proof, REQ-CHAIN-001-AC6: a final or patch tag is admitted only
 # when the marker .github/policy/rc-proof.json of origin/main names an rc tag that is an ancestor and the chain files hash to its sha; an rc tag is exempt):
-CHECKS="tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature ancestor-of-main required-checks baseline rc-proof admission-evidence"
+# audit-approval is gate 7 (REQ-REL-012-AC7): after the on-main check, before the required checks; it runs main's judge, which reads nothing for a patch tag.
+CHECKS="tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature ancestor-of-main audit-approval required-checks baseline rc-proof admission-evidence"
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 BA="$root/bin/build-admit.py"; BV="$root/bin/build-version-check.py"
@@ -60,6 +61,7 @@ MAP = [
  ("verify the annotated tag signature", ["tag-annotated", "tag-signature"]),
  ("verify the tagged commit signature", ["commit-signature"]),
  ("the tagged commit must be on main", ["ancestor-of-main"]),
+ ("a passed whole-release audit", ["audit-approval"]),
  ("every required check green", ["required-checks"]),
  ("an APPROVED, consistent requirements baseline", ["baseline"]),
  ("write canonical admission.json", ["admission-evidence"]),
@@ -96,7 +98,7 @@ r=$(cj "$W/old2.txt" "$CHECKS");
 [ "${r%%|*}" = 1 ] && grep -Fq "brand new admission rule" <<< "$r" && ok "AC5 judge: a new old-stage step with no counterpart is caught" || bad \
     "AC5 judge new step -> $r"
 r=$(cj "$root/bin/chain-admission-old-steps.txt" \
-    "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature required-checks baseline rc-proof admission-evidence");
+    "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature audit-approval required-checks baseline rc-proof admission-evidence");
 [ "${r%%|*}" = 1 ] && grep -Fq "ancestor-of-main" <<< "$r" && ok "AC5 judge: a check dropped from list-checks is caught" || bad \
     "AC5 judge dropped check -> $r"
 printf 'uses:actions/setup-go\n' >> "$W/old2.txt";
@@ -123,7 +125,7 @@ then bad "AC5 bin/build-admit.py does not exist (RED: not implemented yet): list
 bad "AC5 bin/build-admit.py does not exist (RED): comparison with the snapshot of the old stage"
 else
   got=$(python3 "$BA" list-checks 2> /dev/null | tr '\n' ' ' | sed 's/ $//' || true)
-  [ "$got" = "$CHECKS" ] && ok "AC5 build-admit.py list-checks is exactly the eleven checks in order" || bad "AC5 list-checks is '$got', wanted '$CHECKS'"
+  [ "$got" = "$CHECKS" ] && ok "AC5 build-admit.py list-checks is exactly the twelve checks in order" || bad "AC5 list-checks is '$got', wanted '$CHECKS'"
   r=$(cj "$root/bin/chain-admission-old-steps.txt" "$got");
   [ "${r%%|*}" = 0 ] && ok "AC5 every step of the old stage-admission.yml has a counterpart in list-checks" || bad "AC5 real comparison -> $r"
 fi
@@ -139,6 +141,8 @@ exit "${FAKE_GO_RC:-0}"
 EOF
 chmod +x "$FB/go"
 SHA=0123456789abcdef0123456789abcdef01234567
+# gate 7: the record commit the fake gh serves for every audit/<sha> branch, and the owner's approval line of it in a signed tag message
+REC=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; APPROVAL="Audit-approved: $REC"
 bi() { printf '%s\n' "$1: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	$2	" \
     "	build	-ldflags=\"-s -w\"" "	build	vcs=git" "	build	vcs.revision=$3" "	build	vcs.modified=$4";
 }
@@ -297,6 +301,8 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
       '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}]}\n' \
       > .github/policy/required-checks.json
   cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
+  # gate 7: main's judge, its helper and the writers policy (build-admit.py reads them from origin/main, never from the tagged commit)
+  cp "$root/bin/audit-record.py" "$root/bin/audit-record-judge.sh" bin/; cp "$root/.github/policy/audit-writers.json" .github/policy/
   # commit A: the chain files (release.yml, the listed script bin/chain-bytes-sha.py, the policy files) and the release candidate tag on it
   mkdir -p .github/workflows; printf 'name: Release\n' > .github/workflows/release.yml
   cp "$root/bin/chain-bytes-sha.py" bin/ 2> /dev/null || printf 'x\n' > bin/chain-bytes-sha.py
@@ -326,7 +332,7 @@ keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime"
 print(json.dumps({"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": sha, "records": {k: "0" * 64 for k in keys}}, indent=1, sort_keys=True))
 PY
   git add -A; git commit -q -S -m "release prep"; git push -q origin main 2> /dev/null; git push -q origin refs/tags/v0.3.0-rc1 2> /dev/null; git fetch -q origin
-  git tag -s -m "v0.3.0" v0.3.0; git push -q origin refs/tags/v0.3.0 2> /dev/null
+  git tag -s -m "v0.3.0" -m "$APPROVAL" v0.3.0; git push -q origin refs/tags/v0.3.0 2> /dev/null
   cd "$root"
 }
 gh_fixtures() { # gh_fixtures DIR SHA  (all green; the merged PR is #7 with head PRHEAD)
@@ -356,6 +362,29 @@ for a in "$@"; do case "$a" in
   *) [ -n "$path" ] || path=$a;;
 esac; done
 base=${path%%\?*}
+# gate 7: the passed-audit record for ANY tagged sha, shaped by AUDIT_MODE (default good): good, missing (404), apierr (502), unverified,
+# stranger (an author who is not a writer), stale (a parent that is not the tagged commit)
+case "$base" in
+  repos/fosterstack/cache/git/ref/heads/audit/*)
+    echo "${base##*/}" > "$GH_FIXTURES/.audit-sha"
+    case "${AUDIT_MODE:-good}" in
+      missing) echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
+      apierr) echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1;;
+    esac
+    printf '{"ref":"refs/heads/audit/%s","object":{"sha":"%s","type":"commit"}}\n' "${base##*/}" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; exit 0;;
+  repos/fosterstack/cache/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
+    python3 - "$(cat "$GH_FIXTURES/.audit-sha")" "${AUDIT_MODE:-good}" <<'PY'
+import json, sys
+tagged, mode = sys.argv[1:3]
+bot = {"login": "fosterstack-automation[bot]", "id": 333151817, "type": "Bot"}
+c = {"sha": "b" * 40, "parents": [{"sha": "c" * 40 if mode == "stale" else tagged}], "files": [{"filename": "audit-record", "status": "added"}],
+     "commit": {"message": "audit record", "verification": {"verified": mode != "unverified", "reason": "valid"}},
+     "author": {"login": "someone", "id": 1, "type": "User"} if mode == "stranger" else bot,
+     "committer": {"login": "web-flow", "id": 19864447, "type": "User"}}
+print(json.dumps(c))
+PY
+    exit 0;;
+esac
 f="$GH_FIXTURES/$(printf '%s' "$base" | tr '/' '_').json"
 [ -f "$f" ] || { echo "no fixture for $path" >&2; exit 1; }
 cat "$f"
@@ -431,9 +460,9 @@ commit_move() { # commit_move KEYMODE MSG : a new commit on main (signed per KEY
   G push -q origin HEAD:main 2> /dev/null; G fetch -q origin 2> /dev/null; }
 retag() { # retag KIND : move v0.3.0 to HEAD. KIND owner|attacker|none (annotated unsigned)|light
   G tag -d v0.3.0 > /dev/null; case "$1" in
-    owner) G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 v0.3.0 ;;
-    attacker) G -c user.signingkey="$W/keys/attacker" tag -s -m v0.3.0 v0.3.0 ;;
-    none) G tag -a -m v0.3.0 v0.3.0 ;;
+    owner) G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
+    attacker) G -c user.signingkey="$W/keys/attacker" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
+    none) G tag -a -m v0.3.0 -m "$APPROVAL" v0.3.0 ;;
     light) G tag v0.3.0 ;;
   esac; }
 # ---- fixture self-checks: the inputs are what the cases claim they are (so a refusal is about the claimed cause) -----------------
@@ -592,6 +621,113 @@ retag owner;
 gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)";
 run_admit
 expect_refuse "AC4 a tagged commit that is not an ancestor of origin/main is refused" ancestor-of-main
+# ---- audit-approval (gate 7, REQ-REL-012-AC7): a non-patch tag needs the whole-release record and the owner's Audit-approved line ------------
+# the judge is main's (policy-from-main style); a patch tag reads nothing; every other outcome of the judge is a refusal
+sig_tag() { # sig_tag NAME [MESSAGE-PARAGRAPH...] : an owner-signed annotated tag on HEAD with the given message paragraphs (none: the title only)
+  local name=$1; shift; local m=(-m "$name"); for x in "$@"; do m+=(-m "$x"); done
+  G tag -d "$name" > /dev/null 2>&1 || true; G -c user.signingkey="$W/keys/owner" tag -s "${m[@]}" "$name"; }
+audit_calls() { grep -c 'git/ref/heads/audit/' "$W/c/calls.log" || true; }
+fresh; run_admit AUDIT_MODE=good
+expect_ok "AC7 a non-patch tag with the passed-audit record and the owner's approval line naming it is admitted"
+[ "$(audit_calls)" = 1 ] && grep -Fq "gh api repos/fosterstack/cache/commits/$REC" "$W/c/calls.log" && ok \
+    "AC7 the record of the tagged commit is read through the API: the branch audit/<tagged sha>, then its commit" || bad \
+    "AC7 the record reads: $(grep audit "$W/c/calls.log" | tr '\n' ' ')"
+fresh; run_admit AUDIT_MODE=missing
+expect_refuse "AC7 a non-patch tag with no record branch is refused" audit-approval
+! grep -rq SENTINEL-GH-TOKEN "$W/c/out" "$W/c/err" && ok "AC7 the token is in no output of a refused audit check" || bad "AC7 the token leaked"
+fresh; run_admit AUDIT_MODE=apierr
+expect_refuse "AC7 a GitHub API error while reading the record is a refusal (it says so; it is never a pass)" audit-approval "API error"
+fresh; run_admit AUDIT_MODE=unverified;  expect_refuse "AC7 an unverified record commit is refused" audit-approval
+fresh; run_admit AUDIT_MODE=stranger;    expect_refuse "AC7 a record written by anyone but a named writer is refused" audit-approval
+fresh; run_admit AUDIT_MODE=stale;       expect_refuse "AC7 a record whose parent is not the tagged commit is refused" audit-approval
+fresh; sig_tag v0.3.0;                   run_admit; expect_refuse "AC7 a tag with no Audit-approved line is refused, though the record is good" audit-approval Audit-approved
+fresh; sig_tag v0.3.0 "$APPROVAL" "$APPROVAL"; run_admit
+expect_refuse "AC7 a tag with two Audit-approved lines is refused (an ambiguous approval is none)" audit-approval Audit-approved
+fresh; sig_tag v0.3.0 "Audit-approved: dddddddddddddddddddddddddddddddddddddddd"; run_admit
+expect_refuse "AC7 an approval line that names another commit than the record is refused" audit-approval
+fresh; sig_tag v0.3.0 "audit-approved: $REC"; run_admit
+expect_refuse "AC7 an approval line in the wrong case is refused" audit-approval Audit-approved
+# release candidates are held to the same rule, in the chain's -rcN form (and -rc.N is not a chain tag at all)
+fresh; sig_tag v0.3.0-rc1; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1
+expect_refuse "AC7 a release candidate tag with no approval line is refused at audit-approval" audit-approval Audit-approved
+fresh; sig_tag v0.3.0-rc1 "$APPROVAL"; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1 AUDIT_MODE=missing
+expect_refuse "AC7 a release candidate tag with the line but no record is refused at audit-approval" audit-approval
+fresh; sig_tag v0.3.0-rc1 "$APPROVAL"; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1
+[ "$RC" = 1 ] && ! grep -q 'audit-approval' "$W/c/err" && [ "$(audit_calls)" = 1 ] && ok \
+    "AC7 a release candidate tag with record and line passes audit-approval (the record is read) and meets the later checks" || bad \
+    "AC7 rc with record and line -> exit $RC: $(head -1 "$W/c/err")"
+# patch tags (vX.Y.Z, Z >= 1) need neither: the owner-signed tag carries no line, the API would fail, and nothing is read
+for t in v0.3.1 v0.3.12; do
+  fresh; sig_tag "$t"; run_admit GITHUB_REF="refs/tags/$t" GITHUB_REF_NAME="$t" AUDIT_MODE=apierr
+  [ "$RC" = 1 ] && ! grep -q 'audit-approval' "$W/c/err" && [ "$(audit_calls)" = 0 ] && ok \
+      "AC7 the patch tag $t, with no approval line and a failing API, passes audit-approval without reading any record (it meets the later checks)" || bad \
+      "AC7 patch tag $t -> exit $RC, first line '$(head -1 "$W/c/err")', record reads $(audit_calls)"
+done
+fresh; sig_tag v0.3.0; run_admit AUDIT_MODE=good GITHUB_REF_NAME=v0.3.0
+fresh; sig_tag v0.3.1 "$APPROVAL"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+[ "$(audit_calls)" = 0 ] && ok "AC7 a patch tag with an approval line anyway still reads no record" || bad "AC7 a patch tag read the record"
+# order: after the on-main check, before the required checks
+fresh; G checkout -q -b side v0.3.0 2> /dev/null; G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m side; retag owner
+gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit AUDIT_MODE=missing
+expect_refuse "AC7 order: a commit that is not on main is refused at ancestor-of-main before any record is read" ancestor-of-main
+[ "$(audit_calls)" = 0 ] && ok "AC7 order: no record was read for it" || bad "AC7 order: the record was read before the on-main check"
+fresh; edit_gh_red() { rm -f "$W/c/gh"/*check-runs.json; }; edit_gh_red; run_admit AUDIT_MODE=missing
+expect_refuse "AC7 order: with the record missing and the required checks gone, audit-approval refuses first" audit-approval
+# main's judge, never the tagged commit's: a judge planted in the tagged tree that passes everything and leaves a mark is not run
+fresh; rm -f "$W/pwned-judge"
+printf '#!/usr/bin/env bash\ntouch %s\nexit 0\n' "$W/pwned-judge" > "$W/c/repo/bin/audit-record-judge.sh"
+printf 'import sys\nsys.exit(0)\n' > "$W/c/repo/bin/audit-record.py"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "planted judge"; PLANT=$(G rev-parse HEAD)
+G checkout -q "$SHAC" -- bin/audit-record-judge.sh bin/audit-record.py; G -c user.signingkey="$W/keys/owner" commit -q -S -m "judge restored on main"
+G push -q origin HEAD:main 2> /dev/null; G fetch -q origin 2> /dev/null
+G checkout -q --detach "$PLANT"; retag owner; gh_fixtures "$W/c/gh" "$PLANT"; run_admit AUDIT_MODE=missing
+[ ! -e "$W/pwned-judge" ] && ok "AC7 the tagged commit's own judge is never run" || bad "AC7 the tagged commit's judge ran"
+expect_refuse "AC7 with the judge replaced in the tagged tree, the record check is still main's: no record, refused" audit-approval
+# mutants of build-admit.py: each breaks the gate one way; the case that refuses on the real file must NOT refuse on the mutant
+mutate() { # mutate OUT OLD NEW : a copy of build-admit.py with OLD (exactly once) replaced by NEW
+  python3 - "$BA" "$1" "$2" "$3" <<'PY'
+import sys
+src, out, old, new = sys.argv[1:5]
+t = open(src).read()
+if t.count(old) != 1:
+    sys.exit("mutation anchor found %d times: %s" % (t.count(old), old))
+open(out, "w").write(t.replace(old, new))
+PY
+}
+BA_REAL=$BA
+mutant_escapes() { # mutant_escapes LABEL OLD NEW [ENV...] : the mutant admits the state the real file refuses (the current case repo, fresh already made)
+  local label=$1 old=$2 new=$3; shift 3
+  if ! mutate "$W/mutant.py" "$old" "$new" 2> "$W/mutant.err"; then bad "AC7 mutant $label: $(head -c 150 "$W/mutant.err")"; return; fi
+  BA="$W/mutant.py"; run_admit "$@"; BA=$BA_REAL
+  [ "$RC" = 0 ] && ok "AC7 mutant caught: $label (the mutant admits what the real script refuses)" || bad "AC7 mutant NOT caught: $label -> exit $RC, $(head -1 "$W/c/err")"
+}
+rm -f "$W/pwned-judge"
+mutant_escapes "the judge read from the tagged commit instead of origin/main" '        data = git_show("origin/main:" + path)
+        if data is None:
+            raise Refusal("audit-approval"' '        data = git_show(ctx.sha + ":" + path)
+        if data is None:
+            raise Refusal("audit-approval"' AUDIT_MODE=missing
+[ -e "$W/pwned-judge" ] && ok "AC7 the planted judge of the tagged tree does run in that mutant (the case above is a real probe)" || bad "AC7 the planted judge did not run in the mutant"
+fresh; mutant_escapes "the audit-approval check not called" '        check_audit_approval(ctx)
+' '' AUDIT_MODE=missing
+fresh; mutant_escapes "a judge refusal or API error swallowed" '    why = one_line(text(out) or text(err), 300)
+' '    why = one_line(text(out) or text(err), 300)
+    rc = 0
+' AUDIT_MODE=apierr
+fresh; mutant_escapes "the record never read (an approval line alone is enough)" '    judge = os.path.join(root, AUDIT_FILES[0])' '    return
+    judge = os.path.join(root, AUDIT_FILES[0])' AUDIT_MODE=missing
+fresh; edit_gh_red
+if mutate "$W/mutant.py" '        check_audit_approval(ctx)
+        check_required_checks(ctx)' '        check_required_checks(ctx)
+        check_audit_approval(ctx)' 2> "$W/mutant.err"; then
+  BA="$W/mutant.py"; run_admit AUDIT_MODE=missing; BA=$BA_REAL
+  [ "$RC" = 1 ] && ! grep -q '^admission refused at audit-approval' "$W/c/err" && ok "AC7 mutant caught: audit-approval moved after the required checks (the order case refuses elsewhere)" \
+    || bad "AC7 mutant NOT caught: order -> exit $RC, $(head -1 "$W/c/err")"
+else bad "AC7 mutant order: $(head -c 150 "$W/mutant.err")"; fi
+# main's copies must exist: a main that lacks the judge refuses (a missing judge is never a pass)
+fresh; G checkout -q main; G rm -q bin/audit-record-judge.sh; G -c user.signingkey="$W/keys/owner" commit -q -S -m "no judge on main"
+G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
+expect_refuse "AC7 a main without audit-record-judge.sh is a refusal at audit-approval, naming it" audit-approval audit-record-judge.sh
 # ---- required-checks (push scope, pull_request scope, app pin, statuses) -----------------------------------------------------------------
 edit_gh() { python3 - "$W/c/gh" "$1" <<'PY'
 import glob, json, sys
@@ -802,7 +938,7 @@ rm -f "$W/pwned-signer" "$W/pwned-install"; fresh
 (cd "$W/c/repo" && G checkout -q -b side && printf '#!/usr/bin/env python3\nopen("%s","w").write("x")\n' "$W/pwned-signer" > \
     bin/admission-tag-signer.py && printf '#!/bin/sh\ntouch %s\n' "$W/pwned-install" > bin/install-scanner.sh \
   && G add -A && G -c user.signingkey="$W/keys/owner" commit -q -S -m "the tagged commit replaces the policy scripts")
-SIDE=$(G rev-parse HEAD); gh_fixtures "$W/c/gh" "$SIDE"; G tag -d v0.3.0 > /dev/null; G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 v0.3.0; run_admit
+SIDE=$(G rev-parse HEAD); gh_fixtures "$W/c/gh" "$SIDE"; G tag -d v0.3.0 > /dev/null; G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 -m "$APPROVAL" v0.3.0; run_admit
 if [ -f "$BA" ] && [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ];
 then ok "AC4 policy from main: the tagged commit's own bin/admission-tag-signer.py and bin/install-scanner.sh are never executed (owner route)";
 else bad "AC4 policy from main: a script of the tagged commit ran (or build-admit.py is missing: RED)";
@@ -872,7 +1008,7 @@ jq -e '.tag=="v0.3.1" and .tag_signature.method=="owner-ssh" and .commit_signatu
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
 sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
-G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 -m "$APPROVAL" v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
 mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2
 expect_ok "AC6 a release candidate tag is exempt: it is admitted with no marker on main"
@@ -906,6 +1042,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=151
+EXPECT_TOTAL=181
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
