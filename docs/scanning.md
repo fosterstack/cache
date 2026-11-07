@@ -102,7 +102,7 @@ statement**.
 
 Docker Scout does not apply a VEX file you give it on the command line. The
 `--vex-location` option is accepted, but our statements are not applied on any Scout
-release we tested, from 1.9.3 through 1.26.0 (Docker's open report is
+release we tested, from 1.9.3 through 1.26.0 (Docker's open report is <!-- pinned: upstream -->
 [docker/scout-cli#207](https://github.com/docker/scout-cli/issues/207)). A Scout scan
 of our images therefore still lists the findings our statements cover. Read them
 against the published OpenVEX file ([above](#using-our-vex-files-in-your-scanner)) by
