@@ -1800,7 +1800,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "a8e4d06800fa7897bf30471df00c2093025a323dbed5079cefc2ff7ebe8a58de",
+      "sha256": "c00ae4aab1954305e7905baba37b89b5e39ed61747f825c6fe1ce01c19dc92cb",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1906,7 +1906,7 @@
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "38cd7ca08342b6639ea1aa98da7b68bfca6a1de79bb4198bcdd0971d938ee627",
+      "sha256": "a60cfe1b566e72caaf84319c47930978881acf76266e900de42298e90adbde81",
       "exceptions": [
         {
           "rule": "deny",
@@ -1946,7 +1946,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "9639953d932d81037990feee2e023398dc39e5c5a7677a4e693f740e441ccd78"
+      "sha256": "1ec07a4081b97f401351ac6713fe42bd240503db3f471239e4062756b9cbbb3a"
     },
     {
       "path": "bin/vex-forms.py",

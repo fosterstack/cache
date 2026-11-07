@@ -28,6 +28,9 @@ done
 for r in witness-build/build witness-rebuild/rebuild witness-check/witness-scanners/scanners witness-check/witness-acceptance/acceptance witness-check/witness-runtime/runtime witness-check/witness-arm64/arm64; do
   [ -f "$r-collection.rekor.json" ] || { echo "release-assets: $r-collection.rekor.json is missing: the entries file beside the record is part of the list, which is incomplete" >&2; exit 1; }
 done
+for f in release-key-manifest.json release-key-manifest.sig; do
+  [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-assets: .github/policy/$f is missing: the signed key manifest is attached to every release" >&2; exit 1; }
+done
 python3 bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
 rm -rf release-upload release-published
 mkdir release-upload
@@ -63,13 +66,14 @@ only witness-rebuild rebuild-collection.json rebuild-collection.rekor.json verdi
 only provenance provenance.json provenance.rekor.json provenance.bundle.json
 for n in scanners acceptance runtime arm64; do only "witness-check/witness-$n" "$n-collection.json" "$n-collection.rekor.json"; done
 for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
+for f in release-key-manifest.json release-key-manifest.sig; do stage ".github/policy/$f" "$f"; done
 for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json \
          witness-build/build-collection.json witness-build/build-collection.rekor.json witness-build/digests.json witness-build/items.json witness-build/admission-baseline.json witness-rebuild/rebuild-collection.json witness-rebuild/rebuild-collection.rekor.json witness-check/witness-*/*-collection.json witness-check/witness-*/*-collection.rekor.json provenance/provenance.json provenance/provenance.rekor.json provenance/provenance.bundle.json; do
   stage "$f" "${f##*/}"
 done
 python3 bin/release-metadata.py gate --dir release-upload
 files=()
-for f in release-upload/*.apk release-upload/*.json release-upload/*.txt release-upload/*.sha256 release-upload/*.bundle release-upload/*.gz; do
+for f in release-upload/*.apk release-upload/*.json release-upload/*.txt release-upload/*.sha256 release-upload/*.sig release-upload/*.bundle release-upload/*.gz; do
   files+=("$f")
 done
 if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; exit 1; fi
