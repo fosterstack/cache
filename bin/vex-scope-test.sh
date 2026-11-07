@@ -104,13 +104,14 @@ PY
     echo "FAIL: ${label} got=${got} want=${want} (find=${f} ign=${ig} exit=${rc} rc_ok=${rc_ok} id_ok=${id_ok})"; fail=$((fail+1))
   fi
 }
-# the statement names the nine v0.2.2 image digests (index, amd64 and arm64 of production, debug and fips): one of each kind suppresses; the same tag with any other digest does not
+# the products are the repository-wide ones and the scope is the stdlib 1.27.2 subcomponent: the nine v0.2.2 digests (index, amd64 and arm64 of production, debug and fips, where the evidence was gathered) suppress, and so does any other digest of the cache repository whose stdlib is 1.27.2
 V022P=ghcr.io/fosterstack/cache@sha256:f2b330cf27b3814405230cc001a771909ae5bbf3b1e223a90ee7a9ee5d0e53dd
 V022D=ghcr.io/fosterstack/cache@sha256:9e8268329d7266b64a1a4258c83b23140ff8f266b283b835ce591deb1e3efad2
 V022F=ghcr.io/fosterstack/cache@sha256:e5cfd3249fa4d751f5fe2e56a2b3e36e2e45b15d1d29534f22833bc4cf7535b6
 check_stdlib "stdlib 1.27.2, v0.2.2 production index digest"                ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "$V022P" 1.27.2 SUPPRESS
 check_stdlib "stdlib 1.27.2, v0.2.2 debug amd64 digest"                     ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-debug  "$V022D" 1.27.2 SUPPRESS
 check_stdlib "stdlib 1.27.2, v0.2.2 fips arm64 digest"                      ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-fips   "$V022F" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, the same repository and tag, another digest"   ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "ghcr.io/fosterstack/cache@sha256:${D64}" 1.27.2 SUPPRESS
 check_stdlib "stdlib 1.27.2, foreign vendor, SAME basename (cache)"     ghcr.io/another-vendor/cache ghcr.io/another-vendor/cache:1.0 ""                                    1.27.2 FLAG
 check_stdlib "stdlib 1.27.1 (vulnerable, not the pinned version)"        ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:v0.2.1 ""                                       1.27.1 FLAG
 check_stdlib "stdlib 1.27.2, missing image identity (no tags, no digests)" ghcr.io/fosterstack/cache ""                          ""                                                    1.27.2 FLAG
