@@ -9,8 +9,11 @@ runs once. A command that names a repository literally is refused, <TAG> = $GITH
 Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
 verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify
 form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. Every verify form carries
-exactly one key flag whose value is release.rsa.pub (the release key, placed by place_release_key) and no flag but
---key, --bundle, --type and --check-claims. A command that fails
+exactly one key flag whose value is release.rsa.pub (the public key of the release key manifest, placed by place_release_key) and no flag but
+--key, --bundle, --type and --check-claims. Before any command runs, the
+release's key manifest (release-key-manifest.json and .sig in release-published/) is checked with the committed root
+key by the verifier's check_manifest (REQ-CHAIN-008-AC3); release.rsa.pub is written from the manifest's public_key
+only (AC5), and a manifest that does not pass runs nothing (AC4). A command that fails
 fails the run (exit 1) after all have run. The step holds no token and no registry credential.
 
 Every command runs with release-published/ (the assets just downloaded from the published release) as its working
@@ -19,11 +22,12 @@ accepted only when every file it reads is named by an EARLIER command of the sam
 time only after that verify exited 0. Every command runs without a shell: the words the judge read are the argv,
 so nothing (brace, glob, tilde, variable, backslash-newline) is expanded after the check.
 """
-import hashlib, json, os, re, shlex, subprocess, sys, types
+import hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
 
 LIST = "docs/verify-release.cannot-run.json"
 ASSETS = "release-published"   # gh release download -D release-published: the files a customer downloads
-VERIFIER = "bin/chain-verify.py"   # holds the bundle check; loaded only when a listed command names a bundle
+VERIFIER = "bin/chain-verify.py"   # holds the bundle and manifest checks
+ROOT_KEY = ".github/policy/release-key-root.pub"   # the committed offline root public key that signs the manifest
 LISTED = ".github/policy/chain-scripts.json"   # the sha256 of every file of the chain that runs
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
@@ -618,14 +622,32 @@ def refuse_certificate_bundles(plan):
                    % (n, key, ", ".join(sorted(MATERIAL_KEYS))))
         for key in sorted(set(bundle) - BUNDLE_KEYS):
             refuse("%s: %s is not allowed at the top of a bundle (%s)" % (n, key, ", ".join(sorted(BUNDLE_KEYS))))
+def copy_keeping_links(src, dst):
+    """Copies a file; a link is copied as a link, so the verifier refuses it as it would in place. A missing file is
+    left missing, for the verifier to name."""
+    if os.path.islink(src):
+        os.symlink(os.readlink(src), dst)
+    elif os.path.exists(src):
+        shutil.copyfile(src, dst)
+
+
 def place_release_key():
-    key = "build/keys/release.rsa.pub"
-    if os.path.exists(ASSETS + "/release.rsa.pub"):
-        refuse("%s/release.rsa.pub exists: a published asset must not stand in for the committed key" % ASSETS)
-    if not os.path.isfile(key) or os.path.getsize(key) == 0:
-        refuse("%s is missing or empty: the commands that verify with --key release.rsa.pub need it" % key)
-    with open(key, "rb") as src, open(ASSETS + "/release.rsa.pub", "wb") as dst:
-        dst.write(src.read())
+    """Writes release-published/release.rsa.pub from the manifest's public_key, once the verifier has accepted the
+    manifest with the committed root key. No other file is the key."""
+    key_file = ASSETS + "/release.rsa.pub"
+    if os.path.lexists(key_file):
+        refuse("%s exists: a published asset must not stand in for the key of the manifest" % key_file)
+    check = load_verifier()
+    with tempfile.TemporaryDirectory() as keys_dir:
+        for name, src in zip(check.MANIFEST_FILES, (ROOT_KEY, ASSETS + "/" + check.MANIFEST_FILES[1],
+                                                   ASSETS + "/" + check.MANIFEST_FILES[2])):
+            copy_keeping_links(src, os.path.join(keys_dir, name))
+        try:
+            key = check.check_manifest(keys_dir)
+        except check.Refuse as r:
+            refuse("the release key manifest is refused: %s" % r.reason)
+    with open(key_file, "w") as f:
+        f.write(key["public_key"])
 
 
 def main():

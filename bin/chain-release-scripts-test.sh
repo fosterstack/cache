@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4
+# proves: REQ-CHAIN-008-AC1, REQ-CHAIN-008-AC2, REQ-CHAIN-008-AC3, REQ-CHAIN-008-AC4, REQ-CHAIN-008-AC5, REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4
 # RED until PR 4 is implemented (bin/release-verify.sh, release-apks.sh, release-publish.sh, release-sign.sh, release-assets.sh, release-postverify.sh/.py do not exist): step 4.
 #
 # Release, behaviour half (v0.3.0 rules 5, 17, 29, 53b, 56, 57, 64, 69, 71; advisor rulings of Oct 9: rc tags like finals, the release policy
@@ -25,7 +25,7 @@ export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
 export RELEASE_ROOT="$root"
 export REPO_ROOT="$root"
 python3 - "$@" <<'PY'
-import hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
+import ast, base64, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
 SENT = {"DOCKERHUB_USERNAME": "sentinel-user-91", "DOCKERHUB_TOKEN": "SENTINEL-HUB-TOKEN-5c2e", "GH_TOKEN": "SENTINEL-GH-TOKEN-b814"}
 passn, failn = 0, 0
@@ -710,6 +710,8 @@ def full_assets():
     arcs = (("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
             ("fscache-fips_0.3.0_linux_amd64.tar.gz", b"archive-fips-linux-amd64"), ("fscache-fips_0.3.0_linux_arm64.tar.gz", b"archive-fips-linux-arm64"))
     for n, c in arcs: open(os.path.join(t, "dist", n), "wb").write(c)
+    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)      # the committed manifest and its signature (REQ-CHAIN-008-AC2): bytes release-assets.sh must attach as they are
+    for n in ("release-key-manifest.json", "release-key-manifest.sig"): open(os.path.join(t, ".github/policy", n), "w").write("committed " + n + "\n")
     return t
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
@@ -731,6 +733,14 @@ for variant, name in MODULE_SBOMS:
 for pf in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):     # Sign's provenance is part of every release: a run without one stops before the upload, naming it
     tp = full_assets(); os.remove(os.path.join(tp, "provenance", pf)); rcp, sop, sep = run(tp, "release-assets", creds=["GH_TOKEN"])
     check(rcp != 0 and pf in sep and not [l for l in log(tp) if l.startswith("gh release upload")], "AC9 without Sign's %s the release is not published: nothing is uploaded, the file is named" % pf, "rc=%s %s" % (rcp, first(sep)))
+# ---- REQ-CHAIN-008-AC2: the signed key manifest is a release asset, and a release without it is refused before anything is uploaded ------------------
+t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
+for n in ("release-key-manifest.json", "release-key-manifest.sig"):
+    up = os.path.join(t, "release-upload", n)
+    check(rc == 0 and ("release-upload/" + n) in L and os.path.exists(up) and open(up).read() == "committed " + n + "\n", "REQ-CHAIN-008-AC2 %s is uploaded with the committed bytes" % n, "rc=%s %s" % (rc, first(se)))
+for n in ("release-key-manifest.json", "release-key-manifest.sig"):
+    t = full_assets(); os.remove(os.path.join(t, ".github/policy", n)); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+    check(rc != 0 and n in se and not [l for l in log(t) if l.startswith("gh release")], "REQ-CHAIN-008-AC2 without %s nothing is created or uploaded, the file is named" % n, "rc=%s %s" % (rc, first(se)))
 t2 = full_assets(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"})
 check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(l.endswith("--verify-tag") for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
 check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-from-tag" in l], "AC9 no undraft and no gh-generated notes")
@@ -869,8 +879,59 @@ PV1 = "cosign verify <IMAGE_REF> " + IDQ
 PV2 = "cosign verify <IMAGE_REF_FIPS> " + IDQ
 PV3 = "cosign verify-attestation --type https://slsa.dev/provenance/v1 " + IDQ + " <IMAGE_REF>"
 PV4 = "cosign verify-blob " + IDQ + " --type slsa-<TAG> --bundle b.json x.txt"
-def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None, creds=("GH_TOKEN",)):
+# ---- REQ-CHAIN-008: the keys and the manifests of these cases, made with openssl here (a throwaway root key signs; no real key is read) -----------------
+KEYS = tempfile.TemporaryDirectory(prefix="release-key-manifest-")
+def kfile(n): return os.path.join(KEYS.name, n)
+def openssl(*a): return subprocess.run(["openssl", *a], check=True, capture_output=True).stdout
+def genkey(name, *opts):
+    openssl("genpkey", *opts, "-out", kfile(name + ".key")); openssl("pkey", "-in", kfile(name + ".key"), "-pubout", "-out", kfile(name + ".pub"))
+for n in ("root", "otherroot"): genkey(n, "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+genkey("rel", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")      # the release key, as in KMS
+genkey("rsaroot", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048")
+genkey("edroot", "-algorithm", "ED25519")
+def kpem(n): return open(kfile(n + ".pub")).read()
+def kid(n): return hashlib.sha256(openssl("pkey", "-pubin", "-in", kfile(n + ".pub"), "-outform", "DER")).hexdigest()
+def at(days):      # the window is judged by the real clock, so a window is a date in the past or the future
+    return (datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0) + datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def manifest(**over):
+    m = {"public_key": kpem("rel"), "key_id": kid("rel"), "valid_from": at(-30)}
+    m.update(over)
+    return {k: v for k, v in m.items() if v is not None}
+def body_of(m): return json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
+def sig_of(signer, body):
+    if signer == "edroot": return base64.b64encode(os.urandom(64)).decode() + "\n"      # openssl dgst cannot sign with Ed25519
+    open(kfile("body.tmp"), "wb").write(body)
+    return base64.b64encode(openssl("dgst", "-sha256", "-sign", kfile(signer + ".key"), kfile("body.tmp"))).decode() + "\n"
+def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(), link=None, no_root=False):
+    """A good release's key files: the committed root key in .github/policy/, the manifest and its signature as downloaded into release-published/.
+    body: a dict (made into JSON) or the file's bytes; sig: the signature file's text, else made by `signer`; drop: file names to remove; link: a file name made a symlink."""
+    body = body_of(manifest()) if body is None else body_of(body) if isinstance(body, dict) else body
+    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)
+    if not no_root: open(os.path.join(t, ".github/policy/release-key-root.pub"), "w").write(kpem(root_pub))
+    rp = os.path.join(t, "release-published")
+    if not os.path.isdir(rp): return
+    files = {"release-key-manifest.json": body, "release-key-manifest.sig": (sig if sig is not None else sig_of(signer, body)).encode()}
+    for n, data in files.items(): open(os.path.join(rp, n), "wb").write(data)
+    for n in drop: os.remove(os.path.join(rp, n))
+    if link:
+        os.replace(os.path.join(rp, link), os.path.join(t, "elsewhere-" + link)); os.symlink(os.path.join(t, "elsewhere-" + link), os.path.join(rp, link))
+def real_verifier(t):
+    """release-postverify.py loads the verifier and the verifier loads its helpers, each by the sha256 in chain-scripts.json: the real files go over the fake chain-verify.py the other scripts' tests use"""
+    for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
+    if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
+        os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
+def stub_verifier(t, extra_source):
+    """The verifier with extra_source appended and its row in chain-scripts.json re-pinned, so it still loads"""
+    path, listed = os.path.join(t, "bin/chain-verify.py"), os.path.join(t, ".github/policy/chain-scripts.json")
+    open(path, "a").write("\n" + extra_source + "\n")
+    d = json.load(open(listed))
+    for row in d["scripts"]:
+        if row["path"] == "bin/chain-verify.py": row["sha256"] = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    json.dump(d, open(listed, "w"))
+def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None, creds=("GH_TOKEN",), seed=None):
     t = tree(); os.makedirs(os.path.join(t, "docs"), exist_ok=True)
+    real_verifier(t); seed_manifest(t, **(seed or {}))
     lp = os.path.join(t, "docs/verify-release.cannot-run.json")
     if rows is None and raw is None: os.remove(lp)
     if raw is not None: open(lp, "w").write(raw)
@@ -972,17 +1033,12 @@ check(rc == 0 and len(calls(t)) == 2, "AC7 post-publish: with no GH_TOKEN in the
 # ---- REQ-CHAIN-007-AC20 (advisor ruling B, Oct 15): the commands run from the downloaded assets; a jq-only command only after a verify of the same file --------------
 PBF = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ
 PJ = "jq -e '.ok == true' provenance.bundle.json"
-def pva(rows, assets=None, nodir=False, cv=None, links=None, **kw):
+def pva(rows, assets=None, nodir=False, cv=None, links=None, seed=None, **kw):
     """pv with files in release-published/ (assets: name -> text), or the directory removed.
     cv: "drop" removes bin/chain-verify.py from the tree, "alter" appends a line to it, "altercommon" does the same to
     bin/chain_common.py. links: name -> target, made as symbolic links in release-published/."""
     t = tree()
-    # release-postverify.py loads the verifier (a bundle check) and that loads its helpers, each by the sha256 in
-    # chain-scripts.json: the real files go over the fake chain-verify.py the other scripts' tests use
-    for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
-        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
-    if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
-        os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
+    real_verifier(t)
     if cv == "drop": os.remove(os.path.join(t, "bin/chain-verify.py"))
     if cv == "alter": open(os.path.join(t, "bin/chain-verify.py"), "a").write("# altered\n")
     if cv == "altercommon": open(os.path.join(t, "bin/chain_common.py"), "a").write("# altered\n")
@@ -991,6 +1047,7 @@ def pva(rows, assets=None, nodir=False, cv=None, links=None, **kw):
     else:
         for n, c in (assets or {}).items(): open(os.path.join(rp, n), "w").write(c)
         for n, target in (links or {}).items(): os.symlink(target, os.path.join(rp, n))
+    seed_manifest(t, **(seed or {}))
     os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     json.dump([{"command": c, "reason": "needs a release file"} for c in rows], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
     e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(kw.get("env") or {})
@@ -1031,24 +1088,73 @@ for bad_cmd, what in (("jq -e '.messageSignature'", "no file operand (it would r
                       ("jq -n 1", "jq -n alone")):
     t, rc, so, se = pva([PBF, bad_cmd], assets={"provenance.bundle.json": OK, "other.json": OK}); check(rc != 0 and not calls(t), "AC20 post-publish: a jq-only command with %s is refused and nothing runs" % what, "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, "jq -c '.messageSignature' provenance.bundle.json | jq -e '. == true'"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 post-publish: a jq pipe whose first jq reads a verified file is accepted (the later jq reads the pipe)", "rc=%s %s" % (rc, first(se)))
-# the release key is the committed build/keys/release.rsa.pub, never a release asset: the commands that say `--key release.rsa.pub` find it in release-published/ (the working directory)
+# the release key is the public key of the verified manifest (REQ-CHAIN-008-AC5), never a release asset: the commands that say `--key release.rsa.pub` find it in release-published/ (the working directory)
 PVK = "cosign verify --key release.rsa.pub <IMAGE_REF>"
 PVKB = "cosign verify-blob --key release.rsa.pub --bundle b.json x.txt"
-KPATH = "build/keys/release.rsa.pub"
 def keyseen(t):
     p = os.path.join(t, "calls.log.keyseen"); return open(p).read() if os.path.exists(p) else ""
+def placed_key(t):
+    p = os.path.join(t, "release-published/release.rsa.pub"); return open(p).read() if os.path.lexists(p) else None
 t, rc, so, se = pv([PVK, PVKB])
 check(rc == 0 and len(calls(t)) == 3, "AC20 post-publish: `--key release.rsa.pub` commands run (two registries for the image form, once for the blob form)", "rc=%s %s calls=%s" % (rc, first(se), calls(t)))
-check(keyseen(t) == KEYTXT * 3, "AC20 post-publish: every `--key release.rsa.pub` command finds the committed key in its working directory, byte for byte", repr(keyseen(t))[:120])
-check(os.path.exists(os.path.join(t, "release-published/release.rsa.pub")) and open(os.path.join(t, "release-published/release.rsa.pub")).read() == KEYTXT, "AC20 post-publish: release-published/release.rsa.pub is a byte-for-byte copy of build/keys/release.rsa.pub")
-for what, mutate in (("missing", lambda t: os.remove(os.path.join(t, KPATH))), ("empty", lambda t: open(os.path.join(t, KPATH), "w").write(""))):
-    t = tree(); mutate(t); os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
-    rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
-    check(rc != 0 and KPATH in se and not calls(t), "AC20 post-publish: a %s %s in the checkout fails the run, naming it, before any command runs" % (what, KPATH), "rc=%s %s" % (rc, first(se)))
-t = tree(); open(os.path.join(t, "release-published/release.rsa.pub"), "w").write("a published asset\n")
+check(keyseen(t) == kpem("rel") * 3, "AC20 post-publish: every `--key release.rsa.pub` command finds the manifest's key in its working directory, byte for byte", repr(keyseen(t))[:120])
+t, rc, so, se = pva([PVK], assets={"release.rsa.pub": "a published asset\n"})
+check(rc != 0 and "release-published/release.rsa.pub" in se and not calls(t) and placed_key(t) == "a published asset\n", "AC20 post-publish: a release asset named release.rsa.pub is refused, never overwritten and never taken for the key, nothing runs", "rc=%s %s" % (rc, first(se)))
+# ---- REQ-CHAIN-008-AC1: the manifest check is the verifier's, not a copy in this script ----------------------------------------------------------
+pv_tree = ast.parse(open(os.path.join(BIN, "release-postverify.py")).read())
+pv_calls = {n.func.attr for n in ast.walk(pv_tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+pv_text = {n.value for n in ast.walk(pv_tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+check("check_manifest" in pv_calls, "REQ-CHAIN-008-AC1 release-postverify.py calls check_manifest of the verifier it loads")
+own = [w for w in ("valid_from", "valid_to", "revoked_at", "dgst") if any(w in c for c in pv_text)] + [c for c in pv_text if "openssl" in c.lower()]
+check("check_manifest" in pv_calls and not own, "REQ-CHAIN-008-AC1 release-postverify.py holds no manifest check of its own (no window field, no openssl, no signature code) and relies on the verifier's", str(own))
+check(open(os.path.join(BIN, "chain-verify.py")).read().count("def check_manifest(") == 1, "REQ-CHAIN-008-AC1 bin/chain-verify.py defines the one check_manifest")
+# the verifier is the only judge: a verifier that refuses stops the run, and the key it returns is the key that is placed
+t = tree(); real_verifier(t); stub_verifier(t, "def check_manifest(keys_dir):\n    refuse('manifest', 'stub verifier refuses')")
+seed_manifest(t); os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+check(rc != 0 and "stub verifier refuses" in se and not calls(t) and placed_key(t) is None, "REQ-CHAIN-008-AC1 a verifier that refuses the manifest stops the run: the good files on disk are not judged again by this script", "rc=%s %s" % (rc, first(se)))
+t = tree(); real_verifier(t); stub_verifier(t, "def check_manifest(keys_dir):\n    return {'key_id': 'k' * 64, 'public_key': 'KEY RETURNED BY THE VERIFIER\\n'}")
+seed_manifest(t); os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
+check(rc == 0 and placed_key(t) == "KEY RETURNED BY THE VERIFIER\n", "REQ-CHAIN-008-AC5 release.rsa.pub holds the public key the verifier returned and nothing else", "rc=%s %s key=%r" % (rc, first(se), placed_key(t)))
+# ---- REQ-CHAIN-008-AC3 and AC5: a good manifest is checked against the committed root key and its key is the key of the commands ----------------------
+t, rc, so, se = pv([PVK])
+bk = open(os.path.join(t, "build/keys/release.rsa.pub")).read()
+check(rc == 0 and len(calls(t)) == 2, "REQ-CHAIN-008-AC3 a manifest signed by the committed root key, in its window, lets the listed commands run", "rc=%s %s" % (rc, first(se)))
+check(placed_key(t) == kpem("rel") and keyseen(t) == kpem("rel") * 2, "REQ-CHAIN-008-AC5 release.rsa.pub is exactly the manifest's public_key and the commands read that file", repr(placed_key(t))[:80])
+check(bk != kpem("rel") and placed_key(t) != bk and bk not in keyseen(t), "REQ-CHAIN-008-AC5 a different build/keys/release.rsa.pub in the tree is not used", "")
+t = tree(); real_verifier(t); seed_manifest(t); shutil.rmtree(os.path.join(t, "build/keys"))
 os.makedirs(os.path.join(t, "docs"), exist_ok=True); json.dump([{"command": PVK, "reason": "r"}], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
 rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"])
-check(rc != 0 and "release-published/release.rsa.pub" in se and not calls(t) and open(os.path.join(t, "release-published/release.rsa.pub")).read() == "a published asset\n", "AC20 post-publish: a release asset named release.rsa.pub is refused, never overwritten and never taken for the committed key, nothing runs", "rc=%s %s" % (rc, first(se)))
+check(rc == 0 and placed_key(t) == kpem("rel"), "REQ-CHAIN-008-AC3 with no build/keys/release.rsa.pub in the tree the run still passes: that file is not an input", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PVK], seed={"body": manifest(valid_to=at(30), revoked_at=at(30))})
+check(rc == 0 and placed_key(t) == kpem("rel"), "REQ-CHAIN-008-AC3 a valid_to and a revoked_at still in the future are accepted", "rc=%s %s" % (rc, first(se)))
+# ---- REQ-CHAIN-008-AC4: a manifest that does not pass stops the run before any listed command and leaves no key ----------------------------------------
+good_body = body_of(manifest())
+MUTANTS = (
+    ("the manifest missing", dict(drop=("release-key-manifest.json",)), ("missing",)),
+    ("the signature missing", dict(drop=("release-key-manifest.sig",)), ("signature", "missing")),
+    ("the committed root key missing", dict(no_root=True), ("root", "missing")),
+    ("a garbage signature", dict(sig="!!!not-base64!!!\n"), ("signature",)),
+    ("an empty signature (unsigned)", dict(sig=""), ("signature",)),
+    ("a manifest signed by another root key", dict(signer="otherroot"), ("signature",)),
+    ("a manifest altered after it was signed", dict(body=good_body.replace(b'"valid_from"', b'"valid_from" '), sig=sig_of("root", good_body)), ("signature",)),
+    ("a manifest that expired", dict(body=manifest(valid_to=at(-1))), ("expired",)),
+    ("a manifest not yet valid", dict(body=manifest(valid_from=at(1))), ("not yet valid",)),
+    ("a revoked key", dict(body=manifest(revoked_at=at(-1))), ("revoked",)),
+    ("an RSA root key", dict(signer="rsaroot", root_pub="rsaroot"), ("root key", "p-256")),
+    ("an Ed25519 root key", dict(signer="edroot", root_pub="edroot"), ("root key", "p-256")),
+    ("an unknown field", dict(body=manifest(note="x")), ("unknown field", "note")),
+    ("a key_id that is not the hash of the key", dict(body=manifest(key_id=hashlib.sha256(b"x").hexdigest())), ("key_id",)),
+    ("a manifest that is a symlink", dict(link="release-key-manifest.json"), ("manifest", "link")),
+    ("a signature that is a symlink", dict(link="release-key-manifest.sig"), ("signature", "link")),
+)
+for label, seed, words in MUTANTS:
+    t, rc, so, se = pva([PVK, PVKB], seed=seed); low = se.lower()
+    why = [w for w in ("manifest",) + words if w not in low]
+    check(rc != 0 and not why and "Traceback" not in se and not calls(t) and placed_key(t) is None,
+          "REQ-CHAIN-008-AC4 %s: exit non-zero naming the manifest and the reason, no listed command runs, no release.rsa.pub is written" % label,
+          "rc=%s missing words=%s calls=%d key=%s: %s" % (rc, why, len(calls(t)), placed_key(t) is not None, first(se)))
 t, rc, so, se = pv([PV1, PV3]); check(rc == 0 and len(calls(t)) == 4, "AC20 post-publish: a good list of two image commands runs in both registries", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([]); check(rc == 0 and not calls(t), "AC20 post-publish: an empty list runs nothing and passes with the assets directory present")
 # round 1 (both seats): the grammar is CLOSED, so none of these reads a file nothing verified
@@ -1134,7 +1240,7 @@ check(rc == 1 and not calls(t) and CERTMSG in se, "KL-1 post-publish: the --bund
 t, rc, so, se = pva([PV1], assets={"provenance.bundle.json": KCERT})
 check(rc == 0 and len(calls(t)) == 2, "KL-1 post-publish: a certificate bundle that no listed command names is not read (the check is not required of a list that names none)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 t, rc, so, se = pva([PV1], assets={}, cv="drop")
-check(rc == 0 and len(calls(t)) == 2, "KL-1 post-publish: with no bundle named, a missing bin/chain-verify.py is not needed (nothing is loaded)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+check(rc != 0 and not calls(t) and "bin/chain-verify.py cannot be loaded" in se, "KL-1 post-publish: with no bundle named, a missing bin/chain-verify.py still refuses the run (the manifest check is loaded from it), and no listed command runs", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": "not json"})
 check(rc == 1 and not calls(t) and "release-postverify: provenance.bundle.json" in se, "KL-1 post-publish: a named bundle that is not JSON is refused (exit 1), never skipped, and nothing runs", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 for esc, what in (("../escape.bundle.json", "a path that climbs out of release-published/"), ("/etc/hostname", "an absolute path")):
@@ -1245,12 +1351,14 @@ check(_probe is not None and _probe.stdout.split("\n")[:-1] == ["standard fscach
 check("baselayout" not in _ra, "0710 release-apks.sh names no base-layout package: the apk is assembled into the images only, it is neither signed nor attached")
 # ---- AC10: no script prints a credential, anywhere ---------------------------------------------------------------------------------------------
 for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publish", REG), ("release-sign", REG), ("release-assets", ["GH_TOKEN"]), ("release-postverify", ["GH_TOKEN"])):
-    t = full_assets() if s == "release-assets" else tree(); rc, so, se = run(t, s, creds=creds)
+    t = full_assets() if s == "release-assets" else tree()
+    if s == "release-postverify": real_verifier(t); seed_manifest(t)      # a post-publish run needs the manifest to get as far as its commands
+    rc, so, se = run(t, s, creds=creds)
     blob = so + se + tree_text(t)
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "505"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "532"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

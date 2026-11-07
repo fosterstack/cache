@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-002-AC2
+# proves: REQ-CHAIN-002-AC2, REQ-CHAIN-008-AC1
 # Tests for the key manifest of the v0.3.0 release chain (handoff 0713, row P1): `chain-verify.py policy make` reads the manifest first.
 # Offline: the root key, the release key and every manifest are made here with openssl; nothing is committed and no AWS is used.
 #
@@ -204,6 +204,18 @@ expect_refuse "a date that is a number" "valid_from|date" date-number
 # ---- the manifest is read before the template's tag rules write anything -----------------------------------------------------------------
 rm -f "$work/policy.json"; rc=0; run policy make --template "$work/edited/template.json" --tag v0.3.0 --out "$work/policy.json" || rc=$?
 [ "$rc" = 1 ] && [ ! -e "$work/policy.json" ] && ok "a refused manifest leaves no policy file behind" || bad "a policy file exists after a refusal (exit $rc)"
+
+# ---- REQ-CHAIN-008-AC1: the verifier function itself returns the key_id and the public key ----------------------------------------------------
+# Rebuild, stage-start and Check (bin/release-postverify.py) all call this one function, so what it returns is what each of them gets.
+python3 -I - "$cv" "$work/good" "$KID" "$work/rel.pub" > "$work/ret.out" 2>&1 <<'PY' && ok "check_manifest returns exactly the manifest's key_id and public key" || bad "check_manifest return value: $(head -c 300 "$work/ret.out")"
+import importlib.util, sys
+cv, keys_dir, key_id, pub = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("chain_verify", cv)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+got = mod.check_manifest(keys_dir)
+assert got == {"key_id": key_id, "public_key": open(pub).read()}, got
+PY
 
 echo "chain-manifest-test: $pass passed, $failn failed"
 [ "$failn" = 0 ]

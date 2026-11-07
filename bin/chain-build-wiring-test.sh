@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
 # proves: REQ-CHAIN-004-AC18
+# proves: REQ-CHAIN-008-AC6
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed-local.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -3700,7 +3701,104 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1313
+# ---- REQ-CHAIN-008-AC6: key rotation cutover ---------------------------------------------------------------------------------------------------
+# One root key signs two manifests, each for its own release key: the old one's window ended in the past, the new one's is open. The windows are
+# dates in the past and the future, so the real clock decides and no test hook is needed. A record is signed by each key; the policy is made
+# from each manifest the way Rebuild and Check make it.
+mkdir -p "$work/rot"
+python3 - "$work/rot" > "$work/rot/fixture.out" 2>&1 <<'PY' || bad "AC6 key rotation cutover: the fixture could not be made: $(head -c 300 "$work/rot/fixture.out")"
+import base64, datetime as dt, hashlib, json, os, subprocess, sys
+W = sys.argv[1]
+def p(*n): return os.path.join(W, *n)
+def sh(*a): return subprocess.run(a, check=True, capture_output=True).stdout
+def b64(b): return base64.b64encode(b).decode()
+def day(n): return (dt.datetime.now(dt.timezone.utc).replace(microsecond=0) + dt.timedelta(days=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def genkey(name, *opts):
+    sh("openssl", "genpkey", *opts, "-out", p(name + ".key")); sh("openssl", "pkey", "-in", p(name + ".key"), "-pubout", "-out", p(name + ".pub"))
+def der_sha(name): return hashlib.sha256(sh("openssl", "pkey", "-pubin", "-in", p(name + ".pub"), "-outform", "DER")).hexdigest()
+def sign(key, data):
+    open(p("data.tmp"), "wb").write(data)
+    return sh("openssl", "dgst", "-sha256", "-sign", p(key + ".key"), p("data.tmp"))
+genkey("root", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+genkey("rekor", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+for k in ("oldrel", "newrel"): genkey(k, "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")
+json.dump({"rekor_sha256": der_sha("rekor")}, open(p("sigstore-trust.json"), "w"))
+json.dump({"repository": "fosterstack/cache", "stages": ["build", "sign", "rebuild", "check", "release"]}, open(p("template.json"), "w"))
+def keys_dir(d, rel, **window):
+    """A policy folder: the root key, a manifest of `rel` with the given window signed by the root key, and the files that sit beside the template."""
+    os.makedirs(p(d))
+    m = dict({"public_key": open(p(rel + ".pub")).read(), "key_id": der_sha(rel)}, **window)
+    body = json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
+    open(p(d, "release-key-root.pub"), "w").write(open(p("root.pub")).read())
+    open(p(d, "release-key-manifest.json"), "wb").write(body)
+    open(p(d, "release-key-manifest.sig"), "w").write(b64(sign("root", body)) + "\n")
+    for n in ("template.json", "sigstore-trust.json"): open(p(d, n), "w").write(open(p(n)).read())
+    open(p(d, "rekor.pub"), "w").write(open(p("rekor.pub")).read())
+keys_dir("keys-old", "oldrel", valid_from=day(-400), valid_to=day(-30))
+keys_dir("keys-new", "newrel", valid_from=day(-31))
+# the Rekor entry every record carries: a v1 dsse entry for the payload and signature, signed by this run's Rekor key, with an inclusion proof
+def mh(l, r): return hashlib.sha256(b"\x01" + l + r).digest()
+def mroot(ls):
+    if len(ls) == 1: return ls[0]
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return mh(mroot(ls[:k]), mroot(ls[k:]))
+def mpath(m, ls):
+    if len(ls) == 1: return []
+    k = 1
+    while k * 2 < len(ls): k *= 2
+    return mpath(m, ls[:k]) + [mroot(ls[k:])] if m < k else mpath(m - k, ls[k:]) + [mroot(ls[:k])]
+def rekor_entry(payload, sig, rel):
+    body = {"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
+            "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()},
+            "signatures": [{"signature": b64(sig), "verifier": b64(open(p(rel + ".pub")).read().encode())}]}}
+    cb = b64(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    log_id = der_sha("rekor")
+    canon = json.dumps({"body": cb, "integratedTime": 1761800000, "logID": log_id, "logIndex": 7}, sort_keys=True, separators=(",", ":")).encode()
+    leaf = hashlib.sha256(b"\x00" + base64.b64decode(cb)).digest()
+    leaves = [hashlib.sha256(b"\x00" + bytes([i]) * 8).digest() for i in range(5)]
+    leaves[2] = leaf
+    root = mroot(leaves)
+    note = "rekor.sigstore.dev - 1193050959916656506\n5\n%s\n" % b64(root)
+    log_der = sh("openssl", "pkey", "-pubin", "-in", p("rekor.pub"), "-outform", "DER")
+    note_sig = hashlib.sha256(log_der).digest()[:4] + sign("rekor", note.encode())
+    return {"logIndex": "7", "integratedTime": "1761800000", "logId": {"keyId": b64(bytes.fromhex(log_id))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"},
+            "canonicalizedBody": cb, "inclusionPromise": {"signedEntryTimestamp": b64(sign("rekor", canon))},
+            "inclusionProof": {"logIndex": "2", "rootHash": b64(root), "treeSize": "5", "hashes": [b64(h) for h in mpath(2, leaves)],
+                               "checkpoint": {"envelope": note + "\n— rekor.sigstore.dev " + b64(note_sig) + "\n"}}}
+def record(name, rel):
+    """Sign's provenance for the tag, signed by `rel` over the DSSE PAE, with its Rekor entries file beside it"""
+    site, ref = "https://github.com/fosterstack/cache", "refs/tags/v0.3.0"
+    predicate = {"buildDefinition": {"buildType": site + "/release-chain/v0.3.0", "externalParameters": {"ref": ref, "workflow": site + "/.github/workflows/release.yml@" + ref},
+                                     "internalParameters": {}, "resolvedDependencies": [{"uri": "git+" + site + "@" + ref, "digest": {"gitCommit": "f" * 40}}]},
+                 "runDetails": {"builder": {"id": site + "/.github/workflows/stage-sign.yml@" + ref}, "metadata": {"invocationId": site + "/actions/runs/1"}}}
+    payload = json.dumps({"_type": "https://in-toto.io/Statement/v1", "predicateType": "https://slsa.dev/provenance/v1", "predicate": predicate,
+                          "subject": [{"name": "image-production", "digest": {"sha256": "a" * 64}}]}).encode()
+    kind = "application/vnd.in-toto+json"
+    pae = b"DSSEv1 %d %s %d %s" % (len(kind), kind.encode(), len(payload), payload)
+    sig = sign(rel, pae)
+    json.dump({"payloadType": kind, "payload": b64(payload), "signatures": [{"keyid": "awskms:///alias/fosterstack-release-signing", "sig": b64(sig)}]}, open(p(name + ".json"), "w"))
+    json.dump({"entries": [rekor_entry(payload, sig, rel)]}, open(p(name + ".rekor.json"), "w"))
+record("rec-new", "newrel")
+record("rec-old", "oldrel")
+PY
+if [ -f "$work/rot/rec-old.json" ]; then
+  rm -f "$work/rot/policy-old.json" "$work/rot/policy-new.json"; rc=0
+  python3 "$CV" policy make --template "$work/rot/keys-old/template.json" --tag v0.3.0 --out "$work/rot/policy-old.json" > /dev/null 2> "$work/rot/old.err" || rc=$?
+  l1=$(head -n 1 "$work/rot/old.err" | tr 'A-Z' 'a-z')
+  if [ "$rc" = 1 ] && [[ "$l1" == "refused at manifest: "*expired* ]] && [ ! -e "$work/rot/policy-old.json" ]; then ok "AC6 key rotation cutover: the old manifest, its window ended, is refused as expired and no policy holds its key"
+  else bad "AC6 key rotation cutover: the old manifest was not refused as expired (exit $rc: $l1)"; fi
+  rc=0; python3 "$CV" policy make --template "$work/rot/keys-new/template.json" --tag v0.3.0 --out "$work/rot/policy-new.json" > /dev/null 2> "$work/rot/new.err" || rc=$?
+  if [ "$rc" = 0 ] && [ -s "$work/rot/policy-new.json" ]; then ok "AC6 key rotation cutover: the new manifest, its window open, is accepted"
+  else bad "AC6 key rotation cutover: the new manifest was refused (exit $rc: $(head -c 200 "$work/rot/new.err" | tr '\n' ' '))"; fi
+  rc=0; python3 "$CV" verify --policy "$work/rot/policy-new.json" --stage sign --record "$work/rot/rec-new.json" > /dev/null 2> "$work/rot/rn.err" || rc=$?
+  if [ "$rc" = 0 ]; then ok "AC6 key rotation cutover: a record signed by the new key passes under the new manifest's policy"
+  else bad "AC6 key rotation cutover: a record signed by the new key was refused (exit $rc: $(head -c 200 "$work/rot/rn.err" | tr '\n' ' '))"; fi
+  rc=0; python3 "$CV" verify --policy "$work/rot/policy-new.json" --stage sign --record "$work/rot/rec-old.json" > /dev/null 2> "$work/rot/ro.err" || rc=$?
+  if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
+  else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
+fi
+EXPECT=1317
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

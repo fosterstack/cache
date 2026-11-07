@@ -4182,6 +4182,55 @@ requirements:
         then: "before its first signature it runs `python3 bin/release-metadata.py checksums --version V --digests witness-build/digests.json --dist dist --out dist/checksums.txt`, which first checks that dist holds exactly the four archives Build recorded, each with the digest of digests.json, and then writes checksums.txt as one line `<sha256>  <name>` (two spaces) for each of the four archives, in byte order of the names, ending in a newline, with no other line, through a temporary file renamed into place; an archive that is missing, extra, symlinked or different from the recorded digest, or a version that is not vX.Y.Z, is a refusal (exit 1, naming the archive) and nothing is written or signed; no producer other than this command makes checksums.txt (Build and Rebuild do not write it, it is not an item of items.json), and no test creates the file it signs"
         verification: { method: unit, release_blocking: true }
         status: approved
+  - id: REQ-CHAIN-008
+    title: The release key manifest is published with every release and checked before any release signature
+    statement: >
+      Every release shall publish the signed key manifest (release-key-manifest.json and release-key-manifest.sig) as release assets, and Check after a publish shall verify that manifest against the committed offline root public key, with the one verifier of REQ-CHAIN-002-AC2, before they use the release key to verify anything else.
+    source: [bin/release-postverify.py, bin/release-assets.sh, bin/chain-verify.py, .github/policy/release-key-root.pub, bin/chain-manifest-test.sh, bin/chain-release-scripts-test.sh, bin/chain-build-wiring-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: ops docs/ratify/2026-10-28-kms-signing-key-and-one-step-build.md rules 5 to 7 (one offline root key signs one small manifest of the release key and its validity window; the manifest is published with every release and verified before the artifact signature in Rebuild, Check and the customer guide; a new manifest only on rotation or revocation); orchestrator rulings for lane cache5 (step 1, Nov 7 2026). Proposed, not yet read by the advisor.
+    confidence: implementation-only
+    notes: >
+      A new requirement, not new ACs on REQ-CHAIN-002 or REQ-CHAIN-007: the approved ACs of those stay word for word. The customer guide follows in a separate change. REQ-CHAIN-002-AC2 already covers the verifier and the policy side (Rebuild and stage-start); this requirement covers Check after a publish, and the release assets, and adds no second verifier. The root public key is committed in the repository and fetched from the tag; the manifest is a release asset. The release key file build/keys/release.rsa.pub keeps its other users; only Check's listed commands stop using it. KR-CUTOVER (test-evidence/known-red.json) and the CUTOVER CHECKLIST of REQ-CHAIN-001 are not touched.
+    acceptance_criteria:
+      - id: REQ-CHAIN-008-AC1
+        given: "a manifest, its signature and the committed root public key, checked by bin/chain-verify.py check_manifest"
+        when: "the manifest is signed by the root key, in its validity window and not revoked"
+        then: "the verifier returns the manifest's key_id and public key; it is the one implementation that Rebuild, stage-start and Check call, and bin/release-postverify.py holds no manifest check of its own (proved by bin/chain-manifest-test.sh and bin/chain-release-scripts-test.sh)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-008-AC2
+        given: "the release assets that bin/release-assets.sh uploads"
+        when: "it publishes a release"
+        then: "release-key-manifest.json and release-key-manifest.sig are among the uploaded assets, and a release whose manifest or signature file is missing is refused before the upload (proved by bin/chain-release-scripts-test.sh)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-008-AC3
+        given: "release-published/ holding the assets downloaded from the published release, and the committed .github/policy/release-key-root.pub"
+        when: "bin/release-postverify.py runs"
+        then: "it verifies release-key-manifest.json and release-key-manifest.sig against the committed root key with the verifier of AC1 before it runs any listed command, and it no longer takes build/keys/release.rsa.pub as the key of those commands (proved by bin/chain-release-scripts-test.sh)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-008-AC4
+        given: "release-published/ with the manifest missing, its signature missing, the manifest unsigned, signed by another root key, altered after signing, expired, not yet valid, or revoked"
+        when: "bin/release-postverify.py runs"
+        then: "it exits non-zero naming the manifest and the reason, runs no listed command, and writes no release.rsa.pub (proved by bin/chain-release-scripts-test.sh)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-008-AC5
+        given: "a manifest that passed the check of AC3"
+        when: "bin/release-postverify.py prepares the working folder of the listed commands"
+        then: "release.rsa.pub in that folder holds exactly the public key of the verified manifest and comes from nowhere else (proved by bin/chain-release-scripts-test.sh)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-008-AC6
+        given: "two manifests signed by the same root key, the old one whose validity window has ended and the new one whose window is open, each with its own release key"
+        when: "the key rotation cutover case of bin/chain-build-wiring-test.sh checks a record signed by each key at a time after the old valid_to"
+        then: "the old manifest is refused as expired and its key verifies nothing, the new manifest is accepted and a record signed by the new key passes, so an old key is refused after its valid_to (proved by bin/chain-build-wiring-test.sh)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+
   - id: REQ-BUILDTOOLS-002
     title: The image digest is the OCI index digest and a sealed namespace is checked by a probe
     statement: >
