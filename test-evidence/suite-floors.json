@@ -8,7 +8,7 @@
  "build-apk-test.sh": 980,
  "build-sandbox-hostile-test.sh": 49,
  "chain-bind-test.sh": 221,
- "chain-build-admit-test.sh": 151,
+ "chain-build-admit-test.sh": 181,
  "chain-build-wiring-test.sh": 1304,
  "chain-check-scripts-test.sh": 310,
  "chain-check-wiring-test.sh": 302,

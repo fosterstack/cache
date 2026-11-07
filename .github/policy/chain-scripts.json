@@ -510,6 +510,7 @@
       "path": "bin/build-admit.py",
       "tools": [
         "python3",
+        "bash",
         "command",
         "gh",
         "at",
@@ -521,11 +522,13 @@
       ],
       "runs": [
         "bin/admission-tag-signer.py",
+        "bin/audit-record-judge.sh",
+        "bin/audit-record.py",
         "bin/chain-bytes-sha.py"
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "0d8a8273d334bcf90e64bec45aa5d469e152cc2b24e0a7b517fec18a6c226f8f",
+      "sha256": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -536,6 +539,44 @@
           "why": "a docstring naming the path operand of git show; nothing is set"
         }
       ]
+    },
+    {
+      "path": "bin/audit-record-judge.sh",
+      "tools": [
+        "bash",
+        "cd",
+        "gh",
+        "grep",
+        "jq",
+        "mktemp",
+        "printf",
+        "python3",
+        "rm",
+        "tail",
+        "tr",
+        "trap"
+      ],
+      "runs": [
+        "bin/audit-record.py"
+      ],
+      "signs": false,
+      "reason": "gate 7 (REQ-REL-012-AC7): main's copy, read from origin/main by bin/build-admit.py and run on the tagged commit's sha, tag and tag object; reads the record branch with gh GET only and writes nothing",
+      "sha256": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485"
+    },
+    {
+      "path": "bin/audit-record.py",
+      "tools": [
+        "python3",
+        "at",
+        "gh",
+        "make"
+      ],
+      "runs": [
+        "bin/admission-tag-signer.py"
+      ],
+      "signs": false,
+      "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing",
+      "sha256": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f"
     },
     {
       "path": "bin/build-freeze.sh",

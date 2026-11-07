@@ -94,17 +94,18 @@ def verify_record(head, base_ref, ref, commit, writers):
     return True, ""
 
 
-# matches v1.2.3, v0.3.0, v1.0.0-rc.2; refuses v1.2, v01.2.3, v1.2.3-rc1, v1.2.3-rc.
-_RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[0-9]+)?$")
-# matches v1.2.3, v0.9.10; refuses v1.2.0, v1.2.3-rc.1, v01.2.3, v1.2.
-_PATCH_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$")
+# matches v1.2.3, v0.3.0, v1.0.0-rc.2, v1.0.0-rc2 (the chain's form); refuses v1.2, v01.2.3, v1.2.3-rc, v1.2.3-rc.
+# fullmatch: a trailing newline is not part of a tag
+_RELEASE_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.?[0-9]+)?")
+# matches v1.2.3, v0.9.10; refuses v1.2.0, v1.2.3-rc.1, v1.2.3-rc1, v01.2.3, v1.2.
+_PATCH_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*")
 # matches "Audit-approved: " plus 40 lower-case hex; refuses upper-case hex, 39 or 41 digits, a trailing space.
 _APPROVED = re.compile(r"^Audit-approved: ([0-9a-f]{40})$")
 _SIG_BEGIN = ("-----BEGIN SSH SIGNATURE-----", "-----BEGIN SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----")
 
 
 def is_patch_tag(tag):
-    return isinstance(tag, str) and bool(_PATCH_TAG.match(tag))
+    return isinstance(tag, str) and bool(_PATCH_TAG.fullmatch(tag))
 
 
 def _approval(tag_object):
@@ -133,9 +134,9 @@ def verify_release(tag, tag_object, tagged_sha, ref, commit, policy):
     passed-audit record that the owner's signed tag message approves; else (False, reason).
     The tag's signature is verified by the admission step before this runs, so a line in the message is the
     owner's own."""
-    if not isinstance(tag, str) or not _RELEASE_TAG.match(tag):
+    if not isinstance(tag, str) or not _RELEASE_TAG.fullmatch(tag):
         return False, "the tag is not a release version"
-    if _PATCH_TAG.match(tag):
+    if _PATCH_TAG.fullmatch(tag):
         return True, ""
     approved = _approval(tag_object)
     if approved is None:

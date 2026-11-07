@@ -2870,7 +2870,8 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 SIX = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
-       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh")      # held whole with the Python files
+       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh",
+       "bin/audit-record-judge.sh")      # held whole with the Python files (the last one is main's gate 7 judge, which build-admit.py runs)
 for p in sorted(set(seen) | set(SIX)):
     held = p.endswith(".py") or p in SIX
     print(p, file=(sys.stdout if held else sys.stderr))
@@ -2997,7 +2998,7 @@ spec = importlib.util.spec_from_file_location("shape", shape)
 S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
 seen, bad = S.ns_closure(root)
 SIX = {"bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py", "bin/chain-hostile-step.sh",
-       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh"}
+       "bin/chain-sandbox-probe.sh", "bin/loopback-get.sh", "bin/rebuild-records-digests.sh", "bin/audit-record-judge.sh"}
 py = {p for p in seen if p.endswith(".py")}
 held = py | SIX
 # the files the workflows run outside the stage scripts are in the closure
@@ -3008,7 +3009,7 @@ for p in sorted(held):
 for p in ("bin/chain_common.py", "bin/chain_hostile.py", "bin/chain_items.py"):
     assert p in py, p      # they reach the closure only through chain-verify.py's load_sibling literals
 PY
-then ok "nosource NS_SHA holds exactly the 15 Python closure files and the 7 workflow-run files with their \
+then ok "nosource NS_SHA holds exactly the 16 Python closure files and the 8 held shell files with their \
 committed sha256, and chain_common, chain_hostile and chain_items are found"
 else bad "nosource NS_SHA does not match the closure files"; fi
 # the bin/ scripts the run: lines of the two stage workflows start are exactly the roots of the closure
@@ -3700,7 +3701,7 @@ of the two recipes"
 else
   bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
 fi
-EXPECT=1313
+EXPECT=1315
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
