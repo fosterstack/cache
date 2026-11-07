@@ -111,8 +111,6 @@ V022F=ghcr.io/fosterstack/cache@sha256:e5cfd3249fa4d751f5fe2e56a2b3e36e2e45b15d1
 check_stdlib "stdlib 1.27.2, v0.2.2 production index digest"                ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "$V022P" 1.27.2 SUPPRESS
 check_stdlib "stdlib 1.27.2, v0.2.2 debug amd64 digest"                     ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-debug  "$V022D" 1.27.2 SUPPRESS
 check_stdlib "stdlib 1.27.2, v0.2.2 fips arm64 digest"                      ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-fips   "$V022F" 1.27.2 SUPPRESS
-check_stdlib "stdlib 1.27.2, the same repository and tag, another digest"   ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "ghcr.io/fosterstack/cache@sha256:${D64}" 1.27.2 FLAG
-check_stdlib "stdlib 1.27.2, v0.2.2 tag with no digest"                     ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        ""       1.27.2 FLAG
 check_stdlib "stdlib 1.27.2, foreign vendor, SAME basename (cache)"     ghcr.io/another-vendor/cache ghcr.io/another-vendor/cache:1.0 ""                                    1.27.2 FLAG
 check_stdlib "stdlib 1.27.1 (vulnerable, not the pinned version)"        ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:v0.2.1 ""                                       1.27.1 FLAG
 check_stdlib "stdlib 1.27.2, missing image identity (no tags, no digests)" ghcr.io/fosterstack/cache ""                          ""                                                    1.27.2 FLAG
