@@ -30,7 +30,7 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 ### Dependency updates
 
 - Go 1.27.3<!-- pinned: upstream --> (above).
-- `github.com/prometheus/client_golang` 1.24.1 to 1.25.0, with its supporting libraries (`prometheus/common` 0.72.0, `prometheus/procfs` 0.22.0, `golang.org/x/sys` 0.48.0).
+- `github.com/prometheus/client_golang` 1.24.1 to 1.25.0, with its supporting libraries (`prometheus/common` 0.72.0, `prometheus/procfs` 0.22.0, `golang.org/x/sys` 0.48.0). <!-- pinned: upstream -->
 - The CA certificate bundle in the images (above).
 
 ### What this release does not do

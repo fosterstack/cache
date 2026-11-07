@@ -505,13 +505,13 @@ out=$(judge "$work/f/tv.md" draft); rc=$?; [ "$rc" -eq 0 ] && ok "draft mode all
 out=$(judge "$work/f/tv.md" final); rc=$?; case "$out" in *"TO-VERIFY mark(s) remain"*) ok "kills mutant: --final with a TO-VERIFY mark";; *) bad "MISSED mutant: --final with a TO-VERIFY mark" "$out";; esac
 mutant "a registry command not listed"  "the cannot-run list does not name it" 's.replace("<IMAGE_REF> --key", "<IMAGE_REF>  --key")'
 mutant "the -fips registry command not listed" "the cannot-run list does not name it" 's.replace("<IMAGE_REF_FIPS> --key", "<IMAGE_REF_FIPS>  --key")'
-mutant "gh attestation verify oci:// not listed" "the cannot-run list does not name it" 's.replace("jq -e", "gh attestation verify oci://<IMAGE_REF> --repo fosterstack/cache | jq -e")'
-mutant "a literal registry reference not listed" "the cannot-run list does not name it" 's.replace("jq -e", "cosign verify-attestation --type https://slsa.dev/provenance/v1 ghcr.io/fosterstack/cache:<TAG> | jq -e")'
+mutant "gh attestation verify oci:// is not a verify form" "is not cosign verify" 's.replace("jq -e", "gh attestation verify oci://<IMAGE_REF> --repo fosterstack/cache | jq -e")'
+mutant "a literal registry reference not listed" "the cannot-run list does not name it" 's.replace("jq -e", "cosign verify-attestation --key release.rsa.pub --type https://slsa.dev/provenance/v1 ghcr.io/fosterstack/cache:<TAG> | jq -e")'
 mutant "verify-blob on an image placeholder not listed" "the cannot-run list does not name it" 's.replace("sbom.json\n", "<IMAGE_REF_FIPS>\n")'
 mutant "a release-asset command not listed" "the cannot-run list does not name it" 's.replace("jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.bundle.json")'
 mutant "the identity placeholder is back" "the placeholder <IDENTITY> is not one of" 's.replace("cosign verify <IMAGE_REF> --key release.rsa.pub\n", "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY>\n", 1)' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY>", "reason": "needs a registry image"},
  {"command": "cosign verify <IMAGE_REF_FIPS> --key release.rsa.pub", "reason": "needs a registry image"}]'
-mutant "a stale cannot-run entry"       "a stale entry"                's.replace("--key release.rsa.pub\n```\n\n```sh\n# Not", "--key=release.rsa.pub\n```\n\n```sh\n# Not")'
+mutant "a stale cannot-run entry"       "a stale entry"                's.replace("cosign verify <IMAGE_REF> --key release.rsa.pub\n", "cosign verify <IMAGE_REF> --key=release.rsa.pub\n")'
 mutant "a runnable command on the list" "needs no registry image"      's + " "' '[{"command": "cosign verify <IMAGE_REF> --key release.rsa.pub", "reason": "r"}, {"command": "cosign verify <IMAGE_REF_FIPS> --key release.rsa.pub", "reason": "r"}, {"command": "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "reason": "r"}]'
 mutant "a list entry without a reason"  "not exactly {command, reason}" 's + " "' '[{"command": "cosign verify <IMAGE_REF> --key release.rsa.pub", "reason": ""}]'
 mutant "a list that is not JSON"        "not JSON"                     's + " "' '[{'
