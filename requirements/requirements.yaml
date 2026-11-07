@@ -4186,13 +4186,13 @@ requirements:
     title: The release key manifest is published with every release and checked before any release signature
     statement: >
       Every release shall publish the signed key manifest (release-key-manifest.json and release-key-manifest.sig) as release assets, and Check after a publish shall verify that manifest against the committed offline root public key, with the one verifier of REQ-CHAIN-002-AC2, before they use the release key to verify anything else.
-    source: [bin/release-postverify.py, bin/release-assets.sh, bin/chain-verify.py, .github/policy/release-key-root.pub, bin/chain-manifest-test.sh, bin/chain-release-scripts-test.sh, bin/chain-build-wiring-test.sh]
+    source: [bin/release-postverify.py, bin/release-assets.sh, bin/chain-verify.py, .github/policy/release-key-root.pub, bin/chain-manifest-test.sh, bin/chain-release-scripts-test.sh, bin/chain-build-wiring-test.sh, docs/verify-key.md, docs/verify-release.md, bin/verify-key-page-test.sh]
     tier: community
     introduced: v0.3.0
-    origin: ops docs/ratify/2026-10-28-kms-signing-key-and-one-step-build.md rules 5 to 7 (one offline root key signs one small manifest of the release key and its validity window; the manifest is published with every release and verified before the artifact signature in Rebuild, Check and the customer guide; a new manifest only on rotation or revocation); orchestrator rulings for lane cache5 (step 1, Nov 7 2026). Proposed, not yet read by the advisor.
+    origin: ops docs/ratify/2026-10-28-kms-signing-key-and-one-step-build.md rules 5 to 7 (one offline root key signs one small manifest of the release key and its validity window; the manifest is published with every release and verified before the artifact signature in Rebuild, Check and the customer guide; a new manifest only on rotation or revocation); orchestrator rulings for lane cache5 (step 1, Nov 7 2026; the guide step, AC7 to AC9, Nov 7 2026). Proposed, not yet read by the advisor.
     confidence: implementation-only
     notes: >
-      A new requirement, not new ACs on REQ-CHAIN-002 or REQ-CHAIN-007: the approved ACs of those stay word for word. The customer guide follows in a separate change. REQ-CHAIN-002-AC2 already covers the verifier and the policy side (Rebuild and stage-start); this requirement covers Check after a publish, and the release assets, and adds no second verifier. The root public key is committed in the repository and fetched from the tag; the manifest is a release asset. The release key file build/keys/release.rsa.pub keeps its other users; only Check's listed commands stop using it. KR-CUTOVER (test-evidence/known-red.json) and the CUTOVER CHECKLIST of REQ-CHAIN-001 are not touched.
+      A new requirement, not new ACs on REQ-CHAIN-002 or REQ-CHAIN-007: the approved ACs of those stay word for word. The customer guide step is in this change (AC7 to AC9): a new page docs/verify-key.md holds the two manifest commands and their setup text, docs/verify-release.md gets one link line to it (its commands and limits stay), and docs/install.md, docs/offline-install.md and docs/using-our-vex.md get one pointer line each; no judge of Check or the guide changes. REQ-CHAIN-002-AC2 already covers the verifier and the policy side (Rebuild and stage-start); this requirement covers Check after a publish, and the release assets, and adds no second verifier. The root public key is committed in the repository and fetched from the tag; the manifest is a release asset. The release key file build/keys/release.rsa.pub keeps its other users; only Check's listed commands stop using it. KR-CUTOVER (test-evidence/known-red.json) and the CUTOVER CHECKLIST of REQ-CHAIN-001 are not touched.
     acceptance_criteria:
       - id: REQ-CHAIN-008-AC1
         given: "a manifest, its signature and the committed root public key, checked by bin/chain-verify.py check_manifest"
@@ -4229,6 +4229,24 @@ requirements:
         when: "the key rotation cutover case of bin/chain-build-wiring-test.sh checks a record signed by each key at a time after the old valid_to"
         then: "the old manifest is refused as expired and its key verifies nothing, the new manifest is accepted and a record signed by the new key passes, so an old key is refused after its valid_to (proved by bin/chain-build-wiring-test.sh)"
         verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-008-AC7
+        given: "the customer page docs/verify-key.md"
+        when: "bin/verify-key-page-test.sh judges it"
+        then: "the page holds exactly these two commands, `cosign verify-blob --key release-key-root.pub --signature release-key-manifest.sig release-key-manifest.json` and `jq -r .public_key release-key-manifest.json > release.rsa.pub`; its setup text says to fetch release-key-root.pub from the repository at the release tag (.github/policy/release-key-root.pub) and the manifest and its signature from the release assets, to compare the release's publish date with the manifest's valid_to, and to check the newest manifest for the same key_id because a revoked key is refused; the page carries no TO-VERIFY mark about where the manifest and the root key are published, and its added lines pass bin/check-customer-words.py (proved by bin/verify-key-page-test.sh, whose mutants drop each of these and must each be caught)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CHAIN-008-AC8
+        given: "docs/verify-release.md after this change"
+        when: "bin/verify-release-guide-test.sh judges it"
+        then: "the old bullet that told the reader to fetch release.rsa.pub once is replaced by one line that links to docs/verify-key.md; the page still has its nine commands, every later command still uses `--key release.rsa.pub`, and the page stays at most 500 words and at most 10 commands, so REQ-GUIDE-001-AC1 is not changed (proved by bin/verify-release-guide-test.sh)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CHAIN-008-AC9
+        given: "docs/install.md, docs/offline-install.md and docs/using-our-vex.md"
+        when: "the docs drift guard .github/agent/tests/docs-snippets-test.sh reads them"
+        then: "docs/install.md (at its release key step), docs/offline-install.md (at both of its release key steps) and docs/using-our-vex.md (at its release key step) each carry one plain line that points to docs/verify-key.md, and no command in those three files changes (proved by .github/agent/tests/docs-snippets-test.sh)"
+        verification: { method: unit, release_blocking: false }
         status: approved
 
   - id: REQ-BUILDTOOLS-002

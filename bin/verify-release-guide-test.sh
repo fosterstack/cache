@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-GUIDE-001-AC1, REQ-GUIDE-001-AC2, REQ-GUIDE-001-AC3, REQ-GUIDE-001-AC4, REQ-GUIDE-001-AC5, REQ-GUIDE-001-AC6, REQ-GUIDE-001-AC7
+# proves: REQ-GUIDE-001-AC1, REQ-GUIDE-001-AC2, REQ-GUIDE-001-AC3, REQ-GUIDE-001-AC4, REQ-GUIDE-001-AC5, REQ-GUIDE-001-AC6, REQ-GUIDE-001-AC7, REQ-CHAIN-008-AC8
 # The v0.3.0 customer verification guide, docs/verify-release.md (v0.3.0 rule 78, GUIDE-24), judged as a page: its size,
 # its commands, its placeholders, what it verifies, which images it covers, the tool names it uses, and its open marks.
 # The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads, so a page that passes here
@@ -534,6 +534,65 @@ out=$(judge "$work/f/claim.md" draft); case "$out" in *"wording that claims"*) b
 out=$(judge "$work/f/none.md" draft); rc=$?; [ "$rc" -ne 0 ] && [[ "$out" == *"does not exist"* ]] && ok "kills mutant: the page is missing" || bad "MISSED mutant: the page is missing" "$out"
 cp "$work/f/good.md" "$work/f/nolist.md"; out=$(judge "$work/f/nolist.md" draft); rc=$?
 [ "$rc" -ne 0 ] && [[ "$out" == *"cannot-run list nolist.cannot-run.json does not exist"* ]] && ok "kills mutant: the cannot-run list is missing" || bad "MISSED mutant: the cannot-run list is missing" "$out"
+
+# REQ-CHAIN-008-AC8: the page links to docs/verify-key.md in place of the old "fetch release.rsa.pub once" bullet, and its
+# size and commands stay as they were. This check is separate from the judge above, whose caps are unchanged.
+cat > "$work/ac8.py" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+lines = text.split("\n")
+errs = []
+fence, cmds, pend = False, [], None
+for l in lines:
+    s = l.strip()
+    if s.startswith("```"):
+        fence = not fence; continue
+    if not fence: continue
+    if pend is not None: s, pend = pend + " " + s, None
+    elif not s or s.startswith("#"): continue
+    if s.endswith("\\"): pend = s[:-1].rstrip(); continue
+    cmds.append(s)
+outside, f = [], False
+for l in lines:
+    if l.strip().startswith("```"): f = not f
+    elif not f: outside.append(l)
+links = [l for l in outside if re.search(r"\]\((?:\./|docs/)?verify-key\.md(#[^)]*)?\)", l)]
+if len(links) != 1: errs.append("%d link lines to verify-key.md outside a fence (exactly 1)" % len(links))
+if re.search(r"Fetch it once|build/keys/release\.rsa\.pub", text): errs.append("the old bullet that fetches release.rsa.pub once is still there")
+if len(cmds) != 9: errs.append("%d commands (nine)" % len(cmds))
+for c in cmds:
+    if re.match(r"cosign verify", c) and "--key release.rsa.pub" not in c: errs.append("a verify command without --key release.rsa.pub: " + c[:50])
+n = len(text.split())
+if n > 500: errs.append("%d words (at most 500)" % n)
+if len(cmds) > 10: errs.append("%d commands (at most 10)" % len(cmds))
+print("\n".join(errs) if errs else "OK")
+sys.exit(1 if errs else 0)
+PY
+ac8() { python3 -I "$work/ac8.py" "$1" </dev/null; }
+out=$(ac8 "$page"); rc=$?
+[ "$rc" -eq 0 ] && ok "AC8: docs/verify-release.md links to verify-key.md, has no old fetch bullet, keeps nine commands and --key release.rsa.pub" || bad "AC8: docs/verify-release.md" "$out"
+# a fixture made from the real page: its own link line and any old bullet lines out, one link line in after the placeholder list
+python3 -I -c '
+import re, sys
+t = open(sys.argv[1]).read().split("\n")
+t = [l for l in t if not re.search(r"Fetch it once|build/keys/release\.rsa\.pub|\]\((?:\./|docs/)?verify-key\.md", l)]
+i = max(k for k, l in enumerate(t) if l.startswith("- `<TAG>`"))
+t.insert(i + 1, "- Check the release key first: [verify the release key](verify-key.md).")
+open(sys.argv[2], "w").write("\n".join(t))' "$page" "$work/f/ac8good.md" </dev/null
+out=$(ac8 "$work/f/ac8good.md"); rc=$?
+[ "$rc" -eq 0 ] && ok "AC8: the fixture made from the page (link line in, old bullet out) passes" || bad "AC8: the fixture fails" "$out"
+ac8mutant() {  # <name> <expected substring> <python expression over s, the fixture>
+  python3 -I -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(eval(sys.argv[3]))' "$work/f/ac8good.md" "$work/f/ac8m.md" "$3" </dev/null
+  if cmp -s "$work/f/ac8good.md" "$work/f/ac8m.md"; then bad "AC8 mutant did not apply: $1" "$3"; return; fi
+  out=$(ac8 "$work/f/ac8m.md"); rc=$?
+  if [ "$rc" -ne 0 ] && [[ "$out" == *"$2"* ]]; then ok "kills mutant: AC8 $1"; else bad "MISSED mutant: AC8 $1 (rc=$rc)" "$out"; fi
+}
+ac8mutant "link missing"             "0 link lines"        's.replace("[verify the release key](verify-key.md)", "the key page")'
+ac8mutant "old curl bullet back"     "old bullet"          's.replace("- Check the release key", "- `release.rsa.pub`: the release public key. Fetch it once: `curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<TAG>/build/keys/release.rsa.pub`.\n- Check the release key")'
+ac8mutant "a tenth command"          "10 commands (nine)"  's.replace("```\n\n## What", "jq . provenance.bundle.json\n```\n\n## What")'
+ac8mutant "an eleventh command too"  "at most 10"          's.replace("```\n\n## What", "jq . a.json\njq . b.json\n```\n\n## What")'
+ac8mutant "over 500 words"           "at most 500"         's + "\nword" * 500'
+ac8mutant "a verify command without the key" "without --key release.rsa.pub" 's.replace("cosign verify-blob --key release.rsa.pub --bundle fips.sbom.json.bundle", "cosign verify-blob --bundle fips.sbom.json.bundle")'
 
 echo "verify-release-guide: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

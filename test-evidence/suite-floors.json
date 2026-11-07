@@ -66,6 +66,7 @@
  "scout-root-cause-test.sh": 33,
  "suite-guard-test.sh": 115,
  "supply-chain-wiring-test.sh": 181,
+ "verify-key-page-test.sh": 26,
  "verify-release-guide-test.sh": 70,
  "vex-both-scanners-test.sh": 47,
  "vex-forms-test.sh": 64,

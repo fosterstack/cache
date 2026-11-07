@@ -38,6 +38,8 @@ curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fost
 curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VER}/build/keys/release.rsa.pub"
 ```
 
+To check that this key is the one the release names, follow [Check the release key](verify-key.md).
+
 The release already signs a manifest of everything it ships, attached to each image as an attestation signed with our
 release key (the same signing [verify-images.md](verify-images.md) checks). The manifest records the sha256 of
 each VEX file. Verify the attestation against the release key, then check every file against

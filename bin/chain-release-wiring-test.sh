@@ -645,6 +645,9 @@ for f in ("docs/verify-release.md", "docs/verify-images.md", "docs/install.md", 
     mine = customer_forms(commands(txt))
     bad_ = [c[:90] for c in mine if not keyed(c)]
     case("%s: every verify of an image, its manifest attestation or a signed release file (but the older certificate form) is exactly --key release.rsa.pub with no certificate identity (%d commands)" % (f, len(mine)), mine and not bad_, bad_[:1] or "no verify command found")
+    if f == "docs/verify-release.md":   # REQ-CHAIN-008-AC8: the key is made by the steps of docs/verify-key.md, not fetched from build/keys/
+        case("%s links to docs/verify-key.md for the release key (REQ-CHAIN-008-AC8)" % f, re.search(r"\]\((?:\./|docs/)?verify-key\.md(#[^)]*)?\)", txt) is not None)
+        continue
     case("%s tells the reader to fetch release.rsa.pub from build/keys/ at the release tag (curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<tag>/build/keys/release.rsa.pub)" % f, FETCH.search(re.sub(r"\s+", " ", txt)) is not None)
 for f in ("docs/verify-release.md", "docs/verify-images.md", "docs/install.md", "docs/using-our-vex.md"):
     case("%s no longer says the release signatures are keyless" % f, "keyless" not in read(f).lower(), re.findall(r".*keyless.*", read(f), re.I)[:1])

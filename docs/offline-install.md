@@ -44,6 +44,8 @@ cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums
 LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
+To check that this key is the one the release names, follow [Check the release key](verify-key.md).
+
 `sha256sum -c checksums.txt` on its own fails on the archives you did not
 download. The `grep` form checks only what you have, and stops with no output
 if `checksums.txt` has no line for your archive, so a wrong `BIN`, `VERSION` or
@@ -108,6 +110,8 @@ cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums
 
 LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -   # confirms the archive(s) you're about to move
 ```
+
+To check that this key is the one the release names, follow [Check the release key](verify-key.md).
 
 A release before v0.3.0 carries a short-lived certificate instead of a key: verify it as shown in [Install FosterStack Cache](install.md). <!-- pinned: historical -->
 
