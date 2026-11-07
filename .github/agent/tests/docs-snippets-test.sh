@@ -241,13 +241,13 @@ mutant "release guide: the last cosign step without the release key" VERIFY_RELE
 mutant "cannot-run list: the first cosign command back to the keyless identity" VERIFY_CANNOT_RUN 's=s.replace("'"$KEYF"'","'"$IDENT"'",1)'
 mutant "cannot-run list: the first cosign command without the release key" VERIFY_CANNOT_RUN 's=s.replace("'"$KEYF"'","",1)'
 mutant "cannot-run list: a command the release guide does not hold" VERIFY_CANNOT_RUN 's=s.replace("<IMAGE_REF>","<IMAGE_REF_X>",1)'
-# Release key pointer mutants (REQ-CHAIN-008-AC9): each file loses its pointer, has it moved far away, has it moved into the fence, or has a curl line changed.
+# Release key pointer mutants (REQ-CHAIN-008-AC9): each file loses its pointer, has it moved far away, has it moved into the fence, or has the command of its release key step changed.
 PTR='import re; P=re.compile(r"^.*\]\((?:\./|docs/)?verify-key\.md[^)]*\).*\n",re.M)'
 for v in INSTALL_DOC OFFLINE_DOC VEX_DOC; do
   mutant "$v: the pointer to verify-key.md missing" "$v" "$PTR"'; s=P.sub("",s)'
   mutant "$v: the pointer moved to the end of the file" "$v" "$PTR"'; m=P.search(s); s=P.sub("",s)+m.group(0)'
   mutant "$v: the pointer moved into the fence as a comment" "$v" "$PTR"'; s=P.sub("",s,count=1); s=s.replace("build/keys/release.rsa.pub\"\n","build/keys/release.rsa.pub\"\n# see [the key page](verify-key.md)\n",1)'
-  mutant "$v: the release key curl line changed" "$v" 's=s.replace("build/keys/release.rsa.pub","build/keys/release.pub",1)'
+  mutant "$v: the release key command changed, its key name kept" "$v" 's=s.replace("-fsSLO","-fsSL",1)'
 done
 mutant "offline-install.md: only the second pointer missing" OFFLINE_DOC "$PTR"'; ms=list(P.finditer(s)); s=s[:ms[-1].start()]+s[ms[-1].end():]'
 echo "mutants caught: $caught/$mut"

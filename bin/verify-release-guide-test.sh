@@ -588,7 +588,8 @@ ac8mutant() {  # <name> <expected substring> <python expression over s, the fixt
   if [ "$rc" -ne 0 ] && [[ "$out" == *"$2"* ]]; then ok "kills mutant: AC8 $1"; else bad "MISSED mutant: AC8 $1 (rc=$rc)" "$out"; fi
 }
 ac8mutant "link missing"             "0 link lines"        's.replace("[verify the release key](verify-key.md)", "the key page")'
-ac8mutant "old curl bullet back"     "old bullet"          's.replace("- Check the release key", "- `release.rsa.pub`: the release public key. Fetch it once: `curl -fsSLO https://raw.githubusercontent.com/fosterstack/cache/<TAG>/build/keys/release.rsa.pub`.\n- Check the release key")'
+ac8mutant "old fetch bullet back"    "old bullet"          's.replace("- Check the release key", "- `release.rsa.pub`: the release public key. Fetch it once.\n- Check the release key")'
+ac8mutant "old key path back"        "old bullet"          's.replace("- Check the release key", "- `release.rsa.pub` is kept at build/keys/release.rsa.pub in the repository.\n- Check the release key")'
 ac8mutant "a tenth command"          "10 commands (nine)"  's.replace("```\n\n## What", "jq . provenance.bundle.json\n```\n\n## What")'
 ac8mutant "an eleventh command too"  "at most 10"          's.replace("```\n\n## What", "jq . a.json\njq . b.json\n```\n\n## What")'
 ac8mutant "over 500 words"           "at most 500"         's + "\nword" * 500'

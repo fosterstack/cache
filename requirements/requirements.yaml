@@ -4233,7 +4233,7 @@ requirements:
       - id: REQ-CHAIN-008-AC7
         given: "the customer page docs/verify-key.md"
         when: "bin/verify-key-page-test.sh judges it"
-        then: "the page holds exactly these two commands, `cosign verify-blob --key release-key-root.pub --signature release-key-manifest.sig release-key-manifest.json` and `jq -r .public_key release-key-manifest.json > release.rsa.pub`; its setup text says to fetch release-key-root.pub from the repository at the release tag (.github/policy/release-key-root.pub) and the manifest and its signature from the release assets, to compare the release's publish date with the manifest's valid_to, and to check the newest manifest for the same key_id because a revoked key is refused; the page carries no TO-VERIFY mark about where the manifest and the root key are published, and its added lines pass bin/check-customer-words.py (proved by bin/verify-key-page-test.sh, whose mutants drop each of these and must each be caught)"
+        then: "the page holds exactly these two commands, each on its own, `cosign verify-blob --key release-key-root.pub --signature release-key-manifest.sig --insecure-ignore-tlog release-key-manifest.json` and `jq -r .public_key release-key-manifest.json > release.rsa.pub`, with no && and no ; joining them; one plain line tells the reader to run the second command only if the first prints Verified OK; one plain sentence says why the first command has --insecure-ignore-tlog (the root key is kept offline and its signature has no log entry); its setup text says to fetch release-key-root.pub from the repository at the release tag (.github/policy/release-key-root.pub) and the manifest and its signature from the release assets; the page states the rule the verifier enforces, that a key is refused when the current time is at or after the manifest's valid_to (valid_to is optional) or before its valid_from, and also tells the reader to compare the release's publish date with valid_to, without giving that comparison as the rule; for revocation it says the newest manifest and its signature for the same key_id are published among the release assets, that they are verified the same way as the first, and that the reader stops if the manifest has a revoked_at that is at or before the current time; the page carries no TO-VERIFY mark about where the manifest and the root key are published, and its added lines pass bin/check-customer-words.py (proved by bin/verify-key-page-test.sh, whose mutants drop each of these and must each be caught)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CHAIN-008-AC8
@@ -4244,8 +4244,8 @@ requirements:
         status: approved
       - id: REQ-CHAIN-008-AC9
         given: "docs/install.md, docs/offline-install.md and docs/using-our-vex.md"
-        when: "the docs drift guard .github/agent/tests/docs-snippets-test.sh reads them"
-        then: "docs/install.md (at its release key step), docs/offline-install.md (at both of its release key steps) and docs/using-our-vex.md (at its release key step) each carry one plain line that points to docs/verify-key.md, and no command in those three files changes (proved by .github/agent/tests/docs-snippets-test.sh)"
+        when: "the docs drift guard docs-snippets-test.sh reads them"
+        then: "docs/install.md (at its release key step), docs/offline-install.md (at both of its release key steps) and docs/using-our-vex.md (at its release key step) each carry one plain line that points to docs/verify-key.md, and no command in those three files changes (proved by docs-snippets-test.sh)"
         verification: { method: unit, release_blocking: false }
         status: approved
 

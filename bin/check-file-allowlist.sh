@@ -349,6 +349,8 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.md$'
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
+  # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
+  '^bin/verify-key-page-test\.sh$'
   '^bin/layout-archive(-test)?\.sh$'
   # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
   # two tests and the signatory text.
