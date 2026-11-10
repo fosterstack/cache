@@ -67,6 +67,48 @@ check "foreign vendor, different product"                 ghcr.io/another-vendor
 check "foreign vendor, SAME basename (cache)"             ghcr.io/another-vendor/cache         ghcr.io/another-vendor/cache:1.0                     ""                                              1.37.0 FLAG
 check "changed component version (busybox 1.36.0)"        ghcr.io/fosterstack/cache            ghcr.io/fosterstack/cache:v0.2.1                     ""                                              1.36.0 FLAG no
 check "missing image identity (no tags, no digests)"      ghcr.io/fosterstack/cache            ""                                                   ""                                              1.37.0 FLAG
+# The Go standard library statement (GO-2026-6809, CVE-2026-111943): the same scope rules, with grype's own stdlib package form (type go-module,
+# version go1.27.2, purl pkg:golang/stdlib@1.27.2) in place of busybox. The vulnerability id grype reports is the GO id; the statement names the CVE
+# with the GO id as an alias, so a suppress here proves grype matches through the alias. 1.27.1 is inside the advisory's range but not the pinned version.
+check_stdlib() { # label name tag digest ver want
+  local label="$1" name="$2" tag="$3" digest="$4" ver="$5" want="$6"
+  local sbom="$work/sbom.json" js f ig got rc rc_ok=1 id_ok=1
+  python3 - "$base" "$sbom" "$name" "$tag" "$digest" "$ver" <<'PY'
+import json,sys
+base,out,name,tag,digest,ver=sys.argv[1:7]
+d=json.load(open(base)); m=d['source']['metadata']
+d['source']['name']=name
+m['userInput']=tag or name
+m['tags']=[tag] if tag else []
+m['repoDigests']=[digest] if digest else []
+d['artifacts']=[{'id':'stdlib-fixture','name':'stdlib','version':'go'+ver,'type':'go-module','foundBy':'go-module-binary-cataloger',
+                 'locations':[],'licenses':[],'language':'go',
+                 'cpes':[{'cpe':'cpe:2.3:a:golang:go:%s:*:*:*:*:*:*:*'%ver,'source':'fosterstack-vex-scope-fixture'}],
+                 'purl':'pkg:golang/stdlib@'+ver}]
+json.dump(d,open(out,'w'))
+PY
+  js="$("$grype" "sbom:$sbom" -o json --fail-on negligible --vex "$vex" 2>/dev/null)"; rc=$?
+  f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
+  ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
+  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; else got=FLAG; fi
+  if [ "$got" = SUPPRESS ] && [ "$rc" -ne 0 ]; then rc_ok=0; fi
+  if [ "$got" = FLAG ]     && [ "$rc" -eq 0 ]; then rc_ok=0; fi
+  if [ "$got" = SUPPRESS ]; then
+    jq -e 'any(.ignoredMatches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 || id_ok=0
+    jq -e 'any(.matches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 && id_ok=0
+  else
+    jq -e 'any(.matches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 || id_ok=0
+  fi
+  if [ "$got" = "$want" ] && [ "$rc_ok" = 1 ] && [ "$id_ok" = 1 ]; then
+    echo "ok: ${label} (${got}, exit ${rc})"; pass=$((pass+1))
+  else
+    echo "FAIL: ${label} got=${got} want=${want} (find=${f} ign=${ig} exit=${rc} rc_ok=${rc_ok} id_ok=${id_ok})"; fail=$((fail+1))
+  fi
+}
+check_stdlib "stdlib 1.27.2, fosterstack published (tag + repo-digest)" ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:v0.2.2 "ghcr.io/fosterstack/cache@sha256:${D64}" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, foreign vendor, SAME basename (cache)"     ghcr.io/another-vendor/cache ghcr.io/another-vendor/cache:1.0 ""                                    1.27.2 FLAG
+check_stdlib "stdlib 1.27.1 (vulnerable, not the pinned version)"        ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:v0.2.1 ""                                       1.27.1 FLAG
+check_stdlib "stdlib 1.27.2, missing image identity (no tags, no digests)" ghcr.io/fosterstack/cache ""                          ""                                                    1.27.2 FLAG
 echo "----"
 echo "vex-scope: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
