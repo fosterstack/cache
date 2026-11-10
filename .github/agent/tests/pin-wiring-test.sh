@@ -605,7 +605,7 @@ for jid, want_steps in SPLIT_STEPS.items():
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
-        if not why:      # the same names: say which step differs and in which keys
+        if not why:
             for _i, (_g, _w) in enumerate(zip(got, want_steps)):
                 _keys = sorted(k for k in set(_g) | set(_w) if _by_shape(_g).get(k) != _by_shape(_w).get(k))
                 if _keys:
@@ -913,16 +913,22 @@ case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 # a bump of an action that the judged jobs use (cache#790: setup-python 7.0.0 to 7.1.0) moves the digest in every judged
 # step; the digest value is judged by check-action-pins --verify-tags, pin-age and the daily audit, not by this list.
-# The action name and the full 40-hex shape of the ref stay exact.
-BUMP="for j in ('allowlist', 'allowlist-chain', 'allowlist-persona', 'allowlist-pins-auditor'): "
-BUMP+="[s.__setitem__('uses', '%s') for s in d['jobs'][j]['steps'] "
-BUMP+="if s.get('uses', '').startswith('actions/setup-python@')]"
-case_ uses-digest-bumped       ok  "${BUMP//%s/actions/setup-python@abababababababababababababababababababab}"
-case_ uses-tag-ref             bad "${BUMP//%s/actions/setup-python@v7}"
-case_ uses-short-digest        bad "${BUMP//%s/actions/setup-python@abababababababababababababababababababa}"
-case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB}"
-case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
-case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
+# The action name and the full 40-hex shape of the ref stay exact. The allowlist job's own uses refs are judged by
+# check-action-pins --verify-tags and pin-age, not here.
+# bump <job> <uses>: sets the uses of the job's setup-python step
+bump() { echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]"; }
+BUMPED=actions/setup-python@abababababababababababababababababababab
+ALL_JOBS="allowlist allowlist-chain allowlist-persona allowlist-pins-auditor"
+all_bumped=; for j in $ALL_JOBS; do all_bumped+="$(bump $j $BUMPED); "; done
+case_ uses-digest-bumped       ok  "$all_bumped"
+# each split job is refused on its own: a refusal in one job must not hide a missing one in another
+for j in allowlist-chain allowlist-persona allowlist-pins-auditor; do
+  case_ "uses-tag-ref-$j"           bad "$(bump $j actions/setup-python@v7)"
+  case_ "uses-short-digest-$j"      bad "$(bump $j actions/setup-python@abababababababababababababababababababa)"
+  case_ "uses-upper-digest-$j"      bad "$(bump $j actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB)"
+  case_ "uses-other-action-name-$j" bad "$(bump $j evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97)"
+  case_ "uses-literal-marker-$j"    bad "$(bump $j 'actions/setup-python@<commit>')"
+done
 RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
 case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
 case_msg run-changed-names-key  "$RUNX" "differs in: run"
