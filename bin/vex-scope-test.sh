@@ -35,7 +35,7 @@ PY
   js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
   f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
   ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
-  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; else got=FLAG; fi
+  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
   # cache#772 round 1 (A1/B1, ruled): no --fail-on. Its exit code depends on the severity the vulnerability database gives the advisory on the day, so a
   # correct FLAG could exit 0 (it did, Oct 28). A scan that ran exits 0 in both buckets; any other exit is an operational error and fails the case. The
   # bucket (FLAG/SUPPRESS) is decided by the counts and the exact vulnerability-id assertions below.
@@ -90,7 +90,7 @@ PY
   js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
   f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
   ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
-  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; else got=FLAG; fi
+  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
   if [ "$rc" -ne 0 ]; then rc_ok=0; fi   # no --fail-on (see check()): exit 0 is the only completed scan
   if [ "$got" = SUPPRESS ]; then
     jq -e 'any(.ignoredMatches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 || id_ok=0
@@ -104,7 +104,15 @@ PY
     echo "FAIL: ${label} got=${got} want=${want} (find=${f} ign=${ig} exit=${rc} rc_ok=${rc_ok} id_ok=${id_ok})"; fail=$((fail+1))
   fi
 }
-check_stdlib "stdlib 1.27.2, fosterstack published (tag + repo-digest)" ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:v0.2.2 "ghcr.io/fosterstack/cache@sha256:${D64}" 1.27.2 SUPPRESS
+# the statement names the nine v0.2.2 image digests (index, amd64 and arm64 of production, debug and fips): one of each kind suppresses; the same tag with any other digest does not
+V022P=ghcr.io/fosterstack/cache@sha256:f2b330cf27b3814405230cc001a771909ae5bbf3b1e223a90ee7a9ee5d0e53dd
+V022D=ghcr.io/fosterstack/cache@sha256:9e8268329d7266b64a1a4258c83b23140ff8f266b283b835ce591deb1e3efad2
+V022F=ghcr.io/fosterstack/cache@sha256:e5cfd3249fa4d751f5fe2e56a2b3e36e2e45b15d1d29534f22833bc4cf7535b6
+check_stdlib "stdlib 1.27.2, v0.2.2 production index digest"                ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "$V022P" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, v0.2.2 debug amd64 digest"                     ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-debug  "$V022D" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, v0.2.2 fips arm64 digest"                      ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-fips   "$V022F" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, the same repository and tag, another digest"   ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "ghcr.io/fosterstack/cache@sha256:${D64}" 1.27.2 FLAG
+check_stdlib "stdlib 1.27.2, v0.2.2 tag with no digest"                     ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        ""       1.27.2 FLAG
 check_stdlib "stdlib 1.27.2, foreign vendor, SAME basename (cache)"     ghcr.io/another-vendor/cache ghcr.io/another-vendor/cache:1.0 ""                                    1.27.2 FLAG
 check_stdlib "stdlib 1.27.1 (vulnerable, not the pinned version)"        ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:v0.2.1 ""                                       1.27.1 FLAG
 check_stdlib "stdlib 1.27.2, missing image identity (no tags, no digests)" ghcr.io/fosterstack/cache ""                          ""                                                    1.27.2 FLAG
