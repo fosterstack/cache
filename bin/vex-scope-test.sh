@@ -32,14 +32,14 @@ a=d['artifacts'][0]; a['version']=ver; a['purl']='pkg:generic/busybox@'+ver
 a['cpes'][0]['cpe']='cpe:2.3:a:busybox:busybox:%s:*:*:*:*:*:*:*'%ver
 json.dump(d,open(out,'w'))
 PY
-  js="$("$grype" "sbom:$sbom" -o json --fail-on negligible --vex "$vex" 2>/dev/null)"; rc=$?
+  js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
   f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
   ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
   if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; else got=FLAG; fi
-  # Exit-status cross-check: grype --fail-on exits non-zero (2) when matches
-  # remain, 0 when none — a generic count is not enough (audit R01 hardening).
-  if [ "$got" = SUPPRESS ] && [ "$rc" -ne 0 ]; then rc_ok=0; fi
-  if [ "$got" = FLAG ]     && [ "$rc" -eq 0 ]; then rc_ok=0; fi
+  # cache#772 round 1 (A1/B1, ruled): no --fail-on. Its exit code depends on the severity the vulnerability database gives the advisory on the day, so a
+  # correct FLAG could exit 0 (it did, Oct 28). A scan that ran exits 0 in both buckets; any other exit is an operational error and fails the case. The
+  # bucket (FLAG/SUPPRESS) is decided by the counts and the exact vulnerability-id assertions below.
+  if [ "$rc" -ne 0 ]; then rc_ok=0; fi
   # For the busybox@1.37.0 cases, assert the EXACT three CVEs land in the right
   # bucket, so malformed output or an unrelated finding cannot pass as a match.
   if [ "$assert_cves" = yes ]; then
@@ -87,12 +87,11 @@ d['artifacts']=[{'id':'stdlib-fixture','name':'stdlib','version':'go'+ver,'type'
                  'purl':'pkg:golang/stdlib@'+ver}]
 json.dump(d,open(out,'w'))
 PY
-  js="$("$grype" "sbom:$sbom" -o json --fail-on negligible --vex "$vex" 2>/dev/null)"; rc=$?
+  js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
   f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
   ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
   if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; else got=FLAG; fi
-  if [ "$got" = SUPPRESS ] && [ "$rc" -ne 0 ]; then rc_ok=0; fi
-  if [ "$got" = FLAG ]     && [ "$rc" -eq 0 ]; then rc_ok=0; fi
+  if [ "$rc" -ne 0 ]; then rc_ok=0; fi   # no --fail-on (see check()): exit 0 is the only completed scan
   if [ "$got" = SUPPRESS ]; then
     jq -e 'any(.ignoredMatches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 || id_ok=0
     jq -e 'any(.matches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 && id_ok=0
