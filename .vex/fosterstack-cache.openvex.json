@@ -3,8 +3,8 @@
   "@id": "https://fosterstack.com/vex/cache/openvex",
   "author": "FosterStack LLC",
   "role": "vendor",
-  "timestamp": "2026-09-20T09:00:00-04:00",
-  "version": 6,
+  "timestamp": "2026-10-28T12:00:00-04:00",
+  "version": 7,
   "statements": [
     {
       "vulnerability": {
@@ -138,6 +138,34 @@
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "Scoped to FosterStack's cache image by REGISTRY+REPOSITORY \u2014 the published repository ghcr.io/fosterstack/cache and the release-candidate repository ghcr.io/fosterstack/cache-candidates \u2014 and to busybox 1.37.0 as a subcomponent. Matching is repository-qualified, not by bare image name, so another vendor's like-named image is NOT covered; and the subcomponent is version-pinned, so a base-image bump that changes the busybox version re-trips the scanner and forces re-review. This statement makes NO claim about busybox 1.37.0 in any other product. busybox is present only in the :debug variant, included solely so an operator can exec an interactive shell (/busybox/sh); the production and -fips variants contain no busybox at all. The FosterStack server is a single Go binary that never shells out, so the vulnerable netstat code path is never executed during operation of THIS artifact \u2014 it is reachable only by an operator who has already exec'd into the container and runs netstat by hand against attacker-supplied input (vulnerable_code_not_in_execute_path). This is a claim about this FosterStack artifact's execution path, not about busybox generally; govulncheck covers the Go module only, not this base-image binary. The from-source PR/main candidate is loaded into the daemon as ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so grype derives pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache and this statement matches the rebuild by its FosterStack identity \u2014 no context-free package fallback. Assessed 2026-09-20 against the pinned grype v0.118.0 vulnerability database and re-verified on every scan run; trivy and snyk do not report it. Supersedes the pre-VEX-doctrine .grype.yaml suppression (same analysis, policy-governed location).",
       "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-111943",
+        "name": "CVE-2026-111943",
+        "description": "Go standard library crypto/x509: Certificate.Verify did not reject a denylist of known-compromised intermediate certificates (fixed in Go 1.26.10 and 1.27.3).",
+        "aliases": [
+          "GO-2026-6809"
+        ]
+      },
+      "timestamp": "2026-10-28T12:00:00-04:00",
+      "products": [
+        {
+          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
+          "identifiers": {
+            "purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@1.27.2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Scoped to the published repository ghcr.io/fosterstack/cache and to the Go standard library 1.27.2 as a subcomponent, the version the v0.2.2 binaries were built with; a build with another Go version is not covered and re-trips the scanner. The advisory's vulnerable symbol is crypto/x509 Certificate.Verify. The FosterStack v0.2.2 server imports neither crypto/tls nor crypto/x509 in its own non-test code, has no HTTP client there and serves plain HTTP (ListenAndServe), so nothing in it verifies a certificate chain; crypto/x509 is linked only through net/http (vulnerable_code_not_in_execute_path). Independently reproducible: build govulncheck v1.9.0 with Go 1.27.2, check out tag v0.2.2 (commit 0ac0586dc1b2de70318b82469fa5b35bfa090068) and run `govulncheck -mode=source ./...`: it reports 0 vulnerabilities affecting the code and lists GO-2026-6809 only as a vulnerability in an imported package that the code does not call. In binary mode on the released fscache binaries it reports the symbol Certificate.Verify as present in the binary; binary mode has no call graph and shows no call path. Assessed 2026-10-28 against the vulnerability database updated 2026-10-27. This is a claim about this artifact's execution path, not about crypto/x509 in general, and it needs re-checking whenever the call graph changes.",
+      "action_statement": "No action is required for the v0.2.2 images. The fix ships in a Go 1.27.3 build; main builds with Go 1.27.3."
     }
   ]
 }
