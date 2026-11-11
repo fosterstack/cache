@@ -306,11 +306,6 @@ if len(sg) != 1:
     bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
-# The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped,
-# or whose step is skipped, disabled through its environment, or whose failure is ignored, passes while the suites never ran). Each is exactly
-# name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
-# a suite cannot be deleted, edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR
-# cannot change for itself (the gate runs main's copy), being changed first. Adding a suite to a split job means adding its step here.
 def _by_shape(st):
     """A step with `uses: name@<full 40-hex commit>` stands for every digest of
     that action: the digest VALUE is judged by
@@ -318,13 +313,19 @@ def _by_shape(st):
     action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
     scalar can equal."""
     u = st.get("uses")
-    if isinstance(u, str) and u.count("@") == 1:
+    if isinstance(u, str):
         name, _, ref = u.partition("@")
+        # matches "<40 lower-case hex>"; refuses "v7" and the same hex in upper case
         if re.fullmatch(r"[0-9a-f]{40}", ref):
             return dict(st, uses=(name, "@40-hex"))
     return st
 
 
+# The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped,
+# or whose step is skipped, disabled through its environment, or whose failure is ignored, passes while the suites never ran). Each is exactly
+# name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
+# a suite cannot be deleted, edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR
+# cannot change for itself (the gate runs main's copy), being changed first. Adding a suite to a split job means adding its step here.
 SPLIT_STEPS = json.loads(r'''{
  "allowlist-chain": [
   {
@@ -911,27 +912,25 @@ case_ g6-env                      bad "${G6}g6['env'] = {'X': '1'}; ps.insert(ix
 case_ g6-other-script             bad "${G6}g6['run'] = 'bash bin/other-test.sh'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
-# a bump of an action that the judged jobs use (cache#790: setup-python 7.0.0 to 7.1.0) moves the digest in every judged
-# step; the digest value is judged by check-action-pins --verify-tags, pin-age and the daily audit, not by this list.
-# The action name and the full 40-hex shape of the ref stay exact. The allowlist job's own uses refs are judged by
-# check-action-pins --verify-tags and pin-age, not here.
 # bump <job> <uses>: sets the uses of the job's setup-python step
-bump() { echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]"; }
+bump() {
+  echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]"
+}
 BUMPED=actions/setup-python@abababababababababababababababababababab
 ALL_JOBS="allowlist allowlist-chain allowlist-persona allowlist-pins-auditor"
 all_bumped=; for j in $ALL_JOBS; do all_bumped+="$(bump $j $BUMPED); "; done
 case_ uses-digest-bumped       ok  "$all_bumped"
 # each split job is refused on its own: a refusal in one job must not hide a missing one in another
 for j in allowlist-chain allowlist-persona allowlist-pins-auditor; do
-  case_ "uses-tag-ref-$j"           bad "$(bump $j actions/setup-python@v7)"
-  case_ "uses-short-digest-$j"      bad "$(bump $j actions/setup-python@abababababababababababababababababababa)"
-  case_ "uses-upper-digest-$j"      bad "$(bump $j actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB)"
-  case_ "uses-other-action-name-$j" bad "$(bump $j evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97)"
-  case_ "uses-literal-marker-$j"    bad "$(bump $j 'actions/setup-python@<commit>')"
+  want="the $j step 3 (set up Python) differs in: uses"
+  case_msg "uses-tag-ref-$j" "$(bump $j actions/setup-python@v7)" "$want"
+  case_msg "uses-short-digest-$j" "$(bump $j actions/setup-python@abababababababababababababababababababa)" "$want"
+  case_msg "uses-upper-digest-$j" "$(bump $j actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB)" "$want"
+  case_msg "uses-other-action-name-$j" "$(bump $j evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97)" "$want"
+  case_msg "uses-literal-marker-$j" "$(bump $j 'actions/setup-python@<commit>')" "$want"
 done
 RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
-case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
-case_msg run-changed-names-key  "$RUNX" "differs in: run"
+case_msg run-changed-names-key "$RUNX" "the allowlist-persona step 8 (persona UAT — driver suite) differs in: run"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
