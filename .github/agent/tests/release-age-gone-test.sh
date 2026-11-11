@@ -22,12 +22,13 @@ if head -5 docs/quality/traceability.md | grep -q 'GENERATED'; then ok "docs/qua
 
 self=.github/agent/tests/release-age-gone-test.sh
 git ls-files -z | grep -zvE "^(vendor/|$self\$|requirements/requirements\.yaml\$|docs/quality/traceability\.md\$)" >"$work/files"
+# This test's own file name contains 'release-age'; that literal path is stripped from each line before matching (every other phrase check is unchanged).
 phrases='7-day|7 days|seven days|cooldown|release age|release-age|age hold|held pull request|rerun-held|--rerun-held'
 : >"$work/hits"
-while IFS= read -r -d '' f; do [ -f "$f" ] && { grep -HniE -- "$phrases" "$f" >>"$work/hits" || true; }; done <"$work/files"
+while IFS= read -r -d '' f; do [ -f "$f" ] && { grep -IHn '' "$f" | sed 's/release-age-gone-test\.sh//g' | grep -iE -- "$phrases" >>"$work/hits" || true; }; done <"$work/files"
 if [ ! -s "$work/hits" ]; then ok "no tracked file names the release-age wait"; else bad "no tracked file names the release-age wait ($(wc -l <"$work/hits") lines, first: $(head -3 "$work/hits" | cut -c1-140 | tr '\n' '|'))"; fi
 : >"$work/hits"
-while IFS= read -r -d '' f; do [ -f "$f" ] && { grep -HnE 'pin-age-check|tag_observer' "$f" >>"$work/hits" || true; }; done <"$work/files"
+while IFS= read -r -d '' f; do [ -f "$f" ] && { grep -IHnE 'pin-age-check|tag_observer' "$f" >>"$work/hits" || true; }; done <"$work/files"
 if [ ! -s "$work/hits" ]; then ok "nothing refers to pin-age-check or tag_observer"; else bad "nothing refers to pin-age-check or tag_observer ($(wc -l <"$work/hits") lines)"; fi
 
 # the two programs are gone
