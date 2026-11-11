@@ -306,6 +306,21 @@ if len(sg) != 1:
     bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
+
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by check-action-pins --verify-tags, pin-age and the daily audit (a
+    Dependabot bump moves it). The action name and the exact shape of the ref (40 lower-case hex) stay compared; the
+    stand-in is a tuple, which no YAML scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str):
+        name, _, ref = u.partition("@")
+        # matches "0123456789abcdef0123456789abcdef01234567"; refuses "v7"
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            return dict(st, uses=(name, "@40-hex"))
+    return st
+
+
 # The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped,
 # or whose step is skipped, disabled through its environment, or whose failure is ignored, passes while the suites never ran). Each is exactly
 # name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
@@ -587,11 +602,21 @@ for jid, want_steps in SPLIT_STEPS.items():
         _gi = [k for k, x in enumerate(want_steps) if x.get("run") == "bash bin/patch-decide-test.sh"]
         if len(_gi) == 1 and not any(x.get("run") == "bash bin/audit-record-test.sh" for x in want_steps):
             accepted.append(want_steps[:_gi[0] + 1] + [{"name": GATE6_NAME, "run": "bash bin/audit-record-test.sh"}] + want_steps[_gi[0] + 1:])
-    if got not in accepted:
+    if [_by_shape(st) for st in got] not in [[_by_shape(st) for st in a] for a in accepted]:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
-        bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why) or 'a step differs in its command, env, uses, with or order'})")
+        if not why:
+            for _i, (_g, _w) in enumerate(zip(got, want_steps)):
+                _keys = sorted(k for k in set(_g) | set(_w) if _by_shape(_g).get(k) != _by_shape(_w).get(k))
+                if _keys:
+                    _nm = _g.get("name") or _g.get("uses")
+                    bad.append(f"the {jid} step {_i + 1} ({_nm}) differs in: {', '.join(_keys)}")
+                    break
+            else:
+                bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
+        else:
+            bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
 # the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
 # and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
@@ -697,6 +722,22 @@ PY
   if out=$(judge "$f"); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
+}
+
+# case_msg <name> <python edit> <text>: the judge refuses the copy and its message holds the text
+case_msg() {
+  local f="$work/$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  python3 - "$f" "$2" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ] && grep -qF -- "$3" <<<"$out"; then pass=$((pass+1)); echo "PASS $1 → bad, names: $3"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want bad naming: $3 ($out)"; fi
 }
 
 steps='d["jobs"]["allowlist"]["steps"]'
@@ -871,6 +912,25 @@ case_ g6-env                      bad "${G6}g6['env'] = {'X': '1'}; ps.insert(ix
 case_ g6-other-script             bad "${G6}g6['run'] = 'bash bin/other-test.sh'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
+bump() {
+  echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps']" \
+       "if s.get('uses', '').startswith('actions/setup-python@')]"
+}
+BUMPED=actions/setup-python@abababababababababababababababababababab
+ALL_JOBS="allowlist allowlist-chain allowlist-persona allowlist-pins-auditor"
+all_bumped=; for j in $ALL_JOBS; do all_bumped+="$(bump $j $BUMPED); "; done
+case_ uses-digest-bumped       ok  "$all_bumped"
+# each split job is refused on its own: a refusal in one job must not hide a missing one in another
+for j in allowlist-chain allowlist-persona allowlist-pins-auditor; do
+  want="the $j step 3 (set up Python) differs in: uses"
+  case_msg "uses-tag-ref-$j" "$(bump $j actions/setup-python@v7)" "$want"
+  case_msg "uses-short-digest-$j" "$(bump $j actions/setup-python@abababababababababababababababababababa)" "$want"
+  case_msg "uses-upper-digest-$j" "$(bump $j actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB)" "$want"
+  case_msg "uses-other-action-name-$j" "$(bump $j evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97)" "$want"
+  case_msg "uses-literal-marker-$j" "$(bump $j 'actions/setup-python@<commit>')" "$want"
+done
+RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
+case_msg run-changed-names-key "$RUNX" "the allowlist-persona step 8 (persona UAT — driver suite) differs in: run"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
