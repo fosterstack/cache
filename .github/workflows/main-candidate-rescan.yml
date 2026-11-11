@@ -77,7 +77,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      # Condition (b) of the approval: the scratch package holds the newest 14 days of versions, pruned in the run that adds to it. It runs
+      # Condition (b) of the approval: the scratch package contains the newest 14 days of versions, pruned in the run that adds to it. It runs
       # FIRST, so nothing this run pushes can lose its version to it, and it is strict: a listing that fails (other than "no such package
       # yet") or a delete that fails fails the job, never a green run that kept old versions.
       - name: prune the scratch package to the newest 14 days

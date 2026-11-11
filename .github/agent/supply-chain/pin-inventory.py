@@ -9,7 +9,7 @@ One item is "<kind>:<name>@<version>":
   image    name@sha256:digest           container:/services: images and docker:// actions (name:tag@sha256:digest is the SAME item: Docker ignores the tag)
 NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go modules and the Go toolchain.
 
-Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
+Used as a module by pin-scan.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
 import copy
 import fnmatch
@@ -206,7 +206,7 @@ PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driv
 
 def _persona_tool_items(path, text):
     """One image item per entry of the persona UAT tools file ({"<tool>": "<image>@sha256:<digest>", ...}). A file that is not JSON, not an object, or holds a value that is not a string is
-    an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept as a tag-only item, so the age check fails it."""
+    an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept as a tag-only item, so the pin scan fails it."""
     def pairs(kv):
         d = {}
         for k, v in kv:
@@ -237,7 +237,7 @@ def _image_item(ref, label=""):
     m = DIGEST.search(ref)
     if m:
         return Item("image", _strip_tag(ref[:m.start()].rstrip("@")), m.group(0), label)
-    return Item("image", ref, "", label)  # tag only: kept so the age check can fail it
+    return Item("image", ref, "", label)  # tag only: kept so the pin scan can fail it
 
 
 MAX_LINE = 4000

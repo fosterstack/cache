@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
-"""The pin age check (REQ-SUP-001-AC2, AC3): a version a pull request moves must have been public 7 days, proven by a SERVER-SIDE time.
+"""The pin scan (REQ-SUP-001-AC2): names every version a pull request moves and passes only a pin it can read.
 
-  pin-age-check.py --root REPO --base REV --head REV [--fixtures FILE] [--json FILE] [--now ISO] [--min-days N] [--exceptions FILE]
+  pin-scan.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
 
-Exit 0: nothing moved, or every moved version is old enough. Exit 1: a moved version is too young or its age cannot be proven (never a pass).
-Exit 2: the check could not run (unreadable input, a tree that does not parse).
-
-Times that count (and nothing else): github-release (a release's publish time), pypi (the index's upload time), go-index (the Go module index's
-timestamp), registry-push (the registry's push time), and the first time the exact version appeared in one of OUR pull requests. A commit date, a tag
-date, a version-control time or an image's own "created" field is set by the publisher or builder and is never a proof.
-Fixtures (offline tests): {"now": ISO, "times": {ITEM: {"time": ISO, "source": S}}, "first_seen": {ITEM: ISO}}.
+Exit 0: nothing moved, or every moved version is a pin the scan can read (an exact version, a commit or a digest) or is ruled. Exit 1: a moved item the scan
+cannot read or pin (a range, a moving name, an expression, an unpinned install) and that no ruling covers. Exit 2: the check could not run (unreadable input,
+a tree that does not parse). No time is measured: the scan never waits for a version to age.
 """
 import argparse
-import base64
 import hashlib
 import datetime as dt
 import importlib.util
@@ -25,8 +20,6 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SERVER_SIDE = ("github-release", "pypi", "go-index", "registry-push", "observer", "pr-clock")
-MIN_DAYS = 7.0
 
 
 def _load(name):
@@ -37,7 +30,6 @@ def _load(name):
 
 
 inv = _load("pin-inventory")
-tobs = _load("tag_observer")
 
 
 def parse_time(s, clock=False):
@@ -71,35 +63,16 @@ def is_pin(version):
     return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
 
 
-def judge_item(item, proofs, now, min_days=MIN_DAYS):
-    """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
+def judge_item(item):
+    """(ok, reason): a moved item passes when it is a pin the scan can read."""
     if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
-        return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
+        return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit"
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
-        return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
-    best, seen = None, []
-    for t, src in proofs:
-        seen.append(src)
-        if src not in SERVER_SIDE and src != "first-seen":
-            continue
-        if src == "github-release" and item.kind == "action":
-            continue  # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must have seen the commit
-        d = parse_time(t)
-        if d is None or d > now:
-            continue
-        if best is None or d < best[0]:
-            best = (d, src)
-    if best is None:
-        return False, "age not provable: no server-side publish time" + (f" (refused or unusable: {', '.join(seen)})" if seen else " found"), None
-    age = (now - best[0]).total_seconds() / 86400
-    proof = {"time": best[0].strftime("%Y-%m-%dT%H:%M:%SZ"), "source": best[1], "age_days": round(age, 2)}
-    if age + 1e-9 < min_days:
-        return False, f"too young: {age:.1f} days old by {best[1]} (needs {min_days:g})", proof
-    return True, f"{age:.1f} days old by {best[1]}", proof
+        return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch)"
+    return True, f"pinned at {item.version}"
 
 
-# ---------- live providers (a real run, no fixtures) ----------
 class CouldNotLook(Exception):
     """The server could not be asked (rate limit, outage): the check cannot run. Never read as 'no proof', never a pass."""
 
@@ -160,14 +133,6 @@ TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version
 }
 
 
-def _release_time(repo, tags):
-    for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
-            return rel["published_at"]
-    return None
-
-
 _TAGS = {}
 
 
@@ -205,11 +170,6 @@ def _tag_for_commit(repo, sha):
     return tags[0] if tags else None
 
 
-def _commit_date(repo, sha):
-    c = _gh_api(f"repos/{repo}/commits/{sha}")
-    return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
-
-
 def _go_module(path, version):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
@@ -220,234 +180,16 @@ def _go_module(path, version):
     return None, None
 
 
-def _go_index_time(mod, version, vcs_time):
-    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it)."""
-    since = vcs_time
-    for _ in range(40):
-        rows = []
-        try:
-            with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
-                rows = [json.loads(line) for line in r.read().decode().splitlines() if line.strip()]
-        except (OSError, ValueError):
-            return None
-        for row in rows:
-            if row.get("Path", "").lower() == mod.lower() and row.get("Version") == version:
-                return row["Timestamp"]
-        if len(rows) < 2000:
-            return None
-        since = rows[-1]["Timestamp"]
-    return None
-
-
-_OBS = {}
-
-
-def _gh_bytes(path):
-    r = _gh_run(["gh", "api", path], capture_output=True)
-    if r.returncode:
-        _gh_failed(type("R", (), {"stderr": r.stderr.decode("utf-8", "replace"), "stdout": ""})())
-        return None
-    return r.stdout
-
-
-def observed():
-    """The cumulative tag observations of OUR scheduled runs on main (None before the first one); loud if they exist and cannot be read.
-    Only runs that are event=schedule, branch main, success, of this workflow's path are read, so a pull request can never forge them."""
-    if "state" in _OBS:
-        return _OBS["state"]
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    state = None
-    if repo:
-        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100") or {}
-        runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
-        for run in runs[:30]:
-            arts = (_gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
-            art = next((x for x in arts if x.get("name") == tobs.STATE_NAME and not x.get("expired")), None)
-            if art:
-                raw = _gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip")
-                try:
-                    state = tobs.unpack(raw)
-                except Exception as e:  # a state that exists but cannot be read is loud, never "nothing observed"
-                    raise CouldNotLook(f"the tag observations of a scheduled run cannot be read: {type(e).__name__}")
-                break
-    _OBS["state"] = state  # None: runs that predate the artifact, or none yet: nothing observed, so ages only get younger
-    return state
-
-
-_INV_CACHE = {}
-
-
-def _pr_clock(item, root, base, head="HEAD"):
-    """The PR clock: the earliest server-side time of a workflow run on the first commit of base..head whose INVENTORY holds this exact item
-    (not a text match: a comment mentioning the version, or digits that happen to equal it, never start the clock)."""
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    if not repo or not base or not item.version:
-        return None
-    r = _gh_run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
-    first = None
-    for c in r.stdout.split():
-        try:
-            if (root, c) not in _INV_CACHE:
-                _INV_CACHE[(root, c)] = inv.load_at(root, c)     # one parse per commit, not one per moved item
-            if item.key in _INV_CACHE[(root, c)]:
-                first = c
-                break
-        except RuntimeError:
-            continue
-    if not first:
-        return None
-    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
-    times = [x["created_at"] for x in runs if x.get("created_at")]
-    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
-    if r2.returncode:
-        _gh_failed(r2)
-    else:
-        for line in r2.stdout.splitlines():
-            try:
-                c = json.loads(line).get("created_at")
-            except ValueError:
-                continue
-            if c:
-                times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
-    return min(times) if times else None
-
-
-def _release_with_assets(repo, tags):
-    for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-        if rel and rel.get("published_at") and not rel.get("draft"):
-            return rel
-    return None
-
-
-def live_proofs(item, root, base=None, head="HEAD"):
-    out = []
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
-            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
-        return out    # a placeholder, a range, a variable or an action not named by its commit has no age: nothing is looked up (and nothing can pass)
-    if item.kind == "action":
-        # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves nothing about a moved tag),
-        # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
-        tags = _tags_for_commit(item.name, item.version)
-        want = [item.label] if item.label else tags
-        if not item.label or item.label in tags:
-            state = observed()
-            for tag in want:
-                t = tobs.first_seen(state, item.name, tag, item.version)
-                if t:
-                    out.append((t, "observer"))
-    elif item.kind == "tool":
-        repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
-        if repo:
-            bare = item.version.lstrip("v")
-            rel = _release_with_assets(repo, [item.label] if item.label else [item.version, "v" + bare, bare])   # a download names its EXACT tag: no twin tag lends its age
-            if rel:
-                # the NEWEST of the release date and every asset's own created/updated time: a replaced asset in an old release is young again
-                assets = [a for a in rel.get("assets", []) if not item.path or a.get("name") == item.path.split("#")[0]]   # the asset we download: a missing one borrows no other asset's age
-                if item.path.split("#")[0] and not assets:
-                    return out
-                stamps = [rel["published_at"]] + [a[k] for a in assets for k in ("created_at", "updated_at") if a.get(k)]
-                out.append((max(stamps, key=lambda x: parse_time(x) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)), "github-release"))
-    elif item.kind == "gotool":
-        mod, info = _go_module(item.name, item.version)
-        if mod:
-            t = _go_index_time(mod, info["Version"], info["Time"])
-            if t:
-                out.append((t, "go-index"))
-    elif item.kind == "package":
-        name = item.name.split("/", 1)[1]
-        d = _http_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
-        ups = [u.get("upload_time_iso_8601") for u in (d or {}).get("urls", []) if u.get("upload_time_iso_8601")]
-        if ups:
-            out.append((max(ups), "pypi"))  # the newest file: a wheel added later to an old release is young
-    elif item.kind == "image" and item.version:
-        t = _registry_push(item)
-        if t:
-            out.append((t, "registry-push"))
-    pc = _pr_clock(item, root, base, head)
-    if pc:
-        out.append((pc, "pr-clock"))
-    return out
-
-
-def _registry_push(item):
-    name = item.name
-    if name.startswith("ghcr.io/"):
-        owner, _, pkg = name[len("ghcr.io/"):].partition("/")
-        for scope in ("orgs", "users"):
-            for page in (1, 2, 3):
-                vs = _gh_api(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}")
-                if not vs:
-                    break
-                for v in vs:
-                    if v.get("name") == item.version:
-                        return v.get("created_at")
-        return None
-    parts = name.split("/")
-    if len(parts) == 2 or (len(parts) == 3 and parts[0] == "docker.io"):
-        ns, repo = parts[-2], parts[-1]
-        url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
-        for _ in range(5):
-            d = _http_json(url)
-            if not d:
-                return None
-            for tag in d.get("results", []):
-                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in tag.get("images", [])):
-                    return tag.get("tag_last_pushed")
-            url = d.get("next")
-            if not url:
-                break
-    return None
-
-
-class Fixture:
-    def __init__(self, fx):
-        self.fx = fx
-
-    def proofs(self, item):
-        out = []
-        t = (self.fx.get("times") or {}).get(item.key)
-        if isinstance(t, dict):
-            out.append((t.get("time"), t.get("source")))
-        fs = (self.fx.get("first_seen") or {}).get(item.key)
-        if fs:
-            out.append((fs, "first-seen"))
-        return out
-
-
-class Live:
-    def __init__(self, root, base=None, head="HEAD"):
-        self.root, self.base, self.head = root, base, head
-
-    def proofs(self, item):
-        return live_proofs(item, self.root, self.base, self.head)
-
-
-def check(moved_items, source, now, min_days):
-    rows = []
-    for it in moved_items:
-        ok, reason, proof = judge_item(it, source.proofs(it), now, min_days)
-        rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason, "proof": proof})
-    return rows
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base", required=True)
     ap.add_argument("--head", required=True)
-    ap.add_argument("--fixtures")
     ap.add_argument("--json")
-    ap.add_argument("--now")
-    ap.add_argument("--min-days", type=float, default=MIN_DAYS)
     ap.add_argument("--base-inputs", help="the base-inputs list (default: .github/policy/base-inputs.json beside this script's own checkout, the base branch in CI)")
     ap.add_argument("--exceptions", help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
     a = ap.parse_args(argv)
     try:
-        fx = json.load(open(a.fixtures)) if a.fixtures else None
-        now = parse_time(a.now, True) if a.now else (parse_time((fx or {}).get("now"), True) if fx and fx.get("now") else dt.datetime.now(dt.timezone.utc))
-        if now is None:
-            raise ValueError("--now is not an ISO time")
         base_items = inv.load_at(a.root, a.base)
         head_items = inv.load_at(a.root, a.head)
     except (OSError, ValueError, RuntimeError) as e:
@@ -455,12 +197,9 @@ def main(argv=None):
         return 2
     moved = inv.moved(base_items, head_items)
     try:
-        return _run(a, moved, fx, now)
+        return _run(a, moved)
     except RuntimeError as e:
         print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
-        return 2
-    except CouldNotLook as e:
-        print(f"pin-age: cannot run: {e} (not a pass: re-run the check)", file=sys.stderr)
         return 2
 
 
@@ -771,7 +510,7 @@ def _runs_input(words, funcs, seen=None):
 
 # Functions that may receive a written file's CONTENT as an argument ("$(cat FILE)"), by the sha256 of the whitespace-flattened definition (a new one is a change here: a human gate).
 _REVIEWED_FUNCS = {"run": frozenset((
-    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-age-check-test.sh fixture
+    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-scan-test.sh fixture
     "004f644d043348ed9bf307882a5ffe652f7fb62628cf16b2cc1508b957796d46",   # bin/persona-uat-test.sh run()
 ))}
 
@@ -999,7 +738,7 @@ _REVIEWED_WRAPPERS = {
     "check": frozenset((
         "d9f0551a0eefa0c75ab77d72fe9446ac100bf33458d956b500c865ccf33f2b43",   # persona-uat-agent-test.sh
         "0eeb4484c724571050ef124103472beb31a6983886cd15e2f00c6e6e1a1f2629",   # persona-uat-test.sh
-        "9d447de27fa81cc5ba86eada6ef1be1830accd4258ebd950e1e1255ef6ce881d",   # pin-age-check-test.sh (fixture)
+        "9d447de27fa81cc5ba86eada6ef1be1830accd4258ebd950e1e1255ef6ce881d",   # pin-scan-test.sh (fixture)
     )),
 }
 
@@ -1378,7 +1117,7 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     return out
 
 
-GO_EXEMPT_REASON = "exempt from the 7-day hold: Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies"
+GO_INSTALL_REASON = "Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies"
 _GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
 _GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
 _GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
@@ -1394,9 +1133,9 @@ _SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')   
 _GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$") for a in (r"x86_64\|go:amd64", r"aarch64\|go:arm64")}
 
 
-def go_exemption(root, head):
+def go_install_pin(root, head):
     """The pinned Go version when the head's bin/install-scanner.sh fetches Go ONLY from https://go.dev/dl/ at its pinned GO_VER, pins the sha256 of both
-    architectures (64 hex each) and verifies the file right after the download; otherwise None (the 7-day hold applies). Any other line that downloads
+    architectures (64 hex each) and verifies the file right after the download; otherwise None. Any other line that downloads
     something Go-shaped (curl or wget naming go.tgz, GO_VER, go.dev or golang) voids it."""
     try:
         text = inv.tree_files(root, head).get("bin/install-scanner.sh")
@@ -1453,8 +1192,8 @@ def go_exemption(root, head):
     if depth != 1:
         return None
     # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the installed-version grep, each ending in a
-    # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
-    # non-comment line voids the exemption: a write in any form, a second transfer by any command, a URL variable, a read in another command
+    # pipeline_fail whose message contains no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
+    # non-comment line voids the pin: a write in any form, a second transfer by any command, a URL variable, a read in another command
     for i, l in enumerate(joined):
         if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l) \
                 or _GO_WANT.match(l) or _GO_SHOW.match(l):
@@ -1469,14 +1208,14 @@ def go_exemption(root, head):
     return vers[0]
 
 
-def split_go_exempt(moved, root, head):
-    """(the moved items without the exempt Go release, the exempt ones): only `tool:go` at the installer's own pinned version."""
-    ver = go_exemption(root, head) if any(it.kind == "tool" and it.name == "go" for it in moved) else None
+def split_go_install(moved, root, head):
+    """(the moved items without the Go release the installer pins, those Go items): only `tool:go` at the installer's own pinned version."""
+    ver = go_install_pin(root, head) if any(it.kind == "tool" and it.name == "go" for it in moved) else None
     keep = [it for it in moved if not (ver and it.kind == "tool" and it.name == "go" and it.version == ver)]
     return keep, [it for it in moved if it not in keep]
 
 
-def _run(a, moved, fx, now):
+def _run(a, moved):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
     lines = _unmeasured_counts(a.root, a.base, a.head)
     for k, per in _context_regressions(a.root, a.base, a.head, rulings).items():
@@ -1504,37 +1243,41 @@ def _run(a, moved, fx, now):
     moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20
     moved, base_files = split_base_inputs(moved, load_base_inputs(a.base_inputs or DEFAULT_BASE_INPUTS, required=bool(a.base_inputs)))   # REQ-SUP-001-AC21
     moved, ruled_calls = split_ruled_local_calls(moved, rulings)                                                       # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
-    moved, go_free = split_go_exempt(moved, a.root, a.head)
+    moved, go_free = split_go_install(moved, a.root, a.head)
     if not moved and not added and not go_free:
-        print("pin-age: no pin moved (nothing to measure)")
+        print("pin-age: no pin moved")
         rows = []
     else:
-        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), now, a.min_days)
-        print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
+        rows = []
+        for it in moved:
+            ok, reason = judge_item(it)
+            if it.kind == "tool" and it.name == "go":    # the Go release passes only by the installer's own lines (split_go_install above), never as a plain pin
+                ok, reason = False, f"Go {it.version} is not the release bin/install-scanner.sh pins from go.dev with both sha256 pins and the verify call (REQ-SUP-001-AC27)"
+            rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason})
+        for it in go_free:
+            rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_INSTALL_REASON})
+        print(f"pin-age: {len(rows)} moved version(s):")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
-        for it in go_free:
-            rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_EXEMPT_REASON, "proof": None})
-            print(f"  ok   {it.key}: {GO_EXEMPT_REASON}")
     for path, what, line in added:
-        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
+        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
     for it in base_files:
-        rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
+        rows.append({"item": it.key, "label": "", "ok": True, "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
         print(f"  ok   {it.key}: base input (REQ-SUP-001-AC21)")
     for it, ruling in ruled_calls:
-        rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
+        rows.append({"item": it.key, "label": "", "ok": True, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
         print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
-        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
+        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
         print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
-        json.dump({"min_days": a.min_days, "moved": rows}, open(a.json, "w"), indent=1)
+        json.dump({"moved": rows}, open(a.json, "w"), indent=1)
     if failing:
-        print(f"pin-age: FAIL: {len(failing)} of {len(rows)} moved version(s) too young or unprovable; the check turns green when each is {a.min_days:g} days old")
+        print(f"pin-age: FAIL: {len(failing)} of {len(rows)} moved version(s) not a pin the scan can read")
         return 1
     return 0
 

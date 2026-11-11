@@ -1006,7 +1006,7 @@ def unpublished(entries, published_text):
     again — the clear-and-changelog PR may not have merged when the next patch is decided. Published means a whole line
     of the published text is the line notes() prints for the entry, trailing whitespace ignored on both sides; a line
     that only contains it is not (REQ-REL-009-AC14, advisor step 5; Codex #300 r7, A medium / B F2). No published text
-    ever held another form of an entry (no CHANGELOG.md on main, no v* tag message holds 'redacted')."""
+    ever held another form of an entry (no CHANGELOG.md on main, no v* tag message contains 'redacted')."""
     pub = _published_lines(published_text)
     return [e for e in entries if _entry_line(e).rstrip() not in pub]
 
