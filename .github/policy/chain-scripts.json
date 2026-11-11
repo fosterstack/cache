@@ -73,7 +73,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "15c886f0ea9d4dc9e00465ab710448c075e4f43b251a75d8d3a45c0809d07b66",
+      "sha256": "fa99405a70d2b1ee73abb8c5465762d32e71f98b0a126b3af38db5ee2e8bdacc",
       "tools": [
         "at",
         "aws",
