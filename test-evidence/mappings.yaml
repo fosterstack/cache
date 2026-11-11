@@ -856,7 +856,6 @@ mappings:
   - ac: REQ-SUP-001-AC31
     evidence:
       - { type: shell-test, ref: "bin/verify-go-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC32
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
