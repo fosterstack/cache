@@ -306,16 +306,16 @@ if len(sg) != 1:
     bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
+
 def _by_shape(st):
     """A step with `uses: name@<full 40-hex commit>` stands for every digest of
-    that action: the digest VALUE is judged by
-    check-action-pins --verify-tags, pin-age and the daily audit (a Dependabot bump moves it), not by these lists. The
-    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
-    scalar can equal."""
+    that action: the digest VALUE is judged by check-action-pins --verify-tags, pin-age and the daily audit (a
+    Dependabot bump moves it). The action name and the exact shape of the ref (40 lower-case hex) stay compared; the
+    stand-in is a tuple, which no YAML scalar can equal."""
     u = st.get("uses")
     if isinstance(u, str):
         name, _, ref = u.partition("@")
-        # matches "<40 lower-case hex>"; refuses "v7" and the same hex in upper case
+        # matches "0123456789abcdef0123456789abcdef01234567"; refuses "v7"
         if re.fullmatch(r"[0-9a-f]{40}", ref):
             return dict(st, uses=(name, "@40-hex"))
     return st
@@ -912,9 +912,9 @@ case_ g6-env                      bad "${G6}g6['env'] = {'X': '1'}; ps.insert(ix
 case_ g6-other-script             bad "${G6}g6['run'] = 'bash bin/other-test.sh'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
-# bump <job> <uses>: sets the uses of the job's setup-python step
 bump() {
-  echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps'] if s.get('uses', '').startswith('actions/setup-python@')]"
+  echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps']" \
+       "if s.get('uses', '').startswith('actions/setup-python@')]"
 }
 BUMPED=actions/setup-python@abababababababababababababababababababab
 ALL_JOBS="allowlist allowlist-chain allowlist-persona allowlist-pins-auditor"
