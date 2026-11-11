@@ -30,11 +30,23 @@ for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"/usr/bin/openssl": "/nonexist
         out = re.sub(r"(?<![\w./-])%s(?![\w.-])" % re.escape(path), lambda m, n=name, o=over, pth=path: o.get(pth, work + "/tools/" + n), out)
     dst = "%s/%s/bin" % (work, d)
     open(dst + "/refresh-inputs.sh", "w").write(out); os.chmod(dst + "/refresh-inputs.sh", 0o755)
-    for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh", "archive-verify.py"):
+    for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh", "archive-verify.py", "verify-go.sh"):
         shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
 P
 RF="$rfd/rfcopy/bin/refresh-inputs.sh"; RFN="$rfd/rfcopy-nossl/bin/refresh-inputs.sh"
 export FSCACHE_GEN_PIN=$(shasum -a 256 "$fx/melange.yaml.tmpl" | cut -d" " -f1)   # the fixture template's pin: the job asks the generator what the recipes become
+# REQ-SUP-001-AC34: bin/verify-go.sh checks every downloaded Go archive; offline, a throwaway key stands for Google's key (VERIFY_GO_KEYFILE, VERIFY_GO_FPR)
+vgh=$(mktemp -d -t rfvg.XXXXXX); chmod 700 "$vgh"
+vg_gen() { GNUPGHOME=$vgh gpg --batch --passphrase '' --quick-gen-key "$1 <$1@example.invalid>" ed25519 sign never >/dev/null 2>&1; }
+vg_fpr() { GNUPGHOME=$vgh gpg --with-colons --list-keys "$1@example.invalid" 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}'; }
+vg_gen vggood; vg_gen vgother
+VG_GOOD=$(vg_fpr vggood); VG_OTHER=$(vg_fpr vgother)
+GNUPGHOME=$vgh gpg --armor --export "$VG_GOOD" "$VG_OTHER" >"$rfd/vg-keys.asc"
+export VERIFY_GO_KEYFILE="$rfd/vg-keys.asc" VERIFY_GO_FPR="$VG_GOOD"
+vg_sign() {   # <fpr> <archive>: the detached armored signature <archive>.asc
+  GNUPGHOME=$vgh gpg --batch --yes --passphrase '' --local-user "$1" --armor --detach-sign --output "$2.asc" "$2" >/dev/null 2>&1; }
+vg_signdir() {   # <fpr> <dir>: sign every Go tarball in the dir
+  local f_; for f_ in "$2"/*.tar.gz; do vg_sign "$1" "$f_"; done; }
 # ---- begin verbatim sections ----
 # ===== rules 44-49: the refresh job ======================================================================================
 t "rule 45" "dependabot.yml has no apk, apko, melange or lock-file entry (this refresh job is their only updater)" bash -c "test -x '$RF' && python3 '$work/chk.py' dependabot '$root/.github/dependabot.yml'"
@@ -795,13 +807,13 @@ P
 done
 mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c "grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'"
-t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL, \"https://packages.wolfi.dev/os/\$p\" or \"https://go.dev/dl/\$f\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
+t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL, \"https://packages.wolfi.dev/os/\$p\" , \"https://go.dev/dl/\$f\" or \"https://go.dev/dl/\$f.asc\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
 import re, sys
 s = open(sys.argv[1]).read()
 lines = [l for l in s.split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]   # the fetch lines are the ones carrying the fixed flag cluster
 shell = [l for l in lines if l.lstrip().startswith("/usr/bin/")]
-assert len(shell) == len(lines) and len(lines) == 7, "every fetch line is a shell line (4 key fetches, packages, the Go toolchain, index): %d of %d" % (len(shell), len(lines))
-g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|"https://go\.dev/dl/\$f"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
+assert len(shell) == len(lines) and len(lines) == 8, "every fetch line is a shell line (4 key fetches, packages, the Go toolchain and its .asc, index): %d of %d" % (len(shell), len(lines))
+g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|"https://go\.dev/dl/\$f"|"https://go\.dev/dl/\$f\.asc"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
 bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
 assert '"-fsSL"' not in s   # the embedded Python passes no fetch flags: it runs no download
@@ -1199,7 +1211,7 @@ t "rule 27" "AC17 probe A (control): the same run with the archive undamaged wai
 # ---- REQ-REFRESH-001-AC32: the first fill (advisor reading Oct 16): an archive that holds only the pinned key, and no build/archive.json on main --------------------------
 # The committed locks may name versions the live resolution has moved past; with an empty archive they can never already be there, so the job fetches those Wolfi still
 # serves and verifies each (a locked one against its lock checksums; a melange.lock one, which has no checksums, against the signed live index) before archiving it.
-ffl="$work/ff-live"; rm -rf "$ffl"; mkdir -p "$ffl/dl"; cp "$fx/archive/go/"*.tar.gz "$ffl/dl/"
+ffl="$work/ff-live"; rm -rf "$ffl"; mkdir -p "$ffl/dl"; cp "$fx/archive/go/"*.tar.gz "$ffl/dl/"; vg_signdir "$VG_GOOD" "$ffl/dl"
 mkrepo; cp "$fx/melange.lock" "$work/mel.keep"
 oldbb=$(grep '^busybox=' "$work/rp/build/locks/melange.lock" | head -1); ffbv=${oldbb#busybox=}
 python3 - "$fx/live-mel.lock.json" "$work/ff-mel-moved.json" "$ffbv" <<'P'
@@ -1312,7 +1324,7 @@ done
 # The recipes (build/melange.yaml, build/melange-fips.yaml) pin each Go tarball by its go.dev file name and sha256; build-apk.sh requires archive/go/<file> and checks the same
 # sha256. The refresh job stores a missing one only after the sha256 it fetched equals the pin; a present one must equal the pin; old files are never removed.
 gofx="$work/go-live"; rm -rf "$gofx"; mkdir -p "$gofx/dl"
-cp "$fx/archive/go/"*.tar.gz "$gofx/dl/"
+cp "$fx/archive/go/"*.tar.gz "$gofx/dl/"; vg_signdir "$VG_GOOD" "$gofx/dl"
 for a_ in x86_64 aarch64; do mkdir -p "$gofx/$a_"; cp "$fx/live/$a_/APKINDEX.tar.gz" "$gofx/$a_/"; done   # the run also fetches and checks the live index
 gofiles=$(cd "$fx/archive/go" && ls *.tar.gz)
 gorun() {   # $1 = the fetch directory (its dl/ holds the go.dev files); the live resolution equals the committed locks, so nothing but the Go files can change
@@ -1326,9 +1338,13 @@ t "AC33" "Go archive: a recipe-pinned Go tarball that the archive lacks is fetch
 t "AC33" "Go archive: the fetch names the go.dev file and the pull request moves the pointer even though no other file changed (one gh pr create)" bash -c "grep -q 'go.dev/dl/go1.27.2' '$CALLS' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
 gorepo; gorun "$work/no-such-dir"
 t "AC33" "Go archive: a tarball that is not served stops the job (exit 1) naming the file, nothing stored" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'go1.27.2' '$work/log' && ! test -d '$work/ar/go'"
-rm -rf "$work/go-bad"; mkdir -p "$work/go-bad/dl"; for f in $gofiles; do printf 'not the pinned bytes' >"$work/go-bad/dl/$f"; done
+rm -rf "$work/go-bad"; mkdir -p "$work/go-bad/dl"; for f in $gofiles; do printf 'not the pinned bytes' >"$work/go-bad/dl/$f"; done; vg_signdir "$VG_GOOD" "$work/go-bad/dl"   # validly signed, wrong sha256
 gorepo; gorun "$work/go-bad"
 t "AC33" "Go archive: a fetched tarball whose sha256 differs from the recipe's pin stops the job (exit 1, names the file and the checksum), nothing stored" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'sha256' '$work/log' && grep -q 'go1.27.2' '$work/log' && ! test -d '$work/ar/go'"
+# AC34 (REQ-SUP-001-AC34): a Go tarball whose .asc does not verify (a valid signature by another key) stops the run before the sha256 is pinned: nothing stored, no pull request
+rm -rf "$work/go-wrongsig"; mkdir -p "$work/go-wrongsig/dl"; cp "$fx/archive/go/"*.tar.gz "$work/go-wrongsig/dl/"; vg_signdir "$VG_OTHER" "$work/go-wrongsig/dl"
+gorepo; gorun "$work/go-wrongsig"
+t "AC33" "Go archive: a tarball whose .asc is signed by another key stops the job (non-zero, exit 1), nothing stored, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! test -d '$work/ar/go' && ! grep -q '^gh pr create' '$CALLS'"
 mkrepo; for f in $gofiles; do printf 'damaged' >"$work/ar/go/$f"; done; gorun "$gofx"
 t "AC33" "Go archive: an archived tarball whose sha256 is not the pin stops the job (exit 1), names the file and says to delete it, and nothing is fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'go1.27.2' '$work/log' && grep -qi 'delete' '$work/log' && ! grep -q 'go.dev/dl' '$CALLS'"
 mkrepo; gtree_before=$(treehash "$work/ar" "$work/rp"); gorun "$gofx"; gtree_after=$(treehash "$work/ar" "$work/rp")

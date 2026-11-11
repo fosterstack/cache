@@ -1203,7 +1203,7 @@ PY
         echo "refresh-inputs.sh: fetching the Go toolchain $f"
         /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/go/$f" "https://go.dev/dl/$f" || die "could not download a Go toolchain from go.dev" 1
         /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 300 --proto =https --tlsv1.2 -o "$tmp/dl/go/$f.asc" "https://go.dev/dl/$f.asc" || die "could not download the Go toolchain signature from go.dev" 1
-        bash "$(dirname "$0")/verify-go.sh" "$tmp/dl/go/$f" "$tmp/dl/go/$f.asc" || die "the Go toolchain $f is not signed by Google's key" 1
+        bash "${0%/*}/verify-go.sh" "$tmp/dl/go/$f" "$tmp/dl/go/$f.asc" || die "the Go toolchain $f is not signed by Google's key" 1
       done <"$tmp/want-go"
       /bin/rm -f "$tmp/want-go"
     elif [ -s "$tmp/want-index" ]; then
