@@ -209,19 +209,22 @@ _v = next(v for v in wide["vulnerabilities"] if v["cve"] == "CVE-2026-111943")
 _k = next(iter(_v["product_status"]))
 _v["product_status"][_k] = sorted({b["product"]["product_id"] for b in wide["product_tree"]["branches"]})
 check("A2 red proof: widening CVE-2026-111943's product_status to every whole-image product (a temporary copy) is refused", not stmt_scope_ok(real, wide))
-# cache#772 audit: the cache-candidates claim for CVE-2026-111943 has no evidence: the statement names the cache image only
+# cache#772 audit: the cache-candidates claim for CVE-2026-111943 has no evidence
 _s = next(s for s in real["statements"] if s["vulnerability"]["name"] == "CVE-2026-111943")
 _img = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
-check("AC1 CVE-2026-111943 has exactly one product: the cache image (@id, identifiers.purl) and subcomponent stdlib@1.27.2",
-      len(_s["products"]) == 1 and _s["products"][0]["@id"] == _img and _s["products"][0].get("identifiers", {}).get("purl") == _img
-      and _s["products"][0].get("subcomponents") == [{"@id": "pkg:golang/stdlib@1.27.2"}], _s["products"])
-check("AC1 no product of CVE-2026-111943 names cache-candidates", "cache-candidates" not in json.dumps(_s["products"]))
-check("AC2 CVE-2026-111943's impact_statement does not name cache-candidates", "cache-candidates" not in _s.get("impact_statement", ""))
+_p = _s["products"]
+check("AC1 CVE-2026-111943 has exactly one product: the cache image (@id, purl) with subcomponent stdlib@1.27.2",
+      len(_p) == 1 and _p[0]["@id"] == _img and _p[0].get("identifiers", {}).get("purl") == _img
+      and _p[0].get("subcomponents") == [{"@id": "pkg:golang/stdlib@1.27.2"}], _p)
+check("AC1 no product of CVE-2026-111943 names cache-candidates", "cache-candidates" not in json.dumps(_p))
+check("AC2 CVE-2026-111943's impact_statement does not name cache-candidates",
+      "cache-candidates" not in _s.get("impact_statement", ""))
 from datetime import datetime as _dt, timezone as _tz
 _ts = lambda t: _dt.fromisoformat(t.replace("Z", "+00:00"))
 check("AC3 the document timestamp is not before the newest statement timestamp",
       _ts(real["timestamp"]) >= max(_ts(s["timestamp"]) for s in real["statements"]), real["timestamp"])
-check("AC3 the document timestamp is not in the future", _ts(real["timestamp"]) <= _dt.now(_tz.utc), real["timestamp"])
+check("AC3 the document timestamp is not in the future",
+      _ts(real["timestamp"]) <= _dt.now(_tz.utc), real["timestamp"])
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
