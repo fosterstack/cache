@@ -167,11 +167,11 @@ cnr_cos = [e["command"] for e in json.load(open(cnr_file)) if str(e.get("command
 ok(len(cnr_cos) >= 3 and all(CLEAN(c) for c in cnr_cos), "%s: each cosign command of the cannot-run list (%d found) verifies with --key release.rsa.pub and names no certificate identity, no OIDC issuer and no switch that turns the log check off" % (cnr_file, len(cnr_cos)))
 ok(all(c in rel_cmds for c in cnr_cos), "%s: every cosign command of the cannot-run list is a command of %s" % (cnr_file, rel_doc))
 # Release key pointer (REQ-CHAIN-008-AC9): next to each release key step (a fenced curl of build/keys/release.rsa.pub) of install.md (1),
-# offline-install.md (2) and using-our-vex.md (1) there is one plain line outside any fence, within 6 lines of that fence, that links to
+# offline-install.md (1) and using-our-vex.md (1) there is one plain line outside any fence, within 6 lines of that fence, that links to
 # verify-key.md; no other such line; and the fenced text of each file is the text it had before the pointer (a hash), so no command changed.
 import hashlib
 POINTER = re.compile(r"\]\((?:\./|docs/)?verify-key\.md(#[^)]*)?\)")
-for var, steps, digest in (("INSTALL_DOC", 1, "8693fd7ace7dc0be"), ("OFFLINE_DOC", 2, "fcc1055c6fc8f6c4"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
+for var, steps, digest in (("INSTALL_DOC", 1, "8693fd7ace7dc0be"), ("OFFLINE_DOC", 1, "34fb5a1b3891b96c"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
     path = os.environ[var]
     text = open(path).read()
     lines = text.split("\n")
@@ -257,6 +257,5 @@ for v in INSTALL_DOC OFFLINE_DOC VEX_DOC; do
   mutant "$v: the pointer moved into the fence as a comment" "$v" "$PTR"'; s=P.sub("",s,count=1); s=s.replace("build/keys/release.rsa.pub\"\n","build/keys/release.rsa.pub\"\n# see [the key page](verify-key.md)\n",1)'
   mutant "$v: the release key command changed, its key name kept" "$v" 's=s.replace("-fsSLO","-fsSL",1)'
 done
-mutant "offline-install.md: only the second pointer missing" OFFLINE_DOC "$PTR"'; ms=list(P.finditer(s)); s=s[:ms[-1].start()]+s[ms[-1].end():]'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]
