@@ -9,6 +9,29 @@ here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/install-scanner.sh"
 pass=0; fail=0
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+# The installer has no environment hooks: sutc ARCH [NAME=URL...] prints the path of a copy whose TEST-SUBST lines
+# hold the given architecture and base addresses; a base not given points at an empty folder (no network).
+sutc() {
+  local f="$work/copy-$(printf '%s' "$*" | cksum | cut -d' ' -f1).sh"
+  local o="file://$work/offline"
+  python3 - "$sut" "$f" arch="$1" TRIVY_BASE="$o" GRYPE_BASE="$o" SYFT_BASE="$o" SNYK_BASE="$o" OSV_BASE="$o" \
+    SBOMGEN_BASE="$o" SCOUT_BASE="$o" "${@:2}" <<'PY'
+import re, sys
+src, out = sys.argv[1:3]
+subst = dict(a.split("=", 1) for a in sys.argv[3:])
+seen, res = set(), []
+for ln in open(src).read().split("\n"):
+    m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=.*#\s*TEST-SUBST", ln)
+    if m:
+        if m.group(1) not in subst: sys.exit("no substitution given for %s" % m.group(1))
+        seen.add(m.group(1)); res.append("%s=%s   # TEST-SUBST" % (m.group(1), subst[m.group(1)]))
+    else:
+        res.append(ln)
+if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
+open(out, "w").write("\n".join(res))
+PY
+  echo "$f"
+}
 
 check() { # name expected_rc regex -- run...
   local name="$1" want_rc="$2" re="$3"; shift 3
@@ -29,59 +52,59 @@ check "unknown scanner rejected" 1 "unknown scanner.*PIPELINE failure" \
 
 # 2. Unsupported architecture is a labeled pipeline failure.
 check "unsupported arch rejected" 1 "unsupported architecture.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=mips bash "$sut" trivy "$work/bin"
+  bash "$(sutc mips)" trivy "$work/bin"
 
 # 3. Checksum mismatch is a labeled pipeline failure (bytes that do NOT
 #    match the pinned sha256). Serve a bogus asset over file://.
 mkdir -p "$work/rel/v0.74.0"
 echo "not the real trivy tarball" > "$work/rel/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
 check "trivy checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=x86_64 TRIVY_BASE_URL="file://$work/rel" bash "$sut" trivy "$work/bin"
+  bash "$(sutc x86_64 TRIVY_BASE=file://$work/rel)" trivy "$work/bin"
 
 # 4. Download failure (asset absent) is a labeled pipeline failure.
 check "grype download failure rejected" 1 "download failed.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=x86_64 GRYPE_BASE_URL="file://$work/does-not-exist" bash "$sut" grype "$work/bin"
+  bash "$(sutc x86_64 GRYPE_BASE=file://$work/does-not-exist)" grype "$work/bin"
 
 # 4b. osv-scanner checksum mismatch is a labeled pipeline failure.
 mkdir -p "$work/rel/v2.6.0"
 echo "not the real osv-scanner binary" > "$work/rel/v2.6.0/osv-scanner_linux_amd64"
 check "osv-scanner checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=x86_64 OSV_BASE_URL="file://$work/rel" bash "$sut" osv-scanner "$work/bin"
+  bash "$(sutc x86_64 OSV_BASE=file://$work/rel)" osv-scanner "$work/bin"
 
 # 4c. osv-scanner download failure is a labeled pipeline failure.
 check "osv-scanner download failure rejected" 1 "download failed.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=x86_64 OSV_BASE_URL="file://$work/nope" bash "$sut" osv-scanner "$work/bin"
+  bash "$(sutc x86_64 OSV_BASE=file://$work/nope)" osv-scanner "$work/bin"
 
 # 4s. the two older Scout versions for the root-cause round (advisor 0120/0122) are pinned too: wrong bytes are
 #     refused; an unlisted version is not a tool
 for v in 1.24.0 1.25.0; do
   mkdir -p "$work/scout/v$v"; echo "not the real docker-scout $v" > "$work/scout/v$v/docker-scout_${v}_linux_amd64.tar.gz"
   check "docker-scout-$v checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
-    env INSTALL_SCANNER_ARCH=x86_64 SCOUT_BASE_URL="file://$work/scout" bash "$sut" "docker-scout-$v" "$work/bin"
+    bash "$(sutc x86_64 SCOUT_BASE=file://$work/scout)" "docker-scout-$v" "$work/bin"
 done
 check "docker-scout-1.23.0 is not a pinned tool" 1 "(unknown scanner|no pinned checksum).*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=x86_64 bash "$sut" docker-scout-1.23.0 "$work/bin"
+  bash "$(sutc x86_64)" docker-scout-1.23.0 "$work/bin"
 check "docker-scout-1.25.0 has no arm64 pin" 1 "no pinned checksum.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=aarch64 bash "$sut" docker-scout-1.25.0 "$work/bin"
+  bash "$(sutc aarch64)" docker-scout-1.25.0 "$work/bin"
 
 # 4d. inspector-sbomgen checksum mismatch is a labeled pipeline failure.
 mkdir -p "$work/sg/1.16.0/linux/amd64"
 echo "not the real inspector-sbomgen zip" > "$work/sg/1.16.0/linux/amd64/inspector-sbomgen.zip"
 check "inspector-sbomgen checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=x86_64 SBOMGEN_BASE_URL="file://$work/sg" bash "$sut" inspector-sbomgen "$work/bin"
+  bash "$(sutc x86_64 SBOMGEN_BASE=file://$work/sg)" inspector-sbomgen "$work/bin"
 
 # 4e. inspector-sbomgen download failure is a labeled pipeline failure.
 check "inspector-sbomgen download failure rejected" 1 "download failed.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=arm64 SBOMGEN_BASE_URL="file://$work/nope" bash "$sut" inspector-sbomgen "$work/bin"
+  bash "$(sutc arm64 SBOMGEN_BASE=file://$work/nope)" inspector-sbomgen "$work/bin"
 
 # 4f. syft (the auditor's cataloguer; a pinned release binary since Sep 30's run-time build failed on sum.golang.org)
 #     checksum mismatch and download failure are labeled pipeline failures.
 mkdir -p "$work/syft/v1.52.0"
 echo "not the real syft tarball" > "$work/syft/v1.52.0/syft_1.52.0_linux_amd64.tar.gz"
 check "syft checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=x86_64 SYFT_BASE_URL="file://$work/syft" bash "$sut" syft "$work/bin"
+  bash "$(sutc x86_64 SYFT_BASE=file://$work/syft)" syft "$work/bin"
 check "syft download failure rejected" 1 "download failed.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=arm64 SYFT_BASE_URL="file://$work/nope" bash "$sut" syft "$work/bin"
+  bash "$(sutc arm64 SYFT_BASE=file://$work/nope)" syft "$work/bin"
 # 4g. crane (the chain's pinned tool for digest reads; the weekly persona job installs it, handoff 0490). It has a literal asset address and no base-URL hook (advisor 2b
 #     ruling), so there is nothing to point at a local file: the contract is judged on the installer's text, and the shared verify() path is the one the cases above run.
 crane_block=$(awk '/^  crane\)$/{f=1} f{print} f&&/^    ;;$/{exit}' "$sut")
@@ -101,7 +124,25 @@ if grep -q -E 'tar -xzf "\$tmp/c\.tgz" -C "\$DEST" crane \|\|' <<<"$crane_block"
 n=$(grep -c -E '^  crane:[a-z0-9_|:]+\) SUM=[0-9a-f]{64} ;;' "$sut")
 if [ "$n" = 2 ]; then echo "ok: crane has exactly two pinned sums (amd64, arm64)"; pass=$((pass+1)); else echo "FAIL: crane sums found: $n"; fail=$((fail+1)); fi
 check "crane on an unsupported architecture is a labeled pipeline failure" 1 "unsupported architecture.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=mips bash "$sut" crane "$work/bin"
+  bash "$(sutc mips)" crane "$work/bin"
+# 4h. The old hooks are gone: the environment cannot change the architecture or a download address.
+check "INSTALL_SCANNER_ARCH in the environment has no effect" 1 "download failed.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=mips bash "$(sutc x86_64)" trivy "$work/bin"
+for v in TRIVY_BASE_URL TRIVY_BASE; do
+  check "$v in the environment has no effect (the bogus tarball it names is never fetched)" 1 "download failed.*PIPELINE failure" \
+    env "$v=file://$work/rel" bash "$(sutc x86_64)" trivy "$work/bin"
+done
+if ! grep -qE 'INSTALL_SCANNER_ARCH|_BASE_URL' "$sut"; then echo "ok: the installer names no environment hook"; pass=$((pass+1))
+else echo "FAIL: the installer still names INSTALL_SCANNER_ARCH or a _BASE_URL"; fail=$((fail+1)); fi
+# 4i. The usage line names every subcommand the installer accepts (the docker-scout-<version> forms as one).
+usage=$(sed -n 's/^# Usage: install-scanner\.sh <\(.*\)> \[dest-dir\]$/\1/p' "$sut")
+unlisted=
+for n in $(sed -n 's/^case "\$TOOL" in \(.*\)) ;; \*).*/\1/p' "$sut" | head -1 | tr '|' ' '); do
+  case "$n" in docker-scout-[0-9]*) n='docker-scout-<version>' ;; esac
+  case "|$usage|" in *"|$n|"*) ;; *) unlisted="$unlisted $n" ;; esac
+done
+if [ -n "$usage" ] && [ -z "$unlisted" ]; then echo "ok: the usage line lists every subcommand"; pass=$((pass+1))
+else echo "FAIL: the usage line lacks:${unlisted:- (no usage line found)}"; fail=$((fail+1)); fi
 # 5. No arg is a labeled pipeline failure (empty tool).
 check "missing scanner arg rejected" 1 "unknown scanner.*PIPELINE failure" \
   bash "$sut"
@@ -112,9 +153,9 @@ check "missing scanner arg rejected" 1 "unknown scanner.*PIPELINE failure" \
 AWS_SHA=14cb35809ad7547dd3c69fa9899a3975fbd850b6a6791f3fe264856490cd9a63
 AWS_URL=https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.39.3.zip
 check "aws-cli without RUNNER_TEMP is a labeled pipeline failure (it installs under it and takes no destination)" 1 "RUNNER_TEMP.*PIPELINE failure" \
-  env -u RUNNER_TEMP INSTALL_SCANNER_ARCH=x86_64 bash "$sut" aws-cli
+  env -u RUNNER_TEMP bash "$(sutc x86_64)" aws-cli
 check "aws-cli is pinned for x86_64 only: aarch64 has no pinned checksum" 1 "no pinned checksum for aws-cli on aarch64.*PIPELINE failure" \
-  env INSTALL_SCANNER_ARCH=aarch64 RUNNER_TEMP="$work/rt" bash "$sut" aws-cli
+  env RUNNER_TEMP="$work/rt" bash "$(sutc aarch64)" aws-cli
 mkdir -p "$work/awsfake"
 cat > "$work/awsfake/curl" <<'FAKE'
 #!/usr/bin/env bash
@@ -126,7 +167,7 @@ echo "not the pinned zip" > "$out"
 FAKE
 chmod +x "$work/awsfake/curl"
 check "aws-cli checksum mismatch is a labeled pipeline failure and installs nothing" 1 "checksum mismatch.*PIPELINE failure" \
-  env PATH="$work/awsfake:$PATH" AWSFAKE_LOG="$work/awsfake/log" INSTALL_SCANNER_ARCH=x86_64 RUNNER_TEMP="$work/rt2" bash "$sut" aws-cli
+  env PATH="$work/awsfake:$PATH" AWSFAKE_LOG="$work/awsfake/log" RUNNER_TEMP="$work/rt2" bash "$(sutc x86_64)" aws-cli
 if [ "$(cat "$work/awsfake/log" 2>/dev/null)" = "$AWS_URL" ] && [ ! -e "$work/rt2/aws-cli/aws" ]; then
   echo "ok: aws-cli downloads exactly the pinned 2.39.3 zip URL and leaves no aws behind after a mismatch"; pass=$((pass+1))
 else echo "FAIL: aws-cli URL or leftovers: $(cat "$work/awsfake/log" 2>/dev/null) / $(ls "$work/rt2/aws-cli" 2>&1 | head -2)"; fail=$((fail+1)); fi
