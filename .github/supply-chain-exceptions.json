@@ -1133,55 +1133,6 @@
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "640f31f90d3764a424d96f4de436e5fc638b3fba2c0d715908a159b499499055",
-      "line": "5199a8dc8f9a9b0e1e0c9e8efd40e7012d15224495a65cf63ad6a1b7a61cb2c6",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "86a2dc3f8369ec75c3865544d2f9d038b48262ea082f2c2e5e3ff8260951f4f3",
-      "line": "86a2dc3f8369ec75c3865544d2f9d038b48262ea082f2c2e5e3ff8260951f4f3",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "a9ce6d7d241d6a20ba00468e1198a9f8d3a790b03bfd6b2f8bf022c5b7199798",
-      "line": "a9ce6d7d241d6a20ba00468e1198a9f8d3a790b03bfd6b2f8bf022c5b7199798",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "5374c6fbb71fde282c7935a61365ba496a19c977fc6d94e710e73621c5579df0",
-      "line": "5374c6fbb71fde282c7935a61365ba496a19c977fc6d94e710e73621c5579df0",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "84fa86de3d5025216b26f8463e46c3770078f9c0bf069048304034ee6adda175",
-      "line": "84fa86de3d5025216b26f8463e46c3770078f9c0bf069048304034ee6adda175",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "b220d4c86b93ae6d9b0193e013f806baa7ac14480dd28ec14c495b5e5e34f29d",
-      "line": "8d2c4ae069d82ce4f65ebaa09ce882428acb4a2e0e0c1b6c92090925ac03fe10",
-      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; in that test the installer is a copy run in the test's temporary directory with temporary curl and sha256sum shims, the curl shim redirects the kind release request to a local server on 127.0.0.1, and the kind executable it installs is a synthetic fixture; nothing is fetched from outside the host and no upstream tool is installed"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a download",
-      "key": "c4ffa25f0fa70e185c072c18e58002bc534f3f61888db8b654a792b7d70fe334",
-      "line": "60f1283ca18f78328d1233f3fe8afdfba42960b05f4e05e832bc57e0a65ce436",
-      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; in that test the installer is a copy run in the test's temporary directory with temporary curl and sha256sum shims, the curl shim redirects the kind release request to a local server on 127.0.0.1, and the kind executable it installs is a synthetic fixture; nothing is fetched from outside the host and no upstream tool is installed"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
       "form": "a pip requirements file not named requirements*.txt",
       "key": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
       "line": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
@@ -1219,20 +1170,6 @@
       "line": "e861939397a79c133a47cd989c0f473722c56e85b946a85292474e8771c08330",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
       "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "an unpinned package install",
-      "key": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
-      "line": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
-    },
-    {
-      "file": "bin/persona-uat-wiring-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
-      "line": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1328,13 +1265,6 @@
       "line": "c231a4dc9ce568dad97a9eb8c4f485688801f8b1b6f1189d21b2be6dc6638ad4",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
       "body-sha256": "76204f193c9a845e5d25e04cabb1aa97ae2c46488f17dff8b66c49682a49094d"
-    },
-    {
-      "file": "bin/chain-build-wiring-test.sh",
-      "form": "a download",
-      "key": "48e6f8822226006b3b468cd1f57965a6d05868e4f40c2b799b2e2ec5ef293d45",
-      "line": "48e6f8822226006b3b468cd1f57965a6d05868e4f40c2b799b2e2ec5ef293d45",
-      "ruling": "text, not a command: a comment in the script; nothing runs it"
     },
     {
       "file": "bin/chain-check-scripts-test.sh",
@@ -1660,13 +1590,6 @@
       "key": "613e385a8b1ca95218194d29597cc8a678661c65fe07bbd9b623e087bcbec264",
       "line": "184b2129f379c1bb79a09b09bab8a3f473f56d64155d8a7509b849c6fe08fb30",
       "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command"
-    },
-    {
-      "file": "bin/chain-build-wiring-test.sh",
-      "form": "a download",
-      "key": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
-      "line": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
-      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)"
     },
     {
       "file": "bin/chain-build-wiring-test.sh",
