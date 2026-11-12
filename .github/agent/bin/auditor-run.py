@@ -90,21 +90,22 @@ def _resolve_carried(groups, carried_stmts):
         primaries.append((nm, ids))
         for i in ids:
             by_id.setdefault(i, []).append(sorted(_scope_key(s)[1]))
+    name = lambda x: urllib.parse.unquote(x or "").lower()           # "Foo%2FBar" and "foo/bar" are one package
     for cid in list(groups):
         grp = groups[cid]
-        keep = []
+        keep = {}                                        # one entry per (scanner, finding_id, purl): an alias must not add a copy
         for f in grp["findings"]:
             if not (f.get("extra") or {}).get("carried"):
-                keep.append(f)
+                keep[id(f)] = f
                 continue
             for cve in {cid} | set(grp["aliases"]) | set(f.get("aliases") or []):
                 for purls in by_id.get(cve, []):
                     for p in purls:
                         pn, pv = PARS._panel_module()._purl_name_version(p)
-                        if pn == f.get("package") and pv == (f.get("extra") or {}).get("version"):
-                            keep.append(PARS._finding(f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), None, None,
-                                                      dict(f["extra"], carried=True)))
-        grp["findings"] = keep
+                        if name(pn) == name(f.get("package")) and urllib.parse.unquote(pv or "") == urllib.parse.unquote((f.get("extra") or {}).get("version") or ""):
+                            keep.setdefault((f["scanner"], f["finding_id"], p), PARS._finding(
+                                f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), None, None, dict(f["extra"], carried=True)))
+        grp["findings"] = list(keep.values())
         if not keep:
             del groups[cid]
     seen_ids = set()
@@ -734,9 +735,15 @@ def _open_dependabot_prs(ws):
     if r.returncode != 0:
         return None, "gh pr list: " + (r.stderr or "").strip()
     try:
-        return json.loads(r.stdout or "[]"), None
+        rows = json.loads(r.stdout)
     except ValueError:
-        return None, "gh pr list: unreadable answer"
+        rows = None
+    # an empty or unreadable answer is a failed lookup, never "no Dependabot PR"
+    if not isinstance(rows, list) or not all(
+            isinstance(i, dict) and isinstance(i.get("number"), int) and not isinstance(i["number"], bool)
+            and isinstance(i.get("title"), str) and isinstance(i.get("url"), str) for i in rows):
+        return None, "gh pr list: the answer is not a list of number, title and url objects"
+    return rows, None
 
 
 HELD_TAIL = "needs a manual change"
@@ -925,9 +932,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         _plan(would, "bump PR", target, cves, note="skipped: test image", key=branch)
         return None, None, "skipped-test"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
-    ws0 = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
     if log or _real_gh_allowed():
-        prs, lerr = _open_dependabot_prs(ws0)
+        prs, lerr = _open_dependabot_prs(_workspace())
         hit = _dependabot_match(prs, module, tkey) if prs is not None else None
         # row 47: defer to the open Dependabot PR that carries this bump; open nothing (a dry run says so too)
         if hit:
@@ -1810,7 +1816,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        cause="adjudicator unavailable", adjudicator_error=True)
             return row, m_inc
         elif cat == "budget_stop":
-            # the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding; a budget stop notifies no one (nothing else notifies anyone).
+            # the token budget stopped the model: NOT a refusal and not one of the five named conditions per finding; a budget stop counts toward the five-run owner issue (REQ-AUD-9 AC3) like any unsettled finding.
             # Section 4, no per-finding issue. (The repeated-unsettled case, REQ-AUD-9 AC3 "a five-iteration stop", is the run counter's one aggregate issue below.)
             row.update(section=4, disposition="under investigation",
                        action="none (token budget reached)",
@@ -2141,12 +2147,19 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     carried_lift_trigger = {}
     carried_stmts = []
     ws0 = _workspace()
+    # the delivery merges into the files at origin/main's sha: the carried expiries are read from that same sha when the run delivers
+    # (ONE fetch, before any gh call; the delivery cuts its branch from this sha); a dry or test run reads the workspace copies
+    base_sha = base_err = base_docs = None
+    if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed() and (m.get("provenance") or {}).get("source") != "test-image":
+        base_sha, base_err = _fetch_base(ws0)
+        if base_sha:
+            base_docs = _base_docs(ws0, base_sha)
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
         # foreign/legacy @id is matched by the scope it addresses, not its literal id spelling
         # (R1 refactor round-1 #5). Keyed by scope, per scope — never CVE-wide.
         prev_id_to_scope = {}
-        pv = _read_reviewed_json(os.path.join(ws0, ".vex", "fosterstack-cache.openvex.json"))
+        pv = base_docs[BASE_VEX] if base_docs else _read_reviewed_json(os.path.join(ws0, BASE_VEX))
         try:
             carried_stmts = list((pv or {}).get("statements", []))
             for s in (pv or {}).get("statements", []):
@@ -2165,7 +2178,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     carried_status[(nm, _scope_key(s))] = s.get("status")
         except Exception as ex:
             raise ReviewedInputInvalid("the published VEX has a statement the run cannot read (%s): it stops rather than guess a partial state" % type(ex).__name__)
-        prev = _read_reviewed_json(os.path.join(ws0, ".auditor", "accepted-items.json"))
+        prev = base_docs[BASE_ITEMS] if base_docs else _read_reviewed_json(os.path.join(ws0, BASE_ITEMS))
         try:
             for it in (prev or {}).get("accepted_items", []):
                 if not it.get("expiry"):
@@ -2286,11 +2299,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     _collect_vex(out, ts)
     # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh
     # call (cache#708 ruling 1); the delivery cuts its branch from this sha
-    base_sha = base_err = None
-    if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed() and (m.get("provenance") or {}).get("source") != "test-image":
-        base_sha, base_err = _fetch_base(_workspace())
-        if base_sha:
-            _base_docs(_workspace(), base_sha)
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
