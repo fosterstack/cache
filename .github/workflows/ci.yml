@@ -106,7 +106,7 @@ jobs:
       # REQ-AUD-18 AC2: the auditor's Python (.github/agent/bin/) is held to the same gate —
       # ZERO uncovered eligible statements over the parser tests + the matrix suite; the only
       # exclusions are the reasoned line ranges in .github/agent/coverage-exclusions.txt.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: pin pip (hash-checked)
@@ -293,7 +293,7 @@ jobs:
         run: bash .github/agent/tests/govulncheck-fixtures-test.sh
 
       - name: set up Python for the workflow-permission check
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: pin pip (hash-checked)
@@ -417,7 +417,7 @@ jobs:
           fi
 
       - name: set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: pin pip (hash-checked)
@@ -460,7 +460,7 @@ jobs:
           fi
 
       - name: set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: pin pip (hash-checked)
@@ -543,7 +543,7 @@ jobs:
           fi
 
       - name: set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: pin pip (hash-checked)
