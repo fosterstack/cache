@@ -874,6 +874,48 @@ class Deliver(Tmp):
             self.assertEqual((rc, calls), (3, []), label)
             self.assertIn("::error::", err.getvalue(), label)
 
+    def test_a_run_file_that_cannot_be_read_as_json_text_is_a_named_stop_before_any_call(self):
+        self.day()
+        for name in ("state.json", "day.json"):
+            for label, raw in (("truncated", b'{"issue": "x", '), ("not utf-8", b"\xff\xfe{}"),
+                               ("nul bytes", b"{}\x00"), ("empty", b""), ("nan", b'{"issue": NaN}')):
+                self.day()
+                open(os.path.join(self.out, name), "wb").write(raw)
+                calls, run = self.fake()
+                env = {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}
+                with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()), \
+                        mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    rc = P.cmd_deliver(self.a(), run=run)
+                self.assertEqual((rc, calls), (3, []), (name, label))
+                self.assertIn("::error::", err.getvalue(), (name, label))
+
+    def owner_issue_bodies(self, vex_file_statements):
+        json.dump({"@id": "https://x/vex", "version": 3, "timestamp": "t", "statements": vex_file_statements},
+                  open(os.path.join(self.repo, P.VEX), "w"))
+        mine = {"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
+                "purls": ["pkg:generic/tzdata@1"]}
+        self.day(vex=[dict(mine, status="affected", impact_statement="another scanner reported it")])
+        calls, run = self.fake({("gh", "issue", "list"): lambda cmd: "[]"})
+        env = {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_ISSUES_TOKEN": "issues-token", "GH_TOKEN": "app-token",
+               "GITHUB_SHA": SHA40}
+        with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_deliver(self.a(), run=run), 0)
+        creates = [c for c, _ in calls if c[:3] == ["gh", "issue", "create"] and "owner-decision" in c]
+        return [c[c.index("--body") + 1] for c in creates], mine
+
+    def test_an_affected_turn_that_matches_no_published_statement_is_an_owner_line(self):
+        bodies, _ = self.owner_issue_bodies([])
+        self.assertEqual(len(bodies), 1)
+        self.assertIn("CVE-2099-0003", bodies[0])
+
+    def test_an_affected_turn_that_matches_its_published_statement_needs_no_owner_line(self):
+        mine = {"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
+                "purls": ["pkg:generic/tzdata@1"]}
+        published = [{"@id": P.statement_id(mine), "vulnerability": {"name": "CVE-2099-0003"},
+                      "status": "not_affected"}]
+        bodies, _ = self.owner_issue_bodies(published)
+        self.assertEqual(bodies, [])
+
     def test_a_day_file_that_is_not_a_json_object_stops_delivery_cleanly(self):      # row 20
         self.day()
         for bad in ([], [1], "x", 3):
