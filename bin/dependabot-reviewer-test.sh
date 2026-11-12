@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-003-AC2, REQ-DEP-004-AC1, REQ-DEP-004-AC2
+# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12, REQ-DEP-001-AC13, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3, REQ-DEP-004-AC1, REQ-DEP-004-AC2
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -143,20 +143,24 @@ r._Text = None
 _unreadable = r.is_flagged("x")
 r._Text = _T
 check("a body the parser cannot read is flagged (fail toward the readers)", _unreadable is True, "")
-# a flagged body whose update lines cannot be read is never silently the patch/minor lane's (round 2, seat A)
+# a body whose update lines cannot be read is still read: one placeholder, flagged or not (round 2, seat A; every bump is read)
 u = r.parse_updates("Bump the actions group with 1 update",
     "Bumps the actions group with 1 update.\n<!-- <details> -->\nUpdates `x/y` from 1.0.0 to 1.1.0\n<details><summary>Release notes</summary>Breaking: removed.</details>\n<!-- </details> -->\n<!-- <details> -->\n")
-check("flagged body with unreadable update lines -> one placeholder to review, major false",
-      len(u) == 1 and u[0]["review"] is True and u[0]["flagged"] is True and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
-check("an unflagged body with no update lines stays empty (the patch/minor lane's)", r.parse_updates("t", "nothing to see") == [], "")
+check("flagged body with unreadable update lines -> one placeholder, flagged, major false",
+      len(u) == 1 and u[0]["kind"] == "flagged" and u[0]["flagged"] is True and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
+u = r.parse_updates("t", "nothing to see")
+check("an unflagged body with no update lines -> one placeholder too, not flagged: the pull request is still read",
+      len(u) == 1 and u[0]["kind"] == "not-major" and u[0]["flagged"] is False and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
 check("title-only fallback (no body) is not flagged", one("", "Build(deps): bump x/y from 1.2.0 to 1.3.0")[0]["flagged"] is False, "")
-check("review = major or flagged",
-      [x["review"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == [True, True]
-      and [x["review"] for x in one(NOTE % "Fixes a typo")] == [False], "")
-# gather fetches notes and our usage for a flagged non-major and not for a plain one, and says why
+check("kind = major, else flagged, else not-major (what the bundle calls the update)",
+      [x["kind"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == ["major", "flagged"]
+      and [x["kind"] for x in one(NOTE % "Fixes a typo")] == ["not-major"], "")
+# gather fetches notes and our usage for EVERY update (a plain patch or minor too) and says what each one is
 calls = []
-_saved = (r._run, r.release_notes, r.our_usage)
-r._run = lambda cmd, cap=None: ("diff --git a/x b/x\n", 0)
+_saved = (r._run, r.release_notes, r.our_usage, r._gh_json)
+r._run = lambda cmd: ("diff --git a/x b/x\n", 0)
+r._gh_json = lambda args: [{"sha": "d" * 40, "parents": [{}], "author": {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"},
+                            "committer": {"login": "web-flow"}, "commit": {"message": "Bump a/flag", "verification": {"verified": True}}}]
 r.release_notes = lambda n, o, nw: (calls.append(n) or ("notes of " + n + "\n", 1))
 r.our_usage = lambda n: "usage of " + n + "\n"
 import tempfile
@@ -164,16 +168,176 @@ def gathered(updates):
     del calls[:]
     d = tempfile.mkdtemp(); p = os.path.join(d, "u.json"); json.dump(updates, open(p, "w"))
     class A: pass
-    a = A(); a.pr, a.updates, a.out = 7, p, os.path.join(d, "out")
+    a = A(); a.pr, a.sha, a.base, a.updates, a.out = 7, "d" * 40, "main", p, os.path.join(d, "out")
     r.cmd_gather(a)
     return open(os.path.join(a.out, "bundle.md")).read()
-b = gathered([{"name": "a/flag", "from": "1.0.0", "to": "1.1.0", "major": False, "flagged": True, "review": True},
-              {"name": "a/plain", "from": "1.0.0", "to": "1.0.1", "major": False, "flagged": False, "review": False},
-              {"name": "a/big", "from": "1.0.0", "to": "2.0.0", "major": True, "flagged": False, "review": True}])
-r._run, r.release_notes, r.our_usage = _saved
-check("gather: notes only for the flagged and the major, never the plain minor", calls == ["a/flag", "a/big"], calls)
-check("gather: the bundle labels the flagged update FLAGGED and the plain one not major",
+import io as _gio, contextlib as _gcl
+with _gcl.redirect_stdout(_gio.StringIO()):
+    b = gathered([{"name": "a/flag", "from": "1.0.0", "to": "1.1.0", "major": False, "flagged": True, "kind": "flagged"},
+                  {"name": "a/plain", "from": "1.0.0", "to": "1.0.1", "major": False, "flagged": False, "kind": "not-major"},
+                  {"name": "a/big", "from": "1.0.0", "to": "2.0.0", "major": True, "flagged": False, "kind": "major"}])
+    calls_all = list(calls)
+    b_old = gathered([{"name": "a/old", "from": "1.0.0", "to": "2.0.0", "major": True}, {"name": "a/oldminor", "from": "1.0.0", "to": "1.0.1", "major": False}])
+r._run, r.release_notes, r.our_usage, r._gh_json = _saved
+check("gather: notes and usage for every update: the flagged, the plain patch and the major", calls_all == ["a/flag", "a/plain", "a/big"], calls_all)
+check("gather: the bundle calls each update what it is (FLAGGED, not major, MAJOR)",
       "a/flag: 1.0.0 -> 1.1.0 (FLAGGED" in b and "a/flag: 1.0.0 -> 1.1.0 (MAJOR" not in b and "a/plain: 1.0.0 -> 1.0.1 (not major)" in b and "a/big: 1.0.0 -> 2.0.0 (MAJOR)" in b, b[:400])
+check("gather: an update with no `kind` is named from its own fields", "a/old: 1.0.0 -> 2.0.0 (MAJOR)" in b_old and "a/oldminor: 1.0.0 -> 1.0.1 (not major)" in b_old, b_old[:300])
+# --- the commit list: which commits are not Dependabot's own (REQ-DEP-001-AC2)
+def commit(sha, login="dependabot[bot]", uid=49699333, typ="Bot", committer="web-flow", verified=True, parents=1, msg="Bump x"):
+    return {"sha": sha * 40, "parents": [{}] * parents, "author": {"login": login, "id": uid, "type": typ} if login else None,
+            "committer": {"login": committer}, "commit": {"message": msg, "author": {"name": "git name"}, "verification": {"verified": verified}}}
+_saved_gh = r._gh_json
+def commits_of(pages, repo="o/r", sha=None):
+    asked = []
+    if sha is None:   # the commit the verdict is for: by default the last one listed
+        listed = [c for pg in pages if pg for c in pg]
+        sha = listed[-1]["sha"] if listed else "0" * 40
+    r._gh_json = lambda args: (asked.append(args[0]) or (pages[len(asked) - 1] if len(asked) <= len(pages) else []))
+    was = os.environ.pop("GITHUB_REPOSITORY", None)
+    if repo:
+        os.environ["GITHUB_REPOSITORY"] = repo
+    try:
+        return r.pr_commits(7, sha) + (asked,)
+    finally:
+        r._gh_json = _saved_gh
+        os.environ.pop("GITHUB_REPOSITORY", None)
+        if was is not None:
+            os.environ["GITHUB_REPOSITORY"] = was
+text, ok, asked = commits_of([[commit("a"), commit("b", login="some-writer", uid=7, typ="User", committer="some-writer", msg="Keep our pin\n\nbody"),
+                               commit("c", login="lane[bot]", uid=9, committer="web-flow", parents=2, msg="Merge branch 'main' into x")]])
+check("commits: Dependabot's own commit is unmarked; a writer's commit and a merge of main are marked NOT Dependabot's, first line only",
+      ok == "ok" and text.splitlines() == ["- aaaaaaaaaa dependabot[bot]: Bump x", "- bbbbbbbbbb NOT Dependabot's — some-writer: Keep our pin",
+                                   "- cccccccccc NOT Dependabot's — lane[bot] (a merge commit): Merge branch 'main' into x"], text)
+check("commits: the list is read from this repository's pull request, page 1", asked == ["repos/o/r/pulls/7/commits?per_page=100&page=1"], asked)
+_, _, asked = commits_of([[commit("a")]], repo=None)
+check("commits: with no GITHUB_REPOSITORY the repository is left to gh (its {owner}/{repo} of the checkout)", asked == ["repos/{owner}/{repo}/pulls/7/commits?per_page=100&page=1"], asked)
+IMPOSTORS = {"author spelled as Dependabot but not signed (anyone can write an author line)": commit("d", verified=False),
+             "author Dependabot, committed by somebody else": commit("d", committer="some-writer"),
+             "another account with the same login": commit("d", uid=1),
+             "a user, not a bot": commit("d", typ="User"),
+             "a merge commit authored by Dependabot": commit("d", parents=2),
+             "no account on the author": commit("d", login=None)}
+for why, c in IMPOSTORS.items():
+    text, ok, _ = commits_of([[c]])
+    check("commits: %s is marked NOT Dependabot's" % why, ok == "ok" and "NOT Dependabot's" in text, text)
+text, ok, _ = commits_of([None])
+check("commits: a failed read is UNAVAILABLE and not ok, never an empty list", ok == "unavailable" and "commit list UNAVAILABLE" in text, text)
+text, ok, _ = commits_of([[]])
+check("commits: an empty answer (no open pull request has no commit) is UNAVAILABLE and not ok", ok == "unavailable" and "UNAVAILABLE" in text, text)
+text, ok, _ = commits_of([[commit("a")] * 100, None])
+check("commits: a later page that cannot be read is UNAVAILABLE too", ok == "unavailable" and "UNAVAILABLE" in text, text)
+text, ok, asked = commits_of([[commit("a")] * 100, [commit("b", login="w", uid=7, typ="User")] * 100, [commit("c")] * 50])
+check("commits: 250 listed commits (GitHub lists no more, so the list cannot be shown to end at the head) is UNAVAILABLE, after all three pages were read",
+      ok == "unavailable" and len(asked) == 3 and "at most 250 commits" in text, (ok, len(asked)))
+text, ok, _ = commits_of([[commit("a"), commit("b", login="w", uid=7, typ="User")]], sha="a" * 40)
+check("commits: a list whose last commit is not the commit the verdict is for -> moved (the head is another commit by now)", ok == "moved" and "no longer " + "a" * 40 in text, (ok, text))
+text, ok, _ = commits_of([[commit("a"), commit("b", login="w", uid=7, typ="User")]], sha="b" * 40)
+check("commits: the list ends at the commit the verdict is for -> ok", ok == "ok", (ok, text))
+
+# --- the diff the readers get: whole, never cut; vendored module files by header only while the vendor check is required
+VDIFF = ("diff --git a/go.mod b/go.mod\nindex 1..2 100644\n--- a/go.mod\n+++ b/go.mod\n@@ -1 +1 @@\n-require a/b v1.0.0\n+require a/b v1.1.0\n"
+         "diff --git a/vendor/a/b/x.go b/vendor/a/b/x.go\nindex 3..4 100644\n--- a/vendor/a/b/x.go\n+++ b/vendor/a/b/x.go\n@@ -1,2 +1,3 @@\n package b\n-old()\n+new()\n+more()\n"
+         "diff --git a/internal/vendor/y.go b/internal/vendor/y.go\nindex 5..6 100644\n--- a/internal/vendor/y.go\n+++ b/internal/vendor/y.go\n@@ -1 +1 @@\n-ours()\n+OURS()\n"
+         "diff --git a/vendor/a b.go b/vendor/a b.go\nindex 7..8 100644\n--- a/vendor/a b.go\n+++ b/vendor/a b.go\n@@ -1 +1 @@\n-spaced()\n+SPACED()\n"
+         "diff --git a/cmd/z.go b/vendor/z.go\nsimilarity index 90%\nrename from cmd/z.go\nrename to vendor/z.go\n@@ -1 +1 @@\n-moved()\n+MOVED()\n")
+sd = r.shown_diff(VDIFF, True)
+check("shown_diff: a file under vendor/ keeps its header and says how many lines are not shown and which required check judges them",
+      "diff --git a/vendor/a/b/x.go b/vendor/a/b/x.go\n(a vendored module file: 2 added and 1 removed line(s) not shown; the required `vendor` check" in sd
+      and "+new()" not in sd and "+more()" not in sd, sd)
+check("shown_diff: every other file is whole: ours, a path that only contains vendor, a path with a space, a file moved INTO vendor/ from outside",
+      all(x in sd for x in ("+require a/b v1.1.0", "+OURS()", "+SPACED()", "+MOVED()", "rename from cmd/z.go")), sd)
+check("shown_diff: with the vendor check not required, nothing is left out", r.shown_diff(VDIFF, False) == VDIFF, "")
+_t = tempfile.mkdtemp()
+json.dump({"required_checks": [{"context": "test"}, {"context": "vendor"}]}, open(os.path.join(_t, "with.json"), "w"))
+json.dump({"required_checks": [{"context": "test"}]}, open(os.path.join(_t, "without.json"), "w"))
+open(os.path.join(_t, "broken.json"), "w").write("{")
+check("vendor_is_required: only when main's required-check list holds `vendor`; a list without it, unreadable or missing is no",
+      [r.vendor_is_required(os.path.join(_t, f)) for f in ("with.json", "without.json", "broken.json", "missing.json")] == [True, False, False, False], "")
+check("vendor_is_required: this repository's list holds it (so a module bump's vendored files are left to that check)",
+      r.vendor_is_required(os.path.join(os.path.dirname(os.environ["REVIEWER_PY"]), "..", ".github/policy/required-checks.json")) is True, "")
+ran = []
+def gather_diff(diff, required, sha="a" * 40):
+    del ran[:]
+    d = tempfile.mkdtemp(); u = os.path.join(d, "u.json"); json.dump([{"name": "a/b", "from": "1.0.0", "to": "1.1.0", "major": True, "kind": "not-major"}], open(u, "w"))
+    class A: pass
+    a = A(); a.pr, a.sha, a.base, a.updates, a.out = 7, sha, "main", u, os.path.join(d, "out")
+    saved = (r._run, r.release_notes, r.our_usage, r._gh_json, r.vendor_is_required)
+    r._run = lambda cmd: (ran.append(cmd) or (diff, 0))
+    r._gh_json = lambda args: [commit("a")]
+    r.release_notes = lambda n, o, nw: ("notes\n", 1)
+    r.our_usage = lambda n: "usage\n"
+    r.vendor_is_required = lambda: required
+    try:
+        with _gcl.redirect_stdout(_gio.StringIO()), _gcl.redirect_stderr(_gio.StringIO()) as err:
+            try:
+                r.cmd_gather(a); code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, (open(os.path.join(a.out, "bundle.md")).read() if os.path.exists(os.path.join(a.out, "bundle.md")) else None), err.getvalue()
+    finally:
+        r._run, r.release_notes, r.our_usage, r._gh_json, r.vendor_is_required = saved
+big = "diff --git a/x b/x\n" + "".join("+line %06d of what the pull request changes\n" % i for i in range(1200))   # well over the 20000 the diff used to be cut at
+code, b, _ = gather_diff(big, False)
+check("gather: a diff of %d characters reaches the readers whole: its last line is in the bundle and nothing says truncated" % len(big),
+      code == 0 and "+line 001199 of what the pull request changes" in b and "truncated" not in b, code)
+over = "diff --git a/x b/x\n" + "+" + "y" * r.CAP_DIFF + "\n"
+code, b, err = gather_diff(over, False)
+check("gather: a diff over the readers' limit is never cut: exit 3, no bundle, so no reader and no verdict", code == 3 and b is None and "over the %d" % r.CAP_DIFF in err, (code, err))
+vend = "diff --git a/go.mod b/go.mod\n+require a/b v1.1.0\n" + "diff --git a/vendor/a/b/x.go b/vendor/a/b/x.go\n--- a/vendor/a/b/x.go\n+++ b/vendor/a/b/x.go\n@@ -1 +1,2 @@\n" + "+" + "y" * r.CAP_DIFF + "\n"
+code, b, _ = gather_diff(vend, True)
+check("gather: a module bump whose vendored files alone exceed the limit is judged: go.mod whole, the vendored file by header",
+      code == 0 and "+require a/b v1.1.0" in b and "a vendored module file: 1 added and 0 removed line(s) not shown" in b and "yyyy" not in b, code)
+code, b, _ = gather_diff(vend, False)
+check("gather: the same bump while `vendor` is NOT a required check is shown whole, so it is over the limit: no bundle", code == 3 and b is None, code)
+
+# --- the verdict's commit (REQ-DEP-001-AC2): the diff is GitHub's diff of exactly that commit against main, read by its id
+code, b, _ = gather_diff("diff --git a/x b/x\n+one\n", False)
+check("gather: the diff is read as compare/main...<the commit's full id>, with gh api and nothing else (never the pull request's diff of the moment)",
+      code == 0 and ran == [["gh", "api", "-H", "Accept: application/vnd.github.diff", "repos/%s/compare/main...%s" % (os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}", "a" * 40)]], ran)
+check("gather: the bundle names the commit it is for, in its title and over the diff",
+      b.startswith("# Bundle for Dependabot PR #7 at its head %s\n" % ("a" * 40)) and "every commit above: %s against main)" % ("a" * 40) in b, b[:200])
+code, b, err = gather_diff("diff --git a/x b/x\n+one\n", False, sha="b" * 40)
+check("gather: the pull request's commits end at another commit than the one the verdict is for -> exit 5, no diff read, no bundle",
+      code == 5 and b is None and ran == [] and "moved" in err, (code, ran, err))
+for bad_sha in ("main", "a" * 39, "A" * 40, "refs/pull/7/head"):
+    code, b, err = gather_diff("diff --git a/x b/x\n+one\n", False, sha=bad_sha)
+    check("gather: %r is not a full commit id -> exit 3, nothing read, no bundle" % bad_sha, code == 3 and b is None and ran == [], (code, ran))
+
+# --- same-diff: the spend guard's proof that two heads change main in the same way (REQ-DEP-001-AC11)
+D1 = "diff --git a/go.mod b/go.mod\nindex 1..2 100644\n--- a/go.mod\n+++ b/go.mod\n@@ -1 +1 @@\n-require a/b v1.0.0\n+require a/b v1.1.0\n"
+def same(diffs, fail=()):
+    asked = []
+    saved = r._run
+    r._run = lambda cmd: (asked.append(cmd) or (("", 1) if cmd[-1].rsplit("...", 1)[1] in fail else (diffs[cmd[-1].rsplit("...", 1)[1]], 0)))
+    try:
+        return r.same_diff("o/r", "main", ["old", "new"]) + (asked,)
+    finally:
+        r._run = saved
+ok, why, asked = same({"old": D1, "new": D1})
+check("same-diff: byte for byte the same diff against main -> the same", ok is True, why)
+check("same-diff: both diffs are GitHub's diff of the commit against its merge base with main, read and nothing else",
+      asked == [["gh", "api", "-H", "Accept: application/vnd.github.diff", "repos/o/r/compare/main...%s" % x] for x in ("old", "new")], asked)
+for name, new in (("one more changed line", D1 + "+one more\n"), ("another version", D1.replace("v1.1.0", "v1.1.1")), ("a shifted hunk", D1.replace("@@ -1 +1 @@", "@@ -2 +2 @@")),
+                  ("a mode change", D1.replace("index 1..2 100644\n", "old mode 100644\nnew mode 100755\nindex 1..2\n")), ("one byte of trailing space", D1 + " ")):
+    ok, why, _ = same({"old": D1, "new": new})
+    check("same-diff: %s -> not the same" % name, ok is False and "differ" in why, why)
+ok, why, _ = same({"old": D1, "new": D1}, fail=("old",))
+check("same-diff: a diff that cannot be read -> not the same", ok is False and "could not be read" in why, why)
+ok, why, _ = same({"old": "", "new": ""})
+check("same-diff: two empty diffs -> not the same (an empty answer is not a diff)", ok is False, why)
+BIN = "diff --git a/x.bin b/x.bin\nindex 1..2 100644\nBinary files a/x.bin and b/x.bin differ\n"
+ok, why, _ = same({"old": BIN, "new": BIN})
+check("same-diff: the same text naming a binary file -> not the same (the bytes are not in a diff)", ok is False and "binary" in why, why)
+GBIN = "diff --git a/x.bin b/x.bin\nindex 1..2 100644\nGIT binary patch\nliteral 3\n"
+ok, why, _ = same({"old": GBIN, "new": GBIN})
+check("same-diff: a git binary patch -> not the same", ok is False and "binary" in why, why)
+TXT = D1 + "+Binary files are mentioned in a changed line\n"
+ok, why, _ = same({"old": TXT, "new": TXT})
+check("same-diff: the words 'Binary files' inside a changed line are not a binary file", ok is True, why)
+HUGE = "diff --git a/x b/x\n+" + "y" * r.CAP_DIFF + "\n"
+ok, why, _ = same({"old": HUGE, "new": HUGE})
+check("same-diff: over the readers' limit -> not the same", ok is False and "over" in why, why)
 check("is_major: v1.2.3 -> v2.0.0", r.is_major("v1.2.3", "v2.0.0") is True)
 check("is_major: 0.21.0 -> 0.22.0 is not", r.is_major("0.21.0", "0.22.0") is False)
 check("is_major: unparseable is not", r.is_major("latest", "stable") is False)
@@ -387,15 +551,17 @@ echo "gh $*" >> "$GH_LOG"
 fails() { case " ${FAIL:-} " in *" $1 "*) exit 1 ;; esac; }
 case "$1 $2" in
   "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$LIST" | tr -d '\n' ;;
-  "api repos/o/r/check-runs") fails check ;;
+  "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) fails gate ;; *) fails check ;; esac ;;
   "api repos/fosterstack/ops/dispatches") fails dispatch ;;
   "api repos/o/r/commits/shaA/check-runs?check_name=dependabot-reviewer") echo success ;;   # cancellation cleanup lookups
   "api repos/o/r/commits/shaB/check-runs?check_name=dependabot-reviewer") echo none ;;
   "api repos/a/b/releases"*) fails notes; echo '[]' ;;      # upstream releases: a successful read, none published
+  # the PR's commits: Dependabot's own, then one a writer pushed, which is the head (COMMITS_HEAD: another last commit, a head that moved)
+  "api repos/o/r/pulls/"*"/commits"*) fails commits; n=${2#repos/o/r/pulls/}; n=${n%%/*}; sed "s/HEADSHA/${COMMITS_HEAD:-$(printf '%040d' "$n")}/" "$COMMITS" ;;
+  "api -H") fails diff; case "$4" in repos/o/r/compare/main...0000000000000000000000000000000000*) printf -- '--- a/.github/workflows/x.yml\n+++ b/.github/workflows/x.yml\n-      - uses: a/b@v4\n+      - uses: a/b@v7\n' ;; *) exit 1 ;; esac ;;
   "api "*) exit 1 ;;
-  "pr diff") fails diff; printf -- '--- a/.github/workflows/x.yml\n+++ b/.github/workflows/x.yml\n-      - uses: a/b@v4\n+      - uses: a/b@v7\n' ;;
   "pr merge") if [ "$3" = "--disable-auto" ]; then fails disarm; else fails merge; fi ;;
-  "pr view") fails view; echo "${ARMED:-false}" ;;
+  "pr view") case "$*" in *headRefOid*) fails head; echo "${HEAD_NOW:-$(printf '%040d' "$3")}" ;; *) fails view; echo "${ARMED:-false}" ;; esac ;;
   "issue list") fails issuelist; echo '[]' ;;
   "issue create") fails issue; echo "https://example.invalid/issues/5" ;;
   "issue edit") fails issue ;;
@@ -432,6 +598,13 @@ class Anthropic:
     def __init__(self): self.messages = _Messages()
 EOF
 chmod +x "$w/bin/gh" "$w/bin/curl"
+cat > "$w/commits.json" <<'EOF'
+[{"sha": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0", "parents": [{"sha": "m"}], "author": {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"},
+  "committer": {"login": "web-flow"}, "commit": {"message": "Bump a/b from 4 to 7\n\nbody", "verification": {"verified": true}}},
+ {"sha": "HEADSHA", "parents": [{"sha": "d"}], "author": {"login": "some-writer", "id": 7, "type": "User"},
+  "committer": {"login": "some-writer"}, "commit": {"message": "Keep our pin in step", "verification": {"verified": true}}}]
+EOF
+export COMMITS="$w/commits.json"
 jq '[{"type":"required_status_checks","parameters":{"required_status_checks":[.required_checks[]|{context,integration_id}]}}]' \
   "$repo/.github/policy/required-checks.json" > "$w/rules-match.json"
 jq '(.[0].parameters.required_status_checks) |= .[1:]' "$w/rules-match.json" > "$w/rules-drift.json"
@@ -439,12 +612,14 @@ CLEAN='{"findings": [{"severity": "check", "title": "node24 runtime", "release_n
 BREAKS='{"findings": [{"severity": "breaks-us", "title": "input removed", "release_note": "v7: removed foo", "our_line": ".github/workflows/x.yml:3", "why": "we pass foo"}]}'
 TRUNC='{"findings": [], "unfinished": {"findings": []}'
 
-act() { # name; env: A B (answers), PRS, FAIL, ARMED, RULES
+S99=$(printf '%040d' 99)
+MAJOR_UPDATE='[{"name":"a/b","from":"4","to":"7","major":true}]'
+act() { # name; env: A B (answers), PRS, FAIL, ARMED, RULES, UPDATES (the updates file the candidates step would have written)
   local W="$w/run"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   : > "$W/work/candidates.txt"
   for n in ${PRS:-99}; do
-    echo "$n abcdef1234567$n ${PRIOR:-none}" >> "$W/work/candidates.txt"
-    echo '[{"name":"a/b","from":"4","to":"7","major":true}]' > "$W/work/updates-$n.json"
+    echo "$n $(printf '%040d' "$n") ${PRIOR:-none}" >> "$W/work/candidates.txt"   # a full commit id, as the candidates step writes it
+    echo "${UPDATES:-$MAJOR_UPDATE}" > "$W/work/updates-$n.json"
   done
   (cd "$repo" && env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" LIST="$repo/.github/policy/required-checks.json" \
      GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" FAIL="${FAIL:-}" ARMED="${ARMED:-false}" \
@@ -474,10 +649,57 @@ CHK='check-runs'; SUCCESS='conclusion=success'; FAILURE='conclusion=failure'
 
 A="$CLEAN" B="$CLEAN" act; expect "both clean -> arm auto-merge, THEN the success check" \
   "+pr merge --auto --squash --match-head-commit [0-9a-f]+ 99" "+$CHK" "ORDER:pr merge --auto>$CHK" ERRORED=0
-grep -qE -- "pr merge --auto --squash --match-head-commit abcdef123456799 99" "$w/gh.log" \
+grep -qE -- "pr merge --auto --squash --match-head-commit $S99 99" "$w/gh.log" \
   && { echo "ok: act: auto-merge is armed only for the reviewed head (--match-head-commit, owner Oct 1)"; pass=$((pass+1)); } \
   || { echo "FAIL: act: arm not bound to the reviewed head"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 grep -q -- "-f conclusion=success" "$w/gh.log" && { echo "ok: act: the check says success"; pass=$((pass+1)); } || { echo "FAIL: act: success conclusion"; fail=$((fail+1)); }
+grep -q "^- d0d0d0d0d0 dependabot\[bot\]: Bump a/b from 4 to 7$" "$w/run/work/pr-99/bundle.md" \
+  && grep -q "^- 0000000000 NOT Dependabot's — some-writer: Keep our pin in step$" "$w/run/work/pr-99/bundle.md" \
+  && grep -q "^# Bundle for Dependabot PR #99 at its head $S99$" "$w/run/work/pr-99/bundle.md" && grep -q "compare/main\.\.\.$S99" "$w/gh.log" \
+  && grep -q "^+      - uses: a/b@v7$" "$w/run/work/pr-99/bundle.md" \
+  && { echo "ok: act: the bundle lists the PR's commits, the writer's one marked NOT Dependabot's, above the whole diff"; pass=$((pass+1)); } \
+  || { echo "FAIL: act: commits in the bundle"; sed 's/^/    /' "$w/run/work/pr-99/bundle.md" | head -20; fail=$((fail+1)); }
+A="$CLEAN" B="$CLEAN" FAIL="commits" act; expect "the PR's commits cannot be read -> UNAVAILABLE: no reader, no merge, no check; retried" "-pr merge" "-$CHK" ERRORED=1
+grep -q "commit list UNAVAILABLE" "$w/run/work/pr-99/bundle.md" 2>/dev/null \
+  && { echo "ok: act: the bundle labels the unread commit list UNAVAILABLE"; pass=$((pass+1)); } || { echo "FAIL: act: commit list unavailable label"; fail=$((fail+1)); }
+# every bump is read: a plain patch, as the candidates step writes it (major false, kind not-major), goes the same way
+PATCH='[{"name":"a/b","from":"4.0.0","to":"4.0.1","major":false,"flagged":false,"kind":"not-major"}]'
+A="$CLEAN" B="$CLEAN" UPDATES="$PATCH" ARMED=true act; expect "a plain patch, both clean -> armed for the reviewed head, THEN the success check, like a major" \
+  "+pr merge --auto --squash --match-head-commit $S99 99" "+$CHK" "ORDER:pr merge --auto>$CHK" "-disable-auto" ERRORED=0
+grep -q -- "-f conclusion=success" "$w/gh.log" && grep -q "a/b: 4.0.0 -> 4.0.1 (not major)" "$w/run/work/pr-99/bundle.md" && grep -q "a/b 4.0.0→4.0.1" "$w/gh.log" \
+  && { echo "ok: act: the patch's check says success and names it; its bundle calls it not major"; pass=$((pass+1)); } || { echo "FAIL: act: patch success"; fail=$((fail+1)); }
+A="$CLEAN" B="$BREAKS" UPDATES="$PATCH" ARMED=true act; expect "a plain patch a reader says breaks us -> auto-merge off, issue, THEN the failure check, like a major" \
+  "+pr merge --disable-auto 99" "+issue create" "+$CHK" "-pr merge --auto --squash" "ORDER:disable-auto>issue create" "ORDER:issue create>$CHK" ERRORED=0
+grep -q -- "-f conclusion=failure" "$w/gh.log" && { echo "ok: act: the patch's check says failure"; pass=$((pass+1)); } || { echo "FAIL: act: patch failure"; fail=$((fail+1)); }
+grep -q -- "issue create --title bump held: a/b 4.0.0→4.0.1 " "$w/gh.log" && grep -q "is a bump that a reader says breaks a line of ours" "$w/run/work/pr-99/issue.md" && ! grep -qi "major" "$w/run/work/pr-99/issue.md" \
+  && { echo "ok: act: a held patch's issue names the bump and never calls it a major"; pass=$((pass+1)); } || { echo "FAIL: act: held patch issue text"; fail=$((fail+1)); }
+
+# REQ-DEP-001-AC13: a verdict that is not success first fails the review gate's own check on that head (same name, same App token, the gate's
+# own fields); a success publishes nothing on the gate; without the gate failure the reviewer's own check does not go up
+GATE='check-runs -f name=auditor-review-gate -f head_sha=[0-9a-f]{40} -f status=completed -f conclusion=failure -f details_url=[^ ]+ -f output\[title\]=auditor review gate: failure'
+OWN='check-runs -f name=dependabot-reviewer'
+A="$CLEAN" B="$BREAKS" act; expect "hold -> the gate's check fails FIRST, then the reviewer's failure check (last)" "+$GATE" "+$OWN .*conclusion=failure" "ORDER:name=auditor-review-gate>name=dependabot-reviewer" "ORDER:issue create>name=auditor-review-gate" ERRORED=0
+[ "$(grep -c 'name=auditor-review-gate' "$w/gh.log")" = 1 ] && grep -q "name=auditor-review-gate -f head_sha=$S99 " "$w/gh.log" && ! grep -q "name=auditor-review-gate.*conclusion=success" "$w/gh.log" \
+  && { echo "ok: act: exactly one gate check, failure, on the reviewed head"; pass=$((pass+1)); } || { echo "FAIL: act: gate check on hold"; fail=$((fail+1)); }
+A="$CLEAN" B="$CLEAN" act; expect "merge -> nothing is published on the review gate's check (the gate judges a success itself)" "-auditor-review-gate" "+$OWN .*conclusion=success" ERRORED=0
+A="$CLEAN" B="$BREAKS" FAIL="gate" act; expect "hold, the gate's check cannot be failed -> the reviewer's failure is NOT published; unfinished, retried" "-$OWN" "+issue create" ERRORED=1
+A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act; expect "a forced re-review that errors -> the gate's check fails first, then the neutral" \
+  "+$GATE" "+$OWN .*conclusion=neutral" "ORDER:name=auditor-review-gate>name=dependabot-reviewer" ERRORED=1
+A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success FAIL="gate" act; expect "the neutral's gate failure cannot be published -> no neutral either (an error is logged)" "-$OWN" ERRORED=1
+
+# REQ-DEP-001-AC2, AC9: the verdict is for the commit whose diff was gathered. A head that is another commit when the readers have answered
+# gets nothing: no check, no arm, no disarm, no issue; it is not an error (the new head is a candidate next hour)
+A="$CLEAN" B="$CLEAN" ARMED=true HEAD_NOW=1111111111111111111111111111111111111111 act; expect "the head moved during the review (readers clean) -> no arm, no check, the arm it has is left alone" \
+  "-pr merge" "-check-runs" ERRORED=0
+grep -q "PR #99: its head moved from 0000000 to 1111111 during the review" "$w/act.out" && grep -q "head moved during the review (new head next hour): 1;" "$w/run/summary" \
+  && { echo "ok: act: a moved head is said in the log and counted in the summary"; pass=$((pass+1)); } || { echo "FAIL: act: moved head report"; tail -5 "$w/act.out"; fail=$((fail+1)); }
+A="$CLEAN" B="$BREAKS" ARMED=true HEAD_NOW=1111111111111111111111111111111111111111 act; expect "the head moved during the review (a reader says breaks-us) -> no issue, no check, no disarm" \
+  "-pr merge" "-check-runs" "-issue create" ERRORED=0
+A="$CLEAN" B="$CLEAN" FAIL="head" act; expect "the PR's head cannot be read after the review -> unfinished: no arm, no check" "-pr merge --auto" "-check-runs" ERRORED=1
+A="$CLEAN" B="$CLEAN" ARMED=true COMMITS_HEAD=2222222222222222222222222222222222222222 act; expect "the PR's commits end at another commit than the candidate's (gather exit 5) -> no diff read, no reader, nothing done" \
+  "-compare/" "-pr merge" "-check-runs" "-pr view" ERRORED=0
+[ ! -e "$w/run/work/pr-99/bundle.md" ] && [ ! -e "$w/run/work/pr-99/reader-AUDITOR_MODEL_PRIMARY.json" ] \
+  && { echo "ok: act: a head that moved before the gather leaves no bundle and no reader answer"; pass=$((pass+1)); } || { echo "FAIL: act: moved before gather"; fail=$((fail+1)); }
 A="$CLEAN" B="$TRUNC" act; expect "a truncated answer -> no merge, no check (round-1 P1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" FAIL="diff" act; expect "diff cannot be fetched -> no reader, no merge, no check (round-1 P1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$BREAKS" ARMED=true act; expect "re-hold with auto-merge armed -> disarm, issue, THEN failure check (round-1 P1)" \
@@ -500,7 +722,7 @@ grep -q "reader B" "$w/run/work/pr-99/issue.md" && grep -qi "no answer" "$w/run/
 A="$BREAKS" B="$CLEAN" MB=boom act; expect "breaks-us from one reader while the other errors -> HOLD: issue, failure check, no merge (owner, Oct 1)" \
   "-pr merge --auto" "+issue create" "+$CHK" "ORDER:issue create>$CHK" ERRORED=0
 A="$CLEAN" B="$BREAKS" PRS="99 100" FAIL="issuelist" act; expect "issue lookup fails on #99 -> #100 still reviewed, errored counted (bash -e, round 1)" \
-  "+pr diff 100" ERRORED=2
+  "+compare/main\.\.\.$(printf '%040d' 100)" ERRORED=2
 A="$CLEAN" B='{"findings": [{"severity": "breaks-us", "title": "as claude-opus-9 I see", "release_note": "n", "our_line": "l", "why": "Anthropic says"}]}' act
 if grep -rqiE "claude|anthropic" "$w/run/work/pr-99/issue.md" "$w/run/work/pr-99/decision.json" "$w/run/work/pr-99/reader-AUDITOR_MODEL_FALLBACK.json"; then
   echo "FAIL: act: a model/vendor name reached the issue or the evidence"; fail=$((fail+1))
@@ -546,14 +768,14 @@ A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act; expect "forced re-re
 grep -q -- "-f conclusion=neutral" "$w/gh.log" && { echo "ok: act: the superseding check is neutral"; pass=$((pass+1)); } || { echo "FAIL: act: neutral check"; fail=$((fail+1)); }
 A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" PRIOR=success act; expect "forced re-hold whose disarm fails -> neutral check, no failure verdict (round-2 P1)" \
   "+check-runs" "-issue create" ERRORED=1
-grep -q -- "-f conclusion=neutral" "$w/gh.log" && ! grep -q -- "-f conclusion=failure" "$w/gh.log" \
-  && { echo "ok: act: only a neutral check after a failed disarm"; pass=$((pass+1)); } || { echo "FAIL: act: neutral-only"; fail=$((fail+1)); }
+grep -q -- "name=dependabot-reviewer .*-f conclusion=neutral" "$w/gh.log" && ! grep -q -- "name=dependabot-reviewer .*-f conclusion=failure" "$w/gh.log" \
+  && { echo "ok: act: only a neutral check of the reviewer's own after a failed disarm (and the gate's failure before it)"; pass=$((pass+1)); } || { echo "FAIL: act: neutral-only"; fail=$((fail+1)); }
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "first-time reader error -> NO check at all (row 75)" "-check-runs" ERRORED=1
 ANSWER_cut="$CLEAN" A="$CLEAN" B="$CLEAN" MB=cut act; expect "a complete-looking answer that stopped at the token limit -> error, no merge (live run)" "-pr merge" "-check-runs" ERRORED=1
 grep -q '"stop_reason": "max_tokens"' "$w/run/work/pr-99/reader-AUDITOR_MODEL_FALLBACK.json" && grep -q "token limit" "$w/run/work/pr-99/reader-AUDITOR_MODEL_FALLBACK.json" \
   && { echo "ok: act: the evidence records the stop reason and says 'token limit'"; pass=$((pass+1)); } || { echo "FAIL: act: stop reason in evidence"; fail=$((fail+1)); }
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act
-grep -c "check-runs" "$w/gh.log" | grep -qx 2 && grep -q -- "-f conclusion=neutral" "$w/gh.log" \
+grep -c "check-runs" "$w/gh.log" | grep -qx 3 && grep -q -- "-f conclusion=neutral" "$w/gh.log" && grep -q "name=auditor-review-gate" "$w/gh.log" \
   && { echo "ok: act: a success write that errored is superseded by neutral (lost response, round-3 P1)"; pass=$((pass+1)); } \
   || { echo "FAIL: act: lost-response neutral"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 A="$CLEAN" B='{"findings": [], "error": "I could not complete this review."}' act; expect "a reader declaring failure in an extra field -> no merge, no check (round-3 P1)" "-pr merge" "-check-runs" ERRORED=1
@@ -583,33 +805,74 @@ mkdir -p "$w/cx/work"; printf '99 shaA\n100 shaB\n101 shaC\n' > "$w/cx/work/arme
   || { echo "FAIL: cancellation cleanup"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 grep -q -- "check-runs -f name=dependabot-reviewer -f head_sha=shaC .*conclusion=neutral" "$w/gh.log" \
   && ! grep -q -- "head_sha=shaB" "$w/gh.log" \
-  && [ "$(grep -n 'head_sha=shaC' "$w/gh.log" | cut -d: -f1)" -lt "$(grep -n 'disable-auto 101' "$w/gh.log" | cut -d: -f1)" ] \
-  && { echo "ok: cancellation: a failed lookup posts neutral FIRST, then disarms, so the head is retried (round-7 P1)"; pass=$((pass+1)); } \
+  && [ "$(grep -n 'name=dependabot-reviewer -f head_sha=shaC' "$w/gh.log" | cut -d: -f1)" -lt "$(grep -n 'disable-auto 101' "$w/gh.log" | cut -d: -f1)" ] \
+  && [ "$(grep -n 'name=auditor-review-gate -f head_sha=shaC .*conclusion=failure' "$w/gh.log" | cut -d: -f1)" -lt "$(grep -n 'name=dependabot-reviewer -f head_sha=shaC' "$w/gh.log" | cut -d: -f1)" ] \
+  && { echo "ok: cancellation: a failed lookup fails the gate's check, posts neutral, THEN disarms, so the head is retried (round-7 P1)"; pass=$((pass+1)); } \
   || { echo "FAIL: cancellation: neutral on unknown"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
+: > "$w/gh.log"
+(env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" FAIL="gate" RUNNER_TEMP="$w/cx" GITHUB_REPOSITORY=o/r APP_TOKEN=a APP_SLUG=s RUN_URL=https://example.invalid/run \
+   bash --noprofile --norc -e -o pipefail "$w/cancel.sh") >/dev/null 2>&1
+grep -q "name=auditor-review-gate -f head_sha=shaC" "$w/gh.log" && ! grep -q "name=dependabot-reviewer -f head_sha=shaC" "$w/gh.log" && grep -q "pr merge --disable-auto 101" "$w/gh.log" \
+  && { echo "ok: cancellation: when the gate's check cannot be failed the neutral is not published; the arm still comes off (REQ-DEP-001-AC13)"; pass=$((pass+1)); } \
+  || { echo "FAIL: cancellation: neutral without the gate failure"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 
 # ============================================================================ candidates step
-python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cand.sh" "$w/streak.sh" <<'PY2'
+python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cand.sh" "$w/streak.sh" "$w/settle.sh" <<'PY2'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"]
 c = [s["run"] for s in steps if s.get("id") == "candidates"]
 k = [s["run"] for s in steps if s.get("name", "").startswith("three unfinished runs in a row")]
-assert len(c) == 1 and len(k) == 1
-open(sys.argv[2], "w").write(c[0]); open(sys.argv[3], "w").write(k[0])
+t = [s for s in steps if s.get("id") == "settle"]
+assert len(c) == 1 and len(k) == 1 and len(t) == 1
+# the settle step runs after the act step and the cancellation cleanup, whatever became of them (finished, failed, cancelled)
+names = [s.get("id") or s.get("name", "") for s in steps]
+assert names.index("act") < [i for i, x in enumerate(names) if x.startswith("on cancellation")][0] < names.index("settle"), names
+assert t[0]["if"] == "${{ always() && steps.candidates.outputs.count != '0' && steps.candidates.outputs.count != '' && steps.app-merge.outcome == 'success' }}", t[0]["if"]
+assert "continue-on-error" not in t[0]
+open(sys.argv[2], "w").write(c[0]); open(sys.argv[3], "w").write(k[0]); open(sys.argv[4], "w").write(t[0]["run"])
 PY2
+# the default list: the two real majors (#99, #91). prs-all.json adds the real plain patch (#90); prs-flagged.json adds the flagged group (#400) too.
+jq -n --slurpfile a "$FIX/pr-99.json" --slurpfile c "$FIX/pr-91.json" \
+  '[($a[0] + {number: 99, headRefOid: "sha99"}), ($c[0] + {number: 91, headRefOid: "sha91"})]' > "$w/prs.json"
 jq -n --slurpfile a "$FIX/pr-99.json" --slurpfile b "$FIX/pr-90.json" --slurpfile c "$FIX/pr-91.json" \
-  '[($a[0] + {number: 99, headRefOid: "sha99"}), ($b[0] + {number: 90, headRefOid: "sha90"}), ($c[0] + {number: 91, headRefOid: "sha91"})]' > "$w/prs.json"
+  '[($a[0] + {number: 99, headRefOid: "sha99"}), ($b[0] + {number: 90, headRefOid: "sha90"}), ($c[0] + {number: 91, headRefOid: "sha91"})]' > "$w/prs-all.json"
+jq -n --slurpfile b "$FIX/pr-90.json" '[($b[0] + {number: 90, headRefOid: "sha90"})]' > "$w/prs-patch.json"
 cat > "$w/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
 case "$1 $2" in
   "pr list") cat "$PRS_JSON" ;;
   "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
+  "api repos/o/r/commits/sha90/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP90:-}" = fail ] && exit 1; echo "${PRIOR90:-none}" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
   "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
-  "api repos/o/r/issues/99/events") [ "${EVENTSFAIL:-}" = 1 ] && exit 1; printf '%b' "${EVENTS99:-}" ;;
+  # earlier heads of #99 and #90 (the spend guard): p1 is the head's first parent, p0 is p1's
+  "api repos/o/r/commits/p1/check-runs?check_name=dependabot-reviewer") [ "${LOOKUPP1:-}" = fail ] && exit 1; echo "${PRIORP1:-none}" ;;
+  "api repos/o/r/commits/p0/check-runs?check_name=dependabot-reviewer") echo "${PRIORP0:-none}" ;;
+  # a commit as GitHub gives it, read by the step's own filter: PARENT=x makes the head a merge commit (first parent x, second on main);
+  # ONEPARENT=x makes it an ordinary commit on top of x; neither: an ordinary commit on main
+  "api repos/o/r/commits/sha99"|"api repos/o/r/commits/sha90"|"api repos/o/r/commits/p1")
+              case "$2" in */p1) one="${ONEPARENTP1:-}"; two="${PARENTP1:-}" ;; *) one="${ONEPARENT:-}"; two="${PARENT:-}" ;; esac
+              f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
+              if [ -n "$two" ]; then jq -r "$f" <<<"{\"parents\": [{\"sha\": \"$two\"}, {\"sha\": \"main1\"}]}"
+              else jq -r "$f" <<<"{\"parents\": [{\"sha\": \"${one:-main0}\"}]}"; fi ;;
+  "api -H") case "$4" in     # same-diff: GitHub's diff of a commit against its merge base with main
+              repos/o/r/compare/main...p1|repos/o/r/compare/main...p0) [ "${DIFFFAIL:-}" = 1 ] && exit 1; printf '%b' "${DIFF_OLD-$DIFF_SAME}" ;;
+              repos/o/r/compare/main...sha99|repos/o/r/compare/main...sha90) printf '%b' "${DIFF_NEW-$DIFF_SAME}" ;;
+              *) exit 1 ;;
+            esac ;;
+  "api repos/o/r/issues/99/events") [ "${EVENTSFAIL:-}" = 1 ] && exit 1
+              if [ -n "${EVENTS99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" <<<"$EVENTS99_JSON"   # the step's own filter, run for real
+              else printf '%b' "${EVENTS99:-}"; fi ;;
   "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
-  "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
-  "pr view") echo "${ARMED99:-false}" ;;
+  "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
+  # the review gate's own check on a head (the App's latest): GATE99 / GATE90, none unless set
+  "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate") [ "${GATELOOKUP:-}" = fail ] && exit 1; echo "${GATE99:-none}" ;;
+  "api repos/o/r/commits/sha90/check-runs?check_name=auditor-review-gate"|"api repos/o/r/commits/sha91/check-runs?check_name=auditor-review-gate") echo "${GATE90:-none}" ;;
+  "pr view") case "$3" in 90) v="${ARMED90:-${ARMED99:-false}}" ;; *) v="${ARMED99:-false}" ;; esac   # the PR as GitHub gives it, read by the step's own filter
+              h="sha$3"; [ "${MOVED:-}" = "$3" ] && h=shaNEW
+              case "$v" in true) j='{"state":"OPEN","headRefOid":"'$h'","autoMergeRequest":{"mergeMethod":"SQUASH"}}' ;; closed) j='{"state":"MERGED","headRefOid":"'$h'","autoMergeRequest":null}' ;; *) j='{"state":"OPEN","headRefOid":"'$h'","autoMergeRequest":null}' ;; esac
+              f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" <<<"$j" ;;
   "pr merge") case "$*" in *--auto*) [ "${REARMFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   "run list") [ "${RUNLIST:-}" = fail ] && exit 1
               f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
@@ -619,6 +882,7 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$w/bin/gh"
+export DIFF_SAME='diff --git a/go.mod b/go.mod\nindex 1111111..2222222 100644\n--- a/go.mod\n+++ b/go.mod\n@@ -1,3 +1,3 @@\n module x\n-require a/b v4.0.0\n+require a/b v7.0.0\n'
 cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
   (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-$w/prs.json}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" \
@@ -629,13 +893,48 @@ cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
   if [ "$got" = "$1" ] && [ "$rc" = "$2" ]; then echo "ok: candidates: $3"; pass=$((pass+1))
   else echo "FAIL: candidates: $3 (got '$got' rc $rc)"; sed 's/^/    /' "$w/cand.out" | tail -8; fail=$((fail+1)); fi
 }
-cand "99 none,91 none," 0 "real bodies: majors #99 and #91 selected, patch #90 not"
+also() { # <name> then +regex / -regex assertions on the gh log of the last cand, settle or lane run
+  local name="$1" ok=1; shift
+  for a in "$@"; do
+    case "$a" in
+      +*) grep -qE -- "${a:1}" "$w/gh.log" || ok=0 ;;
+      -*) grep -qE -- "${a:1}" "$w/gh.log" && ok=0 ;;
+    esac
+  done
+  if [ "$ok" = 1 ]; then echo "ok: $name"; pass=$((pass+1)); else echo "FAIL: $name"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); fi
+}
+cand "99 none,91 none," 0 "real bodies: the majors #99 and #91 are selected"
+# every open Dependabot PR is a candidate, whatever its updates are (REQ-DEP-001-AC2): the real plain patch #90 beside the majors
+PRSFILE="$w/prs-all.json" cand "99 none,90 none,91 none," 0 "real bodies: the plain patch #90 is selected beside the majors #99 and #91"
+PRSFILE="$w/prs-all.json" PRIOR90=success cand "99 none,91 none," 0 "a plain patch with a success verdict is not reviewed again"
+PRSFILE="$w/prs-all.json" PRIOR90=failure cand "99 none,91 none," 0 "a plain patch with a failure verdict is not reviewed again"
 PRIOR99=success cand "91 none," 0 "a success verdict is not reviewed again"
 PRIOR99=failure PRIOR91=neutral cand "91 neutral," 0 "failure is a verdict; neutral means retry"
 PRIOR99=success FORCE=true cand "99 neutral,91 none," 0 "force: old verdict invalidated up front (disarm + neutral), reviewed from neutral (round-3 P1)"
 grep -q "pr merge --disable-auto 99" "$w/gh.log" && grep -q -- "-f conclusion=neutral" "$w/gh.log" \
   && { echo "ok: candidates: the forced invalidation happened before any later step"; pass=$((pass+1)); } || { echo "FAIL: candidates: forced invalidation calls"; fail=$((fail+1)); }
+[ "$(grep -n 'name=auditor-review-gate -f head_sha=sha99 .*conclusion=failure' "$w/gh.log" | cut -d: -f1)" -lt "$(grep -n 'name=dependabot-reviewer -f head_sha=sha99 .*conclusion=neutral' "$w/gh.log" | cut -d: -f1)" ] 2>/dev/null \
+  && { echo "ok: candidates: force: the review gate's check is failed FIRST, then the neutral (REQ-DEP-001-AC13)"; pass=$((pass+1)); } || { echo "FAIL: candidates: forced gate failure before neutral"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 PRIOR99=success FORCE=true NEUTRALFAIL=1 cand "91 none," 1 "force: neutral cannot be posted -> skipped, step fails (round-3 P1)"
+PRIOR99=success FORCE=true GATEFAIL=1 cand "91 none," 1 "force: the review gate's check cannot be failed -> skipped, step fails"
+also "candidates: without the gate failure the old verdict is not superseded (no neutral)" "-name=dependabot-reviewer -f head_sha=sha99"
+# REQ-DEP-001-AC13: every hour, a gate success standing over a failure or neutral verdict is failed again (a gate run that read before the verdict and published after it)
+GFAIL='check-runs -f name=auditor-review-gate -f head_sha=sha99 -f status=completed -f conclusion=failure'
+PRIOR99=failure GATE99=success cand "91 none," 0 "a failure verdict whose gate check says success"
+also "candidates: the gate's check is failed again over the failure verdict" "+$GFAIL"
+PRIOR99=failure GATE99=failure cand "91 none," 0 "a failure verdict whose gate check says failure"
+also "candidates: nothing is published when the gate already says failure" "-check-runs -f"
+PRIOR99=failure cand "91 none," 0 "a failure verdict with no gate check yet"
+also "candidates: nothing is published when the gate has no check (none is not green)" "-check-runs -f"
+PRIOR99=failure GATE99=success GATEFAIL=1 cand "91 none," 1 "the gate's check cannot be failed again over a failure verdict -> the step fails"
+PRIOR99=failure GATELOOKUP=fail cand "91 none," 1 "the gate's check cannot be read over a failure verdict -> the step fails"
+PRIOR99=neutral GATE99=success cand "99 neutral,91 none," 0 "a neutral verdict whose gate check says success -> failed again, then reviewed"
+also "candidates: the gate's check is failed again over the neutral verdict" "+$GFAIL"
+PRIOR99=neutral GATE99=success GATEFAIL=1 cand "91 none," 1 "the gate's check cannot be failed again over a neutral verdict -> skipped this hour, the step fails"
+PRIOR99=success GATE99=success cand "91 none," 0 "a success verdict: the gate's check is never touched"
+also "candidates: no gate lookup and no gate publish over a success verdict" "-auditor-review-gate"
+GATE99=success cand "99 none,91 none," 0 "a head with no verdict: the gate's check is not touched here (the act step fails it with any verdict that is not success)"
+also "candidates: no gate publish for a head with no verdict" "-name=auditor-review-gate"
 PRIOR99=success FORCE=true DISARMFAIL=1 ARMED99=true cand "" 1 "force: auto-merge cannot be turned off -> skipped, step fails (the stub shows #91 armed too: skipped as well)"
 PRIOR99=success ARMED99=false cand "91 none," 0 "a success verdict whose PR someone disarmed is left alone (no re-arm, round-4 P1)"
 ARMED99=true cand "99 none,91 none," 0 "armed with no verdict (cancelled mid-act) -> disarmed BEFORE review (round-4 P1)"
@@ -644,19 +943,86 @@ cand "99 none,91 none," 0 "not armed, no verdict -> no disarm call"
 grep -q "disable-auto" "$w/gh.log" && { echo "FAIL: candidates: needless disarm"; fail=$((fail+1)); } || { echo "ok: candidates: no needless disarm"; pass=$((pass+1)); }
 ARMED99=true DISARMFAIL=1 cand "" 1 "armed with no verdict and the disarm fails -> skipped, step fails"
 LOOKUP99=fail cand "91 none," 1 "a failed check lookup skips that PR and FAILS the step (round-2 P2)"
-ONLY=90 cand "" 0 "pr=90 (a patch) selects nothing"
+PRSFILE="$w/prs-all.json" ONLY=90 cand "90 none," 0 "pr=90 (a plain patch) selects it"
+PRSFILE="$w/prs-all.json" ONLY=90 PRIOR90=success cand "" 0 "pr=90 with a success verdict and no force selects nothing"
+PRSFILE="$w/prs-all.json" ONLY=90 PRIOR90=success FORCE=true cand "90 neutral," 0 "pr=90 forced over a success verdict: auto-merge off, neutral, reviewed again (a patch like a major)"
+also "candidates: the forced patch was disarmed and its verdict superseded" "+pr merge --disable-auto 90" "+head_sha=sha90 .*conclusion=neutral"
+PRSFILE="$w/prs-all.json" FORCE=true PRIOR99=success PRIOR90=failure cand "99 neutral,90 neutral,91 none," 0 "force with no pr: every open Dependabot PR is reviewed again, verdict or not"
 # REQ-DEP-001-AC10: a flagged non-major (real #400, codeql 4.38.2 -> 4.38.3, notes say 'Breaking change') is a candidate like a major
-PRSFILE="$w/prs-flagged.json" cand "99 none,91 none,400 none," 0 "a flagged non-major (#400) is selected beside the majors; the plain patch #90 is not"
-PRSFILE="$w/prs-flagged.json" PRIOR400=success cand "99 none,91 none," 0 "a flagged non-major with a success verdict is not reviewed again"
-PRSFILE="$w/prs-flagged.json" ARMED99=true cand "99 none,91 none,400 none," 0 "armed flagged non-major with no verdict -> disarmed up front like a major"
+PRSFILE="$w/prs-flagged.json" cand "99 none,90 none,91 none,400 none," 0 "a flagged non-major (#400) is selected beside the majors and the plain patch"
+PRSFILE="$w/prs-flagged.json" PRIOR400=success cand "99 none,90 none,91 none," 0 "a flagged non-major with a success verdict is not reviewed again"
+PRSFILE="$w/prs-flagged.json" ARMED99=true ARMED90=false cand "99 none,90 none,91 none,400 none," 0 "armed flagged non-major with no verdict -> disarmed up front like a major"
 grep -q "pr merge --disable-auto 400" "$w/gh.log" && { echo "ok: candidates: the armed flagged non-major was turned off up front"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged up-front disarm"; fail=$((fail+1)); }
 ONLY=400 PRSFILE="$w/prs-flagged.json" cand "400 none," 0 "pr=400 (flagged) selects it"
-# the hash-pinned act step names a hold by .major: a flagged update is written as major there, still flagged; a plain major is untouched
-[ "$(jq -r '[.[]|select(.major and .flagged)]|length' "$w/cand/work/updates-400.json")" = 4 ] \
-  && { echo "ok: candidates: flagged updates reach the act step as major+flagged (4 codeql members)"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged updates not marked for the act step"; fail=$((fail+1)); }
+# the updates reach the act step as the parser wrote them: what each one is (major, flagged, kind)
+[ "$(jq -r '[.[]|select((.major|not) and .flagged and .kind == "flagged")]|length' "$w/cand/work/updates-400.json")" = 4 ] \
+  && { echo "ok: candidates: flagged updates reach the act step as flagged, not major (4 codeql members)"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged updates changed on the way to the act step"; fail=$((fail+1)); }
 ONLY=99 cand "99 none," 0 "pr=99 selects the plain major"
-[ "$(jq -r '[.[]|select(.major and (.flagged|not))]|length' "$w/cand/work/updates-99.json")" = 1 ] \
+[ "$(jq -r '[.[]|select(.major and (.flagged|not) and .kind == "major")]|length' "$w/cand/work/updates-99.json")" = 1 ] \
   && { echo "ok: candidates: a plain major is left as it was (major, not flagged)"; pass=$((pass+1)); } || { echo "FAIL: candidates: plain major changed"; fail=$((fail+1)); }
+PRSFILE="$w/prs-all.json" ONLY=90 cand "90 none," 0 "pr=90: its updates are handed on"
+[ "$(jq -c '[.[]|[.name, .major, .flagged, .kind]]' "$w/cand/work/updates-90.json")" = '[["actions/setup-java",false,false,"not-major"]]' ] \
+  && { echo "ok: candidates: a plain patch reaches the act step as what it is (not major, not flagged, kind not-major)"; pass=$((pass+1)); } \
+  || { echo "FAIL: candidates: plain patch not handed to the act step"; cat "$w/cand/work/updates-90.json"; fail=$((fail+1)); }
+
+# REQ-DEP-003-AC1: the patch/minor lane's arm on a plain patch stays on through the review (nothing is slower than before the reviewer read
+# patch and minor bumps) and is remembered, so the settle step can put it back; a major's or a flagged bump's arm without a verdict comes off.
+PRSFILE="$w/prs-all.json" ARMED99=true cand "99 none,90 none,91 none," 0 "an armed plain patch with no verdict is reviewed with its arm left on"
+also "candidates: the lane's arm on the plain patch is not turned off; the majors' arms are" "-disable-auto 90" "+pr merge --disable-auto 99" "+pr merge --disable-auto 91"
+[ "$(cat "$w/cand/work/lane-arms.txt")" = "90 sha90" ] && { echo "ok: candidates: the lane's arm is remembered for the settle step (lane-arms.txt), and only that one"; pass=$((pass+1)); } \
+  || { echo "FAIL: candidates: lane-arms.txt"; cat "$w/cand/work/lane-arms.txt"; fail=$((fail+1)); }
+PRSFILE="$w/prs-all.json" ARMED90=true PRIOR90=neutral cand "99 none,90 neutral,91 none," 0 "an armed plain patch whose last review did not finish (neutral) keeps the lane's arm too"
+also "candidates: no disarm of the neutral plain patch" "-disable-auto"
+PRSFILE="$w/prs-all.json" cand "99 none,90 none,91 none," 0 "a plain patch that is not armed: nothing to remember"
+[ ! -s "$w/cand/work/lane-arms.txt" ] && { echo "ok: candidates: lane-arms.txt is empty when the lane armed nothing"; pass=$((pass+1)); } || { echo "FAIL: candidates: lane-arms.txt not empty"; fail=$((fail+1)); }
+
+# REQ-DEP-003-AC3: a failure verdict never stays armed: every hourly run turns off an arm made since (the lane's, a person's)
+PRSFILE="$w/prs-all.json" PRIOR90=failure ARMED90=true cand "99 none,91 none," 0 "a failed plain patch that is armed again -> auto-merge turned off, not reviewed again"
+also "candidates: the arm over the failure verdict was turned off, and never put back" "+pr merge --disable-auto 90" "-pr merge --auto"
+PRIOR99=failure ARMED99=true PRIOR91=success cand "" 0 "a failed major that is armed again -> auto-merge turned off, not reviewed again"
+also "candidates: the failed major's arm was turned off" "+pr merge --disable-auto 99"
+PRSFILE="$w/prs-all.json" PRIOR90=failure cand "99 none,91 none," 0 "a failed plain patch that is not armed -> nothing to do"
+also "candidates: no disarm call for an unarmed failure" "-disable-auto"
+PRSFILE="$w/prs-patch.json" PRIOR90=failure ARMED90=true DISARMFAIL=1 cand "" 1 "a failed patch that is armed and cannot be disarmed -> the step fails (retried next hour)"
+
+# REQ-DEP-001-AC11, the spend guard: a head with no verdict that is a merge commit over a head the readers passed, with byte for byte the
+# same diff against main, gets the success published on it and no reader; anything else is read.
+carried() { also "candidates: $1" "+check-runs -f name=dependabot-reviewer -f head_sha=$2 -f status=completed -f conclusion=success .*carried over from that head" "+compare/main\.\.\.$3" "+compare/main\.\.\.$2"; }
+PRSFILE="$w/prs-patch.json" PARENT=p1 PRIORP1=success cand "" 0 "a patch head that only merges main into a passed head (same diff) is not a candidate"
+carried "the success is published on the new head, naming the head it is carried from, after both diffs were read" sha90 p1
+grep -q "output\[summary\]=Not read again: this head's diff against main is byte for byte the diff of p1," "$w/gh.log" \
+  && { echo "ok: candidates: the carried check says which head it is carried from"; pass=$((pass+1)); } || { echo "FAIL: candidates: carried summary"; fail=$((fail+1)); }
+ONLY=99 PARENT=p1 PRIORP1=success cand "" 0 "a major head that only merges main into a passed head is not a candidate either"
+carried "the success is carried to the major's new head" sha99 p1
+ONLY=99 PARENT=p1 PARENTP1=p0 PRIORP0=success cand "" 0 "two merges of main since the passed head (the first has no verdict): carried from the passed one"
+carried "the walk went back over the unjudged merge to the passed head" sha99 p0
+ONLY=99 PARENT=p1 PRIORP1=success EVENTS99='auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]\n' cand "" 0 "a carried major whose arm the lane turned off on the new head"
+also "candidates: the carried success puts the lane-voided arm back for exactly that head, after the guard" "+pr merge --auto --squash --match-head-commit sha99 99"
+ONLY=99 PARENT=p1 PRIORP1=success DIFF_NEW="${DIFF_SAME}+one more line\n" cand "99 none," 0 "the new head's diff against main differs from the passed head's -> read"
+also "candidates: nothing is published for a head whose diff differs" "-check-runs -f" "+compare/main\.\.\.sha99"
+ONLY=99 PARENT=p1 PRIORP1=failure cand "99 none," 0 "the head under the merge carries a FAILURE -> read (a failure is never carried, and never passed over)"
+also "candidates: no diff is compared and nothing published under a failure" "-compare/" "-check-runs -f"
+ONLY=99 PARENT=p1 PRIORP1=neutral cand "99 none," 0 "the head under the merge carries a neutral (an unfinished re-review) -> read"
+also "candidates: nothing published under a neutral" "-compare/" "-check-runs -f"
+ONLY=99 PARENT=p1 PRIORP1=failure PARENTP1=p0 PRIORP0=success cand "99 none," 0 "an older success behind a newer failure is not reached -> read"
+also "candidates: the walk stops at the first verdict" "-commits/p0" "-check-runs -f"
+ONLY=99 cand "99 none," 0 "a head that is not a merge commit (Dependabot's own, a writer's commit) -> read"
+also "candidates: no earlier head is looked up for a head with one parent" "-commits/p1" "-compare/"
+ONLY=99 ONEPARENT=p1 PRIORP1=success cand "99 none," 0 "an ordinary commit on top of a passed head (somebody pushed a commit) -> read, whatever its diff"
+also "candidates: the head under an ordinary commit is not looked up, no diff compared, nothing published" "-commits/p1" "-compare/" "-check-runs -f"
+ONLY=99 PARENT=p1 ONEPARENTP1=p0 PRIORP0=success cand "99 none," 0 "a merge over an unjudged ordinary commit over a passed head -> read (the walk goes back over merge commits only)"
+also "candidates: the walk does not pass an ordinary commit" "-commits/p0" "-compare/" "-check-runs -f"
+ONLY=99 PARENT=p1 cand "99 none," 0 "a merge over a head with no verdict that is not itself a merge -> read"
+also "candidates: nothing to carry from" "-compare/" "-check-runs -f"
+ONLY=99 PARENT=p1 PRIORP1=success FORCE=true cand "99 none," 0 "force: a head with no verdict is read even over a passed head with the same diff"
+also "candidates: a forced run does not look for a head to carry from" "-commits/sha99 " "-compare/"
+ONLY=99 PARENT=p1 PRIORP1=success DIFFFAIL=1 cand "99 none," 0 "the passed head's diff cannot be read -> read"
+ONLY=99 PARENT=p1 LOOKUPP1=fail cand "99 none," 0 "the earlier head's verdict cannot be read -> read"
+ONLY=99 PARENT=p1 PRIORP1=success DIFF_SAME='diff --git a/x.bin b/x.bin\nindex 1111111..2222222 100644\nBinary files a/x.bin and b/x.bin differ\n' cand "99 none," 0 "the same diff text naming a binary file -> read (its bytes are not in a diff)"
+ONLY=99 PARENT=p1 PRIORP1=success DIFF_SAME='' cand "99 none," 0 "an empty diff -> read"
+ONLY=99 PARENT=p1 PRIORP1=success NEUTRALFAIL=1 cand "" 1 "the carried success cannot be published -> not reviewed this hour, the step fails (retried next hour)"
+ONLY=99 PRIOR99=neutral PARENT=p1 PRIORP1=success cand "99 neutral," 0 "a head whose own latest check is neutral is read, never carried"
+also "candidates: no walk from a neutral head" "-commits/sha99 " "-compare/"
 
 # The lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
 # head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back, after
@@ -681,6 +1047,59 @@ REARMFAIL=1 heal "$LANE_OFF" 1 yes "the re-arm cannot be made -> the step fails 
 EVENTSFAIL=1 heal "$LANE_OFF" 1 no "the events cannot be read -> skipped, the step fails"
 PRIOR99=failure EVENTS99="$LANE_OFF" cand "91 none," 0 "a FAILURE verdict is never re-armed"
 grep -q "pr merge --auto" "$w/gh.log" && { echo "FAIL: candidates: a failure verdict was armed"; fail=$((fail+1)); } || { echo "ok: candidates: no arm for a failure verdict"; pass=$((pass+1)); }
+# The step's own filter over events as GitHub records them (issues/N/events of this repository's bumps, Nov 2026): turning squash
+# auto-merge ON is recorded as auto_squash_enabled, turning it off as auto_merge_disabled. The LAST of them decides.
+ev() { jq -cn --argjson e "$1" '[$e[] | {event: .[0], actor: {login: .[1]}}] + [{event: "labeled", actor: {login: "dependabot[bot]"}}]'; }
+EVENTS99_JSON=$(ev '[["auto_squash_enabled","fosterstack-automation[bot]"],["auto_merge_disabled","github-actions[bot]"]]') heal "" 0 yes \
+  "real event names: squash enabled by the App, then disabled by github-actions[bot] -> the arm is put back"
+EVENTS99_JSON=$(ev '[["auto_merge_disabled","github-actions[bot]"],["auto_squash_enabled","fosterstack-automation[bot]"]]') heal "" 0 no \
+  "real event names: a squash ENABLE after the lane's disable is the last event -> left alone (an enable by any merge method counts)"
+EVENTS99_JSON=$(ev '[["auto_squash_enabled","github-actions[bot]"],["auto_merge_disabled","github-actions[bot]"],["auto_rebase_enabled","someone"]]') heal "" 0 no \
+  "real event names: a later enable by another merge method is the last event -> left alone"
+EVENTS99_JSON=$(ev '[["auto_squash_enabled","fosterstack-automation[bot]"],["auto_merge_disabled","someone"]]') heal "" 0 no \
+  "real event names: a person's disable is the last event -> left alone"
+
+# ============================================================================ settle step
+# REQ-DEP-001-AC12: after the act step (and the cancellation cleanup), for every head taken up for review: none is armed over a failure
+# verdict; a plain patch the lane had armed, whose review did not finish, is armed again for that exact head after the guard.
+settle() { # <candidates lines> <lane-arms lines> <rc> <name>; env PRIOR99 PRIOR90 ARMED99 ARMED90 RULES REARMFAIL DISARMFAIL LOOKUP90
+  local W="$w/settle"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
+  printf '%b' "$1" > "$W/work/candidates.txt"; printf '%b' "$2" > "$W/work/lane-arms.txt"
+  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" \
+     GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m GH_TOKEN=job \
+     bash --noprofile --norc -e -o pipefail "$w/settle.sh") > "$w/settle.out" 2>&1; local rc=$?
+  if [ "$rc" = "$3" ]; then echo "ok: settle: $4"; pass=$((pass+1)); else echo "FAIL: settle: $4 (rc $rc)"; sed 's/^/    /' "$w/settle.out" | tail -6; fail=$((fail+1)); fi
+}
+BOTH='99 sha99 none\n90 sha90 none\n'
+PRIOR90=failure ARMED90=true ARMED99=false settle "$BOTH" '90 sha90\n' 0 "a patch that now carries the failure verdict and is armed (the lane armed it meanwhile)"
+also "settle: auto-merge is turned off over the failure verdict, and nothing is armed" "+pr merge --disable-auto 90" "-pr merge --auto" "-disable-auto 99"
+PRIOR99=failure ARMED99=true ARMED90=false PRIOR90=success settle "$BOTH" '' 0 "a major that now carries the failure verdict and is armed"
+also "settle: the failed major's arm is turned off too" "+pr merge --disable-auto 99" "-pr merge --auto"
+PRIOR90=failure settle "$BOTH" '90 sha90\n' 0 "a failure verdict that is not armed"
+also "settle: nothing to turn off, nothing armed" "-pr merge"
+settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch whose review did not finish (no verdict) and that the act step disarmed"
+also "settle: the lane's arm is put back for exactly that head, after the required-check guard; the major stays off" \
+  "+pr merge --auto --squash --match-head-commit sha90 90" "+required-checks.json\?ref=main" "-match-head-commit sha99"
+PRIOR90=neutral settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch left neutral by an unfinished review"
+also "settle: the lane's arm is put back over a neutral too" "+pr merge --auto --squash --match-head-commit sha90 90"
+settle "$BOTH" '' 0 "an unfinished patch the lane had NOT armed (not in lane-arms.txt)"
+also "settle: an arm that was not there before the review is not made" "-pr merge"
+ARMED90=true settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch that is still armed"
+also "settle: nothing to do for an arm that is still on" "-pr merge"
+PRIOR90=success settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch that passed"
+also "settle: a success verdict is left as the act step left it" "-pr merge"
+RULES="$w/rules-drift.json" settle "$BOTH" '90 sha90\n' 1 "the required-check guard refuses -> the lane's arm stays off and the step fails"
+also "settle: nothing is armed past a refusing guard" "-pr merge --auto"
+REARMFAIL=1 settle "$BOTH" '90 sha90\n' 1 "the lane's arm cannot be put back -> the step fails"
+PRIOR90=failure ARMED90=true DISARMFAIL=1 settle "$BOTH" '90 sha90\n' 1 "an arm over a failure verdict cannot be turned off -> the step fails"
+LOOKUP90=fail settle "$BOTH" '90 sha90\n' 1 "a head's verdict cannot be read -> the step fails, nothing is armed blind"
+also "settle: no arm without a read verdict" "-pr merge --auto"
+ARMED90=closed settle "$BOTH" '90 sha90\n' 0 "the PR is no longer open (merged or closed during the run)"
+also "settle: nothing is done to a PR that is not open (1)" "-pr merge"
+MOVED=90 settle "$BOTH" '90 sha90\n' 0 "the PR's head is no longer the commit this run took up (lane-armed, unfinished, unarmed)"
+also "settle: no arm for a commit that is not the head any more" "-pr merge"
+MOVED=90 PRIOR90=failure ARMED90=true settle "$BOTH" '90 sha90\n' 0 "the failure verdict is on a commit that is not the head any more"
+also "settle: nothing is done to a PR that is not open" "-pr merge"
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name

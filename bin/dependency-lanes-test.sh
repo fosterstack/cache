@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12, REQ-DEP-001-AC13, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
-# event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
-# evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
-# patch/minor lane arms squash auto-merge only after the guard, and never for a major. Each real workflow
-# must pass; each mutated copy must be caught.
+# event, one run at a time; it reads every Dependabot bump, arms or holds and posts its check but opens no PR and
+# edits nothing; it carries a success to a new head only past the same-diff proof, and settles the arms after its act
+# step; its evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
+# patch/minor lane arms squash auto-merge only after the guard, never for a major and never for a head the reviewer
+# failed, and its last step turns off an arm the reviewer's verdict does not allow. Each real workflow must pass;
+# each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -18,6 +20,10 @@ on = d.get("on", {})
 bad = []
 def runs(job):
     return [(s, (s.get("run") or "")) for s in job.get("steps", [])]
+def in_order(text, *subs):
+    """every sub is in text, each first occurrence after the one before"""
+    at = [text.find(x) for x in subs]
+    return all(i >= 0 for i in at) and at == sorted(at) and len(set(at)) == len(at)
 if kind == "reviewer":
     if not isinstance(on, dict) or set(on) != {"schedule", "workflow_dispatch"}:
         bad.append(f"triggers are {sorted(on) if isinstance(on, dict) else on}, not exactly schedule + workflow_dispatch")
@@ -49,14 +55,74 @@ if kind == "reviewer":
             bad.append(f"{k} does not come from its environment secret")
     if re.search(r"\bclaude-[a-z0-9]|ANTHROPIC_API_KEY", open(path).read()):
         bad.append("a model id or an API key is written into the workflow")
-    # REQ-DEP-001-AC10: the candidate step and the hold issue select major OR flagged, never majors only
+    # REQ-DEP-001-AC2: every bump is read: the candidate step drops no pull request for its update kind, and the act step names EVERY update
+    # of a bump (in its check and in the issue of a held one), never the majors only
     cand = [r for st, r in runs(job) if st.get("id") == "candidates"]
-    if len(cand) != 1 or "select(.major or .flagged)" not in cand[0] or "select(.major)" in cand[0]:
-        bad.append("the candidate step does not select a flagged non-major beside a major")
+    acts = [r for st, r in runs(job) if st.get("id") == "act"]
+    if len(cand) != 1 or re.search(r"select\(\.major|the patch/minor lane's\"; continue", cand[0]):
+        bad.append("the candidate step leaves a pull request out for its update kind")
+    if len(acts) != 1 or """names=$(jq -r '[.[]|"\\(.name) \\(.from)→\\(.to)"]|join(", ")'""" not in acts[0] or "select(.major)" in acts[0]:
+        bad.append("the act step does not name every update of a bump (it selects by major)")
+    # REQ-DEP-001-AC2, AC9: the act step gathers the diff of exactly the candidate's commit, and looks at the PR's head again after the
+    # readers answered, before anything is armed, held or published
+    if len(acts) == 1:
+        a = acts[0]
+        g = 'python3 bin/dependabot-reviewer.py gather --pr "$n" --sha "$sha" --updates "$W/updates-$n.json" --out "$d"'
+        h = 'if [ "$head_now" != "$sha" ]; then'
+        if not in_order(a, g, "decide --reader", h, 'case "$decision" in') \
+                or not re.search(r'if \[ "\$head_now" != "\$sha" \]; then\n[^\n]*; continue\n', a):
+            bad.append("the act step does not gather the diff of the candidate's exact commit, or does not skip a head that moved before it acts")
+    # REQ-DEP-001-AC13: a verdict that is not success first fails the review gate's own check on that head, by the same App token, with the
+    # gate's own fields; no step ever publishes a gate success; without the gate failure the reviewer's own check does not go up
+    alltext = "\n".join(r for _, r in runs(job))
+    gate_cmds = re.findall(r"gh api \"repos/\$\{GITHUB_REPOSITORY\}/check-runs\" -f name=auditor-review-gate(?:[^\n]*\\\n)*[^\n]*", alltext)
+    if len(gate_cmds) != 3 or any("-f status=completed -f conclusion=failure -f details_url=\"$RUN_URL\"" not in c
+                                  or '-f "output[title]=auditor review gate: failure"' not in c or "head_sha=" not in c for c in gate_cmds):
+        bad.append("the review gate's check is not published exactly as a failure in the gate's own form (three places: candidates, act, cancellation)")
+    if re.search(r"name=auditor-review-gate(?:(?!name=dependabot-reviewer)[\s\S]){0,400}?conclusion=(?!failure)", alltext):
+        bad.append("a step publishes the review gate's check with a conclusion that is not failure")
+    if len(acts) == 1:
+        a = acts[0]
+        own = 'GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer'
+        gate = 'GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate'
+        m = re.search(r'publish\(\) \{[^\n]*\n\s*if \[ "\$2" != success \]; then\n\s*' + re.escape(gate) + r'(?:[^\n]*\\\n)*[^\n]*>/dev/null \|\| return 1\n\s*fi\n\s*' + re.escape(own), a)
+        if not m or a.count("name=dependabot-reviewer") != 1 or a.count("name=auditor-review-gate") != 1:
+            bad.append("the act step's one publish function does not fail the review gate's check first (and stop without it) for every verdict that is not success")
+    if len(cand) == 1:
+        c = cand[0]
+        first = 'if ! gate_fail "$sha" "The Dependabot reviewer is reading this head again (forced)'
+        if c.count("conclusion=neutral") != 1 or not in_order(c, first, "conclusion=neutral") \
+                or not re.search(re.escape(first) + r"[^\n]*\n[^\n]*lookup_failed=1; continue\n", c) \
+                or 'GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate' not in c \
+                or 'gate_stands "$n" "$sha" failure ||' not in c or 'if [ "$prior" = neutral ] && ! gate_stands "$n" "$sha" neutral; then' not in c:
+            bad.append("the candidate step does not fail the review gate's check before its neutral, or does not fail it again over a failure or neutral verdict")
+    canc = [r for st, r in runs(job) if (st.get("name") or "").startswith("on cancellation")]
+    if len(canc) != 1 or canc[0].count("conclusion=neutral") != 1 \
+            or not in_order(canc[0], "check-runs\" -f name=auditor-review-gate", "check-runs\" -f name=dependabot-reviewer") \
+            or not re.search(r"name=auditor-review-gate(?:[^\n]*\\\n)*[^\n]*>/dev/null \\\n\s*&& \\\n\s*GH_TOKEN=\"\$APP_TOKEN\" gh api \"repos/\$\{GITHUB_REPOSITORY\}/check-runs\" -f name=dependabot-reviewer", canc[0]):
+        bad.append("the cancellation step does not fail the review gate's check before its neutral (the neutral only after it)")
+    # REQ-DEP-001-AC10 / REQ-DEP-003-AC1: whose arm a head's is before a verdict: the lane's only when no update is a major OR flagged, never majors only
+    if len(cand) == 1 and ("any(.[]; .major or .flagged)" not in cand[0] or "any(.[]; .major)" in cand[0]):
+        bad.append("the candidate step does not count a flagged non-major beside a major when it decides whose arm a head's is")
     if len(cand) == 1 and ("auto_merge_disabled github-actions" not in cand[0] or "required-check-guard.sh" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
         bad.append("the candidate step does not put back (guard first, exact head) an arm the lane turned off after the reviewer approved the head")
-    if len(cand) == 1 and "if .flagged then .major = true" not in cand[0]:
-        bad.append("the candidate step does not hand a flagged update to the (hash-pinned) act step as a major")
+    # REQ-DEP-001-AC11: the one success this step publishes itself (the carried one) comes only past the same-diff proof, never on a forced run
+    if len(cand) == 1:
+        proof = 'if [ -n "$from" ] && python3 bin/dependabot-reviewer.py same-diff --repo "$GITHUB_REPOSITORY" --base main "$from" "$sha"; then'
+        guard = 'if [ "$prior" = none ] && [ "$FORCE" != "true" ]; then'
+        if cand[0].count("conclusion=success") != 1 or proof not in cand[0] or guard not in cand[0] \
+                or not cand[0].index(guard) < cand[0].index(proof) < cand[0].index("conclusion=success"):
+            bad.append("the candidate step publishes a success that is not behind the same-diff proof (a head with no verdict, not forced)")
+    # REQ-DEP-001-AC12: the settle step runs after the act step and the cancellation cleanup, whatever became of them, and can fail the run
+    names = [s.get("id") or s.get("name", "") for s in job.get("steps", [])]
+    st = [s for s in job.get("steps", []) if s.get("id") == "settle"]
+    cancel = [i for i, x in enumerate(names) if x.startswith("on cancellation")]
+    if len(st) != 1 or "continue-on-error" in st[0] or len(cancel) != 1 or "act" not in names or not names.index("act") < cancel[0] < names.index("settle") \
+            or st[0].get("if") != "${{ always() && steps.candidates.outputs.count != '0' && steps.candidates.outputs.count != '' && steps.app-merge.outcome == 'success' }}":
+        bad.append("no settle step after the act step and the cancellation cleanup, always run, able to fail the run")
+    elif len(cand) == 1 and ('>> "$RUNNER_TEMP/work/lane-arms.txt"' not in cand[0] or 'grep -qx "$n $sha" "$W/lane-arms.txt"' not in (st[0].get("run") or "")
+                             or "required-check-guard.sh" not in (st[0].get("run") or "") or '"failure true")' not in (st[0].get("run") or "")):
+        bad.append("the settle step does not turn off an arm over a failure verdict, or does not put back (guard first) exactly the lane's arms the candidate step remembered")
     # AC9: auto-merge is armed only for the reviewed head
     arms = re.findall(r"gh pr merge --auto[^\n]*", text)
     if not arms or any('--match-head-commit "$sha"' not in a for a in arms):
@@ -176,12 +242,22 @@ elif kind == "automerge":
         bad.append("auto-merge is not bound to the head this run screened (--match-head-commit \"$HEAD_SHA\")")
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
-    major = "${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}"
-    disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
-    if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
+    # REQ-DEP-003-AC3: the arm step reads the reviewer's verdict on the head it arms first, and leaves a failed head unarmed
+    elif "set -euo pipefail" not in runs(job)[arm[0]][1] or "commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer" not in runs(job)[arm[0]][1] \
+            or not re.search(r'if \[ "\$verdict" = failure \]; then [^\n]*exit 0; fi\n\s*gh pr merge --auto --squash', runs(job)[arm[0]][1]):
+        bad.append("the arm step does not read the reviewer's verdict on this head first and leave a failed head unarmed")
+    # the last step: no arm the reviewer's verdict on the current head does not allow. Run for every bump (a failed patch too); the
+    # no-verdict disarm applies to a major, a flagged bump or a failed screen (WAITS_FOR_VERDICT)
+    major = "${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure' }}"
+    disarm = [(i, s, r) for i, (s, r) in enumerate(runs(job)) if "gh pr merge --disable-auto" in r]
+    if len(disarm) != 1 or disarm[0][1].get("if") != "${{ !cancelled() }}" or "continue-on-error" in disarm[0][1]:
+        bad.append("no single last step, run for every bump, that turns off an arm the reviewer's verdict does not allow")
+    elif (disarm[0][1].get("env") or {}).get("WAITS_FOR_VERDICT") != major:
         bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
-    elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][1] or "headRefOid" not in disarm[0][1]:
+    elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][2] or "headRefOid" not in disarm[0][2]:
         bad.append("the disarm does not judge the PR's CURRENT head by its reviewer check (a stale push job must not disarm a newer approved head)")
+    elif arm and disarm[0][0] < arm[0]:
+        bad.append("the look at the reviewer's verdict that can disarm comes before the arm: a failure published while the lane arms would stay armed")
     if (job.get("permissions") or {}).get("checks") != "read":
         bad.append("the lane cannot read the reviewer's check (permissions: checks: read)")
     if len(guard) != 1 or steps[guard[0]].get("if") != nonmajor or "continue-on-error" in steps[guard[0]]:
@@ -264,8 +340,26 @@ case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-erro
 case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'required-check-guard.sh' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
-case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('select(.major or .flagged)', 'select(.major)')) for s in $rs if s.get('id') == 'candidates']"
-case_ reviewer $R reviewer-flagged-unnamed bad "[s.__setitem__('run', s['run'].replace('if .flagged then .major = true', 'if .flagged then .major = false')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('any(.[]; .major or .flagged)', 'any(.[]; .major)')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-update-unnamed  bad "[s.__setitem__('run', s['run'].replace('[.[]|\"', '[.[]|select(.major)|\"')) for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-patches-skipped bad "[s.__setitem__('run', s['run'].replace('lane=\$(jq', 'jq -e \"any(.[]; select(.major))\" x || continue; lane=\$(jq')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-gather-any-head bad "[s.__setitem__('run', s['run'].replace('gather --pr \"\$n\" --sha \"\$sha\"', 'gather --pr \"\$n\"')) for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-moved-head-acts bad "[s.__setitem__('run', s['run'].replace('if [ \"\$head_now\" != \"\$sha\" ]; then', 'if false; then')) for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-gate-not-first  bad "[s.__setitem__('run', s['run'].replace('if [ \"\$2\" != success ]; then', 'if false; then')) for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-gate-soft       bad "[s.__setitem__('run', s['run'].replace('it is not passed.\" >/dev/null || return 1', 'it is not passed.\" >/dev/null || true')) for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-gate-success    bad "$rs.append({'run': 'gh api \"repos/\${GITHUB_REPOSITORY}/check-runs\" -f name=auditor-review-gate -f head_sha=x -f status=completed -f conclusion=success'})"
+case_ reviewer $R reviewer-force-no-gate   bad "[s.__setitem__('run', s['run'].replace('if ! gate_fail \"\$sha\" \"The Dependabot reviewer is reading', 'if ! true \"\$sha\" \"The Dependabot reviewer is reading')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-no-gate-again   bad "[s.__setitem__('run', s['run'].replace('gate_stands \"\$n\" \"\$sha\" failure ||', 'true ||')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-cancel-no-gate  bad "[s.__setitem__('run', s['run'].replace('name=auditor-review-gate', 'name=dependabot-reviewer', 1)) for s in $rs if (s.get('name') or '').startswith('on cancellation')]"
+case_ reviewer $R reviewer-carry-unproven  bad "[s.__setitem__('run', s['run'].replace('python3 bin/dependabot-reviewer.py same-diff --repo \"\$GITHUB_REPOSITORY\" --base main \"\$from\" \"\$sha\"', 'true')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-carry-forced    bad "[s.__setitem__('run', s['run'].replace('if [ \"\$prior\" = none ] && [ \"\$FORCE\" != \"true\" ]; then', 'if [ \"\$prior\" = none ]; then')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-no-settle       bad "$rs[:] = [s for s in $rs if s.get('id') != 'settle']"
+case_ reviewer $R reviewer-settle-soft     bad "[s.__setitem__('continue-on-error', 'true') for s in $rs if s.get('id') == 'settle']"
+case_ reviewer $R reviewer-settle-early    bad "i = [n for n, s in enumerate($rs) if s.get('id') == 'settle'][0]; g = $rs.pop(i); $rs.insert([n for n, s in enumerate($rs) if s.get('id') == 'act'][0], g)"
+case_ reviewer $R reviewer-settle-not-always bad "[s.__setitem__('if', s['if'].replace('always()', '!cancelled()')) for s in $rs if s.get('id') == 'settle']"
+case_ reviewer $R reviewer-settle-unguarded bad "[s.__setitem__('run', s['run'].replace('bash bin/required-check-guard.sh \"\$W/settle-required-checks.json\"', 'true')) for s in $rs if s.get('id') == 'settle']"
+case_ reviewer $R reviewer-settle-keeps-failed-arm bad "[s.__setitem__('run', s['run'].replace('\"failure true\")', '\"failure never\")')) for s in $rs if s.get('id') == 'settle']"
+case_ reviewer $R reviewer-lane-arm-forgotten bad "[s.__setitem__('run', s['run'].replace('>> \"\$RUNNER_TEMP/work/lane-arms.txt\"', '>> /dev/null')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-put-back-unguarded bad "[s.__setitem__('run', s['run'].replace('bash bin/required-check-guard.sh \"\$RUNNER_TEMP/work/heal-required-checks.json\"', 'true')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-put-back     bad "[s.__setitem__('run', s['run'].replace('auto_merge_disabled github-actions', 'auto_merge_disabled nobody')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
@@ -279,46 +373,82 @@ case_ automerge $A automerge-screen-soft    bad "[s.__setitem__('continue-on-err
 case_ automerge $A automerge-screen-fetches bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set -euo pipefail\\necho contents/bin/dependabot-reviewer.py')) for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($as_) if s.get('id') == 'screen'][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
-case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
-case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-failed-screen-keeps-arm bad "[s['env'].__setitem__('WAITS_FOR_VERDICT', \"\${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' }}\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-flagged-no-void bad "[s['env'].__setitem__('WAITS_FOR_VERDICT', \"\${{ steps.meta.outputs.update-type == 'version-update:semver-major' }}\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-failed-patch-keeps-arm bad "[s.__setitem__('if', \"\${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-arms-failed-head bad "[s.__setitem__('run', '\\n'.join(l for l in s['run'].split('\\n') if 'verdict' not in l)) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-arms-blind      bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set +e')) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-void-before-arm bad "i = [n for n, s in enumerate($as_) if 'gh pr merge --disable-auto' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.insert(0, g)"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 
-# REQ-DEP-003-AC2: the disarm step, run for real against a stub gh: armed with no verdict on the current head -> disarmed (the reviewer's
-# next pass puts the arm back if it had approved the head: its own test covers that side, from GitHub's event record); not armed -> nothing;
-# the reviewer's success already on the head -> auto-merge stands.
+# REQ-DEP-003-AC2, AC3: the lane's last step, run for real against a stub gh. A major, a flagged bump or a failed screen (WAITS_FOR_VERDICT
+# true): armed with no verdict on the current head -> disarmed (the reviewer's next pass puts the arm back if it had approved the head: its
+# own test covers that side, from GitHub's event record); not armed -> nothing; the reviewer's success already on the head -> auto-merge
+# stands. A plain patch or minor (false): its arm stands with no verdict. Any bump: armed over the reviewer's failure -> disarmed.
+# And the arm step: it arms a patch whose head has no verdict, a neutral or a success, never one the reviewer failed, and nothing when
+# the verdict cannot be read.
 if python3 - "$root" "$work" <<'PY'
 import os, subprocess, sys, yaml
 root, work = sys.argv[1], sys.argv[2]
 d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
-run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if "gh pr merge --disable-auto" in (s.get("run") or "")][0]
-def go(verdict, armed="true"):
+steps = d["jobs"]["auto-merge"]["steps"]
+last = [s["run"] for s in steps if "gh pr merge --disable-auto" in (s.get("run") or "")][0]
+arm = [s["run"] for s in steps if "gh pr merge --auto --squash" in (s.get("run") or "")][0]
+def go(run, verdict, armed="true", waits="true", lookup_fails=False):
     bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
     log = os.path.join(bd, "log"); open(log, "w").close()
     open(os.path.join(bd, "gh"), "w").write("""#!/usr/bin/env bash
 echo "gh $*" >> %s
 case "$1 $2" in
   "pr view") case "$*" in *headRefOid*) echo HEAD1 ;; *autoMergeRequest*) echo %s ;; esac ;;
-  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") echo %s ;;
+  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") %s echo %s ;;
 esac
-""" % (log, armed, verdict))
+""" % (log, armed, "exit 1;" if lookup_fails else "", verdict))
     os.chmod(os.path.join(bd, "gh"), 0o755)
-    env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x", "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r"}
+    env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x", "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r",
+           "WAITS_FOR_VERDICT": waits}
     p = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", run], env=env, capture_output=True, text=True)
     return p.returncode, open(log).read()
 bad = []
-rc, log = go("none")
+rc, log = go(last, "none")
 if rc != 0 or "pr merge --disable-auto" not in log:
-    bad.append("armed with no verdict: it must disarm (rc %s)\n%s" % (rc, log))
-rc, log = go("none", armed="false")
+    bad.append("a major armed with no verdict: it must disarm (rc %s)\n%s" % (rc, log))
+rc, log = go(last, "none", armed="false")
 if rc != 0 or "--disable-auto" in log:
     bad.append("not armed: nothing to do (rc %s)\n%s" % (rc, log))
-rc, log = go("success")
+rc, log = go(last, "success")
 if rc != 0 or "--disable-auto" in log:
     bad.append("success on the head: auto-merge must stand and nothing be written (rc %s)\n%s" % (rc, log))
-print("disarm: " + ("ok" if not bad else "; ".join(bad)))
+for verdict in ("none", "neutral"):
+    rc, log = go(last, verdict, waits="false")
+    if rc != 0 or "--disable-auto" in log:
+        bad.append("a plain patch armed with verdict %s: the lane's arm must stand (rc %s)\n%s" % (verdict, rc, log))
+for waits in ("false", "true"):
+    rc, log = go(last, "failure", waits=waits)
+    if rc != 0 or "pr merge --disable-auto" not in log:
+        bad.append("armed over the reviewer's failure (waits=%s): it must disarm (rc %s)\n%s" % (waits, rc, log))
+    rc, log = go(last, "failure", armed="false", waits=waits)
+    if rc != 0 or "--disable-auto" in log:
+        bad.append("a failed head that is not armed (waits=%s): nothing to do (rc %s)\n%s" % (waits, rc, log))
+rc, log = go(last, "none", waits="false", lookup_fails=True)
+if rc == 0 or "pr merge" in log:
+    bad.append("the verdict cannot be read: the step must fail loudly and write nothing (rc %s)\n%s" % (rc, log))
+for verdict in ("none", "neutral", "success"):
+    rc, log = go(arm, verdict, armed="false")
+    if rc != 0 or "pr merge --auto --squash --match-head-commit HEAD1 https://example.invalid/pr/1" not in log:
+        bad.append("the arm step, verdict %s: it must arm exactly this head (rc %s)\n%s" % (verdict, rc, log))
+    elif log.index("check-runs?check_name=dependabot-reviewer") > log.index("pr merge --auto"):
+        bad.append("the arm step must read the verdict BEFORE it arms\n%s" % log)
+rc, log = go(arm, "failure", armed="false")
+if rc != 0 or "pr merge" in log:
+    bad.append("the arm step on a head the reviewer failed: it must arm nothing and not fail (rc %s)\n%s" % (rc, log))
+rc, log = go(arm, "none", armed="false", lookup_fails=True)
+if rc == 0 or "pr merge" in log:
+    bad.append("the arm step when the verdict cannot be read: it must fail and arm nothing (rc %s)\n%s" % (rc, log))
+print("lane arm and last step: " + ("ok" if not bad else "; ".join(bad)))
 sys.exit(1 if bad else 0)
 PY
-then pass=$((pass+1)); echo "PASS disarm-only-an-unsupported-arm"; else failn=$((failn+1)); echo "FAIL disarm-only-an-unsupported-arm"; fi
+then pass=$((pass+1)); echo "PASS arm-never-a-failed-head-and-disarm-only-an-unsupported-arm"; else failn=$((failn+1)); echo "FAIL arm-never-a-failed-head-and-disarm-only-an-unsupported-arm"; fi
 
 # REQ-DEP-003-AC2: the screen's heredoc IS the reviewer's rule, byte for byte: the workflow's code must equal what is generated from
 # bin/dependabot-reviewer.py (imports, the patterns, _Text, _drop_targets, is_flagged), so the two lanes cannot drift apart.

@@ -3126,6 +3126,12 @@ for idx in (4, 8):
     assert judge(D, "review", idx, drun + "\n# edited", {D: dwf}), "an edited step is a finding"
     assert judge(D, "review", idx, drun, {D: dwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
 assert judge(D, "review", 4, dsteps[8]["run"], {D: dwf}), "one excluded step's key does not exclude the other's text"
+# the reviewer's excluded steps are a closed set: the identity-token step and the decision loop, one text each
+rk = sorted((k[2], k[3]) for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D)
+assert rk == [(4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"),
+              (8, "30a945d16294846fbc89c18c10b2a21fa5406cd2162713dc19e06ec6dff873d1")], "the reviewer's excluded steps are not exactly the two expected: %r" % (rk,)
+assert [k for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D and k[1] != "review"] == [], "an excluded step of the reviewer outside its review job"
+assert m.hashlib.sha256(dsteps[8]["run"].encode("utf-8", "replace")).hexdigest() == rk[1][1], "the repository's decision loop is not the accepted text"
 PY
 fi
 

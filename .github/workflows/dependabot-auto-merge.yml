@@ -2,10 +2,12 @@ name: Dependabot auto-merge
 
 # Brief §0.2(a) autonomous lane, mechanised: dependency bumps to
 # upstream-published versions ship after the full CI gate and do not wait on
-# the owner. This file arms patch and minor. A major is an API-break risk, so
-# it gets a READER instead of a human: the hourly dependabot-reviewer.yml
-# (register row 75) judges it against upstream release notes and our usage.
-# So does a patch/minor whose release notes say "breaking" or "deprecat"
+# the owner. Every bump gets a READER instead of a human: the hourly
+# dependabot-reviewer.yml (register row 75) judges it against upstream release
+# notes and our usage. This file arms a patch or minor at once, before that
+# verdict, and never one the reviewer failed (REQ-DEP-003-AC3). A major is an
+# API-break risk, so it is not armed here: the reviewer arms it when it passes.
+# So with a patch/minor whose release notes say "breaking" or "deprecat"
 # (REQ-DEP-003-AC2, advisor tighten-only reading, Oct 22): the `screen` step applies the
 # reviewer's own rule, so a flagged bump is treated here as a major.
 #
@@ -41,7 +43,7 @@ jobs:
     permissions:
       contents: write        # enable auto-merge on the PR
       pull-requests: write   # approve the PR
-      checks: read           # a major's verdict: the reviewer's check on THIS head
+      checks: read           # the reviewer's verdict: its check on THIS head
     steps:
       - name: dependabot metadata
         id: meta
@@ -155,33 +157,6 @@ jobs:
             echo "holds with an issue. Nothing waits on a person."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Owner, Oct 1: a merge verdict holds only for the head the reviewer read. A push to a major PR
-      # (a Dependabot rebase or a new version) voids it: unless the reviewer has already approved THIS
-      # head (its success check is on it — the reviewer may have got there first), auto-merge comes off
-      # here at once and the hourly reviewer judges the new head afresh. Fails loudly if it cannot.
-      # Also when the screen itself failed: its answer is unknown, so an arm without a verdict on the current head
-      # still comes off (arming stays off: the arm step needs the screen to have succeeded).
-      - name: a new head voids the reviewer's verdict on a major — turn auto-merge off
-        if: ${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          # judge the PR's CURRENT head, never this event's: a stale job (an older push) must not disarm a
-          # newer head the reviewer has already approved
-          head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
-          [ "$head" = "$HEAD_SHA" ] || echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
-          lookup() { gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
-                       --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"'; }
-          verdict=$(lookup)
-          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
-          if [ "$verdict" = success ]; then echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
-          elif [ "$armed" = true ]; then
-            gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
-          else echo "auto-merge is not armed; nothing to void"; fi
-
       - name: require that main enforces the exact expected check set
         if: steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'
         env:
@@ -239,4 +214,49 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # Bound to the head this run screened: an older run (an older body) cannot arm a newer head.
-        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
+        # Never a head the reviewer failed (REQ-DEP-003-AC3): its check on this head is read first, and if that
+        # read fails the step fails and nothing is armed. This job can start many minutes after the push, so the
+        # failure may already be there; one that lands while this step arms is caught by the step below.
+        run: |
+          set -euo pipefail
+          verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer" \
+                      --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"')
+          if [ "$verdict" = failure ]; then echo "the reviewer failed this head (${HEAD_SHA:0:7}); it is not armed"; exit 0; fi
+          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
+
+      # Last, for every bump: no arm stands that the reviewer's verdict on the CURRENT head does not allow.
+      #  - A failure verdict: auto-merge comes off, whatever the bump is (REQ-DEP-003-AC3). It runs after the arm above, so a
+      #    failure published while that step armed is seen here; one published after this step is the reviewer's to turn off
+      #    (its act step, its settle step, and every hourly sweep).
+      #  - Owner, Oct 1: a merge verdict holds only for the head the reviewer read. A push to a major or flagged PR
+      #    (a Dependabot rebase or a new version) voids it: unless the reviewer has already approved THIS
+      #    head (its success check is on it — the reviewer may have got there first), auto-merge comes off
+      #    here at once and the hourly reviewer judges the new head afresh. Also when the screen itself failed: its answer
+      #    is unknown, so an arm without a verdict on the current head still comes off (arming stays off: the arm step
+      #    needs the screen to have succeeded).
+      #  - A plain patch or minor with no verdict yet keeps the arm this lane gave it.
+      # Fails loudly if it cannot.
+      - name: no arm without the reviewer's leave — a failed head, or a new head of a major, has auto-merge turned off
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WAITS_FOR_VERDICT: ${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          # judge the PR's CURRENT head, never this event's: a stale job (an older push) must not disarm a
+          # newer head the reviewer has already approved
+          head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
+          [ "$head" = "$HEAD_SHA" ] || echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
+          lookup() { gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
+                       --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"'; }
+          verdict=$(lookup)
+          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$verdict" = success ]; then echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
+          elif [ "$armed" != true ]; then echo "auto-merge is not armed; nothing to turn off"
+          elif [ "$verdict" = failure ]; then
+            gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the reviewer failed the current head (${head:0:7})"
+          elif [ "$WAITS_FOR_VERDICT" = true ]; then
+            gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
+          else echo "a patch or minor bump with no verdict yet: the lane's arm stands"; fi
