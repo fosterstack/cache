@@ -12,7 +12,8 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   daily_cut               rule 2: at most one daily patch (a critical/high fix may cut at once, outside this rule).
   notes                   rule 5: per fix the CVE, package, old -> new, severity, variants; each VEX change; a
                           no-behavior-change line, or (advisor 0130) the behavior changes listed in
-                          docs/next-release-notes.md, each citing the handoff that judged it; no vendor or model names.
+                          docs/next-release-notes.md, each with a Source line that is never published; no shop words
+                          in an entry; no vendor or model names.
                           Its sources are refused, never rewritten, when a line holds a form Markdown could hide text in
                           (REQ-REL-009-AC14, advisor step 5): file:line, exit 2, nothing written.
   removed_critical_high   rule 2: the latest release's critical/high findings that HEAD removes (a Go module or the
@@ -510,16 +511,18 @@ def _lit(v, before_colon=False):
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
-CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
+SHOP = re.compile(r"\b(?:owner|advisor|handoff|orchestrator|lane|ratified)\b", re.I)
 
 
 def _entries(text):
-    """[entry, line number of its bullet] of a next-release-notes text: each "- " bullet, its indented continuation lines
-    joined"""
+    """[entry, line number of its bullet, source] of a next-release-notes text: each "- " bullet, its indented continuation
+    lines joined; its source is the text of the indented "  Source:" line under it, which is not part of the entry"""
     out = []
     for n, ln in enumerate(text.splitlines(), 1):
         if ln.startswith("- "):
-            out.append([ln[2:].strip(), n])
+            out.append([ln[2:].strip(), n, ""])
+        elif out and ln.startswith("  Source:"):
+            out[-1][2] = ln[len("  Source:"):].strip()
         elif out and ln.startswith("  ") and ln.strip():
             out[-1][0] += " " + ln.strip()
     return out
@@ -531,33 +534,36 @@ def _source_entries(text, name):
     refused form; two entries whose published lines are the same line are refused, both named"""
     _refuse_text(text, name)
     ents = _entries(text)
-    for e, n in ents:
+    for e, n, _ in ents:
         why = _refused_form("- " + _oneline(e))
         if why:
             raise ValueError("%s:%d: %s (the entry, its lines joined)" % (name, n, why))
-    _no_collision([(_entry_line(e), "%s:%d:" % (name, n)) for e, n in ents])
+    _no_collision([(_entry_line(e), "%s:%d:" % (name, n)) for e, n, _ in ents])
     return ents
 
 
 def behavior_entries(text, name="docs/next-release-notes.md", located=False):
-    """The entries of docs/next-release-notes.md (advisor 0130). An entry is only a change the owner or the advisor judged
-    unable to affect supported clients, so each must end by citing that handoff, "(... advisor NNNN)"; an entry without
-    one is refused (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two
-    entries publishing the same line are refused, naming name:line. located: each entry with its location 'name:line:'."""
+    """The entries of docs/next-release-notes.md (advisor 0130). An entry is only a change judged unable to affect
+    supported clients, so each must have a "  Source:" line under it, read here and never published; an entry without
+    one, or with shop talk in its text, is refused (ValueError) and nothing is cut. The file is a notes source
+    (REQ-REL-009-AC14): a refused form or two entries publishing the same line are refused, naming name:line. located:
+    each entry with its location 'name:line:'."""
     ents = _source_entries(text, name)
-    for e, n in ents:
+    for e, n, src in ents:
         try:
+            if not src:
+                raise ValueError("next-release-notes entry has no Source line: %r" % e)
             _check_entry(e)
         except ValueError as x:
             raise ValueError("%s:%d: %s" % (name, n, x))
-    return [(e, "%s:%d:" % (name, n)) for e, n in ents] if located else [e for e, _ in ents]
+    return [(e, "%s:%d:" % (name, n)) for e, n, _ in ents] if located else [e for e, _, _ in ents]
 
 
 def _check_entry(e):
-    """An entry cites the handoff that judged it (advisor 0130), and no vendor or model name hides in it split by a
-    space or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
-    if not CITED.search(e):
-        raise ValueError("next-release-notes entry cites no handoff: %r" % e)
+    """An entry holds no shop talk (customers read it), and no vendor or model name hides in it split by a space or the
+    line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
+    if SHOP.search(e):
+        raise ValueError("next-release-notes entry holds shop talk: %r" % e)
     # any run of up to ten adjacent words that spells a name (the longest has nine letters): "Goo gle", "G o o g l e"
     # (Sonnet #158 r2b); a run starting with a word that is already a name is _clean's, which redacts it
     words = re.findall(r"[A-Za-z0-9]+", e)
@@ -1088,7 +1094,7 @@ def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHAN
         if lines[i].startswith("- "):                      # an entry and its indented continuation lines
             while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
                 j += 1
-            entry = " ".join(ln.strip() for ln in lines[i:j])[2:]
+            entry = " ".join(ln.strip() for ln in lines[i:j] if not ln.startswith("  Source:"))[2:]
             if _entry_line(entry).rstrip() in published:
                 i = j
                 continue
