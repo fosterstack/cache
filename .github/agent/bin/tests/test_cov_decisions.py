@@ -1,5 +1,5 @@
 """Coverage + behaviour tests for the decision scripts: auditor-classify, auditor-poam,
-auditor-release-authz, auditor-suppress (REQ-AUD-18 AC2). Every test asserts an effect:
+auditor-suppress (REQ-AUD-18 AC2). Every test asserts an effect:
 a return value, a file written (and its content), or the exit message."""
 import importlib.util, json, os, shutil, sys, tempfile, unittest
 from unittest import mock
@@ -19,7 +19,6 @@ def _load(fname):
 
 classify = _load("auditor-classify.py")
 poam = _load("auditor-poam.py")
-authz = _load("auditor-release-authz.py")
 suppress = _load("auditor-suppress.py")
 
 
@@ -206,7 +205,7 @@ class ClassifyDoManifest(TmpCase):
                     "unique": True, "status": "unique", "purls": ["pkg:golang/%s@v0.3.0" % name],
                     "details": {"grype": dict({"severity": "high", "purl": "pkg:golang/%s@v0.3.0" % name}, **({"aliases": [alias]} if alias else {}))}}
         fs = [f("CVE-2024-0001", "GO-1", "text"), f("CVE-2024-0002", None, "net"), f("CVE-2024-0003", None, "a"), f("CVE-2024-0004", None, "b")]
-        pm = PL._panel_module()
+        pm = PL.panel_module()
         verdict = self.put("verdict.json", {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs, "vex_covered": [],
                                             "issue": pm.render_issue([]), "unique": fs, "exit": 0})
         gv = self.put("gv.json", gv_stream([("GO-1", IMPORTED)]))
@@ -301,6 +300,29 @@ class ClassifyMain(TmpCase):
         self.assertEqual(self.main_exit(classify, ["--finding", "GO-1", "--out", self.d]),
                          "classify: need --manifest or --finding+--govulncheck")
 
+    def test_a_missing_manifest_is_a_classify_message_and_exit(self):
+        code = self.main_exit(classify, ["--manifest", self.p("none.json"), "--out", self.p("out")])
+        self.assertIsInstance(code, str)
+        self.assertTrue(code.startswith("classify: "), code)
+        self.assertFalse(os.path.exists(self.p("out")))
+
+    def test_a_malformed_manifest_is_a_classify_message_and_exit(self):
+        for text in ("{not json", "", "\xff"):
+            code = self.main_exit(classify, ["--manifest", self.put("bad.json", text), "--out", self.p("out")])
+            self.assertIsInstance(code, str, repr(text))
+            self.assertTrue(code.startswith("classify: "), (text, code))
+
+    def test_a_manifest_that_is_not_a_json_object_is_a_classify_message_and_exit(self):
+        for text in ("[]", "7", "null", '"x"'):
+            code = self.main_exit(classify, ["--manifest", self.put("bad.json", text), "--out", self.p("out")])
+            self.assertIsInstance(code, str, repr(text))
+            self.assertTrue(code.startswith("classify: "), (text, code))
+
+    def test_a_manifest_that_fails_validation_says_why(self):
+        code = self.main_exit(classify, ["--manifest", self.put("m.json", {}), "--out", self.p("out")])
+        self.assertTrue(code.startswith("classify: "), code)
+        self.assertIn("scanner_reports object is missing", code)
+
     def test_single_mode_routes(self):
         g = self.put("g.json", gv_stream([("GO-1", [])]))
         self.run_main(classify, ["--finding", "GO-1", "--govulncheck", g, "--out", self.d])
@@ -314,37 +336,9 @@ def vexfile(*stmts):
         {"vulnerability": {"name": n, "aliases": al}, "status": "affected"} for n, al in stmts]}
 
 
-class PoamRemoveFromVex(TmpCase):
-    def test_a_file_that_vanished_between_the_listing_and_the_read_removes_nothing(self):
-        self.assertFalse(poam._remove_from_vex(self.p("gone.openvex.json"), {"CVE-1"}))
-
-    def test_unparseable_and_no_statements(self):
-        bad = self.put("bad.openvex.json", "{nope")
-        with self.assertRaises(poam.reviewed.ReviewedInputInvalid):      # a VEX that cannot be read or has no statements list is a stop, never "nothing to remove" (cache#701)
-            poam._remove_from_vex(bad, {"CVE-1"})
-        self.assertEqual(self.rt("bad.openvex.json"), "{nope")
-        nost = self.put("n.openvex.json", {"x": 1})
-        with self.assertRaises(poam.reviewed.ReviewedInputInvalid):
-            poam._remove_from_vex(nost, {"CVE-1"})
-        self.assertEqual(self.rj("n.openvex.json"), {"x": 1})
-
-    def test_no_match_leaves_file(self):
-        f = self.put("v.openvex.json", vexfile(("CVE-2", [])))
-        before = self.rt("v.openvex.json")
-        self.assertFalse(poam._remove_from_vex(f, {"CVE-1"}))
-        self.assertEqual(self.rt("v.openvex.json"), before)
-
-    def test_surgical_by_alias_keeps_others(self):
-        f = self.put("v.openvex.json", vexfile(("GHSA-x", ["CVE-1"]), ("CVE-2", [])))
-        self.assertTrue(poam._remove_from_vex(f, {"CVE-1"}))
-        d = self.rj("v.openvex.json")
-        self.assertEqual([s["vulnerability"]["name"] for s in d["statements"]], ["CVE-2"])
-        self.assertEqual(d["@context"], "x")
-
-    def test_last_statement_removes_file(self):
-        f = self.put("v.openvex.json", vexfile(("CVE-1", [])))
-        self.assertTrue(poam._remove_from_vex(f, {"CVE-1"}))
-        self.assertFalse(os.path.exists(f))
+class PoamDeleted(unittest.TestCase):
+    def test_the_helper_only_the_removed_tests_called_is_gone(self):
+        self.assertFalse(hasattr(poam, "_remove_from_vex"))
 
 
 class PoamRecheck(TmpCase):
@@ -387,103 +381,6 @@ class PoamAcceptGuard(TmpCase):
             self.assertEqual(os.listdir(out), ["decision.json"])
             self.assertEqual(json.load(open(os.path.join(out, "decision.json"))),
                              {"accepted": False, "reason": "not a reachable-no-fix item"})
-
-
-# --------------------------------------------------------------------------- release-authz
-class AuthzHelpers(TmpCase):
-    def test_valid_future(self):
-        self.assertFalse(authz._valid_future("2026-02-30", "2026-01-01"))   # not a real date
-        self.assertFalse(authz._valid_future("2026-09-22", "2026-09-22"))
-        self.assertTrue(authz._valid_future("2026-09-23", "2026-09-22"))
-
-    def test_acceptance_latest_owner_comment_wins(self):
-        def iss(*bodies, number=7, author="own"):
-            return {"issues": [{"number": 99, "comments": [{"author": "own", "body": "ACCEPT CVE-1 until 2027-01-01"}]},
-                               {"number": number, "comments": [{"author": author, "body": b} for b in bodies]}]}
-        acc, rej = "ACCEPT CVE-1 until 2027-01-01\nwhy", "REJECT CVE-1 no"
-        self.assertTrue(authz.acceptance_verdict(iss(acc), "own", 7, "CVE-1", "2026-09-22"))
-        self.assertFalse(authz.acceptance_verdict(iss(acc, rej), "own", 7, "CVE-1", "2026-09-22"))
-        self.assertFalse(authz.acceptance_verdict(iss(acc, "DO NOT ACCEPT CVE-1"), "own", 7, "CVE-1", "2026-09-22"))
-        self.assertTrue(authz.acceptance_verdict(iss(rej, acc), "own", 7, "CVE-1", "2026-09-22"))
-        self.assertFalse(authz.acceptance_verdict(iss(acc, "REJECT CVE-2"), "own", 7, "CVE-2", "2026-09-22"))
-        self.assertTrue(authz.acceptance_verdict(iss(acc, "REJECT CVE-2"), "own", 7, "CVE-1", "2026-09-22"))
-        # issue 99's acceptance does not count for issue 8; non-owner comments are ignored
-        self.assertFalse(authz.acceptance_verdict(iss(acc, number=8), "own", 7, "CVE-1", "2026-09-22"))
-        self.assertFalse(authz.acceptance_verdict(iss(acc, author="x"), "own", 7, "CVE-1", "2026-09-22"))
-
-    def test_affected_cves(self):
-        self.assertEqual(authz.affected_cves(None), (set(), []))
-        self.put("v/a.openvex.json", {"statements": [
-            {"status": "affected", "vulnerability": {"name": "CVE-1"}},
-            {"status": "affected", "vulnerability": {}},
-            {"status": "not_affected", "vulnerability": {"name": "CVE-2"}}]})
-        self.put("v/b.openvex.json", {"statements": [{"status": "affected", "vulnerability": {"name": "CVE-3"}}]})
-        self.put("v/ignored.txt", "garbage")
-        self.assertEqual(authz.affected_cves(self.p("v")), ({"CVE-1", "CVE-3"}, []))
-        self.put("v/bad.openvex.json", "{x")
-        self.put("v/note.json", {})                 # not a VEX document (the run writes dispositions beside them): not judged
-        cves, bad = authz.affected_cves(self.p("v"))
-        self.assertEqual(cves, {"CVE-1", "CVE-3"})
-        self.assertEqual(len(bad), 1)
-        self.assertTrue(bad[0].startswith("bad.openvex.json ("))
-
-
-class AuthzMain(TmpCase):
-    def decide(self, cand=None, issues=None, vex=None):
-        args = ["--out", self.p("decision.json"), "--today", "2026-09-22", "--owner", "own"]
-        if vex is not None:
-            for i, stmts in enumerate(vex):
-                self.put("vex/%d.openvex.json" % i, stmts)
-            args += ["--vex-dir", self.p("vex")]
-        if cand is not None:
-            args += ["--candidate", self.put("cand.json", cand)]
-        if issues is not None:
-            args += ["--issues", self.put("issues.json", issues)]
-        self.run_main(authz, args)
-        return self.rj("decision.json")
-
-    AFF = [{"statements": [{"status": "affected", "vulnerability": {"name": "CVE-1"}}]}]
-
-    def test_malformed_vex_holds(self):
-        r = self.decide(vex=["{broken"])
-        self.assertEqual(r["decision"], "hold")
-        self.assertTrue(r["reasons"][0].startswith("malformed candidate VEX: 0.openvex.json ("))
-
-    def test_no_inventory(self):
-        self.assertEqual(self.decide(vex=self.AFF),
-                         {"decision": "hold", "reasons": ["affected VEX but no inventory (fail closed)"]})
-        self.assertEqual(self.decide(), {"decision": "promote", "reasons": []})
-
-    def test_no_accepted_items_field(self):
-        r = self.decide(cand={})                               # an inventory without its list is malformed (the shared reader), a hold
-        self.assertEqual(r["decision"], "hold")
-        self.assertIn("malformed candidate inventory", r["reasons"][0])
-
-    def test_completeness(self):
-        self.assertEqual(self.decide(cand={"accepted_items": []}, vex=self.AFF),
-                         {"decision": "hold", "reasons": ["affected CVE-1 not in the candidate inventory"]})
-        r = self.decide(cand={"accepted_items": [{"cve": "CVE-1", "threshold": "at_or_above"}]}, vex=self.AFF)
-        self.assertEqual(r["decision"], "hold")
-        self.assertEqual(r["reasons"], ["affected at-or-above CVE-1 has no owner-decision issue",
-                                        "no current owner acceptance for CVE-1"])
-        self.assertEqual(self.decide(cand={"accepted_items": [{"cve": "CVE-1", "threshold": "below"}]},
-                                     vex=self.AFF),
-                         {"decision": "promote", "reasons": []})
-
-    def test_item_shape(self):
-        r = self.decide(cand={"accepted_items": [{"cve": "CVE-1"}, {"threshold": "below"},
-                                                 {"cve": "CVE-2", "threshold": "medium"}]})
-        self.assertEqual(r, {"decision": "hold", "reasons": [
-            "item missing cve/threshold (fail closed)", "item missing cve/threshold (fail closed)",
-            "unknown threshold 'medium'"]})
-
-    def test_owner_acceptance_promotes(self):
-        cand = {"accepted_items": [{"cve": "CVE-1", "threshold": "at_or_above", "owner_issue": 5}]}
-        issues = {"issues": [{"number": 5, "comments": [{"author": "own", "body": "ACCEPT CVE-1 until 2026-12-01"}]}]}
-        self.assertEqual(self.decide(cand=cand, issues=issues, vex=self.AFF), {"decision": "promote", "reasons": []})
-        expired = {"issues": [{"number": 5, "comments": [{"author": "own", "body": "ACCEPT CVE-1 until 2026-09-01"}]}]}
-        self.assertEqual(self.decide(cand=cand, issues=expired, vex=self.AFF),
-                         {"decision": "hold", "reasons": ["no current owner acceptance for CVE-1"]})
 
 
 # --------------------------------------------------------------------------- suppress
