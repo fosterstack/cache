@@ -15,7 +15,7 @@ import re
 import stat
 from datetime import date
 
-from auditorlib import policy
+from auditorlib import parsers, policy
 
 SCHEMA = "fosterstack/auditor-state/v1"
 MAX_BYTES = 1 << 20
@@ -128,24 +128,28 @@ def _valid(doc):
         return True
     return (isinstance(n, dict) and set(n) == {"key", "text", "date"} and isinstance(n["key"], str) and bool(HEX64.fullmatch(n["key"]))
             and isinstance(n["text"], str) and 0 < len(n["text"]) <= MAX_NARRATIVE
-            and isinstance(n["date"], str) and bool(DATE.fullmatch(n["date"])))
+            and isinstance(n["date"], str) and bool(DATE.fullmatch(n["date"]))
+            and _calendar(n["date"]))
 
 
-def load(path):
-    """yesterday's state, or None for anything unusable (never raises)"""
-    if not path:
-        return None
+def _read(path):
+    """the JSON document of a state file, or None when the file is not a regular file, is too large or is not strict JSON
+    (NaN and Infinity refused); a missing file is None too"""
     try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(os.lstat(path).st_mode):
             return None
         with open(path, "rb") as fh:
             raw = fh.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             return None
-        doc = json.loads(raw.decode("utf-8"), parse_constant=lambda name: (_ for _ in ()).throw(ValueError(name)))
+        return json.loads(raw.decode("utf-8"), parse_constant=parsers.refuse_constant)
     except (OSError, ValueError):
         return None
+
+
+def load(path):
+    """yesterday's state, or None for anything unusable (never raises)"""
+    doc = _read(path) if path else None
     return doc if _valid(doc) else None
 
 
@@ -195,22 +199,8 @@ def load_unsettled(path, today):
     regular file, too large: REQ-AUD-3 AC3 ignores such a file) or a state written before the counts existed. The counts restart and the run says so.
     ("ok", counts) for a valid file. Raises CounterInvalid for a state that IS an auditor state (right schema) whose counts cannot be trusted (malformed, a date that is not a
     calendar date, or a date after `today`): the caller stops the run, before any model call or mutating call."""
-    if not path or not os.path.lexists(path):
-        return "missing", {}
-    try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode):
-            return "missing", {}
-        with open(path, "rb") as fh:
-            raw = fh.read(MAX_BYTES + 1)
-        if len(raw) > MAX_BYTES:
-            return "missing", {}
-        doc = json.loads(raw.decode("utf-8"), parse_constant=lambda name: (_ for _ in ()).throw(ValueError(name)))
-    except (OSError, ValueError):
-        return "missing", {}
+    doc = _read(path) if path else None
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
-        return "missing", {}
-    if set(doc) == STATE_KEYS - {"unsettled"}:
         return "missing", {}
     if set(doc) != STATE_KEYS or not _valid(dict(doc, unsettled={})):
         return "missing", {}                      # not a state the no-change day would accept either: its counts are not trusted or carried, they restart
