@@ -1264,15 +1264,14 @@ PIN = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 norm = lambda s: " ".join((s or "").split())
 FORKP = "(" + FORK + ")"
 if which == "scan":
-    # merge_group is by design (REQ-DEP-005: the merge queue runs every required check)
-    triggers = {"pull_request": "", "merge_group": "", "push": {"branches": ["main"], "tags": ["v*"]}}
+    triggers = {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}
     IF_SCAN = None                         # the Inspector job (the Witness adversarial pass): its own job, no matrix, so no matrix condition on any step
     IF_REST = FORK
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "inspector", "Amazon Inspector scan every image tar", "python3 bin/inspector-gate.py"
     perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
-             "rebuild": {"contents": "read"}, "reproducibility": None, "scanners": None,
+             "rebuild": {"contents": "read"}, "reproducibility": None,
              "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None}
 else:
     triggers = {"schedule": [{"cron": "41 7 * * *"}], "workflow_dispatch": {}}
@@ -1296,7 +1295,7 @@ if got != perms:
     bad.append("permissions changed: %s" % json.dumps(got))
 if which == "scan":
     # (ruling, cache#603) the load step still produces the four refs and the scan step refuses to run on fewer; the aggregate needs both jobs and asserts Inspector's result;
-    # the evidence upload exists and the role assumption comes before the scan; the matrix list is the real pr_gate minus inspector
+    # the evidence upload exists and the role assumption comes before the scan; the grype job carries no Inspector step
     isteps = d["jobs"]["inspector"]["steps"]
     ld = [st for st in isteps if "make a tar of every variant/platform child" in (st.get("name") or "")]
     if len(ld) != 1 or "for v in production fips; do" not in ld[0].get("run", "") or "for arch in amd64 arm64; do" not in ld[0].get("run", ""):
@@ -1315,21 +1314,8 @@ if which == "scan":
     arun = " ".join((st.get("run") or "") for st in aj["steps"])
     if aj.get("needs") != ["scanner", "inspector"] or norm(aj.get("if")) != "always()" or "needs.inspector.result" not in arun or d["jobs"]["inspector"].get("name") != "scan (inspector)":
         bad.append("the aggregate scan job must need scanner and inspector, run under always(), assert the Inspector result, and the Inspector job must be named scan (inspector)")
-    import subprocess as _sp
-    sc_text = " ".join((st.get("run") or "") for st in d["jobs"]["scanners"]["steps"])
-    mj = re.search(r'\$\((jq -c .*?)\)" >> "\$GITHUB_OUTPUT"', sc_text)
-    if not mj:
-        bad.append("the scanners job's list line is not a jq pipeline over scanners.json")
-    else:
-        got_list = _sp.run(["bash", "-c", mj.group(1)], cwd=os.environ.get("INSP_ROOT", "."), capture_output=True, text=True).stdout.strip()
-        pr_gate = json.load(open(os.path.join(os.environ.get("INSP_ROOT", "."), ".github/policy/scanners.json")))["pr_gate"]
-        if got_list != json.dumps([x for x in pr_gate if x != "inspector"], separators=(",", ":")):
-            bad.append("running the scanners job's jq line on pr_gate does not give exactly the non-inspector list: %s" % got_list)
-    rd = " ".join((st.get("run") or "") for st in d["jobs"]["scanners"]["steps"])
-    if "map(select(. != \"inspector\"))" not in rd:
-        bad.append("the scanner matrix list still holds inspector: it has its own job, the matrix holds no token")
     if "inspector" in json.dumps(d["jobs"]["scanner"]["steps"]).replace("inspector-evidence", ""):
-        bad.append("the scanner matrix job still carries an Inspector step")
+        bad.append("the grype job still carries an Inspector step")
 if re.search(r"^\s*actions\s*:\s*(write|read)", raw, re.M):
     bad.append("an actions: permission is granted")
 # the stock actions/cache restore and save only: exactly one of each, in the call-site job, nothing else cache-like
@@ -1472,7 +1458,7 @@ f = os.environ["FORKX"]; i = t.rfind("&& (" + f + ")"); t = t[:i] + "&& " + f + 
 EOF
 mut_def W_SAVE_ALWAYS_OR <<'EOF'
 import re
-t = re.sub(r"if: always\(\) && ((?:matrix\.scanner == 'inspector' && )?steps\.insp-scan\.outputs\.fresh)", r"if: always() || \1", t, count=1)
+t = re.sub(r"if: always\(\) && (steps\.insp-scan\.outputs\.fresh)", r"if: always() || \1", t, count=1)
 EOF
 mut_def W_PR_TARGET_TRIGGER <<'EOF'
 import re
@@ -1556,7 +1542,6 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   if [ "$k" = scan ]; then
     wf "$f" "$k" scanner-matrix-gets-id-token bad "i = t.index('  scanner:\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: read\n      id-token: write' + t[j+14:]"
     wf "$f" "$k" inspector-job-loses-id-token bad "i = t.index('  inspector:\n'); j = t.index('      id-token: write\n', i); t = t[:j] + t[j+len('      id-token: write\n'):]"
-    wf "$f" "$k" inspector-back-in-the-matrix bad "t = t.replace('map(select(. != \"inspector\"))', 'map(.)', 1)"
     wf "$f" "$k" gate-fed-the-unscanned-sbom bad "$W_GATE_UNSCANNED"
     wf "$f" "$k" load-loop-emptied bad "i = t.index('  inspector:\n'); j = t.index('for v in production fips; do', i); t = t[:j] + 'for v in; do' + t[j+len('for v in production fips; do'):]"
     wf "$f" "$k" post-loop-ref-check-removed bad "t = t.replace('[ \"\$(grep -c . /tmp/refs.txt)\" -eq \"\${EXPECTED_REFS}\" ] || rc=2', 'true', 1)"
@@ -1566,7 +1551,6 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
     wf "$f" "$k" inspector-job-renamed bad "t = t.replace('    name: scan (inspector)\n', '    name: inspector scan\n', 1)"
     wf "$f" "$k" evidence-upload-removed bad "t = t.replace('name: inspector-evidence', 'name: inspector-evidence-gone', 1)"
     wf "$f" "$k" role-assumed-after-the-scan bad "t = t.replace('      - name: Amazon Inspector - the UTC day at save time', '      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0\n        with:\n          role-to-assume: x\n      - name: Amazon Inspector - the UTC day at save time', 1)"
-    wf "$f" "$k" matrix-list-gets-inspector-back bad "t = t.replace('map(select(. != \"inspector\"))', 'map(select(. != \"inspector\")) + [\"inspector\"]', 1)"
   fi
 done
 # the gate is still fed after the call site, and the tally still reads the result

@@ -226,7 +226,7 @@ ALLOW_PATTERNS=(
   # with --require-hashes on real/schedule runs; bumped by the pip ecosystem in dependabot.yml.
   '^\.github/agent/adjudicator-requirements\.txt$'
   # pip itself, pinned and hash-checked for CI (REQ-SUP-001-AC13); one requirement, bumped by the pip
-  # ecosystem in dependabot.yml under the 7-day cooldown.
+  # ecosystem in dependabot.yml.
   '^\.github/agent/pip-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
@@ -370,9 +370,8 @@ ALLOW_PATTERNS=(
   '^build/keys/retired/[0-9]{4}-[0-9]{2}-[0-9]{2}/release\.rsa\.pub$'
 )
 
-# Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore
-# files the scanners read, and the .auditor/accepted-items.json inventory the
-# release-authorization gate reads (REQ-AUD-11). These are generated, never
+# Daily CVE auditor SUPPRESSION OUTPUTS — the .auditor/accepted-items.json inventory the
+# release-authorization gate reads (REQ-AUD-11), and the other .auditor files below. These are generated, never
 # hand-authored, and delivered ONLY through the auditor's own PR lane
 # (auditor/<date>-<sha> branches; see _deliver_suppression_pr in
 # .github/agent/bin/auditor-run.py). They must be allowed to LIVE on main so
@@ -382,10 +381,8 @@ ALLOW_PATTERNS=(
 # The scoping is enforced by the head branch of the change: a pull_request from
 # a non-auditor branch that touches these paths is blocked; the auditor lane and
 # the merged state on main are allowed. (VEX itself already lives in .vex/ above,
-# published for anyone auditing an artifact; these are its scanner-native forms.)
+# published for anyone auditing an artifact; it is the only suppression a scanner reads.)
 SUPPRESSION_PATTERNS=(
-  '^\.snyk$'
-  '^osv-scanner\.toml$'
   '^\.auditor/accepted-items\.json$'
   # REQ-AUD-16: the generated knowledge document (AC3) and the model's merge-gated proposals
   # (AC4), carried in the auditor's own suppression PR. Like the inventory, they are generated,

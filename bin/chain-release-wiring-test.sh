@@ -771,9 +771,9 @@ for pth in sys.argv[1:]:
             print("%s:%s" % (os.path.basename(pth), job))
 JOBSPY
 }
-ALLOWED_AWS_JOBS=$'evidence-letter.yml:sign\nstage-promote.yml:release\nstage-sign.yml:sign\nstage-sign.yml:sign-check\nstage-sign.yml:sign-rebuild'
+ALLOWED_AWS_JOBS=$'stage-promote.yml:release\nstage-sign.yml:sign\nstage-sign.yml:sign-check\nstage-sign.yml:sign-rebuild'
 mapfile -t aw_files < <(awsfiles "$root"); aj=$(awsjobs "${aw_files[@]}" | sort)
-if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' the aws CLI is installed in exactly the five signing jobs (stage-sign sign, sign-rebuild, sign-check; evidence-letter sign; stage-promote release) and in no other job of any workflow"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
+if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' the aws CLI is installed in exactly the four signing jobs (stage-sign sign, sign-rebuild, sign-check; stage-promote release) and in no other job of any workflow"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
 mkdir -p "$work/awsjobs"; python3 - "$root/.github/workflows/stage-build.yml" "$work/awsjobs/stage-build.yml" <<'JOBMUT'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))

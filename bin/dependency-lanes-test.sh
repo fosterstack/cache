@@ -165,6 +165,8 @@ elif kind == "automerge":
             bad.append("the screen interpolates an expression into a script (pass it by env)")
         if "github.event.pull_request.body" not in str((st.get("env") or {}).get("PR_BODY", "")):
             bad.append("the screen does not take the PR body from env PR_BODY")
+    if any("${{" in r for _, r in runs(job)):
+        bad.append("an expression is interpolated into a script (the metadata outputs go through env, quoted)")
     guard = [i for i, (s, r) in enumerate(runs(job)) if "required-check-guard.sh" in r]
     arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r) and "--disable-auto" not in r]
     if len(arm) != 1:
@@ -276,6 +278,7 @@ case_ automerge $A automerge-arm-any-head   bad "[s.__setitem__('run', s['run'].
 case_ automerge $A automerge-no-screen      bad "$as_[:] = [s for s in $as_ if s.get('id') != 'screen']"
 case_ automerge $A automerge-screen-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-screen-fetches bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set -euo pipefail\\necho contents/bin/dependabot-reviewer.py')) for s in $as_ if s.get('id') == 'screen']"
+case_ automerge $A automerge-summary-inline bad "[s.__setitem__('run', s['run'].replace('\${DEPENDENCY_NAMES}', '\${{ steps.meta.outputs.dependency-names }}')) for s in $as_ if 'Major bump' in (s.get('run') or '')]"
 case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($as_) if s.get('id') == 'screen'][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"

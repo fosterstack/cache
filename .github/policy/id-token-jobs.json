@@ -95,11 +95,6 @@
    "workflow": "release.yml",
    "job": "live-test-release",
    "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
-  },
-  {
-   "workflow": "evidence-letter.yml",
-   "job": "sign",
-   "reason": "the monthly evidence letter's one signing job: the KMS release key by federation, its Rekor entry recorded (REQ-REL-013-AC9; owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md)"
   }
  ]
 }

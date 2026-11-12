@@ -36,7 +36,7 @@ for files, diff, want in [
     (["build/apko.yaml"], {}, "dirty"),                      # a recipe is a build input, not a base signal
     (["build/docker/Dockerfile.production"], {}, "dirty"),   # there is no Dockerfile any more: a file by that name is shipped configuration, not a base signal
     ([".vex/fosterstack-cache.openvex.json"], {}, "fix"),
-    ([".snyk", "osv-scanner.toml", ".auditor/accepted-items.json"], {}, "fix"),
+    ([".auditor/accepted-items.json"], {}, "fix"),
     ([".github/workflows/ci.yml", "docs/x.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml"], {}, "neutral"),
     (["cmd/fscache/main_test.go"], {}, "dirty"),                            # a test is executable (AC1, owner Oct 3)
     (["bin/panel-test.sh"], {}, "dirty"),
@@ -2205,7 +2205,7 @@ check("SEC-1 the real entries still pass (Go 1.27; metadata; to 1.2)", len(P.beh
 # added content starts a script (#!), is never neutral or fix-class; B02: a reviewed workflow by its full path only
 sh_ = "+#!/bin/sh\n+test 1 = 1 && printf AC1_EXECUTED\n"
 for f in ("docs/gate.md", "requirements/gate.yaml", "test-evidence/gate.json", ".github/agent/docs/gate.txt",
-          ".github/agent/reviews/gate.csv", ".github/CODEOWNERS", ".vex/gate.txt", ".auditor/gate.json", ".snyk", "osv-scanner.toml"):
+          ".github/agent/reviews/gate.csv", ".github/CODEOWNERS", ".vex/gate.txt", ".auditor/gate.json"):
     got = P.classify(c("x", [f], diffs={f: sh_}))
     check("B01 a script under a data name is dirty: %s" % f, got[0] == "dirty" and "executable" in got[1], got)
     for mode in ("100755", "120000"):

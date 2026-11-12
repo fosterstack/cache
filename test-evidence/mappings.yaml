@@ -407,7 +407,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
       - { type: shell-test, ref: "bin/layout-archive-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
@@ -592,15 +591,6 @@ mappings:
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
-  - ac: REQ-DEP-005-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
-  - ac: REQ-DEP-005-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
-  - ac: REQ-DEP-005-AC3
-    evidence:
-      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
   - ac: REQ-DEP-003-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -740,8 +730,7 @@ mappings:
       - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
   - ac: REQ-SCAN-015-AC2
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's pin-wiring judge and scanner guard over every PR head's workflows (required check auditor-review-gate)" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's scanner guard over every PR head's workflows (required check auditor-review-gate)" }
   - ac: REQ-SCAN-015-AC3
     evidence:
       - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
@@ -868,7 +857,6 @@ mappings:
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
@@ -885,7 +873,6 @@ mappings:
   - ac: REQ-SUP-001-AC6
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC7
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
@@ -1126,7 +1113,7 @@ mappings:
   - ac: REQ-AUD-018-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges no review record, and the matrix test asserts it runs only the pin checker, the allowlist guard, the pin-wiring judge and the scanner guard" }
+      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges the passed-audit record of the head, and the matrix test asserts it runs only the pin checker, the allowlist guard, the scanner guard and the record judge" }
   - ac: REQ-CHAIN-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1880,25 +1867,12 @@ mappings:
   - ac: REQ-SCAN-012-AC6
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
-  - ac: REQ-CI-001-AC1
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
-  - ac: REQ-CI-001-AC2
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
-  - ac: REQ-CI-001-AC3
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
-  - ac: REQ-CI-001-AC4
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
   - ac: REQ-CI-005-AC2
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-005-AC3
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
@@ -1930,7 +1904,6 @@ mappings:
   - ac: REQ-REL-013-AC5
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC6
     evidence:
@@ -1944,16 +1917,3 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
-  - ac: REQ-REL-013-AC9
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh over the workflow file and the publish script with stand-ins for cosign and gh" }
-  - ac: REQ-REL-013-AC10
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh" }
-  - ac: REQ-REL-013-AC11
-    evidence:
-      - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh over the presence script with stand-ins for cosign and gh" }

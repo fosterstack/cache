@@ -561,7 +561,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): main's copy, read from origin/main by bin/build-admit.py and run on the tagged commit's sha, tag and tag object; reads the record branch with gh GET only and writes nothing",
-      "sha256": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485"
+      "sha256": "f5e0359ceecc866f58ef7ee55f91b4a3fef084f29e9e6420949d1a34b6491a2b"
     },
     {
       "path": "bin/audit-record.py",
@@ -576,7 +576,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing",
-      "sha256": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f"
+      "sha256": "eeeabbdef3cbaf01659b7df275e8cdacf0958a2de0e9c72fbddca91d629144bf"
     },
     {
       "path": "bin/build-freeze.sh",

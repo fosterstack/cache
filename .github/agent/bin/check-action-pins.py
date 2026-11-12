@@ -241,8 +241,8 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 GATE_WORKFLOW_SHA256 = frozenset({
     # main's gate workflow (the passed-audit record judge and writer)
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",
-    # the gate workflow with one step per check (the merge queue judge of REQ-DEP-005-AC3, cache#542, still in it)
-    "52413fd1b4d4a99a5c889641e69ab54eda8bd9117ce0379de0bd035486060cdc",
+    # the gate workflow with one step per check, no merge queue judge, and the record rule's Dependabot exemption
+    "3102248f3d2c88b6e5be3751a1fc42635296b5187bc1d10024eaf19b810bf34e",
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)

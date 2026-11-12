@@ -153,35 +153,19 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
                         bad.append("%s/%s holds %s and names a script path under bin/ through a variable: %r" % (key[0], jn, ", ".join(w), l_.strip()[:100]))
         if len(comp) >= 2 and key not in EXCLUDED_AC2:
             bad.append("%s/%s runs two builds: %r and %r" % (key[0], jn, comp[0], comp[1]))
-# a listed installer exception must name a job that exists, and scan.yml's matrix (the one tool word read from a list) must be exactly the pr_gate-driven shape
+# a listed installer exception must name a job that exists, and scan.yml's scanner jobs must be the two the policy file names
 for key in EXCLUDED_INSTALLER:
     if key not in jobs_seen:
         bad.append("the installer exception %s/%s names a job that does not exist (remove the row)" % key)
 sc = json.load(open(os.environ.get("ISO_SCANNERS") or os.path.join(os.path.dirname(os.path.abspath(wf)), "policy", "scanners.json")))
-if "govulncheck" in (sc.get("pr_gate") or []):
-    bad.append("scanners.json pr_gate holds govulncheck: scan.yml's matrix job would build it (it holds no credential now, but the list is still the scanner set)")
+if sc.get("pr_gate") != ["grype", "inspector"]:
+    bad.append("scanners.json pr_gate is %s, not [grype, inspector]: scan.yml has one job for each and builds nothing else" % sc.get("pr_gate"))
 scan_d = yaml.safe_load(open(os.path.join(wf, "scan.yml"))) or {}
-scan_txt = open(os.path.join(wf, "scan.yml")).read()
-if "jq -c '.pr_gate' .github/policy/scanners.json" not in scan_txt:
-    bad.append("scan.yml no longer reads its matrix list from scanners.json pr_gate")
 sj_ = ((scan_d.get("jobs") or {}).get("scanner") or {})
-if (sj_.get("strategy") or {}).get("matrix") != {"scanner": "${{ fromJSON(needs.scanners.outputs.list) }}"}:
-    bad.append("scan.yml scanner: the matrix must be exactly scanner from the scanners job's list (no include, exclude or other axis): %s" % (sj_.get("strategy") or {}).get("matrix"))
-# rc-5a F: a matrix leg whose scanner is not one the job scans with fails before it installs anything (a leg that scans nothing must never read as a pass)
-sst = sj_.get("steps") or []
-refuse = [i for i, st_ in enumerate(sst) if isinstance(st_, dict) and str(st_.get("if", "")).replace(" ", "") == "matrix.scanner!='grype'" and [l_.strip() for l_ in str(st_.get("run", "")).splitlines() if l_.strip()][-1:] == ["exit 1"] and len(re.findall(r"\bexit\b", str(st_.get("run", "")))) == 1]
-install_i = [i for i, st_ in enumerate(sst) if isinstance(st_, dict) and "install-scanner.sh" in str(st_.get("run", ""))]
-if sj_.get("continue-on-error") is not None and str(sj_.get("continue-on-error")).strip().lower() != "false":
-    bad.append("scan.yml scanner: the job has continue-on-error, so a refused matrix leg would not fail the job")
-if "defaults" in scan_d or "defaults" in sj_:
-    bad.append("scan.yml scanner: a defaults block (a custom run shell) could make the refusal step exit 0 without any other key")
-for i_ in refuse:
-    if set(sst[i_]) - {"name", "if", "run"}:
-        bad.append("scan.yml scanner: the refusal step holds keys other than name, if and run (%s): continue-on-error or an env could keep it from failing the leg" % sorted(set(sst[i_]) - {"name", "if", "run"}))
-if not refuse:
-    bad.append("scan.yml scanner: no step `if: matrix.scanner != 'grype'` whose run ends in the only `exit`, `exit 1` (a pr_gate name other than grype would scan nothing and the aggregate would pass)")
-elif install_i and refuse[0] > install_i[0]:
-    bad.append("scan.yml scanner: the refusal of a non-grype matrix leg must come before the scanner install step")
+if "strategy" in sj_ or "scanners" in (scan_d.get("jobs") or {}):
+    bad.append("scan.yml scanner: the grype job is one plain job (no matrix, no scanner list job)")
+if sj_.get("name") != "scan (grype)":
+    bad.append("scan.yml scanner: the job is not named scan (grype)")
 # an exclusion must still name a job that exists (a stale row hides nothing but must not rot)
 for key in list(EXCLUDED_AC1) + list(EXCLUDED_AC2):
     if key not in jobs_seen:
@@ -290,19 +274,8 @@ PY
 export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the pr_gate check reads (mutated copies of the workflows keep the real one)
 slot check "the real workflows" ok "$root/.github/workflows"
 # AC1: a build added to a job that holds a credential
-# rc-5a F: a non-grype matrix leg must fail
-mutate "scan.yml scanner job: the refusal of a non-grype matrix leg removed (rc-5a F)" '
-edit("scan.yml", lambda s: s.replace("        if: matrix.scanner != \"grype\"\n".replace("\"", "\x27"), "        if: matrix.scanner == \x27grype\x27\n", 1))'
-mutate "scan.yml scanner job: continue-on-error on the refusal step (rc-5a F)" '
-edit("scan.yml", lambda s: s.replace("        if: matrix.scanner != \x27grype\x27\n", "        if: matrix.scanner != \x27grype\x27\n        continue-on-error: true\n", 1))'
-mutate "scan.yml scanner job: continue-on-error on the whole job (rc-5a F)" '
-edit("scan.yml", lambda s: s.replace("    name: scan (${{ matrix.scanner }})\n", "    name: scan (${{ matrix.scanner }})\n    continue-on-error: true\n", 1))'
-mutate "scan.yml scanner job: an exit 0 ahead of the refusal's exit 1 (rc-5a F)" '
-edit("scan.yml", lambda s: s.replace("          exit 1\n\n      # grype reads", "          exit 0\n          exit 1\n\n      # grype reads", 1))'
-mutate "scan.yml: a workflow-level custom run shell (rc-5a F)" '
-edit("scan.yml", lambda s: s.replace("\njobs:\n", "\ndefaults:\n  run:\n    shell: true {0}\njobs:\n", 1))'
-mutate "scan.yml scanner job: the refusal step placed after the installer (rc-5a F)" '
-edit("scan.yml", lambda s: s.replace("      - name: refuse a scanner this job cannot run\n", "      - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can\x27t run is a pipeline failure, not a finding)\n        run: ./bin/install-scanner.sh \x27${{ matrix.scanner }}\x27\n\n      - name: refuse a scanner this job cannot run\n", 1))'
+mutate "scan.yml scanner job: a matrix back in the grype job" '
+edit("scan.yml", lambda s: s.replace("    needs: [build]\n    runs-on: ubuntu-latest\n    # Amazon Inspector runs in its own job below", "    needs: [build]\n    strategy:\n      matrix:\n        scanner: [grype]\n    runs-on: ubuntu-latest\n    # Amazon Inspector runs in its own job below", 1))'
 mutate "go install added to go-freshness refresh (App key, packages: write)" '
 edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n"))'
 mutate "go build added to a job with an environment (auditor panel-probe)" '
@@ -449,19 +422,13 @@ mutate "an extra installer line in the auditor syft exception step" '
 edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh syft \"${RUNNER_TEMP}/gobin\" \\\n", "          bash bin/install-\"scanner\".sh govulncheck\n          ./bin/install-scanner.sh syft \"${RUNNER_TEMP}/gobin\" \\\n", 1))'
 mutate "scan.yml inspector job (the credential holder) gets a second installer line with a variable" '
 edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh inspector-sbomgen\n", "        run: ./bin/install-scanner.sh inspector-sbomgen\n      - name: extra\n        run: |\n          tool=govulncheck\n          bash bin/install-scanner.sh \"$tool\"\n", 1))'
-mutate "scan.yml scanner job adds a matrix.include entry naming govulncheck" '
-edit("scan.yml", lambda s: s.replace("        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}\n", "        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}\n        include:\n          - scanner: govulncheck\n", 1))'
 mutate "scan.yml inspector job (the credential holder) gets a pinned Go install and a variable installer line" '
 edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh inspector-sbomgen\n", "        run: ./bin/install-scanner.sh inspector-sbomgen\n      - name: go\n        run: bash bin/install-scanner.sh go\n      - name: extra\n        run: |\n          TOOL=govulncheck; bash bin/install-scanner.sh \"$TOOL\"\n", 1))'
-mutate "scan.yml matrix list taken from another key of scanners.json (scanners)" '
-edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scanners.json", "jq -c \x27.source_scanners\x27 .github/policy/scanners.json", 1))'
-mutate "pr_gate-driven matrix job loses its exclusion (scan.yml reads another key)" '
-edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scanners.json", "jq -c \x27.scanners\x27 .github/policy/scanners.json", 1))'
 echo '{"scanners": ["grype"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "govulncheck"]}' > "$work/sc-bad.json"
 prgate_case() { local out rc
   out=$(ISO_SCANNERS="$work/sc-bad.json" judge "$root/.github/workflows" 2>&1) && rc=0 || rc=$?
-  if [ "$rc" != 0 ] && grep -Fq "pr_gate holds govulncheck" <<< "$out"; then
-    echo "ok   a pr_gate list that holds govulncheck is refused (the matrix job would build it)"
+  if [ "$rc" != 0 ] && grep -Fq "pr_gate is" <<< "$out"; then
+    echo "ok   a pr_gate list other than grype and inspector is refused"
   else echo "FAIL a pr_gate list holding govulncheck passed or was mis-reported: rc=$rc $out"; fi
 }
 slot prgate_case

@@ -328,8 +328,8 @@ root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
 # exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
-if on != {"pull_request": "", "merge_group": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
-    bad.append("scan.yml's events changed (pull requests, the merge queue, pushes to main and v* tags): %s" % on)
+if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
+    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags): %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
 if builds != ["build"]:
@@ -446,26 +446,25 @@ case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 
 
 # ---------------------------------------------------------------------------------------------------------------------
 # REQ-REL-008-AC1 (owner RATIFIED Oct 2): the workflow directory holds exactly the ratified files and nothing else, so
-# no workflow sprawls. Today's 20 are the consolidation's "keep" rows, the attestation-signer stages and
-# dependabot-auto-merge.yml. Three files are admitted beyond them: stage-sign.yml (v0.3.0 rule 52, owner Oct 9), customer-words-edited.yml (decision 98, Oct 3) and
-# evidence-letter.yml (a new file under the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md).
+# no workflow sprawls. Today's 19 are the consolidation's "keep" rows, the attestation-signer stages and
+# dependabot-auto-merge.yml. Two files are admitted beyond them: stage-sign.yml (v0.3.0 rule 52, owner Oct 9) and customer-words-edited.yml (decision 98, Oct 3).
 # The history of the count (24, 25, 26, 24, 19) is in the git log of this file.
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
-evidence-letter.yml stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
+stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
 stage-sign.yml supply-chain.yml customer-words-edited.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 20:
-    print("the ratified list is not 20 files (rule 52 and the owner's Oct 3 amendment admit the three new files)")
+if len(want) != 19:
+    print("the ratified list is not 19 files (rule 52 and the owner's Oct 3 amendment admit the two new files)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 if odd or extra or missing or len(got) != len(set(got)):
     print("extra: %s missing: %s odd names: %s (the list is rule 52 and the owner's Oct 3 amendment: "
-          "stage-sign.yml, evidence-letter.yml and customer-words-edited.yml)" % (extra, missing, odd)); sys.exit(1)
+          "stage-sign.yml and customer-words-edited.yml)" % (extra, missing, odd)); sys.exit(1)
 print("ok")
 PY
 }
@@ -485,9 +484,9 @@ edit_set() { python3 -c 'import json, sys; s = json.loads(sys.argv[1]); exec(sys
 case_set real          ok  "$real_set"
 case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
 case_set a-third-new-file bad "$(edit_set 's.append("stage-extra.yml")')"
-case_set letter-missing bad "$(edit_set 's.remove("evidence-letter.yml")')"
+case_set letter-back   bad "$(edit_set 's.append("evidence-letter.yml")')"
 case_cites a-third-new-file "$(edit_set 's.append("stage-extra.yml")')"
-case_cites letter-missing "$(edit_set 's.remove("evidence-letter.yml")')"
+case_cites letter-back "$(edit_set 's.append("evidence-letter.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("go-freshness.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("go-freshness.yml"); s.remove("scorecard.yml"); s.append("go-freshness.yml\nscorecard.yml")')"

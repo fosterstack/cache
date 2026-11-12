@@ -74,11 +74,9 @@ case_() {
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   # every tree must carry the pinned gate
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
-  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
   : > "$d/.github/agent/bin/check-action-pins.py"
   mkdir -p "$d/bin" "$d/.github/agent/tests"
   : > "$d/bin/check-file-allowlist.sh"
-  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   : > "$d/bin/scan-no-workflow-call-test.sh"
   : > "$d/bin/audit-record-judge.sh"
   : > "$d/bin/audit-record-prepare.sh"
@@ -707,11 +705,9 @@ gitcase() {
   take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
-  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
   : > "$d/.github/agent/bin/check-action-pins.py"
   mkdir -p "$d/bin" "$d/.github/agent/tests"
   : > "$d/bin/check-file-allowlist.sh"
-  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   : > "$d/bin/scan-no-workflow-call-test.sh"
   : > "$d/bin/audit-record-judge.sh"
   : > "$d/bin/audit-record-prepare.sh"
@@ -1133,8 +1129,7 @@ case_out() {
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
-  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
            build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
     printf '#!/usr/bin/env bash\nset -euo pipefail\n:\n' > "$d/bin/$s"; chmod +x "$d/bin/$s"
@@ -1773,11 +1768,9 @@ mutant_() {   # name, python replace (old|||new), probe script, optional setup
   take "mutant-$name" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
-  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
   mkdir -p "$d/bin" "$d/.github/agent/tests"
   : > "$d/.github/agent/bin/check-action-pins.py"
   : > "$d/bin/check-file-allowlist.sh"
-  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   : > "$d/bin/scan-no-workflow-call-test.sh"
   : > "$d/bin/audit-record-judge.sh"
   : > "$d/bin/audit-record-prepare.sh"
@@ -2099,8 +2092,7 @@ realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
 cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
 cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"; mkdir -p "$realcase/.github/agent/bin"
-cp "$here/../bin/queue-gate-judge.sh" "$realcase/.github/agent/bin/queue-gate-judge.sh"
-: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
+: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
 python3 -c "
 s = open('$realcase/.github/workflows/auditor.yml').read()
 marker = '    steps:\n'
@@ -3284,9 +3276,7 @@ case3_() {
   take "$name" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; printf '%s\n' "$2" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  cp "$here/../bin/queue-gate-judge.sh" "$d/.github/agent/bin/queue-gate-judge.sh"
   : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"
-  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   if [ -n "${3:-}" ]; then (cd "$d" && eval "$3"); fi
   local out rc=0; out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1) || rc=$?
   if [ "$rc" -ne 0 ] && grep -q 'REQ-REL-005-AC3' <<< "$out"; then pass=$((pass+1)); echo "PASS $name → AC3 finding"; else failn=$((failn+1)); echo "FAIL $name → no REQ-REL-005-AC3 finding"; fi

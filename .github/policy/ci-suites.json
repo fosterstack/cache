@@ -21,7 +21,6 @@
 {"suite": "layout-archive-test.sh"},
 {"suite": "vex-forms-test.sh"},
 {"suite": "evidence-letter-test.sh"},
-{"suite": "evidence-letter-job-test.sh"},
 {"suite": "scout-root-cause-test.sh"},
 {"suite": "scout-older-versions-test.sh"},
 {"suite": "suite-guard-test.sh"},
@@ -70,7 +69,6 @@
 {"suite": "pin-age-check-test.sh"},
 {"suite": "pin-audit-test.sh"},
 {"suite": "supply-chain-wiring-test.sh"},
-{"suite": "pin-wiring-test.sh"},
 {"suite": "marker-gate-test.sh"},
 {"suite": "pin-audit-go-major-test.sh"},
 {"suite": "required-check-guard-test.sh"}

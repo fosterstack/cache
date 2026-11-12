@@ -25,7 +25,6 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
 import argparse, datetime, html, json, os, re, subprocess, sys, unicodedata
-FIX_EXACT = {".snyk", "osv-scanner.toml"}
 # data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15); every other path under .vex/ and .auditor/ stays fix-class
 NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
 NEUTRAL_PROPOSALS = re.compile(r"^\.auditor/proposals/[^/]+\.json$")
@@ -260,7 +259,7 @@ def classify(commit, base_inputs=None):
             # only data is neutral by its directory (Sonnet #159 r7 B4, r8): anything without a data extension —
             # a script, an extensionless file, another extension — could be executed, so it is not
             kinds.add("dirty"); why.append("%s is not a data file; a directory does not make it neutral" % f)
-        elif f in FIX_EXACT or (f.startswith(FIX_PREFIX) and DATA_FILE.search(f)):
+        elif f.startswith(FIX_PREFIX) and DATA_FILE.search(f):
             # the auditor's output directories make only DATA fix-class — never a script there (Codex #159 r5b, B10)
             kinds.add("fix")
         elif f in ("go.mod", "tools/requirements/go.mod"):

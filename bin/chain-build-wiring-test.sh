@@ -714,20 +714,13 @@ expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable"
 mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw" "$work/wf-cw-new"
 for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
-# the monthly evidence letter's workflow is the second new file (owner's Oct 3 amendment,
-# ops/docs/ratify/2026-10-02-owner-load.md): admitted; a third is still refused
-mkdir -p "$work/wf-letter" "$work/wf-third"
-cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
-cp "$work/wf-letter"/* "$work/wf-third/"; : > "$work/wf-third/stage-extra.yml"
+mkdir -p "$work/wf-letter"; cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
 cp "$work/wf-ok"/* "$work/wf-cw/"; : > "$work/wf-cw/customer-words-edited.yml"
 cp "$work/wf-cw"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/stage-extra.yml"
 expect ok     "AC1 fixture: a workflow directory with stage-sign.yml and without stage-image.yml / stage-admission.yml passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a new workflow file other than the two named" "was added" workflows "$work/wf-new"
-expect ok     "AC1 evidence-letter.yml is admitted beside stage-sign.yml (rule 52 and the owner's Oct 3 amendment)" "" \
-  workflows "$work/wf-letter"
-expect caught "AC1 a third new workflow file is still refused, with evidence-letter.yml present" \
-  "workflow file stage-extra.yml was added" workflows "$work/wf-third"
+expect caught "AC1 evidence-letter.yml is gone for good: it is a new file too" "workflow file evidence-letter.yml was added" workflows "$work/wf-letter"
 expect ok     "AC1 customer-words-edited.yml is the one other file allowed (decision 98, Oct 3)" "" workflows "$work/wf-cw"
 expect caught "AC1 customer-words-edited.yml does not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 stage-admission.yml still present" "still exists" workflows "$work/wf-old"
@@ -3597,7 +3590,7 @@ expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode 
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
-label="AC1 the real workflow directory: no file added beyond stage-sign.yml, customer-words-edited.yml and evidence-letter.yml, stage-image.yml"
+label="AC1 the real workflow directory: no file added beyond stage-sign.yml and customer-words-edited.yml, stage-image.yml"
 expect ok "$label and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the four chain stage files pin download-artifact to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
@@ -3798,7 +3791,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1319
+EXPECT=1318
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

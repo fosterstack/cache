@@ -13,6 +13,7 @@ sha, so an old record then names a different sha and does not apply.
   audit-record.py verify --head SHA --base-ref REF --base-root DIR [--ref-json FILE --commit-json FILE]
       FILE = the answers of `gh api repos/R/git/ref/heads/audit/SHA` and `gh api repos/R/commits/<that ref's sha>`.
       Exit 0: a base that is not main (the judge decides; nothing is read), or a good record. Exit 1: anything else, with the reason on stdout. Exit 2: usage.
+      With --compare-json FILE (the answer of `gh api repos/R/compare/main...SHA?per_page=100`) a head whose every commit is Dependabot's or an audit writer's passes without a record (bot_authored).
 
 Every doubt fails closed: a missing or malformed answer, a head that is not 40 lower-case hex, a missing policy file.
 """
@@ -27,6 +28,7 @@ RECORD_FILE = "audit-record"          # the one file the record commit adds (cre
 WEB_FLOW = ("web-flow", 19864447)     # GitHub's own committer for commits it makes and signs on an actor's behalf
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
+DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot
 
 
 def record_branch(head):
@@ -92,6 +94,25 @@ def verify_record(head, base_ref, ref, commit, writers):
     if not isinstance(k, dict) or ((k.get("login"), k.get("id")) not in allowed and (k.get("login"), k.get("id")) != WEB_FLOW):
         return False, "the record commit was not committed by an audit writer or by GitHub itself (a signature made with someone else's own key does not count)"
     return True, ""
+
+
+def bot_authored(compare, writers):
+    """True when the head has commits past main and every one is authored by Dependabot or an audit writer, verified by GitHub, and committed by
+    one of them or by GitHub itself; a list that is cut, or any other author, committer or signature, is False and the record rule stands."""
+    allowed = _writers(writers)
+    commits = compare.get("commits") if isinstance(compare, dict) else None
+    if allowed is None or not isinstance(commits, list) or not commits or compare.get("total_commits") != len(commits):
+        return False
+    bots = allowed | {DEPENDABOT}
+    for c in commits:
+        if not isinstance(c, dict) or not isinstance(c.get("commit"), dict):
+            return False
+        ver, a, k = c["commit"].get("verification"), c.get("author"), c.get("committer")
+        if not (isinstance(ver, dict) and ver.get("verified") is True and ver.get("reason") == "valid"
+                and isinstance(a, dict) and a.get("type") == "Bot" and (a.get("login"), a.get("id")) in bots
+                and isinstance(k, dict) and (k.get("login"), k.get("id")) in bots | {WEB_FLOW}):
+            return False
+    return True
 
 
 # matches v1.2.3, v0.3.0, v1.0.0-rc.2, v1.0.0-rc2 (the chain's form); refuses v1.2, v01.2.3, v1.2.3-rc, v1.2.3-rc.
@@ -211,6 +232,7 @@ def main(argv):
     v.add_argument("--base-root", required=True)
     v.add_argument("--ref-json")
     v.add_argument("--commit-json")
+    v.add_argument("--compare-json")
     r = sub.add_parser("release")
     r.add_argument("--tag", required=True)
     r.add_argument("--tag-object", required=True)
@@ -254,8 +276,11 @@ def main(argv):
         return 0 if ok else 1
     if a.cmd != "verify":
         return 2
-    ok, why = verify_record(a.head, a.base_ref, _load(a.ref_json), _load(a.commit_json),
-                            _load(os.path.join(a.base_root, WRITERS_PATH)))
+    writers = _load(os.path.join(a.base_root, WRITERS_PATH))
+    ok, why = verify_record(a.head, a.base_ref, _load(a.ref_json), _load(a.commit_json), writers)
+    if not ok and a.compare_json and bot_authored(_load(a.compare_json), writers):
+        print("audit-record: every commit of " + a.head + " is Dependabot's or the audit writer's: no record needed")
+        return 0
     print("audit-record: " + (why if not ok else ("passed-audit record found for " + a.head if a.base_ref == "main" else "base %r is not main: nothing to check" % a.base_ref)))
     return 0 if ok else 1
 

@@ -3,7 +3,7 @@
  "files": [
   {
    "path": ".githooks/pre-commit",
-   "sha256": "e747eb18100bf2036826cd84b1595861a70967a278678f97d3e1340a5e614c2a",
+   "sha256": "21a6de031f08b86b8d11e90d16fce4cb58965836de94e0ea4e3c50ec64deb541",
    "reason": "a local developer hook (never run in CI)"
   },
   {
