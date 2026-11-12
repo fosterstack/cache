@@ -3115,6 +3115,14 @@ print("OK" if ("owner-decision issue: skipped — a — CVEs: CVE-AAA" in pl and
 { eq "$csr" "OK"; } && ok || no "distinct skipped owner items each listed" "$csr"
 
 echo "=== REQ-AUD-18 engineering hygiene ==="
+# selection <name> <file>...: what bin/select-tests.sh prints for a change to those files, from the committed map, in a scratch repository
+selection(){
+  local d="$WORK/sel-$1"; shift; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/policy"
+  cp "$repo/bin/select-tests.sh" "$d/bin/"; cp "$repo/.github/policy/test-paths.json" "$d/.github/policy/"
+  ( cd "$d" && git init -q && for f in "$@"; do mkdir -p "$(dirname "$f")"; echo a > "$f"; done && git add -A \
+    && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm base && for f in "$@"; do echo b >> "$f"; done && git add -A \
+    && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm change && bash bin/select-tests.sh HEAD~1 HEAD ) 2>/dev/null
+}
 begin "req18-ac1-everything-under-agent" "the layout check passes the real tree and FAILS an auditor-named path or a file referring to .github/agent/ outside it; workflows, the allowlist, the generated outputs, the two traceability files (amendment, owner Oct 2) and the patch-release classifier with its test (amendment, owner Oct 3) are the only exemptions"
 LC="$repo/$BIN/auditor-layout-check.py"
 git ls-files 2>/dev/null | "$PY" "$LC" >/dev/null 2>&1; real=$?
@@ -3150,28 +3158,34 @@ printf ' bin/patch-decide.py\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws3=
   && eq "$ws1" "1" && eq "$ws2" "1" && eq "$ws3" "1"; } \
   && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other patch_classifier=$patchx patch_lookalike=$patch_other whitespace=$ws1/$ws2/$ws3"
 
-begin "req18-ac1-suites-wired-into-required-allowlist-job" "ci.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
-hy="$(python3 - <<'HH'
-import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+begin "req18-ac1-layout-check-selected-by-the-map-and-run-whole-by-full-suite" "the changed-path map selects the layout check, the parser tests and the matrix suite for a change under .github/agent/ and the layout check for a change to the allowlist; full-suite.yml runs all three whole, unconditionally; ci.yml's allowlist job names none of them"
+sel_agent="$(selection agent .github/agent/bin/auditor-layout-check.py)"
+sel_allow="$(selection allow bin/check-file-allowlist.sh)"
+hy="$(SEL_AGENT="$sel_agent" SEL_ALLOW="$sel_allow" python3 - <<'HH'
+import os, sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml  # the vendored reader — never whatever PyYAML the host happens to have
-d=yaml.safe_load(open(".github/workflows/ci.yml")); j=d["jobs"]["allowlist"]
-st=j["steps"]; runs=[x.get("run","") for x in st]
-ok=(j.get("name")=="allowlist" and any("auditor-layout-check.py" in r for r in runs)
-    and any(".github/agent/tests/auditor-matrix-test.sh" in r for r in runs)
-    and any(".github/agent/tests/auditor-parser-tests.sh" in r for r in runs)
-    and not any(("continue-on-error" in x) or ("if" in x) for x in st if "auditor-" in x.get("run","")))
-print("OK" if ok else "BAD")
+want = ("auditor-layout-check.py", ".github/agent/tests/auditor-matrix-test.sh", ".github/agent/tests/auditor-parser-tests.sh")
+agent = os.environ["SEL_AGENT"].splitlines(); allow = os.environ["SEL_ALLOW"].splitlines()
+sel_ok = all(any(w in l for l in agent) for w in want) and any("auditor-layout-check.py" in l for l in allow)
+fs = yaml.safe_load(open(".github/workflows/full-suite.yml"))
+def steps(d, j): return (d["jobs"].get(j) or {}).get("steps", [])
+whole = {w: [x for j in fs["jobs"] for x in steps(fs, j) if w in x.get("run", "")] for w in want}
+full_ok = all(len(v) == 1 and "if" not in v[0] and "continue-on-error" not in v[0] and "select-tests" not in v[0]["run"] for v in whole.values())
+ci = yaml.safe_load(open(".github/workflows/ci.yml"))
+named = [x for x in steps(ci, "allowlist") if any(w in x.get("run", "") for w in want) and "select-tests" not in x.get("run", "")]
+print("OK" if sel_ok and full_ok and not named else "BAD sel=%s full=%s named=%d" % (sel_ok, full_ok, len(named)))
 HH
 )"
-eq "$hy" "OK" && ok || no "layout check + suites, unconditional, in the required allowlist job" "$hy"
+eq "$hy" "OK" && ok || no "layout check + suites selected by the map, run whole and unconditionally by full-suite.yml, not named in ci.yml's allowlist job" "$hy"
 
-begin "req18-ac2-python-100pct-coverage-gate" "the required 'coverage' job runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
+begin "req18-ac2-python-100pct-coverage-gate-in-full-suite" "the coverage job of full-suite.yml (not ci.yml) runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
 cg="$(python3 - <<'CC'
 import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
-j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["coverage"]
+j=yaml.safe_load(open(".github/workflows/full-suite.yml"))["jobs"]["coverage"]
 g=[x for x in j["steps"] if ".github/agent/tests/coverage-gate.sh" in x.get("run","")]
-ok=(j.get("name")=="coverage" and len(g)==1 and "--require-hashes" in g[0]["run"]
+ok=("coverage" not in yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]
+    and j.get("name")=="coverage" and "if" not in j and len(g)==1 and "--require-hashes" in g[0]["run"]
     and ".github/agent/coverage-requirements.txt" in g[0]["run"]
     and "if" not in g[0] and "continue-on-error" not in g[0])
 print("OK" if ok else "BAD")
@@ -3262,21 +3276,23 @@ IV
 { eq "$rcg" "0" && eq "$rcb" "0" && eq "$idv" "OK"; } \
   && ok || no "claims logged exactly, token never; malformed token warns" "rc_good=$rcg rc_bad=$rcb verdict=$idv"
 
-begin "req18-requirements-resolve-in-required-job" "the required allowlist job resolves both hash-pinned auditor requirement files (a lone pydantic-core bump broke the SDK install twice), and Dependabot moves pydantic + pydantic-core together"
-rq="$(python3 - <<'RQ'
-import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+begin "req18-requirements-resolve-in-full-suite-allowlist-shard" "a change to the auditor requirements selects the resolve step by the map, a full-suite allowlist shard resolves both hash-pinned auditor requirement files whole (a lone pydantic-core bump broke the SDK install twice), and Dependabot moves pydantic + pydantic-core together"
+sel_req="$(selection req .github/agent/pip-requirements.txt)"
+rq="$(SEL_REQ="$sel_req" python3 - <<'RQ'
+import os, sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
-j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["allowlist"]
-st=[x for x in j["steps"] if "--dry-run" in x.get("run","") and "--require-hashes" in x.get("run","")]
+sel=[l for l in os.environ["SEL_REQ"].splitlines() if "--dry-run" in l and "--require-hashes" in l and "adjudicator-requirements.txt" in l and "coverage-requirements.txt" in l]
+fs=yaml.safe_load(open(".github/workflows/full-suite.yml"))["jobs"]
+st=[x for jid, j in fs.items() if jid.startswith("allowlist-") for x in j["steps"] if "--dry-run" in x.get("run","") and "--require-hashes" in x.get("run","")]
 d=yaml.safe_load(open(".github/dependabot.yml"))
 pip=[u for u in d["updates"] if u.get("package-ecosystem")=="pip" and u.get("directory")=="/.github/agent"]
 grp=(pip[0].get("groups") or {}).get("pydantic",{}).get("patterns",[]) if len(pip)==1 else []
-ok=(len(st)==1 and "adjudicator-requirements.txt" in st[0]["run"] and "coverage-requirements.txt" in st[0]["run"]
+ok=(len(sel)==1 and len(st)==1 and "adjudicator-requirements.txt" in st[0]["run"] and "coverage-requirements.txt" in st[0]["run"]
     and "if" not in st[0] and "continue-on-error" not in st[0] and sorted(grp)==["pydantic","pydantic-core"])
-print("OK" if ok else "BAD")
+print("OK" if ok else "BAD sel=%d full=%d" % (len(sel), len(st)))
 RQ
 )"
-eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
+eq "$rq" "OK" && ok || no "requirements resolve step selected by the map, whole in a full-suite allowlist shard + pydantic group" "$rq"
 
 begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository (REQ-REL-012-AC3): the record-judging script is gone, the trusted verdict (judge and sweep) runs the action-pin checker, the allowlist guard, the pin-wiring judge and the scanner guard and nothing else over the head, neither runs bin/audit-record-judge.sh or reads a branch audit/<sha>, only the record job (the writer's own last step) runs the judge, and the check's summary texts name no record"
 nr="$(python3 - <<'NR'
