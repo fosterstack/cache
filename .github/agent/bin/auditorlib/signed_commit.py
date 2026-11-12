@@ -1,49 +1,36 @@
-"""The auditor's delivery commits, made through the GitHub API so GitHub signs them (REQ-AUD-17, REQ-AUD-15).
+"""The auditor's delivery commits, made through the GitHub API so GitHub signs them.
 
-main's ruleset requires signed commits. A commit made by `git commit` in the runner is not signed, so the PR it
-carried stayed BLOCKED forever. A commit made through the GraphQL `createCommitOnBranch` mutation with the App's
-installation token is created and signed by GitHub. The same App, the same permissions, no new token.
+main's ruleset requires signed commits, and a commit made by `git commit` in the runner is unsigned. A commit made
+through the GraphQL `createCommitOnBranch` mutation with the App's installation token is created and signed by GitHub.
 
-commit_via_api(repo, branch, base_sha, message, changes): on an ALLOWED_PREFIXES branch, the LIVE branch is touched
-only AFTER a signed replacement commit exists.
-  1. read the live branch's head H1 (absent = none);
-  2. create a TEMPORARY ref auditor/tmp-<id> at base_sha (REST);
-  3. make ONE commit on the temporary branch (expectedHeadOid = base_sha) and confirm it is signed (the mutation's
-     signature, else a follow-up GET of the commit);
-  4. read the live head again: if it is not H1, someone wrote since step 1: delete the temporary ref and FAIL CLOSED,
-     nothing overwritten;
-  5. point the live branch at the new commit (PATCH force when it exists, POST create when absent);
-  6. ALWAYS delete the temporary ref (best effort: a failure to delete is not fatal and is reported in `notes` / the
-     error).
-So a failed mutation, a failed signature check or a lease miss leaves the live branch, its open PR and the PR's
-pending additions exactly as they were; the live branch is never reset to main and the PR never has an empty-diff head.
+commit_via_api writes one signed commit on a delivery branch (auditor/, patch-notes/ or audit/). It builds the commit
+on a temporary auditor/tmp-* ref at base_sha, confirms the signature, checks that the live branch has not moved since
+it was first read, and only then points the live branch at the new commit and deletes the temporary ref. A failure at
+any point leaves the live branch, its open PR and the PR's pending additions as they were.
 
-branch_reusable(repo, branch, base_sha): an EXISTING delivery branch may be left as it is only when its head commit
-is verified by GitHub and its first parent is base_sha (today's main); otherwise the caller rebuilds it
-through commit_via_api.
+branch_reusable says whether an existing auditor/ branch can stay as it is. Its head must be one signed commit by the
+App with base_sha (today's main) as its only parent and exactly the wanted files, or that commit plus one signed
+records commit by the App on top of it. It returns the head oid, or None when the caller must rebuild the branch.
 
-commit_on_branch(repo, branch, head_sha, message, changes): the dependency-bump lanes (dependabot/go_modules/*,
-auditor/bump-*). ONE signed commit on the branch's own head: head_sha is the parent AND the lease
-(createCommitOnBranch's expectedHeadOid), so a branch that moved is never written, and only records paths may be
-written (is_records_path). The sweep that regenerates a bump's vendored tree and provenance uses it; branch_reusable
-then accepts a head whose one extra commit is that commit (GitHub-verified, by the App, its message exactly
-records_message(branch)), so the auditor's daily replace leaves it in place.
+commit_on_branch writes one signed records commit on the head of a dependency-bump branch (dependabot/go_modules/* or
+auditor/bump-*). The head is both the parent and the lease, so a branch that moved is not written, and only records
+paths may be written.
 
-Anything else (an API error, no oid, an unconfirmed signature, a file over 5 MB, a branch outside the lanes of
-ALLOWED_PREFIXES, or of BUMP_PREFIXES for commit_on_branch) is a CommitError: the delivery fails
-closed and says so. A commit that is not provably signed is never reported delivered.
+commits_authored_by says whether every commit between two shas is verified by GitHub and made by given logins.
 
-KNOWN RESIDUAL: between step 4 and step 5 a concurrent writer to the live branch can still be overwritten (the refs
-API has no compare-and-swap for a forced update). The window is two API calls long; the auditor's workflow runs in the
-concurrency group `auditor-daily-delivery` (cancel-in-progress: false), so two deliveries never overlap, and only the
-App writes auditor/* (the
-only-the-app-pushes-auditor-lane guard).
+Anything that cannot be proved, such as an API error, a missing oid, an unconfirmed signature, a file over 5 MB or a
+branch outside the allowed prefixes, is a CommitError: the delivery fails closed, and a commit that is not provably
+signed is never reported delivered.
+
+Known race: between the lease check and the move of the live branch in commit_via_api, a concurrent writer can be
+overwritten, because the refs API has no compare-and-swap for a forced update. The workflow's concurrency group
+auditor-daily-delivery keeps two deliveries from overlapping.
 """
 import base64, hashlib, json, os, re, subprocess, time, urllib.parse
 
 # createCommitOnBranch is a request body, not a git push: refuse what it cannot take
 MAX_FILE_BYTES = 5 * 1024 * 1024
-BRANCH_PREFIX = "auditor/"              # the reserved lane: the only branches the App writes
+BRANCH_PREFIX = "auditor/"              # the default lane of commit_via_api
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 # the lanes commit_via_api may write; a caller names which it uses (audit/ = the passed-audit record, REQ-REL-012)
@@ -149,9 +136,13 @@ def records_message(branch):
     return RECORDS_HEADLINE + "%s bump" % branch.rsplit("/", 1)[1]
 
 
+def is_bump_branch(branch):
+    """True for a dependency-bump branch name (see _BUMP_BRANCH)."""
+    return isinstance(branch, str) and bool(_BUMP_BRANCH.match(branch))
+
+
 def _check_bump_branch(branch):
-    plain = isinstance(branch, str) and _BUMP_BRANCH.match(branch) and ".." not in branch
-    if not plain or branch.endswith(("/", ".lock")):
+    if not is_bump_branch(branch) or ".." in branch or branch.endswith(("/", ".lock")):
         raise CommitError("signed commit: refusing branch %r: a records commit goes on a dependabot/go_modules/* "
                           "or auditor/bump-* branch only" % (branch,))
 
@@ -334,13 +325,17 @@ def _verified(doc):
     return isinstance(verification, dict) and verification.get("verified") is True
 
 
+def _login(doc, who):
+    """The GitHub login of the commit's "author" or "committer", or None when the doc has none."""
+    person = doc.get(who)
+    return person.get("login") if isinstance(person, dict) else None
+
+
 def _by_app(doc, app_login):
     """The commit was made through the API on the App's behalf: authored by the App (its login, e.g. 'name[bot]') and
     committed by GitHub itself. The author is only an email anyone can set; the committer GitHub signs is not.
     Without a login to compare, nothing is by the App."""
-    author, committer = doc.get("author"), doc.get("committer")
-    return (bool(app_login) and isinstance(author, dict) and author.get("login") == app_login
-            and isinstance(committer, dict) and committer.get("login") == GITHUB_COMMITTER)
+    return bool(app_login) and _login(doc, "author") == app_login and _login(doc, "committer") == GITHUB_COMMITTER
 
 
 def _is_records_commit(doc, branch):
@@ -348,31 +343,55 @@ def _is_records_commit(doc, branch):
     return isinstance(commit, dict) and commit.get("message") == records_message(branch)
 
 
-def _only_records_paths(files):
-    """Every file of a commit is a plain add, change or delete of a records path. GitHub lists at most 300 files of
-    a commit, so a list that long may be cut short and proves nothing."""
-    return (isinstance(files, list) and 0 < len(files) < 300
-            and all(isinstance(f, dict) and is_records_path(f.get("filename"))
-                    and f.get("status") in ("added", "modified", "removed") and "previous_filename" not in f
-                    for f in files))
+def _only_records_paths(run, repo, sha):
+    """Every file of commit `sha` is a plain add, change or delete of a records path. GitHub pages a commit's files at
+    300 a page and stops at 3000, so a list is complete only when a page comes back short; anything else proves
+    nothing."""
+    files = []
+    for page in range(1, 11):
+        rc, out, _ = _api(run, ["gh", "api", "repos/%s/commits/%s?per_page=300&page=%d" % (repo, sha, page)])
+        if rc != 0:
+            return False
+        chunk = _json(out, "the commit lookup").get("files")
+        if not isinstance(chunk, list):
+            return False
+        files += chunk
+        if len(chunk) < 300:
+            return bool(files) and all(isinstance(f, dict) and is_records_path(f.get("filename"))
+                                       and f.get("status") in ("added", "modified", "removed")
+                                       and "previous_filename" not in f for f in files)
+    return False
 
 
-def commits_authored_by(run, repo, base_sha, head_sha, logins):
-    """True when every commit after base_sha up to head_sha is verified by GitHub and authored by one of `logins`
-    (e.g. 'dependabot[bot]'). A list GitHub may have cut short, or any failed lookup, is False."""
+def commits_authored_by(run, repo, base_sha, head_sha, logins, notes=None):
+    """True when every commit after base_sha up to head_sha is verified by GitHub, authored by one of `logins`
+    (e.g. 'dependabot[bot]') and committed by one of them or by the GitHub web-flow account that signs API commits.
+    A list GitHub may have cut short, or any failed lookup, is False; `notes` (a list) then receives the cause."""
     logins = {login for login in logins if login}      # an unset App login must not match an author with no login
-    rc, out, _ = _api(run, ["gh", "api", "repos/%s/compare/%s...%s?per_page=100" % (repo, base_sha, head_sha)])
+    rc, out, err = _api(run, ["gh", "api", "repos/%s/compare/%s...%s?per_page=100" % (repo, base_sha, head_sha)])
     if rc != 0:
-        return False
+        return _refused(notes, "the compare lookup failed: %s" % (err or out).strip()[-200:])
     try:
         doc = _json(out, "the compare lookup")
-    except CommitError:
-        return False
+    except CommitError as e:
+        return _refused(notes, str(e))
     commits = doc.get("commits")
-    if not isinstance(commits, list) or not commits or doc.get("total_commits") != len(commits):
-        return False
-    return all(isinstance(c, dict) and _verified(c) and isinstance(c.get("author"), dict)
-               and c["author"].get("login") in logins for c in commits)
+    if not isinstance(commits, list) or not commits:
+        return _refused(notes, "the compare lookup listed no commits")
+    if doc.get("total_commits") != len(commits):
+        return _refused(notes, "the branch has %s commits, more than the %d listed"
+                        % (doc.get("total_commits"), len(commits)))
+    if not all(isinstance(c, dict) and _verified(c) and _login(c, "author") in logins
+               and _login(c, "committer") in logins | {GITHUB_COMMITTER} for c in commits):
+        return _refused(notes, "a commit is not verified, or not authored and committed by %s or GitHub"
+                        % ", ".join(sorted(logins)))
+    return True
+
+
+def _refused(notes, why):
+    if notes is not None:
+        notes.append(why)
+    return False
 
 
 def branch_reusable(repo, branch, base_sha, want, run=None, app_login=None):
@@ -398,7 +417,7 @@ def branch_reusable(repo, branch, base_sha, want, run=None, app_login=None):
             return None
         # the sweep's commit: it writes records paths only; judge the commit under it by the ordinary rules
         if _is_records_commit(doc, branch):
-            if not _only_records_paths(doc.get("files")):
+            if not _only_records_paths(run, repo, head):
                 return None
             parents = doc.get("parents")
             if not (isinstance(parents, list) and len(parents) == 1 and isinstance(parents[0], dict)):
