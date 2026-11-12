@@ -422,7 +422,7 @@ class LiveNet:
             raise Fail(f"gh api {path.split('?')[0]} returned null")
         if strict and r.returncode:
             # only a 404 on a record is "absent"; a list endpoint answers 200
-            if "(HTTP 404)" not in r.stderr + r.stdout or "?" in path:
+            if age._gh_status(r) != 404 or "?" in path:
                 raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
         with self._lock:
             self._memo[(path, strict)] = val
@@ -785,10 +785,13 @@ class LiveNet:
 
     @staticmethod
     def _api_ok(r, item):
-        """A 404/422 means the commit or repo is not there (a finding); anything else (rate limit, outage) means we
-        could not look, never a hit."""
-        if r.returncode and not re.search(r"\b(404|422)\b", r.stderr):
-            raise Fail(f"could not check {item.name}@{item.version[:12]} upstream: {r.stderr.strip()[:120]}")
+        """gh's 404, 410 or 422 means the commit or repo is not there (a finding); anything else (rate limit, outage)
+        means we could not look, never a hit."""
+        if r.returncode:
+            try:
+                age._gh_failed(r)
+            except age.CouldNotLook:
+                raise Fail(f"could not check {item.name}@{item.version[:12]} upstream: {r.stderr.strip()[:120]}")
 
     def nested(self, item):
         if item.kind != "action":
@@ -1363,10 +1366,11 @@ def history_items(root, start, now):
     # that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     memo = {}
     for r in revs:
-        key = inv.tree_key(root, r)
+        agent = r == tip    # .github/agent/ scripts are read at the tip only; the history read stays as it was
+        key = inv.tree_key(root, r, agent)
         if key not in memo:
             try:
-                memo[key] = inv.load_at(root, r)
+                memo[key] = inv.load_at(root, r, agent)
             except RuntimeError as e:
                 if r == tip or "refusing to read it partially" not in str(e):
                     raise
