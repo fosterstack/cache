@@ -58,22 +58,29 @@ need(re.search(r"repository.{0,120}release tag|release tag.{0,120}repository", f
 need("release assets" in flat.lower(), "setup text does not name the release assets")
 need("release-key-manifest.json" in flat and "release-key-manifest.sig" in flat, "setup text does not name the manifest and its signature")
 sents = [x.strip() for x in re.split(r"(?<=[.;])\s+", flat) if x.strip()]
+def matches(x, *pats):
+    return all(re.search(p, x, re.I) for p in pats)
 def sentence(*pats):
-    return any(all(re.search(p, x, re.I) for p in pats) for x in sents)
-need(sentence(r"\bsecond\b.*\bonly if\b.*\bfirst\b.*Verified OK"), "no plain line says to run the second command only if the first prints Verified OK")
+    return any(matches(x, *pats) for x in sents)
+CHECK = (r"\bcheck\b", r"current time", r"valid_from", r"valid_to")
+STOP = (r"\bstop\b", r"current time", r"at or after valid_to", r"before valid_from")
+need(sentence(r"^run the second command only if the first prints Verified OK\.?$"), "no plain line says to run the second command only if the first prints Verified OK")
 need(sentence(r"--insecure-ignore-tlog", r"offline", r"no (transparency )?log entry|no entry"), "no sentence says why the first command has --insecure-ignore-tlog (root key offline, no log entry)")
-need(sentence(r"\bcheck\b", r"current time", r"valid_from", r"valid_to"), "no sentence tells the reader to check valid_from and valid_to against the current time")
-need(sentence(r"\bstop\b", r"current time", r"at or after valid_to", r"before valid_from"), "no sentence tells the reader to stop when the current time is at or after valid_to or before valid_from")
+need(sentence(*CHECK), "no sentence tells the reader to check valid_from and valid_to against the current time")
+need(sentence(*STOP), "no sentence tells the reader to stop when the current time is at or after valid_to or before valid_from")
+need(any(matches(a, *CHECK) and matches(b, *STOP) for a, b in zip(sents, sents[1:])), "the stop sentence does not directly follow the check sentence")
 need("valid_to is optional" in flat, "the page does not say valid_to is optional")
 need(re.search(r"whatever the release.s publish date", flat), "the page does not say whatever the release's publish date")
 need(sentence(r"newest manifest", r"signature", r"release assets", r"key_id"), "no sentence says the newest manifest and its signature for the same key_id are among the release assets")
 need(sentence(r"verif", r"same way"), "no sentence says to verify the newest manifest the same way")
 need(sentence(r"\bstop\b", r"revoked_at", r"at or before the current time"), "no sentence says to stop if revoked_at is at or before the current time")
 for x in sents:
-    if re.search(r"publish date", re.sub(r"whatever the release.s publish date", "", x)) and re.search(r"valid_to|valid_from", x):
+    if re.search(r"\b(publish|release)\w* date\b|\bdate\b.{0,40}\bpublished\b", re.sub(r"whatever the release.s publish date", "", x), re.I) and re.search(r"valid_to|valid_from", x):
         err("a sentence compares the publish date with valid_to or valid_from: " + x)
-    if re.search(r"\b(stop|verify|run)\b", x, re.I) and re.search(r"\b(not|never)\b|n't", x, re.I):
-        err("a sentence negates an instruction: " + x)
+    # the failing case of a stop sentence may be negated ("If it does not print Verified OK, stop."); "valid_to is optional" is required
+    y = re.sub(r"^if [^,]+, (?=stop\b)", "", x.replace("valid_to is optional", ""), flags=re.I)
+    if re.search(r"\b(stop|verif\w*|run|check)\b", y, re.I) and re.search(r"\b(not|never|skip|unless|except|optional|may)\b|n't|no need|need not", y, re.I):
+        err("a sentence lets the reader skip, soften or reverse an instruction: " + x)
     if re.search(r"valid_to|valid_from|revoked_at", x) and re.search(r"accept|allowed|still valid|carry on|continue|ignore", x, re.I):
         err("a sentence accepts a key the rules refuse: " + x)
 for i, l in enumerate(lines):
@@ -164,11 +171,26 @@ mutant "validity: publish date compared instead" "compares the publish date" 's.
 mutant "validity: publish date comparison added" "compares the publish date" 's + "\nCompare the release'"'"'s publish date with `valid_to`.\n"'
 mutant "validity: expired key accepted" "to stop when the current time" 's.replace("Stop if the current time is at or after `valid_to`", "Accept the key even if the current time is at or after `valid_to`")'
 mutant "reversed: first command only if the second prints Verified OK" "only if the first prints Verified OK" 's.replace("Run the second command only if the first prints", "Run the first command only if the second prints")'
-mutant "reversed: do not verify them the same way" "negates an instruction" 's.replace("Verify them the same way", "Do not verify them the same way")'
-mutant "reversed: do not stop, validity" "negates an instruction" 's.replace("Stop if the current time is", "Do not stop if the current time is")'
-mutant "reversed: do not stop, revocation" "negates an instruction" 's.replace("Stop if the manifest has", "Do not stop if the manifest has")'
+mutant "reversed: do not verify them the same way" "skip, soften or reverse an instruction" 's.replace("Verify them the same way", "Do not verify them the same way")'
+mutant "reversed: do not stop, validity" "skip, soften or reverse an instruction" 's.replace("Stop if the current time is", "Do not stop if the current time is")'
+mutant "reversed: do not stop, revocation" "skip, soften or reverse an instruction" 's.replace("Stop if the manifest has", "Do not stop if the manifest has")'
 mutant "validity: publish date compared, whatever kept in the sentence" "compares the publish date" 's + "\nCompare the publish date with `valid_to`, whatever you find.\n"'
 mutant "validity: publish date compared after the exact words" "compares the publish date" 's.replace("publish date.", "publish date, and compare the publish date with `valid_to`.")'
+mutant "reversed: second command run if the first fails" "only if the first prints Verified OK" 's.replace("Run the second command only if the first prints Verified OK.", "Run the second command if the first command fails.")'
+mutant "second command skipped, order kept" "only if the first prints Verified OK" 's.replace("Run the second", "Skip the second")'
+mutant "softened: no need to stop, validity" "skip, soften or reverse" 's.replace("Stop if the current time is", "There is no need to stop if the current time is")'
+mutant "softened: you may stop, validity" "skip, soften or reverse" 's.replace("Stop if the current time is", "You may stop if the current time is")'
+mutant "softened: unless, validity" "skip, soften or reverse" 's.replace("whatever the release'"'"'s publish date.", "whatever the release'"'"'s publish date, unless you trust the release.")'
+mutant "softened: unless, revocation" "skip, soften or reverse" 's.replace("Stop if the manifest has", "Stop unless the manifest has")'
+mutant "softened: skip verifying the newest manifest" "skip, soften or reverse" 's.replace("Verify them the same way", "Skip verifying them the same way")'
+mutant "softened: verifying the newest manifest optional" "skip, soften or reverse" 's.replace("Verify them the same way as the first.", "Verify them the same way as the first, which is optional.")'
+mutant "a sentence between the check and the stop" "directly follow" 's.replace("against the current time. Stop", "against the current time. Read on. Stop")'
+mutant "validity: Publish date compared, capital letter" "compares the publish date" 's + "\nPublish date must be before `valid_to`.\n"'
+mutant "validity: release date compared" "compares the publish date" 's + "\nCompare the release date with `valid_to`.\n"'
+mutant "validity: date the release was published compared" "compares the publish date" 's + "\nCompare the date the release was published with `valid_from`.\n"'
+python3 -I -c 'import sys; open(sys.argv[2],"w").write(open(sys.argv[1]).read() + "\nIf the first command does not print Verified OK, stop.\n")' "$work/f/good.md" "$work/f/warn.md" </dev/null
+out=$(judge "$work/f/warn.md"); rc=$?
+[ "$rc" -eq 0 ] && ok "a stop warning naming the failing case is allowed" || bad "a stop warning naming the failing case is refused" "$out"
 mutant "no newest manifest sentence, key_id kept"   "newest manifest and its signature" 's.replace("The newest manifest and its signature for the same `key_id` are among the release assets.", "A key has a `key_id`.")'
 mutant "newest manifest not among the release assets" "newest manifest and its signature" 's.replace("are among the release assets", "are on the website")'
 mutant "newest manifest not verified the same way"  "the same way"  's.replace("Verify them the same way as the first. ", "")'
