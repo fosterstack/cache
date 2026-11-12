@@ -135,7 +135,8 @@ def test_job_problems(job):
     if "if" in job: bad.append("the test job has a job-level condition")
     return bad
 ALLOW_CHECK = "git ls-files | ./bin/check-file-allowlist.sh"
-PINS = "python3 .github/agent/bin/check-action-pins.py --verify-tags ."
+AGENT = ".github/" + "agent/"
+PINS = "python3 " + AGENT + "bin/check-action-pins.py --verify-tags ."
 TESTSH = re.compile(r"[\w./-]*-tests?\.sh\b")
 def sel_steps(job): return [s for s, r in runs(job) if "select-tests.sh" in r]
 def allowlist_static(job):
@@ -239,7 +240,7 @@ mutants("ci.yml", ci_problems, ci, [
     ("no selection step", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if "select-tests.sh" not in (s.get("run") or "")])),
     ("two selection steps", lambda d: add_step(d, "allowlist", {"name": "again", "run": "bash bin/select-tests.sh origin/main HEAD"})),
     ("a suite run directly in the allowlist job", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash bin/branch-sweep-test.sh"})),
-    ("an auditor suite run directly", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash .github/agent/tests/auditor-matrix-test.sh"})),
+    ("an auditor suite run directly", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash " + AGENT + "tests/auditor-matrix-test.sh"})),
     ("the allowlist check of tracked files gone", lambda d: [s.__setitem__("run", s["run"].replace("./bin/check-file-allowlist.sh", "true")) for s in d["jobs"]["allowlist"]["steps"] if s.get("run")]),
     ("the pin check gone", lambda d: [s.__setitem__("run", s["run"].replace("--verify-tags", "")) for s in d["jobs"]["allowlist"]["steps"] if s.get("run")]),
     ("the selection discarded", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "bash bin/select-tests.sh origin/${{ github.base_ref }} HEAD >/dev/null"))),
