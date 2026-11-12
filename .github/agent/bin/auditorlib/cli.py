@@ -96,7 +96,9 @@ def ask_model(adjudicator, finding_id, attempt="primary", model="primary", conte
         raise RuntimeError("adjudicator exit %s: %s" % (p.returncode if p.returncode is not None else "?", last))
     ans = json.loads(out)
     if ans.get("error"):                                     # a per-request error the client stayed alive for
-        raise RuntimeError(ans["error"])
+        ex = RuntimeError(ans["error"])
+        ex.token_usage = int(ans.get("token_usage") or 0)   # a malformed reply is still billed
+        raise ex
     if ans.get("refused"):
         ex = Refused(finding_id)
         ex.token_usage = int(ans.get("token_usage") or 0)   # a refusal is still billed
