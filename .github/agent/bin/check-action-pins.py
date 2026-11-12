@@ -2714,6 +2714,12 @@ DOWNLOAD_EXCLUSIONS = {
         "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
         "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
+    # While a change to that step is in flight its key has EXACTLY TWO accepted texts: main's (above) and the change's (below): the decision loop of the reviewer that
+    # reads every Dependabot pull request. Its token refresh is the same function, character for character. The change itself removes main's old one, leaving one.
+    (".github/workflows/dependabot-reviewer.yml", "review", 8, "30a945d16294846fbc89c18c10b2a21fa5406cd2162713dc19e06ec6dff873d1"): (
+        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
+        "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }
 
 
