@@ -1307,7 +1307,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "26294f50e61980b026f9439f6395ab0b2a91ed23e049a4580d2d05f06afdf06b",
+      "sha256": "e4a19a5c62064cf0087235b15aaaf5dceed353cc01af33a313947334f47fec0f",
       "tools": [
         "at",
         "awk",
@@ -1466,7 +1466,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "27093e3c59ebd2f42dec74c96ec30d803e81a82bf474301062b94ece902f1a2a",
+      "sha256": "ce4468ef6f0f287d97339721c1cfccfc547c5c8edcb86c0929e345f0185b4463",
       "tools": [
         "curl",
         "docker",
