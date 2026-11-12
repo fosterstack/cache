@@ -35,7 +35,7 @@ the SBOM and the provenance rather than having to take the scan result on faith.
 
 ## The same statements, three ways
 
-Releases from now on also carry two files
+Releases also carry two files
 generated at release time from this one OpenVEX file (`bin/vex-forms.py`) and the
 release's own image digests — never edited by hand:
 
@@ -50,7 +50,7 @@ carries one rule per suppressible statement (not_affected, fixed) and none for
 affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
 
 The Google VEX upload is a **preview feature** of Google Cloud
-(`gcloud artifacts vulnerabilities load-vex`); we check that our CSAF file loads there by loading it into a test Google Artifact Registry repository for each release candidate, and do not assume it.
+(`gcloud artifacts vulnerabilities load-vex`).
 Google's loader matches the file to the image path you load it for, and applies one image per load, so
 name the digest you run (one of this release's digests, listed in `release-manifest.json`) and your own image path:
 `jq --arg u "$IMAGE" --arg d "$DIGEST" '.product_tree.branches |= map(if (.product.product_identification_helper.purl | startswith("pkg:oci/cache@" + $d + "?")) then .name = $u else . end)' <file> > vex-for-my-image.json`,
