@@ -2117,12 +2117,12 @@ requirements:
       owner's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
       something.
       The Dependabot rule (AC9 to AC12) changes only the judge and the record writer. The gate workflow, its check
-      name and the required checks are unchanged, and the gate's verdict job and scheduled sweep publish the verdict
-      on every new head. A Dependabot head passes only on the reviewer's success on that head, or on a head it only
-      merges main into.
+      name and the required checks are unchanged. Without a passing record, a Dependabot head passes only on the
+      reviewer's success on that head, or, with no verdict of its own, as a clean merge of main into a head that passes
+      this way.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
-        given: "a pull request whose base is main and that Dependabot did not open (AC9 has those), and the head sha it has now"
+        given: "a pull request whose base is main and that Dependabot did not open (AC9 to AC12 have those), and the head sha it has now"
         when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
         then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
         verification: { method: ci-workflow, release_blocking: false }
@@ -2172,7 +2172,7 @@ requirements:
       - id: REQ-REL-012-AC9
         given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
         when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
-        then: "it passes without a record on the Dependabot reviewer's success and nothing else: the newest dependabot-reviewer check run that an audit writer's App (an App named in .github/policy/audit-writers.json) put on the head (all runs read, not only GitHub's latest) is completed with the conclusion success; or the head has no such check run and is a clean merge of main into the head before it and nothing more (two parents, the first the head before it, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back."
+        then: "it passes without a record on the Dependabot reviewer's success and nothing else: the newest dependabot-reviewer check run that an audit writer's App (an App whose bot account is listed under writers in .github/policy/audit-writers.json) put on the head (all runs read, not only GitHub's latest) is completed with the conclusion success; or the head has no such check run and is a clean merge of main into the head before it and nothing more (two parents, the first the head before it, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC10
@@ -2184,13 +2184,13 @@ requirements:
       - id: REQ-REL-012-AC11
         given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
         when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
-        then: "everything else is refused, saying why: no verdict on the head or on any head it only updates, on a patch as on a major; a newest verdict that is a failure, neutral, any other conclusion, or unfinished; a verdict that cannot be read (a check entry with a missing or empty name or App slug, a full page, which GitHub may have cut); a head that carries a commit or a change of its own after the passed head. A GitHub API error exits as one."
+        then: "a head that does not pass as AC9 says is refused, saying why: no verdict on the head (or, for a clean merge of main, on the head before it), on a patch as on a major; a newest verdict that is a failure, neutral, any other conclusion, or unfinished; a verdict that cannot be read (a check entry with a missing or empty name or App slug, or a list with fewer runs than GitHub counts); a head that carries a commit or a change of its own after the passed head. A GitHub API error exits as one."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC12
         given: "a head with no passing record"
         when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
-        then: "the record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests is full (100) or holds an entry whose state cannot be read or an open entry whose head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed, and then GitHub is not asked whose head it is; the judge's release mode never asks"
+        then: "the record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests is full (100) or holds an entry whose state cannot be read or an open entry whose head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed; in that last case GitHub is not asked whose head it is. The judge's release mode, which stage-admission.yml runs, never asks whose head it is."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

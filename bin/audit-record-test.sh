@@ -763,7 +763,7 @@ for name, pulls in (("a human pull request shares the head with Dependabot's", [
     r, c = gate(D, pulls=pulls, verdicts={D: [run(1)]})
     check("gate: %s: the record rule stands (exit 1, no record, no verdict asked for)" % name, stands(r, c) and c.count("gh api") == 2, said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, "failure")]}, files={"ref": mut(REF, ["ref"], "refs/heads/audit/" + D), "commit": mut(COMMIT, ["parents"], [{"sha": D}])})
-check("gate: a passed-audit record on the exact head also passes the gate, and nothing more is asked (the reviewer's failure is the merger's to refuse)",
+check("gate: a passed-audit record on the exact head also passes the gate, and nothing more is asked",
       r.returncode == 0 and "passed-audit record found" in r.stdout and c.count("gh api") == 2 and "/pulls" not in c, said(r, c))
 
 # the writers policy comes first: without it nothing is exempt, and GitHub is not asked whose head it is
