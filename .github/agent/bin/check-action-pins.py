@@ -241,8 +241,8 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow
-    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
+    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
+    "5efa7fbe8f684dd468871aecda6bcd803e460c062123c91538bf00fbe6c977d4",   # the gate workflow whose header says what the run logs show of the runs Dependabot triggers
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2701,6 +2701,8 @@ def _unsafe_downloads(text):
 
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
+_TOKEN_URL_CONDITION = ("(this exclusion holds only while the step has no `shell:`, its own or a default, and the file names ACTIONS_ID_TOKEN_REQUEST_URL "
+                        "nowhere but in the excluded steps' run text)")
 DOWNLOAD_EXCLUSIONS = {
     (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
@@ -2708,19 +2710,22 @@ DOWNLOAD_EXCLUSIONS = {
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
     (".github/workflows/dependabot-reviewer.yml", "review", 4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
-        "command substitution that jq reads; it writes no file (this exclusion holds only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
     (".github/workflows/dependabot-reviewer.yml", "review", 8, "95e44c8ccb8ac27ab0ffcf34f61f7111cfbaf6d70676cc36b5dee4724f6c5727"): (
-        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
-        "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    # While a change to that step is in flight its key has EXACTLY TWO accepted texts: main's (above) and the change's (below): the decision loop of the reviewer that
-    # reads every Dependabot pull request. Its token refresh is the same function, character for character. The change itself removes main's old one, leaving one.
-    (".github/workflows/dependabot-reviewer.yml", "review", 8, "30a945d16294846fbc89c18c10b2a21fa5406cd2162713dc19e06ec6dff873d1"): (
-        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
-        "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+    # a change to the decision loop is in flight: main's text above, the change's below
+    (".github/workflows/dependabot-reviewer.yml", "review", 8, "69bc42e58433720251404d2f518c0989f76d6dde8547c2f449b954e4a4106ee1"): (
+        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }
+
+
+def _exclusion_key(item):
+    """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts: (workflow file, job, step index, sha256 of its run text), or None."""
+    m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
+    return (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
 
 
 def check_runs(where_job, scripts, bad, tree=None):
@@ -2762,16 +2767,20 @@ def check_runs(where_job, scripts, bad, tree=None):
         for item, ok in zip(scripts, posix):
             if not ok:
                 continue
-            m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-            key = (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
+            key = _exclusion_key(item)
             excl = DOWNLOAD_EXCLUSIONS.get(key)
-            if excl and tree is not None:
+            if excl and tree is not None and item[2] is None:    # a `shell:` (the step's or a default) can set the variable before the script runs: never excluded
                 try:
                     ftext = tree.read(key[0])
                 except Exception:
-                    ftext = ""
-                assigned = len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext))
-                if (excl[2] is None and assigned == 0) or (excl[2] is not None and ftext.count(excl[2]) == 1 and assigned == 1):
+                    ftext = None                                 # a file that cannot be read keeps the finding
+                if ftext is not None and excl[2] is None:
+                    # the name stands in the file only inside the excluded steps' own run text: an env key in any YAML form, a line for GITHUB_ENV or any other mention keeps the finding
+                    inside = sum(other[1].count(excl[1]) for other in scripts
+                                 if other[2] is None and DOWNLOAD_EXCLUSIONS.get(_exclusion_key(other), ("", "", ""))[1:] == (excl[1], None))
+                    if ftext.count(excl[1]) == inside:
+                        continue
+                elif ftext is not None and ftext.count(excl[2]) == 1 and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1:
                     continue
             for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(re.sub(r"\\\n", "", item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
                 bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
