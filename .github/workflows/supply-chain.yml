@@ -124,6 +124,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: The pull request refs (the history read scans them)
+        run: git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'
       - name: Audit
         env:
           GH_TOKEN: ${{ github.token }}
