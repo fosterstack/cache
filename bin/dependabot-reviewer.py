@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Dependabot major-bump reviewer (register row 75).
+"""Dependabot reviewer (register row 75).
 
 Three dependency lanes: the auditor opens CVE bumps (cron), Dependabot opens "latest" bumps,
-and THIS reviewer judges Dependabot MAJORS so no human has to. It runs hourly from main
+and THIS reviewer judges every pull request Dependabot opens into main, whatever its update
+kind (patch, minor, major, flagged), so no human has to. It runs hourly from main
 (dependabot-reviewer.yml), never on a PR event: Dependabot-triggered runs hold no repository
 secrets, so the federation identity is only reachable from a scheduled run on main.
 
 Subcommands (each one is small and testable on its own; the workflow strings them together):
 
-  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, review}
-  gather   --pr N --updates F --out DIR       -> DIR/bundle.md (diff + release notes + our usage)
+  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, kind}; kind is major, flagged,
+                                                 not-major or unparsed
+  gather   --pr N --sha SHA --updates F --out DIR
+                                              -> DIR/bundle.md (commits + the whole diff of SHA against main + release notes + our usage)
+  same-diff --repo R --base B SHA SHA         -> exit 0 only when both commits change B by the same diff text
   read     --bundle F --prompt F --model-env NAME --out F
                                               -> one reader's ranked findings (JSON)
   decide   --reader F [--reader F ...] --out F
@@ -30,7 +34,9 @@ SEVERITIES = ("breaks-us", "check", "noise")
 # families in the pinned SDK) can reject it; get_final_message() returns the same Message.
 MAX_TOKENS = 16000
 _FINDING_KEYS = {"severity", "title", "release_note", "our_line", "why"}
-CAP_DIFF, CAP_NOTES, CAP_USAGE = 20000, 60000, 20000
+# The diff is never cut: the readers get every character of what the pull request changes, or (over CAP_DIFF) no
+# bundle and no verdict. Release notes and usage are cut at their caps, and the bundle says so where it happens.
+CAP_DIFF, CAP_NOTES, CAP_USAGE = 200000, 60000, 20000
 
 _SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
                 "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID",
@@ -229,14 +235,15 @@ def parse_updates(title, body):
             seen.add(key)
             major = is_major(old, new)
             found.append({"name": name, "from": old, "to": new, "major": major,
-                          "flagged": flagged and not major, "review": major or flagged})
+                          "flagged": flagged and not major,
+                          "kind": "major" if major else "flagged" if flagged else "not-major"})
         if found:
             break
-    if not found and flagged:
-        # Flagged, but the update lines cannot be read (markup, an odd title): never silently the patch/minor
-        # lane's. One placeholder so the readers judge the diff; it names no repository, so no notes are fetched.
+    if not found:
+        # The update lines cannot be read (markup, an odd title): the pull request is still read. One placeholder
+        # so the readers judge the diff; it names no repository, so no notes are fetched.
         found.append({"name": "(unparsed Dependabot update)", "from": "?", "to": "?", "major": False,
-                      "flagged": True, "review": True})
+                      "flagged": flagged, "kind": "unparsed"})
     return found
 
 
@@ -247,12 +254,9 @@ def cmd_updates(a):
 
 # ----------------------------------------------------------------------------- gather
 
-def _run(cmd, cap=None):
+def _run(cmd):
     p = subprocess.run(cmd, capture_output=True, text=True)
-    out = p.stdout if p.returncode == 0 else ""
-    if cap and len(out) > cap:
-        out = out[:cap] + "\n[... truncated at %d characters ...]\n" % cap
-    return out, p.returncode
+    return (p.stdout if p.returncode == 0 else ""), p.returncode
 
 
 def _gh_json(args):
@@ -403,22 +407,118 @@ def our_usage(name):
     return text
 
 
+DEPENDABOT = ("dependabot[bot]", 49699333, "Bot")   # the author GitHub reports on a commit Dependabot made; GitHub commits and signs it (web-flow)
+MAX_COMMIT_PAGES = 3                                  # GitHub lists at most 250 commits of a pull request
+
+
+def head_diff(repo, base, sha):
+    """(text, rc): GitHub's diff of the commit `sha` against its merge base with `base`: what that exact commit changes,
+    whatever the pull request's head is by now."""
+    return _run(["gh", "api", "-H", "Accept: application/vnd.github.diff", "repos/%s/compare/%s...%s" % (repo, base, sha)])
+
+
+def pr_commits(pr, sha):
+    """(text, state): one line per commit of the pull request, oldest first, each one GitHub does not report as Dependabot's
+    own marked; state is "ok", "unavailable" (a failed or empty read, or 250 commits: GitHub lists no more) or "moved" (the
+    list does not end at `sha`, the commit the verdict is for)."""
+    repo = os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}"
+    commits = []
+    for page in range(1, MAX_COMMIT_PAGES + 1):
+        chunk = _gh_json(["repos/%s/pulls/%s/commits?per_page=100&page=%d" % (repo, pr, page)])
+        if not isinstance(chunk, list) or (page == 1 and not chunk):
+            return "(commit list UNAVAILABLE: the GitHub API read failed; this bundle cannot be judged)\n", "unavailable"
+        commits.extend(chunk)
+        if len(chunk) < 100:
+            break
+    if len(commits) >= 250 or not all(isinstance(c, dict) for c in commits):
+        return ("(commit list UNAVAILABLE: GitHub lists at most 250 commits of a pull request, or its answer is not a commit "
+                "list; this bundle cannot be judged)\n"), "unavailable"
+    if commits[-1].get("sha") != sha:
+        return "(the pull request's head is no longer %s: its last commit is %s)\n" % (sha, commits[-1].get("sha")), "moved"
+    lines = []
+    for c in commits:
+        author = c.get("author") or {}
+        commit = c.get("commit") or {}
+        who = author.get("login") or (commit.get("author") or {}).get("name") or "unknown author"
+        merge = len(c.get("parents") or []) != 1
+        own = ((author.get("login"), author.get("id"), author.get("type")) == DEPENDABOT and not merge
+               and (c.get("committer") or {}).get("login") == "web-flow"
+               and (commit.get("verification") or {}).get("verified") is True)
+        subject = (str(commit.get("message") or "").splitlines() or [""])[0][:120]
+        lines.append("- %s %s%s%s: %s" % (str(c.get("sha") or "")[:10], "" if own else "NOT Dependabot's — ", who,
+                                         " (a merge commit)" if merge else "", subject))
+    return "\n".join(lines) + "\n", "ok"
+
+
+_VENDORED = re.compile(r"^diff --git a/vendor/\S+ b/vendor/\S+$")
+
+
+def vendor_is_required(path=".github/policy/required-checks.json"):
+    """True when main's required-check list (this checkout is main) holds the `vendor` check: the job that regenerates
+    vendor/ from go.mod and go.sum and compares it byte for byte (REQ-VEND-001-AC2, AC3). Unreadable is False."""
+    try:
+        return any(c.get("context") == "vendor" for c in json.load(open(path))["required_checks"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def shown_diff(diff, omit_vendor):
+    """The diff as the readers get it. With omit_vendor, a section whose old and new path are both under vendor/ keeps its
+    header line and a count of its lines: the required `vendor` check compares those bytes with what go.mod and go.sum make."""
+    if not omit_vendor:
+        return diff
+    out = []
+    for section in re.split(r"(?m)^(?=diff --git )", diff):
+        head, _, body = section.partition("\n")
+        if not _VENDORED.match(head):
+            out.append(section)
+            continue
+        hunks = body[body.index("\n@@") + 1:] if "\n@@" in body else ""
+        added = sum(1 for l in hunks.splitlines() if l.startswith("+"))
+        removed = sum(1 for l in hunks.splitlines() if l.startswith("-"))
+        out.append("%s\n(a vendored module file: %d added and %d removed line(s) not shown; the required `vendor` check "
+                   "regenerates vendor/ from go.mod and go.sum and compares it byte for byte)\n" % (head, added, removed))
+    return "".join(out)
+
+
+_KIND_LABEL = {"major": "MAJOR", "flagged": "FLAGGED: its release notes say breaking or deprecated", "not-major": "not major",
+               "unparsed": "UNPARSED: the title and description name no update that could be read"}
+_BINARY = re.compile(r"(?m)^(?:Binary files |GIT binary patch)")   # a changed binary file: its bytes are not in a diff
+
+
 def cmd_gather(a):
     updates = json.load(open(a.updates))
     os.makedirs(a.out, exist_ok=True)
-    diff, rc = _run(["gh", "pr", "diff", str(a.pr)], cap=CAP_DIFF)
-    if rc != 0 or not diff.strip():
-        sys.stderr.write("gather: could not fetch the diff of PR #%s (rc %s) — no bundle, no review\n" % (a.pr, rc))
+    if not re.fullmatch(r"[0-9a-f]{40}", a.sha):
+        sys.stderr.write("gather: --sha is not a full commit id — no bundle, no review\n")
         sys.exit(3)
-    parts = ["# Bundle for Dependabot PR #%s\n" % a.pr,
-             "## Updates in this PR\n",
-             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "FLAGGED: its release notes say breaking or deprecated" if u.get("flagged") else "MAJOR" if u["major"] else "not major")
-                       for u in updates) + "\n",
-             "## The PR diff\n\n```diff\n%s```\n" % (diff or "(empty diff)\n")]
-    notes, unavailable = 0, []
+    repo = os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}"
+    commits, state = pr_commits(a.pr, a.sha)
+    if state == "moved":  # the verdict would be for a commit that is not the head any more: nothing is judged
+        sys.stderr.write("gather: PR #%s moved: %s— no bundle, no review\n" % (a.pr, commits.strip() + " "))
+        sys.exit(5)
+    # the diff of exactly that commit against main, by its id: a head that moves after this changes nothing in it
+    diff, rc = head_diff(repo, a.base, a.sha)
+    if rc != 0 or not diff.strip():
+        sys.stderr.write("gather: could not fetch the diff of %s (PR #%s, rc %s) — no bundle, no review\n" % (a.sha, a.pr, rc))
+        sys.exit(3)
+    diff = shown_diff(diff, vendor_is_required())
+    if _BINARY.search(diff):  # the readers cannot be given a binary file's bytes: what they were not shown could merge unread
+        sys.stderr.write("gather: the diff of PR #%s names a binary file, whose bytes are not in a diff — no bundle, no review\n" % a.pr)
+        sys.exit(3)
+    if len(diff) > CAP_DIFF:  # never a cut diff, for the same reason
+        sys.stderr.write("gather: the diff of PR #%s is %d characters, over the %d the readers are given — no bundle, no review\n"
+                         % (a.pr, len(diff), CAP_DIFF))
+        sys.exit(3)
+    kinds = [u.get("kind") or ("flagged" if u.get("flagged") else "major" if u["major"] else "not-major") for u in updates]
+    parts = ["# Bundle for Dependabot PR #%s at its head %s\n" % (a.pr, a.sha),
+             "## Updates in this PR (as Dependabot's title and description name them)\n",
+             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], _KIND_LABEL.get(k, k))
+                       for u, k in zip(updates, kinds)) + "\n",
+             "## Commits in this PR\n\n%s" % commits,
+             "## The PR diff (the whole pull request, every commit above: %s against %s)\n\n```diff\n%s```\n" % (a.sha, a.base, diff)]
+    notes, unavailable = 0, ([] if state == "ok" else ["the commit list"])
     for u in updates:
-        if not u.get("review", u["major"]):
-            continue
         text, count = release_notes(u["name"], u["from"], u["to"])
         if count is None:
             unavailable.append("release notes of %s" % u["name"])
@@ -433,9 +533,37 @@ def cmd_gather(a):
     if unavailable:  # labeled in the bundle (kept as evidence) and an error: no reader, no verdict, retried
         sys.stderr.write("gather: UNAVAILABLE — %s; no review this hour\n" % "; ".join(unavailable))
         sys.exit(4)
-    print("bundle: %d characters, %d update(s), %d to review (major or flagged), %d upstream release note(s)%s"
-          % (len(text), len(updates), sum(1 for u in updates if u.get("review", u["major"])), notes,
+    print("bundle: %d characters, %d update(s) (%s), %d upstream release note(s)%s"
+          % (len(text), len(updates), ", ".join(sorted(set(kinds))) or "none", notes,
              "" if notes else " — NONE found; the readers judge from the diff and our usage only"))
+
+
+# ----------------------------------------------------------------------------- same-diff
+
+def same_diff(repo, base, shas):
+    """(same, why). True only when GitHub's diff of each commit against its merge base with `base` is, byte for byte,
+    the same non-empty text, at most CAP_DIFF characters, naming no binary file. Then both commits make the same change
+    to `base`: the same files, the same hunks at the same lines with the same context, the same mode changes and
+    renames. A binary file's bytes are not in a diff, so it is never "the same"; a read that fails is never "the same"."""
+    texts = []
+    for sha in shas:
+        out, rc = head_diff(repo, base, sha)
+        if rc != 0 or not out.strip():
+            return False, "the diff of %s against %s could not be read" % (sha[:10], base)
+        texts.append(out)
+    if len(set(texts)) != 1:
+        return False, "the diffs against %s differ" % base
+    if len(texts[0]) > CAP_DIFF:
+        return False, "the diff is %d characters, over %d" % (len(texts[0]), CAP_DIFF)
+    if _BINARY.search(texts[0]):
+        return False, "the diff names a binary file"
+    return True, "the same %d characters of diff against %s" % (len(texts[0]), base)
+
+
+def cmd_same_diff(a):
+    same, why = same_diff(a.repo, a.base, a.sha)
+    print("same-diff %s: %s" % (" ".join(s[:10] for s in a.sha), why))
+    sys.exit(0 if same else 1)
 
 
 # ----------------------------------------------------------------------------- read
@@ -602,7 +730,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("updates"); p.add_argument("--title", default=""); p.add_argument("--body-file"); p.set_defaults(fn=cmd_updates)
-    p = sub.add_parser("gather"); p.add_argument("--pr", required=True); p.add_argument("--updates", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_gather)
+    p = sub.add_parser("gather"); p.add_argument("--pr", required=True); p.add_argument("--sha", required=True); p.add_argument("--base", default="main"); p.add_argument("--updates", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_gather)
+    p = sub.add_parser("same-diff"); p.add_argument("--repo", required=True); p.add_argument("--base", required=True); p.add_argument("sha", nargs=2); p.set_defaults(fn=cmd_same_diff)
     p = sub.add_parser("mask-tree"); p.add_argument("dir"); p.set_defaults(fn=cmd_mask_tree)
     p = sub.add_parser("read"); p.add_argument("--bundle", required=True); p.add_argument("--prompt", required=True); p.add_argument("--model-env", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_read)
     p = sub.add_parser("decide"); p.add_argument("--reader", action="append", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_decide)

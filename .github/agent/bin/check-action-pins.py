@@ -241,8 +241,8 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow
-    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
+    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
+    "e6d6eaf0e9dbf9f1734ad1af6048eb658bba1d050a8fc5560886ecfefa18f88f",   # the same file after the change in flight
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2701,6 +2701,70 @@ def _unsafe_downloads(text):
 
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
+# beside the entry's own name: the ways a step's environment or search path is set for later steps. Each may stand in
+# the parsed file only as often as in the excluded steps' run text.
+_HELD_WORDS = ("GITHUB_ENV", "GITHUB_PATH", "::set-env", "::add-path", "ACTIONS_ALLOW_UNSECURE_COMMANDS",
+               "exportVariable", "addPath")
+_HELD_WORDS_ANY_CASE = ("github.env", "github.path")      # expression names: GitHub reads them in any letter case
+_TOKEN_URL_CONDITION = (
+    "(this exclusion holds only while the step has no `shell:`, its own or a default; each of "
+    "ACTIONS_ID_TOKEN_REQUEST_URL, " + ", ".join(_HELD_WORDS) + " and, in any letter case, "
+    + " and ".join(_HELD_WORDS_ANY_CASE) + " stands in the parsed file only as often as in the excluded steps' run "
+    "text; and every env is a mapping whose keys are plain ASCII identifiers, none a bash startup hook, PATH or "
+    "another name the allowlist job's judge refuses, none CURL_HOME. "
+    "Not seen: a name or path built at run time, a committed script, an action's own code, or the job's container "
+    "image.)")
+# the names pin-wiring-test.sh refuses in the env of the allowlist job: a startup file, a search path, an interpreter's
+# or the runner's own variables. A copy (that list lives in a test's inline program); the checker's suite compares them.
+_RISKY_ENV = frozenset({"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "SHELLOPTS", "BASHOPTS",
+                        "PS4", "IFS", "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"})
+_RISKY_ENV_PREFIX = re.compile(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)")
+_RISKY_ENV_HERE = frozenset({"CURL_HOME"})     # not on that list: where curl looks first for a config file
+
+
+def _risky_env(name):
+    return name in _RISKY_ENV or _RISKY_ENV_PREFIX.match(name) is not None
+
+
+def _token_url_breach(text, name, run_texts):
+    """Why a workflow file breaks the condition of the entries excluded for `name`, or None. `run_texts` are the
+    excluded steps' run texts. The file is read as GitHub reads it, parsed: a key or a value spelled with YAML escapes
+    or quotes counts as what it decodes to."""
+    try:
+        todo = [d for d in yaml.compose_all(text, Loader=StrLoader) if d is not None]
+    except yaml.YAMLError:
+        return "the file does not parse"
+    scalars, env_keys, seen = [], [], set()
+    while todo:
+        node = todo.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.ScalarNode):
+            scalars.append(node.value)
+        elif isinstance(node, yaml.SequenceNode):
+            todo.extend(node.value)
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                todo += [key, value]
+                if isinstance(key, yaml.ScalarNode) and key.value == "env":
+                    if not isinstance(value, yaml.MappingNode):
+                        return "an env that is not a mapping: its keys cannot be read"
+                    env_keys += [k.value if isinstance(k, yaml.ScalarNode) else "" for k, _ in value.value]
+    for word in (name,) + _HELD_WORDS:
+        if sum(v.count(word) for v in scalars) != sum(t.count(word) for t in run_texts):
+            return f"{word} stands outside the excluded steps' run text"
+    for word in _HELD_WORDS_ANY_CASE:
+        if sum(v.lower().count(word) for v in scalars) != sum(t.lower().count(word) for t in run_texts):
+            return f"{word} stands outside the excluded steps' run text"
+    for key in env_keys:
+        if not (key.isascii() and key.isidentifier()):
+            return "an env sets a key that is not a plain name"
+        if _risky_env(key) or key in _RISKY_ENV_HERE:
+            return f"an env sets {key}"
+    return None
+
+
 DOWNLOAD_EXCLUSIONS = {
     (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
@@ -2708,13 +2772,28 @@ DOWNLOAD_EXCLUSIONS = {
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
     (".github/workflows/dependabot-reviewer.yml", "review", 4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
-        "command substitution that jq reads; it writes no file (this exclusion holds only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 8, "95e44c8ccb8ac27ab0ffcf34f61f7111cfbaf6d70676cc36b5dee4724f6c5727"): (
-        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
-        "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+    (".github/workflows/dependabot-reviewer.yml", "review", 8, "69bc42e58433720251404d2f518c0989f76d6dde8547c2f449b954e4a4106ee1"): (
+        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }
+
+
+def _exclusion_key(item):
+    """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts: (workflow file, job, step index, sha256 of its run text), or None."""
+    m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
+    return (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
+
+
+def _excluded_run_texts(scripts, name):
+    """The run texts of this job's steps that an entry excludes on the condition about `name` (no shell on the step)."""
+    texts = []
+    for item in scripts:
+        entry = DOWNLOAD_EXCLUSIONS.get(_exclusion_key(item))
+        if entry and item[2] is None and entry[1] == name and entry[2] is None:
+            texts.append(item[1])
+    return texts
 
 
 def check_runs(where_job, scripts, bad, tree=None):
@@ -2756,16 +2835,17 @@ def check_runs(where_job, scripts, bad, tree=None):
         for item, ok in zip(scripts, posix):
             if not ok:
                 continue
-            m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-            key = (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
+            key = _exclusion_key(item)
             excl = DOWNLOAD_EXCLUSIONS.get(key)
-            if excl and tree is not None:
+            if excl and tree is not None and item[2] is None:    # a `shell:` (the step's or a default) can set the variable before the script runs: never excluded
                 try:
                     ftext = tree.read(key[0])
                 except Exception:
-                    ftext = ""
-                assigned = len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext))
-                if (excl[2] is None and assigned == 0) or (excl[2] is not None and ftext.count(excl[2]) == 1 and assigned == 1):
+                    ftext = None                                 # a file that cannot be read keeps the finding
+                if ftext is not None and excl[2] is None:
+                    if _token_url_breach(ftext, excl[1], _excluded_run_texts(scripts, excl[1])) is None:
+                        continue
+                elif ftext is not None and ftext.count(excl[2]) == 1 and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1:
                     continue
             for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(re.sub(r"\\\n", "", item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
                 bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
