@@ -175,8 +175,56 @@ check("all three variants' digests are required", ok)
 real = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
 check("the real OpenVEX file: CSAF carries all its statements", len(V.csaf(real, IMAGES, "v0.3.0")["vulnerabilities"]) == len(real["statements"]))
 rc = V.csaf(real, IMAGES, "v0.3.0")
-check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
-      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"]["relationships"]))
+check("the real file's CSAF passes the loader's checks; its package statements stay scoped to busybox 1.37.0 and the Go standard library 1.27.2",
+      bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-busybox@1.37.0", "component-stdlib@1.27.2"})
+# cache#772 round 1 (A2, ruled): the relationship SET above does not say which statement points at which component. For every vulnerability of the real
+# file's CSAF, each product id in its product_status must resolve to a relationship whose product_reference is the component that statement names
+# (computed here from the OpenVEX subcomponent purls, independent of the generator), and none may be a whole-image product id. A statement that names
+# no subcomponent is image-wide: its ids must be whole-image products (the opposite check).
+import urllib.parse as _up
+def _comp(purl):
+    body = purl.split(":", 1)[1].split("/", 1)[1]            # pkg:generic/busybox@1.37.0 -> busybox@1.37.0 ; pkg:golang/stdlib@1.27.2 -> stdlib@1.27.2
+    name, _, ver = body.partition("@")
+    return "component-%s@%s" % (_up.quote(name, safe=""), ver)
+def stmt_scope_ok(doc, csaf_doc):
+    rel = {r["full_product_name"]["product_id"]: r for r in csaf_doc["product_tree"].get("relationships", [])}
+    images = {b["product"]["product_id"] for b in csaf_doc["product_tree"]["branches"]}
+    for v in csaf_doc["vulnerabilities"]:
+        want = {_comp(c["@id"]) for s in doc["statements"] if s["vulnerability"]["name"] == v["cve"]
+                for p in s["products"] for c in p.get("subcomponents") or []}
+        ids = [i for lst in v["product_status"].values() for i in lst]
+        if not ids:
+            return False
+        if not want:                        # a statement with no subcomponent is an image-wide statement (CVE-2024-51744 here): its ids are whole-image products only
+            if any(i not in images for i in ids):
+                return False
+        elif any(i in images or i not in rel or rel[i]["product_reference"] not in want for i in ids):
+            return False
+    return True
+check("A2 every product id of each real vulnerability resolves to a relationship on that statement's own component, never a whole-image product",
+      stmt_scope_ok(real, rc))
+import copy as _copy
+wide = _copy.deepcopy(rc)
+_v = next(v for v in wide["vulnerabilities"] if v["cve"] == "CVE-2026-111943")
+_k = next(iter(_v["product_status"]))
+_v["product_status"][_k] = sorted({b["product"]["product_id"] for b in wide["product_tree"]["branches"]})
+check("A2 red proof: widening CVE-2026-111943's product_status to every whole-image product (a temporary copy) is refused", not stmt_scope_ok(real, wide))
+# cache#772 audit: the cache-candidates claim for CVE-2026-111943 has no evidence
+_s = next(s for s in real["statements"] if s["vulnerability"]["name"] == "CVE-2026-111943")
+_img = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+_p = _s["products"]
+check("AC1 CVE-2026-111943 has exactly one product: the cache image (@id, purl) with subcomponent stdlib@1.27.2",
+      len(_p) == 1 and _p[0]["@id"] == _img and _p[0].get("identifiers", {}).get("purl") == _img
+      and _p[0].get("subcomponents") == [{"@id": "pkg:golang/stdlib@1.27.2"}], _p)
+check("AC1 no product of CVE-2026-111943 names cache-candidates", "cache-candidates" not in json.dumps(_p))
+check("AC2 CVE-2026-111943's impact_statement does not name cache-candidates",
+      "cache-candidates" not in _s.get("impact_statement", ""))
+from datetime import datetime as _dt, timezone as _tz
+_ts = lambda t: _dt.fromisoformat(t.replace("Z", "+00:00"))
+check("AC3 the document timestamp is not before the newest statement timestamp",
+      _ts(real["timestamp"]) >= max(_ts(s["timestamp"]) for s in real["statements"]), real["timestamp"])
+check("AC3 the document timestamp is not in the future",
+      _ts(real["timestamp"]) <= _dt.now(_tz.utc), real["timestamp"])
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
