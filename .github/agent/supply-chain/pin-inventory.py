@@ -85,9 +85,6 @@ WORKFLOW_GLOBS = (".github/workflows/*.yml", ".github/workflows/*.yaml", ".githu
                   ".github/actions/*/*/action.yml", ".github/actions/*/*/action.yaml")
 
 
-_EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
-
-
 MAX_FILE = 1_000_000
 VERSION_FILES = (".python-version", ".nvmrc", ".node-version", ".java-version", ".tool-versions", ".sdkmanrc", ".ruby-version")
 
@@ -418,10 +415,6 @@ _DOCKER_VALUE_OPTS = {"--context", "-c", "--host", "-H", "--config", "--log-leve
                       "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull", "--cpu-period", "--cpu-quota", "--cpuset-cpus", "--cpuset-mems", "--memory-swap", "--memory-reservation", "--stop-timeout", "--stop-signal", "--health-cmd", "--health-interval", "--health-retries", "--health-timeout", "--health-start-period", "--tmpfs", "--volumes-from", "--link", "--ip", "--network-alias", "--user", "-u", "-w", "--workdir", "--entrypoint", "--name", "-e", "--env", "-p", "--publish", "-v", "--volume", "--network", "--net", "--security-opt", "--sysctl", "--group-add", "--runtime", "--isolation", "--cgroup-parent", "--blkio-weight", "--annotation", "--cidfile", "--pid", "--ipc", "--uts", "--userns", "--expose", "--log-opt", "--mac-address", "--oom-score-adj", "--dns-search", "--dns-option", "--detach-keys", "--label-file", "--gpus"}
 
 
-def _docker_images(cmd_args):
-    return _docker_operand(cmd_args)[0]
-
-
 _DOCKER_BOOL_OPTS = {"--rm", "-d", "--detach", "-i", "--interactive", "-t", "--tty", "--init", "--privileged", "--read-only", "--no-healthcheck",
                      "--sig-proxy", "--oom-kill-disable", "-P", "--publish-all", "--help", "--quiet", "-q", "--disable-content-trust",
                      "--platform-none"}
@@ -584,9 +577,6 @@ _NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=
 
 
 _CONT = re.compile(r"(\\\n\s*)")
-_ASSIGN_LINE = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-
-
 def _script_lines(text):
     """(joined, raw) per logical line of a script: joined is the line with each backslash continuation folded to one space (what the readers match on),
     raw keeps the continuation exactly as written, so a change of spacing inside a continued value is a change."""
@@ -781,9 +771,8 @@ def _step_items(node, out, labels):
 
 def _walk(node, out, labels, path="", in_step=False):
     if isinstance(node, str):
-        if True:
-            for m in _RUN_IMAGE.finditer(node):  # a digest-pinned image in ANY value: run text, env, driver-opts, an action input
-                out.append(_image_item(m.group(1)))
+        for m in _RUN_IMAGE.finditer(node):  # a digest-pinned image in ANY value: run text, env, driver-opts, an action input
+            out.append(_image_item(m.group(1)))
     elif isinstance(node, dict):
         if in_step or path.startswith("job:"):
             _step(node, out, labels)
