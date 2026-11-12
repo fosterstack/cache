@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
-#   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE] [--rerun-held]
+#   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE]
 #   exit 0: no hit and no unexcepted dispute; exit 1: a hit or a disputed hit (the issue says so); exit 2: it could not do its job (a failed gh, unreadable input).
 #   Fixtures: {"lists": {ITEM: {"github": [ADV], "osv": [ADV]}}, "upstream": {"owner/repo@sha": {"reachable": bool}}, "nested": {"owner/repo@sha": [REF]},
-#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}, "prs": [{"number", "title", "run_id", "moved": [ITEM]}],
-#              "times": {ITEM: {"time", "source"}}, "first_seen": {ITEM: ISO}}   with ADV = {"id", "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
-#   gh calls it may make: issue list / issue create / issue edit / label create, and (only with --rerun-held) run rerun. NEVER anything about runs, environments or
+#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}}   with ADV = {"id", "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
+#   gh calls it may make: issue list / issue create / issue edit / label create, NEVER anything about runs, environments or
 #   secrets: the private details are produced on the Mac, not by this workflow (advisor 0175 amendment 5).
 set -euo pipefail
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
@@ -72,7 +71,7 @@ elif a[:2] in (["issue", "create"], ["issue", "edit"]):
         sys.stderr.write("gh: empty body\n"); sys.exit(1)
     open(os.environ["GH_LOG"] + ".bodies", "a").write(open(bf).read() + "\n=====\n")
     if a[1] == "create": print("https://github.com/x/y/issues/9")
-elif a[:2] in (["label", "create"], ["run", "rerun"], ["issue", "reopen"]):
+elif a[:2] in (["label", "create"], ["issue", "reopen"]):
     pass
 else:
     sys.stderr.write("gh: unexpected call " + " ".join(a) + "\n"); sys.exit(1)
@@ -90,7 +89,7 @@ calls = [json.loads(l) for l in open(sys.argv[1])]
 print(len([c for c in calls if c[:2] == ["issue", "create"]]))
 PY
 }
-CLEAN='{"lists": {}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}'
+CLEAN='{"lists": {}, "upstream": {}, "nested": {}, "versions": {}}'
 mkrepo "$work/r-clean" "5:$CLEANSHA"
 mkrepo "$work/r-cur" "120:$SHA1"                 # the bad pin is on main today: it has been RUN (the workflows execute daily)
 mkrepo "$work/r-ranpast" "120:$SHA1" "20:$CLEANSHA"     # the bad pin was replaced 20 days ago: we ran it within 90 days
@@ -104,7 +103,7 @@ check test "$rc" -eq 0; check test "$(creates "$work/clean.gh")" -eq 0
 check grep -q 'no known-compromised versions as of 2026-10-05' "$work/clean.out"
 CASE="AC9: the report never claims 'no supply chain issues' (in any case or spacing), clean day or hit day"
 check none_match -i 'no supply[ -]chain (issue|problem)' "$work/clean.out" "$work/clean.err"
-CASE="AC5: the audit covers every kind of version the age check covers: actions, installer-action inputs, install-scanner pins and hash-pinned packages are all in its inventory"
+CASE="AC5: the audit covers every kind of version the pin scan covers: actions, installer-action inputs, install-scanner pins and hash-pinned packages are all in its inventory"
 check python3 - "$work/clean.out" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()
@@ -133,13 +132,19 @@ assert "actions/checkout" in title and "GHSA-aaaa-bbbb-cccc" in title, title
 body = open(sys.argv[2]).read()
 assert "v4.1.0" in body and "GHSA-aaaa-bbbb-cccc" in body, body
 PY
-CASE="the rollback is the NEWEST CLEAN version that is at least 7 days old: v4.1.1 (not the 2-day-old v4.3.0, not the affected v4.2.0)"
-check grep -q 'v4.1.1' "$work/hit.gh.bodies"; check bash -c "! grep -q 'roll back to v4.3.0\|rollback: v4.3.0\|roll back to v4.2.0' '$work/hit.gh.bodies'"
+run newest "$(python3 - "$HIT_GH" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); v = d["versions"]["actions/checkout"]; v[0]["lists"] = v[1]["lists"]; print(json.dumps(d))
+PY
+)" "$work/r-cur"
+CASE="the rollback is the NEWEST CLEAN version: with v4.3.0 and v4.2.0 both affected it is v4.1.1, whatever its age"
+check grep -qx 'Rollback: pin the newest clean version: v4.1.1.*' "$work/newest.gh.bodies"
+check bash -c "! grep '^Rollback:' '$work/newest.gh.bodies' | grep -q 'v4\.[23]\.0'"
 CASE="a hit on a PR's NEW pin (present in its head, absent from its base: it has not run) with a clean rollback available is NOT labelled owner-decision"
 run hitpr "$HIT_GH" "$work/r-pr" --base HEAD~1
-check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/hitpr.gh"; check none_match 'owner-decision' "$work/hitpr.gh"; check grep -q 'v4.1.1' "$work/hitpr.gh.bodies"
+check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/hitpr.gh"; check none_match 'owner-decision' "$work/hitpr.gh"; check grep -q 'v4.3.0' "$work/hitpr.gh.bodies"
 CASE="a hit on a pin that is on main today is labelled owner-decision (the workflows ran it), and still names the rollback"
-check grep -q 'owner-decision' "$work/hit.gh"; check grep -q 'v4.1.1' "$work/hit.gh.bodies"
+check grep -q 'owner-decision' "$work/hit.gh"; check grep -q 'v4.3.0' "$work/hit.gh.bodies"
 GH_LIST='[{"number": 31, "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run hit2 "$HIT_GH" "$work/r-cur"
 CASE="the next day, with that issue already open: it is UPDATED (issue edit), never a second issue"
 check test "$rc" -eq 1; check test "$(creates "$work/hit2.gh")" -eq 0
@@ -160,9 +165,9 @@ check test "$rc" -eq 1; check grep -q 'MAL-2026-1234' "$work/mal.gh.bodies"
 
 # --- AC8: no clean old version, or we RAN the bad one: owner-decision -----------------------------------------------------------------------------
 ONLYBAD="{\"lists\": {\"$ITEM_CO\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \"modified\": \"$(dago 20)\"}], \"osv\": []}}, \"upstream\": {}, \"nested\": {}, \"prs\": [],
- \"versions\": {\"actions/checkout\": [{\"version\": \"v4.3.0\", \"sha\": \"$(printf '3%.0s' $(seq 40))\", \"published\": \"$(dago 2)\", \"lists\": {}}, {\"version\": \"v4.1.0\", \"sha\": \"$SHA1\", \"published\": \"$(dago 90)\", \"lists\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \"modified\": \"$(dago 20)\"}]}}]}}"
+ \"versions\": {\"actions/checkout\": [{\"version\": \"v4.1.0\", \"sha\": \"$SHA1\", \"published\": \"$(dago 90)\", \"lists\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \"modified\": \"$(dago 20)\"}]}}]}}"
 run noclean "$ONLYBAD" "$work/r-pr" --base HEAD~1
-CASE="no clean version at least 7 days old exists (only a 2-day-old one): the issue says to DROP the action, and is labelled owner-decision as well as supply-chain-hit (even for a PR's not-yet-run pin)"
+CASE="no clean version exists (only the affected one): the issue says to DROP the action, and is labelled owner-decision as well as supply-chain-hit (even for a PR's not-yet-run pin)"
 check grep -qi 'drop' "$work/noclean.gh.bodies"; check grep -q 'owner-decision' "$work/noclean.gh"; check grep -q 'supply-chain-hit' "$work/noclean.gh"
 run ranpast "$HIT_GH" "$work/r-ranpast"
 CASE="the bad version was replaced 20 days ago: the audit reads the workflow git history of the last 90 days, finds that we RAN it, and reports it with owner-decision (though today's tree is clean)"
@@ -179,9 +184,7 @@ import glob, json, sys
 for p in glob.glob(sys.argv[1] + "/*.gh"):
     for l in open(p):
         c = json.loads(l)
-        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["issue", "reopen"], ["label", "create"], ["run", "rerun"]), (p, c)
-        if c[:2] == ["run", "rerun"] and "held" not in p:
-            raise AssertionError("a run rerun without --rerun-held: " + p)
+        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["issue", "reopen"], ["label", "create"]), (p, c)
 PY
 
 # --- AC5: upstream reachability and nested references -----------------------------------------------------------------------------------------------
@@ -316,149 +319,6 @@ run twin "$(cat "$work/twin.json")" "$work/r-twin" --exceptions "$work/no-except
 CASE="the same dispute on two versions of one package (0.73.0 in the history, 0.74.0 today) is ONE issue that names both versions"
 check test "$rc" -eq 1; check test "$(creates "$work/twin.gh")" -eq 1; check grep -q '0.73.0' "$work/twin.gh.bodies"; check grep -q '0.74.0' "$work/twin.gh.bodies"
 
-# --- AC6: held pull requests are re-run once their versions are old enough ----------------------------------------------------------------------------------
-HELD="{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [
-  {\"number\": 7, \"title\": \"bump checkout\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]},
-  {\"number\": 8, \"title\": \"bump trivy\", \"run_id\": 98, \"moved\": [\"$ITEM_TRIVY\"]}],
- \"times\": {\"$ITEM_CO\": {\"time\": \"$(dago 8)\", \"source\": \"observer\"}, \"$ITEM_TRIVY\": {\"time\": \"$(dago 2)\", \"source\": \"github-release\"}}}"
-run held "$HELD" "$work/r-clean" --rerun-held
-CASE="a held PR whose moved version is now 8 days old is RE-RUN (gh run rerun 99); one still 2 days old (run 98) is not"
-check python3 - "$work/held.gh" <<'PY'
-import json, sys
-reruns = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)[:2] == ["run", "rerun"]]
-assert reruns == [["run", "rerun", "99"]], reruns
-PY
-run heldoff "$HELD" "$work/r-clean"
-CASE="rerun-held reads a pull request's inventory only when its newest supply-chain run failed: of three pull requests (success, failure, no run) only the failed one is fetched and loaded (two inventories), and only it is returned"
-check python3 - "$aud" <<'PY'
-import contextlib, importlib.util, io, json, sys
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-H = {n: ("%d" % n) * 40 for n in (1, 2, 3)}
-def run_prs(runs_of):
-    """pa.LiveNet.prs() with git and gh stubbed: what it fetched, which revisions it loaded, what it returned and printed."""
-    seen = {"fetch": [], "load": []}
-    class R:
-        returncode, stdout, stderr = 0, "", ""
-    def fake_run(cmd, **kw):
-        r = R()
-        if "list" in cmd and "pr" in cmd:
-            r.stdout = json.dumps([{"number": n, "title": "t%d" % n, "headRefOid": H[n], "baseRefName": "main"} for n in sorted(runs_of)])
-        elif "fetch" in cmd:
-            seen["fetch"].append(cmd[-2])
-        elif "rev-parse" in cmd:
-            r.stdout = "f" * 40 + "\n"
-        elif "merge-base" in cmd:
-            r.stdout = "b" * 40 + "\n"
-        return r
-    def gh_json(self, path, strict=False):
-        n = [k for k, v in H.items() if "head_sha=" + v in path][0]
-        runs = runs_of[n]
-        if runs == "unreadable":
-            raise pa.Fail("boom")
-        return {"workflow_runs": [{"id": 10 * n + i, "path": ".github/workflows/supply-chain.yml", "created_at": c, "conclusion": k} for i, (c, k) in enumerate(runs)]}
-    pa._run = fake_run
-    pa.LiveNet._gh_json = gh_json
-    pa.inv.load_at = lambda root, rev: seen["load"].append(rev) or {}
-    pa.inv.moved = lambda a, b: [pa.inv.Item("action", "o/r", "v1", "v1")]
-    os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        got = pa.LiveNet(["gh"], ".").prs()
-    return seen, [p["number"] for p in got], out.getvalue()
-seen, got, _ = run_prs({1: [("2026-10-01T00:00:00Z", "success")], 2: [("2026-10-01T00:00:00Z", "failure")], 3: []})
-assert got == [2], got
-assert seen["fetch"] == ["pull/2/head"], seen
-assert len(seen["load"]) == 2, seen
-PY
-CASE="rerun-held: an older failed run with a newer green run is not a held pull request (the newest run decides): it is neither fetched nor loaded"
-check python3 - "$aud" <<'PY'
-import contextlib, importlib.util, io, json, sys
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-H = {n: ("%d" % n) * 40 for n in (1, 2, 3)}
-def run_prs(runs_of):
-    """pa.LiveNet.prs() with git and gh stubbed: what it fetched, which revisions it loaded, what it returned and printed."""
-    seen = {"fetch": [], "load": []}
-    class R:
-        returncode, stdout, stderr = 0, "", ""
-    def fake_run(cmd, **kw):
-        r = R()
-        if "list" in cmd and "pr" in cmd:
-            r.stdout = json.dumps([{"number": n, "title": "t%d" % n, "headRefOid": H[n], "baseRefName": "main"} for n in sorted(runs_of)])
-        elif "fetch" in cmd:
-            seen["fetch"].append(cmd[-2])
-        elif "rev-parse" in cmd:
-            r.stdout = "f" * 40 + "\n"
-        elif "merge-base" in cmd:
-            r.stdout = "b" * 40 + "\n"
-        return r
-    def gh_json(self, path, strict=False):
-        n = [k for k, v in H.items() if "head_sha=" + v in path][0]
-        runs = runs_of[n]
-        if runs == "unreadable":
-            raise pa.Fail("boom")
-        return {"workflow_runs": [{"id": 10 * n + i, "path": ".github/workflows/supply-chain.yml", "created_at": c, "conclusion": k} for i, (c, k) in enumerate(runs)]}
-    pa._run = fake_run
-    pa.LiveNet._gh_json = gh_json
-    pa.inv.load_at = lambda root, rev: seen["load"].append(rev) or {}
-    pa.inv.moved = lambda a, b: [pa.inv.Item("action", "o/r", "v1", "v1")]
-    os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        got = pa.LiveNet(["gh"], ".").prs()
-    return seen, [p["number"] for p in got], out.getvalue()
-seen, got, _ = run_prs({1: [("2026-10-01T00:00:00Z", "failure"), ("2026-10-02T00:00:00Z", "success")]})
-assert got == [] and seen == {"fetch": [], "load": []}, (got, seen)
-PY
-CASE="rerun-held: when the runs of one pull request cannot be read, that one gets its information line and no fetch (never treated as held), and the next pull request is still handled"
-check python3 - "$aud" <<'PY'
-import contextlib, importlib.util, io, json, sys
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-H = {n: ("%d" % n) * 40 for n in (1, 2, 3)}
-def run_prs(runs_of):
-    """pa.LiveNet.prs() with git and gh stubbed: what it fetched, which revisions it loaded, what it returned and printed."""
-    seen = {"fetch": [], "load": []}
-    class R:
-        returncode, stdout, stderr = 0, "", ""
-    def fake_run(cmd, **kw):
-        r = R()
-        if "list" in cmd and "pr" in cmd:
-            r.stdout = json.dumps([{"number": n, "title": "t%d" % n, "headRefOid": H[n], "baseRefName": "main"} for n in sorted(runs_of)])
-        elif "fetch" in cmd:
-            seen["fetch"].append(cmd[-2])
-        elif "rev-parse" in cmd:
-            r.stdout = "f" * 40 + "\n"
-        elif "merge-base" in cmd:
-            r.stdout = "b" * 40 + "\n"
-        return r
-    def gh_json(self, path, strict=False):
-        n = [k for k, v in H.items() if "head_sha=" + v in path][0]
-        runs = runs_of[n]
-        if runs == "unreadable":
-            raise pa.Fail("boom")
-        return {"workflow_runs": [{"id": 10 * n + i, "path": ".github/workflows/supply-chain.yml", "created_at": c, "conclusion": k} for i, (c, k) in enumerate(runs)]}
-    pa._run = fake_run
-    pa.LiveNet._gh_json = gh_json
-    pa.inv.load_at = lambda root, rev: seen["load"].append(rev) or {}
-    pa.inv.moved = lambda a, b: [pa.inv.Item("action", "o/r", "v1", "v1")]
-    os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        got = pa.LiveNet(["gh"], ".").prs()
-    return seen, [p["number"] for p in got], out.getvalue()
-seen, got, out = run_prs({1: "unreadable", 2: [("2026-10-01T00:00:00Z", "failure")]})
-assert "information: the runs of pull request #1 could not be read" in out, out
-assert seen["fetch"] == ["pull/2/head"] and got == [2], (seen, got)
-PY
-
-CASE="without --rerun-held nothing is ever re-run (the re-run permission belongs to one job only)"
-check bash -c "! grep -q 'rerun' '$work/heldoff.gh'"
-run heldfirst "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"x\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {}, \"first_seen\": {\"$ITEM_CO\": \"$(dago 9)\"}}" "$work/r-clean" --rerun-held
-CASE="the first time the exact version appeared in one of our own PRs also counts (9 days ago): that held PR is re-run"
-check grep -q '"rerun", "99"' "$work/heldfirst.gh"
-run heldunprov "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"x\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {}}" "$work/r-clean" --rerun-held
-CASE="a held PR whose age cannot be proven is not re-run (it stays red)"
-check bash -c "! grep -q 'rerun' '$work/heldunprov.gh'"
-
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"
 check python3 - "$aud" <<'PY'
@@ -541,9 +401,9 @@ old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
 disp = {"github": [{"id": "G", "incident": "I", "affected": False}], "osv": [{"id": "O", "incident": "I", "affected": True}]}
 fx = pa.FixtureNet({"versions": {"o/r": [{"version": "v3", "sha": None, "published": old(20), "lists": disp},
                                          {"version": "v2", "sha": None, "published": old(40), "lists": {}}, {"version": "v1", "sha": None, "published": old(80), "lists": {}}]}})
-assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx, now)["version"] == "v2"
+assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx)["version"] == "v2"
 net = pa.LiveNet(["false"], ".")
-assert pa.rollback(pa.inv.Item("gotool", "golang.org/x/vuln/cmd/govulncheck", "v1.0.0"), net, now) == pa.UNKNOWN
+assert pa.rollback(pa.inv.Item("gotool", "golang.org/x/vuln/cmd/govulncheck", "v1.0.0"), net) == pa.UNKNOWN
 PY
 printf '{"exceptions": [{"version": "1.0.0", "ids": ["A"], "package": "p", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "ruling": "r", "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
 run noev "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-noev.json"
@@ -584,46 +444,7 @@ for n in ("pin-inventory", "pin-age-check", "pin-audit"):
         ms = [m.name for m in c.body if isinstance(m, ast.FunctionDef)]
         assert len(ms) == len(set(ms)), (n, c.name, sorted(x for x in ms if ms.count(x) > 1))
         if c.name == "LiveNet":
-            assert {"lists", "covered", "live_ranges", "upstream", "nested", "versions", "prs", "proofs", "modified"} <= set(ms), ms
-PY
-
-# --- the daily run records what it saw of every tag we use, FIRST (before judging), cumulatively; a pull request run never writes it --------------------------------------------------------------------
-OBS_FX="{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [], \"tags\": {\"actions/checkout@v4.1.0\": \"$SHA1\", \"actions/checkout@v4\": \"$SHA1\"},
- \"observed\": {\"version\": 1, \"first_seen\": {\"actions/checkout@v4.1.0@$SHA1\": \"2026-09-01T00:00:00Z\", \"actions/checkout@v3@$(printf 'd%.0s' $(seq 40))\": \"2026-08-01T00:00:00Z\"}}}"
-run obs "$OBS_FX" "$work/r-cur" --observations-out "$work/obsout/state.json"
-CASE="the daily run writes the tag observations: an old mapping keeps its first time, a new tag at a commit gets today, a mapping never seen before is not backdated, nothing is forgotten"
-check python3 - "$work/obsout/state.json" "$SHA1" <<'PY'
-import json, sys
-fs = json.load(open(sys.argv[1]))["first_seen"]
-sha = sys.argv[2]
-assert fs["actions/checkout@v4.1.0@" + sha] == "2026-09-01T00:00:00Z", fs
-assert fs["actions/checkout@v4@" + sha] == "2026-10-05T12:00:00Z", fs
-assert fs["actions/checkout@v3@" + "d" * 40] == "2026-08-01T00:00:00Z", fs
-assert len(fs) == 3, fs
-PY
-HIT_OBS=$(python3 - "$OBS_FX" "$HIT_GH" <<'PY'
-import json, sys
-a = json.loads(sys.argv[1]); b = json.loads(sys.argv[2]); b["tags"] = a["tags"]; b["observed"] = a["observed"]; print(json.dumps(b))
-PY
-)
-rm -rf "$work/obsout2"; run obs2 "$HIT_OBS" "$work/r-cur" --observations-out "$work/obsout2/state.json"
-CASE="the observations are written BEFORE anything is judged: a run that finds a hit (exit 1) has still recorded them"
-check test "$rc" -eq 1; check test -s "$work/obsout2/state.json"
-rm -rf "$work/obsout3"; run obs3 "$OBS_FX" "$work/r-pr" --base HEAD~1 --observations-out "$work/obsout3/state.json"
-CASE="a pull request run (--base) never writes observations: only the scheduled run on main does"
-check test ! -e "$work/obsout3/state.json"
-CASE="tag_observer.py accepts only a completed (success or failure) scheduled run on main of supply-chain.yml, and keeps a moved tag as a NEW mapping"
-check python3 - "$here/../supply-chain/tag_observer.py" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("t", sys.argv[1]); t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)
-ok = {"event": "schedule", "head_branch": "main", "conclusion": "success", "path": ".github/workflows/supply-chain.yml"}
-assert t.accept_run(ok)
-for k, v in (("event", "pull_request"), ("head_branch", "feature"), ("conclusion", "cancelled"), ("path", ".github/workflows/ci.yml")):
-    assert not t.accept_run(dict(ok, **{k: v})), k
-s = t.update_state(None, {"o/r@v1": "a" * 40}, "2026-01-01T00:00:00Z")
-s = t.update_state(s, {"o/r@v1": "b" * 40}, "2026-02-01T00:00:00Z")
-assert t.first_seen(s, "o/r", "v1", "a" * 40) == "2026-01-01T00:00:00Z" and t.first_seen(s, "o/r", "v1", "b" * 40) == "2026-02-01T00:00:00Z"
-assert t.unpack(t.pack(s)) == s
+            assert {"lists", "covered", "live_ranges", "upstream", "nested", "versions", "modified"} <= set(ms), ms
 PY
 
 CASE="a version this check cannot order, and a record with only commit ranges, are read as AFFECTED (never as safe); post-releases sort after the final"
@@ -660,19 +481,17 @@ import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 assert any(c[:3] == ["issue", "reopen", "50"] for c in calls) and any(c[:3] == ["issue", "edit", "50"] for c in calls), calls
 PY
-CASE="a rollback candidate must itself be provably old: a candidate whose own proofs say too young is skipped, the next older clean one is chosen"
+CASE="a rollback candidate must itself be an exact pin: a candidate whose _item is a tag-form action is skipped, the next older clean one is chosen"
 check python3 - "$aud" <<'PY'
-import datetime as dt, importlib.util, sys
+import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
-old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
 class N:
     def versions(self, item):
-        return [{"version": "v3", "sha": None, "published": old(30), "_item": pa.inv.Item("action", "o/r", "3" * 40, "v3")},
-                {"version": "v2", "sha": None, "published": old(60), "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")}]
+        return [{"version": "v3", "sha": None, "published": "2026-09-01T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "v3", "v3")},
+                {"version": "v2", "sha": "2" * 40, "published": "2026-08-01T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")}]
     def lists(self, item): return [], []
-    def proofs(self, item, base=None): return [(old(2), "observer")] if item.version[0] == "3" else [(old(50), "observer")]
-assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N(), now)["version"] == "v2"
+r = pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N())
+assert r["version"] == "v2" and r["sha"] == "2" * 40, r
 PY
 
 GH_LIST='[{"number": 60, "state": "OPEN", "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run alias "$(python3 - "$HIT_GH" <<'PY'
@@ -729,7 +548,16 @@ for text in (title, body):
     assert "evil.example" not in text and "[click]" not in text and "@owner" not in text, text
 assert "(unparseable)" in title
 PY
-CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges can never pass the age check; commits, digests and dotted numbers can"
+CASE="the rollback line names the publish time only when it is known (never 'published None')"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+f = pa.Finding(pa.inv.Item("action", "o/r", "a" * 40, "v4"), "advisory", ["GHSA-x"], "an advisory covers this version")
+line = lambda rb: [l for l in pa.body_of(f, rb, True, False, "2026-10-05").splitlines() if l.startswith("Rollback:")][0]
+assert line({"version": "v2", "sha": "2" * 40, "published": None}) == "Rollback: pin the newest clean version: v2 (commit " + "2" * 40 + ").", line({"version": "v2", "sha": "2" * 40, "published": None})
+assert line({"version": "v2", "sha": None, "published": "2026-08-01T00:00:00Z"}).endswith("v2, published 2026-08-01T00:00:00Z."), "x"
+PY
+CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges are never a pin; commits, digests and dotted numbers can"
 check python3 - "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -796,7 +624,7 @@ spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib
 work = sys.argv[2]
 sha = "1" * 40
 fx = {"lists": {"action:actions/checkout@" + sha: {"github": [{"id": "GHSA-main-main", "incident": "I", "affected": True, "modified": "2026-01-01T00:00:00Z"}], "osv": []}},
-      "upstream": {}, "nested": {}, "versions": {}, "prs": [], "open_prs": [{"number": 9, "items": ["action:actions/boom@v1"]}]}
+      "upstream": {}, "nested": {}, "versions": {}, "open_prs": [{"number": 9, "items": ["action:actions/boom@v1"]}]}
 class N(pa.FixtureNet):
     def lists(self, item):
         if item.name == "actions/boom":
@@ -855,28 +683,6 @@ pa.file_issues(G(), plan, "2026-10-05")
 assert len([c for c in calls if c[:2] == ("issue", "create")]) == 1, calls
 PY
 
-CASE="one held pull request that cannot be judged never stops the others from being re-run, and a run path with an @ref suffix still counts as this workflow's"
-check python3 - "$aud" <<'PY'
-import importlib.util, sys, datetime as dt
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
-old = (now - dt.timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%SZ")
-class N:
-    def prs(self):
-        return [{"number": 1, "title": "bad", "run_id": 11, "moved": ["action:o/boom@" + "a" * 40]}, {"number": 2, "title": "ok", "run_id": 22, "moved": ["action:o/ok@" + "b" * 40]}]
-    def proofs(self, item, base=None, head="HEAD"):
-        if item.name == "o/boom":
-            raise pa.age.CouldNotLook("git ls-remote failed")
-        return [(old, "observer")]
-calls = []
-class G:
-    def run(self, *a, ok_fail=False):
-        calls.append(a)
-pa.rerun_held(G(), N(), now)
-assert calls == [("run", "rerun", "22")], calls
-assert pa.age.tobs.accept_run(dict({"event": "schedule", "head_branch": "main", "conclusion": "success"}, path=".github/workflows/supply-chain.yml@refs/heads/main".split("@")[0]))
-PY
-
 CASE="two disputed incidents of one package are ONE issue carrying both; tags of one commit never manufacture a dispute (incidents are per tag); script history is covered; an incomplete open-PR audit is not a clean day"
 check python3 - "$aud" <<'PY'
 import importlib.util, sys
@@ -918,28 +724,8 @@ now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
 old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
 fx = pa.FixtureNet({"versions": {"o/r": [{"version": "2.0.0", "sha": None, "published": old(60), "lists": {}}, {"version": "1.2.9", "sha": None, "published": old(10), "lists": {}},
                                           {"version": "3.0.0rc1", "sha": None, "published": old(20), "lists": {}}]}})
-assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx, now)["version"] == "2.0.0"
+assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx)["version"] == "2.0.0"
 assert pa._norm_name("Jaraco.Context") == pa._norm_name("jaraco_context") == "jaraco-context"
-PY
-
-CASE="a failing re-run of one held PR never stops the others; two commits that collide on one issue identity are ONE issue carrying BOTH (never one dropped)"
-check python3 - "$aud" <<'PY'
-import datetime as dt, importlib.util, sys
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc); old = (now - dt.timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%SZ")
-class N:
-    def prs(self):
-        return [{"number": 1, "title": "a", "run_id": 11, "moved": ["tool:o/a@1.0"]}, {"number": 2, "title": "b", "run_id": 22, "moved": ["tool:o/b@1.0"]}]
-    def proofs(self, item, base=None, head="HEAD"):
-        return [(old, "github-release")]
-calls = []
-class G:
-    def run(self, *a, ok_fail=False):
-        if a[2] == "11":
-            raise pa.Fail("simulated")
-        calls.append(a)
-pa.rerun_held(G(), N(), now)
-assert calls == [("run", "rerun", "22")], calls
 PY
 
 CASE="an exception that names a version covers only that version"
@@ -1005,11 +791,10 @@ class RN:
     def versions(self, item): return [{"version": "v2.0.0", "published": "2026-01-01T00:00:00Z", "sha": "b" * 40, "_item": pa.inv.Item("action", "o/cand", "b" * 40), "lists": {"github": [], "osv": []}}]
     def lists(self, item):
         return ([{"id": "G", "affected": True, "incident": "I", "modified": "t"}], []) if item.name == "o/grand" else ([], [])
-    def proofs(self, item): return None
     def nested(self, item):
         return {"o/cand": [{"ref": "o/child1/sub@" + "c" * 40, "pinned": True}], "o/child1": [{"ref": "o/grand@" + "d" * 40, "pinned": True}]}.get(item.name, []) if (item.name != "o/child1" or item.path == "sub") else []
 import datetime as dt
-r = pa.rollback(pa.inv.Item("action", "o/cand", "e" * 40, "v3.0.0"), RN(), dt.datetime(2026, 10, 6, tzinfo=dt.timezone.utc))
+r = pa.rollback(pa.inv.Item("action", "o/cand", "e" * 40, "v3.0.0"), RN())
 assert r is None, r
 class G:
     def __init__(self): self.calls = []
@@ -1064,7 +849,7 @@ fi
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
-# REQ-SUP-001-AC27: Go's own toolchain release skips the 7-day AGE hold only; the advisory audit still covers it (the Go vulnerability database files the standard
+# REQ-SUP-001-AC27: Go's own toolchain release is read by the install-line rule of the pin scan; the advisory audit still covers it (the Go vulnerability database files the standard
 # library under the package stdlib): the item go is covered, queried as Go/stdlib at its version, and a stdlib record affecting the pin is a hit.
 CASE="AC27: the audit covers tool:go (queried as the Go package stdlib) and an affected stdlib record is a hit, the fixed one is not"
 check python3 - "$here/../supply-chain/pin-audit.py" <<'PY'
@@ -1465,13 +1250,12 @@ import sys
 lines = [l.strip() for l in open(sys.argv[1]) if l.startswith("audit: phase: ")]
 assert lines == ["audit: phase: history", "audit: phase: judging"], lines
 PY
-CASE="deadline: defaults are 900 s for the daily run and 600 s for --rerun-held and for pull request mode; --deadline overrides"
+CASE="deadline: defaults are 900 s for the daily run and 600 s for pull request mode; --deadline overrides"
 check python3 - "$aud" <<'PY'
 import importlib.util, sys, argparse
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-ns = lambda **k: argparse.Namespace(**{"deadline": None, "rerun_held": False, "base": None, **k})
+ns = lambda **k: argparse.Namespace(**{"deadline": None, "base": None, **k})
 assert pa.deadline_for(ns()) == 900
-assert pa.deadline_for(ns(rerun_held=True)) == 600
 assert pa.deadline_for(ns(base="abc")) == 600
 assert pa.deadline_for(ns(deadline=7, base="abc")) == 7 and pa.deadline_for(ns(deadline=7)) == 7
 PY
@@ -1503,29 +1287,10 @@ def slow_callback(seconds):
     time.sleep(0.5)       # the callback is mid-way when main reaches its end
     original(seconds)
 pa._deadline_passed = slow_callback
-pa.FixtureNet.prs = lambda self: (started.wait(10), [])[1]   # the run finishes only after the callback has started
-sys.exit(pa.main(["--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--rerun-held", "--deadline", "1"]))
+pa.history_items = lambda *a, **k: (started.wait(10), {})[1]   # the run finishes only after the callback has started
+sys.exit(pa.main(["--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--deadline", "1"]))
 PY
 check test "$rc" -eq 2
-# a deadline in the middle of the observations write must not leave a half-written state.json at the published path
-CASE="observations: a deadline during the write leaves no partial file at the published path (a temp file, then os.replace)"
-check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" "$work/obs-partial" <<'PY'
-import os, subprocess, sys
-aud, repo, fx, now, gh, out = sys.argv[1:7]
-code = """
-import importlib.util, sys, time
-spec = importlib.util.spec_from_file_location("pa", %r); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-def partial(obj, f, **kw):
-    f.write('{"first_seen": {"half')
-    f.flush()
-    time.sleep(30)
-pa.json.dump = partial
-sys.exit(pa.main(["--root", %r, "--fixtures", %r, "--now", %r, "--gh", %r, "--observations-out", %r, "--deadline", "1"]))
-""" % (aud, repo, fx, now, gh, out + "/state.json")
-r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=25)
-assert r.returncode == 2, (r.returncode, r.stdout[-300:], r.stderr[-300:])
-assert not os.path.exists(out + "/state.json"), "a partial state.json is at the published path"
-PY
 # the deadline must not depend on stdout: with the pipe full and nobody reading, the callback still ends the run
 CASE="deadline: stdout full and undrained does not stop the callback: exit 2 within seconds, the diagnostic on stderr"
 check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
@@ -1606,39 +1371,26 @@ PY
 run phclean "$CLEAN" "$work/r-clean"
 CASE="markers: a clean daily run prints history, judging, open pull requests, open pull request pins, nested references, exceptions, in that order; exit 0 as before"
 check test "$rc" -eq 0 -a "$(phases "$work/phclean.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions"
-run phobs "$CLEAN" "$work/r-clean" --observations-out "$work/obs/state.json"
-CASE="markers: with --observations-out the history phase is printed again after the tag observations, so a stalled history read names history"
-check test "$rc" -eq 0 -a "$(phases "$work/phobs.out")" = "history,tag observations,history,judging,open pull requests,open pull request pins,nested references,exceptions"
-# a history read that stalls on a day that records observations: the deadline must name the history, not the phase before it
+# a history read that stalls: the deadline must name the history
 mkdir -p "$work/shim-log"
 rm -f "$work/phstall.log-entered"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && { : >"%s"; exec sleep 60; }; done\nexec %s "$@"\n' "$work/phstall.log-entered" "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
 echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
-( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 10 --observations-out "$work/obs/stall.json" >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
-CASE="markers: a stalled history read on a daily run with --observations-out exits 2"
+( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 10 >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
+CASE="markers: a stalled history read on a daily run exits 2"
 check test "$rc" -eq 2
 CASE="markers: that stall happened inside git log, so the history read was reached"
 check test -e "$work/phstall.log-entered"
-CASE="markers: that run had already written its tag observations"
-check test -s "$work/obs/stall.json"
-CASE="markers: that run printed history, tag observations, then history again"
-check test "$(phases "$work/phstall.out")" = "history,tag observations,history"
 CASE="markers: its stderr is exactly one line: still in history after 10 s"
 check python3 -c 'import sys; assert open(sys.argv[1]).read() == "audit: could not finish: still in history after 10 s\n"' "$work/phstall.err"
-run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
+run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
-run phrh "$CLEAN" "$work/r-clean" --rerun-held
-CASE="markers: --rerun-held prints its own phase and exits 0 as before"
-check test "$rc" -eq 0 -a "$(phases "$work/phrh.out")" = "re-run of held pull requests"
-run phrh2 '{"lists": {}, "upstream": {}, "nested": {}, "versions": {}, "prs": [{"number": 7, "title": "t", "run_id": 5, "moved": []}, {"number": 9, "title": "u", "run_id": 6, "moved": []}]}' "$work/r-clean" --rerun-held
-CASE="markers: --rerun-held prints one line per held pull request, so a slow one is named"
-check test "$rc" -eq 0 -a "$(phases "$work/phrh2.out")" = "re-run of held pull requests,pull request #7,pull request #9"
 run phbase "$CLEAN" "$work/r-pr" --base HEAD~1 --head HEAD --report-only
 CASE="markers: pull request mode (--base) prints history, judging, nested references and exceptions, never the daily-only phases"
 check test "$(phases "$work/phbase.out")" = "history,judging,nested references,exceptions"
-# one line per pull request in both live walks: the PR walk is the lead suspect of the hang
-CASE="markers: both live open-pull-request walks print 'audit: phase: pull request #N' for every PR before they fetch it"
+# one line per pull request in the live walk: the PR walk is the lead suspect of the hang
+CASE="markers: the live open-pull-request walk prints 'audit: phase: pull request #N' for every PR before they fetch it"
 check python3 - "$aud" <<'PY'
 import importlib.util, io, subprocess, sys, contextlib, os
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -1650,7 +1402,7 @@ def fail_fetch(cmd, **kw):
 pa._run = fail_fetch
 pa.age._gh_pages = lambda path: [{"number": 7, "base": {"ref": "main"}, "head": {"sha": "a"}}, {"number": 9, "base": {"ref": "main"}, "head": {"sha": "b"}}]
 net = pa.LiveNet(["gh"], ".")
-for walk in (net.open_pr_items, net.prs):
+for walk in (net.open_pr_items,):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         walk()
@@ -1688,13 +1440,11 @@ for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
 PY
 
 
-# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits 2 and the tag observations are already written; one
+# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits 2; one
 # ls-tree -r per revision is all the history reader asks git for ---
-rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-oversize" --observations-out "$work/obsout4/state.json"
+run oversizeobs "$CLEAN" "$work/r-oversize"
 CASE="oversize history, daily run: an unlisted unreadable revision ends the audit with exit 2 and the cap's own message"
 check test "$rc" -eq 2; check grep -q 'refusing to read it partially' "$work/oversizeobs.err"
-CASE="oversize history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
-check test -s "$work/obsout4/state.json"
 CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
 check python3 - "$aud" "$work/r-histmemo" <<'PY'
 import collections, datetime as dt, importlib.util, sys

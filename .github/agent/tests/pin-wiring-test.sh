@@ -578,20 +578,23 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/k8s-harness-fence-test.sh"
   },
   {
-   "name": "the pin age check \u2014 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)",
+   "name": "the pin scan \u2014 names every moved version, passes only a pin it can read (REQ-SUP-001 AC2)",
    "run": "bash .github/agent/tests/pin-age-check-test.sh"
   },
   {
-   "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)",
+   "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions (REQ-SUP-001 AC5-AC10)",
    "run": "bash .github/agent/tests/pin-audit-test.sh"
   },
   {
-   "name": "where the supply-chain checks run \u2014 Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)",
+   "name": "where the supply-chain checks run \u2014 the PR job's read-only token, one writer per job (REQ-SUP-001 AC4)",
    "run": "bash .github/agent/tests/supply-chain-wiring-test.sh"
+  },
+  {
+   "name": "no wait for new versions \u2014 no text of it, Dependabot proposes at once, the pin-age context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)",
+   "run": "bash .github/agent/tests/release-age-gone-test.sh"
   }
  ]
 }''')
-GATE6_NAME = "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)"
 for jid, want_steps in SPLIT_STEPS.items():
     sj = d.get("jobs", {}).get(jid)
     if not isinstance(sj, dict):
@@ -607,10 +610,6 @@ for jid, want_steps in SPLIT_STEPS.items():
     accepted = [want_steps]
     if jid == "allowlist-chain":      # the transition: the second exact form carries the chain's 25 suites (nothing between, nothing after)
         accepted.append(want_steps + json.loads(os.environ["PIN_WIRING_CHAIN25"]))
-    if jid == "allowlist-pins-auditor":   # the transition (cache#669's landing): exactly main's list, or it plus the gate-6 step once, right after patch-decide
-        _gi = [k for k, x in enumerate(want_steps) if x.get("run") == "bash bin/patch-decide-test.sh"]
-        if len(_gi) == 1 and not any(x.get("run") == "bash bin/audit-record-test.sh" for x in want_steps):
-            accepted.append(want_steps[:_gi[0] + 1] + [{"name": GATE6_NAME, "run": "bash bin/audit-record-test.sh"}] + want_steps[_gi[0] + 1:])
     if [_by_shape(st) for st in got] not in [[_by_shape(st) for st in a] for a in accepted]:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
@@ -896,7 +895,7 @@ for i in $(seq 0 24); do
   case_ "chain25-step-$i-continue"  bad "${C25}x = [dict(s) for s in c25]; x[$i]['continue-on-error'] = 'true'; cs.extend(x)"
   case_ "chain25-step-$i-shell"     bad "${C25}x = [dict(s) for s in c25]; x[$i]['shell'] = 'bash -c true {0}'; cs.extend(x)"
 done
-# allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
+# allowlist-pins-auditor is accepted in main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
 PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; "
 case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
 case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
@@ -908,7 +907,7 @@ case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.s
 case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
 case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
-# The transition judge (cache#669's landing): allowlist-pins-auditor is accepted in EXACTLY two forms: main's list, or it plus the gate-6 step once, right after patch-decide
+# Gate 6 sits in main's list, right after patch-decide (cache#669 landed): a second copy, or one moved or weakened, is refused
 G6="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; g6 = {'name': 'gate 6 of the release process \\u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)', 'run': 'bash bin/audit-record-test.sh'}; "
 case_ g6-at-start                 bad "${G6}ps.insert(0, g6)"
 case_ g6-at-end                   bad "${G6}ps.append(g6)"
@@ -920,6 +919,19 @@ case_ g6-continue                 bad "${G6}g6['continue-on-error'] = 'true'; ps
 case_ g6-env                      bad "${G6}g6['env'] = {'X': '1'}; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-other-script             bad "${G6}g6['run'] = 'bash bin/other-test.sh'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+# the no-hold suite step sits in main's list (cache#884), judged strictly like every other step: once, last, as written
+PA+="gone = 'bash .github/agent/tests/release-age-gone-test.sh'; "
+case_ pa-nohold-removed           bad "${PA}"'del ps[ix(gone)]'
+case_ pa-nohold-twice             bad "${PA}"'ps.append(dict(ps[ix(gone)]))'
+case_ pa-nohold-at-start          bad "${PA}"'ps.insert(0, ps.pop(ix(gone)))'
+case_ pa-nohold-renamed           bad "${PA}"'ps[ix(gone)]["name"] = "x"'
+case_ pa-nohold-or-true           bad "${PA}"'ps[ix(gone)]["run"] += " || true"'
+case_ pa-nohold-continue          bad "${PA}"'ps[ix(gone)]["continue-on-error"] = "true"'
+case_ pa-nohold-env               bad "${PA}"'ps[ix(gone)]["env"] = {"X": "1"}'
+case_ pa-nohold-if-false          bad "${PA}"'ps[ix(gone)]["if"] = "false"'
+case_ pa-pin-age-hold-name        bad "${PA}ps[ix('bash .github/agent/tests/pin-age-check-test.sh')]['name'] = 'the pin age check \\u2014 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)'"
+case_ pa-pin-audit-hold-name      bad "${PA}ps[ix('bash .github/agent/tests/pin-audit-test.sh')]['name'] = 'the daily supply-chain audit \\u2014 advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)'"
+case_ pa-supply-chain-hold-name   bad "${PA}ps[ix('bash .github/agent/tests/supply-chain-wiring-test.sh')]['name'] = 'where the supply-chain checks run \\u2014 Dependabot cooldown, the PR job\\x27s read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)'"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 bump() {
   echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps']" \
