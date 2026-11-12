@@ -357,13 +357,12 @@
         "git",
         "openssl",
         "script",
-        "timeout",
         "trap"
       ],
       "runs": [],
       "signs": "other",
-      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "be4c8cdcf99c8f47ecc8659f1776034eb5df9725fb0ded860c06e929f2eecb08",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "f4ed2815275af45958ef3350ffd77e1414f8d7a6abd62aee04d725cbdea7d230",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -385,11 +384,6 @@
         "release-verify": "bin/release-verify.sh"
       },
       "exceptions": [
-        {
-          "rule": "witness-target",
-          "text": "timeout -k 20 540 bash \"$@\" || rc=$?",
-          "why": "REQ-CHAIN-004-AC2: the wrapped build runs under timeout -k 20 540; the target is one of the arg_map scripts, bound by the stage line"
-        },
         {
           "rule": "script-name",
           "text": "bin/chain-test-shape.py",
@@ -1624,7 +1618,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "e638d4892f4f6cdf5ba3c93a769d72e65a1c0d286deaaf58a7f058c41f079a45",
+      "sha256": "63bffd20c9eec377f7ef9c97e4adc0e1c35d93f84c4e7b072c33eb8f1f8017e9",
       "exceptions": [
         {
           "rule": "deny",
@@ -1789,18 +1783,74 @@
       ]
     },
     {
-      "path": "bin/release-assets.sh",
+      "path": "bin/release-stage.sh",
       "tools": [
-        "gh",
-        "git",
         "python3"
       ],
       "runs": [
         "bin/release-metadata.py"
       ],
       "signs": false,
-      "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "c00ae4aab1954305e7905baba37b89b5e39ed61747f825c6fe1ce01c19dc92cb",
+      "reason": "Release, run by release-postverify: gathers the evidence the GitHub release will carry in release-upload/ and copies it to release-published/; no credential, no gh call (B-F22)",
+      "sha256": "38cb354f5682153c1dbc16fd0b849aa93579856cf800e0dd19711deb1520bafb",
+      "reads_env": [],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-stage: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
+          "line_sha256": "5b8735d3cf72de77f097ce26726e177a33709051414864adcde540f85513bc6f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${#std[@]}\" = 1 ] || { echo \"release-stage: release-apks/$arch must hold exactly one standard apk (fscache-VERSION.apk), it holds ${#std[@]}: the list is incomplete\" >&2; exit 1; }",
+          "line_sha256": "ff4a655c100f575fc4f33b61dfd724d045fcc727439c59ee6f0803b301bfd710",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${#fips[@]}\" = 1 ] || { echo \"release-stage: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the list is incomplete\" >&2; exit 1; }",
+          "line_sha256": "f93a93793307b94485fa2dc91859a79db7b395be6277f5832357e2abe77b3485",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${#all[@]}\" = 2 ] || { echo \"release-stage: release-apks/$arch holds ${#all[@]} apks, exactly the two Build attested are attached\" >&2; exit 1; }",
+          "line_sha256": "9959d67a9078f6f18ec44c90d2d833c0f56178e260dcd16d8e19b87ed0c42608",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    ok=0; for n in \"$@\"; do [ \"${f##*/}\" = \"$n\" ] && ok=1; done",
+          "line_sha256": "5f26c662fe0f0760e6f99d7d01b266a91d038c9539993e5455389cfe59a51b20",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "for f in dist/*.txt; do [ \"${f##*/}\" = checksums.txt ] || { echo \"release-stage: $f is not in the inventory of dist (the four archives and checksums.txt)\" >&2; exit 1; }; done",
+          "line_sha256": "96640828c714474cee24e54624d08e9817e83846b60291ea35aecb0d8064b557",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
+      ]
+    },
+    {
+      "path": "bin/release-assets.sh",
+      "tools": [
+        "gh",
+        "python3"
+      ],
+      "runs": [
+        "bin/release-metadata.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-assets: creates the GitHub release after release-postverify has passed, only with --verify-tag, and attaches release-upload/ (REQ-CHAIN-007-AC9)",
+      "sha256": "9f3cd158cec58f91d339ae0f3fe9988e6584742b8572d6fef6a705d4d53f43a3",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1821,57 +1871,8 @@
         },
         {
           "rule": "deny",
-          "line": "  [ \"${#std[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one standard apk (fscache-VERSION.apk), it holds ${#std[@]}: the list is incomplete\" >&2; exit 1; }",
-          "line_sha256": "cd894eeae368b0dd48df4e1074dc53fe2072a448e9f602fad3c33b34deb42251",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"${#fips[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the list is incomplete\" >&2; exit 1; }",
-          "line_sha256": "083c44a013067df226d8aac79f76358eee31f009a0411e329aa2be1109e7857f",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ \"${#all[@]}\" = 2 ] || { echo \"release-assets: release-apks/$arch holds ${#all[@]} apks, exactly the two Build attested are attached\" >&2; exit 1; }",
-          "line_sha256": "26784fe3fe704e2fc17275f8ff73019efc8ed689cc1e8abfc0b642ed0f469c91",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    ok=0; for n in \"$@\"; do [ \"${f##*/}\" = \"$n\" ] && ok=1; done",
-          "line_sha256": "5f26c662fe0f0760e6f99d7d01b266a91d038c9539993e5455389cfe59a51b20",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    if [ -f \"${kind#*:}\" ]; then stage \"${kind#*:}\" \"${kind%%:*}\"; fi",
-          "line_sha256": "98ad9e8e4c6ff8d27086410624c0463f39f71403a5c1f47215a88129e969e141",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "for f in dist/*.txt; do [ \"${f##*/}\" = checksums.txt ] || { echo \"release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)\" >&2; exit 1; }; done",
-          "line_sha256": "1aaceda5b1224333b2c979a4c90bd467dd4409f185bc773dc70d8abc0d5caa72",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
           "line": "if [ \"${#files[@]}\" = 0 ]; then echo \"release-assets: nothing to attach\" >&2; exit 1; fi",
           "line_sha256": "f6e82ba4a511d2fa5f5b0ddb9fae3d8c944096446d7970809a69ae4ca108387d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "elif [ \"${notes[0]}\" = --notes-file ]; then",
-          "line_sha256": "303fb7eecc84abb7eb64ffed1e0c3f9aed9b638549c377ce213b4fc60794549e",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
@@ -1880,14 +1881,16 @@
     {
       "path": "bin/release-postverify.sh",
       "tools": [
+        "bash",
         "python3"
       ],
       "runs": [
-        "bin/release-postverify.py"
+        "bin/release-postverify.py",
+        "bin/release-stage.sh"
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "4f89daaa659d30a16dc5c4bcb31e9535d65c259227ec6416b677d92902aa621e",
+      "sha256": "52d490a5e7f44042d4626f8aae7ae3406c6afca9ee6e4f0faa391353a6a9571d",
       "reads_env": []
     },
     {
@@ -2713,7 +2716,7 @@
       ],
       "signs": "other",
       "reason": "Sign's token fetch for one signing call of its own (#822 round 2: the provenance signature and each staged record): fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP, runs bin/chain-verify.py sign-record, sign or kms-sign (the signing functions, nothing else) with AWS_WEB_IDENTITY_TOKEN_FILE set for that call only, and removes the directory the moment the call ends",
-      "sha256": "82c661621cdfbee2b75595de440f6d883d69dc3f0da63b65c59dfb88f46c4792",
+      "sha256": "3763e043b8957a76746f8a26b6ce974f503620ae317d9e7e8adf3b97df2daff6",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",

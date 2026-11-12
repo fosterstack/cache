@@ -25,7 +25,7 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
 
 === Rule 68 seam (advisor ruling, Oct 9; the Release helper no longer carries the ten-minute bound of the earlier certificate: Witness signs with a throwaway key, the release key signs afterwards) ===========
 The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
-(the throwaway key, the attestors, the output path) and then calls the one signing function; the building steps' local helper keeps `timeout -k 20 540`. Every stage calls it; no stage file and no listed script
+(the throwaway key, the attestors, the output path) and then calls the one signing function; the building steps' local helper runs the script itself. Every stage calls it; no stage file and no listed script
 names `witness run`. The seam in this file is exactly three functions: witness_seam (the stage's one run line), helper (the helper's exact lines)
 and directwitness (nothing else runs Witness). If harness spike (d) changes the wrapping (witness wraps only short steps; or a second witness run
 signs a record of the first), only those three functions and the fixture generators (witness_block, witnessed_text in
@@ -662,7 +662,7 @@ def local_lines():
             'openssl genpkey -algorithm ed25519 -out "$kd/key.pem"',
             "rc=0",
             'witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars %s '
-            '-o "witness-${step#snapshot-}/$step-collection.local.json" -- timeout -k 20 540 bash "$@" || rc=$?' % keys,
+            '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@" || rc=$?' % keys,
             'rm -rf "$kd"',
             '[ ! -e "$kd" ] || { echo "witnessed-local: the throwaway key directory still exists" >&2; exit 1; }',
             'exit "$rc"']

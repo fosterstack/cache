@@ -71,18 +71,20 @@ TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-
 RC_IF = "${{ !contains(github.ref_name, '-') }}"   # every step after release-verify: a release candidate (a tag with a hyphen) ends after release-verify
 VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order, nothing else (PROPOSED: stage-start takes --rekor-stub for provenance)
     TAGLINE,
-    r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" --out policy\.json',
-    r"python3 bin/chain-verify\.py stage-start --stage release --previous build --record witness-build/build-collection\.json --digests witness-build/digests\.json --policy policy\.json",
-    r"python3 bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/items\.json",
+    # B-F22: the signed key manifest, its signature and the root key exist before any later step
+    r'for f in release-key-manifest\.json release-key-manifest\.sig release-key-root\.pub; do \[ -f "\.github/policy/\$f" \] && \[ ! -L "\.github/policy/\$f" \] \|\| \{ echo "release-verify: \.github/policy/\$f is missing: the release is refused before any credential step" >&2; exit 1; \}; done',
+    r'python3 -I -B bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" --out policy\.json',
+    r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous build --record witness-build/build-collection\.json --digests witness-build/digests\.json --policy policy\.json",
+    r"python3 -I -B bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/items\.json",
     # REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the baseline admission chose is a second product of Build's record, bound by name
-    r"python3 bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/admission-baseline\.json --product admission-baseline\.json",
-    r"python3 bin/chain-verify\.py stage-start --stage release --previous sign --record provenance/provenance\.json --digests witness-build/digests\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json",
-    r"python3 bin/chain-verify\.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection\.json --digests witness-build/digests\.json --policy policy\.json",
+    r"python3 -I -B bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/admission-baseline\.json --product admission-baseline\.json",
+    r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous sign --record provenance/provenance\.json --digests witness-build/digests\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json",
+    r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection\.json --digests witness-build/digests\.json --policy policy\.json",
     # the owner's rule of Oct 21 2026: Rebuild's apks are compared in the compare job (no key, no token); this job reads only its result file, for Build's attested apk digests
-    r"python3 bin/chain-verify\.py apk-compare --file apk-compare/apk-compare\.json --digests witness-build/digests\.json",
-    r"python3 bin/chain-verify\.py check-list --policy policy\.json --digests witness-build/digests\.json --dir witness-check",
+    r"python3 -I -B bin/chain-verify\.py apk-compare --file apk-compare/apk-compare\.json --digests witness-build/digests\.json",
+    r"python3 -I -B bin/chain-verify\.py check-list --policy policy\.json --digests witness-build/digests\.json --dir witness-check",
     # ruling G (advisor Oct 12): check-results/govulncheck.json, the file release-sign hands the evidence step, is a product of Check's verified scanners record
-    r"python3 bin/chain-verify\.py bind-check --policy policy\.json --record witness-check/witness-scanners/scanners-collection\.json --digests witness-build/digests\.json --file check-results/govulncheck\.json --product check-results/govulncheck\.json",
+    r"python3 -I -B bin/chain-verify\.py bind-check --policy policy\.json --record witness-check/witness-scanners/scanners-collection\.json --digests witness-build/digests\.json --file check-results/govulncheck\.json --product check-results/govulncheck\.json",
 ]
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
@@ -93,8 +95,9 @@ ROWS = {
     "bin/release-publish.sh": {"tools": ["crane", "jq", "python3", "trap"], "signs": False, "runs": ["bin/release-layout.py"]},   # round 1 B4: the layout is checked first
     "bin/release-layout.py":  {"tools": [], "signs": False, "runs": []},
     "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
-    "bin/release-assets.sh":  {"tools": ["gh", "git", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # git reads the tag object; release-metadata.py tag-notes extracts its notes
-    "bin/release-postverify.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-postverify.py"]},   # rule 79 amended
+    "bin/release-stage.sh":   {"tools": ["python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify; no credential, no gh
+    "bin/release-assets.sh":  {"tools": ["gh", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # B-F22: creates the release after release-postverify has passed
+    "bin/release-postverify.sh": {"tools": ["bash", "python3"], "signs": False, "runs": ["bin/release-postverify.py", "bin/release-stage.sh"]},   # rule 79 amended; runs the staging first
     "bin/release-postverify.py": {"tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py"]},   # runs only verify forms, judged first
 }
 # commands a plain release script must not use unless its row lists them
