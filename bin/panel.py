@@ -341,6 +341,11 @@ def scanner_dirs(inp):
     return dirs
 
 
+def _vex_version(name, ver):
+    """Scanners write the Go standard library's version go1.27.2; the VEX purl, pkg:golang/stdlib@1.27.2, has no prefix."""
+    return ver[2:] if name.lower() == "stdlib" and re.match(r"go\d", ver) else ver
+
+
 def tally(root, vexidx, dirs=None):
     images, findings, covered_log = {}, {}, []
     for s, imgs in EXPECTED.items():
@@ -359,7 +364,7 @@ def tally(root, vexidx, dirs=None):
             for vid, name, ver, purl, extra in found:
                 if purl and not purl_ok(purl):
                     purl = None           # a package URL outside the verdict's grammar is dropped, never written (the finding still counts)
-                if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver)):
+                if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), _vex_version(name, ver))):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
                 key = key_of(img, vid, name, ver)
