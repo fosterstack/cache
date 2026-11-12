@@ -1752,34 +1752,15 @@
         "trap"
       ],
       "runs": [
-        "bin/chain-verify.py",
-        "bin/release-metadata.py",
-        "bin/vendor-provenance.py",
-        "bin/vex-forms.py"
+        "bin/chain-verify.py"
       ],
-      "signs": "other",
-      "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "4e68f5b569736ef7ec01e5988d71b2a5d8d454252c68d48dda9ff0784e526ad0",
+      "signs": false,
+      "reason": "Release, step release-sign: holds no key. It checks the detached KMS signatures Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and pushes them: the images signatures and the release manifest attestations attached by digest in both registries (cosign attach signature and attestation, then cosign verify --key on each), the blobs bundles placed beside the blobs (REQ-CHAIN-007-AC8)",
+      "sha256": "69b660303265445d9345bb6869817d0778b83f06acbadcb016bee9c6a71856c8",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
         "GH_TOKEN"
-      ],
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-sign: $name is unset\" >&2; exit 2; fi",
-          "line_sha256": "18a76e77de3fce5659a5630e6611566cc5cacf27b1006c19ab052614449aeb00",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
-          "line_sha256": "6fb5bc63ef42405f8c8e6942e3b50560a86793a9964a29430e1bbdaa9639847b",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
       ]
     },
     {
