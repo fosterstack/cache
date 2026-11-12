@@ -231,29 +231,30 @@ for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):
     gate("a release without Sign's %s is refused, naming it (Sign's provenance is part of every release)" % n, lambda a, n=n: os.remove(os.path.join(a, n)), n)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
-# ---- tag-notes: the release tag's generated notes (REQ-REL-009-AC8), the same decision as bin/patch-decide.py tag_notes ----------------------------
-import importlib.util
-spec = importlib.util.spec_from_file_location("patch_decide", os.path.join(BIN, "patch-decide.py")); PD = importlib.util.module_from_spec(spec); spec.loader.exec_module(PD)
+# ---- no tag-notes path: no admitted tag carries a signed message, so a tag object's text is never taken as notes ----------------------------
 GEN = ("object 0123\ntype commit\ntag v0.3.1\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
-       "## v0.3.1 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
-       "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
-cases = [("a generated patch tag", GEN, "v0.3.1"),
-         ("an owner's tag", "object 1\ntype commit\ntag v0.3.1\ntagger o <o@x> 1 +0000\n\nv0.3.1\n", "v0.3.1"),
-         ("another tagger", GEN.replace("fosterstack release <release@users.noreply.github.com>", "Someone <s@x>"), "v0.3.1"),
-         ("a heading for another version", GEN.replace("## v0.3.1 \u2014", "## v0.3.2 \u2014"), "v0.3.1"),
-         ("an ssh signature, not gitsign", GEN.replace("SIGNED MESSAGE-----", "SSH SIGNATURE-----"), "v0.3.1"),
-         ("two signature blocks", GEN + "-----BEGIN SIGNED MESSAGE-----\nfake\n-----END SIGNED MESSAGE-----\n", "v0.3.1"),
-         ("no signature block", GEN.split("-----BEGIN")[0], "v0.3.1"),
-         ("the right tag object for another release tag", GEN, "v0.3.2")]
-for what, raw, tag in cases:
-    obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(raw)
-    r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag, "--object", obj], capture_output=True, text=True)
-    try: pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
-    except ValueError: pd = None          # since cache#300 patch-decide REFUSES a tag message with a refused form (two signature blocks): the release keeps its fixed text, as for "no notes"
-    same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
-    check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
-print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "73"))
+       "## v0.3.1 \u2014 patch release\n\n### Fixes\n- none\n-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(GEN)
+rc, so, se = run("tag-notes", "--tag", "v0.3.1", "--object", obj)
+check(rc != 0 and so == "", "tag-notes: a tag with SIGNED MESSAGE notes text is not accepted as notes (no such subcommand)", "rc=%s out=%r" % (rc, so[:60]))
+check("tag-notes" not in open(os.path.join(BIN, "release-metadata.py")).read(), "tag-notes: the script holds no tag-notes code")
+# ---- usage: the docstring (the script's usage text) names every subcommand it has, and no other ----------------------------------------
+import ast
+SUBS = ("images", "manifest", "baseline", "list", "gate", "bind-archives", "checksums")
+doc = ast.get_docstring(ast.parse(open(os.path.join(BIN, "release-metadata.py")).read())) or ""
+check(all("release-metadata.py %s " % n in doc for n in SUBS) and "tag-notes" not in doc,
+      "usage: the docstring has a usage line for every subcommand and none for tag-notes", doc[:300])
+rc, so, se = run("--help")
+check(rc == 0 and all(n in so for n in SUBS) and "tag-notes" not in so, "usage: --help names every subcommand and no tag-notes", so[:200])
+# ---- strict JSON: a duplicate key is refused, never taken last-wins ---------------------------------------------------------------------
+t, d = tree(); dup = t + "/witness-build/digests.json"
+open(dup, "w").write(json.dumps(d)[:-1] + ', "image-production": "%s"}' % sha(b"other"))
+rc, so, se = run("images", "--digests", dup, "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", t + "/o.json")
+check(rc == 1 and "duplicate" in se and not os.path.exists(t + "/o.json"), "strict json: a duplicate key in digests.json is refused", "rc=%s %s" % (rc, se[:200]))
+t = tempfile.mkdtemp(); adm = t + "/admission.json"
+open(adm, "w").write('{"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "%s", "tag": "v0.3.1", "tag": "v0.3.2"}' % ("a" * 40))
+rc, so, se = run("baseline", "--admission", adm, "--tag", "v0.3.2", "--commit", "a" * 40)
+check(rc == 1 and "duplicate" in se and so == "", "strict json: a duplicate key in the admission file is refused", "rc=%s %s" % (rc, se[:200]))
 # ---- the accepted AC text of advisor rulings B, C and E (Oct 12): requirements.yaml says what the code now does ----------------------------------------------------------
 import yaml
 REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "requirements", "requirements.yaml")))["requirements"]}
@@ -332,7 +333,7 @@ check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "124"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "122"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
