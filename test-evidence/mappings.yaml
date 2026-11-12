@@ -820,7 +820,6 @@ mappings:
   - ac: REQ-REL-009-AC6
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
-      - { type: shell-test, ref: "bin/chain-no-keyless-tag-test.sh" }
   - ac: REQ-REL-009-AC13
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
@@ -871,7 +870,6 @@ mappings:
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
-      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
@@ -1440,7 +1438,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
-      - { type: shell-test, ref: "bin/chain-install-crane-test.sh" }
   - ac: REQ-CHAIN-007-AC8
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
