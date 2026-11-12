@@ -360,6 +360,7 @@ def _only_records_paths(files):
 def commits_authored_by(run, repo, base_sha, head_sha, logins):
     """True when every commit after base_sha up to head_sha is verified by GitHub and authored by one of `logins`
     (e.g. 'dependabot[bot]'). A list GitHub may have cut short, or any failed lookup, is False."""
+    logins = {login for login in logins if login}      # an unset App login must not match an author with no login
     rc, out, _ = _api(run, ["gh", "api", "repos/%s/compare/%s...%s?per_page=100" % (repo, base_sha, head_sha)])
     if rc != 0:
         return False
