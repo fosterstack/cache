@@ -149,7 +149,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
+      "sha256": "32f6b1d24b0c6e0a4c0bd9d3dd50072b7435b2f415a707a245c47e899737b555",
       "tools": [
         "at",
         "bash",
@@ -234,7 +234,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
+      "sha256": "17b6af5b148922a14cde728d0c03df4879fc72baee9f0811d9e2b6a330c39a67",
       "tools": [
         "at"
       ],
@@ -297,7 +297,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
+      "sha256": "537961d7a3d028ad0f3c1e96da85d44ba4ec91ee8cef0b31e17b85546974047b"
     },
     {
       "path": "bin/witnessed.sh",
@@ -668,7 +668,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e"
+      "sha256": "1725f6cc8888600b56f54323fbe005806f929e3c8dde57b399bf48f16f63776f"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -2229,7 +2229,7 @@
       ],
       "signs": false,
       "reason": "the sandbox wall probe of the dry run: six test-only recipes (build/probe) through the sealed melange call, judged by melange's exit status; signs, uploads and publishes nothing",
-      "sha256": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30"
+      "sha256": "06c3f219d7bbacb6cf333403380826a3544fb12a96a0e1142a4fdb58baa5e71f"
     },
     {
       "path": "bin/net-probe.py",
