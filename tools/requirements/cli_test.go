@@ -875,6 +875,28 @@ func TestRenderApprovedBaselineWithEvidenceAndGroups(t *testing.T) {
 	}
 }
 
+func TestRenderUnapprovedBaselineHasNoShopWords(t *testing.T) {
+	richFixture(t)
+	f, m := wantValid(t)
+	f.Baseline.Approved = false
+	f.Baseline.ApprovedOn = ""
+	out := render(f, m)
+
+	if strings.Contains(strings.ToLower(out), "owner") {
+		t.Error("customer page must not contain the word \"owner\"")
+	}
+	// The sentence is wrapped over source lines; compare it on one line.
+	oneLine := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{
+		"pending",
+		"no test mapping happens until the baseline is approved",
+	} {
+		if !strings.Contains(oneLine, want) {
+			t.Errorf("rendered output lacks %q", want)
+		}
+	}
+}
+
 // ── verify-freeze ────────────────────────────────────────────────────
 
 func TestVerifyFreezeConsistent(t *testing.T) {
