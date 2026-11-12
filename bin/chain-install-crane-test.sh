@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC7
 # The copy tool of the Release stage (crane) is pinned by checksum (v0.3.0 rules 16, 64: "the copy tool is pinned by checksum, no build command").
-# Failure-path suite for the crane entry of bin/install-scanner.sh, in the style of bin/install-scanner-test.sh: a tool that cannot be installed
-# or verified exits NON-ZERO and is LABELED a pipeline failure. The success path pulls a real vendor binary and cannot run offline.
-# RED until PR 4 adds the entry. PROPOSED/UNVERIFIED: the version (v0.22.1, the one the old stage-promote.yml went-installed), the asset names
-# go-containerregistry_Linux_x86_64.tar.gz and go-containerregistry_Linux_arm64.tar.gz, and the release URL, which a stub curl on PATH serves from a local layout.
+# Suite for the crane entry of bin/install-scanner.sh, in the style of bin/install-scanner-test.sh: a tool that cannot be installed
+# or verified exits NON-ZERO and is LABELED a pipeline failure; the success path runs offline against a fixture tarball and a COPY of the script
+# whose pinned x86_64 sum is the fixture's sum (the real script is never changed).
+# The version (v0.22.1), the asset names go-containerregistry_Linux_x86_64.tar.gz and go-containerregistry_Linux_arm64.tar.gz and the release URL
+# are served by a stub curl on PATH from a local layout.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/install-scanner.sh"
@@ -25,6 +25,7 @@ chmod +x "$FXD_1"
 check() { # name expected_rc regex -- run...
   local name="$1" want_rc="$2" re="$3"; shift 3
   local out rc; out="$("$@" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && [ "$want_rc" -eq 0 ]; then echo "FAIL: ${name}: expected exit 0, got ${rc}"; echo "$out" | sed 's/^/    /'; fail=$((fail+1)); return; fi
   if [ "$rc" -eq 0 ] && [ "$want_rc" -ne 0 ]; then echo "FAIL: ${name}: expected non-zero exit, got 0"; fail=$((fail+1)); return; fi
   if ! grep -qiE "$re" <<<"$out"; then echo "FAIL: ${name}: output did not match /$re/"; echo "$out" | sed 's/^/    /'; fail=$((fail+1)); return; fi
   echo "ok: ${name}"; pass=$((pass+1))
@@ -39,6 +40,21 @@ for arch in x86_64 aarch64; do
     env INSTALL_SCANNER_ARCH=$arch PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$sut" crane "$work/bin-$arch"
 done
 check "crane unsupported architecture rejected" 1 "unsupported architecture.*PIPELINE failure" env INSTALL_SCANNER_ARCH=mips bash "$sut" crane "$work/bin"
+# success path: a fixture tarball with a fake crane, and a copy of the script whose pinned x86_64 crane sum is the fixture's real sum
+ok_rel="$work/ok-rel/${ver:-v0.0.0}"; ok_src="$work/ok-src"; mkdir -p "$ok_rel" "$ok_src" "$work/ok-bin"
+printf '#!/bin/sh\necho "fake crane 0.0.0"\n' > "$ok_src/crane"; chmod +x "$ok_src/crane"
+tar -czf "$ok_rel/go-containerregistry_Linux_x86_64.tar.gz" -C "$ok_src" crane
+ok_sum=$(sha256sum "$ok_rel/go-containerregistry_Linux_x86_64.tar.gz" | cut -d' ' -f1)
+sut_copy="$work/install-scanner-copy.sh"
+sed -E "s/^(  crane:x86_64\|crane:amd64\) SUM=)[0-9a-f]{64}/\1${ok_sum}/" "$sut" > "$sut_copy"
+if grep -q "crane:x86_64|crane:amd64) SUM=${ok_sum}" "$sut_copy"; then echo "ok: the pinned crane sum was replaced in the copy"; pass=$((pass+1))
+else echo "FAIL: the pinned crane sum was not replaced in the copy"; fail=$((fail+1)); fi
+check "crane install succeeds on x86_64" 0 "." \
+  env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/ok-rel" bash "$sut_copy" crane "$work/ok-bin"
+if [ -x "$work/ok-bin/crane" ]; then echo "ok: crane is installed and executable"; pass=$((pass+1))
+else echo "FAIL: $work/ok-bin/crane is missing or not executable"; fail=$((fail+1)); fi
+if "$work/ok-bin/crane" version 2>&1 | grep -q "fake crane"; then echo "ok: the installed crane runs"; pass=$((pass+1))
+else echo "FAIL: the installed crane does not run"; fail=$((fail+1)); fi
 # the pin itself: one version, one 64-hex sha256 per architecture, in the crane entry (a placeholder or a missing sum is a failure)
 n=$(grep -ciE 'crane' "$sut" 2> /dev/null); n=${n:-0}
 if [ "$n" -gt 0 ] && [ -n "$ver" ] && [ "$(grep -iE 'crane' "$sut" | grep -oE '[0-9a-f]{64}' | sort -u | wc -l | tr -d ' ')" -ge 2 ]; then echo "ok: crane is pinned to $ver with a sha256 for both architectures"; pass=$((pass+1))
