@@ -72,9 +72,6 @@ for want in ("CVE-2099-0001", "golang.org/x/sys", "v0.46.0", "v0.47.0", "high", 
 leak = P.notes("v0.2.2", [dict(fixes[0], package="claude-sdk")], [])
 check("notes name no vendor or model", "claude" not in leak.lower(), leak)
 # --- AC11: floating tags
-check("highest version: :X.Y, :X and :latest move", P.floating("v0.2.2", ["v0.2.1", "v0.1.9"]) == ["0.2", "0", "latest"])
-check("an older line: only :X.Y moves", P.floating("v0.1.10", ["v0.2.1", "v0.1.9"]) == ["0.1"])
-check("same major, lower minor: :X does not move", P.floating("v1.2.5", ["v1.3.0", "v1.2.4"]) == ["1.2"])
 
 # --- Codex #158 r1 (B01-B06)
 A64, B64 = "a" * 64, "b" * 64
@@ -115,9 +112,6 @@ for f in (".github/workflows/stage-image.yml", ".github/workflows/stage-build.ym
     check("B04 %s is not neutral" % f, P.classify(c("x", [f]))[0] == "dirty")
 check("B04 other workflows stay neutral", P.classify(c("x", [".github/workflows/ci.yml"]))[0] == "neutral")
 # B05: a released prerelease above the patch keeps :X and :latest where they are
-check("B05 a higher released rc keeps :X and :latest", P.floating("v0.2.2", ["v2.0.0-rc.1"]) == ["0.2"], P.floating("v0.2.2", ["v2.0.0-rc.1"]))
-check("B05 a lower rc does not", P.floating("v0.2.2", ["v0.2.1", "v0.2.2-rc.1"]) == ["0.2", "0", "latest"], P.floating("v0.2.2", ["v0.2.1", "v0.2.2-rc.1"]))
-check("B05 the final release outranks its own rc", P.floating("v1.0.0", ["v1.0.0-rc.2"]) == ["1.0", "1", "latest"])
 # B06: no vendor or model names, the wider set
 # r10 (advisor decision Oct 11): notes() checks its whole text, a VEX line too, for the refused forms (a hand-built 'change'
 # text holding one is refused); the names ride in a changed field's name
@@ -320,6 +314,12 @@ open(os.path.join(bm, "build/locks/melange.lock"), "w").write("2\n"); os.makedir
 g(bm, "add", "build", "docs"); g(bm, "commit", "-q", "-m", "refresh")
 rc_, so_, se_ = bmoved()
 check("base-moved: a moved lock is named, an unrelated file is not", rc_ == 0 and "build/locks/melange.lock" in so_ and "docs/x.md" not in so_ and "apko.base" not in so_, (rc_, so_, se_))
+# the diff starts at refs/tags/<since>: a branch of the same name, or a ref git looks up before tags, moves nothing
+g(bm, "branch", "v0.2.1"); g(bm, "update-ref", "refs/v0.2.1", "HEAD")
+rc_, so_, se_ = bmoved()
+check("base-moved: a branch and a ref named like the tag do not change the diff",
+      rc_ == 0 and "build/locks/melange.lock" in so_ and "docs/x.md" not in so_, (rc_, so_, se_))
+g(bm, "branch", "-D", "v0.2.1"); g(bm, "update-ref", "-d", "refs/v0.2.1")
 rc_, so_, se_ = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", os.path.join(bi, "absent.json"), "--since", "v0.2.1", "--repo", bm],
                                capture_output=True, text=True).returncode, "", ""
 check("base-moved: an unreadable list is exit 2 (the job stops; no fallback)", rc_ == 2, rc_)
@@ -1466,8 +1466,6 @@ check("AC8 VEX line-local redaction (r3, B1): the changelog cleans line by line,
       "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n" in cl_, cl_)
 tr_ = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + raw_
        + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
-check("AC8 VEX line-local redaction (r3, B1): a patch tag's notes are cleaned line by line too",
-      "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n" in (P.tag_notes(tr_) or ""), P.tag_notes(tr_))
 # B3: Markdown and GitHub rendering never make two values read alike, hide a value or add a line
 E1, E2 = (vs(products=[{"@id": PC}], status="fixed", status_notes="old", **{"@id": i}) for i in ("urn:s:a", "urn:s:&#97;"))
 o_, n_ = vd(E1, E2), vd(dict(E1, status_notes="new"), dict(E2, status_notes="new"))
@@ -1724,10 +1722,6 @@ for t_ in TERMS:
           got_ == "urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)", got_)
     cl_, _ = P.changelog(raw_, None, "")
     check("AC8 line-local redaction (r4, A R3-4): the changelog splits at %r too" % t_, want_ in cl_ and t_ not in cl_.replace("\n", ""), cl_)
-    tr_ = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + raw_
-           + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
-    got_ = P.tag_notes(tr_) or ""
-    check("AC8 line-local redaction (r4, A R3-4): a patch tag's notes split at %r too" % t_, want_ in got_ and t_ not in got_.replace("\n", ""), got_)
 check("AC8 line-local redaction (r4): a trailing boundary and an empty text keep their shape",
       P._clean_lines("a\n") == "a\n" and P._clean_lines("") == "" and P._clean_lines("a\n\nb") == "a\n\nb", P._clean_lines("a\n"))
 # r4 (A R3-5, B low): a value prints bare only in a form GitHub cannot autolink, mention, reference or emoji-expand
@@ -1749,7 +1743,7 @@ n_ = vd(vs(products=[{"@id": PC}], status_notes="o", **{"@id": "urn:b"}))
 nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
 check("AC8 VEX rendering (r4): the field name '@id' prints quoted (a mention of the user 'id' otherwise)",
       vlines(nt_) == ['- CVE-7: not_affected (changed: `"@id"`)'] and resolves(nt_, o_, n_)[0], vex_part(nt_))
-# r4 (B low): the redaction marker in the notes, changelog and tag notes is visible text, not an HTML tag
+# r4 (B low): the redaction marker in the notes and changelog is visible text, not an HTML tag
 nt_ = P.notes("v0.2.3", [], P.vex_changes(vdd(), vdd(st=(VS, vs(vulnerability={"name": "gpt"}, status="fixed")), gpt=1)))
 check("AC8 VEX redaction marker (r4, B low): a name and a document field 'gpt' print '(redacted)', never '<redacted>'",
       vlines(nt_) == ["- (redacted): fixed (added) — statement 2 of the new document", "- document fields changed ((redacted))"]
@@ -1822,12 +1816,9 @@ def refused(f, *a, **k):
         return f(*a, **k)
     except ValueError as e:
         return "ValueError: %s" % e
-got_, cl_ = refused(P.tag_notes, mktag("v0.2.2", old_tag_)), refused(P.changelog, old_tag_, None, "")
+cl_ = refused(P.changelog, old_tag_, None, "")
 check("AC14 (r8; was r5 'older tag shown escaped'): a fix line or behavior entry holding '<redacted>' outside a VEX section is "
-      "refused in a tag's notes and as changelog input, never shown",
-      str(got_).startswith("ValueError") and str(cl_).startswith("ValueError"), (got_, cl_))
-check("AC8 redaction marker (r5): the escaped form is stable: a tag of the notes reads back as the notes byte for byte",
-      P.tag_notes(mktag("v0.2.3", nt_)) == nt_, P.tag_notes(mktag("v0.2.3", nt_)))
+      "refused as changelog input, never shown", str(cl_).startswith("ValueError"), cl_)
 cl1_, nn1_ = P.changelog(nt_, None, "- [click]gpt (decided 2026-10-05).\n- Another change (decided 2026-10-06).\n")
 check("0130 + r5: a published entry holding a marker leaves next-release-notes; an unpublished one stays",
       nn1_ == "- Another change (decided 2026-10-06).\n", nn1_)
@@ -1838,10 +1829,6 @@ check("0135 + r5 (r8: the escaped form only, the older forms cut back): an entry
 # refused (as in round 3)
 for t_ in TERMS:
     body_ = "## v0.2.2 — patch release" + t_ + "\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
-    check("AC8 tag-notes heading (r5, B low): %r after the heading is refused" % t_, P.tag_notes(mktag("v0.2.2", body_)) is None,
-          P.tag_notes(mktag("v0.2.2", body_)))
-check("AC8 tag-notes heading (r5): the generated LF heading is still read",
-      P.tag_notes(mktag("v0.2.2", "## v0.2.2 — patch release\n\n### VEX\n- no change\n")) == "## v0.2.2 — patch release\n\n### VEX\n- no change\n")
 # r5 (A R4-1, B low): the changelog's existing history is copied unchanged, never rewritten; a history this code would not
 # have written (a line boundary other than LF, a vendor name, an unescaped marker) is refused, nothing written (fail closed)
 HIST_ = "# Changelog\n\n## v0.2.1 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- \\(redacted\\)\\: fixed \\(added\\) — statement 2 of the new document\n"
@@ -1918,15 +1905,8 @@ for l_ in ("- (redacted): fixed (added) — statement 2 of the new document", "-
     # form like any line, and that form reads back unchanged; the bare form is not what the notes print and reads escaped
     blk_ = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n%s\n" % P._clean_free(l_)
     raw_ = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n%s\n" % l_
-    check("AC8 redaction marker (r10; was r6/r8): a VEX line holding the marker is printed escaped, reads back unchanged and "
-          "shows the marker: %r" % l_, P._clean_free(l_) != l_ and vshown(P._clean_free(l_)) == l_ and P._clean_lines(blk_) == blk_
-          and P.tag_notes(mktag("v0.2.3", blk_)) == blk_ and P._clean_lines(raw_) == blk_, P._clean_lines(blk_))
 R4T_ = ("## v0.2.2 — patch release\n\n### Fixes\n- CVE-1 in [click](redacted): v1 → v2 (severity high; variants: default)\n\n### VEX\n"
         "- (redacted): fixed (added) — statement 2 of the new document\n\n### Behavior changes\n- [click](redacted) (decided 2026-10-05).\n")
-got_ = P.tag_notes(mktag("v0.2.2", R4T_)) or ""
-check("AC8 redaction marker (r6, B F1; r10 no VEX exemption): a round-4 tag's '[click](redacted)' (fix line and behavior entry) "
-      "reads escaped, its VEX line too", "](redacted)" not in got_ and "- \\[click\\]\\(redacted\\) \\(decided 2026\\-10\\-05\\)\\.\n" in got_
-      and "\\[click\\]\\(redacted\\)\\: v1" in got_ and "- \\(redacted\\)\\: fixed \\(added\\) — statement 2 of the new document\n" in got_, got_)
 try:
     cl_, nn_ = P.changelog(R4T_, None, "- [click]gpt (decided 2026-10-05).\n- Another change (decided 2026-10-06).\n")
 except ValueError as e:
@@ -1966,7 +1946,7 @@ check("AC8 escape-whole-line (r6; r8): 6000 random free-text lines (%d holding a
       "every marker-bearing line is fully escaped" % n_marked, bad_ == [] and n_marked > 1500, bad_[:4])
 # F2 (r6) / r8: the _shaped() machinery is cut back (advisor step 5). A context that opens a construct with a refused form
 # ('<' before a letter, '/', '!' or '?'; a reference-definition shape) is refused wherever it stands (REQ-REL-009-AC14): a
-# tag's notes (tag-notes exits 2), the changelog's new notes and its history. A context with no refused form is not
+# the changelog's new notes and its history. A context with no refused form is not
 # refused as notes; its marker line is still written fully escaped, and a history holding an unescaped marker is still
 # refused as not clean.
 CTX_ = [("B's HTML comment", "<!--\ngpt\n-->\n", True), ("an HTML comment around a bullet", "<!--\n- gpt helper (decided 2026-10-05).\n-->\n", True),
@@ -1976,22 +1956,19 @@ CTX_ = [("B's HTML comment", "<!--\ngpt\n-->\n", True), ("an HTML comment around
         ("a marker in a comment", "<!--\n- (redacted) helper (decided 2026-10-05).\n-->\n", True)]
 for what_, ctx_, refuse_ in CTX_:
     body_ = "## v0.2.3 — patch release\n\n" + ctx_
-    got_ = refused(P.tag_notes, mktag("v0.2.3", body_))
     cl_ = refused(P.changelog, body_, None, "")
     hi_ = refused(P.changelog, P.notes("v0.2.3", [], []), "# Changelog\n\n## v0.2.2 — patch release\n\n" + ctx_.replace("gpt", "(redacted)"), "")
     if refuse_:
-        check("AC14 (r6 B F2; r8; r9 B F5: a marker line continuing the line above): %s: refused in the tag's notes, as the changelog's notes and as history" % what_,
-              all(isinstance(x, str) and x.startswith("ValueError") for x in (got_, cl_, hi_)), (got_, cl_, hi_))
+        check("AC14 (r6 B F2; r8; r9 B F5: a marker line continuing the line above): %s: refused as the changelog's notes and as history" % what_,
+              all(isinstance(x, str) and x.startswith("ValueError") for x in (cl_, hi_)), (cl_, hi_))
     else:
-        check("AC8 escape-whole-line (r6 B F2; r8): %s holds no refused form: the marker line is written escaped in the tag's notes "
-              "and the changelog; as unescaped history it is refused (not clean)" % what_,
-              isinstance(got_, str) and "\\(redacted\\)" in got_ and "\\(redacted\\)" in cl_[0]
-              and str(hi_).startswith("ValueError"), (got_, cl_, hi_))
+        check("AC8 escape-whole-line (r6 B F2; r8): %s holds no refused form: the marker line is written escaped in the changelog "
+              "in the changelog; as unescaped history it is refused (not clean)" % what_,
+              "\\(redacted\\)" in cl_[0] and str(hi_).startswith("ValueError"), (cl_, hi_))
 got_ = refused(P.changelog, "## v0.2.3 — patch release\n\n<!--\n", HIST_, "")
 check("AC14 (r6 B F2; r8): new notes opening a comment above a history are refused", str(got_).startswith("ValueError"), got_)
 mf_ = "## v0.2.3 — patch release\n\n<!--\nnote\n-->\n"
-got_ = refused(P.tag_notes, mktag("v0.2.3", mf_))
-check("AC14 (r8; was r6 'a text with no marker keeps its Markdown'): a comment in a tag's notes is refused with or without a marker",
+check("AC14 (r8; was r6 'a text with no marker keeps its Markdown'): a comment in the changelog's notes is refused with or without a marker",
       str(got_).startswith("ValueError"), got_)
 # A R5-5: the history after the title and its one blank line is copied byte for byte (its own spacing kept)
 H4_ = "# Changelog\n\n\n\n## v0.2.1 — patch release\n\nold\n"
@@ -2013,9 +1990,6 @@ for what_, o_, n_ in (("a vulnerability name", None, vd(vs(vulnerability={"name"
                       ("a statement @id", None, vd(vs(products=[{"@id": PC}], **{"@id": SIG_}), vs(products=[{"@id": "pkg:b"}]))),
                       ("a field name", vd(VS), vd(vs(**{SIG_: 1}))), ("a long run of hyphens", None, vd(vs(vulnerability={"name": "------BEGIN X"})))):
     nt6_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
-    check("AC8 VEX signature delimiter (r6, B F4): %s holding %r: no five-hyphen run printed, the tag of the notes reads back"
-          % (what_, SIG_), "-----" not in nt6_ and P.tag_notes(mktag("v0.2.3", nt6_)) == nt6_ and resolves(nt6_, o_, n_)[0],
-          (vex_part(nt6_), resolves(nt6_, o_, n_)))
 # B F4 (r7, B): a bare value next to a space the formatter prints ('CVE-1-----BEGIN' then ' [') never forms a delimiter
 for what_, o_, n_ in (("a CVE name before a product list", None, vd(vs(vulnerability={"name": "CVE-1-----BEGIN"}, products=[{"@id": "pkg:a"}]),
                                                                     vs(vulnerability={"name": "CVE-1-----BEGIN"}, products=[{"@id": "pkg:b"}]))),
@@ -2024,10 +1998,7 @@ for what_, o_, n_ in (("a CVE name before a product list", None, vd(vs(vulnerabi
                       ("an identifier before another", None, vd(vs(products=[{"identifiers": {"purl": "pkg:a-----BEGIN", "cpe23": "cpe:x"}}]),
                                                                   vs(products=[{"@id": PC}])))):
     nt6_ = refused(P.notes, "v0.2.3", [], P.vex_changes(o_, n_))
-    check("AC8 VEX signature delimiter (r7 B F4; r8): %s holding a bare-looking five-hyphen run: no '-----BEGIN ' printed, the tag of "
-          "the notes reads back" % what_, isinstance(nt6_, str) and not nt6_.startswith("ValueError") and "-----BEGIN " not in nt6_
-          and P.tag_notes(mktag("v0.2.3", nt6_)) == nt6_ and resolves(nt6_, o_, n_)[0], nt6_)
-# a tag of random generated notes reads back byte for byte (every VEX line a fixed point of the free-text cleaner)
+# random generated notes read back as the changelog's notes (every VEX line a fixed point of the free-text cleaner)
 def ac14_hit(l):
     """the test's own reading of REQ-REL-009-AC14's four line forms (with the widening the implementation documents: a
     reference-definition shape after any list or quote markers and indentation, and a label left open at the line end)"""
@@ -2051,10 +2022,8 @@ for it_ in range(300):
             bad_.append((it_, "refused: %s" % e))
         continue
     made_ += 1
-    if P.tag_notes(mktag("v0.2.3", nt6_)) != nt6_:
-        bad_.append((it_, nt6_))
-check("AC8 tag round trip (r6; r8 B T1): a tag of every generated note of 300 random inputs reads back byte for byte; every input "
-      "is generated or refused for a refused form (generated: %d, refused: %d)" % (made_, len(refusals_)),
+check("AC8 generated notes (r6; r8 B T1): every input of 300 random ones is generated or refused for a refused form "
+      "(generated: %d, refused: %d)" % (made_, len(refusals_)),
       bad_ == [] and made_ + len(refusals_) == 300 and made_ >= 150, bad_[:2])
 # A (c), B F3: the oracle refuses a GitHub-active value printed bare, another spelling of a value, a redacted CVE name the
 # source does not call for, unparsed product text, and fix or behavior lines that are not their own inputs
@@ -2093,13 +2062,6 @@ pub ="## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request 
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (decided 2026-10-05)."], P.unpublished(ents, pub))
 check("0135 nothing published yet: every entry stays", P.unpublished(ents, "") == ents)
-tagraw = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + pub
-          + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
-check("AC8w tag-notes: a generated patch tag's message is its notes, the signature dropped", P.tag_notes(tagraw) == pub, P.tag_notes(tagraw))
-check("AC8w tag-notes: an owner's tag message is not taken as notes",
-      P.tag_notes("object 1\ntype commit\ntag v0.3.0\ntagger o <o@x> 1 +0000\n\nv0.3.0\n") is None)
-check("AC8w tag-notes: a look-alike heading for another version is refused",
-      P.tag_notes(tagraw.replace("tag v0.2.2", "tag v0.2.3")) is None)
 cl, nn = P.changelog(pub, "# Changelog\n\n## v0.2.1 — patch release\n\nold\n", NRN)
 check("AC8w changelog: the notes go on top, newest first", cl.startswith("# Changelog\n\n## v0.2.2 — patch release\n") and cl.index("v0.2.2") < cl.index("v0.2.1"), cl)
 check("0130 changelog: the published entry leaves next-release-notes, an unpublished one stays",
@@ -2108,46 +2070,6 @@ cl0, _ = P.changelog(pub, None, NRN)
 check("AC8w changelog: a missing CHANGELOG.md is created with its heading", cl0.startswith("# Changelog\n\n## v0.2.2"), cl0)
 nts = P.notes("v0.2.2", fx, vc, behavior=["Gemini helper changed (decided 2026-10-05)."])
 check("AC8w/row 48 the built notes name no vendor or model", not re.search(r"(?i)gemini|claude|openai", nts), nts)
-# the signed tag keeps the notes' markdown headings: git tag's default cleanup would strip every '#' line
-tg = tempfile.mkdtemp(); g(tg, "init", "-q", "-b", "main"); open(os.path.join(tg, "f"), "w").write("x")
-g(tg, "add", "-A"); g(tg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
-open(os.path.join(tg, "n.md"), "w").write(pub)
-g(tg, "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "--cleanup=verbatim", "-F", os.path.join(tg, "n.md"), "v0.2.2")
-subprocess.run(["git", "-C", tg, "tag", "-a", "--cleanup=verbatim", "-F", os.path.join(tg, "n.md"), "v0.2.3"], check=True,
-               env=dict(os.environ, GIT_COMMITTER_NAME="fosterstack release", GIT_COMMITTER_EMAIL="release@users.noreply.github.com"))
-raw_ = subprocess.run(["git", "cat-file", "tag", "v0.2.3"], cwd=tg, capture_output=True, text=True).stdout
-check("AC8w the tag made with --cleanup=verbatim keeps the notes' headings",
-      P.tag_notes(raw_.replace("tag v0.2.3", "tag v0.2.2") + "-----BEGIN SIGNED MESSAGE-----\nx\n-----END SIGNED MESSAGE-----\n") == pub)
-# Sonnet #159 r2, BLOCKER-1: only the release workflow's own patch tag carries notes — its tagger and a gitsign (x509)
-# signature; an owner's tag (SSH-signed, any message) or an unsigned one never does; what is posted is always redacted
-check("B1 an owner's SSH-signed tag shaped like a patch tag carries no notes",
-      P.tag_notes(tagraw.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Owner <o@x>")
-                  .replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
-check("B1 the release tagger with an SSH signature carries no notes", P.tag_notes(tagraw.replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
-check("B1 an unsigned tag carries no notes", P.tag_notes(tagraw.split("-----BEGIN")[0]) is None)
-# Sonnet #159 r2b (BLOCKER-1 reopened): the real signature is always the LAST such block in a genuine `git cat-file
-# tag` (git appends it after the full message); splitting on the FIRST occurrence lets an attacker-embedded fake
-# "-----BEGIN SIGNED MESSAGE-----" block earlier in the message pass as if it were the real one
-raw2 = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
-        + pub.replace("### Behavior changes", "-----BEGIN SIGNED MESSAGE-----\nAAAA\n-----END SIGNED MESSAGE-----\n\n### Behavior changes")
-        + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
-check("B1 (r2b) a fake signature block embedded earlier in the message does not stand in for the real, LAST one",
-      P.tag_notes(raw2) is None, P.tag_notes(raw2))
-# Codex #159 fresh r2d: more than one signature-shaped block anywhere, in either order, is never a genuine tag —
-# ssh-keygen's own signature check does not require the signature to be the object's literal last bytes, so "the real
-# signature is last" alone is not fail-closed against a hand-crafted object with trailing bytes appended after it
-fake_ = "-----BEGIN SIGNED MESSAGE-----\nAAAA\n-----END SIGNED MESSAGE-----\n"
-real_sig_ = tagraw[tagraw.index("-----BEGIN SIGNED MESSAGE-----"):]
-raw_after = tagraw[:tagraw.index("-----BEGIN SIGNED MESSAGE-----")] + real_sig_ + fake_
-check("B1 (fresh r2d; r9 A (c) / B F4) a second signature-shaped block appended AFTER the real one is refused, not read as notes "
-      "(a generated tag's notes region holding '-----BEGIN ': ValueError, exit 2)",
-      str(refused(P.tag_notes, raw_after)).startswith("ValueError"), refused(P.tag_notes, raw_after))
-check("B1 (fresh r2d) exactly one signature block, genuinely last, is still read", P.tag_notes(tagraw) == pub)
-check("B1 (r2b) the real signature is still read when it is genuinely the last block", P.tag_notes(tagraw) == pub)
-check("B1 another tagger with a gitsign signature carries no notes",
-      P.tag_notes(tagraw.replace("fosterstack release <release@users.noreply.github.com>", "fosterstack release <x@evil>")) is None)
-leak_ = P.tag_notes(tagraw.replace("### Behavior changes", "Thanks to OpenAI Codex and the Anthropic Claude team.\n\n### Behavior changes"))
-check("B1 the notes a tag carries are redacted before they are posted", leak_ and not re.search(r"(?i)openai|codex|anthropic|claude", leak_), leak_)
 cl_, _ = P.changelog("## v0.2.2 — patch release\n\nGemini helper\n", None, "")
 check("B1 the changelog redacts what it is given", "Gemini" not in cl_, cl_)
 # the notes CLI end to end: scans per variant, the VEX pair, the next-release file, the published guard
@@ -2275,6 +2197,11 @@ for ver, want in (("0.2.2", ["0.2.2", "0.2.2-debug", "0.2.2-fips"]), ("0.1.0", [
     rc, got = variants(ver); check("AC3 the images scanned for release %s are exactly %s" % (ver, want), rc == 0 and got == want, (rc, got))
 for bad in ("v0.3.0", "0.3", "0.3.0-rc1", "", "0.3.0 -debug", "x.y.z"):
     rc, got = variants(bad); check("AC3 a version that is not X.Y.Z (%r) is refused and prints nothing" % bad, rc != 0 and got == [], (rc, got))
+# no admitted tag carries a signed message: the tag-notes subcommand is gone
+tn_in = "object 0123\ntype commit\ntag v0.2.2\ntagger x <x@x> 1 +0000\n\n## v0.2.2 — patch release\n-----BEGIN SIGNED MESSAGE-----\nM\n"
+r_ = subprocess.run([sys.executable, sys.argv[1], "tag-notes"], input=tn_in, capture_output=True, text=True)
+check("tag-notes: a tag with SIGNED MESSAGE notes text is not accepted as notes (no such subcommand)",
+      r_.returncode == 2 and r_.stdout == "", (r_.returncode, r_.stdout))
 # --- REQ-CHAIN-001-AC6 (advisor Oct 12): the decide job refuses, naming the marker, unless .github/policy/rc-proof.json validates for the commit being tagged
 import shutil
 rp = tempfile.mkdtemp(prefix="rcproof-")
@@ -2308,6 +2235,13 @@ check("AC6 decide: an rc tag that is not an ancestor of the commit is refused", 
 put(dict(good, rc_tag="v0.3.0")); rc, msg = rcp(head); check("AC6 decide: a final tag as the rc tag is refused", rc == 1 and "rc_tag" in msg, (rc, msg)); put(good)
 rc, msg = rcp(); check("AC6 decide: the check does not change the repository (the marker file is unchanged)", rc == 0 and json.load(open(marker)) == good, (rc, msg))
 check("AC6 decide: the subcommand refuses without a commit (usage, never a default)", subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", marker], capture_output=True).returncode == 2)
+# the helper runs isolated (-I): a module planted on PYTHONPATH is never imported by it
+plant = tempfile.mkdtemp(prefix="plant-"); seen_ = os.path.join(plant, "seen")
+open(os.path.join(plant, "json.py"), "w").write("import os\nopen(os.environ['PLANT_SEEN'], 'w').close()\n")
+subprocess.run([sys.executable, "-I", sys.argv[1], "rc-proof", "--marker", marker, "--commit", head, "--repo", rp],
+               capture_output=True, env=dict(os.environ, PYTHONPATH=plant, PLANT_SEEN=seen_))
+check("AC6 decide: the rc-proof helper runs isolated: a module on PYTHONPATH is not imported", not os.path.exists(seen_))
+shutil.rmtree(plant, ignore_errors=True)
 shutil.rmtree(rp, ignore_errors=True)
 # ===== REQ-REL-009-AC14 (advisor step 5, Oct 11; owner rule 5 engineering AC): the notes sources are refused outright,
 # never decoded, escaped or rewritten, when a line holds (1) '<' before a letter (any Unicode letter), '/', '!' or '?';
@@ -2438,17 +2372,12 @@ for t_ in ("<b>", "[x]: y", "&amp;", "-----BEGIN x"):
 rc_, err_, cl_, nnout_, p_ = changelog_cli(GOOD_NT.replace("- Second change (decided 2026-10-05).", "- <b> (decided 2026-10-05)."), None, NN6)
 check("AC14 R14-6: with no CHANGELOG.md, a refusal creates none", rc_ == 2 and cl_ is None and nnout_ == NN6, (rc_, err_))
 # R14-7 (r10, advisor decision Oct 11: no VEX exemption): values printed through _lit hold no refused form ('<' and '&'
-# written \u003c and \u0026), so they pass notes, tag-notes and changelog unchanged; the raw text in a behavior line is refused
+# written \u003c and \u0026), so they pass notes and changelog unchanged; the raw text in a behavior line is refused
 o7_, n7_ = vd(VS), vd(VS, vs(vulnerability={"name": "<b>"}), vs(vulnerability={"name": "&amp;"}), vs(vulnerability={"name": "[x]: y"}))
 nt7_ = refused(P.notes, "v0.2.3", [], P.vex_changes(o7_, n7_))
-check("AC14 R14-7 (r10): VEX values '<b>', '&amp;', '[x]: y' print quoted, JSON-escaped, and pass notes, tag-notes and changelog",
-      isinstance(nt7_, str) and '`"\\u003cb>"`' in nt7_ and '`"\\u0026amp;"`' in nt7_ and '`"[x]: y"`' in nt7_
-      and P.tag_notes(mktag("v0.2.3", nt7_)) == nt7_ and P.changelog(nt7_, None, "")[0] == "# Changelog\n\n" + nt7_, nt7_)
 rc_, err_, out_, p_ = notes_cli("# Notes\n\n- `\"<b>\"` (decided 2026-10-05).\n")
 check("AC14 R14-7: the same text as a behavior entry is refused", refused_at(rc_, err_, out_, p_["nn"] + ":3:"), (rc_, err_))
 mv_ = nt7_.replace("No behavior change: this release contains fixes only.", "### Behavior changes\n- `\"<b>\"` (decided 2026-10-05).")
-check("AC14 R14-7: the same text moved to a behavior line of the changelog's notes or a tag's notes is refused",
-      str(refused(P.changelog, mv_, None, "")).startswith("ValueError") and str(refused(P.tag_notes, mktag("v0.2.3", mv_))).startswith("ValueError"))
 # R14-8 collisions: two entries (or fix records) whose published lines are the same line, refused before any is dropped
 rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt helper (decided 2026-10-05).\n- claude helper (decided 2026-10-05).\n")
 check("AC14 R14-8: two entries that redact to the same published line are refused, both lines named",
@@ -2486,18 +2415,11 @@ rc_, err_, out_, p_ = notes_cli(real_nn_)
 check("AC14 R14-10: the real docs/next-release-notes.md passes (Go 1.27 entry printed)", rc_ == 0 and "- Go 1.27: a request" in (out_ or ""), (rc_, err_))
 rc_, err_, out_, p_ = notes_cli(NRN)
 check("AC14 R14-10: the NRN fixture passes", rc_ == 0 and out_ is not None, (rc_, err_))
-rc_, err_, sout_ = cli(["tag-notes"], stdin=tagraw)
-check("AC14 R14-10: the tagraw fixture's notes are read (exit 0)", rc_ == 0 and sout_ == pub, (rc_, err_))
 # R14-11 message hygiene: a refusal message never prints a vendor name
 rc_, err_, out_, p_ = notes_cli("# Notes\n\n- gpt <b> claude helper (decided 2026-10-05).\n")
 check("AC14 R14-11: a refusal for an entry holding a vendor name prints no name", rc_ == 2 and out_ is None
       and not re.search(r"(?i)gpt|claude", err_), err_)
-# tag-notes: a refused form in a generated patch tag's notes exits 2 (like notes and changelog); another tag exits 1 as before
-rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", "## v0.2.3 — patch release\n\n### Behavior changes\n- <!-- (decided 2026-10-05).\n"))
-check("AC14 tag-notes: a refused form exits 2 with the line named, nothing printed", rc_ == 2 and sout_ == "" and ":4:" in err_, (rc_, err_))
-rc_, _, _ = cli(["tag-notes"], stdin="object 1\ntype commit\ntag v0.3.0\ntagger o <o@x> 1 +0000\n\nv0.3.0\n")
-check("AC14 tag-notes: an owner's tag still exits 1 (no notes, not a refusal)", rc_ == 1, rc_)
-# property: no refused form outside a VEX section can reach the published text (notes, a tag's notes, the changelog)
+# property: no refused form outside a VEX section can reach the published text (notes and the changelog)
 TRIG_P = ["<b", "</", "<!--", "<?", "<é", "[x]:", "&amp;", "&#97;", "&#x61;", "-----BEGIN ", "-----"]
 SAFE_P = ["[x]", " [", "BEGIN ", "<", "&", "[", "]", ":", " ", "a", "gpt", "- ", "> ", "1. ", "\\", "`", "(redacted)", "-"]
 rngp_ = random.Random(1414)
@@ -2513,27 +2435,18 @@ for it_ in range(1500):
         ref_ += 1
         continue
     made_ += 1
-    outs_ = [nt_, P.tag_notes(mktag("v0.2.3", nt_)) or "", P.changelog(nt_, None, "")[0]]
     for o_ in outs_:
         for l_ in o_.split("\n"):
             if ac14_hit(l_):
                 bad_.append((it_, l_))
 check("AC14 property: 1500 random notes from fix and entry text built of the refused forms (%d generated, %d refused): no line "
-      "of the notes, the tag's notes or the changelog holds a refused form" % (made_, ref_), bad_ == [] and made_ > 100 and ref_ > 100, bad_[:3])
+      "of the notes or the changelog holds a refused form" % (made_, ref_), bad_ == [] and made_ > 100 and ref_ > 100, bad_[:3])
 # ===== round 7 findings (Codex #300 r7): each is refused or inert under REQ-REL-009-AC14 and the escape-whole-line rule
 A1_ = ["<!-- (decided 2026-10-05).", "gpt helper (decided 2026-10-06)."]
 A1_BODY = "## v0.2.3 — patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n\n### Behavior changes\n- <!-- (decided 2026-10-05).\n- \\(redacted\\) helper \\(decided 2026-10-06\\)\\.\n"
 rc_, err_, out_, p_ = notes_cli("# Notes\n\n- <!-- (decided 2026-10-05).\n- gpt helper (decided 2026-10-06).\n")
-check("r7 A High / B F3: '- <!-- (decided 2026-10-05).' before another entry: refused by notes() and the CLI (exit 2, line 3), by tag-notes "
-      "and by the changelog", str(refused(P.notes, "v0.2.3", [], [], behavior=A1_)).startswith("ValueError")
-      and refused_at(rc_, err_, out_, p_["nn"] + ":3:") and str(refused(P.tag_notes, mktag("v0.2.3", A1_BODY))).startswith("ValueError")
-      and str(refused(P.changelog, A1_BODY, None, "")).startswith("ValueError"), (rc_, err_))
 for l_ in ("-  [(redacted)]: /url", "-  [x]: (redacted)"):
     body_ = "## v0.2.3 — patch release\n\n" + l_ + "\n"
-    check("r7 A medium / B F1: %r is refused in a tag's notes, as the changelog's notes and as history" % l_,
-          str(refused(P.tag_notes, mktag("v0.2.3", body_))).startswith("ValueError")
-          and str(refused(P.changelog, body_, None, "")).startswith("ValueError")
-          and str(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, "")).startswith("ValueError"))
 check("r7 A medium: notes() refuses the behavior entry ' [redacted]: /url (decided 2026-10-05)'",
       str(refused(P.notes, "v0.2.3", [], [], behavior=[" [redacted]: /url (decided 2026-10-05)"])).startswith("ValueError"))
 nt_ = P.notes("v0.2.3", [], [], behavior=["Update gpt (decided 2026-10-05). Follow-up (decided 2026-10-06)."])
@@ -2545,8 +2458,6 @@ _, nn_ = P.changelog(ntf_, None, "- gpt helper (decided 2026-10-05).\n")
 check("r7 B F2: a VEX field name holding an entry's text neither publishes nor clears the entry",
       P.unpublished(["gpt helper (decided 2026-10-05)."], ntf_) == ["gpt helper (decided 2026-10-05)."] and nn_ == "- gpt helper (decided 2026-10-05).\n", (ntf_, nn_))
 nr_ = "## v0.2.3 — patch release\n\nThis record is notredacted.\nNext line.\n"
-check("r7 A medium: 'notredacted' is not the marker: two prose lines in a tag's notes read back unchanged; as history they are kept",
-      P.tag_notes(mktag("v0.2.3", nr_)) == nr_ and P.changelog(GOOD_NT, "# Changelog\n\n" + nr_, "")[0].endswith(nr_), P.tag_notes(mktag("v0.2.3", nr_)))
 y_ = P._clean_free("google\\.notredacted")
 check("r7 A medium: a marker-free escaped 'google\\.notredacted' is never read as escaped output: the name is redacted",
       "google" not in y_.lower() and P._clean_free(y_) == y_, y_)
@@ -2603,11 +2514,9 @@ for what_, h_, n_ in (("A's history (no Fixes section)", A_HIST, 6), ("A's line 
           and LAST_STDOUT[0] == "", (rc_, err_))
 for l_ in ("- <!--", "- [x]: /url", "- &amp;", "- -----BEGIN injected"):
     body_ = GEN_B.replace("- no change", l_)
-    tag_rc, tag_err, tag_out = cli(["tag-notes"], stdin=mktag("v0.2.3", body_))
-    check("r9 B F1: %r in place of a generated VEX line is refused as the changelog's notes, as history and in a tag's notes "
-          "(exit 2, line 7 named, nothing printed)" % l_,
-          is_ve(refused(P.changelog, body_, None, "")) and is_ve(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, ""))
-          and tag_rc == 2 and tag_out == "" and ":7:" in tag_err, (refused(P.changelog, body_, None, ""), tag_rc, tag_err))
+    check("r9 B F1: %r in place of a generated VEX line is refused as the changelog's notes and as history" % l_,
+          is_ve(refused(P.changelog, body_, None, "")) and is_ve(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, "")),
+          refused(P.changelog, body_, None, ""))
 for what_, body_ in (("no Fixes section before it", "## v0.2.3 — patch release\n\n### VEX\n- `\"<b>\"`: fixed (added)\n"),
                      ("a second '### VEX' after the behavior section",
                       GEN_B + "\n### VEX\n- `\"<b>\"`: fixed (added)\n"),
@@ -2647,19 +2556,6 @@ check("r9 B medium: through the CLI, a fix line and an entry colliding are refus
 rc_, err_, out_, p_ = notes_cli2({"": {"matches": [M("CVE-2099-7", "gpt.helper", "1", fixv=["2"]), M("CVE-2099-7", "claude.helper", "1", fixv=["2"])]}}, base=[])
 check("r9 B F3: two fix records printing the same line are refused, both named by scan file and key path",
       refused_at(rc_, err_, out_, p_[""] + ":matches[0]:") and p_[""] + ":matches[1]:" in err_, (rc_, err_))
-# R9-4 (A (c) / B F4): '-----BEGIN ' in the notes region of a generated tag exits 2 naming the line; a tag that is not
-# ours still exits 1
-for l_ in ("- -----BEGIN BAD", "- -----BEGIN injected (decided 2026-10-05)."):
-    rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", l_)))
-    check("r9 A (c) / B F4: %r in a generated tag's notes: exit 2, line 10 named, nothing printed" % l_,
-          rc_ == 2 and sout_ == "" and "tag message:10:" in err_, (rc_, err_, sout_))
-for what_, raw_ in (("an owner's tag", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")).replace(
-                        "fosterstack release <release@users.noreply.github.com>", "Owner <o@x>")),
-                    ("an SSH signature last", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")).replace(
-                        "SIGNED MESSAGE", "SSH SIGNATURE")),
-                    ("another version's heading", mktag("v0.2.4", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")))):
-    rc_, err_, sout_ = cli(["tag-notes"], stdin=raw_)
-    check("r9 A (c): %s holding a second '-----BEGIN ' is not ours: exit 1 as before" % what_, rc_ == 1 and sout_ == "", (rc_, err_))
 # R9-5 (B F2): every line of a source value is checked before it is made one line
 for key_, path_ in (("installed", "matches[0].artifact.version"), ("id", "matches[0].vulnerability.id"), ("severity", "matches[0].vulnerability.severity")):
     m_ = M("CVE-2099-8", "liby", "1", fixv=["2"])
@@ -2681,11 +2577,8 @@ rc_, err_, out_, p_ = notes_cli(gomod="module x\n\nrequire golang.org/x/net v0.3
 check("r9 B F2: the go.mod line a fix is read from is checked whole (a comment holding '<b>'), named go.mod:3",
       refused_at(rc_, err_, out_, p_["gomod"] + ":3:"), (rc_, err_))
 # R9-6 (B F5): a marker line that continues the line above (a link title, a code span or any construct spanning lines
-# could take it) is refused in a tag's notes and the changelog; a marker line after a blank line or a heading is read
+# could take it) is refused in the changelog; a marker line after a blank line or a heading is read
 F5_ = "## v0.2.3 — patch release\n\n- [a](/url \"\nx gpt\n\")\n"
-check("r9 B F5: B's link title over lines is refused in a tag's notes and as the changelog's notes",
-      is_ve(refused(P.tag_notes, mktag("v0.2.3", F5_))) and is_ve(refused(P.changelog, F5_, None, "")),
-      (refused(P.tag_notes, mktag("v0.2.3", F5_)), refused(P.changelog, F5_, None, "")))
 F5H_ = "# Changelog\n\n" + GEN_.replace("No behavior change: this release contains fixes only.",
                                        "### Behavior changes\n- [a](/url \"\nx \\(redacted\\)\n\")")
 check("r9 B F5: the escaped marker line inside a link title is refused as history", is_ve(refused(P.changelog, GOOD_NT, F5H_, "")))
@@ -2720,7 +2613,7 @@ check("r9 B F7: a main() that prints on a refusal is caught by the notes and cha
 # ===== round 9 self-review: neighbour mutants of each round-8 family, each refused (or, for selection, judged on the
 # match that produced the fix)
 # family 1, VEX-section forgeries: a line or heading near the generated VEX section that is not exactly what notes()
-# prints is not exempt; each is refused as the changelog's notes, as history, and in a tag's notes (exit 2)
+# prints is not exempt; each is refused as the changelog's notes, and as history
 VEXM_ = [("trailing text after a quoted value", GEN_B.replace("- no change", '- `"<b>"`: fixed (added) <!--')),
          ("a bare product holding '<'", GEN_B.replace("- no change", "- CVE-1 [<b>]: fixed (added)")),
          ("a bare field name holding '<'", GEN_B.replace("- no change", "- CVE-1: fixed (changed: <b>)")),
@@ -2737,15 +2630,11 @@ VEXM_ = [("trailing text after a quoted value", GEN_B.replace("- no change", '- 
                                                                 "- none (dependency or VEX maintenance only)\ntext").replace("- no change", '- `"<b>"`: fixed (added)')),
          ("a Fixes section with no bullet", GEN_B.replace("- none (dependency or VEX maintenance only)\n", "").replace("- no change", '- `"<b>"`: fixed (added)'))]
 for what_, body_ in VEXM_:
-    trc_, terr_, tout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", body_))
-    check("r9 self-review VEX forgery: %s is refused as the changelog's notes, as history and in a tag's notes (exit 2, no stdout)" % what_,
-          is_ve(refused(P.changelog, body_, None, "")) and is_ve(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, ""))
-          and trc_ == 2 and tout_ == "", (refused(P.changelog, body_, None, ""), trc_, terr_))
+    check("r9 self-review VEX forgery: %s is refused as the changelog's notes and as history" % what_,
+          is_ve(refused(P.changelog, body_, None, "")) and is_ve(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, "")),
+          refused(P.changelog, body_, None, ""))
 nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(VS), vd(VS, vs(vulnerability={"name": "<b>"}), vs(vulnerability={"name": "-----BEGIN x"}),
                                                      vs(vulnerability={"name": "gpt <x>"}))))
-check("r9 self-review VEX forgery control (r10: printed \\u003c, no refused form on any line): generated VEX lines from '<b>', "
-      "a five-hyphen run and a redacted '<x>' pass notes, tag-notes and changelog unchanged", P.tag_notes(mktag("v0.2.3", nt_)) == nt_ and P.changelog(nt_, None, "")[0] == "# Changelog\n\n" + nt_
-      and all(P._refused_form(l) is None for l in nt_.splitlines()), vex_part(nt_))
 # family 2, collision sets: any two published lines that are the same line — fix, behavior or VEX, after redaction and
 # escaping, from the API or the CLI — are refused, both named
 FX1_ = {"cve": "CVE-1", "package": "pkg", "old": "1", "new": "2", "severity": "Low", "variants": ["(decided 2026-10-05"]}
@@ -2817,26 +2706,7 @@ for it_ in range(300):
             bad_.append((it_, f_, loc_))
 check("r9 self-review selection property: 300 random multi-variant scans: every record's judged source is a fixed match whose "
       "values are exactly the printed ones", bad_ == [], bad_[:2])
-# family 4, exit codes: a generated tag's notes region holding a refused form exits 2 naming the line; a tag that is not
-# ours exits 1; notes and changelog refusals exit 2 with nothing on stdout
-SIGB_ = "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n"
-EXM_ = [("a behavior line", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- a -----BEGIN b (decided 2026-10-05).")), 2, ":10:"),
-        ("the Fixes line", mktag("v0.2.3", GEN_B.replace("- none (dependency or VEX maintenance only)", "- -----BEGIN x")), 2, ":4:"),
-        ("a VEX line", mktag("v0.2.3", GEN_B.replace("- no change", "- -----BEGIN x")), 2, ":7:"),
-        ("a prose line", mktag("v0.2.3", GEN_B + "\nsee -----BEGIN x\n"), 2, ":12:"),
-        ("a whole second signed block before the real one", mktag("v0.2.3", GEN_B + "\n" + SIGB_), 2, ":12:"),
-        ("a second signed block after the real one", mktag("v0.2.3", GEN_B) + SIGB_, 2, ":11:"),
-        ("'<b>' in a behavior line", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- <b> (decided 2026-10-05).")), 2, ":10:"),
-        ("a marker line continuing the line above", mktag("v0.2.3", GEN_B + "\n[a](/u \"\nx gpt\n\")\n"), 2, ":13:"),
-        ("an owner's tag with two delimiters", (mktag("v0.2.3", GEN_B) + SIGB_).replace("fosterstack release <release@users.noreply.github.com>", "O <o@x>"), 1, None),
-        ("the release tagger with an SSH signature last", (mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN x")))
-         .replace("SIGNED MESSAGE", "SSH SIGNATURE"), 1, None),
-        ("another version's heading with a delimiter", mktag("v0.2.4", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN x")), 1, None),
-        ("no signature at all", mktag("v0.2.3", GEN_B).split("-----BEGIN")[0], 1, None)]
-for what_, raw_, want_rc, line_ in EXM_:
-    rc_, err_, sout_ = cli(["tag-notes"], stdin=raw_)
-    check("r9 self-review exit code: tag-notes, %s: exit %d%s, nothing printed" % (what_, want_rc, ", " + line_ + " named" if line_ else ""),
-          rc_ == want_rc and sout_ == "" and (line_ is None or "tag message" + line_ in err_), (rc_, err_, sout_))
+# family 4, exit codes: notes and changelog refusals exit 2 with nothing on stdout
 rc_, err_, out_, p_ = notes_cli2({"": {"matches": [M("C-1", "l", "1", sev="<b>", fixv=["2"])]}}, base=[])
 check("r9 self-review exit code: a notes refusal exits 2, nothing on stdout, no file", refused_at(rc_, err_, out_, p_[""]), (rc_, err_))
 rc_, err_, cl_, nnout_, p_ = changelog_cli(GEN_B.replace("- no change", "- <!--"), HIST6, NN6)
@@ -2851,15 +2721,14 @@ for name_ in ("urn:x", "pkg:abc", "cpe:a"):
     t_ = refused(P.notes, "v0.2.3", [], P.vex_changes(None, {"statements": [{"vulnerability": {"name": name_}, "status": "fixed"}]}))
     ok_ = not is_ve(t_) and ('- `"%s"`: fixed (added)\n' % name_) in t_
     if ok_:
-        tn_ = refused(P.tag_notes, mktag("v0.2.3", t_))
         cl_ = refused(P.changelog, t_, None, "")
         t2_ = P.notes("v0.2.4", [], [])
         cl2_ = refused(P.changelog, t2_, cl_[0], "") if not is_ve(cl_) else cl_
-        ok_ = tn_ == t_ and not is_ve(cl_) and not is_ve(cl2_)
+        ok_ = not is_ve(cl_) and not is_ve(cl2_)
     check("r10 A (a)(2) / B 3: the VEX name %r prints and reads back: notes, the tag, the changelog's notes and history" % name_,
           ok_, t_)
 # R10-2 the round trip, a property: for 500 random VEX documents vex_changes accepts, notes() prints them (never refused by
-# its own validators), and its text passes every reader: the tag's notes byte for byte, the changelog's notes, the history
+# its own validators), and its text passes every reader: the changelog's notes and the history
 rng_ = random.Random(1010)
 ALPH_ = ["a", "Z", "0", "9", ".", "-", "_", "/", ":", " ", "<", "&", ";", "#", "[", "]", "`", "\"", "\\", "*", "é", " ", "!", "(", ")"]
 PREF_ = ["", "", "urn:", "pkg:", "cpe:", "CVE-2099-", "GHSA-", "gpt-", "-----", "http://"]
@@ -2889,12 +2758,11 @@ for it_ in range(500):
     if is_ve(t_):
         bad_.append((it_, "notes refused its own lines", t_, new_)); continue
     made_ += 1
-    tn_, cl_ = refused(P.tag_notes, mktag("v0.2.3", t_)), refused(P.changelog, t_, None, "")
     cl2_ = refused(P.changelog, P.notes("v0.2.4", [], []), cl_[0], "") if not is_ve(cl_) else cl_
-    if tn_ != t_ or is_ve(cl_) or is_ve(cl2_):
-        bad_.append((it_, tn_ if tn_ != t_ else (cl_ if is_ve(cl_) else cl2_), t_))
+    if is_ve(cl_) or is_ve(cl2_):
+        bad_.append((it_, cl_ if is_ve(cl_) else cl2_, t_))
 check("r10 round trip property: 500 random VEX documents: every one notes() is handed prints, and its text reads back as the "
-      "tag's notes byte for byte, as the changelog's notes and as history (%d printed)" % made_, bad_ == [] and made_ > 200, bad_[:2])
+      "the changelog's notes and as history (%d printed)" % made_, bad_ == [] and made_ > 200, bad_[:2])
 # R10-3 (decision (2); A (a)(3) / B 1): go.mod is parsed (its grammar: blocks, single-line directives, '//' comments); the
 # version comes from the parsed require directives only, and the fix check reads that same require line, whole
 rc_, err_, out_, p_ = notes_cli(gomod="module example.org/test\n// golang.org/x/net v0.33.0\nrequire golang.org/x/net v0.33.0 // <b>\n")
@@ -2951,9 +2819,6 @@ check("r10: the go directive of go.mod is read with its line (stdlib)", pg_["go"
 # R10-4 (B 4): two bullets that publish the same line in one release block of a reader input are refused, both named; the
 # same bullet in two release blocks is a legitimate repetition
 DUP_ = GEN_B.replace("- x (decided 2026-10-05).\n", "- x (decided 2026-10-05).\n- x (decided 2026-10-05).\n")
-rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", DUP_))
-check("r10 B 4: a generated tag's notes with one behavior bullet twice: exit 2, lines 10 and 11 named, nothing printed",
-      rc_ == 2 and sout_ == "" and "tag message:10:" in err_ and "tag message:11:" in err_, (rc_, err_, sout_))
 rc_, err_, cl_, nnout_, p_ = changelog_cli(DUP_, HIST6, "# Notes\n\n- x (decided 2026-10-05).\n")
 check("r10 B 4: the changelog's notes with one behavior bullet twice: exit 2, both lines named, CHANGELOG.md and "
       "next-release-notes.md unchanged", rc_ == 2 and LAST_STDOUT[0] == "" and cl_ == HIST6 and nnout_ == "# Notes\n\n- x (decided 2026-10-05).\n"
@@ -2974,23 +2839,19 @@ for name_ in ("<b>x", "&amp;", "[x]: y", "-----BEGIN x"):
     ok_ = not is_ve(t_) and all(P._refused_form(l_) is None for l_ in t_.splitlines()) and ("- %s: fixed (added)\n" % lit_) in t_ \
         and json.loads(lit_[1:-1]) == name_
     if ok_:
-        rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", t_))
         rc2_, err2_, cl_, nnout_, p_ = changelog_cli(sout_, None, "# Notes\n")
         rc3_, err3_, cl3_, _, _ = changelog_cli(P.notes("v0.2.4", [], []), cl_, "# Notes\n") if rc2_ == 0 else (rc2_, err2_, None, None, None)
         ok_ = rc_ == 0 and sout_ == t_ and rc2_ == 0 and rc3_ == 0 and lit_ in (cl3_ or "")
-    check("r10 cut: a statement named %r prints JSON-escaped (%s), holds no refused form, and goes notes -> tag-notes -> "
-          "changelog (notes, then history) with exit 0" % (name_, P._lit(name_, before_colon=True)), ok_, (t_, locals().get("err_")))
 check("r10 cut: _lit writes '<' and '&' as \\u003c and \\u0026 (the same JSON string)",
       P._lit("<b>&") == '`"\\u003cb>\\u0026"`' and json.loads(P._lit("<b>&")[1:-1]) == "<b>&", P._lit("<b>&"))
 FORGE_ = [GEN_B.replace("- no change", "- `\"<b>\"`: fixed (added)"), GEN_B.replace("- no change", "- CVE-1: fixed (changed: `\"&amp;\"`)"),
           GEN_B.replace("- no change", "- CVE-1: fixed (changed: `\"<b>\"`)")]
 for f_ in FORGE_:
-    rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", f_))
     rc2_, err2_, cl_, nnout_, p_ = changelog_cli(f_, HIST6, NN6)
     rc3_, err3_, cl3_, nn3_, p3_ = changelog_cli(P.notes("v0.2.4", [], []), "# Changelog\n\n" + f_, NN6)
-    check("r10 cut: a hand-forged VEX line %r under '### VEX' is refused by every reader: the tag's notes (line 7), the "
+    check("r10 cut: a hand-forged VEX line %r under '### VEX' is refused by every reader: the "
           "changelog's notes and the history, exit 2, nothing written" % f_.splitlines()[6],
-          rc_ == 2 and sout_ == "" and "tag message:7:" in err_ and rc2_ == 2 and cl_ == HIST6 and p_["notes"] + ":7:" in err2_
+          rc2_ == 2 and cl_ == HIST6 and p_["notes"] + ":7:" in err2_
           and rc3_ == 2 and cl3_ == "# Changelog\n\n" + f_ and p3_["cl"] + ":9:" in err3_, (rc_, err_, rc2_, err2_, rc3_, err3_))
     check("r10 cut: the same forged line in docs/next-release-notes.md is refused", is_ve(refused(P.behavior_entries, f_)),
           refused(P.behavior_entries, f_))
@@ -3004,10 +2865,6 @@ for what_, body_, n1_, n2_ in (
         ("'- CVE-1: fixed (changed: (redacted))' and its escaped spelling",
          GEN_B.replace("- no change\n", "- CVE-1: fixed (changed: (redacted))\n- CVE\\-1\\: fixed \\(changed\\: \\(redacted\\)\\)\n"), 7, 8),
         ("two differently named behavior bullets", GEN_B.replace("- x (decided 2026-10-05).\n", "- gpt (decided 2026-10-05).\n- claude (decided 2026-10-05).\n"), 10, 11)):
-    rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", body_))
-    check("r11 R11-1: a generated tag's notes with %s in one release block: exit 2, lines %d and %d named, nothing printed"
-          % (what_, n1_, n2_), rc_ == 2 and sout_ == "" and "tag message:%d:" % n1_ in err_ and "tag message:%d:" % n2_ in err_,
-          (rc_, err_, sout_))
     NNP_ = "# Notes\n\n- gpt (decided 2026-10-05).\n"
     rc_, err_, cl_, nnout_, p_ = changelog_cli(body_, HIST6, NNP_)
     check("r11 R11-1: the changelog's notes with %s: exit 2, both lines named, CHANGELOG.md and the pending entry unchanged"
@@ -3018,11 +2875,6 @@ for what_, body_, n1_, n2_ in (
     check("r11 R11-1: the history with %s: exit 2, both lines named, nothing written" % what_,
           rc_ == 2 and cl_ == H_ and nnout_ == NN6 and p_["cl"] + ":%d:" % (n1_ + 2) in err_ and p_["cl"] + ":%d:" % (n2_ + 2) in err_,
           (rc_, err_))
-OKB_ = GEN_B.replace("- x (decided 2026-10-05).\n", "- gpt x (decided 2026-10-05).\n- gpt y (decided 2026-10-05).\n")
-rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", OKB_))
-check("r11 R11-1 control: two bullets that publish different lines once cleaned are read (exit 0)", rc_ == 0, (rc_, err_))
-check("r11 R11-1 control: a raw refused form is still refused on the raw bullet (raw check kept)",
-      is_ve(refused(P.tag_notes, mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- <b>gpt (decided 2026-10-05).")))))
 # R11-2 (B Medium 1): a document value is redacted BEFORE its JSON encoding: a name right after a character the quoted form
 # escapes ('<' -> <, '&' -> &, '`' -> `, '\n' -> \n, a control or non-ASCII character -> \uXXXX) is still
 # redacted, and a statement whose name redaction changes is named by its position. Oracle: every value the redactor
@@ -3041,10 +2893,9 @@ for nm_ in NAMES_:
         if is_ve(t_) or len(vl_) != 1 or nm_.lower() in vl_[0].lower() or not vl_[0].endswith("statement 1 of the new document"):
             bad_.append((v_, t_))
             continue
-        tn_ = refused(P.tag_notes, mktag("v0.2.3", t_))
         cl_ = refused(P.changelog, t_, None, "")
-        if tn_ != t_ or is_ve(cl_) or is_ve(refused(P.changelog, P.notes("v0.2.4", [], []), cl_[0], "")):
-            bad_.append((v_, "round trip", tn_, cl_))
+        if is_ve(cl_) or is_ve(refused(P.changelog, P.notes("v0.2.4", [], []), cl_[0], "")):
+            bad_.append((v_, "round trip", cl_))
 check("r11 R11-2: a vendor or model name right after an escaped character (%d cases) is redacted in the printed VEX line, "
       "the statement named by its position, and the notes read back as tag, changelog notes and history" % seen_,
       bad_ == [] and seen_ >= len(NAMES_) * len(PRE_) - 1, bad_[:3])
@@ -3059,8 +2910,6 @@ check("r11 R11-2: @id labels '<google' / '&o1' and a product '&aws' are redacted
 od_ = {"statements": [{"vulnerability": {"name": "CVE-6"}, "status": "fixed", "<Google": 1}], "&o2": 1}
 nd_ = {"statements": [{"vulnerability": {"name": "CVE-6"}, "status": "fixed", "<Google": 2}], "&o2": 2}
 t_ = refused(P.notes, "v0.2.3", [], P.vex_changes(od_, nd_))
-check("r11 R11-2: field names '<Google' (statement) and '&o2' (document) are redacted in the printed lines",
-      not is_ve(t_) and "google" not in t_.lower() and "o2" not in t_.lower() and P.tag_notes(mktag("v0.2.3", t_)) == t_, t_)
 check("r11 R11-2 control: a value without a name still prints its exact JSON string",
       json.loads(P._lit("<b>&x", before_colon=True)[1:-1]) == "<b>&x", P._lit("<b>&x"))
 # R11-3 (B Medium 3 / A Low 2): go.mod versions validated as Go validates them (golang.org/x/mod/semver; the go directive
@@ -3383,11 +3232,10 @@ for it_ in range(500):
     if is_ve(t_):
         bad_.append((it_, "notes refused its own lines", t_)); continue
     made_ += 1
-    tn_, cl_ = refused(P.tag_notes, mktag("v0.2.3", t_)), refused(P.changelog, t_, None, "")
-    if tn_ != t_ or is_ve(cl_):
-        bad_.append((it_, tn_, cl_))
+    if is_ve(cl_):
+        bad_.append((it_, cl_))
 check("r12 R12-5: 500 random VEX documents (%d holding a marker form, %d printed): a marker form in any printed value is "
-      "refused naming its statement; every other document prints and reads back as the tag's notes and changelog"
+      "refused naming its statement; every other document prints and reads back as the changelog"
       % (refd_, made_), bad_ == [] and refd_ > 50 and made_ > 200, bad_[:2])
 # ===== r13 (Codex #300 b12, B Medium; advisor CUT, Oct 12): the decoding is deleted; the refusal covers the recognised forms
 # only (RECOGNISED_ above, refused in every field by R12-2); every cut form is an ordinary value: not refused, printed quoted
@@ -3411,7 +3259,7 @@ for f_ in CUT_:
                 bad_.append((v_, "_lit", bc_, r_, old_lit_(v_, bc_)))
         t_ = refused(P.notes, "v0.2.3", [], [{"cve": v_, "status": "fixed", "change": "added"}])
         if is_ve(t_) or (P._lit(v_, before_colon=True) not in t_ and "gpt" not in v_) \
-                or refused(P.tag_notes, mktag("v0.2.3", t_)) != t_ or is_ve(refused(P.changelog, t_, None, "")):
+                or is_ve(refused(P.changelog, t_, None, "")):
             bad_.append((v_, "notes", t_))
 check("r13 R13-2: every cut form (%d: percent-encoded, fullwidth, nested, \\x / \\U escapes, mixed families, the 64-pass "
       "limit, B's '%%EF%%BC\\x259Credacted...'), 4 embeddings, in every field of either document (%d cases) is NOT refused; "
@@ -3520,6 +3368,21 @@ def ac15_():
     BASE0 = {"docs/keep.md": ("x\n", "100644")}
     def verdict_new(path, content, mode="100644"):
         return verdict_(BASE0, lambda r_: put_(r_, {path: (content, mode)}))[0][0]
+    # a blob git cannot show is reported as unreadable, not as NUL bytes
+    fakebin = tempfile.mkdtemp(prefix="fakegit-")
+    real_git = shutil.which("git")
+    open(os.path.join(fakebin, "git"), "w").write('#!/bin/sh\n[ "$3" = show ] && case "$4" in *:*) exit 1;; esac\nexec %s "$@"\n' % real_git)
+    os.chmod(os.path.join(fakebin, "git"), 0o755)
+    ur_repo = gitrepo({RD: ("old\n", "100644")})
+    put_(ur_repo, {RD: ("new\n", "100644")}); g(ur_repo, "add", "-A"); g(ur_repo, "commit", "-q", "-m", "edit")
+    path_was = os.environ["PATH"]; os.environ["PATH"] = fakebin + ":" + path_was
+    try:
+        ur_verdict, ur_why = P.classify(P.gather_commits("v0.1.0", cwd=ur_repo)[-1])
+    finally:
+        os.environ["PATH"] = path_was
+    check("AC15 git: a blob git cannot show is dirty and reported as unreadable, not as NUL bytes",
+          ur_verdict == "dirty" and "NUL" not in ur_why and "read" in ur_why, (ur_verdict, ur_why))
+    shutil.rmtree(fakebin, ignore_errors=True)
     for path, good in ((PS, '{"a": 1}\n'), (PS, "[1, 2]\n"), (PJ, '{"a": 1}\n'), (PJ, "[]\n"), (KN, "# knowledge\ntext\n"), (RD, "# readme\n")):
         check("AC15 git: a new %s with data content is neutral" % path, verdict_new(path, good) == "neutral", verdict_new(path, good))
     for path in (PS, PJ):
