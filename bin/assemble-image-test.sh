@@ -27,6 +27,13 @@ for ln in open(src).read().split("\n"):
 if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
 open(out, "w").write("\n".join(res))
 PY
+cat >"$work/sealedtest.py" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+keep = ("PATH", "CALLS", "ImageOS", "ImageVersion")
+d["closed"].update({k: v for k, v in os.environ.items() if k.startswith(("STUB_", "FAKE_")) or k in keep})
+json.dump(d, open(sys.argv[1], "w"))
+PY
 AI_PROD="$AI"
 air="$work/air"; rm -rf "$air"; mkdir -p "$air/bin"
 for f in "$root"/bin/*; do [ "$(basename "$f")" = assemble-image.sh ] || ln -s "$f" "$air/bin/$(basename "$f")"; done
@@ -57,6 +64,8 @@ done
 [ -z "\${ASSEMBLE_WORK_DIR:-}" ] || export TEST_WORKDIR="\$ASSEMBLE_WORK_DIR"
 [ -z "\${FAKE_OS:-}" ] || export TEST_HOST_OS="\$(printf %s "\$FAKE_OS" | tr A-Z a-z)"
 rm -rf "\$air/build"; cp -RP "\$root/build" "\$air/build"
+# the stubs find CALLS, STUB_* and the test's PATH in the sealed environment, as in the build-apk proofs' data file
+"$(command -v python3)" "$work/sealedtest.py" "\$air/build/sealed-env.json"
 put() { rm -f "\$2"; if [ -e "\$1" ] || [ -L "\$1" ]; then cp -P "\$1" "\$2"; fi; }
 case "\$variant" in fips) cf=apko-fips.yaml; lk=apko-fips.base.lock.json;; *) cf=apko.yaml; lk=apko.base.lock.json;; esac
 [ \$have_cfg = 1 ] && put "\$cfg" "\$air/build/\$cf"
@@ -168,6 +177,7 @@ for k, v in os.environ.items():
     if k.startswith(("STUB_", "FAKE_")) or k in ("CALLS", "ImageOS", "ImageVersion"): closed[k] = v
 json.dump({"closed": closed, "from_environment": ["SOURCE_DATE_EPOCH"]}, open(proot + "/sealed-test.json", "w"))
 os.environ["TEST_SEALED_ENV"] = proot + "/sealed-test.json"
+shutil.copy(proot + "/sealed-test.json", proot + "/build/sealed-env.json")   # the assemble copy reads this one
 if os.environ.get("PW_FIXTURE"):   # the fixture's own config, base lock and records (what --apko-config etc. meant), for the (always production) variant
     put(os.environ["PW_CFG"], proot + "/build/apko.yaml"); put(os.environ["PW_BL"], proot + "/build/locks/apko.base.lock.json")
     put(os.environ["PW_IDX"], proot + "/build/locks/archive-index.sha256"); put(os.environ["PW_KEY"], proot + "/build/locks/archive-keys.sha256")
@@ -356,7 +366,7 @@ for v in production fips; do
   sn "rule 20" "[$v] apko's SBOM is not disabled" '--sbom[ =]false|--sbom=false' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # build.go:130
   sn "rule 31" "[$v] the config is passed to apko lock and apko build as a bare file name (cwd = the render dir): lock.config.name is that path and must not be random" '^apko (lock|build) [^ ]*/[^ ]*\.yaml' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # real-run finding Oct 9
   sd "rule 31" "[$v] --build-date from SOURCE_DATE_EPOCH" "^apko build .*--build-date $ISO" "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # build.go:129
-  sd "rule 31" "[$v] apko sees SOURCE_DATE_EPOCH too (env wins, pkg/build/build.go:325)" "SOURCE_DATE_EPOCH=$SDE|-E |--preserve-env" "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  sd "rule 31" "[$v] apko sees SOURCE_DATE_EPOCH too (env wins, pkg/build/build.go:325)" "env -i .*SOURCE_DATE_EPOCH=$SDE .*apko build " "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
   sn "rule 26" "[$v] no --repository-append / -r / --build-repository-append: the config's two local repositories only" ' (--repository-append|-r|--build-repository-append|-b) ' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
   sn "rule 26" "[$v] no network address, proxy or ignore-signatures in any call" '://|[Pp][Rr][Oo][Xx][Yy]|ignore-signatures|allow-untrusted' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
   sn "rule 38b" "[$v] no docker, podman, --privileged or container image in any call" 'docker|podman|--privileged|cgr\.dev|@sha256' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
@@ -373,6 +383,19 @@ for v in production fips; do
   o3=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_SALT=other "$AI" "${a[@]}" --out "$o3"
   t "rule 31" "[$v] the digest follows the built image (a different image gives a different digest)" bash -c "test -s '$o/$v.digest' && test -s '$o3/$v.digest' && ! cmp -s '$o/$v.digest' '$o3/$v.digest'"
 done
+# an apko stub that records the names of its environment (the stubs/apko one does not)
+cat >"$work/apko-env" <<EOS
+#!/bin/bash
+names="^(STUB_|FAKE_|CALLS\$|ImageOS\$|ImageVersion\$|PWD\$|SHLVL\$|_\$|OLDPWD\$)"
+echo "APKO-ENV \$1: \$(env | cut -d= -f1 | grep -Ev "\$names" | sort | tr '\\n' ' ')" >>"\$CALLS"
+exec "$stubs/apko" "\$@"
+EOS
+chmod +x "$work/apko-env"
+run_s env AWS_ACCESS_KEY_ID=leak FOO=leak TEST_APKO="$work/apko-env" "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+if [ "$(rc)" = 0 ] && [ "$(grep -c '^APKO-ENV ' "$CALLS")" = 2 ] \
+  && [ "$(grep '^APKO-ENV ' "$CALLS" | cut -d: -f2 | sort -u)" = " HOME LC_ALL PATH SOURCE_DATE_EPOCH " ] \
+  && [ "$(grep -c "^ENV SDE=$SDE\$" "$CALLS")" = 2 ]; then ok
+else bad "rule 31" "apko lock and build see only PATH, HOME, LC_ALL, SOURCE_DATE_EPOCH (not an ambient AWS_ACCESS_KEY_ID)"; fi
 sd "rule 33" "the -fips image is assembled from the -fips config" 'apko-fips\.yaml|fscache-fips' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
 # the names are in the script, or (straight-line form) in oci-digest.py variant-field
 t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" \

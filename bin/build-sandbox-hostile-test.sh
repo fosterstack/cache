@@ -56,11 +56,20 @@ cat > "$work/bin/sudo" << 'STUB'
 if [ "$1" = rm ]; then for a in "${@:3}"; do chmod -R u+w "$a" 2> /dev/null; done; fi
 exec "$@"
 STUB
-# python3 stub: the net probe (unshare -n python3 bin/net-probe.py) answers the status the case set; any other use is
-# the real python3
+# The helper judges the sealed call against the fixed unshare and melange paths. The python3 stub below runs this
+# copy of the helper, whose one constants line names the stubs, in place of bin/build-apk-helper.py.
+swap='ENV_PATH, UNSHARE_PATH, MELANGE_PATH = "/usr/bin/env", "'$work'/bin/unshare", "'$work'/bin/melange"'
+hits=$(grep -c '^ENV_PATH, UNSHARE_PATH, MELANGE_PATH = ' "$root/bin/build-apk-helper.py")
+[ "$hits" = 1 ] || { echo "FIXTURE SETUP FAILED: helper constants line"; exit 1; }
+sed "s#^ENV_PATH, UNSHARE_PATH, MELANGE_PATH = .*#$swap#" "$root/bin/build-apk-helper.py" > "$work/helper-copy.py"
+t "AC5" "the helper copy differs from build-apk-helper.py in the constants line only" \
+  bash -c "[ \$(diff '$root/bin/build-apk-helper.py' '$work/helper-copy.py' | grep -c '^<') = 1 ]"
+# python3 stub: the net probe (unshare -n python3 bin/net-probe.py) answers the status the case set; the helper is
+# the copy above; any other use is the real python3
 cat > "$work/bin/python3" << STUB
 #!/usr/bin/env bash
 case "\$*" in *net-probe.py*) exit \$(cat "$work/netrc" 2> /dev/null || echo 101);; esac
+case "\$*" in "-I -B bin/build-apk-helper.py "*) exec /usr/bin/python3 -I -B "$work/helper-copy.py" "\${@:4}";; esac
 exec /usr/bin/python3 "\$@"
 STUB
 chmod +x "$work/bin/"*

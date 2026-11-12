@@ -24,7 +24,7 @@
       ],
       "signs": false,
       "reason": "the stage's archive pull: fetches the archive by the digest committed in build/archive.json with the pinned crane into a new directory and checks every file against the pointer (REQ-CHAIN-004-AC16); nothing is pulled by tag and there is no fallback source",
-      "sha256": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
+      "sha256": "a5799f46e362f45600f3c052358c51cbc618494d371ea34a9ec7414c9a0d83bf",
       "exceptions": [
         {
           "rule": "script-name",
@@ -42,7 +42,7 @@
       "runs": [],
       "signs": false,
       "reason": "reads the archive pointer and verifies the archive artifact and each file's sha256 and size against it (run by bin/archive-pull.sh)",
-      "sha256": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31"
+      "sha256": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b"
     },
     {
       "path": "bin/install-host-bwrap.py",
@@ -73,7 +73,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "15c886f0ea9d4dc9e00465ab710448c075e4f43b251a75d8d3a45c0809d07b66",
+      "sha256": "89271f287ac054d3d6de64fe6d0f37f2d4970c4fdea752280c7b544230ced715",
       "tools": [
         "at",
         "aws",
@@ -528,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
+      "sha256": "d18d4672579a35f45b244a62b95f94f680e2e3de73a928b9e7640bd1f5c5c711",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -653,7 +653,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
-      "sha256": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77"
+      "sha256": "982d1e6e31ee00c6e270b27805a964ce05a0d1d560985da9ce579f752192727d"
     },
     {
       "path": "bin/chain_items.py",
@@ -1049,7 +1049,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "c1c96768f690f949da407538f664c7b35b4b80d3b9139c4baa3ccfb985d04f14",
+      "sha256": "378e26592b2e182b91db60a307e1739d4dd2380f24d1d895772ddfafc026d746",
       "tools": [
         "at",
         "awk",
@@ -1307,7 +1307,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "26294f50e61980b026f9439f6395ab0b2a91ed23e049a4580d2d05f06afdf06b",
+      "sha256": "e4a19a5c62064cf0087235b15aaaf5dceed353cc01af33a313947334f47fec0f",
       "tools": [
         "at",
         "awk",
@@ -1466,7 +1466,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "27093e3c59ebd2f42dec74c96ec30d803e81a82bf474301062b94ece902f1a2a",
+      "sha256": "ce4468ef6f0f287d97339721c1cfccfc547c5c8edcb86c0929e345f0185b4463",
       "tools": [
         "curl",
         "docker",
@@ -1516,7 +1516,7 @@
     },
     {
       "path": "bin/acceptance-k8s-manifests.py",
-      "sha256": "d4c6fd00fd04599846a3ab5e89d2c40f7ccd80b36bd840122ecd070e2f8249c0",
+      "sha256": "4f4238c5b0f192ebee73495d75f862f5df38a4a3c95a49fa4c85d6520f96001b",
       "tools": [
         "script"
       ],
@@ -2174,7 +2174,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "af5dd18f53439e2198e1a2eb1c372bb2fef153836b4b8c76d68aea81254b93e7",
+      "sha256": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
       "exceptions": [
         {
           "rule": "deny",
@@ -2255,7 +2255,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
+      "sha256": "a9ebc31e7fe8fe9336f763457c1ffa6cce89808b6c92961e8656904cd531762e",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2371,7 +2371,7 @@
       ],
       "signs": false,
       "reason": "0710: the fscache-baselayout apk built with melange in the same sealed call as the fscache apk (a file-only recipe, signed with the committed assembly key; assembled into the images only, not released)",
-      "sha256": "5c355ac5326d8bbd37de7cbd92a93e4488e6821f0bc98687c1c58b17929fc923",
+      "sha256": "986c676d474f24f28da2e5e3b4524ffb48e175b0ee3e7c527178b50e6956bdf2",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2426,7 +2426,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "504727af0ee14276e11b5376467c068bdd8f116fc86081194490bf4212f1d87e",
+      "sha256": "b5819464b0ee3a5176207212bda2b66face01d96a006c7ecc73db4804dbfe934",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2496,7 +2496,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "20cd77b65a3e0f397eb8a36bd74e8b7ac5961059a18a5d3a3422ff14e5b4dede",
+      "sha256": "ab8a3922eb4326fb3c9aa03fdb668fe16633eee1d8e46f1215c52440f44e3929",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2586,7 +2586,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
-      "sha256": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935"
+      "sha256": "8a556854bf7fa2c0df2fe2710754788350d50a87dacfb69fed2ca086daf519bf"
     },
     {
       "path": "bin/vendor-provenance.py",

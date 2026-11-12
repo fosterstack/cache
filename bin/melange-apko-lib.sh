@@ -153,7 +153,7 @@ def realsig(ctrl, keyfile, alg):
     with tempfile.TemporaryDirectory() as d:
         open(d + "/k", "w").write(pem); open(d + "/c", "wb").write(ctrl)
         return subprocess.run(["openssl", "dgst", "-" + alg, "-sign", d + "/k", d + "/c"], capture_output=True, check=True).stdout
-def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigalg="RSA", datahash=None, signkey=None, datatar=None):
+def mkapk(path, name, ver, files, control=None, signer="assembly.rsa.pub", sigalg="RSA256", datahash=None, signkey=None, datatar=None):
     data = gz(datatar or tarb(sorted(files.items())))
     dh = datahash or hashlib.sha256(data).hexdigest()   # a real apk's .PKGINFO carries the sha256 of its data stream
     ctl = [(".PKGINFO", ("pkgname = %s\npkgver = %s\ndatahash = %s\n" % (name, ver, dh)).encode())] + sorted((control or {}).items())

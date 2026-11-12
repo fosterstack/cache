@@ -6,8 +6,7 @@
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh
-# <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck> [dest-dir]
+# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-<version>|cosign|witness|go|crane|aws-cli|govulncheck> [dest-dir]
 # `aws-cli` (KA-2: the signer's KMS calls) installs the pinned AWS CLI v2 job-locally into $RUNNER_TEMP/aws-cli (the binary at $RUNNER_TEMP/aws-cli/aws) and takes no destination: nothing is left in /usr/local.
 # `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that
 # version is the pinned one (GO_VER); admission's freeze check runs it from there (the runner's own Go may be older than go.mod).
@@ -56,7 +55,7 @@ die() { pipeline_fail "$@"; }   # the plain-text failure word of the pinned Go f
 
 case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|docker-scout-1.0.9|docker-scout-1.2.2|docker-scout-1.3.0|docker-scout-1.4.1|docker-scout-1.5.2|docker-scout-1.6.4|docker-scout-1.7.0|docker-scout-1.8.0|docker-scout-1.9.3|docker-scout-1.10.0|docker-scout-1.11.0|docker-scout-1.12.0|docker-scout-1.14.0|docker-scout-1.15.1|docker-scout-1.16.3|docker-scout-1.17.1|docker-scout-1.18.4|docker-scout-1.19.0|docker-scout-1.20.4|docker-scout-1.21.0|docker-scout-1.22.0|docker-scout-1.23.1|cosign|witness|go|crane|aws-cli|govulncheck) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck)" ;; esac
 
-arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
+arch="$(uname -m)"   # TEST-SUBST
 case "$arch" in
   x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GO=linux-amd64 ;;
   aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GO=linux-arm64 ;;
@@ -117,13 +116,13 @@ case "${TOOL}:${arch}" in
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
-TRIVY_BASE="${TRIVY_BASE_URL:-https://github.com/aquasecurity/trivy/releases/download}"
-GRYPE_BASE="${GRYPE_BASE_URL:-https://github.com/anchore/grype/releases/download}"
-SYFT_BASE="${SYFT_BASE_URL:-https://github.com/anchore/syft/releases/download}"
-SNYK_BASE="${SNYK_BASE_URL:-https://github.com/snyk/cli/releases/download}"
-OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/download}"
-SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
-SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}"
+TRIVY_BASE=https://github.com/aquasecurity/trivy/releases/download   # TEST-SUBST
+GRYPE_BASE=https://github.com/anchore/grype/releases/download   # TEST-SUBST
+SYFT_BASE=https://github.com/anchore/syft/releases/download   # TEST-SUBST
+SNYK_BASE=https://github.com/snyk/cli/releases/download   # TEST-SUBST
+OSV_BASE=https://github.com/google/osv-scanner/releases/download   # TEST-SUBST
+SBOMGEN_BASE=https://amazon-inspector-sbomgen.s3.amazonaws.com   # TEST-SUBST
+SCOUT_BASE=https://github.com/docker/scout-cli/releases/download   # TEST-SUBST
 
 tmp=$(mktemp -d)
 trap 'chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT   # a Go module cache is read-only: it is writable again before it is removed
@@ -283,9 +282,6 @@ case "$TOOL" in
     got=$("$AWSDIR/aws" --version 2>&1) || got=""
     case "$got" in "aws-cli/${AWSCLI_VER} "*) ;; *) pipeline_fail "the installed aws CLI reports '${got}', not aws-cli/${AWSCLI_VER}" ;; esac
     DEST="$AWSDIR"
-    ;;
-  *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

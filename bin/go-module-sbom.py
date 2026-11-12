@@ -118,7 +118,7 @@ def main():
     ap.add_argument("--name", default="fscache")    # the package the binary ships in (fscache or fscache-fips)
     ap.add_argument("--version", default=None)      # its apk version, e.g. 0.3.0 or 0.3.0_rc1
     # The root version is VERSION-r0: the recipes say epoch: 0, and the build driver expects the apk as VERSION-r0 (its
-    # apk path, line 174) and fails if melange wrote any other.
+    # apk path, line 177) and fails if melange wrote any other.
     a = ap.parse_args()
     # Every apk form of the build helper's VERSION_GRAMMAR (X.Y.Z, X.Y.Z_rcN, 0.0.0_rc1) fits the version pattern below.
     # The pattern is a word check and also admits e.g. 01.2.3; the driver checks the grammar before it calls this tool.

@@ -20,7 +20,7 @@ sed -n 1p .github/policy/gradle-wrapper-jar-sha256.txt | grep -qxE '[0-9a-f]{64}
 step_06() (
 cd bench/gradle-sample
 ./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain --info 2>&1 \
-  | tee /tmp/cold.log | grep -E '> Task|BUILD' || true
+  | tee /tmp/cold.log | { grep -E '> Task|BUILD' || true; }
 )
 
 # acceptance.yml, job acceptance-gradle, step 7: assert the cold build stored every expected task's entry

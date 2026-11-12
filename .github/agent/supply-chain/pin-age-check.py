@@ -1834,8 +1834,8 @@ PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no
         '    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"',
     ],
     'bin/go-bump-open-pr.sh': [
-        '  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1',
-        '    curl -q -fsSL -g -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1',
+        '  curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1',
+        '    curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1',
     ],
 }
 _PINNED_FETCH_SHA = {f: {hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest(): l for l in ls} for f, ls in PINNED_FETCH.items()}

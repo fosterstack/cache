@@ -33,11 +33,11 @@ if [ -n "$bad_env" ]; then
   exit 2
 fi
 
+scanner=grype   # TEST-SUBST
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$cfg"   # $cfg stays empty: it is the one config grype reads (grype needs the extension)
 
-# GRYPE is a test seam (a stand-in for the grype binary); no workflow ever sets it, so CI always runs the pinned grype.
-"${GRYPE:-grype}" "$target" -c "$cfg" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}" -o "json=${js}"; rc=$?
+"$scanner" "$target" -c "$cfg" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}" -o "json=${js}"; rc=$?
 # EXPECT_IMAGE_ID (optional): the config digest of the image the caller built the scanned tar from
 # (bin/layout-archive.sh). A tar's image ID is its config
 # digest, so grype's report must name it: the image scanned is then the one we ship, not another tar in its place.

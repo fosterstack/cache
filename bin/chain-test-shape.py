@@ -897,14 +897,14 @@ def ns_shell(path, name):
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
-    "bin/apk-tool.py": "af5dd18f53439e2198e1a2eb1c372bb2fef153836b4b8c76d68aea81254b93e7",
-    "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
-    "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
+    "bin/apk-tool.py": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
+    "bin/archive-pull.sh": "a5799f46e362f45600f3c052358c51cbc618494d371ea34a9ec7414c9a0d83bf",
+    "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485",
     "bin/audit-record.py": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f",
-    "bin/build-admit.py": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
-    "bin/build-apk-helper.py": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
-    "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
+    "bin/build-admit.py": "d18d4672579a35f45b244a62b95f94f680e2e3de73a928b9e7640bd1f5c5c711",
+    "bin/build-apk-helper.py": "a9ebc31e7fe8fe9336f763457c1ffa6cce89808b6c92961e8656904cd531762e",
+    "bin/build-archives.py": "982d1e6e31ee00c6e270b27805a964ce05a0d1d560985da9ce579f752192727d",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
@@ -913,7 +913,7 @@ NS_SHA = {
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
     "bin/chain_items.py": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e",
-    "bin/go-module-sbom.py": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935",
+    "bin/go-module-sbom.py": "8a556854bf7fa2c0df2fe2710754788350d50a87dacfb69fed2ca086daf519bf",
     "bin/install-host-bwrap.py": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
@@ -1030,7 +1030,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"wait for it or remove the lock if no run is active" >&2; exit 2; }',
         '"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"',
         'tmp=$(mktemp -d)',
-        'made=',
+        'made=()',
         'trap \'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true\' EXIT',
         'rdir=$("$PY3" -I -B bin/oci-digest.py prepare-render "$render" "$tmp")',
         'rendered=$rdir/$(basename "$config")',
@@ -1044,21 +1044,22 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"$SUDO" mkdir -p "$workdir" || { echo "assemble-image.sh: cannot create $workdir" >&2; exit 2; }',
         '"$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" "(could not take '
         '$lock)" >&2; exit 2; }',
-        'trap \'{ "$SUDO" rm -f $made; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } '
-        '|| true\' EXIT',
+        'trap \'{ "$SUDO" rm -f "${made[@]}"; "$SUDO" rmdir "$lock";',
+        'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true\' EXIT',
         '"$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link '
         '$workdir/archive" "(it exists: another assembly?); stopping" >&2; exit 2; }',
-        'made="$made $workdir/archive"',
+        'made+=("$workdir/archive")',
         '"$SUDO" ln -sT "$melrepo" "$workdir/melange-repo" || { echo "assemble-image.sh: cannot make the link" '
         '"$workdir/melange-repo (it exists: another assembly?); stopping" >&2; exit 2; }',
-        'made="$made $workdir/melange-repo"',
+        'made+=("$workdir/melange-repo")',
         '"$SUDO" ln -sT "$keydir" "$workdir/keyring" || { echo "assemble-image.sh: cannot make the link '
         '$workdir/keyring" "(it exists: another assembly?); stopping" >&2; exit 2; }',
-        'made="$made $workdir/keyring"',
+        'made+=("$workdir/keyring")',
         'mkdir -p "$tmp/apko-cache"',
+        'mapfile -d \'\' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env build/sealed-env.json)',
         'full=$tmp/$variant.full.lock.json',
         'cd "$rdir"',
-        '"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" lock "$(basename '
+        '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$APKO" lock "$(basename '
         '"$rendered")" --cache-dir "$tmp/apko-cache" --output "$full" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?',
         'cd "$root"',
         'cat "$tmp/apko.err" >&2',
@@ -1078,7 +1079,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'cp "$full" "$out/$variant.full.lock.json"',
         'mkdir -p "$tmp/sbom"   # apko renames its SBOMs into --sbom-path and does not create it (real-run finding)',
         'cd "$rdir"',
-        '"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" build "$(basename '
+        '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$APKO" build "$(basename '
         '"$rendered")" "$pkg:$version" "$tmp/$variant.tar" --offline --cache-dir "$tmp/apko-cache" --lockfile "$full" '
         '--vcs=false --sbom-path "$tmp/sbom" --build-date "$build_date" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?',
         'cd "$root"',
@@ -1276,7 +1277,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '[ -f "$goarch_dir/$gofile" ] || { echo "build-apk.sh: the Go archive $goarch_dir has no $gofile" "(rule 12: '
         'Go comes from the archive)" >&2; exit 2; }',
         '[ -x "$SHA256SUM" ] || { echo "build-apk.sh: sha256sum is not installed at $SHA256SUM" >&2; exit 1; }',
-        'got=$("$SHA256SUM" "$goarch_dir/$gofile" | cut -d\' \' -f1)',
+        'mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/go-archive"',
+        'got=$("$SHA256SUM" "$tmp/cache/go-archive" | cut -d\' \' -f1)',
         '[ "$got" = "$gosha" ] || { echo "build-apk.sh: sha256 checksum of $gofile ($got) differs from the recipe\'s '
         'pin ($gosha)" >&2; exit 2; }',
         'sed -n \'s/^pin=//p\' "$tmp/recipe.facts" >"$tmp/pins"',
@@ -1290,7 +1292,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'rdir=${render:-$tmp/render}; mkdir -p "$rdir"',
         'rendered=$rdir/$(basename "$recipe")',
         'sed "s/@VERSION@/$apkver/g" "$recipe" >"$rendered"',
-        'mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"',
+        'mv "$tmp/cache/go-archive" "$tmp/cache/sha256:$gosha"',
         'excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || { echo '
         '"build-apk.sh: cannot locate the exclude file of $src (git rev-parse failed)" >&2; exit 1; }',
         'exdir=${excl%/*}',
