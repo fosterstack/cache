@@ -155,7 +155,10 @@ def _sub_purl(sid):
     segs = [urllib.parse.unquote(x) for x in (head.split("/") if head else []) + [last]]
     if any(not x.strip() or "/" in x for x in segs) or (at and not ver):
         raise ValueError("a subcomponent package URL without a usable package name or version (%r)" % sid)
-    return "/".join(segs), urllib.parse.unquote(ver)
+    name, ver = "/".join(segs), urllib.parse.unquote(ver)
+    if typ == "golang" and name == "stdlib" and ver:
+        ver = "go" + ver   # scanners report the standard library's version as go1.27.2 for purl version 1.27.2 (as vex-forms.py writes the rule)
+    return name, ver
 
 
 def _same_package(name, version, sub_name, sub_version):

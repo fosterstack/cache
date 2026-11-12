@@ -668,6 +668,14 @@ vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.5.0)
 vexdoc "$D/v/sub-alpine.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:apk/alpine/busybox@1.37.0"}]}]')]"
 vrun osv-scanner 1 "$(osvrep CVE-2024-9999 busybox 1.37.0)" "$D/v/sub-alpine.json"; expect "a namespaced subcomponent (alpine/busybox) does not cover a finding without a namespace (busybox)" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2024-9999 alpine/busybox 1.37.0)" "$D/v/sub-alpine.json"; expect "...but covers the same namespace (alpine/busybox)" clean false 0 1
+vexdoc "$D/v/sub-stdlib.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:golang/stdlib@1.27.2"}]}]')]"
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 stdlib go1.27.2)" "$D/v/sub-stdlib.json"; expect "pkg:golang/stdlib@1.27.2 covers the stdlib finding at go1.27.2" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 stdlib go1.27.3)" "$D/v/sub-stdlib.json"; expect "...but not stdlib at go1.27.3" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 stdlib 1.27.2)" "$D/v/sub-stdlib.json"; expect "...and not stdlib at 1.27.2 without the go prefix" findings true 1 0
+vexdoc "$D/v/sub-jwt.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:golang/github.com/golang-jwt/jwt/v4@4.5.1"}]}]')]"
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 github.com/golang-jwt/jwt/v4 4.5.1)" "$D/v/sub-jwt.json"; expect "a non-stdlib golang module is covered at its plain version" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 github.com/golang-jwt/jwt/v4 v4.5.1)" "$D/v/sub-jwt.json"; expect "...but not at v4.5.1" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 github.com/golang-jwt/jwt/v4 go4.5.1)" "$D/v/sub-jwt.json"; expect "...and not at go4.5.1 (the go prefix is for stdlib only)" findings true 1 0
 vexdoc "$D/v/sub-npm.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:npm/pkg@1.0.0"}]}]')]"
 vrun osv-scanner 1 "$(osvrep CVE-2024-9999 @scope/pkg 1.0.0)" "$D/v/sub-npm.json"; expect "an npm @scope/pkg finding is NOT covered by a scope-less pkg:npm/pkg subcomponent" findings true 1 0
 vexdoc "$D/v/sub-npm-scoped.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:npm/%40scope/pkg@1.0.0"}]}]')]"
