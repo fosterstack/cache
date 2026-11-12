@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Risk-acceptance / POA&M (REQ-AUD-2 AC5/5b/5c). Guarded by reachable + no-pullable-fix
-facts. Writes a conformant `affected` VEX (evidence + target date in a sidecar), a
-run-date + 30 day expiry, a decision, and an accepted-item entry.
+"""Risk-acceptance / POA&M (REQ-AUD-2 AC5/5b/5c of .github/agent/docs/cve-auditor-matrix.md).
+Guarded by reachable + no-pullable-fix facts. Writes a conformant `affected` VEX (evidence + target
+date in a sidecar), a run-date + 30 day expiry, a decision, and an accepted-item entry.
 Threshold = Critical OR CISA-KEV OR known-exploited. On expiry with no fix, the recheck
 SURGICALLY removes only the finding's statements and per-finding ignore records (matched by id or
 vulnerability.aliases), never whole shared files."""
@@ -18,7 +18,8 @@ def _expiry(today):
 
 def _plan_removal(path, aliases):
     """(doc, kept statements) when the VEX at `path` holds statements for `aliases`, else None. Writes nothing."""
-    d = reviewed.read(path, as_name="x.openvex.json")      # a present VEX without its statements list, or one that cannot be read, is a stop: never "nothing to remove" (cache#701)
+    # a present VEX without its statements list, or one that cannot be read, is a stop: never "nothing to remove"
+    d = reviewed.read(path, as_name="x.openvex.json")
     if d is None:
         return None
     kept = []
@@ -39,16 +40,10 @@ def _apply_removal(path, d, kept):
         os.remove(path)
 
 
-def _remove_from_vex(path, aliases):
-    plan = _plan_removal(path, aliases)
-    if plan:
-        _apply_removal(path, *plan)
-    return bool(plan)
-
-
 def _remove_ignores(root, aliases):
     """Remove the finding's statements from every OpenVEX file under root (the VEX is the only exception there is).
-    Every file is read and checked first, then written: a file that cannot be read stops the run with nothing changed."""
+    Every file is read and checked first, then written: a file that cannot be read stops the run with
+    nothing changed."""
     plans = []
     for dp, _, fs in os.walk(root):
         for fn in fs:
@@ -64,7 +59,7 @@ def _remove_ignores(root, aliases):
 def recheck(pkgfile, suppdir, today, out):
     p = json.load(open(pkgfile)); cve = p["cve"]
     aliases = {cve} | set(p.get("aliases", []))
-    expired = p.get("ignore_expiry", "") <= today          # R11 rank 8: expiry date itself expires
+    expired = p.get("ignore_expiry", "") <= today          # the expiry date itself counts as expired
     if expired and not p.get("fix_available"):
         removed = _remove_ignores(suppdir, aliases) if suppdir and os.path.isdir(suppdir) else []
         cli.writej(os.path.join(out, "recheck.json"),
@@ -91,7 +86,8 @@ def accept(finding_file, kevfile, github, state, today, out):
               evidence={"check": "reachable-no-fix", "source_file": finding_file,
                         "detail": "reachable=%s fix_pullable=%s" % (f.get("reachable"), f.get("fix_pullable"))},
               target_date=exp)
-    cli.writej(os.path.join(out, "package.json"), {"cve": cve, "ignore_expiry_days": policy.IGNORE_EXPIRY_DAYS, "expiry": exp})
+    cli.writej(os.path.join(out, "package.json"),
+               {"cve": cve, "ignore_expiry_days": policy.IGNORE_EXPIRY_DAYS, "expiry": exp})
     cli.writej(os.path.join(out, "decision.json"),
                {"accepted": True, "ci_stays_green": True, "report_section": 2,
                 "threshold": "at_or_above" if at else "below", "threshold_reason": reason})
