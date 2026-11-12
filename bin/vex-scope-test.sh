@@ -33,8 +33,8 @@ a['cpes'][0]['cpe']='cpe:2.3:a:busybox:busybox:%s:*:*:*:*:*:*:*'%ver
 json.dump(d,open(out,'w'))
 PY
   js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
-  f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
-  ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
+  f=$(jq --arg ids "$BUSYBOX_CVES" '[.matches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
+  ig=$(jq --arg ids "$BUSYBOX_CVES" '[.ignoredMatches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
   if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
   # cache#772 round 1 (A1/B1, ruled): no --fail-on. Its exit code depends on the severity the vulnerability database gives the advisory on the day, so a
   # correct FLAG could exit 0 (it did, Oct 28). A scan that ran exits 0 in both buckets; any other exit is an operational error and fails the case. The
@@ -72,7 +72,7 @@ check "missing image identity (no tags, no digests)"      ghcr.io/fosterstack/ca
 # with the GO id as an alias, so a suppress here proves grype matches through the alias. 1.27.1 is inside the advisory's range but not the pinned version.
 check_stdlib() { # label name tag digest ver want
   local label="$1" name="$2" tag="$3" digest="$4" ver="$5" want="$6"
-  local sbom="$work/sbom.json" js f ig got rc rc_ok=1 id_ok=1
+  local sbom="$work/sbom.json" js f ig got rc rc_ok=1
   python3 - "$base" "$sbom" "$name" "$tag" "$digest" "$ver" <<'PY'
 import json,sys
 base,out,name,tag,digest,ver=sys.argv[1:7]
@@ -90,18 +90,13 @@ PY
   js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
   f=$(jq '[.matches[]?|select(.vulnerability.id=="GO-2026-6809")]|length' <<<"$js" 2>/dev/null || echo -1)
   ig=$(jq '[.ignoredMatches[]?|select(.vulnerability.id=="GO-2026-6809")]|length' <<<"$js" 2>/dev/null || echo -1)
+  # each case judges only its own advisory: grype's database grows every day
   if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
   if [ "$rc" -ne 0 ]; then rc_ok=0; fi   # no --fail-on (see check()): exit 0 is the only completed scan
-  if [ "$got" = SUPPRESS ]; then
-    jq -e 'any(.ignoredMatches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 || id_ok=0
-    jq -e 'any(.matches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 && id_ok=0
-  else
-    jq -e 'any(.matches[]?; .vulnerability.id=="GO-2026-6809")' <<<"$js" >/dev/null 2>&1 || id_ok=0
-  fi
-  if [ "$got" = "$want" ] && [ "$rc_ok" = 1 ] && [ "$id_ok" = 1 ]; then
+  if [ "$got" = "$want" ] && [ "$rc_ok" = 1 ]; then
     echo "ok: ${label} (${got}, exit ${rc})"; pass=$((pass+1))
   else
-    echo "FAIL: ${label} got=${got} want=${want} (find=${f} ign=${ig} exit=${rc} rc_ok=${rc_ok} id_ok=${id_ok})"; fail=$((fail+1))
+    echo "FAIL: ${label} got=${got} want=${want} (find=${f} ign=${ig} exit=${rc} rc_ok=${rc_ok})"; fail=$((fail+1))
   fi
 }
 # the products are the repository-wide ones and the scope is the stdlib 1.27.2 subcomponent: the nine v0.2.2 digests (index, amd64 and arm64 of production, debug and fips, where the evidence was gathered) suppress, and so does any other digest of the cache repository whose stdlib is 1.27.2
