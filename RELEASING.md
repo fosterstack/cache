@@ -96,8 +96,8 @@ git tag -s -m "..." vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag must be signed with the maintainer's own key: set git's
-`user.signingkey` first, or `git tag -s` cannot sign it. Pushing it is the only trigger — there is no manual
+Sign the tag with SSH: set `gpg.format` to `ssh` and `user.signingkey` to the SSH key
+listed for you as a maintainer, then run `git tag -s`. Pushing it is the only trigger — there is no manual
 release path.
 
 ## What a release contains
@@ -112,8 +112,8 @@ today reads a separate local apk release key; the intended state is the one
 release signing key, and it lands with the APK signing change:
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
-  `linux/arm64` index holding the `fscache` binary and a few packages (base layout, CA
-  certificates, time zone data), with no base image,
+  `linux/arm64` index holding the `fscache` binary and a few packages (base layout and
+  time zone data), with no base image,
   at `ghcr.io/fosterstack/cache` and mirrored, same digests, at
   `docker.io/fosterstack/cache`. Tags: `:X.Y.Z` and `:X.Y.Z-fips` exactly;
   `:X.Y` moves to every final release of that line; `:X` and `:latest` move
