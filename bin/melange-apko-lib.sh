@@ -579,7 +579,7 @@ elif mode == "dependabot":
     d = load()
     for u in d["updates"]:
         assert not re.search(r"apko|melange|apk|lock|/build/locks", json.dumps(u), re.I), u
-        assert u["directory"] in ("/", "/build/docker", "/.github/agent"), u["directory"]   # build/docker stays until the Dockerfile goes
+        assert u["directory"] in ("/", "/build/docker", "/.github/agent", "/tools/requirements"), u["directory"]   # build/docker stays until the Dockerfile goes; /tools/requirements: the second Go module (its own gomod entry, rule 12), not an apk, apko, melange or lock-file entry
 elif mode == "wf":
     d = load(); on = d.get(True) or d.get("on"); jobs = d["jobs"]; j = jobs[arg]; blob = json.dumps(j)
     if arg == "refresh":

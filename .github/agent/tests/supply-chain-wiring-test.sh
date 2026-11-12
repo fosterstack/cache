@@ -204,14 +204,15 @@ def judge_db(d):
     for k, n in seen.items():
         if n > 1:
             bad.append(f"{k[0]} {k[1]} has {n} entries: one entry per ecosystem and directory")
-    by = {u.get("package-ecosystem"): u for u in ups}
+    by = {(u.get("package-ecosystem"), u.get("directory")): u for u in ups}
     want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
-            "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: byte-for-byte unchanged
+            "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: unchanged, except that gomod may group its updates
     for eco, entry in want.items():
-        if eco in by and by[eco] != entry:
+        found = next((u for u in ups if u.get("package-ecosystem") == eco and (eco == "docker" or u.get("directory") == "/")), None)
+        if found is not None and {k: v for k, v in found.items() if k != "groups"} != entry:
             bad.append(f"the {eco} entry is not unchanged")
-    for eco in ("github-actions", "gomod", "docker", "pip"):
-        if eco not in by:
+    for eco, directory in (("github-actions", "/"), ("gomod", "/"), ("docker", "/build/docker"), ("pip", "/.github/agent")):
+        if (eco, directory) not in by and not (eco == "docker" and any(k[0] == eco for k in by)):  # docker's directory change is judged as "not unchanged" above
             bad.append(f"the {eco} entry is missing")
     return bad
 

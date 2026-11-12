@@ -15,14 +15,45 @@ updates:
     # construction and none can ever merge. Grouping makes them one PR that
     # moves all pins together. (Found Sep 7, 2026: PRs #12/#13/#15.)
     groups:
+      # Major only: a codeql-action major stays its own lane task. It must come first and be major-only:
+      # Dependabot gives a dependency to the first group that matches it, so its minor and patch fall through
+      # to actions-minor-patch below.
       codeql-action:
         patterns:
           - "github/codeql-action*"
+        update-types:
+          - "major"
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # tools/requirements is its own Go module (ci.yml runs it with go -C tools/requirements); same shape as the root module.
+  - package-ecosystem: "gomod"
+    directory: "/tools/requirements"
+    schedule:
+      interval: "weekly"
+    groups:
+      gomod-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # The distroless base digests. CRITICAL (owner, Sep 8): nothing had
   # watched these since Sprint 3 — the pins lived in .goreleaser.yaml and
@@ -56,3 +87,13 @@ updates:
         patterns:
           - "pydantic"
           - "pydantic-core"
+      # Minor and patch updates of the other agent packages arrive as ONE pull request instead of one each (audit
+      # ruling Oct 31): one head, one review, one audit record. A major never joins (it stays a lane task, bump rule 3).
+      # It comes after pydantic: Dependabot gives a dependency to the first group that matches it.
+      # pip itself is pinned exactly in pip-requirements.txt (the pip-pin test fails on any other pin): a pip bump never joins.
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+        exclude-patterns:
+          - "pip"
