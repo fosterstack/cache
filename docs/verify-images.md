@@ -1,7 +1,7 @@
 # Verify our images
 
-Every FosterStack Cache release is signed and provenance-attested by
-GitHub's own CI — not by us claiming it, by a chain you can check yourself
+Every FosterStack Cache release is signed and provenance-attested — not by
+us claiming it, but by a chain you can check yourself
 in under a minute, with `cosign` and `gh` plus standard tools (`curl`,
 `sed`, `jq`, `base64`, `sha256sum` or `shasum`).
 
@@ -224,11 +224,11 @@ The individual statements, all verifiable with the same command shape
 | `https://fosterstack.com/attestations/scan-trivy/v1` (also `-grype`, `-snyk`) | the verification stage | this digest was scanned clean by that scanner, with its version and database state |
 | `https://fosterstack.com/attestations/acceptance/v1` | the acceptance stage | the per-AC acceptance results for this digest |
 | `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
-| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results (REQ-REL-001/002): the anonymous verification and every-tag anonymous pull passed for this digest |
+| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results ([REQ-REL-001](quality/traceability.md#req-rel-001--signed-attested-releases), [REQ-REL-002](quality/traceability.md#req-rel-002--anonymous-availability)): the anonymous verification and every-tag anonymous pull passed for this digest |
 
 **Resolving the deferred release ACs.** Because the release manifest is
 attached BEFORE publication, its `ac_results` shows the two publication
-ACs (`REQ-REL-001-AC1`, `REQ-REL-002-AC1`) as
+ACs (`REQ-REL-001-AC1` in [REQ-REL-001](quality/traceability.md#req-rel-001--signed-attested-releases) and `REQ-REL-002-AC1` in [REQ-REL-002](quality/traceability.md#req-rel-002--anonymous-availability)) as
 `deferred-to-publication`, and its `publication_evidence` field points
 here. Their **pass** outcome lives in the separate publication attestation
 above — verify it (needs a token), pinned to the promotion workflow and
@@ -346,7 +346,7 @@ key, as a bundle over that file:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt   # verifies every archive you downloaded, transitively
+sha256sum -c checksums.txt 2>/dev/null | grep OK   # checks each archive you downloaded
 ```
 
 ## 5. Enforcing this in your own cluster (Kyverno)
@@ -389,6 +389,6 @@ artifact — review it against your own cluster's admission-control setup.
 
 ## Why this matters more than most vendors' equivalent page
 
-Free and paid tiers pull the exact same bytes (brief §0.2) — there is no
+Free and paid tiers pull the exact same bytes — there is no
 "trust us" tier. Everything on this page works identically whether you're
 paying us anything or not.
