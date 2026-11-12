@@ -45,6 +45,12 @@ passes_of() {   # passes_of <workdir>  -> prints the pass case names (one per li
 
 # run_mutant <label> <mode> <standin> [workflow-variant]
 # installs the stand-in under every command name (with AUDIT_MUTANT=<mode>), prints passes.
+keep_fixture_helper() {  # keep_fixture_helper <workspace>: the suite's own verdict helper and the library it imports
+  mkdir -p "$1/.github/agent/bin/tests"
+  cp "$repo/.github/agent/bin/tests/verdict_fixture.py" "$1/.github/agent/bin/tests/"
+  cp -R "$repo/.github/agent/bin/auditorlib" "$1/.github/agent/bin/"
+}
+
 run_mutant() {
   local label="$1" mode="$2" standin="$3" wf="${4:-}"
   local w; w="$(mktemp -d)"
@@ -52,6 +58,7 @@ run_mutant() {
   rm -rf "$w/.github/agent/bin"; mkdir -p "$w/.github/agent/bin"
   local c
   for c in $(cmds); do cp "$standin" "$w/.github/agent/bin/$c"; chmod +x "$w/.github/agent/bin/$c"; done
+  keep_fixture_helper "$w"
   if [ -n "$wf" ]; then printf '%s' "$wf" > "$w/.github/workflows/auditor.yml"; fi
   ( cd "$w" && AUDIT_MUTANT="$mode" AUDIT_MARKER="$MK/$label.marker" bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
   rm -rf "$w"
@@ -63,6 +70,7 @@ run_probe() {  # run_probe <label> <probemode> : install probe-standin in that m
   rm -rf "$w/.github/agent/bin"; mkdir -p "$w/.github/agent/bin"
   local c
   for c in $(cmds); do cp "$PROBE" "$w/.github/agent/bin/$c"; chmod +x "$w/.github/agent/bin/$c"; done
+  keep_fixture_helper "$w"
   ( cd "$w" && AUDIT_PROBE="$pm" AUDIT_MARKER="$MK/$label.marker" bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
   rm -rf "$w"
 }
