@@ -74,7 +74,7 @@ def _no_dup_pairs(pairs):
     return out
 
 
-def _refuse_constant(name):
+def refuse_constant(name):
     raise ParseError("panel verdict: %s is not valid JSON" % name)
 
 
@@ -83,7 +83,7 @@ def load_panel_verdict(path):
     reader can see a different document from the one a stricter reader refuses. OSError for a missing file."""
     with open(path) as fh:
         try:
-            return json.load(fh, object_pairs_hook=_no_dup_pairs, parse_constant=_refuse_constant)
+            return json.load(fh, object_pairs_hook=_no_dup_pairs, parse_constant=refuse_constant)
         except RecursionError as e:
             raise ParseError("panel verdict: nested too deeply (%s)" % e)
 
