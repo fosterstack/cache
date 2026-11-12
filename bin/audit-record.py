@@ -36,8 +36,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot, the user of a pull request it opened
 REVIEWER_CHECK = "dependabot-reviewer"       # the check run dependabot-reviewer.yml publishes as its verdict on a head
-# the conclusions GitHub documents for a completed check run; anything else in that field is not a verdict
-CONCLUSIONS = ("action_required", "cancelled", "failure", "neutral", "skipped", "stale", "success", "timed_out")
+NO_RUN = object()                            # reviewer_verdict's answer for a commit the reviewer has not run on; no string a run can carry equals it
 MAX_UPDATES = 50                             # the merges of main followed back from a head
 
 
@@ -124,31 +123,30 @@ def dependabot_pull(pr):
 
 def bump_pull(head, pulls):
     """The one open pull request with this head sha, when Dependabot opened it (`gh api repos/R/commits/SHA/pulls`),
-    else None. The gate's check run belongs to the commit, so it would pass every pull request with that head: any
-    other open one, an item whose state or head sha cannot be read, or a full page of 100 leaves the record rule in
-    force."""
+    else None. The gate's check run belongs to the commit, so any other open pull request on it, or an item that
+    cannot be read, leaves the record rule in force."""
     if not isinstance(pulls, list) or len(pulls) >= 100:
         return None
     for p in pulls:
-        sha = p["head"].get("sha") if isinstance(p, dict) and isinstance(p.get("head"), dict) else None
-        if not isinstance(sha, str) or not _SHA.fullmatch(sha) or p.get("state") not in ("open", "closed"):
+        if not isinstance(p, dict) or p.get("state") not in ("open", "closed"):
+            return None
+        sha = p["head"].get("sha") if isinstance(p.get("head"), dict) else None
+        if p["state"] == "open" and not (isinstance(sha, str) and _SHA.fullmatch(sha)):
             return None
     same = [p for p in pulls if p["state"] == "open" and p["head"]["sha"] == head]
     return same[0] if len(same) == 1 and dependabot_pull(same[0]) else None
 
 
-def reviewer_verdict(checks, writers):
-    """The conclusion of the newest dependabot-reviewer check run that an audit writer's App put on a commit: "none"
-    when it put none there, "unfinished" for one still running, None when the writers policy or the answer of
+def reviewer_verdict(checks, logins):
+    """The conclusion of the newest dependabot-reviewer check run on a commit that one of the bot logins put there
+    (the reviewer publishes as the App that writes the records, so its login is the App's slug plus [bot]):
+    NO_RUN when it put none, "unfinished" for one still running, None when the answer of
     `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&filter=all&per_page=100` is malformed or
-    cut, or when the run is completed with a conclusion GitHub does not document (so a run's conclusion cannot read
-    as "none").
-    The reviewer publishes as the App that writes the records, whose bot login is the App's slug plus [bot]."""
-    allowed = _writers(writers)
+    cut, or the completed run has no conclusion."""
     runs = checks.get("check_runs") if isinstance(checks, dict) else None
-    if allowed is None or not isinstance(runs, list) or checks.get("total_count") != len(runs):
+    if not isinstance(runs, list) or checks.get("total_count") != len(runs):
         return None
-    logins, mine = {login for login, _ in allowed}, []
+    mine = []
     for r in runs:
         app = r.get("app") if isinstance(r, dict) else None
         if (not isinstance(app, dict) or not isinstance(app.get("slug"), str) or not app["slug"]
@@ -157,25 +155,22 @@ def reviewer_verdict(checks, writers):
         if r["name"] == REVIEWER_CHECK and app["slug"] + "[bot]" in logins:
             mine.append(r)
     if not mine:
-        return "none"
+        return NO_RUN
     last = max(mine, key=lambda r: r["id"])
-    if last.get("status") != "completed":
-        return "unfinished"
-    return last["conclusion"] if last.get("conclusion") in CONCLUSIONS else None
+    return last.get("conclusion") if last.get("status") == "completed" else "unfinished"
 
 
 def bump_passes(head, verdict_of, update_of):
-    """(True, why) when the Dependabot reviewer passes this head of a Dependabot pull request, else (False, why).
-    Its newest verdict on the head (verdict_of) is success; or the head has no verdict and only merges main into a
-    head that passes (update_of gives the first parent of such a commit, else None). Any other verdict refuses, and
-    so does no verdict at all, on a patch as on a major."""
+    """(True, why) when verdict_of(head) is "success", or is NO_RUN and the head only merges main into a head that
+    passes (update_of gives the first parent of such a commit, else None); else (False, why). Any other verdict
+    refuses, and so does no verdict at all."""
     c = head
     for _ in range(MAX_UPDATES + 1):
         v = verdict_of(c)
         if v == "success":
             return True, "the Dependabot reviewer passed " + (
                 "this head" if c == head else "%s, and this head only merges main into it" % c)
-        if v != "none":
+        if v is not NO_RUN:
             return False, "the Dependabot reviewer's newest verdict on %s is %s, not success" % (c, v or "unreadable")
         c = update_of(c)
         if c is None:
@@ -319,17 +314,18 @@ def _update_of(root, commit):
 def bump(head, repo, root):
     """(None, "") when the record rule stands (no exemption can be read for this head); else (passes, why).
     _ApiError when GitHub cannot be asked."""
-    writers = _load(os.path.join(root, WRITERS_PATH))
-    if not (isinstance(head, str) and _SHA.fullmatch(head) and _writers(writers) is not None
+    allowed = _writers(_load(os.path.join(root, WRITERS_PATH)))
+    if not (isinstance(head, str) and _SHA.fullmatch(head) and allowed is not None
             and isinstance(repo, str) and re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo)):
         return None, ""
+    logins = {login for login, _ in allowed}
     pr = bump_pull(head, _gh("repos/%s/commits/%s/pulls?per_page=100" % (repo, head)))
     if pr is None:
         return None, ""
 
     def verdict_of(commit):
         path = "repos/%s/commits/%s/check-runs?check_name=%s&filter=all&per_page=100" % (repo, commit, REVIEWER_CHECK)
-        return reviewer_verdict(_gh(path), writers)
+        return reviewer_verdict(_gh(path), logins)
     ok, why = bump_passes(head, verdict_of, lambda commit: _update_of(root, commit))
     if ok:
         return True, "Dependabot pull request #%s needs no passed-audit record: %s" % (pr.get("number"), why)

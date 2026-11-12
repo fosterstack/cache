@@ -539,6 +539,7 @@ for name, pr in (
 HUMAN = mut(mut(mut(DEP, ["user"], {"login": "fosterstack-admin", "id": 9, "type": "User"}), ["head", "ref"], "feat/x"), ["number"], 8)
 check("bump: the one open pull request on the head, Dependabot's, is the one judged", A.bump_pull(HEAD, [DEP]) == DEP)
 check("bump: a closed pull request on the same head changes nothing", A.bump_pull(HEAD, [DEP, mut(HUMAN, ["state"], "closed")]) == DEP)
+check("bump: a closed pull request whose head sha cannot be read changes nothing", A.bump_pull(HEAD, [DEP, mut(mut(HUMAN, ["state"], "closed"), ["head", "sha"], None)]) == DEP)
 check("bump: a pull request on another head changes nothing", A.bump_pull(HEAD, [DEP, mut(HUMAN, ["head", "sha"], "c" * 40)]) == DEP)
 for name, pulls in (
     ("a human pull request shares the head with Dependabot's", [DEP, HUMAN]),
@@ -554,7 +555,6 @@ for name, pulls in (
     ("an item's head sha is not 40 lower-case hex", [DEP, mut(HUMAN, ["head", "sha"], HEAD.upper())]),
     ("another open pull request's head sha is this head and a newline", [DEP, mut(HUMAN, ["head", "sha"], HEAD + "\n")]),
     ("an item's state is neither open nor closed", [DEP, mut(HUMAN, ["state"], "OPEN")]),
-    ("a closed item's head sha cannot be read", [DEP, mut(mut(HUMAN, ["state"], "closed"), ["head", "sha"], None)]),
     ("no pull request at all", []), ("the answer is not a list", DEP), ("no answer", None),
 ):
     check("bump: the record rule stands when " + name, A.bump_pull(HEAD, pulls) is None, A.bump_pull(HEAD, pulls))
@@ -563,25 +563,22 @@ def run(i, conclusion="success", slug="fosterstack-automation", name="dependabot
     return {"id": i, "name": name, "status": status, "conclusion": conclusion, "app": {"id": 5054756, "slug": slug}}
 def runs(*rs):
     return {"total_count": len(rs), "check_runs": list(rs)}
-def verdict(answer, writers=WRITERS):
-    return A.reviewer_verdict(answer, writers)
+def verdict(answer):
+    return A.reviewer_verdict(answer, {"fosterstack-automation[bot]"})
 for name, answer, want in (
-    ("no check run", runs(), "none"),
+    ("no check run", runs(), A.NO_RUN),
     ("the reviewer's success", runs(run(1)), "success"),
     ("the reviewer's failure", runs(run(1, "failure")), "failure"),
     ("a neutral check (a re-review that did not finish)", runs(run(1, "neutral")), "neutral"),
     ("a failure after a success: the newest counts", runs(run(1), run(2, "failure")), "failure"),
     ("a success after a failure: the newest counts", runs(run(2), run(1, "failure")), "success"),
-    ("a success from another App", runs(run(1, slug="github-actions")), "none"),
+    ("a success from another App", runs(run(1, slug="github-actions")), A.NO_RUN),
     ("another App's success after the reviewer's failure", runs(run(1, "failure"), run(2, slug="someone")), "failure"),
-    ("a success under another check name", runs(run(1, name="dependabot reviewer")), "none"),
+    ("a success under another check name", runs(run(1, name="dependabot reviewer")), A.NO_RUN),
     ("a check run still in progress", runs(run(1, None, status="in_progress")), "unfinished"),
     ("a completed run that was cancelled", runs(run(1, "cancelled")), "cancelled"),
-    ("a completed run whose conclusion is the word none (not GitHub's, and not the absence of a run)", runs(run(1, "none")), None),
-    ("a completed run whose conclusion is the word unfinished", runs(run(1, "unfinished")), None),
-    ("a completed run with a conclusion GitHub does not document", runs(run(1, "passed")), None),
+    ("a completed run whose conclusion is the word none (not the absence of a run)", runs(run(1, "none")), "none"),
     ("a completed run with no conclusion", runs(run(1, None)), None),
-    ("an undocumented conclusion after the reviewer's success: the newest counts", runs(run(1), run(2, "none")), None),
     ("a list GitHub cut (more runs than it returned)", {"total_count": 2, "check_runs": [run(1)]}, None),
     ("an entry with no App", runs(dict(run(1), app=None)), None),
     ("an entry whose App has no slug", runs(dict(run(1), app={"id": 5054756})), None),
@@ -595,16 +592,14 @@ for name, answer, want in (
     ("a malformed entry", runs("x"), None), ("a malformed answer", [], None), ("no answer", None, None),
 ):
     check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
-check("bump: the reviewer's verdict: no writers policy -> unreadable", verdict(runs(run(1)), None) is None)
-check("bump: the conclusions read as verdicts are the eight GitHub documents, and neither sentinel is one of them",
-      sorted(A.CONCLUSIONS) == ["action_required", "cancelled", "failure", "neutral", "skipped", "stale", "success", "timed_out"])
+check("bump: the word none is not the absence of a run", verdict(runs(run(1, "none"))) is not A.NO_RUN)
 
 # the walk: success on the head, or on a head it only merges main into; nothing else passes, and no verdict is no pass
 CHAIN = {"h2": "h1", "h1": "h0"}      # h2 is h1 with main merged in, h1 is h0 with main merged in, h0 is more than a merge
 def passes(head="h2", verdicts=None, parents=CHAIN):
     asked = []
     def verdict_of(c):
-        asked.append(c); return (verdicts or {}).get(c, "none")
+        asked.append(c); return (verdicts or {}).get(c, A.NO_RUN)
     ok, said = A.bump_passes(head, verdict_of, lambda c: (parents or {}).get(c))
     return ok, said, asked
 ok, said, asked = passes()

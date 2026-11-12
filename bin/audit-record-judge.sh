@@ -5,10 +5,9 @@
 # It reads the record branch audit/<HEAD_SHA> and its commit through the API (only when the base is main and the head is 40 lower-case hex, so nothing odd is ever put in
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
-# A head with no passing record is put to bin/audit-record.py bump (REQ-REL-012-AC9: the head of a pull request
-# Dependabot opened passes on the Dependabot reviewer's success). That reads the head's commits as git objects of this
-# checkout and refuses where they are missing. --release mode never reaches it; the writer's prepare script calls
-# this judge without --release for a release commit as well, and that call does.
+# A head with no passing record is then put to bin/audit-record.py bump (its docstring has the contract), which reads
+# the head's commits from this checkout. --release mode never reaches it. The writer's prepare script also calls this
+# judge without --release for a release commit, and that call does reach it.
 set -uo pipefail
 # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
 head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}
