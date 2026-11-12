@@ -2,12 +2,12 @@
 # The sandbox wall probe of the dry run (sandboxed-build rules 3, 5 and 6). It renders six test-only recipes
 # (build/probe/*.yaml.tmpl), runs each through the same sealed melange call as the apk build, and reads only melange's
 # exit status, never the recipe's output. Every attempt recipe is: if ATTEMPT; then exit 1; fi
-#   control       a harmless step with every tool the attempts use and the route table; it must exit 0
+#   control       a harmless step with every tool the attempts use and both route tables; it must exit 0
 #   read-record   cat the host path of this job's Witness record, and its copy under /home/build
 #   write-record  append to the host path (the probe also compares the record's sha256 before and after)
 #   read-keydir   cat a file of a stand-in key folder made here
 #   read-token    the sandbox's variable NAMES grepped for the runner's token names (a value is never printed)
-#   network       an HTTP fetch of a literal address, then any route in /proc/net/route; then the net probe in a
+#   network       any route in /proc/net/route, or any route off lo in /proc/net/ipv6_route; then the net probe in a
 #                 namespace made with unshare -n (101 = sealed)
 # melange exit 0 on an attempt = the recipe ran to its end and denied the attempt = the wall held. ANY other exit = not
 # held (exit 4: the wall is open, or the attempt did not run; fail closed). 126 or 127 = probe error (exit 1). The
