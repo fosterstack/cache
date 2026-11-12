@@ -88,17 +88,24 @@ def load_panel_verdict(path):
             raise ParseError("panel verdict: nested too deeply (%s)" % e)
 
 
-_TOP_KEYS = frozenset(("images", "not_counted", "scanner_failures", "findings", "unique", "vex_covered", "issue", "exit"))
+_TOP_KEYS = frozenset(("images", "not_counted", "scanner_failures", "findings", "unique", "vex_covered", "issue",
+                       "exit"))
 _IMAGE_KEYS = frozenset(("counts", "did_not_run", "ran", "counts_for_day"))
-_FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of", "unique", "status", "purls", "details"))
+_FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of", "unique", "status", "purls",
+                           "details"))
 _DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited", "purl"))
 _SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
-_TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")            # no control characters, no backtick (the issue text quotes with it)
-_ID = policy.FINDING_ID          # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result; capped, and the same grammar the unsettled-run counter keeps
+# no control characters, no backtick (the issue text quotes with it)
+# matches "libc6 2.36"; not text holding a backtick
+_TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")
+# CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result; capped, and the same grammar the
+# unsettled-run counter keeps
+_ID = policy.FINDING_ID
 _NOCTL = r"[^\s\x00-\x1f\x7f"
 class _PurlGrammar:
-    """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs (bin/panel.py purl_ok)."""
+    """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs (bin/panel.py
+    purl_ok)."""
     @staticmethod
     def fullmatch(purl):
         return True if _panel_module().purl_ok(purl) else None
@@ -140,7 +147,8 @@ def _validate_panel_verdict(d):
     pm = _panel_module()
     if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not isinstance(d.get("findings"), list):
         raise ParseError("panel verdict: no images object or findings array")
-    _closed(d, _TOP_KEYS, "the verdict")            # default deny: every level lists its keys, an unknown one is refused
+    # default deny: every level lists its keys, an unknown one is refused
+    _closed(d, _TOP_KEYS, "the verdict")
     if set(d["images"]) != panel_images():
         raise ParseError("panel verdict: the image set is not the panel's fixed set")
     for img, st in d["images"].items():
@@ -169,8 +177,10 @@ def _validate_panel_verdict(d):
     for f in d["findings"]:
         if isinstance(f, dict):
             _closed(f, _FINDING_KEYS, "a finding")
-            if not _ID.fullmatch(str(f.get("id"))) or not _TEXT.fullmatch(str(f.get("package"))) or not _TEXT.fullmatch(str(f.get("version"))):
-                raise ParseError("panel verdict: a finding id, package or version holds a character outside the allowed set")
+            if (not _ID.fullmatch(str(f.get("id"))) or not _TEXT.fullmatch(str(f.get("package")))
+                    or not _TEXT.fullmatch(str(f.get("version")))):
+                raise ParseError("panel verdict: a finding id, package or version holds a character outside the "
+                                 "allowed set")
         if not (isinstance(f, dict) and all(isinstance(f.get(k), str) and f.get(k) for k in ("id", "image", "package"))
                 and isinstance(f.get("version"), str) and isinstance(f.get("purls"), list)
                 and all(isinstance(x, str) for x in f["purls"]) and f["image"] in st_all):
@@ -179,32 +189,47 @@ def _validate_panel_verdict(d):
         if (not isinstance(sb, list) or not sb or len(set(sb)) != len(sb) or any(x not in ran for x in sb)
                 or not _is_int(f.get("of")) or f.get("of") != len(ran) or f.get("unique") is not (len(sb) == 1)
                 or f.get("status") != ("unique" if len(sb) == 1 else "report")):
-            raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique/status" % (f["id"], f["image"]))
+            raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique/status"
+                             % (f["id"], f["image"]))
     for f in d["findings"]:                      # a package URL must name the package and version the finding names
         for purl in f["purls"]:
             if not _PURL.fullmatch(purl):
-                raise ParseError("panel verdict: finding %s on %s has a package URL that is not pkg:TYPE/..." % (f["id"], f["image"]))
+                raise ParseError("panel verdict: finding %s on %s has a package URL that is not pkg:TYPE/..."
+                                 % (f["id"], f["image"]))
             name, ver = pm._purl_name_version(purl)
-            if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"], f["version"])[2:]:
-                raise ParseError("panel verdict: finding %s on %s has a package URL for a different package or version" % (f["id"], f["image"]))
-    for f in d["findings"]:                      # each reporting scanner's own record: closed keys, exact types; absent = not reported
+            if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"],
+                                                                                      f["version"])[2:]:
+                raise ParseError("panel verdict: finding %s on %s has a package URL for a different package or "
+                                 "version" % (f["id"], f["image"]))
+    # each reporting scanner's own record: closed keys, exact types; absent = not reported
+    for f in d["findings"]:
         det = f["details"]
         if not isinstance(det, dict) or set(det) != set(f["seen_by"]):
-            raise ParseError("panel verdict: finding %s on %s has details for different scanners than seen_by" % (f["id"], f["image"]))
+            raise ParseError("panel verdict: finding %s on %s has details for different scanners than seen_by"
+                             % (f["id"], f["image"]))
         for sc, rec in det.items():
             if not isinstance(rec, dict) or not set(rec) <= _DETAIL_KEYS:
-                raise ParseError("panel verdict: finding %s on %s has an unknown key in %s's details" % (f["id"], f["image"], sc))
+                raise ParseError("panel verdict: finding %s on %s has an unknown key in %s's details"
+                                 % (f["id"], f["image"], sc))
             al = rec.get("aliases", [])
             if (rec.get("severity", "negligible") not in _SEVERITIES or not isinstance(rec.get("severity", ""), str)
-                    or ("fixed_version" in rec and not (isinstance(rec["fixed_version"], str) and rec["fixed_version"] and _TEXT.fullmatch(rec["fixed_version"])))
-                    or not isinstance(al, list) or len(set(map(str, al))) != len(al) or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
+                    or ("fixed_version" in rec
+                        and not (isinstance(rec["fixed_version"], str) and rec["fixed_version"]
+                                 and _TEXT.fullmatch(rec["fixed_version"])))
+                    or not isinstance(al, list) or len(set(map(str, al))) != len(al)
+                or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
                     or ("aliases" in rec and not al) or not isinstance(rec.get("known_exploited", True), bool)
                     or ("purl" in rec and not (isinstance(rec["purl"], str) and _PURL.fullmatch(rec["purl"])))):
-                raise ParseError("panel verdict: finding %s on %s has a malformed value in %s's details" % (f["id"], f["image"], sc))
-            if "purl" in rec:                    # that scanner's own package URL names the package and version the finding names
+                raise ParseError("panel verdict: finding %s on %s has a malformed value in %s's details"
+                                 % (f["id"], f["image"], sc))
+            # that scanner's own package URL names the package and version the finding names
+            if "purl" in rec:
                 name, ver = pm._purl_name_version(rec["purl"])
-                if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"], f["version"])[2:]:
-                    raise ParseError("panel verdict: finding %s on %s: %s's package URL is for a different package or version" % (f["id"], f["image"], sc))
+                if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"],
+                                                                                          f["package"],
+                                                                                          f["version"])[2:]:
+                    raise ParseError("panel verdict: finding %s on %s: %s's package URL is for a different package or "
+                                     "version" % (f["id"], f["image"], sc))
     keys = [pm.key_of(f["image"], f["id"], f["package"], f["version"]) for f in d["findings"]]
     if len(set(keys)) != len(keys):
         raise ParseError("panel verdict: two findings share one identity (image, CVE, package, version)")
@@ -218,13 +243,17 @@ def _validate_panel_verdict(d):
         raise ParseError("panel verdict: the issue text is not the tally's rendering of the reported findings")
     for c in d["vex_covered"]:
         if isinstance(c, dict):
-            _closed(c, _VEX_KEYS, "a vex_covered entry")                   # what the tally recorded as hidden by our statement (its Inspector and Google results)
-        if not (isinstance(c, dict) and all(isinstance(c.get(k), str) and c.get(k) for k in ("image", "scanner", "id", "package"))
+            # what the tally recorded as hidden by our statement (its Inspector and Google results)
+            _closed(c, _VEX_KEYS, "a vex_covered entry")
+        if not (isinstance(c, dict)
+                and all(isinstance(c.get(k), str) and c.get(k) for k in ("image", "scanner", "id", "package"))
                 and isinstance(c.get("version"), str) and c["image"] in st_all and c["scanner"] in pm.FILTER_HERE
                 and c["scanner"] in st_all[c["image"]]["ran"]):
-            raise ParseError("panel verdict: a vex_covered entry is incomplete, names an unknown image or a scanner the tally does not filter, or one that did not run there")
+            raise ParseError("panel verdict: a vex_covered entry is incomplete, names an unknown image or a scanner "
+                             "the tally does not filter, or one that did not run there")
         if not _ID.fullmatch(c["id"]) or not _TEXT.fullmatch(c["package"]) or not _TEXT.fullmatch(c["version"]):
-            raise ParseError("panel verdict: a vex_covered id, package or version holds a character outside the allowed set")
+            raise ParseError("panel verdict: a vex_covered id, package or version holds a character outside the "
+                             "allowed set")
     code = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if reported else 0)
     if not _is_int(d.get("exit")) or d.get("exit") != code:
         raise ParseError("panel verdict: exit status disagrees with the images and findings")
@@ -232,8 +261,8 @@ def _validate_panel_verdict(d):
 
 
 def manifest_readers(m):
-    """[(scanner, reader, path)] for a manifest's four panel scanners; the path is None for a scanner whose report is not available
-    (it did not run, or missed an image). All four are read from the one verdict.json."""
+    """[(scanner, reader, path)] for a manifest's four panel scanners; the path is None for a scanner whose report is
+    not available (it did not run, or missed an image). All four are read from the one verdict.json."""
     vp = ((m or {}).get("panel") or {}).get("verdict")
     r = (m or {}).get("scanner_reports") or {}
     return [(sc, (lambda p, sc=sc: parse_panel(p, sc)), vp if r.get(sc) else None) for sc in PANEL_SCANNERS]
@@ -253,15 +282,18 @@ def parse_panel(path, scanner):
     for f in d["findings"]:
         if scanner not in f["seen_by"]:
             continue
-        mine = f["details"].get(scanner, {})             # this scanner's own severity / fix / aliases / package URL for this image
-        purl = mine.get("purl") or "pkg:generic/%s@%s" % (f.get("package"), f.get("version"))     # never another scanner's package URL
+        # this scanner's own severity / fix / aliases / package URL for this image
+        mine = f["details"].get(scanner, {})
+        # never another scanner's package URL
+        purl = mine.get("purl") or "pkg:generic/%s@%s" % (f.get("package"), f.get("version"))
         key = (f["id"], purl)
         rec = seen.get(key)
         if rec is None:
             rec = seen[key] = _finding(scanner, f["id"], purl, (), f.get("package"), None, None,
                                        {"images": [], "version": f.get("version"), "by_image": {}})
         rec["extra"]["images"].append(f["image"])
-        if mine.get("severity") and (rec["severity"] is None or _SEVERITIES.index(mine["severity"]) > _SEVERITIES.index(rec["severity"])):
+        if mine.get("severity") and (rec["severity"] is None
+                                     or _SEVERITIES.index(mine["severity"]) > _SEVERITIES.index(rec["severity"])):
             rec["severity"] = mine["severity"]           # the highest across images; the scanner's words, normalised
         if mine.get("fixed_version") and not rec["fixed_version"]:
             rec["fixed_version"] = mine["fixed_version"]
@@ -269,9 +301,12 @@ def parse_panel(path, scanner):
             rec["extra"]["known_exploited"] = True
         rec["aliases"] = sorted(set(rec["aliases"]) | set(mine.get("aliases") or []))
         rec["extra"]["by_image"][f["image"]] = {"seen_by": sorted(f["seen_by"]), "of": f["of"], "unique": f["unique"]}
-    # What the tally recorded as HIDDEN by our published VEX for this scanner (its Inspector and Google results are filtered against the document, bin/panel.py): a carried
-    # statement must stay re-judgeable each run, so each entry is emitted as a finding flagged `carried` (rc-5b fix 5, REQ-AUD-2 AC7, REQ-AUD-13 AC7). It carries no package URL of its
-    # own (the tally keeps package and version); the run resolves it to the carried statement's scope, or drops it when no carried statement matches.
+    # What the tally recorded as HIDDEN by our published VEX for this scanner (its Inspector and Google results are
+    # filtered against the document, bin/panel.py): a carried
+    # statement must stay re-judgeable each run, so each entry is emitted as a finding flagged `carried` (REQ-AUD-2 AC7,
+    # REQ-AUD-13 AC7). It carries no package URL of its
+    # own (the tally keeps package and version); the run resolves it to the carried statement's scope, or drops it when
+    # no carried statement matches.
     for c in d["vex_covered"]:
         if c["scanner"] != scanner:
             continue
@@ -339,7 +374,8 @@ def parse_govulncheck(path):
             if root0:
                 cands = [p for p in mods if p != "stdlib" and (root0 == p or root0.startswith(p + "/"))]
                 module = max(cands, key=len) if cands else root0
-        if isinstance(obj.get("osv"), dict) and obj["osv"].get("id"):         # the stream's own advisory entry: its aliases
+        # the stream's own advisory entry: its aliases
+        if isinstance(obj.get("osv"), dict) and obj["osv"].get("id"):
             osv_aliases[obj["osv"]["id"]] = sorted(a for a in (obj["osv"].get("aliases") or []) if isinstance(a, str))
         f = obj.get("finding")
         if not f:
@@ -361,11 +397,14 @@ def parse_govulncheck(path):
                    for fr in trace if fr.get("module")}
         cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set(), "mods": {}})
         mods = dict(cur["mods"])
-        vuln = next((fr for fr in trace if fr.get("module")), None)         # the vulnerable dependency is the trace's first named module
-        if vuln:                                                            # its installed version and the stream's fix stay with THAT module
+        # the vulnerable dependency is the trace's first named module
+        vuln = next((fr for fr in trace if fr.get("module")), None)
+        # its installed version and the stream's fix stay with THAT module
+        if vuln:
             e = dict(mods.get(vuln["module"], {"installed": None, "fixed": None, "reachable": False}))
             e["installed"] = e["installed"] or vuln.get("version") or sbom_ver.get(vuln["module"])
-            e["fixed"] = e["fixed"] or (f["fixed_version"] if isinstance(f.get("fixed_version"), str) and f["fixed_version"] else None)
+            e["fixed"] = e["fixed"] or (f["fixed_version"] if isinstance(f.get("fixed_version"), str)
+                                        and f["fixed_version"] else None)
             e["reachable"] = e["reachable"] or called
             mods[vuln["module"]] = e
         by_osv[osv] = {"reachable": cur["reachable"] or called,
