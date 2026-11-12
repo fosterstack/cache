@@ -102,7 +102,7 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
         else:
             proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
     if item.kind in ("tool", "package", "gotool") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
-        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
+        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
@@ -1311,7 +1311,7 @@ def _run(a, moved, fx, now):
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         rs = [r if r is None or _body_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]    # a row whose body hash does not hold rules nothing
         if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, PINNED_FETCH_RULING, HASH_LOCKED_RULING)) for r in rs):
-            rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
+            rs = [None]                                  # a download row rules a line only with one of the five rulings named above (text, live, Go, pinned, hash-locked)
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING) and not (k[0].endswith(".sh") and not k[0].startswith(".github/") and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
