@@ -1941,7 +1941,10 @@ def fake(cmd,*a,**kw):
     return R.subprocess.run.__wrapped__(cmd,*a,**kw) if hasattr(R.subprocess.run,"__wrapped__") else __import__("subprocess").run(cmd,*a,**kw)
 import subprocess as _sp
 def fake2(cmd,*a,**kw):
-    if cmd[:2]==["git","show"]: return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
+    if cmd[:2]==["git","show"]:   # a delivering run reads the carried files from the delivery base (git show <base>:<path>), not the workspace: the base here holds the carried files
+        _rel=cmd[2].split(":",1)[1]; _p=os.path.join(ws,_rel)
+        if os.path.isfile(_p): return _sp.CompletedProcess(cmd,0,open(_p).read(),"")
+        return _sp.CompletedProcess(cmd,128,"","fatal: path '"+_rel+"' does not exist in 'origin/main'")
     if cmd[:3]==["git","rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
     if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
@@ -2561,7 +2564,7 @@ pc="$("$PY" -c "
 import importlib.util,os
 os.environ['AUDITOR_MODEL_PRIMARY']='m'
 spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
-class B: text=('Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", '
+class B: text=('{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", '
     '\"lift_trigger\": {\"carrier\": \"nodejs\", \"min_version\": \"20.11.0\", \"component\": \"openssl\", '
     '\"component_min_version\": \"3.0.13\"}, \"candidate_release\": null}')
 class Msg: content=[B()]; usage=None
@@ -2573,6 +2576,9 @@ req={'kind':'pullability','finding_id':'CVE-X','component':'openssl','component_
 ans=C._handle(req,Client())
 good=(ans.get('pullable') is False and ans.get('hold')=='upstream-held'
       and (ans.get('lift_trigger') or {}).get('carrier')=='nodejs')
+B.text='Analysis: '+B.text
+try: C._handle(req,Client()); good=False      # prose around the object is a failed attempt, not an answer
+except ValueError: pass
 print('OK' if good else 'BAD:%r'%ans)" 2>/dev/null | tail -1)"
 { eq "$pc" "OK"; } && ok || no "production client answers pullability" "$pc"
 
@@ -4843,11 +4849,12 @@ def ask(text):
         @staticmethod
         def create(**k): return Msg()
     class Client: messages=_M()
-    a=C._handle({'finding_id':'CVE-X','package':'p','kind':'disposition'},Client())
+    try: a=C._handle({'finding_id':'CVE-X','package':'p','kind':'disposition'},Client())
+    except ValueError: return 'FAILED-ATTEMPT'      # prose, fenced, a second object or a repeated key is no answer: the attempt fails (one-shot exit 5), never a category
     return a.get('category'), a.get('refused')
 got=[ask('{\"category\": \"false_positive\"}'), ask('This is not a false_positive; it is real_fixable.'), ask('{\"category\": \"not a false_positive\"}'),
      ask('I cannot assess this.'), ask('{\"refused\": true}'), ask('{\"category\": \"real_fixable\", \"x\": 1}'), ask('{\"category\": \"real_fixable or false_positive\"}'), ask('Example: {\"category\": \"false_positive\"} then {\"refused\": true}'), ask('{\"refused\": true, \"category\": \"real_fixable\"}'), ask('{\"refused\": true, \"refused\": false, \"category\": \"false_positive\"}'), ask('Analysis: {\"category\": \"real_fixable\"}')]
-want=[('false_positive',False),('under_investigation',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('real_fixable',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('under_investigation',False),('under_investigation',False)]
+want=['false_positive'and('false_positive',False),'FAILED-ATTEMPT',('under_investigation',False),'FAILED-ATTEMPT',('under_investigation',True),('real_fixable',False),('under_investigation',False),'FAILED-ATTEMPT',('under_investigation',True),'FAILED-ATTEMPT','FAILED-ATTEMPT']
 print('OK' if got==want else 'BAD %r'%(got,))" 2>/dev/null | tail -1)"
 eq "$r12" "OK" && ok || no "client category and refusal are read from exact JSON keys" "$r12"
 begin "rc5b-12-proposals-validated-by-shape-and-name" "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap and no vendor/model name; a refused proposal does not stop the run"
@@ -4861,10 +4868,12 @@ bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''
      dict(good,note='proposed by Claude'), dict(good,evidence='per the gpt-5 analysis'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
      dict(good,note='x'*2001), None, 'x', [], {},
      {'kind':'knowledge'}, {'evidence':'e'}, {'kind':'knowledge','evidence':'e'}, dict(good,keys=[]), {k:v for k,v in good.items() if k!='keys'},
-     dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,package='Cl',note='au',evidence='de'), dict(good,note='gpt - 5'), dict(good,note='reviewed by private - model'), dict(good,package='zlib',note='aude',keys=[{'scanner':'grype','finding_id':'CVE-2099-1','purl':'pkg:generic/cl'}]), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
-     dict(good,note='\\uff23\\uff4c\\uff41\\uff55\\uff44\\uff45'), dict(good,note='Cl\\u0430ude'), dict(good,note='Cl\\u200baude'), dict(good,note='Clau',evidence='de says no'),
-     dict(good,package='an',note='thropic'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/\\uff4fpus@1'}])]
-ok=R._valid_proposal(good)==good and R._valid_proposal({'kind':'knowledge','evidence':'e','note':'n'})=={'kind':'knowledge','evidence':'e','note':'n'}
+     dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,evidence='Anthropic says no'), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
+     dict(good,note='\\uff23\\uff4c\\uff41\\uff55\\uff44\\uff45'), dict(good,note='Cl\\u0430ude'), dict(good,note='Cl\\u200baude'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/\\uff4fpus@1'}])]
+# ordinary text is kept: words that only share letters with a vendor name, even across two fields, are not a vendor name (no cross-field splitting layer)
+acc=[dict(good,note='knowledge',evidence='minizip'), dict(good,package='libopus0'), dict(good,package='minizip',note='knowledge')]
+acc_lost=[a for a in acc if R._valid_proposal(a) is None]
+ok=not acc_lost and R._valid_proposal(good)==good and R._valid_proposal({'kind':'knowledge','evidence':'e','note':'n'})=={'kind':'knowledge','evidence':'e','note':'n'}
 rej=[b for b in bad if R._valid_proposal(b) is not None]
 # configured model identifiers of this run, one at a time (no minimum length), each also against the kind field
 cfg_rej=[]
@@ -4906,7 +4915,7 @@ good_items={"accepted_items":[{"cve":c,"severity":"Medium","package":"libmed","t
 def write_good():
     json.dump(old,open(vp,"w")); json.dump(good_items,open(ap,"w"))
 write_good()
-corrupt_at="start"; reopened_body="{bad"
+corrupt_at="start"; reopened_body="{bad"; base_bad=None
 if variant=="vex-malformed": open(vp,"w").write("{not json")
 elif variant=="vex-notobject": open(vp,"w").write("[]")
 elif variant=="vex-empty-object": open(vp,"w").write("{}")
@@ -4924,13 +4933,13 @@ elif variant=="items-scalar-entry": json.dump({"accepted_items":[3]},open(ap,"w"
 elif variant=="items-bad-fields": json.dump({"accepted_items":[{"cve":"CVE-A","expiry":"2026-01-01","scope_purls":["p"],"not_pullable":True},{"cve":"CVE-B","expiry":"2026-01-01","scope_purls":5}]},open(ap,"w"))
 elif variant=="items-mixed-expiry": json.dump({"accepted_items":[dict(good_items["accepted_items"][0],expiry=5),dict(good_items["accepted_items"][0],expiry="2026-12-31")]},open(ap,"w"))
 elif variant=="vex-bad-vulnerability": json.dump(dict(old,statements=[dict(old["statements"][0],vulnerability="x")]),open(vp,"w"))
-elif variant=="vex-dir": os.remove(vp); os.mkdir(vp)
-elif variant=="items-dir": os.remove(ap); os.mkdir(ap)
+elif variant=="vex-dir": base_bad=".vex/"         # a delivering run reads the carried files from the delivery base, so the damage is in the base (served by git show below); the workspace stays good
+elif variant=="items-dir": base_bad=".auditor/accepted"
 elif variant=="items-bad-at-delivery": corrupt_at="delivery"
 elif variant=="delivery-base-vex-empty": corrupt_at="delivery-vex"
 elif variant=="delivery-base-items-keyless": corrupt_at="delivery-items"
 elif variant=="missing": os.remove(vp); os.remove(ap)
-elif variant=="vex-parent-noaccess": os.chmod(ws+"/.vex",0)          # EACCES on the parent: lstat of the file fails, which is not "absent"
+elif variant=="vex-parent-noaccess": base_bad=".vex/"          # the base's VEX cannot be read (git show gives a non-JSON answer), which is not "absent"
 elif variant=="reopened-bad-at-delivery": corrupt_at="reopened"
 elif variant=="reopened-empty-at-delivery": corrupt_at="reopened"; reopened_body="{}"
 elif variant=="reopened-nokey-at-delivery": corrupt_at="reopened"; reopened_body='{"other": []}'
@@ -4949,6 +4958,7 @@ def fake(cmd,*a,**kw):
         if cmd[1:3]==["rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
         if cmd[1:2]==["show"] and len(cmd)>2 and (cmd[2].startswith("origin/main:") or cmd[2].startswith("a"*40+":")):      # origin/main is the workspace's own reviewed files here
             _rel=cmd[2].split(":",1)[1]; _p=ws+"/"+_rel
+            if base_bad and _rel.startswith(base_bad): return _sp.CompletedProcess(cmd,0,"{bad","")      # the base's file is damaged (a directory / unreadable there)
             if os.path.isfile(_p): return _sp.CompletedProcess(cmd,0,open(_p).read(),"")
             return _sp.CompletedProcess(cmd,128,"","fatal: path '%s' does not exist in 'origin/main'"%_rel)
         return _sp.CompletedProcess(cmd,0,"","")
@@ -4978,6 +4988,10 @@ sys.path.insert(0,".github/agent/bin")
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 from auditorlib import vex
 from unittest.mock import patch
+from auditorlib import nochange
+if variant=="counter-invalid":      # the unsettled-run counter cannot advance: the run stops at once, before any owner issue exists
+    def _bad_advance(*a,**kw): raise nochange.CounterInvalid("more than %d unsettled findings" % nochange.UNSETTLED_MAX)
+    nochange.advance=_bad_advance
 _orig=vex.write
 def dmg_write(*a,**kw):
     p=_orig(*a,**kw)
@@ -5062,9 +5076,9 @@ for variant in fetch-fails-then-bad-base revparse-fails-then-bad-base; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r7" "rc=1 fetches=1" && ok || no "a base fetch or resolution that fails before the first owner issue is handed to the delivery, which reports it (rc=1) and acquires the base ONCE: no second fetch can find a damaged base after the issue exists ($variant)" "$r7"
 done
-for variant in finding-vex-empty-object finding-vex-invalid-statement; do
+for variant in counter-invalid finding-vex-empty-object finding-vex-invalid-statement; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
-  eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding whose per-finding VEX is damaged ($variant) stops the run (exit 3) BEFORE the owner-decision issue is created: no gh issue, no checkout, no push" "$r7"
+  eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding whose per-finding VEX is damaged, or whose unsettled-run counter cannot advance ($variant), stops the run (exit 3) BEFORE the owner-decision issue is created: no gh issue, no checkout, no push" "$r7"
 done
 while read -r want cmdline; do
   got="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import mutclass; print(int(mutclass.mutating(sys.argv[2:])))' "$WORK" $cmdline)"
