@@ -2048,8 +2048,8 @@ EXPECTED = {
         "1714fe6f02ca5bb0e5e7caeb04be023d96f15dfbd67448f45b86683a82e3e08f",
     ],
     "bin/go-bump-open-pr.sh": [
-        "9deac0d1003e47ede2bbb0c688862ad337321257308adfb4f41c232b3846c188",
         "7d12504f59f46f70f485dbe1d91ad4e2f3462dad855fa6d7abf9f089214e357b",
+        "9deac0d1003e47ede2bbb0c688862ad337321257308adfb4f41c232b3846c188",
     ],
 }
 assert {f: sorted(hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest() for l in ls) for f, ls in ac.PINNED_FETCH.items()} == EXPECTED
