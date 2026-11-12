@@ -320,6 +320,21 @@ if len(sg) != 1:
     bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
+
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by check-action-pins --verify-tags, pin-age and the daily audit (a
+    Dependabot bump moves it). The action name and the exact shape of the ref (40 lower-case hex) stay compared; the
+    stand-in is a tuple, which no YAML scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str):
+        name, _, ref = u.partition("@")
+        # matches "0123456789abcdef0123456789abcdef01234567"; refuses "v7"
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            return dict(st, uses=(name, "@40-hex"))
+    return st
+
+
 # The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped,
 # or whose step is skipped, disabled through its environment, or whose failure is ignored, passes while the suites never ran). Each is exactly
 # name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
