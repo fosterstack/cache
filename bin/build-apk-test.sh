@@ -78,6 +78,24 @@ printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then exec "%s" -
   "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)" >"$work/py3-shim"
 chmod +x "$work/py3-shim"
 # ---- begin verbatim sections ----
+# A Go toolchain is now always required (the cross-check cannot be skipped), so every run that must succeed needs the go stub to answer. STUB_GOVM_FILE=auto
+# makes the stub print what the packaged binary's own go version -m prints: the buildinfo the stub melange wrote (STUB_BUILDINFO, else its default text,
+# with the fips line for a -fips binary). A case that names its own STUB_GOVM_FILE, or removes it (env -u STUB_GOVM_FILE: no Go on PATH), overrides this.
+cat >"$stubs/go" <<EOF
+#!/bin/bash
+echo "go \$*" >>"\$CALLS"
+echo "GOTOOLCHAIN=\${GOTOOLCHAIN:-} GOFLAGS=\${GOFLAGS-unset} GOENV=\${GOENV:-}" >>"\$CALLS.goenv"
+[ -z "\${STUB_GO_FAILS:-}" ] || { echo "go: not a Go binary" >&2; exit 1; }
+[ -n "\${STUB_GOVM_FILE:-}" ] || exit 127
+[ "\$1 \$2" = "version -m" ] || exit 2
+[ "\$STUB_GOVM_FILE" = auto ] || { cat "\$STUB_GOVM_FILE"; exit 0; }
+if [ -n "\${STUB_BUILDINFO:-}" ]; then cat "\$STUB_BUILDINFO"; exit 0; fi
+printf '%s\n' "\$3: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0" "	dep	github.com/example/x	v1.0.0" "	dep	golang.org/x/sys	v0.30.0" "	build	-trimpath=true" "	build	vcs.revision=\$(git -C "\${STUB_SRC:-$src}" rev-parse HEAD)" "	build	vcs.modified=false"
+grep -q 'fscache-fips' "\$3" && printf '\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n'
+exit 0
+EOF
+chmod +x "$stubs/go"
+export STUB_GOVM_FILE=auto
 # ---- P4 review round 1 (Opus): setup added after the mechanical split --------------------------------------------------------------
 rev=$(git -C "$src" rev-parse HEAD)
 sb=$(mktemp -d "$work/sbom-rev.XXXXXX")   # this file's own scratch, made by mktemp: each fixture SBOM gains its revision line in a copy, then replaces the original
@@ -1385,9 +1403,9 @@ printf '%s\n' "/some/path/usr/bin/fscache: go1.27.2" >"$work/govm-ok.txt"; tail 
 sd "rule 20" "the packaged binary's go version -m equals buildinfo.txt (first line aside) -> accepted, and go was asked about the binary" '^go version -m ' "${bae[@]}" STUB_BUILDINFO="$fx/sbom/ok.txt" STUB_GOVM_FILE="$work/govm-ok.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 { cat "$work/govm-ok.txt"; printf '\tdep\texample.org/smuggled\tv1.0.0\n'; } >"$work/govm-bad.txt"
 sf "rule 20" "a buildinfo.txt that differs from go version -m of the packaged binary is refused, naming buildinfo" 'buildinfo' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/ok.txt" STUB_GOVM_FILE="$work/govm-bad.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
-sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS unset the build is refused, naming the missing toolchain" 'no Go toolchain found' env -u GITHUB_ACTIONS SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
-sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS empty the build is refused" 'no Go toolchain found' env GITHUB_ACTIONS= SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
-sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS set the build is refused the same way" 'no Go toolchain found' env GITHUB_ACTIONS=true SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
+sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS unset the build is refused, naming the missing toolchain" 'no Go toolchain found' env -u STUB_GOVM_FILE -u GITHUB_ACTIONS SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
+sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS empty the build is refused" 'no Go toolchain found' env -u STUB_GOVM_FILE GITHUB_ACTIONS= SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
+sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS set the build is refused the same way" 'no Go toolchain found' env -u STUB_GOVM_FILE GITHUB_ACTIONS=true SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
 t "rule 20" "the missing-toolchain refusal does not say the toolchain is looked up on PATH" bash -c "! grep -q 'on PATH' '$work/log'"
 
 sr "rule 31" "build-apk refuses a SOURCE_DATE_EPOCH too large to be a date (exit 2)" SOURCE_DATE_EPOCH env SOURCE_DATE_EPOCH=99999999999999999999 FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
