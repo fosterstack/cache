@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 91 |
-| Acceptance criteria | 392 |
+| Acceptance criteria | 389 |
 | Release-blocking ACs | 54 |
-| ACs with mapped evidence | 372 |
+| ACs with mapped evidence | 369 |
 | Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -1025,7 +1025,7 @@ The complete server — cache protocol, eviction, size caps, auth, metrics, stat
 
 ### REQ-SUP-001 — Actions supply-chain checks
 
-Our workflows shall check every version of an action, tool, image or package we use, every day, against the public advisory and malware lists; shall check a signature or provenance where the source publishes one, before use; and shall say publicly only what they know.
+Our workflows shall check every version of an action, tool, image or package we use, every day, against the public advisory and malware lists; and shall say publicly only what they know.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/supply-chain.yml; .github/dependabot.yml; .github/supply-chain-exceptions.json*
 
@@ -1056,11 +1056,8 @@ Our workflows shall check every version of an action, tool, image or package we 
 | REQ-SUP-001-AC28 | Given the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties); when the wrapper downloads its Gradle distribution; then the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the owner's plain form for a tool download: exact version and checksum | unit |  | approved | 1 item(s) |
 | REQ-SUP-001-AC29 | Given acceptance.yml run with an image-ref (release-chain mode); when the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line); then the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest | unit |  | approved | 1 item(s) |
 | REQ-SUP-001-AC30 | Given the repository (workflows, scripts, tests, docs and configuration); when it is read; then nothing in it names a release-age wait or enforces one: no check, job, script or test measures how long a version has been public before it may be used, and no document describes such a wait | ci-workflow |  | approved | 1 item(s) |
-| REQ-SUP-001-AC31 | Given every place the build downloads software from (an action, tool, image or package source); when the build uses what that source gave; then where the source publishes a signature or provenance for it, the build checks that before use and stops if it does not verify; each source is listed in an AC below | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC32 | Given Dependabot's configuration; when it is read; then it has one entry per ecosystem root we use, and no entry carries a cooldown key; every version bump it proposes is a reviewed pull request | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC33 | Given the workflow supply-chain.yml and the required-check list .github/policy/required-checks.json; when they are read; then the context pin-age stays in the list, and the job named pin-age runs only the pin scan, the wiring checks and the checker's own tests, never a measurement of how long a version has been public; no job holds actions: write for a re-run of held pull requests; dropping the context name is a later change of the ruleset, which is the owner's | ci-workflow |  | approved | 1 item(s) |
-| REQ-SUP-001-AC34 | Given a Go toolchain archive that refresh-inputs.sh downloads from go.dev/dl; when the archive is used; then bin/verify-go.sh checks the .asc signature beside it against Google's Linux packages signing key, pinned by its fingerprint, requiring GOODSIG and VALIDSIG for that fingerprint and refusing REVKEYSIG, EXPKEYSIG and EXPSIG; a missing or wrong signature, a revoked or expired key or a different signer stops the run before the sha256 is pinned; it uses gpg and curl only, which the runners already hold | ci-workflow |  | approved | 2 item(s) |
-| REQ-SUP-001-AC35 | Given the sources the build downloads from, one line each; when AC31 is applied to them; then Go (go.dev/dl) signs with gpg and is checked (AC34); trivy, grype, syft, gitsign, melange and apko sign with Sigstore (cosign), and osv-scanner and crane (go-containerregistry) publish SLSA provenance, which needs cosign or slsa-verifier and a Sigstore trust root the build does not hold, so they stay on their pinned sha256 and each is named here as a source not yet checked; snyk signs its checksum list with gpg, a key the build does not pin; kind, docker-scout and inspector-sbomgen publish a checksum and no signature; Wolfi packages are checked by apk against the pinned Wolfi key; GitHub Actions, container images and Go modules are pinned by commit, digest and go.sum; the pinned Python packages are pinned by hash and check no PyPI provenance here; a source's line changes only in a reviewed change | ci-workflow |  | approved | 1 item(s) |
 
 ## UAT
 

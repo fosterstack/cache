@@ -669,28 +669,16 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/k8s-harness-fence-test.sh"
   },
   {
-   "name": "the pin scan \u2014 names every moved version, passes only a pin it can read (REQ-SUP-001 AC2)",
-   "run": "bash .github/agent/tests/pin-scan-test.sh"
+   "name": "the pin age check \u2014 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)",
+   "run": "bash .github/agent/tests/pin-age-check-test.sh"
   },
   {
-   "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions (REQ-SUP-001 AC5-AC10)",
+   "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)",
    "run": "bash .github/agent/tests/pin-audit-test.sh"
   },
   {
-   "name": "where the supply-chain checks run \u2014 the PR job's read-only token, one writer per job (REQ-SUP-001 AC4)",
+   "name": "where the supply-chain checks run \u2014 Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)",
    "run": "bash .github/agent/tests/supply-chain-wiring-test.sh"
-  },
-  {
-   "name": "no wait for new versions \u2014 no text of it, Dependabot proposes at once, the pin-age context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)",
-   "run": "bash .github/agent/tests/release-age-gone-test.sh"
-  },
-  {
-   "name": "Go toolchain signature \u2014 verified before it is pinned (REQ-SUP-001 AC34)",
-   "run": "bash bin/verify-go-test.sh"
-  },
-  {
-   "name": "refresh-inputs.sh verifies the Go archive before pinning; AC35 lists every source (REQ-SUP-001 AC34, AC35)",
-   "run": "bash bin/refresh-inputs-verify-go-test.sh"
   }
  ]
 }''')

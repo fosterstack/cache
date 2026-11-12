@@ -15,13 +15,14 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 #   this test                      names the phrases it forbids.
 #   requirements/requirements.yaml records the removal in REQ-SUP-001's origin note.
 #   docs/quality/traceability.md   is GENERATED from requirements.yaml (its first lines say so), so it repeats that origin note.
+#   .github/agent/tests/pin-wiring-landing.sh is chain-v030's judge byte for byte (pin-wiring-test.sh checks it with cmp), and names the old steps until chain-v030 takes main.
 #   vendor/                        is third-party Go source (time-window prose in prometheus), not ours; go.sum/go.mod hold no prose.
 # No CHANGELOG or release-history file is tracked (checked by the name test below), so none is excluded.
 if git ls-files | grep -qiE '(^|/)(CHANGELOG|HISTORY|NEWS)'; then bad "a changelog-style file is tracked: add it to the exclusions with a reason"; else ok "no changelog-style file needs excluding"; fi
 if head -5 docs/quality/traceability.md | grep -q 'GENERATED'; then ok "docs/quality/traceability.md is generated (so excluded)"; else bad "docs/quality/traceability.md is generated (so excluded)"; fi
 
 self=.github/agent/tests/release-age-gone-test.sh
-git ls-files -z | grep -zvE "^(vendor/|$self\$|requirements/requirements\.yaml\$|docs/quality/traceability\.md\$)" >"$work/files"
+git ls-files -z | grep -zvE "^(vendor/|$self\$|requirements/requirements\.yaml\$|docs/quality/traceability\.md\$|\.github/agent/tests/pin-wiring-landing\.sh\$)" >"$work/files"
 # This test's own file name contains 'release-age'; that literal path is stripped from each line before matching (every other phrase check is unchanged).
 phrases='7-day|7 days|seven days|cooldown|release age|release-age|age hold|held pull request|rerun-held|--rerun-held'
 : >"$work/hits"

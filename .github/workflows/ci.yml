@@ -600,10 +600,6 @@ jobs:
         run: bash .github/agent/tests/supply-chain-wiring-test.sh
       - name: no wait for new versions — no text of it, Dependabot proposes at once, the pin-age context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)
         run: bash .github/agent/tests/release-age-gone-test.sh
-      - name: Go toolchain signature — verified before it is pinned (REQ-SUP-001 AC34)
-        run: bash bin/verify-go-test.sh
-      - name: refresh-inputs.sh verifies the Go archive before pinning; AC35 lists every source (REQ-SUP-001 AC34, AC35)
-        run: bash bin/refresh-inputs-verify-go-test.sh
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must

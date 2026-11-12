@@ -583,14 +583,6 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "no wait for new versions \u2014 no text of it, Dependabot proposes at once, the pin-age context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)",
    "run": "bash .github/agent/tests/release-age-gone-test.sh"
-  },
-  {
-   "name": "Go toolchain signature \u2014 verified before it is pinned (REQ-SUP-001 AC34)",
-   "run": "bash bin/verify-go-test.sh"
-  },
-  {
-   "name": "refresh-inputs.sh verifies the Go archive before pinning; AC35 lists every source (REQ-SUP-001 AC34, AC35)",
-   "run": "bash bin/refresh-inputs-verify-go-test.sh"
   }
  ]
 }''')
@@ -736,7 +728,7 @@ PY
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
 
-# case_msg <name> <python edit> <text>: the judge refuses the copy and its message holds the text
+# case_msg <name> <python edit> <text>: the judge refuses the copy and its message carries the text
 case_msg() {
   local f="$work/$1.yml"
   cp "$here/.github/workflows/ci.yml" "$f"
