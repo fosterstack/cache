@@ -171,11 +171,17 @@ def _gh_run(cmd, **kw):
         raise CouldNotLook(f"{cmd[0]} {' '.join(map(str, cmd[1:3]))} did not answer in {GH_TIMEOUT}s")
 
 
+def _gh_status(r):
+    """The status gh reports: the token "(HTTP 404)" that ends the last line of its error text, else None. A URL or a
+    body that mentions a token earlier in the text is not read."""
+    lines = r.stderr.strip().splitlines()
+    m = re.search(r"\(HTTP (\d{3})\)$", lines[-1].strip()) if lines else None
+    return int(m.group(1)) if m else None
+
+
 def _gh_failed(r):
-    """True for a plain miss; raises when the failure is the service's, not the answer's. gh ends its message with the
-    exact token "(HTTP 404)"."""
-    text = r.stderr + r.stdout
-    if not any(f"(HTTP {code})" in text for code in (404, 410, 422)):
+    """True for a plain miss; raises when the failure is the service's, not the answer's."""
+    if _gh_status(r) not in (404, 410, 422):
         raise CouldNotLook(f"GitHub API: {(r.stderr or r.stdout).strip()[:120]}")
     return True
 
