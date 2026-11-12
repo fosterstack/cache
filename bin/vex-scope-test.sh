@@ -37,9 +37,9 @@ PY
   f=$(jq --arg ids "$BUSYBOX_CVES" '[.matches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
   ig=$(jq --arg ids "$BUSYBOX_CVES" '[.ignoredMatches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
   if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
-  # cache#772 round 1 (A1/B1, ruled): no --fail-on. Its exit code depends on the severity the vulnerability database gives the advisory on the day, so a
-  # correct FLAG could exit 0 (it did, Oct 28). A scan that ran exits 0 in both buckets; any other exit is an operational error and fails the case. The
-  # bucket (FLAG/SUPPRESS) is decided by the counts and the exact vulnerability-id assertions below.
+  # cache#772 round 1 (A1/B1, ruled): no --fail-on. Its exit code comes from the whole scan, so an unrelated advisory left in .matches would turn a correct
+  # SUPPRESS red. A scan that ran exits 0 in both buckets; any other exit is an operational error and fails the case. The bucket is decided by the counts
+  # and the exact vulnerability-id assertions below.
   if [ "$rc" -ne 0 ]; then rc_ok=0; fi
   # For the busybox@1.37.0 cases, assert the EXACT three CVEs land in the right
   # bucket, so malformed output or an unrelated finding cannot pass as a match.
