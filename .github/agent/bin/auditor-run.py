@@ -59,7 +59,7 @@ _SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
 
 def _mask(s):
     """Redact secret values and any model-id/token shapes from text before it is printed or
-    written into the report (REQ-AUD-6: identifiers never leak; R-live fix 1: surface the error)."""
+    written into the report (REQ-AUD-6 in .github/agent/docs/cve-auditor-matrix.md: identifiers never leak)."""
     s = str(s or "")
     for k in _SECRET_ENVS:
         v = os.environ.get(k)
@@ -107,11 +107,11 @@ def _resolve_carried(groups, carried_stmts):
             for cve in {cid} | set(grp["aliases"]) | set(f.get("aliases") or []):
                 for purls in by_id.get(cve, []):
                     for p in purls:
-                        pn, pv = PARS._panel_module()._purl_name_version(p)
+                        pn, pv = PARS.panel_module().purl_name_version(p)
                         want_version = (f.get("extra") or {}).get("version") or ""
-                        same_version = urllib.parse.unquote(pv or "") == urllib.parse.unquote(want_version)
+                        same_version = pv == urllib.parse.unquote(want_version)
                         if name(pn) == name(f.get("package")) and same_version:
-                            keep.setdefault((f["scanner"], f["finding_id"], p), PARS._finding(
+                            keep.setdefault((f["scanner"], f["finding_id"], p), PARS.finding(
                                 f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), None, None,
                                 dict(f["extra"], carried=True)))
         grp["findings"] = list(keep.values())
@@ -186,22 +186,8 @@ def load_defect_log(logpath):
     if not logpath:
         return {}
     try:
-        # the reader owns existence (lstat): a dangling link or a log in an unreachable folder is present, and
-        # a stop
-        if not reviewed.present(logpath):
-            return {}
-    except reviewed.ReviewedInputInvalid as e:
-        raise DefectLogInvalid(str(e))
-    try:
-        with open(logpath) as fh:
-            d = json.load(fh)
-    except (OSError, ValueError) as e:
-        raise DefectLogInvalid("%s: %s" % (logpath, e))
-    if not isinstance(d, dict):
-        raise DefectLogInvalid("%s: top level is %s, want an object" % (logpath, type(d).__name__))
-    try:
         # a present log must carry "defects" (a list of objects): {} is not an empty history
-        return reviewed.check(d, logpath, "known-defect-log.json")
+        return reviewed.read(logpath, "known-defect-log.json") or {}
     except reviewed.ReviewedInputInvalid as e:
         raise DefectLogInvalid(str(e))
 
@@ -332,15 +318,15 @@ def _automerge_allowed(paths):
     return _automerge_on() and not any((p or "").startswith(_PROMPT_PATH) for p in (paths or []))
 
 
-_DAILY_BRANCH = re.compile(r"^auditor/\d{4}-\d{2}-\d{2}-[0-9a-f]{4,40}$")
+# a daily branch: "auditor/2026-11-12-0a1b2c3d" matches; "auditor/panel" and "auditor/2026-11-12" are refused
+_DAILY_BRANCH = re.compile(r"auditor/[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{4,40}\Z")
 
 
 def _close_superseded(branch, url, ws):
-    """Each day's suppression PR is a fresh branch off main (auditor/<date>-<sha>); the day before's, if still open,
-    is behind main and will never
-    merge under strict checks, so it is closed with a pointer to today's (advisor 0187). Only older daily branches:
-    never today's, auditor/panel or
-    a bump branch. Best effort: a failure here is reported and never fails the delivery."""
+    """Each day's suppression PR is a fresh branch off main (auditor/<date>-<sha>); an older one still open is behind
+    main and can never merge under strict checks, so it is closed with a pointer to today's. Only older daily
+    branches are closed, never today's, auditor/panel or a bump branch. A failure here is reported and never fails
+    the delivery."""
     try:
         # only PRs the App itself opened from a branch of THIS repository and that are not drafts (a draft
         # waits for the owner; a fork's or a human's PR is never ours to close)
@@ -353,8 +339,8 @@ def _close_superseded(branch, url, ws):
             return
         for line in (q.stdout or "").splitlines():
             num, _, ref = line.strip().partition(" ")
-            day, other_day = ref[len("auditor/"):][:10], branch[len("auditor/"):][:10]
-            if num.isdigit() and ref != branch and _DAILY_BRANCH.match(ref) and day < other_day:
+            ref_day, branch_day = ref[len("auditor/"):][:10], branch[len("auditor/"):][:10]
+            if num.isdigit() and ref != branch and _DAILY_BRANCH.match(ref) and ref_day < branch_day:
                 note = ("Superseded by %s (a fresh branch off the current main; this one is behind main "
                         "and cannot merge)." % url)
                 r = subprocess.run(["gh", "pr", "close", num, "--comment", note],
@@ -449,11 +435,8 @@ BASE_VEX, BASE_ITEMS = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted
 
 def _fetch_base(ws):
     """(sha, None) or (None, the failure text): ONE `git fetch origin main` (it changes no ref the workspace stands on)
-    and the sha origin/main resolved to. The sha is what the base is read
-    at, what the delivery branch is cut from and what the signed commit is built on, so the validated bytes are the
-    bytes merged into (cache#708 rulings 1, 2). A failure is handed down to the
-    delivery, which reports it and acquires nothing again: a second acquisition could find a base the first never
-    validated, after an owner issue exists."""
+    and the sha origin/main resolved to. The sha is what the base is read at, what the delivery branch is cut from
+    and what the signed commit is built on, so the validated bytes are the bytes merged into."""
     r = subprocess.run(["git", "fetch", "origin", "main"], cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
         return None, "git fetch: " + (r.stderr or "").strip()
@@ -486,16 +469,16 @@ def _base_docs(ws, sha):
 
 def _preflight_delivery(out, supp):
     """What _merge_suppressions reads of the files THIS run wrote (the consolidated VEX, the reopened-expired ledger,
-    the accepted-items inventory), validated BEFORE
-    `git checkout -B` touches the workspace (cache#701 ruling F3/B3: exit 3 never follows a mutating call)."""
+    the accepted-items inventory), validated before
+    `git checkout -B` touches the workspace: exit 3 never follows a mutating call."""
     # absent is the staging error _merge_suppressions reports; present must be the VEX object
     _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
     _read_reopened(os.path.join(out, ".auditor", "reopened-expired.json"))
     _read_reviewed_json(os.path.join(out, ".auditor", "accepted-items.json"))
 
 
-def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False, base_sha=None, base_err=None):
-    """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
+def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False, base_sha=None):
+    """Deliver the consolidated suppressions as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json (the only exception there is, rule 4) in a single commit
     by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
     failure returns (None, stderr) so the caller marks the run AUDIT INCOMPLETE — never a
@@ -556,10 +539,6 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
-    # run() tried to acquire the base before the first owner issue and failed: that failure is the delivery's, and
-    # nothing is acquired again
-    if base_err:
-        return None, base_err
     # run() hands the validated sha down; a direct caller (neither given) acquires it here
     if base_sha is None:
         base_sha, base_err = _fetch_base(ws)
@@ -741,10 +720,9 @@ def _vmajor(v):
 
 
 def _is_major_bump(module, frm, to):
-    """rc-5b A6 (agent-remediation-rules: "a major bump means an API changed"): the transition changes the major number
-    (v0.9 -> v1.0 included), the
-    module path's /vN suffix disagrees with the target's major, or either version is unreadable (fail safe: held, never
-    auto-treated as a patch)."""
+    """A major bump means an API changed: the transition changes the major number (v0.9 -> v1.0 included), the module
+    path's /vN suffix disagrees with the target's major, or either version is unreadable (held, never treated as a
+    patch)."""
     f, t = _vmajor(frm), _vmajor(to)
     if f is None or t is None or f != t:
         return True
@@ -790,7 +768,7 @@ def _open_dependabot_prs(ws):
     # an empty or unreadable answer is a failed lookup, never "no Dependabot PR"
     if not isinstance(rows, list) or not all(
             isinstance(i, dict) and isinstance(i.get("number"), int) and not isinstance(i["number"], bool)
-            and isinstance(i.get("title"), str) and isinstance(i.get("url"), str) for i in rows):
+            and i["number"] > 0 and isinstance(i.get("title"), str) and isinstance(i.get("url"), str) for i in rows):
         return None, "gh pr list: the answer is not a list of number, title and url objects"
     return rows, None
 
@@ -809,8 +787,8 @@ def _held_titles(title):
 
 
 def _emit_held_issue(title, body, dry, would, cves=(), target=None):
-    """Open OR update the issue that hands a held MAJOR bump to a person as a task (rc-5b A6: a major is judged by a
-    machine, never by the repository owner). Not an owner-decision issue: no owner label, no assignee. An issue opened
+    """Open OR update the issue that hands a held MAJOR bump to a person as a task (a major is judged by a
+    person, never by the repository owner). Not an owner-decision issue: no owner label, no assignee. An issue opened
     under the old title is still found, one title after the other (new, then old), and commented. Returns (ok, ref)
     like _emit_owner_issue."""
     cmd = "gh issue create --title %s" % shlex.quote(title)
@@ -883,8 +861,8 @@ def _branch_slug(s):
 def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
     """Deliver every §1/§3 bump: ONE delivery per (module, version) target carrying all its CVEs
     (LR-32), then set each row's honest action from its target's delivery status. A MAJOR transition
-    (rc-5b A6) is delivered as the same draft and also opens one issue, a task for a harness lane; a target an open
-    Dependabot PR already covers (A7) is deferred to. Returns the delivery errors (each makes the run INCOMPLETE)."""
+    is delivered as the same draft and also opens one issue, a manual-change issue for a person; a target an
+    open Dependabot PR already covers is deferred to. Returns the delivery errors (each makes the run INCOMPLETE)."""
     fix_errs = []
     targets = {}                                   # LR-32: ONE delivery per (module, version) target
     for r in rows:
@@ -994,7 +972,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     if log or _real_gh_allowed():
         prs, lerr = _open_dependabot_prs(_workspace())
         hit = _dependabot_match(prs, module, tkey) if prs is not None else None
-        # row 47: defer to the open Dependabot PR that carries this bump; open nothing (a dry run says so too)
+        # defer to the open Dependabot PR that carries this bump; open nothing (a dry run says so too)
         if hit:
             if dry:
                 _plan(would, "bump PR", target, cves, note="deferred to Dependabot PR #%s" % hit[0], key=branch)
@@ -1006,7 +984,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     else:
         unchecked = False
     # AC3/AC4: a bump PR touches only go.mod/go.sum (no prompt file), so it auto-merges when the
-    # owner turned auto-merge on; otherwise draft. A MAJOR transition is held (rc-5b A6): always a draft, never armed.
+    # owner turned auto-merge on; otherwise draft. A MAJOR transition is held: always a draft, never armed.
     major = _is_major_bump(module, frm, to)
     automerge = _automerge_allowed(["go.mod", "go.sum"]) and not major
     draft = "" if automerge else "--draft "
@@ -1165,11 +1143,8 @@ def _merge_suppressions(ws, supp, base=None):
         raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
     # the delivery hands down the base documents it validated at the sha: the tree is not read again
     existing = (base[BASE_VEX] if base is not None else _read_reviewed_json(vp)) or {}
-    # Merge statements by the CANONICAL scope key (vulnerability, scope) (REQ-AUD-13 AC1/AC3).
-    # Statements now arrive with scope-deterministic @ids (generation-time, AC2), so a
-    # same-scope statement — this run's or a carried one — has the same key and the incoming
-    # one replaces it; DISTINCT scopes are both retained and, by construction, carry distinct
-    # @ids. Foreign statement ids (a reviewer's `…#review~…`) are their own scope and kept as-is.
+    # a statement is keyed by (vulnerability, scope): this run's replaces a carried one of the same scope, other
+    # scopes stay (REQ-AUD-13 in .github/agent/docs/cve-auditor-matrix.md)
     def _key(s):
         return ((s.get("vulnerability") or {}).get("name"), _scope_key(s))
     by_id = {}
@@ -1178,16 +1153,14 @@ def _merge_suppressions(ws, supp, base=None):
     for s in newdoc.get("statements", []):
         by_id[_key(s)] = s                        # this run replaces same-scope / adds new
     survivors = list(by_id.values())
-    # Per-SCOPE expiry removal (REQ-AUD-13 AC6): drop only the statements whose OWN scope
-    # reopened this run because its time box expired (identified by statement @id); sibling
-    # scopes and permanent statements of the same vulnerability are retained.
+    # an expired time box drops only its own scope; sibling scopes and permanent statements stay
     reopened = set()
     for sc in _read_reopened(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json")):
         reopened.add((sc[0], tuple(sc[1]), tuple(sc[2])))     # (cve, products, purls)
     if reopened:
         survivors = [s for s in survivors
                      if ((s.get("vulnerability") or {}).get("name"), *_scope_key(s)) not in reopened]
-    # AC2 safety net: never deliver two statements sharing an @id.
+    # never deliver two statements sharing an @id
     seen = {}
     for s in survivors:
         sid = s.get("@id") or ""
@@ -1201,40 +1174,23 @@ def _merge_suppressions(ws, supp, base=None):
     for k in ("@context", "@id", "author", "role"):
         merged.setdefault(k, newdoc.get(k))
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
-    # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the
-    # VEX unwritten
+    # both inventories are read before the working tree is touched: an unreadable one stops the run, VEX unwritten
     old_ai = (base[BASE_ITEMS] if base is not None
               else _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json")))
-    # the run's own inventory too
     new_ai = _read_reviewed_json(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
-    # the working tree is touched only after every read above has passed
     os.makedirs(os.path.dirname(vp), exist_ok=True)
     cli.writej(vp, merged)
 
-    # accepted-items.json is COUPLED to the VEX: an affected statement that survives the VEX
-    # merge but this run did not re-assess must keep its inventory entry, or release-authz
-    # rejects the package as inconsistent. Merge like the VEX — this
-    # run's items win; carry an old item forward for any affected CVE still in the merged
-    # document; drop acceptances whose statement is no longer affected.
+    # The inventory follows the VEX: an old item stays while its CVE and scope are still affected in the merged
+    # document (release-authz rejects a package whose affected statement has no item); this run's items win.
     aip = os.path.join(ws, ".auditor", "accepted-items.json")
     out_ai = {}
     if new_ai is not None or old_ai is not None:
         def _cve(it):
             return (it or {}).get("cve") or (it or {}).get("id")
-        # Key items by their FULL scope identity, not by cve nor by
-        # (cve, package, threshold) alone: two scopes of one CVE can share
-        # package AND threshold yet carry DIFFERENT owner obligations (distinct owner-decision
-        # issues, distinct governing VEX statements). Keying on any subset lets the last write
-        # erase another scope's obligation and promote past a rejected owner. Include the
-        # governing statement id and the owner issue so every distinct obligation survives; this
-        # run replaces only the SAME scope.
-        # Inventory keys on the FULL canonical scope, never a hash-derived @id
-        # An item carries its own scope (product + purls); a legacy item
-        # without one resolves its scope through its @id against the merged statements; only a
-        # truly unresolvable legacy item falls back to the coarse (cve,package,threshold,issue).
+        # Items are keyed by (cve, scope): two scopes of one CVE can carry different owner obligations. A legacy item
+        # without a scope finds it through its vex_id or its package; one that does not resolve keeps a coarse key.
         id_to_scope = {s.get("@id"): _scope_key(s) for s in merged.get("statements", [])}
-        # for a legacy item with no scope AND no resolvable @id, try its package: if exactly one
-        # surviving affected scope names that package, resolve to it.
         pkg_to_scopes = {}
         for s in merged.get("statements", []):
             if s.get("status") != "affected":
@@ -1260,15 +1216,10 @@ def _merge_suppressions(ws, supp, base=None):
             sc = _scope_of(it)
             if sc is not None:
                 return (_cve(it), sc)             # same scope -> replace; distinct scope -> keep both
-            # unresolvable legacy: keep the coarse identity AND the deadline, so two ambiguous
-            # same-package obligations are surfaced, never silently collapsed.
+            # the deadline is in the key so two ambiguous same-package obligations are not collapsed
             return (_cve(it), it.get("package"), it.get("threshold"), it.get("owner_issue"), it.get("expiry"))
-        # retain an old obligation only if THIS SCOPE's affected statement survived the merge:
-        # a scope reopened/removed on expiry drops its obligation too, a sibling live scope keeps
-        # its own; an unresolvable legacy item falls back to CVE-level retention.
-        # retain per (VULNERABILITY, scope): an item is kept only if ITS OWN CVE is still
-        # affected at ITS OWN scope — a sibling CVE that keeps the same package scope alive does
-        # NOT keep an expired CVE's obligation.
+        # an old item is kept only while its own CVE is still affected at its own scope (a legacy item without a
+        # scope: while its CVE is affected anywhere)
         affected = {((s.get("vulnerability") or {}).get("name"), _scope_key(s))
                     for s in merged.get("statements", []) if s.get("status") == "affected"}
         affected_cves = {cve for cve, _ in affected}
@@ -1283,9 +1234,7 @@ def _merge_suppressions(ws, supp, base=None):
                 final[_ikey(it)] = it              # this run wins on the same scope
         out_ai = dict(new_ai or old_ai or {})
         out_ai["accepted_items"] = list(final.values())
-        # reconcile each pointer to the FINAL statement @id for ITS (cve, scope)
-        # so a collision-suffixed or foreign id never leaves an item pointing at
-        # another statement that merely shares its scope.
+        # point each item at the final @id of its own (cve, scope): ids may have been suffixed above
         cvescope_to_id = {}
         for s in merged.get("statements", []):
             cvescope_to_id.setdefault(((s.get("vulnerability") or {}).get("name"), _scope_key(s)), s.get("@id"))
@@ -1297,12 +1246,11 @@ def _merge_suppressions(ws, supp, base=None):
         cli.writej(aip, out_ai)
 
 
-
 def _collect_vex(out, ts):
     """Read every per-CVE VEX this run wrote and validate the merged document; writes nothing. Returns (document,
-    statements). run() calls it BEFORE the first owner-decision issue
-    so a damaged per-finding VEX stops the run (exit 3) while nothing outside the run's own directory has been touched
-    (cache#701 ruling F3/B3); _consolidate does the same read."""
+    statements). run() calls it before the first owner-decision issue so a damaged per-finding VEX stops
+    the run (exit 3) while nothing outside the run's own directory has been touched; _consolidate does the same
+    read."""
     vdir = os.path.join(out, "vex")
     try:
         names = sorted(n for n in os.listdir(vdir) if n.endswith(".openvex.json") and not n.startswith("."))
@@ -1326,11 +1274,8 @@ def _collect_vex(out, ts):
 
 
 def _consolidate(out, ts):
-    """Merge every per-CVE VEX this run wrote into ONE canonical
-    suppressions/fosterstack-cache.openvex.json (the file scan/rescan/release-authz read),
-    Returns
-    (suppression_dir, statement_count). (the auditor's VEX must reach the
-    canonical file, and the consistency check must read the layout the run actually writes.)"""
+    """Merge every per-CVE VEX this run wrote into ONE canonical suppressions/fosterstack-cache.openvex.json (the
+    file scan, rescan and release-authz read). Returns (suppression_dir, statement_count)."""
     document, statements = _collect_vex(out, ts)
     supp = os.path.join(out, "suppressions")
     cli.writej(os.path.join(supp, "fosterstack-cache.openvex.json"), document)
@@ -1372,6 +1317,7 @@ def adjudicate(adjudicator, ctx, state):
             continue
         except Exception as e:
             errored = True
+            state["tokens"] += int(getattr(e, "token_usage", 0) or 0)   # a malformed reply was billed too
             msg = "%s: %s" % (type(e).__name__, _mask(str(e)))    # class + masked message/status
             # Dedup by a NORMALIZED key that strips volatile per-call ids (e.g. request_id), so N
             # identical failures (one per finding/attempt) collapse to ONE recorded error instead
@@ -1389,7 +1335,7 @@ def adjudicate(adjudicator, ctx, state):
         # this run — it takes effect only after the owner merges the audit-lane PR. A proposal is
         # kept ONLY when it names a recognized kind AND carries evidence (AC4 "with evidence"); a
         # malformed / evidence-free / unsupported-kind proposal is dropped, never forwarded.
-        _pr = _valid_proposal(ans.get("propose"))
+        _pr = _valid_proposal(ans.get("propose"), state.get("evidence_root"), state.get("evidence_sha"))
         if _pr is not None:
             state.setdefault("proposals", []).append(
                 {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": _pr})
@@ -1450,6 +1396,7 @@ def _pullability(adjudicator, ctx, state):
             {"finding_id": ctx["finding_id"], "attempt": "pullability", "role": "primary"})
         return None
     except Exception as e:
+        state["tokens"] += int(getattr(e, "token_usage", 0) or 0)   # a malformed reply was billed too
         state["nc_incomplete"] = True
         msg = "%s: %s" % (type(e).__name__, _mask(str(e)))
         key = re.sub(r"\s*\[?request[_-]?id[=:]\s*[^\]\s]+\]?", "", msg, flags=re.I)
@@ -1527,12 +1474,6 @@ def _max_sev(findings):
     return best or "unknown"
 
 
-def _nofix_reason(findings):
-    """Why a finding has no fix. The panel's verdict carries no fix-state words (a fix is a version or absent),
-    so it is the one reason."""
-    return "no upstream fix"
-
-
 def _sev_by_scanner(findings):
     """Each scanner's own severity for a finding group, so the report shows each (the policy uses the highest):
     {scanner: severity}."""
@@ -1586,7 +1527,7 @@ def _group_facts(c, grp):
         "is_go": any(e in ("golang", "go") for e in ecos),
         "known_exploited": any((f.get("extra") or {}).get("known_exploited") for f in nonlineage),
         "lineages": {policy.lineage_of(f["scanner"]) for f in findings},   # lineage votes: ALL
-        "nofix_reason": _nofix_reason(ev),
+        "nofix_reason": "no upstream fix",
     }
 
 
@@ -1625,7 +1566,7 @@ def _text(s):
 
 
 def _row_line(r):
-    """One self-explaining line per row (R13 item 2), Markdown-safe."""
+    """One self-explaining line per row Markdown-safe."""
     reach = r.get("reachability") or "n/a (OS package)"
     fix = r.get("fixed") or "none"
     line = ("%s — %s — %s — fix: %s — reachability: %s — %s — action: %s — %s"
@@ -1826,7 +1767,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vn = name or c
     gf = _group_facts(c, {"findings": findings, "aliases": aliases})
     ids = sorted(aliases) + [c]
-    # A not_affected closure clears ONLY the packages its evidence names (R11 rank 1); scope
+    # A not_affected closure clears ONLY the packages its evidence names; scope
     # every closure to this subset's exact PURLs so a Go unreachability never suppresses a
     # sibling OS package product-wide.
     subs = sorted({f["purl"] for f in findings if f.get("purl") and not f.get("_lineage_only")}) or None
@@ -1929,7 +1870,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                            reason="adjudication exhausted", cause=cause)
                 return row, m_inc
             # genuine refusal (the model was reachable) -> owner-decision issue, deduped per
-            # (CVE, package) with every scope listed in the body, emitted after routing (fix 4).
+            # (CVE, package) with every scope listed in the body, emitted after routing.
             row.update(section=4, disposition="under investigation",
                        action="escalation pending (owner-decision issue)",
                        reason="unassessed after fallback", cause=cause)
@@ -2156,7 +2097,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                threshold=("at_or_above" if at else "below"), expiry=this_exp, carried=(_cstat == "affected"))
     if at:
         # at/above threshold -> owner-decision issue, deduped per (CVE, package) with every scope
-        # listed in the body and emitted after routing (fix 4) — never one issue per binary that
+        # listed in the body and emitted after routing — never one issue per binary that
         # vendors the same package. run() sets the final action / owner_issue / issue_failed.
         row["action"] = action + "; owner-decision issue pending"
         row["owner_issue_intent"] = {
@@ -2200,8 +2141,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     m, groups = C.manifest_findings(manifest_path)
     # A test image is never shipped, so no statement on `main` applies and nothing is delivered:
     # a test image ALWAYS forces dry_run regardless of the dispatch input (REQ-AUD-15 AC9).
-    if (m.get("provenance") or {}).get("source") == "test-image":
-        dry = True
+    is_test = (m.get("provenance") or {}).get("source") == "test-image"
+    dry = dry or is_test
     gvc, module, gvc_usable = C.manifest_gvc(m)
     logpath = m.get("known_defect_log"); ts = today + "T00:00:00Z"
     _klog = load_defect_log(logpath)
@@ -2239,10 +2180,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     prev_path = cli.opt("--prev-state") or os.environ.get("AUDITOR_PREV_STATE")
     state.update(nc_verdicts={}, nc_pull={}, nc_narr=None, nc_today=today,
                  nc_prev=nochange.matching(nochange.load(prev_path), nc_hash))
-    # REQ-AUD-9 AC3 "a five-iteration stop" (register row 38; advisor reading, Oct 24: a five-iteration loop =
-    # five CONSECUTIVE runs with the same finding unsettled): the counts ride in the
-    # same state file. A missing state (the first run, or the artifact expired) restarts them and the run SAYS so;
-    # a present state that cannot be trusted stops the run.
+    # REQ-AUD-9 AC3 (.github/agent/docs/cve-auditor-matrix.md): a "five-iteration stop" is five consecutive runs with
+    # the same finding unsettled. The counts ride in the state file; a missing state restarts them and the run says
+    # so, a state that cannot be trusted stops the run.
     state["counter_status"], state["unsettled_prev"] = nochange.load_unsettled(prev_path, today)
     state["unsettled_now"] = set()
     if state["counter_status"] == "missing":
@@ -2254,16 +2194,16 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     carried_lift_trigger = {}
     carried_stmts = []
     ws0 = _workspace()
-    # the delivery merges into the files at origin/main's sha: the carried expiries are read from that same sha
-    # when the run delivers
-    # (ONE fetch, before any gh call; the delivery cuts its branch from this sha); a dry or test run reads the
-    # workspace copies
+    # A delivering run reads the carried files at origin/main's sha, the one the delivery branch is cut from, after
+    # ONE fetch before any gh call; a dry or test run reads the workspace copies.
     base_sha = base_err = base_docs = None
-    is_test_image = (m.get("provenance") or {}).get("source") == "test-image"
-    if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed() and not is_test_image:
+    if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed():
         base_sha, base_err = _fetch_base(ws0)
-        if base_sha:
-            base_docs = _base_docs(ws0, base_sha)
+        if base_err:
+            raise ReviewedInputInvalid("the delivery base cannot be fetched, the run stops before any owner issue "
+                                       "(%s)" % base_err)
+        base_docs = _base_docs(ws0, base_sha)
+    state.update(evidence_root=ws0, evidence_sha=base_sha)
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
         # foreign/legacy @id is matched by the scope it addresses, not its literal id spelling
@@ -2328,7 +2268,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             and (m.get("base") or {})["days_behind"] > (m.get("base") or {}).get("behind_threshold_days", 30))}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
-        # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
+        # 1) trusted log FP closes ONLY the PACKAGES the log names — every
         #    finding for one of those packages, across scanners/arches, not just the exact
         #    key. A sibling PACKAGE's finding for the same CVE is NOT closed with it
         #    and is routed on its own; because that second disposition is a
@@ -2411,8 +2351,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     adj_err_msgs = sorted((state.get("adj_errors") or {}).values())
     adjudicator_down = bool(adj_unavailable)
     adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
-    # every per-finding VEX the run wrote is read and validated BEFORE the first owner-decision issue: exit 3 never
-    # follows a mutating call (cache#701 ruling F3/B3)
+    # every per-finding VEX the run wrote is read and validated before the first owner-decision issue: exit 3 never
+    # follows a mutating call
     _collect_vex(out, ts)
     # (a2) "a five-iteration stop" (REQ-AUD-9 AC3): the run counter moves BEFORE the first owner issue, so a counter
     # that cannot advance stops the run with no issue sent; its one aggregate issue is emitted below (a3)
@@ -2565,15 +2505,14 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                    "os_counts": {s: (st.get(s) or {}).get("package_count") or 0 for s in SCN}}
     # consolidate every per-CVE VEX into the canonical suppression files, run the consistency
     # check over THAT layout, then DELIVER the suppressions as one draft PR via the App token
-    # (R16). A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
+    # A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
     supp, nstmt = _consolidate(out, ts)
     consistency = _consistency(out, supp, manifest_path)
     cons_failed = any(p.get("type", "").startswith("consistency-check-")
                       for p in (consistency or {}).get("problems", []))
-    is_test = (m.get("provenance") or {}).get("source") == "test-image"
     pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test,
-                                             base_sha=base_sha, base_err=base_err)
-    # Decision 2: the auditor DELIVERS its own Go-module bumps as draft PRs through the App path
+                                             base_sha=base_sha)
+    # The auditor DELIVERS its own Go-module bumps as draft PRs through the App path
     # (go get + go mod tidy, go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one
     # draft PR; an unresolvable fixed version stays in §3 (never a broken PR); a git/gh/tidy
     # failure marks the run INCOMPLETE. Base rebuilds are NOT delivered here — they defer to
@@ -2683,12 +2622,9 @@ def _persist(out, rows, today):
     return h
 
 
-# forbidden vendor/model identifiers that must never reach the persisted report
-# The federation audience/import elsewhere is separately acknowledged; a model
-# narrative must not name a provider or model.
+# Vendor and model names that must never reach the persisted report.
 FORBIDDEN_WORDS = ("anthropic", "claude", "openai", "chatgpt", "gpt-", "codex", "sonnet", "opus", "gemini", "llama",
                    "private-model", "canary")
-FORBIDDEN_NAMES = re.compile("|".join(FORBIDDEN_WORDS), re.I)
 
 
 def _configured_model_values():
@@ -2708,33 +2644,46 @@ _PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
 _PROP_MAX = 2000
 
 
+def _words(text):
+    """The lowercase letter-and-digit words of `text`, joined by single spaces and padded: "GPT - 5" -> " gpt 5 "."""
+    return " " + " ".join(re.findall("[a-z0-9]+", text.lower())) + " "
+
+
 def _scrubbed_all(texts):
-    """True when every field is ASCII and none holds, as a whole word, a vendor/model name or a model identifier
-    this run is configured with (row 48: the public repo names none). Each field is judged alone."""
+    """True when every field is ASCII and none holds, as whole words in order, a vendor/model name or a model
+    identifier this run is configured with. Separators do not matter ("gpt - 5" is "gpt-5"); "libopus0" is not
+    "opus". Each field is judged alone."""
     if not all(t.isascii() for t in texts):
         return False
-    cfg = [v.strip() for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v.strip()]
-    for w in FORBIDDEN_WORDS + tuple(cfg):
-        # a word ending in a letter or digit must end the token (libopus0 is not "opus"); "gpt-" ends at its hyphen
-        tail = r"(?![a-z0-9])" if w[-1].isalnum() else ""
-        if any(re.search(r"(?<![a-z0-9])" + re.escape(w.lower()) + tail, t.lower()) for t in texts):
-            return False
-    return True
+    cfg = [v for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v.strip()]
+    names = [_words(w) for w in FORBIDDEN_WORDS + tuple(cfg)]
+    return not any(n in _words(t) for t in texts for n in names)
 
 
-def _valid_proposal(pr):
-    """A model-proposed defect-log/knowledge entry, validated by SHAPE: the keys are within
-    kind/package/keys/note/evidence and
-    kind and evidence are present; kind is defect_log|knowledge; evidence a non-empty string; the other fields
-    strings (keys: a list of objects with exactly scanner, finding_id
-    and purl, all strings); each at most 2000 characters; and no string names a
-    vendor or model. Anything else returns None: the proposal
-    is refused (and counted), never forwarded, and the run goes on."""
+def _evidence_present(root, sha, rel):
+    """True when `rel` is a path inside the repository (no leading /, no .. part, no NUL) naming a regular file in
+    the checkout the run reads: the tree of commit `sha`, or `root` itself when the run has no base commit."""
+    if not rel or rel.startswith("/") or "\0" in rel or ".." in rel.split("/") or not root:
+        return False
+    if sha is None:
+        path = os.path.join(root, rel)
+        return os.path.isfile(path) and not os.path.islink(path)
+    r = subprocess.run(["git", "ls-tree", "-z", sha, "--", rel], cwd=root, capture_output=True, text=True)
+    mode, _, path = r.stdout.split("\0")[0].partition("\t")
+    return r.returncode == 0 and path == rel and mode[:6] in ("100644", "100755")
+
+
+def _valid_proposal(pr, root, sha):
+    """A model-proposed defect-log/knowledge entry, validated by shape: only the keys kind, package, keys, note and
+    evidence, with kind, note and evidence present; kind is defect_log or knowledge; evidence is a file present in
+    the checkout the run reads (_evidence_present); keys, if any, is a list of objects with exactly scanner,
+    finding_id and purl; every string is at most 2000 characters and names no vendor or model. Anything else
+    returns None: the proposal is refused (and counted), never forwarded, and the run goes on."""
     if (not isinstance(pr, dict) or set(pr) - _PROP_KEYS or _PROP_REQUIRED - set(pr)
             or pr.get("kind") not in ("defect_log", "knowledge")):
         return None
     ev = pr.get("evidence")
-    if not isinstance(ev, str) or not ev.strip():
+    if not isinstance(ev, str) or not _evidence_present(root, sha, ev):
         return None
     texts = [pr["kind"], ev]
     if not isinstance(pr["note"], str) or not pr["note"].strip():
@@ -2750,8 +2699,8 @@ def _valid_proposal(pr):
         if not isinstance(pr["keys"], list) or len(pr["keys"]) > 20:
             return None
         for kk in pr["keys"]:
-            if not isinstance(kk, dict) or set(kk) != _PROP_KEY_KEYS or not all(isinstance(v, str)
-                    for v in kk.values()):
+            if not isinstance(kk, dict) or set(kk) != _PROP_KEY_KEYS or not all(
+                    isinstance(v, str) for v in kk.values()):
                 return None
             texts += [kk["scanner"], kk["finding_id"], kk["purl"]]
     if any(len(t) > _PROP_MAX for t in texts) or not _scrubbed_all(texts):
@@ -2760,7 +2709,7 @@ def _valid_proposal(pr):
 
 
 def _narrative_ok(text, sections):
-    if FORBIDDEN_NAMES.search(text):     # no vendor/model attribution in the report
+    if any(w in text.lower() for w in FORBIDDEN_WORDS):     # no vendor/model attribution in the report
         return False
     cfg = _configured_model_values()
     if cfg and re.search("|".join(cfg), text, re.I):   # nor the configured model identifiers
@@ -3183,7 +3132,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
             return "proposed, not delivered (test image)"   # no statement on main applies
         if r.get("carried"):
             # already published on main (same disposition) — a dry run does not change that, so
-            # this is checked BEFORE `dry` (Sonnet D). `carried` is set only when THIS run's
+            # this is checked BEFORE `dry`. `carried` is set only when THIS run's
             # disposition matches the one on main (see _cstat), so it can never over-claim.
             return "in force (main)"
         if dry:
@@ -3191,7 +3140,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         # freshly written this run — NEVER "in force (main)" without evidence it is on main (AC9).
         if r.get("section") == 1 and r.get("fix_pr_url"):
             # a lifted row's delivery is its BUMP PR, not the suppression PR — name the PR its own
-            # action text names, never a different one (Sonnet C).
+            # action text names, never a different one.
             return "proposed (PR #%s)" % r["fix_pr_url"].rstrip("/").split("/")[-1]
         if pr_url:
             return "proposed (PR #%s)" % pr_url.rstrip("/").split("/")[-1]
@@ -3306,7 +3255,7 @@ def main():
     finally:
         cli.close_adjudicators()       # shut the run's single adjudicator client process down
     print("daily CVE auditor: dry_run=%s, out=%s" % (dry, out))
-    return 0 if complete else 1        # AUDIT INCOMPLETE fails the job (R13 item 3)
+    return 0 if complete else 1        # AUDIT INCOMPLETE fails the job
 
 
 if __name__ == "__main__":
