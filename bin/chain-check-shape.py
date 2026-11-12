@@ -62,55 +62,25 @@ SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scan
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
 STEP_LIST = "release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # the Release helper keeps only Release's six; Check's steps run under the local helper (REQ-REL-011-AC1)
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # PR 2's with the two AWS variables of handoff 0713 (SIGSTORE_ID_TOKEN is gone); never github or slsa
-RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
 
 
 def witnessed_lines():
-    """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py), with PR 3's three steps in the closed list. Handoff 0713: the collection is signed with the release KMS key
-    by its alias, by the one signing function, after Witness has run with a throwaway key and no token, AWS_ROLE_ARN or AWS_WEB_IDENTITY_TOKEN_FILE of its own (the scripts of release-sign and release-apks, which sign with the key themselves, are handed the sensitive names RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE and map them themselves; the wrapped command is the plain bash SCRIPT); a fresh identity token
-    (audience sts.amazonaws.com) goes to a file in a private directory under RUNNER_TEMP that a trap removes, and the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and
-    AWS_ROLE_ARN for the one signing call."""
-    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
+    """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py): Release's steps record under Witness with a throwaway key, as the building steps do; the Release job holds no key (Q-T2, KMS:36-38)."""
+    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in %s) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac' % STEP_LIST,
             'mkdir -p "witness-${step#snapshot-}"',
-            ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
-            ': "${AWS_REGION:?witnessed: AWS_REGION is missing}"',
-            ': "${RELEASE_KMS_KEY_REF:?witnessed: RELEASE_KMS_KEY_REF is missing}"',
+            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN",
             "umask 077",
-            'td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")',
-            "trap 'rm -rf \"$td\"' EXIT HUP INT TERM",
-            "role=$AWS_ROLE_ARN region=$AWS_REGION kref=$RELEASE_KMS_KEY_REF",
-            "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL",
-            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            "oidc_token() {",
-            '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $req_tok" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
-            '  tok=$(cat "$td/token")',
-            '  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
-            '  echo "::add-mask::$tok"',
-            "}",
-            'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
-            'signers=" release-sign release-apks "',
-            'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
-            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac',
-            'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
-            'local_record="$td/$step-collection.json"',
+            'kd=$(mktemp -d "${RUNNER_TEMP:?}/witness-key.XXXXXX")',
+            "trap 'rm -rf \"$kd\"' EXIT HUP INT TERM",
+            'openssl genpkey -algorithm ed25519 -out "$kd/key.pem"',
             "rc=0",
-            'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
+            'witness run --step "$step" --signer-file-key-path "$kd/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
-            'rm -rf "$td/step"',
-            "unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE",
-            'if [ "$rc" -eq 0 ]; then',
-            '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
-            "  oidc_token",
-            '  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" AWS_ROLE_ARN=$role AWS_REGION=$region RELEASE_KMS_KEY_REF=$kref '
-            'python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
-            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json '
-            '--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub || rc=$?',
-            "fi",
-            'rm -rf "$td"',
-            '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
+            '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@" || rc=$?' % keys,
+            'rm -rf "$kd"',
+            '[ ! -e "$kd" ] || { echo "witnessed: the throwaway key directory still exists" >&2; exit 1; }',
             'exit "$rc"']
 
 
