@@ -653,7 +653,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
-      "sha256": "982d1e6e31ee00c6e270b27805a964ce05a0d1d560985da9ce579f752192727d"
+      "sha256": "7f5680fa99c677d6ccb051d03c1497814b0407a068ec4dff6c369d455b47ca81"
     },
     {
       "path": "bin/chain_items.py",

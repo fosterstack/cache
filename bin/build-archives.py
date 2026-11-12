@@ -21,7 +21,8 @@ import tarfile
 
 ARCHES = (("x86_64", "amd64"), ("aarch64", "arm64"))
 VARIANTS = (("standard", "fscache"), ("fips", "fscache-fips"))
-VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?|0\.0\.0-rc\.1")   # X.Y.Z, X.Y.Z-rcN, or the snapshot 0.0.0-rc.1
+# X.Y.Z, X.Y.Z-rcN, or the snapshot 0.0.0-rc.1
+VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?|0\.0\.0-rc\.1")
 
 
 def refuse(why):
@@ -69,7 +70,8 @@ def main(argv):
         return 2 if e.code else 0
     if not VERSION.fullmatch(args.version):
         refuse("version %r is not X.Y.Z, X.Y.Z-rcN or 0.0.0-rc.1" % args.version)
-    apk_version = args.version.replace("-rc.", "-rc").replace("-rc", "_rc")   # the apk spelling: 0.3.0-rc1 and 0.0.0-rc.1 are 0.3.0_rc1 and 0.0.0_rc1
+    # the apk spelling: 0.3.0-rc1 and 0.0.0-rc.1 are 0.3.0_rc1 and 0.0.0_rc1
+    apk_version = args.version.replace("-rc.", "-rc").replace("-rc", "_rc")
     sde = os.environ.get("SOURCE_DATE_EPOCH", "0")
     if not sde.isdigit():
         refuse("SOURCE_DATE_EPOCH %r is not digits" % sde)
