@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7, REQ-REL-012-AC8
+# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7, REQ-REL-012-AC8, REQ-REL-012-AC9, REQ-REL-012-AC10
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a
 # pull request into the release carries a passed-audit record for its exact head, or it cannot merge"), offline. The record is the branch
 # audit/<the pull request's head sha>: ONE commit whose only parent is that head, verified by GitHub, authored by the writer the policy file
 # of the default branch names (and committed by it or by GitHub's own web-flow), with the fixed message, adding exactly the one file
 # audit-record. The judge reads the API answers as data and fails closed on every doubt; bin/audit-record-judge.sh reads them (a fake gh here)
 # and the verdict job of agent-review-gate.yml runs it from the default branch, over the head.
+# A pull request Dependabot opened is the exception (owner RATIFIED Nov 11 2026): no record, the Dependabot reviewer's
+# pass alone. Its cases are the last section here; they build a small git repository and need git 2.38 or newer.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
@@ -118,6 +120,7 @@ open(os.path.join(fake, "gh"), "w").write('''#!/usr/bin/env bash
 echo "gh $*" >> "$CALLS"
 case "$2" in
   repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; ;;
+  repos/o/r/commits/*/pulls*) echo "[]"; exit 0 ;;
   repos/o/r/commits/*) f="$FAKE/commit"; ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
 esac
@@ -148,7 +151,7 @@ r, calls = wrap(ref_err="gh: HTTP 502: Bad Gateway"); check("wrapper: a GitHub A
 r, calls = wrap(commit_err="gh: HTTP 403: rate limit exceeded"); check("wrapper: a GitHub API error on the commit exits 3 as an API error", r.returncode == 3 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=None); check("wrapper: a commit that is not found exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("wrapper: an unverified record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and calls.count("gh api") == 1, (r.returncode, r.stdout, calls))
+r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and "commits/not-a-sha" not in calls, (r.returncode, r.stdout, calls))
 r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/name exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stderr, calls))
 
 # the writer's own checks: the pull request must be open, into main, with exactly this head, before anything is written
@@ -215,6 +218,7 @@ echo "gh $*" >> "$CALLS"
 case "$2" in
   repos/o/r/pulls/*) f="$FAKE/pr" ;;
   repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref" ;;
+  repos/o/r/commits/*/pulls*) echo "[]"; exit 0 ;;
   repos/o/r/commits/*) f="$FAKE/commit" ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
 esac
@@ -416,6 +420,7 @@ case "$1 $2" in
     [ -n "$CMP_FAIL" ] && { echo "HTTP 502" >&2; exit 1; }
     if [ "$3" = -q ]; then echo "$CMP_STATUS"; else echo "{\\"status\\": \\"$CMP_STATUS\\"}"; fi ;;
   "api repos/o/r/git/ref/heads/audit/"*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  "api repos/o/r/commits/"*"/pulls"*) echo "[]" ;;
   "workflow run") exit 0 ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
 esac
@@ -502,6 +507,230 @@ for name, fn, frag in (
 ):
     probs = adm_problems(adm_mut(fn))
     check("stage-admission.yml: a copy with %s is refused" % name, any(frag in x for x in probs), probs)
+
+# A PULL REQUEST DEPENDABOT OPENED (owner RATIFIED Nov 11 2026): no passed-audit record; the Dependabot reviewer is its
+# only review. The judge passes its head on the reviewer's pass and nothing else, and no other pull request this way.
+OURS = {"id": 11, "full_name": "o/r"}
+DEP = {"number": 7, "state": "open", "merged": False, "title": "Bump left-pad from 1.2.3 to 1.2.4",
+       "body": "Bumps left-pad from 1.2.3 to 1.2.4.", "user": {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"},
+       "head": {"sha": HEAD, "ref": "dependabot/pip/left-pad-1.2.4", "repo": OURS}, "base": {"ref": "main", "repo": OURS}}
+check("bump: an open pull request into main that Dependabot opened from its own branch of the repository is one",
+      A.dependabot_pull(DEP) is True, A.dependabot_pull(DEP))
+for name, pr in (
+    ("another author", mut(DEP, ["user", "login"], "fosterstack-admin")),
+    ("Dependabot's login with another id", mut(DEP, ["user", "id"], 5)),
+    ("Dependabot's id with another login", mut(DEP, ["user", "login"], "dependabot")),
+    ("an author that is not a bot", mut(DEP, ["user", "type"], "User")),
+    ("no author", mut(DEP, ["user"], None)),
+    ("a branch that is not dependabot/", mut(DEP, ["head", "ref"], "feat/dependabot/x")),
+    ("a branch named dependabot with no slash", mut(DEP, ["head", "ref"], "dependabot-fix")),
+    ("no branch name", mut(DEP, ["head", "ref"], A)),
+    ("a fork (the head is in another repository)", mut(DEP, ["head", "repo"], {"id": 12, "full_name": "x/r"})),
+    ("a head repository that is gone", mut(DEP, ["head", "repo"], None)),
+    ("a repository id that is a string", mut(mut(DEP, ["head", "repo"], {"id": "11"}), ["base", "repo"], {"id": "11"})),
+    ("another base", mut(DEP, ["base", "ref"], "chain-v030")),
+    ("a closed pull request", mut(DEP, ["state"], "closed")),
+    ("no head block", mut(DEP, ["head"], A)), ("no base block", mut(DEP, ["base"], A)),
+    ("a malformed answer", []), ("no answer", None),
+):
+    check("bump: not a Dependabot pull request: " + name, A.dependabot_pull(pr) is False, A.dependabot_pull(pr))
+
+def run(i, conclusion="success", slug="fosterstack-automation", name="dependabot-reviewer", status="completed"):
+    return {"id": i, "name": name, "status": status, "conclusion": conclusion, "app": {"id": 5054756, "slug": slug}}
+def runs(*rs):
+    return {"total_count": len(rs), "check_runs": list(rs)}
+def verdict(answer, writers=WRITERS):
+    return A.reviewer_verdict(answer, writers)
+for name, answer, want in (
+    ("no check run", runs(), "none"),
+    ("the reviewer's success", runs(run(1)), "success"),
+    ("the reviewer's failure", runs(run(1, "failure")), "failure"),
+    ("a neutral check (a re-review that did not finish)", runs(run(1, "neutral")), "neutral"),
+    ("a failure after a success: the newest counts", runs(run(1), run(2, "failure")), "failure"),
+    ("a success after a failure: the newest counts", runs(run(2), run(1, "failure")), "success"),
+    ("a success from another App", runs(run(1, slug="github-actions")), "none"),
+    ("a success with no App at all", runs(dict(run(1), app=None)), "none"),
+    ("another App's success after the reviewer's failure", runs(run(1, "failure"), run(2, slug="someone")), "failure"),
+    ("a success under another check name", runs(run(1, name="dependabot reviewer")), "none"),
+    ("a check run still in progress", runs(run(1, None, status="in_progress")), "unfinished"),
+    ("a list GitHub cut (more runs than it returned)", {"total_count": 2, "check_runs": [run(1)]}, None),
+    ("a run without an id", runs(dict(run(1), id=None)), None),
+    ("a malformed run", runs("x"), None), ("a malformed answer", [], None), ("no answer", None, None),
+):
+    check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
+check("bump: the reviewer's verdict: no writers policy -> unreadable", verdict(runs(run(1)), None) is None)
+
+def passes(head="h2", review=True, verdicts=None, parents=None):
+    asked = []
+    def verdict_of(c):
+        asked.append(c); return (verdicts or {}).get(c, "none")
+    ok, why = A.bump_passes(head, review, verdict_of, lambda c: (parents or {}).get(c))
+    return ok, why, asked
+CHAIN = {"h2": "h1", "h1": "h0"}      # h2 is h1 with main merged in, h1 is h0 with main merged in
+ok, why, asked = passes(review=False)
+check("bump: no major and nothing flagged passes, and no verdict is asked for", ok and asked == [], (ok, why, asked))
+for name, kw, want in (
+    ("the reviewer's success on the head", dict(verdicts={"h2": "success"}), True),
+    ("no verdict anywhere", dict(), False),
+    ("no verdict on the head, success on the head it only updates", dict(verdicts={"h1": "success"}, parents=CHAIN), True),
+    ("success two updates back", dict(verdicts={"h0": "success"}, parents=CHAIN), True),
+    ("success on the parent, but the head is not only an update of it", dict(verdicts={"h1": "success"}), False),
+    ("the reviewer's failure on the head, success on its parent", dict(verdicts={"h2": "failure", "h1": "success"}, parents=CHAIN), False),
+    ("a neutral check on the head, success on its parent", dict(verdicts={"h2": "neutral", "h1": "success"}, parents=CHAIN), False),
+    ("an unfinished check on the head", dict(verdicts={"h2": "unfinished", "h1": "success"}, parents=CHAIN), False),
+    ("an unreadable verdict on the head", dict(verdicts={"h2": None, "h1": "success"}, parents=CHAIN), False),
+    ("no verdict on the head, failure on its parent, success before that", dict(verdicts={"h1": "failure", "h0": "success"}, parents=CHAIN), False),
+):
+    ok, why, asked = passes(**kw)
+    check("bump: a major or flagged bump: %s -> %s" % (name, "passes" if want else "refused"), ok is want and bool(why), (ok, why, asked))
+LONG = {"u%d" % i: "u%d" % (i + 1) for i in range(A.MAX_UPDATES + 5)}
+ok, why, asked = passes(head="u0", verdicts={"u%d" % A.MAX_UPDATES: "success"}, parents=LONG)
+check("bump: a success exactly %d updates back still counts" % A.MAX_UPDATES, ok, (ok, why, len(asked)))
+ok, why, asked = passes(head="u0", verdicts={"u%d" % (A.MAX_UPDATES + 1): "success"}, parents=LONG)
+check("bump: the judge follows at most %d updates back" % A.MAX_UPDATES, (not ok) and len(asked) == A.MAX_UPDATES + 1, (ok, why, len(asked)))
+
+ok, why = plan(pr=DEP)
+check("plan refused: a pull request Dependabot opened gets no record", (not ok) and "Dependabot" in why, (ok, why))
+ok, why = plan(pr=mut(DEP, ["user", "login"], "fosterstack-admin"))
+check("plan: the same pull request opened by anyone else may be recorded", ok, (ok, why))
+
+r, c = wrap_rel(ref=None)
+check("bump: a release tag is never judged as a bump (no pull request is asked for)", r.returncode == 1 and "/pulls" not in c, (r.returncode, r.stdout, c))
+
+# the wrapper over a real repository: main, Dependabot's commit, heads that bring main in, and heads that carry more
+G = os.path.join(d, "gate"); os.makedirs(G + "/bin"); os.makedirs(G + "/.github/policy")
+BIN = os.path.dirname(JUDGE_SH)
+for name in ("audit-record.py", "audit-record-judge.sh", "audit-record-prepare.sh", "dependabot-reviewer.py"):
+    open(G + "/bin/" + name, "w").write(open(os.path.join(BIN, name)).read())
+open(G + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
+genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t",
+            GIT_COMMITTER_EMAIL="t@example.invalid", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+def git(*args):
+    return subprocess.run(("git", "-C", G) + args, capture_output=True, text=True, env=genv, check=True).stdout.strip()
+def commit(path, text, msg):
+    open(os.path.join(G, path), "w").write(text); git("add", "-A"); git("commit", "-q", "-m", msg)
+    return git("rev-parse", "HEAD")
+git("init", "-q", "-b", "main")
+commit("ours.txt", "one\n", "main")
+git("checkout", "-q", "-b", "side"); SIDE = commit("side.txt", "not on main\n", "a commit main does not have")
+git("checkout", "-q", "-b", "bump", "main"); D = commit("pins.txt", "left-pad==1.2.4\n", "Bump left-pad")
+git("checkout", "-q", "main"); M1 = commit("ours.txt", "two\n", "main moves")
+git("checkout", "-q", "bump"); git("merge", "-q", "--no-ff", "-m", "Merge branch 'main' into bump", "main"); U1 = git("rev-parse", "HEAD")
+git("checkout", "-q", "main"); commit("ours.txt", "three\n", "main moves again")
+git("checkout", "-q", "bump"); git("merge", "-q", "--no-ff", "-m", "Merge branch 'main' into bump", "main"); U2 = git("rev-parse", "HEAD")
+git("checkout", "-q", "--detach", D); MEND = commit("ours.txt", "one, mended for 1.2.4\n", "somebody's own commit on the bump")
+git("checkout", "-q", "--detach", D); git("merge", "-q", "--no-ff", "--no-commit", M1)
+EVIL = commit("extra.txt", "rides along\n", "Merge branch 'main' into bump")
+git("checkout", "-q", "--detach", D); git("merge", "-q", "--no-ff", "-m", "Merge branch 'side' into bump", SIDE); OFF = git("rev-parse", "HEAD")
+git("checkout", "-q", "main")
+check("bump fixture: the update heads have two parents, the second on main; the mend has one",
+      [len(git("rev-list", "--parents", "-n", "1", c).split()) for c in (D, U1, U2, MEND, EVIL, OFF)] == [2, 3, 3, 2, 3, 3])
+open(fake + "/gh", "w").write('''#!/usr/bin/env bash
+echo "gh $*" >> "$CALLS"
+sha=${2#repos/o/r/commits/}; sha=${sha%%[/?]*}
+case "$2" in
+  repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; none="" ;;
+  repos/o/r/commits/*/pulls*) f="$FAKE/pulls-$sha"; none="[]" ;;
+  repos/o/r/commits/*/check-runs\\?check_name=dependabot-reviewer\\&per_page=100) f="$FAKE/checks-$sha"; none='{"total_count": 0, "check_runs": []}' ;;
+  repos/o/r/commits/*) f="$FAKE/commit"; none="" ;;
+  repos/o/r/pulls/*) f="$FAKE/pr"; none="" ;;
+  *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
+esac
+if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
+if [ -f "$f.json" ]; then cat "$f.json"; elif [ -n "$none" ]; then echo "$none"; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+''')
+FLAGGED = "Bumps left-pad from 1.2.3 to 1.2.4.\n<details><summary>Release notes</summary>\n<li><em>Breaking change</em>: drops py3.8</li>\n</details>"
+def dep(head, **kw):
+    pr = mut(DEP, ["head", "sha"], head)
+    for k, v in kw.items(): pr[k] = v
+    return pr
+def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, root=G, base_ref="main"):
+    fk = tempfile.mkdtemp(dir=d)
+    def put(name, obj): open(os.path.join(fk, name), "w").write(obj if isinstance(obj, str) else json.dumps(obj))
+    if pulls is not None: put("pulls-%s.json" % head, pulls)
+    for sha, rs in (verdicts or {}).items(): put("checks-%s.json" % sha, runs(*rs))
+    for name, obj in (files or {}).items(): put(name + ".json", obj)
+    for name, text in (errs or {}).items(): put(name + ".err", text)
+    calls = os.path.join(fk, "calls"); open(calls, "w").close()
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r", GH_TOKEN="x", AUDIT_ACTOR="fosterstack-admin")
+    cwd = tempfile.mkdtemp(dir=d)
+    cmd = ["bash", root + "/bin/audit-record-judge.sh", head, base_ref] if script is None else ["bash", root + "/bin/" + script, "7", head]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=root if script else cwd)
+    return r, open(calls).read()
+def said(r, c): return (r.returncode, r.stdout, r.stderr, c)
+
+r, c = gate(D, pulls=[dep(D)])
+check("gate: Dependabot's patch bump with no record passes; GitHub is asked for the record and the pull request, and for no verdict",
+      r.returncode == 0 and "Dependabot pull request #7 needs no passed-audit record" in r.stdout and c.count("gh api") == 2 and "check-runs" not in c, said(r, c))
+r, c = gate(U1, pulls=[dep(U1)])
+check("gate: the same bump after main was merged in passes too", r.returncode == 0, said(r, c))
+r, c = gate(MEND, pulls=[dep(MEND)])
+check("gate: a patch bump that carries somebody's own commit passes as well (the pull request is asked, not its commits; nothing reads a patch or minor)",
+      r.returncode == 0, said(r, c))
+for name, pr in (("somebody else opened it", dep(D, user={"login": "fosterstack-harness[bot]", "id": 7, "type": "Bot"})),
+                 ("it comes from a fork", mut(dep(D), ["head", "repo"], {"id": 12, "full_name": "x/r"})),
+                 ("its branch is not dependabot/", mut(dep(D), ["head", "ref"], "feat/bump")),
+                 ("it is closed", dep(D, state="closed")), ("it is into another branch", mut(dep(D), ["base", "ref"], "chain-v030")),
+                 ("the Dependabot pull request GitHub names has another head", dep(U1))):
+    r, c = gate(D, pulls=[pr])
+    check("gate: the same commits, but %s: the record rule stands (exit 1, no record)" % name,
+          r.returncode == 1 and "no passed-audit record for this head" in r.stdout and "check-runs" not in c, said(r, c))
+r, c = gate(D)
+check("gate: a head no pull request has: the record rule stands", r.returncode == 1 and "no passed-audit record for this head" in r.stdout, said(r, c))
+r, c = gate(D, pulls=[dep(D), dep(D, number=8)])
+check("gate: two Dependabot pull requests for one head is a doubt: the record rule stands", r.returncode == 1 and "no passed-audit record" in r.stdout, said(r, c))
+r, c = gate(D, pulls=[dep(D)], files={"ref": mut(REF, ["ref"], "refs/heads/audit/" + D), "commit": mut(COMMIT, ["parents"], [{"sha": D}])})
+check("gate: a head that has a passing record passes by it, and nothing more is asked", r.returncode == 0 and "passed-audit record found" in r.stdout and c.count("gh api") == 2 and "/pulls" not in c, said(r, c))
+
+MAJOR = dict(title="Bump left-pad from 1.2.3 to 2.0.0", body="Bumps left-pad from 1.2.3 to 2.0.0.")
+r, c = gate(D, pulls=[dep(D, **MAJOR)])
+check("gate: a major the reviewer has not read is refused, and says so", r.returncode == 1 and "Dependabot pull request #7: the Dependabot reviewer has not passed this head" in r.stdout, said(r, c))
+r, c = gate(D, pulls=[dep(D, **MAJOR)], verdicts={D: [run(1)]})
+check("gate: a major the reviewer passed on this head passes", r.returncode == 0 and "the Dependabot reviewer passed this head" in r.stdout, said(r, c))
+r, c = gate(D, pulls=[dep(D, body=FLAGGED)])
+check("gate: a minor whose notes say breaking is judged like a major: refused until the reviewer passes it", r.returncode == 1 and "has not passed" in r.stdout and "check-runs" in c, said(r, c))
+r, c = gate(D, pulls=[dep(D, body=FLAGGED)], verdicts={D: [run(1)]})
+check("gate: ... and passes once the reviewer has", r.returncode == 0, said(r, c))
+r, c = gate(U1, pulls=[dep(U1, body=FLAGGED)], verdicts={D: [run(1)]})
+check("gate: a head that is the passed head with main merged in passes at once, with no verdict of its own",
+      r.returncode == 0 and ("the Dependabot reviewer passed %s, and this head is that one with main merged in" % D) in r.stdout, said(r, c))
+r, c = gate(U2, pulls=[dep(U2, body=FLAGGED)], verdicts={D: [run(1)]})
+check("gate: ... and so does a head two such updates on", r.returncode == 0 and c.count("check-runs") == 3, said(r, c))
+for name, head, verdicts in (
+    ("the reviewer failed this head, though it passed the one before", U1, {U1: [run(2, "failure")], D: [run(1)]}),
+    ("the reviewer's re-review of this head did not finish (neutral)", U1, {U1: [run(2, "neutral")], D: [run(1)]}),
+    ("the head before was failed", U1, {D: [run(1, "failure")]}),
+    ("the head before was passed and then failed", U1, {D: [run(1), run(2, "failure")]}),
+    ("the head before was passed by another App", U1, {D: [run(1, slug="github-actions")]}),
+    ("the head carries somebody's own commit on top of the passed head", MEND, {D: [run(1)]}),
+    ("the head is a merge with main that carries a file of its own", EVIL, {D: [run(1)]}),
+    ("the head merges in a commit that main does not have", OFF, {D: [run(1)]}),
+):
+    r, c = gate(head, pulls=[dep(head, body=FLAGGED)], verdicts=verdicts)
+    check("gate refused: " + name, r.returncode == 1 and "Dependabot pull request #7: the Dependabot reviewer has not passed" in r.stdout, said(r, c))
+r, c = gate(MEND, pulls=[dep(MEND, body=FLAGGED)], verdicts={MEND: [run(2)], D: [run(1)]})
+check("gate: the head with somebody's own commit passes once the reviewer has passed that very head", r.returncode == 0, said(r, c))
+r, c = gate(U1, pulls=[dep(U1, body=FLAGGED)], verdicts={D: [run(1)]}, root=root)
+check("gate refused: where the head's commits cannot be read (no git objects) and the reviewer's rule cannot be run, nothing is passed over",
+      r.returncode == 1 and "has not passed" in r.stdout, said(r, c))
+r, c = gate(D, pulls=[dep(D)], root=root)
+check("gate refused: a patch bump where the reviewer's rule cannot be run waits for the reviewer", r.returncode == 1 and "has not passed" in r.stdout and "check-runs" in c, said(r, c))
+r, c = gate(D, errs={"pulls-" + D: "gh: HTTP 502: Bad Gateway"})
+check("gate: a GitHub API error asking for the pull request exits 3 and says it is an API error", r.returncode == 3 and "GitHub API error" in r.stderr and r.stdout == "", said(r, c))
+r, c = gate(D, pulls=[dep(D, body=FLAGGED)], errs={"checks-" + D: "gh: HTTP 403: rate limit exceeded"})
+check("gate: a GitHub API error asking for the reviewer's verdict exits 3", r.returncode == 3 and "GitHub API error" in r.stderr, said(r, c))
+r, c = gate(D, pulls=[dep(D)], base_ref="chain-v030")
+check("gate: a base that is not main still passes without asking anything", r.returncode == 0 and c == "", said(r, c))
+
+# the writer: no record for a Dependabot pull request, whatever the reviewer says of it
+for name, verdicts in (("passed by the reviewer", {D: [run(1)]}), ("not read by the reviewer yet", {})):
+    r, c = gate(D, pulls=[dep(D, **MAJOR)], verdicts=verdicts, files={"pr": dep(D, **MAJOR)}, script="audit-record-prepare.sh")
+    check("prepare refused: a Dependabot pull request %s gets no record (exit 1, nothing written)" % name,
+          r.returncode == 1 and "proceed" not in r.stdout and "Dependabot opened the pull request" in r.stderr and not os.path.exists(G + "/audit-record"), said(r, c))
+r, c = gate(D, files={"pr": dep(D, user={"login": "fosterstack-admin", "id": 9, "type": "User"})}, script="audit-record-prepare.sh")
+wrote = os.path.exists(G + "/audit-record")
+if wrote: os.remove(G + "/audit-record")
+check("prepare: the same pull request opened by anyone else is recorded as before (proceed)", r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and wrote, said(r, c))
 
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

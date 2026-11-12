@@ -459,6 +459,14 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
+  - ac: REQ-REL-012-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the Dependabot cases: who opened the pull request, the reviewer's verdict, and the judge with a fake gh over a real git repository whose heads merge main in, carry a commit of their own, or carry more than the merge)" }
+  - ac: REQ-REL-012-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the writer's plan and its prepare script refuse a Dependabot pull request)" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }

@@ -5,6 +5,13 @@
 # It reads the record branch audit/<HEAD_SHA> and its commit through the API (only when the base is main and the head is 40 lower-case hex, so nothing odd is ever put in
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
+# A pull request Dependabot opened gets no record (owner RATIFIED Nov 11 2026: the Dependabot reviewer is its only
+# review). So a head without a passing record is put to bin/audit-record.py bump, which asks GitHub whose pull request
+# it is. An open one into main that Dependabot opened from its own branch of this repository passes on the reviewer's
+# pass and nothing else: a patch or minor the reviewer's rule does not read, or the reviewer's success on this very
+# head, or on a head this one only merges main into. Every other pull request is judged by its record, as before.
+# That part reads the head's commits as git objects of this checkout (the gate's two jobs fetch them; where they are
+# missing it fails closed) and is never run for a release tag.
 set -uo pipefail
 # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
 head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}
@@ -44,4 +51,15 @@ if [ "$mode" = --release ]; then
   cd "$here" && exec python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" \
     --tagged-sha "$head" --base-root . "${args[@]+"${args[@]}"}"
 fi
-cd "$here" && exec python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . "${args[@]+"${args[@]}"}"
+cd "$here" || exit 1
+said=$(python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . \
+  "${args[@]+"${args[@]}"}"); rc=$?
+# repo is set only above, for a base of main and a head of 40 lower-case hex: nothing else is put to GitHub
+if [ "$rc" = 1 ] && [ -n "${repo:-}" ]; then
+  bump=$(python3 -I bin/audit-record.py bump --head "$head" --repo "$repo" --base-root .); b=$?
+  if [ "$b" = 3 ]; then exit 3; fi
+  # a line means the head is a Dependabot pull request's: its verdict is the reviewer's, 0 or 1
+  if [ -n "$bump" ]; then said=$bump; [ "$b" = 0 ] && rc=0; fi
+fi
+printf '%s\n' "$said"
+exit "$rc"

@@ -2103,10 +2103,13 @@ requirements:
       record no longer applies. The verdict is part of the
       existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
       cannot edit or skip it, and a retarget re-runs it.
-    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
+      A pull request Dependabot opened is the one exception (owner RATIFIED Nov 11 2026,
+      ops/docs/ratify/2026-11-11-dependabot-reviewer-only.md, rules 1, 2 and 4): it gets no record, the Dependabot
+      reviewer is its only review, and the same judge passes its head on the reviewer's pass and nothing else (AC9, AC10).
+    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json, bin/dependabot-reviewer.py]
     tier: community
     introduced: v0.3.0
-    origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2
+    origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2; the Dependabot exception, owner Nov 11 2026
     confidence: implementation-only
     notes: >
       No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
@@ -2114,9 +2117,12 @@ requirements:
       exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
       owner's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
       something.
+      The Dependabot exception (AC9, AC10) changes the judge and the writer's plan only: the gate workflow, its check
+      name and the required-check list are as they were, and the verdict for a Dependabot pull request is still published
+      by the gate's own two jobs, on every new head.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
-        given: "a pull request whose base is main, and the head sha it has now"
+        given: "a pull request whose base is main and that Dependabot did not open (AC9 has those), and the head sha it has now"
         when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
         then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
         verification: { method: ci-workflow, release_blocking: false }
@@ -2161,6 +2167,18 @@ requirements:
         given: "a dispatch of the record job with the word release as the pull request and a commit sha"
         when: "the writer's prepare script runs"
         then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC9
+        given: "a head with no passing record that GitHub names as the head of exactly one open pull request into main opened by Dependabot (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself"
+        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check nothing out)"
+        then: "it passes without a record on the Dependabot reviewer's pass and nothing else: by the reviewer's own rule (bin/dependabot-reviewer.py updates, over the title and body GitHub holds) no update is a major and the notes do not say breaking or deprecated, so the reviewer reads none of it; or the newest dependabot-reviewer check run that an audit writer's App put on the head is success; or the head has no such check run and is main merged into its first parent and nothing more (two parents, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back. It is refused, saying why, when the reviewer's newest verdict on the head, or on the head it only updates, is a failure, neutral or unfinished; when the head carries a commit or a change of its own on top of the passed head; when the rule, the commits or the writers policy cannot be read; or when the list of check runs is cut; a GitHub API error exits as one. The pull request is asked, not its commits: the owner's rule has what a major breaks mended on the bump itself. Every other pull request (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head, or two pull requests for one head) is judged by its record as before, and a release tag is never judged this way"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC10
+        given: "a dispatch of the record job for a pull request Dependabot opened"
+        when: "the writer's prepare script runs"
+        then: "it refuses and writes nothing, whatever the reviewer says of the head: a Dependabot pull request gets no passed-audit record, so nothing stands in for the Dependabot reviewer; the same pull request opened by anyone else is recorded as before"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

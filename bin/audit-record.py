@@ -13,6 +13,14 @@ sha, so an old record then names a different sha and does not apply.
   audit-record.py verify --head SHA --base-ref REF --base-root DIR [--ref-json FILE --commit-json FILE]
       FILE = the answers of `gh api repos/R/git/ref/heads/audit/SHA` and `gh api repos/R/commits/<that ref's sha>`.
       Exit 0: a base that is not main (the judge decides; nothing is read), or a good record. Exit 1: anything else, with the reason on stdout. Exit 2: usage.
+  audit-record.py bump --head SHA --repo OWNER/NAME --base-root DIR      (the judge, for a head with no passing record)
+      A pull request Dependabot opened gets no record: the Dependabot reviewer is its only review (owner RATIFIED Nov 11
+      2026, ops/docs/ratify/2026-11-11-dependabot-reviewer-only.md). This asks GitHub, through gh and the caller's
+      read-only token, whose pull request the head is and whether the reviewer passes it, and reads the head's commits
+      from the git objects of DIR. Nothing of the pull request is checked out or run.
+      Exit 0: an open Dependabot pull request has this head and the reviewer passes it. Exit 1 with a line on stdout: it
+      has, and the reviewer does not. Exit 1 with no line: no such pull request, so the record rule stands. Exit 3: a
+      GitHub API error, said on stderr.
 
 Every doubt fails closed: a missing or malformed answer, a head that is not 40 lower-case hex, a missing policy file.
 """
@@ -20,13 +28,18 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 
 RECORD_MESSAGE = "audit record"       # the one fixed, neutral line the writer commits; the record names no tool, model or reviewer
 RECORD_FILE = "audit-record"          # the one file the record commit adds (createCommitOnBranch needs a change to make a commit); its content is the head sha
 WEB_FLOW = ("web-flow", 19864447)     # GitHub's own committer for commits it makes and signs on an actor's behalf
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
+DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot: nobody else opens a pull request as this user
+REVIEWER_CHECK = "dependabot-reviewer"       # the check run dependabot-reviewer.yml publishes as its verdict on a head
+MAX_UPDATES = 50                             # the merges of main followed back from a head to one the reviewer passed
 
 
 def record_branch(head):
@@ -92,6 +105,77 @@ def verify_record(head, base_ref, ref, commit, writers):
     if not isinstance(k, dict) or ((k.get("login"), k.get("id")) not in allowed and (k.get("login"), k.get("id")) != WEB_FLOW):
         return False, "the record commit was not committed by an audit writer or by GitHub itself (a signature made with someone else's own key does not count)"
     return True, ""
+
+
+def dependabot_pull(pr):
+    """True for an open pull request into main that Dependabot opened from a dependabot/ branch of the repository itself
+    (the answer of `gh api repos/R/pulls/N`, or one item of `gh api repos/R/commits/SHA/pulls`). The pull request is
+    asked, not its commits: the owner's rule has what a major breaks mended on the bump itself, so a commit somebody
+    else pushed there is part of the bump. The reviewer's verdict is for one exact head (bump_passes), so such a commit
+    on a bump the reviewer reads waits for the reviewer. On a patch or minor bump nothing reads it, as before this
+    rule (dependabot-auto-merge.yml arms those on green)."""
+    if not isinstance(pr, dict):
+        return False
+    user, head, base = pr.get("user"), pr.get("head"), pr.get("base")
+    if not all(isinstance(x, dict) for x in (user, head, base)):
+        return False
+    ours, theirs = base.get("repo"), head.get("repo")
+    return (pr.get("state") == "open" and base.get("ref") == "main"
+            and (user.get("login"), user.get("id")) == DEPENDABOT and user.get("type") == "Bot"
+            and isinstance(head.get("ref"), str) and head["ref"].startswith("dependabot/")
+            and isinstance(ours, dict) and isinstance(theirs, dict)
+            and type(ours.get("id")) is int and ours["id"] == theirs.get("id"))
+
+
+def reviewer_verdict(checks, writers):
+    """The conclusion of the newest dependabot-reviewer check run that an audit writer's App put on a commit: "none"
+    when it put none there, "unfinished" for one still running, None when the writers policy or the answer of
+    `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&per_page=100` is malformed or cut.
+    The reviewer publishes as the App that writes the records (dependabot-reviewer.yml), whose bot login is the App's
+    slug plus [bot]. A check run of that name from anything else counts for nothing."""
+    allowed = _writers(writers)
+    runs = checks.get("check_runs") if isinstance(checks, dict) else None
+    if allowed is None or not isinstance(runs, list) or checks.get("total_count") != len(runs):
+        return None
+    logins, mine = {login for login, _ in allowed}, []
+    for r in runs:
+        if not isinstance(r, dict) or type(r.get("id")) is not int:
+            return None
+        app = r.get("app") if isinstance(r.get("app"), dict) else {}
+        if r.get("name") == REVIEWER_CHECK and "%s[bot]" % app.get("slug") in logins:
+            mine.append(r)
+    if not mine:
+        return "none"
+    last = max(mine, key=lambda r: r["id"])
+    done = last.get("status") == "completed" and isinstance(last.get("conclusion"), str)
+    return last["conclusion"] if done else "unfinished"
+
+
+def bump_passes(head, review, verdict_of, update_of):
+    """(True, why) when the Dependabot reviewer passes this head of a Dependabot pull request, else (False, why).
+    review False: by the reviewer's own rule no update is a major and the notes do not say breaking or deprecated, so
+    the reviewer reads none of it (the patch/minor lane): it passes.
+    review True: the reviewer's newest verdict on the head (verdict_of) must be success. A head with no verdict takes
+    its first parent's when it is main merged into that parent and nothing more (update_of gives that parent, else
+    None): the bump the reviewer read is in it unchanged, so a head made only to bring main in does not wait for the
+    next hourly run. A failed or unfinished verdict is never passed over, and a head with anything else of its own
+    waits for the reviewer."""
+    if not review:
+        return True, "no major and no breaking or deprecated release notes, so the Dependabot reviewer reads none of it"
+    c = head
+    for _ in range(MAX_UPDATES + 1):
+        v = verdict_of(c)
+        if v == "success":
+            return True, "the Dependabot reviewer passed " + (
+                "this head" if c == head else "%s, and this head is that one with main merged in and nothing more" % c)
+        if v != "none":
+            return False, "the Dependabot reviewer has not passed %s (its newest verdict there: %s)" % (
+                c, v or "unreadable")
+        c = update_of(c)
+        if c is None:
+            return False, ("the Dependabot reviewer has not passed this head (no verdict on it, and it is not just "
+                           "main merged into a head the reviewer passed)")
+    return False, "the Dependabot reviewer has not passed this head or any of the %d before it" % MAX_UPDATES
 
 
 # matches v1.2.3, v0.3.0, v1.0.0-rc.2; refuses v1.2, v01.2.3, v1.2.3-rc1, v1.2.3-rc.
@@ -168,7 +252,8 @@ def plan_release(head, cmp_json, actor=None, policy=None):
 def plan_record(number, head, pr, actor=None, policy=None):
     """(True, "") when a record may be written for this pull request and head now, on the request of this actor; (False, reason) otherwise. The writer checks the pull request
     itself, so a record is never made for a closed or merged pull request, for another base, or for a head that has since moved, and only an actor the policy names as a
-    dispatcher can ask for one (anyone with write access can start a workflow; not everyone may vouch for a review)."""
+    dispatcher can ask for one (anyone with write access can start a workflow; not everyone may vouch for a review).
+    A pull request Dependabot opened is refused: it gets no record, so none can stand in for the Dependabot reviewer."""
     pol = _policy(policy)
     if pol is None:
         return False, "the audit policy (%s of the default branch) is missing or malformed" % WRITERS_PATH
@@ -188,7 +273,88 @@ def plan_record(number, head, pr, actor=None, policy=None):
     h = pr.get("head")
     if not isinstance(h, dict) or h.get("sha") != head:
         return False, "the pull request's head is not %s (it moved)" % head
+    if dependabot_pull(pr):
+        return False, ("Dependabot opened the pull request: it gets no passed-audit record, "
+                       "the Dependabot reviewer is its only review")
     return True, ""
+
+
+class _ApiError(Exception):
+    pass
+
+
+def _gh(path):
+    """The parsed answer of `gh api PATH` (gh and its token as the caller set them); None for a 404; _ApiError for
+    any other failure."""
+    p = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    if p.returncode != 0:
+        if re.search(r"HTTP 404|Not Found", p.stderr):
+            return None
+        raise _ApiError("%s: %s" % (path, " ".join(p.stderr[-200:].split())))
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        raise _ApiError(path + ": the answer is not JSON")
+
+
+def _review(pr, root):
+    """True when the reviewer's own rule sends this pull request to the reviewer: bin/dependabot-reviewer.py updates
+    of the base checkout, over the title and body GitHub holds now, names an update that is a major or flagged. It is
+    the command the reviewer's hourly candidate step runs, so the two cannot disagree about who reads what. A rule
+    that cannot be run or read sends the pull request to the reviewer too."""
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".body") as f:
+        f.write(str(pr.get("body") or "") + "\n")
+        f.flush()
+        rule = [sys.executable, "-I", os.path.join(root, "bin", "dependabot-reviewer.py"), "updates",
+                "--title=" + str(pr.get("title") or ""), "--body-file", f.name]
+        p = subprocess.run(rule, capture_output=True, text=True)
+    try:
+        updates = json.loads(p.stdout) if p.returncode == 0 else None
+    except ValueError:
+        updates = None
+    return not isinstance(updates, list) or any(
+        not isinstance(u, dict) or u.get("major") is not False or u.get("flagged") is not False for u in updates)
+
+
+def _update_of(root, commit):
+    """The first parent of a commit that is main merged into that parent and nothing more, else None: it has two
+    parents, the second is a commit of the checked-out main (HEAD: both jobs of the gate judge from the default
+    branch), and its tree is the very tree git makes of merging the two. Whoever made such a commit put nothing of
+    their own in it. Git objects only: nothing is checked out and nothing of the head is run."""
+    def git(*args):
+        p = subprocess.run(("git", "-C", root) + args, capture_output=True, text=True)
+        return p.returncode, p.stdout.strip()
+    rc, line = git("rev-list", "--parents", "-n", "1", commit)
+    ids = line.split()
+    if rc != 0 or len(ids) != 3 or ids[0] != commit or not all(_SHA.match(i) for i in ids):
+        return None
+    if git("merge-base", "--is-ancestor", ids[2], "HEAD")[0] != 0:
+        return None
+    merged, tree = git("merge-tree", "--write-tree", ids[1], ids[2]), git("rev-parse", commit + "^{tree}")
+    same = merged[0] == 0 and tree[0] == 0 and _SHA.match(tree[1]) and merged[1] == tree[1]
+    return ids[1] if same else None
+
+
+def bump(head, repo, root):
+    """(None, "") when no open Dependabot pull request has exactly this head; else (passes, why). _ApiError when
+    GitHub cannot be asked."""
+    if not (isinstance(head, str) and _SHA.match(head)
+            and isinstance(repo, str) and re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo)):
+        return None, ""
+    pulls = _gh("repos/%s/commits/%s/pulls?per_page=100" % (repo, head))
+    mine = [p for p in pulls if dependabot_pull(p) and p["head"].get("sha") == head] if isinstance(pulls, list) else []
+    if len(mine) != 1:
+        return None, ""
+    writers = _load(os.path.join(root, WRITERS_PATH))
+
+    def verdict_of(commit):
+        path = "repos/%s/commits/%s/check-runs?check_name=%s&per_page=100" % (repo, commit, REVIEWER_CHECK)
+        return reviewer_verdict(_gh(path), writers)
+    ok, why = bump_passes(head, _review(mine[0], root), verdict_of, lambda commit: _update_of(root, commit))
+    number = mine[0].get("number")
+    if ok:
+        return True, "Dependabot pull request #%s needs no passed-audit record: %s" % (number, why)
+    return False, "Dependabot pull request #%s: %s" % (number, why)
 
 
 def _load(path):
@@ -222,6 +388,10 @@ def main(argv):
     q.add_argument("--cmp-json", required=True)
     q.add_argument("--actor", required=True)
     q.add_argument("--base-root", required=True)
+    b = sub.add_parser("bump")
+    b.add_argument("--head", required=True)
+    b.add_argument("--repo", required=True)
+    b.add_argument("--base-root", required=True)
     p = sub.add_parser("plan")
     p.add_argument("--pr", required=True, type=int)
     p.add_argument("--head", required=True)
@@ -250,6 +420,15 @@ def main(argv):
     if a.cmd == "plan":
         ok, why = plan_record(a.pr, a.head, _load(a.pr_json), a.actor, _load(os.path.join(a.base_root, WRITERS_PATH)))
         print("audit-record: " + ("a record may be written for #%d at %s" % (a.pr, a.head) if ok else why))
+        return 0 if ok else 1
+    if a.cmd == "bump":
+        try:
+            ok, why = bump(a.head, a.repo, a.base_root)
+        except _ApiError as e:
+            print("audit-record: could not ask GitHub about this head (GitHub API error on %s)" % e, file=sys.stderr)
+            return 3
+        if ok is not None:
+            print("audit-record: " + why)
         return 0 if ok else 1
     if a.cmd != "verify":
         return 2
