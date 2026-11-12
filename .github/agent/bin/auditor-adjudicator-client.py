@@ -129,7 +129,7 @@ def _handle(req, client):
         msg = client.messages.create(model=model, max_tokens=1024,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        ans = _one_object(text)
+        ans = _one_object(text, msg)
         ans["refused"] = ans.get("refused") is True
         ans.setdefault("proposed", True)
         ans["token_usage"] = _usage(msg)
@@ -151,7 +151,7 @@ def _handle(req, client):
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)
     # Category and refusal come from the answer's own keys, exact match: a word in prose is not a refusal.
-    p = _one_object(text)
+    p = _one_object(text, msg)
     refused = p.get("refused") is True          # a refusal wins over any category beside it
     cat = p.get("category")
     if refused or cat not in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance"):
@@ -180,6 +180,8 @@ def main():
             except Exception as e:
                 step, detail = _err_detail("model-call", e)
                 ans = {"error": "adjudicator-client: %s step failed: %s" % (step, detail)}
+                if getattr(e, "token_usage", 0):
+                    ans["token_usage"] = e.token_usage
             sys.stdout.write(json.dumps(ans) + "\n")
             sys.stdout.flush()
         return
@@ -195,7 +197,7 @@ def _whole_answer(text):
     """The model's answer: the WHOLE response must be exactly one JSON object. An object inside
     prose, a second object, an array or any other top-level value is not an answer, so an example
     in the model's wording or an injected leading object can never choose the disposition."""
-    def _no_dup(pairs):
+    def _no_dup(pairs):   # a copy of parsers.no_dup_pairs: tests load this file where auditorlib is not importable
         d = {}
         for k, v in pairs:
             if k in d:
@@ -209,12 +211,15 @@ def _whole_answer(text):
     return obj if isinstance(obj, dict) else None
 
 
-def _one_object(text):
+def _one_object(text, msg):
     """The reply as one JSON object. Anything else (prose, a fenced block) raises, so the attempt
-    fails and the chain goes on: nothing is cached from it (the message carries no reply text)."""
+    fails and the chain goes on: nothing is cached from it. The reply was billed, so the error
+    carries its usage."""
     p = _whole_answer(text)
     if p is None:
-        raise ValueError("the reply was not one JSON object")
+        e = ValueError("the reply was not one JSON object")
+        e.token_usage = _usage(msg)
+        raise e
     return p
 
 
