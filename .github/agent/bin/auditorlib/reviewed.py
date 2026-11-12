@@ -3,11 +3,8 @@
 A PRESENT file must be a JSON object that carries its required key(s) with the right shape: {} , a null list and a
 missing key are a stop (ReviewedInputInvalid), never "nothing":
 an empty file read as "no statements", "no removals" or "no defects" would delete every statement, keep every expired
-acceptance or trust an empty history. An ABSENT file is the first
-run (None). Which keys a file must carry is the table below, by file name; the readers in auditor-run.py,
-auditor-release-authz.py, auditor-consistency.py, auditor-classify.py and
-auditor-knowledge.py all read through `read`, and test_reviewed_inputs.py checks every json file name the agent programs
-mention against the table."""
+acceptance or trust an empty history. An ABSENT file is the first run (None). Which keys a file must carry is the table
+below, by file name."""
 import json
 import os
 
@@ -16,7 +13,7 @@ class ReviewedInputInvalid(Exception):
     """A reviewed file (the published VEX, the accepted-items inventory, the reopened-expired ledger, the consistency
     result, the known-defect log) is present but unreadable or not the
     JSON object it must be: the run stops (exit 3) rather than guess an empty one, which would delete every statement or
-    renew every time box (REQ-AUD-13 AC3/AC6, REQ-AUD-2 AC5c)."""
+    renew every time box (REQ-AUD-13 AC3/AC6, REQ-AUD-2 AC5c; matrix page .github/agent/docs/cve-auditor-matrix.md)."""
 
 
 # (key, kind): kind objects = a list of JSON objects, lists = a list of lists (a row), bool = a JSON true/false
