@@ -55,6 +55,14 @@ check_signed images/fips.full.lock.json "$signed/release-evidence/fips.full.lock
 check_signed policy.json "$signed/release-evidence/release-policy.bundle"
 for b in production.sbom.json fips.sbom.json fscache-modules.spdx.json fscache-modules-fips.spdx.json production.full.lock.json fips.full.lock.json; do cp "$signed/release-evidence/$b.bundle" release-evidence/; done
 cp "$signed/release-evidence/release-policy.bundle" release-evidence/
+# the images' payloads and bundles are checked too, before any login: a payload names its registry's repository and this digest
+for host in ghcr.io docker.io; do
+  for pair in "production:$prod" "fips:$fips"; do
+    v="${pair%%:*}"; d="${pair#*:}"; p="$signed/images/$host/$v.payload"
+    check_signed "$p" "$signed/images/$host/$v.bundle"
+    jq -e --arg d "$d" --arg r "$host/$repo" '.critical.image."docker-manifest-digest" == $d and .critical.identity."docker-reference" == $r' "$p" > /dev/null || { echo "release-sign: $p does not name $host/$repo@$d" >&2; exit 1; }
+  done
+done
 # The logins live in a private DOCKER_CONFIG of this step, removed when it ends (round 1 F2).
 DOCKER_CONFIG=$(mktemp -d)
 [ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || { echo "release-sign: no private credential directory: refusing to log in" >&2; exit 1; }
@@ -66,8 +74,6 @@ for host in ghcr.io docker.io; do
   for pair in "production:$prod" "fips:$fips"; do
     v="${pair%%:*}"; d="${pair#*:}"; ref="$host/$repo@$d"
     p="$signed/images/$host/$v.payload"; b="$signed/images/$host/$v.bundle"
-    check_signed "$p" "$b"
-    jq -e --arg d "$d" --arg r "$host/$repo" '.critical.image."docker-manifest-digest" == $d and .critical.identity."docker-reference" == $r' "$p" > /dev/null || { echo "release-sign: $p does not name $ref" >&2; exit 1; }
     # cosign's signature object: the payload, the signature (base64) and the log entry in the form cosign reads (--rekor-response)
     jq -er .messageSignature.signature "$b" > "$scratch/image.sig"
     logid=$(jq -er '.verificationMaterial.tlogEntries[0].logId.keyId' "$b" | base64 -d | od -An -tx1 | tr -d ' \n')

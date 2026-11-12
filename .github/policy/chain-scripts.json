@@ -1726,7 +1726,6 @@
       "path": "bin/release-sign.sh",
       "tools": [
         "cosign",
-        "git",
         "jq",
         "python3",
         "sha256sum",
@@ -1737,7 +1736,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-sign: holds no key. It checks the detached KMS signatures Sign made (release-signed/, each with its Rekor entry) against build/keys/release.rsa.pub and pushes them: the images signatures and the release manifest attestations attached by digest in both registries (cosign attach signature and attestation, then cosign verify --key on each), the blobs bundles placed beside the blobs (REQ-CHAIN-007-AC8)",
-      "sha256": "69b660303265445d9345bb6869817d0778b83f06acbadcb016bee9c6a71856c8",
+      "sha256": "771d32dd305891e8c6ec14b1ac9bc72f3200be18de9aefc1c1ab6d33c8f304f5",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -2232,11 +2231,12 @@
     {
       "path": "bin/release-sign-apks.sh",
       "tools": [
-        "trap",
+        "at",
         "env",
         "find",
+        "jq",
         "make",
-        "at"
+        "trap"
       ],
       "runs": [
         "bin/apk-tool.py",
