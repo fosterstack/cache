@@ -1049,7 +1049,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "c1c96768f690f949da407538f664c7b35b4b80d3b9139c4baa3ccfb985d04f14",
+      "sha256": "378e26592b2e182b91db60a307e1739d4dd2380f24d1d895772ddfafc026d746",
       "tools": [
         "at",
         "awk",
@@ -1516,7 +1516,7 @@
     },
     {
       "path": "bin/acceptance-k8s-manifests.py",
-      "sha256": "d4c6fd00fd04599846a3ab5e89d2c40f7ccd80b36bd840122ecd070e2f8249c0",
+      "sha256": "4f4238c5b0f192ebee73495d75f862f5df38a4a3c95a49fa4c85d6520f96001b",
       "tools": [
         "script"
       ],
