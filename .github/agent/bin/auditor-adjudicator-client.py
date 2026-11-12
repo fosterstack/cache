@@ -129,8 +129,8 @@ def _handle(req, client):
         msg = client.messages.create(model=model, max_tokens=1024,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        ans = _extract_json(text) or {}
-        ans["refused"] = bool("cannot" in text.lower() and "pullable" not in ans)
+        ans = _one_object(text)
+        ans["refused"] = ans.get("refused") is True
         ans.setdefault("proposed", True)
         ans["token_usage"] = _usage(msg)
         return ans
@@ -150,16 +150,17 @@ def _handle(req, client):
     msg = client.messages.create(model=model, max_tokens=512,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)
-    # the category and the refusal are read from the JSON answer's own keys, exact match (rc-5b R5): a substring of free text ("not a false_positive") is not a category, and
-    # a word in prose is not a refusal. No JSON, or a value outside the four = under_investigation, not refused.
-    p = _whole_answer(text)
-    refused = isinstance(p, dict) and p.get("refused") is True          # a refusal wins over any category beside it: it is never converted into a disposition
-    cat = p.get("category") if isinstance(p, dict) and not refused and p.get("category") in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance") else "under_investigation"
+    # Category and refusal come from the answer's own keys, exact match: a word in prose is not a refusal.
+    p = _one_object(text)
+    refused = p.get("refused") is True          # a refusal wins over any category beside it
+    cat = p.get("category")
+    if refused or cat not in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance"):
+        cat = "under_investigation"
     ans = {"refused": refused, "category": cat, "proposed": True, "token_usage": _usage(msg)}
     # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass
     # it through under "propose"; the driver delivers it in the draft PR and it takes effect only
     # after merge. The model never edits its own instructions or the live records here.
-    if isinstance(p, dict) and isinstance(p.get("propose"), dict):
+    if isinstance(p.get("propose"), dict):
         ans["propose"] = p["propose"]
     return ans
 
@@ -207,22 +208,13 @@ def _whole_answer(text):
     return obj if isinstance(obj, dict) else None
 
 
-def _extract_json(text):
-    """The first top-level JSON OBJECT in a model response (the model may wrap it in prose or a
-    code fence). Uses json.raw_decode from each '{', which respects strings — so a value that
-    itself contains a '}' does not break extraction (Codex round-2 P2). Returns the dict or None."""
-    s = str(text or "")
-    dec = json.JSONDecoder()
-    i = s.find("{")
-    while i != -1:
-        try:
-            obj, _end = dec.raw_decode(s[i:])
-            if isinstance(obj, dict):
-                return obj
-        except ValueError:
-            pass
-        i = s.find("{", i + 1)
-    return None
+def _one_object(text):
+    """The reply as one JSON object. Anything else (prose, a fenced block) raises, so the attempt
+    fails and the chain goes on: nothing is cached from it (the message carries no reply text)."""
+    p = _whole_answer(text)
+    if p is None:
+        raise ValueError("the reply was not one JSON object")
+    return p
 
 
 def _usage(msg):
