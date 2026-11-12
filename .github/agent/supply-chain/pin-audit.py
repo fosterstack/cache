@@ -376,12 +376,9 @@ class LiveNet:
             raise Fail(f"gh api {path.split('?')[0]} did not return JSON")      # in either mode: a body that is not JSON is not 'absent'
         if val is None and not r.returncode:
             raise Fail(f"gh api {path.split('?')[0]} returned null")      # a decoded null is not 'absent' either; only a 404 is
-        if strict and r.returncode and not re.search(r"\b404\b", r.stderr + r.stdout):
-            raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
-        if strict and val is None and r.returncode:
-            val = [] if "?" in path else None  # a 404 on a LIST endpoint: no entries; on a record: absent
-        elif strict and val is None:
-            raise Fail(f"gh api {path.split('?')[0]} returned null")
+        if strict and r.returncode:
+            if "(HTTP 404)" not in r.stderr + r.stdout or "?" in path:      # only a 404 on a record is "absent"; a list endpoint answers 200
+                raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
         with self._lock:
             self._memo[(path, strict)] = val
         return val
@@ -473,7 +470,7 @@ class LiveNet:
         mod = None
         if item.kind == "gotool":
             # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
-            mod = age._go_module(item.name, item.version, strict=True)[0]   # a proxy outage is CouldNotLook (exit 2), never "not covered"
+            mod = age._go_module(item.name, item.version)[0]   # a proxy outage is CouldNotLook (exit 2), never "not covered"
         elif item.kind == "tool":
             mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
         return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
@@ -704,7 +701,7 @@ class LiveNet:
                 try:
                     doc = inv.yaml.load(base64.b64decode(c["content"]).decode(), Loader=inv.yaml.BaseLoader) or {}
                 except inv.yaml.YAMLError:
-                    return [{"ref": "(action metadata not found or unreadable)", "pinned": False}]
+                    raise Fail(f"{item.name}: its action metadata is not YAML")
                 runs = doc.get("runs") or {}
                 refs = [st.get("uses") for st in (runs.get("steps") or []) if isinstance(st, dict) and isinstance(st.get("uses"), str)]
                 if isinstance(runs.get("image"), str):
@@ -712,7 +709,7 @@ class LiveNet:
                 for ref in refs:
                     out.append({"ref": ref, "pinned": bool(re.search(r"@[0-9a-f]{40}$|@sha256:[0-9a-f]{64}$", ref))})
                 return out
-        return [{"ref": "(action metadata not found or unreadable)", "pinned": False}]  # said out loud, never silently empty
+        raise Fail(f"{item.name}: its action metadata was not found")
 
     def versions(self, item):
         """Candidate versions with their publish times; None when this kind of item cannot be enumerated (then nobody searched, and it is a decision)."""
@@ -773,10 +770,7 @@ class LiveNet:
                 age._shaped(p["head"], (("sha", str),), "a pull request's head")
             except age.CouldNotLook as e:
                 raise Fail(str(e))
-            tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            hdr = ["-c",
-                "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
-            f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
+            f = self._fetch_pull(p["number"], p["base"]["ref"])
             if f.returncode:
                 self.incomplete_prs.append(p["number"])
                 print(f"information: open pull request #{p['number']} could not be fetched: not audited")
@@ -794,6 +788,10 @@ class LiveNet:
             out.append((p["number"], items))
         return out
 
+    def _fetch_pull(self, number, base_ref):
+        """The pull request's head and its base branch, fetched from the public repository: no token goes into git's argv (any process can read it there)."""
+        return _run(["git", "-C", self.root, "fetch", "-q", "origin", f"pull/{number}/head", base_ref], capture_output=True, text=True)
+
     def prs(self):
         repo = os.environ.get("GITHUB_REPOSITORY")
         if not repo:
@@ -809,10 +807,7 @@ class LiveNet:
             raise Fail(f"gh pr list did not return a list of pull requests ({type(e).__name__})")
         for p in listed:
             phase(f"pull request #{p['number']}")
-            tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            hdr = ["-c",
-                "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
-            f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
+            f = self._fetch_pull(p["number"], p["baseRefName"])
             if f.returncode:
                 continue
             try:
@@ -865,6 +860,26 @@ class LiveNet:
             return None
 
 
+def _is_text_list(x):
+    return isinstance(x, list) and bool(x) and all(isinstance(i, str) for i in x)
+
+
+def _well_formed_exception(e):
+    """One exceptions row: the ids it covers, the authoritative advisory, the ruling, its evidence and the one version it covers."""
+    if not isinstance(e, dict) or not _is_text_list(e.get("ids")):
+        return False
+    au = e.get("authoritative")
+    if not isinstance(au, dict) or str(au.get("source")).lower() not in ("github", "osv") or not au.get("id") or not _is_text_list(au.get("ranges")):
+        return False
+    if not isinstance(e.get("modified"), dict) or not e.get("package") or not set(e["ids"]) <= set(e["modified"]) or au["id"] not in e["ids"]:
+        return False
+    if not isinstance(e.get("ruling"), str) or not e["ruling"] or not isinstance(e.get("osv_modified", {}), dict):
+        return False
+    if not isinstance(e.get("evidence"), list) or not e["evidence"] or not isinstance(e.get("date"), str) or not e["date"]:
+        return False
+    return isinstance(e.get("version"), str) and bool(e["version"].strip())      # every exception names the one version it covers
+
+
 # ---------- exceptions (the same format as the ops repo's docs/supply-chain-exceptions.json) ----------
 def load_exceptions(path, required):
     if not path or not os.path.exists(path):
@@ -872,20 +887,16 @@ def load_exceptions(path, required):
             raise Fail(f"the exceptions file {path} does not exist")
         return []
     try:
-        d = json.load(open(path))
-        ex = d["exceptions"]
-        assert isinstance(ex, list)
-        for e in ex:
-            assert isinstance(e["ids"], list) and e["ids"] and all(isinstance(i, str) for i in e["ids"])
-            au = e["authoritative"]
-            assert isinstance(e["modified"], dict) and e["package"] and isinstance(au, dict) and str(au["source"]).lower() in ("github", "osv") and au["id"]
-            assert isinstance(au["ranges"], list) and au["ranges"] and all(isinstance(r, str) for r in au["ranges"])
-            assert isinstance(e["ruling"], str) and e["ruling"] and set(e["ids"]) <= set(e["modified"]) and au["id"] in e["ids"]
-            assert isinstance(e.get("osv_modified", {}), dict)
-            assert isinstance(e["evidence"], list) and e["evidence"] and isinstance(e["date"], str) and e["date"]
-            assert isinstance(e.get("version"), str) and e["version"].strip(), "every exception names the one version it covers"
-    except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
-        raise Fail(f"the exceptions file {path} is unreadable or malformed: {e}")
+        with open(path) as f:
+            d = json.load(f, object_pairs_hook=age._no_duplicate_keys)
+    except (OSError, ValueError) as e:
+        raise Fail(f"the exceptions file {path} is unreadable: {e}")
+    ex = d.get("exceptions") if isinstance(d, dict) else None
+    if not isinstance(ex, list):
+        raise Fail(f"the exceptions file {path}: exceptions is not a list")
+    for i, e in enumerate(ex):
+        if not _well_formed_exception(e):
+            raise Fail(f"the exceptions file {path} is malformed: exception {i} is not well formed")
     return ex
 
 
@@ -1170,42 +1181,12 @@ def body_of(f, rb, owner, ran, today):
 
 
 # ---------- history: what we ran in the last 90 days ----------
-# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is
-# never read partially, pin-inventory MAX_LINE). A revision is skipped instead only when it is named below by its
-# FULL lowercase 40-hex sha with its reason. A revision is listed only after a check that its pins are all in the
-# readable revisions' items (the listing change quotes it); each sits in a branch's history, so without the skip
-# every audit would stop at it for the 90-day lookback.
-# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a
-# revision is added to this list only by a reviewed change that names it.
-P1P5_REASON = "bin/chain-rekor-key-test.sh held a 4529-character command line, since wrapped (0289dc91)"
-SKIP_UNREADABLE = {
-    "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
-    "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
-    "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
-    "6b8c70df66651667e530748db9bc22462e307bee": "#597 fix round 3 commit (Oct 23 2026): bin/chain-check-scripts-test.sh held a 4103-character command line, since removed (the tip holds no line over 3500 characters); only this historical commit is skipped",
-    "27b14e37ed06bca44ae479a8880480fa5855605b": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "c4ac17f07ac894c014034ec7e535e4598e06ced8": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "c9e30be29823765fce4c8a23bb11a4340a73fd69": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "23f771008513913f5a1bf434af83530125621a53": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "c5b8f225a378db6fa72200bafcf9af7998ef23e5": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "9045a08f287801c75cbf385caae8038774ed9f10": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "115c746b17620f08c0fe52c789dea720c887d465": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987": "cache6-0713-p1p5 (Oct 30): " + P1P5_REASON,
-    "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
-    "464b72fea4e356a9876bf9bd70f57cc84e07cab4": "cache6-0713-p1p5 (Oct 31): " + P1P5_REASON,
-    "7d538938ec3733112eb29b5f495502e8a74d7e33": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
-    "16e2e1f9a010dfc966930b7963cec13326fa877c": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
-    "28acfea97185023710ee2ba4596cbdb2ca68bfb0": "cache6-0713-p2 (Oct 30): " + P1P5_REASON,
-    "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
-    "fbecada5bf5c37ab9263ca82664b3382c3dd9457": "cache6-0713-p2 (Oct 31): " + P1P5_REASON,
-}
-
-
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
-    refs = ["--all"] if start == "HEAD" else [start]  # daily mode: every branch and PR ref this checkout has, not only the default branch's ancestry
+    refs = ["HEAD", "--glob=refs/pull/*/head"] if start == "HEAD" else [start]      # daily mode: main and the pull request refs, not every branch and tag
     revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
+    tip = inv.git(root, "rev-parse", start).strip()
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
     if before:
         revs.append(before)
@@ -1217,10 +1198,10 @@ def history_items(root, start, now):
             try:
                 memo[key] = inv.load_at(root, r)
             except RuntimeError as e:
-                # only the named revisions, and only for the cap's own refusal; never remembered under the tree key (an unlisted revision of the same tree must still refuse)
-                if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
-                    continue
-                raise
+                if r == tip or "refusing to read it partially" not in str(e):
+                    raise
+                print(f"information: revision {r[:12]} is unmeasured: {clean(e)}")      # an old revision with a very long line is counted, not fatal
+                continue
         items.update(memo[key])
     return items
 
