@@ -1726,6 +1726,7 @@
       "path": "bin/release-sign.sh",
       "tools": [
         "cosign",
+        "git",
         "jq",
         "python3",
         "sha256sum",
