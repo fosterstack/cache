@@ -58,15 +58,12 @@ def subject(text):
     text = text or ""
     return text if text.startswith(AUDITOR_PREFIX) else "%s %s" % (AUDITOR_PREFIX, text)
 
-# Run bounds.
-MAX_ITERATIONS = 5
-# REQ-AUD-9 AC3 "a five-iteration stop" (register row 38, advisor reading Oct 24): the owner hears when the same finding
-# is still unsettled after this many CONSECUTIVE runs
+# REQ-AUD-9 AC3 (matrix page .github/agent/docs/cve-auditor-matrix.md) "a five-iteration stop": the owner hears when the
+# same finding is still unsettled after this many CONSECUTIVE runs
 UNSETTLED_RUNS = 5
 # the one grammar of a finding id (the panel verdict's, with the tally's "?" for an id-less result), capped: the verdict
-# parser and the unsettled-run counter both use it, so an id
-# the parser accepts is always one the counter can write and read back
-# matches "CVE-2026-1234" and "?"; not "bad id" (a space)
+# parser and the unsettled-run counter both use it, so an id the parser accepts is always one the counter can write and
+# read back. With fullmatch it matches "CVE-2026-1234" and "?"; not "bad id" (a space)
 FINDING_ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]{0,199}")
 TOKEN_BUDGET = 200000
 
