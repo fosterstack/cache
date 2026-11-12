@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC30, REQ-SUP-001-AC33, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
+# proves: REQ-SUP-001-AC30, REQ-SUP-001-AC33, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
 # RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
 # bin/witnessed.sh do not exist): step 4.
 #
@@ -36,10 +36,10 @@
 #         Fails closed on: no command, more than ten, another tool or subcommand, any other shell syntax, an undefined, twice-defined or
 #         unsubstituted placeholder, a non-zero exit, a cannot-run entry that is runnable or not in the guide. Writes OUT/guide-results.json.
 #   [P] bin/check-acceptance.sh gradle|maven|egress --digests D --images DIR --out DIR: wraps the EXISTING suites (acceptance.yml's gradle and
-#         maven jobs, stage-acceptance-egress.yml's trace) unchanged. THE GAP, stated plainly: what those suites need (Docker, Gradle, a running
-#         server) cannot be faked here without re-implementing them, so only the interface (unknown kind, missing images) is tested below; that a
-#         failing suite fails the script and that a suite which ran no test fails it (REQ-CHAIN-006-AC5) is proven by the implementation PR's
-#         dry run on GitHub, and by the review brief which asks the reviewers to read those suites.
+#         maven jobs, stage-acceptance-egress.yml's trace) unchanged. Those suites need Docker, Gradle and a running server, so below the
+#         suite scripts (bin/acceptance-<suite>.sh) are stubs in the throw-away tree, for egress and k8s: a suite that fails, or exits 0 but
+#         reports no passing assertion, fails the script (REQ-CHAIN-006-AC5), and a passing one gets OUT/acceptance-<suite>.json naming the
+#         candidate digest. That the real suites pass is proven by the implementation PR's dry run on GitHub.
 #   [P] bin/check-stage.sh PHASE (scanners|acceptance|runtime): verifies Build's record and Sign's provenance FIRST (every phase), then runs only
 #         that phase's checks in the order of bin/chain-check-shape.py PHASES; an unknown phase exits 2 naming it; a failed verify runs no check.
 #   [P] bin/witnessed.sh STEP SCRIPT [ARGS] (PR 2's helper; the rule 68 cap, as amended by the owner Oct 9): fetches the identity token, runs
@@ -1363,7 +1363,7 @@ g "$(blk "$L2")"; printf '[{"command": "%s", "reason": "x"}]\n' "$R1" > "$fx/gui
 gwant_fail "AC7 a cannot-run entry that is not a command of the guide fails (a stale list)" "not in the guide"
 rm -f "$fx/guide.md" "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a missing guide file fails" "guide"
-# ---- REQ-CHAIN-006-AC5: the interface only (the gap is stated in the header) ------------------------------------------------
+# ---- REQ-CHAIN-006-AC5: the interface, and a failing or empty suite (suite scripts are stubs in the throw-away tree) ----
 want_rc "AC5 an unknown suite name is a named refusal (exit 2)" 2 check-acceptance.sh nosuch --digests digests.json --images images --out out
 want_rc "AC5 no suite name is a named refusal (exit 2)" 2 check-acceptance.sh --digests digests.json --images images --out out
 want_rc "AC5 a missing image directory is a named refusal (exit 2)" 2 check-acceptance.sh gradle --digests digests.json --images /nonexistent --out out
@@ -1371,6 +1371,30 @@ rm -rf "$work/keep-p"; cp -R "$fx/images/production" "$work/keep-p"; rm -rf "$fx
 want_fail "AC5 F1 a valid OCI layout that is not Build's production image (digests.json intact) is refused naming the image before the suite or docker" image-production check-acceptance.sh gradle --digests digests.json --images images --out out
 if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind the refused production layout"; else bad "AC5 F1 docker ran: $(head -2 "$work/log" | tr '\n' '|')"; fi
 rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
+# a suite script that fails, or reports no passing assertion, fails the script; one that passes names the candidate digest
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/acceptance-serve.sh"
+for suite in egress k8s; do
+  stub() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$fx/bin/acceptance-$suite.sh"; }   # stub BODY: the suite script, in the throw-away tree only
+  rm -f "$fx/out/acceptance-$suite.json"
+  stub 'echo "the suite broke" >&2; exit 3'
+  want_fail "AC5 the $suite suite script exits non-zero: the script fails naming the suite" "$suite suite script failed" check-acceptance.sh $suite --digests digests.json --images images --out out
+  stub 'echo "results=[{\"ac\":\"AC5\",\"result\":\"pass\"}]" >> "$GITHUB_OUTPUT"; exit 3'
+  want_fail "AC5 the $suite suite script exits non-zero after reporting a pass: the script still fails" "$suite suite script failed" check-acceptance.sh $suite --digests digests.json --images images --out out
+  stub 'exit 0'
+  want_fail "AC5 the $suite suite exits 0 with no results line: ran no test, the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
+  stub 'echo "results=[]" >> "$GITHUB_OUTPUT"'
+  want_fail "AC5 the $suite suite reports an empty results array: ran no test, the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
+  stub 'echo "results=[{\"ac\":\"AC5\",\"result\":\"pass\"},{\"ac\":\"AC6\",\"result\":\"fail\"}]" >> "$GITHUB_OUTPUT"'
+  want_fail "AC5 the $suite suite reports one failed assertion beside a pass: the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
+  stub 'echo "results=[{\"ac\":\"AC5\"}]" >> "$GITHUB_OUTPUT"'
+  want_fail "AC5 the $suite suite reports an assertion with no result: the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
+  if [ ! -e "$fx/out/acceptance-$suite.json" ]; then ok "AC5 no $suite results file is written for a failed suite"; else bad "AC5 a $suite results file exists after failed suites"; fi
+  stub 'echo "results=[{\"ac\":\"AC5\",\"result\":\"pass\"}]" >> "$GITHUB_OUTPUT"'
+  want_ok "AC5 the $suite suite reports a passing assertion: the script passes" check-acceptance.sh $suite --digests digests.json --images images --out out
+  if [ "$(jq -r '.suite + " " + .candidate' "$fx/out/acceptance-$suite.json" 2> /dev/null)" = "$suite $D1" ]; then ok "AC5 acceptance-$suite.json names the candidate digest"; else bad "AC5 acceptance-$suite.json: $(cat "$fx/out/acceptance-$suite.json" 2> /dev/null)"; fi
+  rm -f "$fx/bin/acceptance-$suite.sh"
+done
+rm -f "$fx/bin/acceptance-serve.sh"
 # ---- REQ-SUP-001-AC30: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
 srv="$work/srv"; mkdir -p "$srv/bin" "$srv/fakedir"; cp "$root/bin/acceptance-serve.sh" "$srv/bin/"; printf '#!/bin/sh\nexit 0\n' > "$srv/bin/loopback-get.sh"
 H64=$(printf '%064d' 7); UP64=$(printf 'A%.0s' $(seq 1 64))
@@ -1768,7 +1792,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=592
+EXPECT=610
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
