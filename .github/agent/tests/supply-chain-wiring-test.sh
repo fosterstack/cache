@@ -209,9 +209,10 @@ def judge_db(d):
             "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: unchanged, except that gomod may group its updates
     for eco, entry in want.items():
         found = next((u for u in ups if u.get("package-ecosystem") == eco and (eco == "docker" or u.get("directory") == "/")), None)
-        if found is not None and {k: v for k, v in found.items() if k != "groups"} != entry:
+        compared = {k: v for k, v in found.items() if k != "groups"} if eco == "gomod" and found is not None else found
+        if found is not None and compared != entry:
             bad.append(f"the {eco} entry is not unchanged")
-    for eco, directory in (("github-actions", "/"), ("gomod", "/"), ("docker", "/build/docker"), ("pip", "/.github/agent")):
+    for eco, directory in (("github-actions", "/"), ("gomod", "/"), ("gomod", "/tools/requirements"), ("docker", "/build/docker"), ("pip", "/.github/agent")):
         if (eco, directory) not in by and not (eco == "docker" and any(k[0] == eco for k in by)):  # docker's directory change is judged as "not unchanged" above
             bad.append(f"the {eco} entry is missing")
     return bad
@@ -370,9 +371,11 @@ mut_wf("top-level permissions widened", "no top-level permissions block", lambda
 mut_db("a second github-actions entry for the same directory", "one entry per ecosystem and directory", lambda d: d["updates"].append(copy.deepcopy(eco(d, "github-actions"))))
 mut_db("gomod gains an ignore rule", "gomod entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
 mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
+mut_db("docker gains a group", "docker entry is not unchanged", lambda d: eco(d, "docker").update(groups={"all": {"patterns": ["*"]}}))
 mut_db("docker's directory changes", "docker entry is not unchanged", lambda d: eco(d, "docker").update(directory="/"))
 mut_db("docker's schedule slows", "docker entry is not unchanged", lambda d: eco(d, "docker")["schedule"].update(interval="weekly"))
 mut_db("gomod is removed", "the gomod entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
+mut_db("the tools/requirements gomod entry is removed", "the gomod entry is missing", lambda d: d["updates"].remove(next(u for u in d["updates"] if u["directory"] == "/tools/requirements")))
 mut_db("pip is removed", "the pip entry is missing", lambda d: d["updates"].remove(eco(d, "pip")))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
