@@ -24,8 +24,8 @@ before them and tie their work to the digest list Build made; Sign checks
 the building jobs' records (Build's against the artifacts it receives, Rebuild's
 against Build's digest list) and signs them. Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
-rebuilds. Release is the only job that holds a registry credential, the apk
-signing key or `packages: write`.
+rebuilds. Release is the only job that holds a registry credential or
+`packages: write`.
 
 - **Build** (`stage-build.yml`): admits the tagged commit (tag signature,
   ancestry of `main`, required checks, approved requirements baseline), builds
@@ -56,7 +56,7 @@ signing key or `packages: write`.
 - **Release** (`stage-promote.yml`, environment `release`): six Witness steps,
   each a committed script. `release-verify` checks the tag and verifies the
   earlier stages' records in order before any credential exists in the job;
-  `release-apks` re-signs the apks with the stored release key through
+  `release-apks` re-signs the apks with the release signing key through
   `bin/release-sign-apks.sh`; `release-publish` pushes the images by digest to
   `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and reads each
   registry back; `release-sign` signs the images in both registries and the
@@ -107,9 +107,8 @@ made (nothing is rebuilt). The images and the release files are signed with
 the release signing key, a key held in a cloud key service that the Release job
 reaches with short-lived credentials, each with an entry in Rekor. Sign's
 records and provenance are signed with the same key through the cloud key
-service (entry in Rekor). The apks are signed in Release's `release-apks` step, which
-today reads a separate local apk release key; the intended state is the one
-release signing key, and it lands with the APK signing change:
+service (entry in Rekor). The apks are signed in Release's `release-apks` step with
+the same key; no apk key is stored anywhere:
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
   `linux/arm64` index holding the `fscache` binary and a few packages (base layout and
