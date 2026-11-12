@@ -12,9 +12,9 @@ vulnerability); this page is what we do.
   repository ruleset that also requires the checks on every pull request
   ([the repository's rules](https://github.com/fosterstack/cache/rules),
   [required checks](../.github/policy/required-checks.json)).
-- **Signed release tags, checked first.** The release chain starts by verifying the
-  tag against a list of allowed signers kept on `main`, before any repository code
-  runs ([admission stage](../.github/workflows/stage-admission.yml),
+- **Signed release tags, checked first.** Build first verifies the tag signature
+  against a list of allowed signers kept on `main`, then builds
+  ([build stage](../.github/workflows/stage-build.yml),
   [allowed signers](../.github/policy/allowed_signers)).
 - **Release tags are protected.** Creating a release tag is restricted by a
   repository rule, and a published release tag cannot be moved, updated or deleted
@@ -65,8 +65,8 @@ vulnerability); this page is what we do.
 
 ## Build
 
-Where a line says "with v0.3", it describes the v0.3 release chain, which is not on
-`main` yet; the other lines describe what runs today.
+Releases are built by the release chain from v0.3.0; the lines about it below
+describe that chain.
 
 - **One build, promoted by digest.** The release is built once; the same bytes are
   scanned, tested and promoted, and the promoted digest is asserted equal to the
@@ -77,7 +77,7 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
 - **Pinned toolchain.** The build uses the Go version from `go.mod` with downloads
   of a newer toolchain disabled, and module manifests are verified, never rewritten
   ([build stage](../.github/workflows/stage-build.yml)).
-- **With v0.3, the Wolfi packages in the image come from our own archive.** The
+- **The Wolfi packages in the image come from our own archive.** The
   image is assembled by apko from Wolfi packages that we keep in our own archive,
   plus the project's own package, which the build job makes. A
   scheduled job refreshes the archive and a committed pointer names its digest; the
@@ -85,28 +85,28 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
   recorded hash, so a Wolfi package that was not archived and verified cannot
   reach an image ([build stage](../.github/workflows/stage-build.yml),
   [refresh job](../.github/workflows/go-freshness.yml)).
-- **With v0.3, the build tools are downloaded at a pinned version and checked.** The
+- **The build tools are downloaded at a pinned version and checked.** The
   tools that make the packages and the image are fetched from their release pages
   at an exact version and verified against a checksum before they run
   ([build stage](../.github/workflows/stage-build.yml)).
-- **Distroless image, assembled by copy.** Each image variant is a base image digest
-  plus the binary bytes, with no build step inside the image; the production and
-  FIPS images have no shell and no package manager
-  ([image stage](../.github/workflows/stage-image.yml)).
-- **With v0.3, Build, Rebuild and a no-secret compare job.** Build makes the apks
+- **Minimal image, assembled from pinned packages.** Each image variant is built
+  from a few packages and the binary, with no base image and no build step inside
+  the image; the production and FIPS images have no shell and no package manager
+  ([build stage](../.github/workflows/stage-build.yml)).
+- **Build, Rebuild and a no-secret compare job.** Build makes the apks
   and the images. Rebuild makes its own copy from the same commit in its own jobs,
   and a separate compare job, which holds no secret, no environment and no identity
   token, compares Build's and Rebuild's apks before the release job signs or publishes
   ([reproducibility stage](../.github/workflows/stage-reproducibility.yml),
   [release stage](../.github/workflows/stage-promote.yml)).
-- **With v0.3, every build is its own job.** Each build, for each architecture, runs
+- **Every build is its own job.** Each build, for each architecture, runs
   in a fresh virtual machine that holds no stored secret, and no build shares a
   machine with the job that signs or publishes
-  (with v0.3 the page `docs/build-and-signing-isolation.md` explains it).
-- **With v0.3, the signer never receives an apk or an image that Rebuild made.** The
+  ([build and signing-key isolation](build-and-signing-isolation.md) explains it).
+- **The signer never receives an apk or an image that Rebuild made.** The
   release job signs and publishes Build's exact artifacts, after checking each
-  against the digest Build attested; the rebuilt files only feed the comparison. The one
-  long-lived signing key reaches a single step of the release job
+  against the digest Build attested; the rebuilt files only feed the comparison. Only
+  the Sign job can use the signing key; builds and pull requests never can
   (same page, section 3).
 - **Assembled twice and compared.** The image assembly is repeated on a fresh runner
   and the digests must be equal ([reproducibility stage](../.github/workflows/stage-reproducibility.yml)).
@@ -144,17 +144,19 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
 
 - **Signed images.** Every image is signed with the release key by the promotion workflow, in
   both registries ([verify-images.md](verify-images.md)).
-- **Signed provenance.** Archives, SBOMs and the checksums file carry build
-  provenance naming the CI run that made them ([verify-images.md](verify-images.md)).
+- **Signed provenance.** The images and archives Build made have signed build
+  provenance naming the commit and the CI run that made them
+  ([verify-images.md](verify-images.md)).
 - **An SBOM for every archive**, published with the release ([RELEASING.md](../RELEASING.md)).
 - **The VEX document ships with every release** as `fosterstack-cache.openvex.json`
   ([RELEASING.md](../RELEASING.md#vex-statements)).
-- **One authorization before anything goes public.** A single stage verifies the
-  whole graph, fails closed on anything missing, and signs the approval that
-  promotion requires ([authorization stage](../.github/workflows/stage-authorize.yml)).
+- **The release stage checks every earlier stage first.** Before it publishes
+  anything it verifies the tag, the release policy and each earlier stage's signed
+  record, in order ([release stage](../.github/workflows/stage-promote.yml)).
 - **Builds and signing are kept apart.** Every build is its own job on its own
-  virtual machine, the apk signing key reaches one step of one job, and the
-  comparison of the rebuilt files runs in a job with no secrets
+  virtual machine, only the Sign job can use the signing key (builds and pull
+  requests never can), and the comparison of the rebuilt files runs in a job with
+  no secrets
   ([build and signing-key isolation](build-and-signing-isolation.md)).
 - **The release is checked as a customer would.** After promotion the public digests
   are verified and pulled anonymously, and only then is the release published
@@ -162,13 +164,13 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
 - **Acceptance runs against the exact artifacts.** The archives and images that ship
   run the customer scenarios first: Gradle, Maven, Kubernetes and the artifact checks
   ([acceptance](../.github/workflows/acceptance.yml),
-  [artifact acceptance](../.github/workflows/stage-acceptance-artifacts.yml)).
+  [check stage](../.github/workflows/stage-verify.yml)).
 
 ## Runtime
 
 - **No telemetry and no outbound connections.** The server sends nothing anywhere,
   and a release test traces the candidate from its first instruction with egress
-  denied to prove it ([egress acceptance](../.github/workflows/stage-acceptance-egress.yml),
+  denied to prove it ([check stage](../.github/workflows/stage-verify.yml),
   [SECURITY.md](../SECURITY.md#data-handling)).
 - **No request access log.** The only per-request logging is on failure, and it never
   carries a body, a credential or a client address
