@@ -322,7 +322,7 @@ check("bind-archives" not in t21 and "bin/release-metadata.py checksums" in t21 
 t6, t10 = ac("REQ-CHAIN-007", 6)["then"], ac("REQ-CHAIN-007", 10)["then"]
 check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B` with the key reference from RELEASE_KMS_KEY_REF" in t6 and "--key K" not in t6 and "release-compare.sh" in t6,
       "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and the key reference from RELEASE_KMS_KEY_REF; the comparison is release-compare.sh's")
-check("release-sign: cosign, git, jq and python3" in t10, "text: REQ-CHAIN-007-AC10 lists git among release-sign's tools")
+check("release-sign: cosign, git, jq, python3, sha256sum and trap;" in t10, "text: REQ-CHAIN-007-AC10 lists git, sha256sum and trap among release-sign's tools")
 b7 = ac("REQ-BUILDAPK-001", 7)["then"]
 check("Build and Rebuild apk" not in b7 and "PROPOSED" not in b7 and "counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
       "text: REQ-BUILDAPK-001-AC7 signs Build's apks only; a --rebuild-dir is an unknown argument; the comparison is release-compare.sh's")
