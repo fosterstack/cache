@@ -116,9 +116,9 @@ t "AC5" "each attempt names its wall: the record (host path, copy), key folder, 
   python3 - "$root" << 'PY'
 import sys
 d = sys.argv[1] + "/build/probe/"
-want = {"read-record": ["cat @RECORD@", "/home/build/witness-apk/apk-collection.local.json"],
-        "write-record": [">> @RECORD@"],
-        "read-keydir": ["@KEYDIR@/dummy"],
+want = {"read-record": ['cat "@RECORD@"', "/home/build/witness-apk/apk-collection.local.json"],
+        "write-record": ['>> "@RECORD@"'],
+        "read-keydir": ['cat "@KEYDIR@/dummy"'],
         "read-token": ["ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "cut -d = -f 1"],
         "network": ["192.0.2.1:9", "/proc/net/route"]}
 for k, v in want.items():
@@ -129,9 +129,9 @@ t "AC5" "the control reads the route table the network wall depends on" \
 # the six templates are bound by hash: a template-only change must change a hash here (the hashes are data, no
 # template text)
 HASHES="277db462b97327e3cbc0731850f96c951f6fb64b81538930b588c851faa7fac3  build/probe/control.yaml.tmpl
-6a8c80b624b77ebb004ef2528260bbfdae119e3aab290435d8c4b71e4096d3fc  build/probe/read-record.yaml.tmpl
-8cbe432aa1741f9903fb2bd8419a0c27288270a056a4a4b855a43673b92f4bdb  build/probe/write-record.yaml.tmpl
-32d50e8b55421866d20bbc620e8b7dd0fc7d8d3646eac82ee4467220e9083e9e  build/probe/read-keydir.yaml.tmpl
+45895e4908bac6713cbd4ad29f531ded033b76d56f64fad7572fa499896c44c8  build/probe/read-record.yaml.tmpl
+564f62ffd4448b79dfda238d71ce2a3ef8b9f450b53b617a672a65fc329e5fe8  build/probe/write-record.yaml.tmpl
+9900f32ab8815aea8cd5dbf6797d1218bf9812f1c78a2eb7be42bbaaa5b695d2  build/probe/read-keydir.yaml.tmpl
 9f365493701556423ef2622e76a46e414191acb745c1e56ffb8f6247bdf36208  build/probe/read-token.yaml.tmpl
 b7e43370bc58dfdeb3ad3c140c0651a523c6624e20f14e8169d562e9d843c095  build/probe/network.yaml.tmpl"
 t "AC5" "the six templates equal the hashes bound in this test" \
@@ -208,6 +208,34 @@ setrc 0
 exits "AC5" "RUNNER_TEMP unset is a refusal (exit 2) that leaves no temporary folder" \
   2 bash -c "cd '$co' && env -u RUNNER_TEMP TMPDIR='$work/tmp' bash '$work/probe.sh'"
 t "AC5" "...and the temporary folder is empty" bash -c "[ -z \"\$(ls -A '$work/tmp')\" ]"
+
+# the paths pasted into a recipe's shell line: a path with a space, &, | or a quote is refused (exit 2, the message
+# names it) before any melange call; a plain path still runs
+withrec() { # withrec OUT PATH : the probe copy with its RECORD line naming PATH (quoted for the shell)
+  python3 - "$work/probe.sh" "$1" "$2" << 'PY'
+import re, shlex, sys
+t = open(sys.argv[1]).read()
+t = re.sub(r"(?m)^RECORD=\S*", lambda m: "RECORD=" + shlex.quote(sys.argv[3]), t)
+open(sys.argv[2], "w").write(t)
+PY
+}
+hostile_names=("sp ace" "am&per" "pi|pe" "sin'gle" 'dou"ble')
+setrc 0
+for hn in "${hostile_names[@]}"; do
+  rd="$work/rec $hn"; mkdir -p "$rd"; cp "$co/witness-apk/apk-collection.local.json" "$rd/r.json"
+  withrec "$work/probe-rec.sh" "$rd/r.json"; : > "$work/calls"
+  exits "AC5" "a RECORD path containing [$hn] is refused (exit 2)" 2 runprobe "$work/probe-rec.sh"
+  t "AC5" "...the message names the record path ([$hn])" grep -qF -e "$rd/r.json" "$work/o"
+  t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+  kr="$work/rtk $hn"; mkdir -p "$kr"; : > "$work/calls"
+  exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+  t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
+  t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+done
+mkdir -p "$work/rec-plain"; cp "$co/witness-apk/apk-collection.local.json" "$work/rec-plain/r.json"
+withrec "$work/probe-plain.sh" "$work/rec-plain/r.json"; setrc 0
+exits "AC5" "a plain RECORD path in another folder still runs (exit 0)" 0 runprobe "$work/probe-plain.sh"
 
 echo "build-sandbox-hostile-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
