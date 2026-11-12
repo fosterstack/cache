@@ -249,4 +249,4 @@ jobs:
             gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the reviewer failed the current head (${head:0:7})"
           elif [ "$WAITS_FOR_VERDICT" = true ]; then
             gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
-          else echo "a patch or minor bump with no verdict yet: the lane's arm stands"; fi
+          else echo "a patch or minor bump with no verdict yet: this workflow's arm stands"; fi

@@ -570,6 +570,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
   - ac: REQ-DEP-001-AC12
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }

@@ -1772,6 +1772,12 @@ requirements:
         then: "it first publishes the review gate's own check on that head as failure (the check run named auditor-review-gate, created with the same App token as its own check, with the gate's fields), and publishes its own check only after that succeeded; it never publishes that check as anything but failure; at every hourly run, a head whose latest verdict is failure or neutral and whose latest auditor-review-gate check from the App is success gets the gate failure again; and a head whose latest verdict is success (read or carried) and whose latest auditor-review-gate check from the App is a failure more than six hours old, which the gate's sweep no longer judges, gets that gate failure published again, so that the sweep judges the head anew; a gate failure that cannot be published or read fails the run"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-DEP-001-AC14
+        given: a reviewer check with conclusion success on a commit, completed at or before the time of the newest commit on main that changed .github/workflows/dependabot-reviewer.yml
+        when: the reviewer reads that commit's verdict, on a pull request's head or on a commit under it in the walk of AC11
+        then: "it does not count as a success: a head whose latest verdict is such a check is read again the way a forced run reads it (auto-merge off, the review gate's check failed, a neutral check, then the whole read), and such a check on an earlier commit is never carried to a new head; a success completed after that time counts; that time is read from GitHub at every run with the job's read-only token, and when it cannot be read or is not a time the run fails before any verdict is read, any check is published or any auto-merge is changed"
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-DEP-002
     title: The required-check guard runs everywhere

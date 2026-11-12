@@ -90,9 +90,9 @@ if kind == "reviewer":
             bad.append("the act step's one publish function does not fail the review gate's check first (and stop without it) for every verdict that is not success")
     if len(cand) == 1:
         c = cand[0]
-        first = 'if ! gate_fail "$sha" "The Dependabot reviewer is reading this head again (forced)'
+        first = 'if ! gate_fail "$sha" "The Dependabot reviewer is $again"; then'
         if c.count("conclusion=neutral") != 1 or not in_order(c, first, "conclusion=neutral") \
-                or not re.search(re.escape(first) + r"[^\n]*\n[^\n]*lookup_failed=1; continue\n", c) \
+                or not re.search(re.escape(first) + r"\n[^\n]*\n\s*lookup_failed=1; continue\n", c) \
                 or 'GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate' not in c \
                 or 'gate_stands "$n" "$sha" failure ||' not in c or 'if [ "$prior" = neutral ] && ! gate_stands "$n" "$sha" neutral; then' not in c:
             bad.append("the candidate step does not fail the review gate's check before its neutral, or does not fail it again over a failure or neutral verdict")
@@ -355,7 +355,7 @@ case_ reviewer $R reviewer-moved-head-acts bad "[s.__setitem__('run', s['run'].r
 case_ reviewer $R reviewer-gate-not-first  bad "[s.__setitem__('run', s['run'].replace('if [ \"\$2\" != success ]; then', 'if false; then')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-gate-soft       bad "[s.__setitem__('run', s['run'].replace('it is not passed.\" >/dev/null || return 1', 'it is not passed.\" >/dev/null || true')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-gate-success    bad "$rs.append({'run': 'gh api \"repos/\${GITHUB_REPOSITORY}/check-runs\" -f name=auditor-review-gate -f head_sha=x -f status=completed -f conclusion=success'})"
-case_ reviewer $R reviewer-force-no-gate   bad "[s.__setitem__('run', s['run'].replace('if ! gate_fail \"\$sha\" \"The Dependabot reviewer is reading', 'if ! true \"\$sha\" \"The Dependabot reviewer is reading')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-force-no-gate   bad "[s.__setitem__('run', s['run'].replace('if ! gate_fail \"\$sha\" \"The Dependabot reviewer is', 'if ! true \"\$sha\" \"The Dependabot reviewer is')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-gate-again   bad "[s.__setitem__('run', s['run'].replace('gate_stands \"\$n\" \"\$sha\" failure ||', 'true ||')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-cancel-no-gate  bad "[s.__setitem__('run', s['run'].replace('name=auditor-review-gate', 'name=dependabot-reviewer', 1)) for s in $rs if (s.get('name') or '').startswith('on cancellation')]"
 case_ reviewer $R reviewer-carry-unproven  bad "[s.__setitem__('run', s['run'].replace('python3 bin/dependabot-reviewer.py same-diff --repo \"\$GITHUB_REPOSITORY\" --base main \"\$from\" \"\$sha\"', 'true')) for s in $rs if s.get('id') == 'candidates']"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12, REQ-DEP-001-AC13, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3, REQ-DEP-004-AC1, REQ-DEP-004-AC2
+# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12, REQ-DEP-001-AC13, REQ-DEP-001-AC14, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3, REQ-DEP-004-AC1, REQ-DEP-004-AC2
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -861,14 +861,26 @@ jq -n --slurpfile b "$FIX/pr-90.json" '[($b[0] + {number: 90, headRefOid: "sha90
 cat > "$w/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
+own_check() { # <check runs as JSON, or empty> <the answer otherwise> <the call's own arguments>
+  local json="$1" answer="$2" f=; shift 2
+  [ -n "$json" ] || { echo "$answer"; return; }
+  while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
+  jq -r "$f" <<<"$json"
+}
 case "$1 $2" in
   "pr list") cat "$PRS_JSON" ;;
-  "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
+  # when the reviewer's workflow last changed on main (the cutoff for a success): CUTOFF, the start of 2026 unless set
+  "api repos/o/r/commits?sha=main&path=.github/workflows/dependabot-reviewer.yml&per_page=1")
+              [ "${CUTOFFFAIL:-}" = 1 ] && exit 1; echo "${CUTOFF-2026-01-01T00:00:00Z}" ;;
+  # the reviewer's own check on a head: PRIOR99 as the answer, or PRIOR99_JSON through the step's own filter
+  "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer")
+              [ "${LOOKUP99:-}" = fail ] && exit 1; own_check "${PRIOR99_JSON:-}" "${PRIOR99:-none}" "$@" ;;
+  "api repos/o/r/commits/p1/check-runs?check_name=dependabot-reviewer")
+              [ "${LOOKUPP1:-}" = fail ] && exit 1; own_check "${PRIORP1_JSON:-}" "${PRIORP1:-none}" "$@" ;;
   "api repos/o/r/commits/sha90/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP90:-}" = fail ] && exit 1; echo "${PRIOR90:-none}" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
   "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
   # earlier heads of #99 and #90 (the spend guard): p1 is the head's first parent, p0 is p1's
-  "api repos/o/r/commits/p1/check-runs?check_name=dependabot-reviewer") [ "${LOOKUPP1:-}" = fail ] && exit 1; echo "${PRIORP1:-none}" ;;
   "api repos/o/r/commits/p0/check-runs?check_name=dependabot-reviewer") echo "${PRIORP0:-none}" ;;
   # a commit as GitHub gives it, read by the step's own filter: PARENT=x makes the head a merge commit (first parent x, second on main);
   # ONEPARENT=x makes it an ordinary commit on top of x; neither: an ordinary commit on main
@@ -987,6 +999,45 @@ PRIOR99=success GATE99_JSON=$(runs_json "[[\"failure\",\"$OLD\",\"github-actions
 also "candidates: another app's check is not the gate's: nothing published" "-check-runs -f name=auditor-review-gate"
 PRIOR99=failure GATE99_JSON=$(runs_json "[[\"failure\",\"$OLDER\"],[\"success\",\"$RECENT\"]]") cand "91 none," 0 "real check runs: a gate success newer than its failure, over a failure verdict"
 also "candidates: the gate success over the failure verdict is failed again" "+$GFAIL .*verdict on this head is failure"
+
+# REQ-DEP-001-AC14: a success counts only if it was published after the reviewer's workflow last changed on main (the
+# stub's cutoff: the start of 2026). An older one is from a reviewer that may have read less than the whole diff.
+verdicts() { # <[[conclusion, completed_at, app slug or null], ...]> oldest first
+  jq -cn --argjson r "$1" '{check_runs: [$r | to_entries[] | {id: .key, conclusion: .value[0], completed_at: .value[1],
+                                                                app: {slug: (.value[2] // "fosterstack-automation")}}]}'
+}
+OLD_OK='["success","2025-12-31T23:59:59Z"]'; NEW_OK='["success","2026-06-01T00:00:00Z"]'
+OWN99='name=dependabot-reviewer -f head_sha=sha99'; GATE99F='name=auditor-review-gate -f head_sha=sha99'
+ONLY=99 ARMED99=true PRIOR99_JSON=$(verdicts "[$OLD_OK]") cand "99 neutral," 0 \
+  "a head whose only success is older than the cutoff (a reopened PR) is read again"
+also "candidates: it goes the forced run's way: auto-merge off, the gate's check failed, then neutral" \
+  "+pr merge --disable-auto 99" "+$GATE99F .*conclusion=failure .*its success is older than this workflow on main" \
+  "+$OWN99 .*conclusion=neutral" "-name=dependabot-reviewer .*conclusion=success"
+[ "$(grep -n "$GATE99F" "$w/gh.log" | cut -d: -f1)" -lt "$(grep -n "$OWN99" "$w/gh.log" | cut -d: -f1)" ] \
+  && { echo "ok: candidates: the gate failure goes up before the neutral here too"; pass=$((pass+1)); } \
+  || { echo "FAIL: candidates: legacy order"; fail=$((fail+1)); }
+ONLY=99 PRIOR99_JSON=$(verdicts "[$NEW_OK]") cand "" 0 "a success after the cutoff is still a success: not read again"
+also "candidates: nothing is published over a new success" "-check-runs -f"
+ONLY=99 PRIOR99_JSON=$(verdicts '[["success","2026-01-01T00:00:00Z"]]') cand "99 neutral," 0 \
+  "a success at the very second of the cutoff does not count"
+ONLY=99 PRIOR99_JSON=$(verdicts '[["success",null]]') cand "99 neutral," 0 "a success with no completion time"
+ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK,[\"failure\",\"2025-12-31T23:59:59Z\"]]") cand "" 0 \
+  "an old failure after an old success is a failure: the cutoff is for successes only"
+ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK,$NEW_OK]") cand "" 0 "an old success superseded by a new one is a success"
+ONLY=99 PRIOR99_JSON=$(verdicts '[["success","2026-06-01T00:00:00Z","github-actions"]]') cand "99 none," 0 \
+  "another app's success is no verdict at all"
+ONLY=99 PARENT=p1 PRIORP1_JSON=$(verdicts "[$OLD_OK]") cand "99 none," 0 \
+  "a merge of main over a head whose success is older than the cutoff -> read: a legacy success is not carried"
+also "candidates: no diff is compared and no success published from a legacy ancestor" "-compare/" "-check-runs -f"
+ONLY=99 PARENT=p1 PRIORP1_JSON=$(verdicts "[$NEW_OK]") cand "" 0 "a merge of main over a new success is still carried"
+also "candidates: the new ancestor's success is carried to the head, after both diffs were read" \
+  "+compare/main\.\.\.p1" "+compare/main\.\.\.sha99" \
+  "+$OWN99 -f status=completed -f conclusion=success .*carried over from that head"
+ONLY=99 CUTOFFFAIL=1 PRIOR99=success cand "" 1 "the cutoff cannot be read -> the step fails before any verdict is read"
+also "candidates: nothing is listed, read or published without the cutoff" "-pr list" "-check-runs" "-pr merge"
+ONLY=99 CUTOFF="last week" PRIOR99=success cand "" 1 "the cutoff's answer is not a time -> the step fails the same way"
+also "candidates: nothing is listed without a readable cutoff" "-pr list" "-check-runs"
+ONLY=99 CUTOFF="" PRIOR99=success cand "" 1 "an empty answer for the cutoff -> the step fails"
 
 # REQ-DEP-001-AC10: a PR whose update lines cannot be read is read like any other, and is not the lane's: an arm with no verdict comes off first
 jq -n '[{number: 77, title: "An odd title", body: "nothing here names an update", headRefOid: "sha77"}]' > "$w/prs-unparsed.json"

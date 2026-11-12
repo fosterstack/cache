@@ -2701,28 +2701,35 @@ def _unsafe_downloads(text):
 
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
+# beside the entry's own name: the ways a step's environment or search path is set for later steps. Each may stand in
+# the parsed file only as often as in the excluded steps' run text.
+_HELD_WORDS = ("GITHUB_ENV", "GITHUB_PATH", "::set-env", "::add-path", "ACTIONS_ALLOW_UNSECURE_COMMANDS",
+               "exportVariable", "addPath")
+_HELD_WORDS_ANY_CASE = ("github.env", "github.path")      # expression names: GitHub reads them in any letter case
 _TOKEN_URL_CONDITION = (
-    "(this exclusion holds only while the step has no `shell:`, its own or a default; the parsed file names "
-    "ACTIONS_ID_TOKEN_REQUEST_URL nowhere but in the excluded steps' run text; no env key is a bash startup hook "
-    "or PATH; "
-    "nothing names GITHUB_PATH; and no text that names GITHUB_ENV assigns such a name. "
-    "Not seen: a name built at run time, or written by a committed script)")
+    "(this exclusion holds only while the step has no `shell:`, its own or a default; each of "
+    "ACTIONS_ID_TOKEN_REQUEST_URL, " + ", ".join(_HELD_WORDS) + " and, in any letter case, "
+    + " and ".join(_HELD_WORDS_ANY_CASE) + " stands in the parsed file only as often as in the excluded steps' run "
+    "text; and every env is a mapping whose keys are plain ASCII identifiers, none a bash startup hook, PATH or "
+    "another name the allowlist job's judge refuses, none CURL_HOME. "
+    "Not seen: a name or path built at run time, a committed script, an action's own code, or the job's container "
+    "image.)")
 # the names pin-wiring-test.sh refuses in the env of the allowlist job: a startup file, a search path, an interpreter's
-# or the runner's own variables. Kept the same as that list; it lives in a test's inline program and cannot be imported.
+# or the runner's own variables. A copy (that list lives in a test's inline program); the checker's suite compares them.
 _RISKY_ENV = frozenset({"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "SHELLOPTS", "BASHOPTS",
                         "PS4", "IFS", "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"})
 _RISKY_ENV_PREFIX = re.compile(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)")
-_ASSIGNED = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*(?:%%)?)(?:=|<<)")
+_RISKY_ENV_HERE = frozenset({"CURL_HOME"})     # not on that list: where curl looks first for a config file
 
 
 def _risky_env(name):
     return name in _RISKY_ENV or _RISKY_ENV_PREFIX.match(name) is not None
 
 
-def _token_url_breach(text, name, inside):
-    """Why a workflow file breaks the condition of the entries excluded for `name`, or None. `inside` is how often the
-    excluded steps' run texts hold the name. The file is read as GitHub reads it, parsed: a key or a value spelled with
-    YAML escapes or quotes counts as what it decodes to."""
+def _token_url_breach(text, name, run_texts):
+    """Why a workflow file breaks the condition of the entries excluded for `name`, or None. `run_texts` are the
+    excluded steps' run texts. The file is read as GitHub reads it, parsed: a key or a value spelled with YAML escapes
+    or quotes counts as what it decodes to."""
     try:
         todo = [d for d in yaml.compose_all(text, Loader=StrLoader) if d is not None]
     except yaml.YAMLError:
@@ -2744,18 +2751,17 @@ def _token_url_breach(text, name, inside):
                     if not isinstance(value, yaml.MappingNode):
                         return "an env that is not a mapping: its keys cannot be read"
                     env_keys += [k.value if isinstance(k, yaml.ScalarNode) else "" for k, _ in value.value]
-    if sum(v.count(name) for v in scalars) != inside:
-        return f"{name} is named outside the excluded steps' run text"
+    for word in (name,) + _HELD_WORDS:
+        if sum(v.count(word) for v in scalars) != sum(t.count(word) for t in run_texts):
+            return f"{word} stands outside the excluded steps' run text"
+    for word in _HELD_WORDS_ANY_CASE:
+        if sum(v.lower().count(word) for v in scalars) != sum(t.lower().count(word) for t in run_texts):
+            return f"{word} stands outside the excluded steps' run text"
     for key in env_keys:
-        if not key or _risky_env(key):
-            return f"an env sets {key or 'a key that is not a plain name'}"
-    for v in scalars:
-        if "GITHUB_PATH" in v:
-            return "GITHUB_PATH is named"
-        if "GITHUB_ENV" in v:
-            for written in _ASSIGNED.findall(v):
-                if _risky_env(written):
-                    return f"a text that names GITHUB_ENV assigns {written}"
+        if not (key.isascii() and key.isidentifier()):
+            return "an env sets a key that is not a plain name"
+        if _risky_env(key) or key in _RISKY_ENV_HERE:
+            return f"an env sets {key}"
     return None
 
 
@@ -2837,8 +2843,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                 except Exception:
                     ftext = None                                 # a file that cannot be read keeps the finding
                 if ftext is not None and excl[2] is None:
-                    inside = sum(text.count(excl[1]) for text in _excluded_run_texts(scripts, excl[1]))
-                    if _token_url_breach(ftext, excl[1], inside) is None:
+                    if _token_url_breach(ftext, excl[1], _excluded_run_texts(scripts, excl[1])) is None:
                         continue
                 elif ftext is not None and ftext.count(excl[2]) == 1 and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1:
                     continue

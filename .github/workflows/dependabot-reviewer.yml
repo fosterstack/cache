@@ -34,7 +34,7 @@ name: Dependabot reviewer
 #      check, so the next hourly run retries; three unfinished runs in a row => one issue.
 #      The check goes up LAST: a head that carries it is never looked at again.
 #   4. settles the arms of the heads it took up: none is left armed over a failure verdict, and a
-#      patch/minor whose review did not finish is armed again as the lane had left it.
+#      patch/minor whose review did not finish is armed again as the auto-merge workflow had left it.
 #
 # The review gate (agent-review-gate.yml) passes a Dependabot head on this reviewer's success, and
 # its sweep does not look again at a head whose gate check is green. So whenever this workflow
@@ -120,17 +120,33 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ONLY_PR: ${{ inputs.pr }}
           FORCE: ${{ inputs.force }}
-        # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is read this hour.
-        # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same change was read.
-        # A plain patch/minor keeps the lane's arm through the review (the gate holds the merge); any other arm without a success comes
-        # off before the review, so a setup step that fails later cannot leave it standing. A person's disarm is never undone.
+        # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is
+        # read this hour. A success from before this workflow last changed on main is not one: such a reviewer may
+        # have read less than the whole diff, so the head is read again as a forced run reads it.
+        # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same
+        # change was read.
+        # A plain patch/minor keeps the auto-merge workflow's arm through the review (the gate holds the merge); any
+        # other arm without a success comes off before the review, so a setup step that fails later cannot leave it
+        # standing. A person's disarm is never undone.
         # A lookup that fails is never "nothing to do": the PR is skipped and the step fails, so the failure streak sees it.
         run: |
           set +e -uo pipefail
           mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
-          verdict_of() { # <sha>: the conclusion of the App's latest reviewer check on that commit, or none
+          # when this workflow last changed on main: the newest commit of main that touched this file. Without it no
+          # success can be told from an older reviewer's, so nothing is read or published this hour.
+          this=.github/workflows/dependabot-reviewer.yml
+          cutoff=$(gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${this}&per_page=1" \
+                     --jq '.[0].commit.committer.date') \
+            && [[ "$cutoff" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+            || { echo "::error::cannot read when this workflow last changed on main — no verdict is read"; exit 1; }
+          # <sha>: the App's latest reviewer check on that commit: its conclusion, none, or legacy (a success not
+          # after the cutoff)
+          verdict_of() {
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\""
+              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+                    | if . == null then \"none\"
+                      elif .conclusion == \"success\" and ((.completed_at // \"\") <= \"${cutoff}\") then \"legacy\"
+                      else .conclusion // \"none\" end"
           }
           gate_fail() { # <sha> <why>: the review gate's own check, as the gate publishes it (same name, same App), says failure on that commit
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate \
@@ -150,8 +166,9 @@ jobs:
             gate_fail "$2" "The Dependabot reviewer's verdict on this head is $3: it is not passed." || return 1
             echo "PR #$1 ${2:0:7}: the review gate's check said success over the reviewer's $3 — failed again"
           }
-          # The gate's sweep does not look again at a failure older than six hours, so a head the reviewer passes after
-          # that would stay red. Publishing the failure anew (never a success) puts it back inside the sweep's window.
+          # Without an audit record branch, the gate's sweep does not look again at a failure older than six hours, so a
+          # head the reviewer passes after that would stay red. Publishing the failure anew (never a success) puts it
+          # back inside the sweep's window.
           gate_refresh() { # <n> <sha>: a stale gate failure over a success verdict is published again (1: that could not be done)
             local g
             g=$(gate_of "$2") && [ -n "$g" ] || return 1
@@ -227,7 +244,7 @@ jobs:
                            | base64 -d > "$RUNNER_TEMP/work/heal-required-checks.json" \
                          && bash bin/required-check-guard.sh "$RUNNER_TEMP/work/heal-required-checks.json"; then
                         if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
-                          echo "PR #$n ${sha:0:7}: the lane turned the approved arm off meanwhile — put back"
+                          echo "PR #$n ${sha:0:7}: the approved arm was turned off meanwhile — put back"
                         else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi
                       else echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the approved arm stays off this hour"; lookup_failed=1; fi ;;
                   esac
@@ -243,26 +260,33 @@ jobs:
               fi
               if [ "$armed" != false ] && [ "$lane" = yes ]; then
                 echo "$n $sha" >> "$RUNNER_TEMP/work/lane-arms.txt"
-                echo "PR #$n: armed by the patch/minor lane — left armed through the review"
+                echo "PR #$n: armed by the auto-merge workflow — left armed through the review"
               elif [ "$armed" != false ]; then
                 if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
                   echo "::error::PR #$n: armed with no verdict and could not be disarmed — skipped this hour"; lookup_failed=1; continue
                 fi
                 echo "PR #$n: armed with no current verdict — auto-merge turned off before review"
               fi
-            elif [ "$FORCE" = "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
+            elif [ "$prior" = legacy ] \
+                 || { [ "$FORCE" = "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; }; then
+              why=forced
+              if [ "$prior" = legacy ]; then why="its success is older than this workflow on main"; prior=success; fi
               if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null 2>&1 \
                    && [ "$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null')" != false ]; then
-                echo "::error::PR #$n: forced re-review could not turn auto-merge off — skipped, old verdict kept"; lookup_failed=1; continue
+                echo "::error::PR #$n: re-review ($why) could not turn auto-merge off — skipped, old verdict kept"
+                lookup_failed=1; continue
               fi
-              if ! gate_fail "$sha" "The Dependabot reviewer is reading this head again (forced); its earlier '$prior' verdict no longer stands."; then
-                echo "::error::PR #$n: forced re-review could not fail the review gate's check — skipped, old verdict kept (auto-merge is off)"; lookup_failed=1; continue
+              again="reading this head again ($why); its earlier '$prior' verdict no longer stands."
+              if ! gate_fail "$sha" "The Dependabot reviewer is $again"; then
+                echo "::error::PR #$n: re-review ($why) could not fail the gate's check — skipped (auto-merge is off)"
+                lookup_failed=1; continue
               fi
               if ! GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
                      -f head_sha="$sha" -f status=completed -f conclusion=neutral -f details_url="$RUN_URL" \
                      -f "output[title]=dependabot reviewer: neutral" \
-                     -f "output[summary]=Forced re-review in progress; the earlier '$prior' verdict no longer stands. Auto-merge is off." >/dev/null; then
-                echo "::error::PR #$n: forced re-review could not supersede its '$prior' verdict — skipped (auto-merge is off)"; lookup_failed=1; continue
+                     -f "output[summary]=The reviewer is $again Auto-merge is off." >/dev/null; then
+                echo "::error::PR #$n: re-review ($why) could not supersede its verdict — skipped (auto-merge is off)"
+                lookup_failed=1; continue
               fi
               prior=neutral
             fi
@@ -539,9 +563,10 @@ jobs:
             else echo "::error::PR #$n: could not turn auto-merge off; the next hourly sweep disarms it"; fi
           done < "$f"
 
-      # The lane's job can start many minutes after a push and arm a head between the decision loop's disarm and its failure
-      # check; and the loop turns off the lane's own arm when a review does not finish. Both are put right here, after it.
-      - name: settle the arms — none over a failure verdict, the lane's arm back after an unfinished review
+      # The auto-merge workflow's job can start many minutes after a push and arm a head between the decision loop's
+      # disarm and its failure check; and the loop turns off that workflow's own arm when a review does not finish.
+      # Both are put right here, after it.
+      - name: settle the arms — none over a failure verdict, an arm lost to an unfinished review put back
         id: settle
         if: ${{ always() && steps.candidates.outputs.count != '0' && steps.candidates.outputs.count != '' && steps.app-merge.outcome == 'success' }}
         env:
@@ -574,11 +599,11 @@ jobs:
                      && bash bin/required-check-guard.sh "$W/settle-required-checks.json"; then guard=ok; else guard=refused; fi
                 fi
                 if [ "$guard" != ok ]; then
-                  echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the lane's arm stays off"; bad=1; continue
+                  echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the arm stays off"; bad=1; continue
                 fi
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
-                  echo "PR #$n ${sha:0:7}: its review did not finish — armed again as the patch/minor lane left it"
-                else echo "::error::PR #$n ${sha:0:7}: its review did not finish and the lane's arm could not be put back"; bad=1; fi ;;
+                  echo "PR #$n ${sha:0:7}: its review did not finish — armed again as it was before"
+                else echo "::error::PR #$n ${sha:0:7}: unfinished review; its arm could not be put back"; bad=1; fi ;;
             esac
           done < "$W/candidates.txt"
           exit "$bad"
