@@ -610,6 +610,32 @@ check("G an encoded dot in the host segment is still a Go module path (decoded o
       V._scopes(scoped("CVE-G10", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/github%2Ecom/golang-jwt/jwt/v4"}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", ""))])
 check("G an encoded slash in a Go module path (host or later segment) stops generation",
       all(refused({"@id": OURS, "subcomponents": [{"@id": x}]}) for x in ("pkg:golang/github%2Ecom%2Fgolang-jwt/jwt/v4", "pkg:golang/github.com/golang-jwt%2Fjwt/v4")))
+# rc-5a G amended: the Go standard library is the one name allowed outside a full module path, and only with a version
+STD = "pkg:golang/stdlib@1.27.2"
+STD_PRODUCT = [{"@id": OURS, "subcomponents": [{"@id": STD}]}]
+def std_doc(cve): return {"statements": [scoped(cve, "not_affected", STD_PRODUCT)]}
+def std_scopes():
+    try: return V._scopes(std_doc("CVE-G11")["statements"][0], [D("1")])
+    except ValueError as e: return str(e)    # a refusal is a failed check, not a crash of the whole run
+check("G the Go standard library with a version is the package (stdlib, 1.27.2)",
+      std_scopes() == [([D("1")], ("stdlib", "1.27.2"))], std_scopes())
+try: gs = [f["filterCriteria"]["vulnerablePackages"]
+           for f in V.inspector(std_doc("CVE-G12"), IMAGES, "v0.3.0")["filters"]]
+except ValueError as e: gs = str(e)
+check("G the Inspector rule names the standard library and its version",
+      gs == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "1.27.2"}}]], gs)
+try: grels = V.csaf(std_doc("CVE-G13"), IMAGES, "v0.3.0")["product_tree"].get("relationships", [])
+except ValueError as e: grels = str(e)
+check("G the CSAF names the standard library component inside each image",
+      isinstance(grels, list) and grels and all(r["product_reference"] == "component-stdlib@1.27.2" for r in grels), grels)
+for sub_ in ("pkg:golang/stdlib", "pkg:golang/stdlibx@1", "pkg:golang/std@1",
+             STD + "?goos=linux", "pkg:golang/stdlib/sub@1.27.2"):
+    check("G a standard library name outside the one allowed form stops generation: " + sub_,
+          refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
+check("G pkg:generic/stdlib@1.27.2 stays a plain generic package",
+      V._scopes(scoped("CVE-G14", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/stdlib@1.27.2"}]}]),
+                [D("1")])
+      == [([D("1")], ("stdlib", "1.27.2"))])
 check("G the empty version leaves no stray space in the published text",
       "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
 check("G the published document no longer describes a :debug image or busybox",
