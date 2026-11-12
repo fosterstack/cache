@@ -274,7 +274,7 @@ the Rekor log indexes.
 | `X` / `latest` | — | Floating: move only when the release is the highest released version |
 
 There is no base image from v0.3.0 on: each image holds only the packages named in <!-- pinned: historical -->
-[`build/apko.yaml`](../build/apko.yaml) (base layout, CA certificates, time zone data and `fscache`),
+[`build/apko.yaml`](../build/apko.yaml) (base layout, time zone data and `fscache`),
 pinned by the lock files in `build/locks/`.
 
 Both variants of every release are signed the same way. The `-fips` image has
@@ -285,7 +285,7 @@ not.
 ### The images have no shell
 
 Production and `-fips` contain the `fscache` binary and a few packages
-(base layout, CA certificates, time zone data; see `build/apko.yaml`) — no
+(base layout, time zone data; see `build/apko.yaml`) — no
 shell, no package manager, no coreutils. `docker exec ... sh` into them
 fails, by design. What that buys, stated precisely: no shell and no package
 manager means an attacker who gains code execution has no on-image tooling
@@ -346,8 +346,10 @@ key, as a bundle over that file:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-# Check the archive you downloaded (BIN, VERSION and PLATFORM as in the install page)
-LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
+# Check the archive you downloaded (VER is set at the top of this page; PLATFORM and BIN as in the install page)
+PLATFORM=linux_amd64   # or linux_arm64
+BIN=fscache            # fscache-fips for the FIPS build (Linux only)
+LINE=$(grep -F "${BIN}_${VER}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 ## 5. Enforcing this in your own cluster (Kyverno)
