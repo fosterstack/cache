@@ -1148,6 +1148,31 @@ class AuditRows(unittest.TestCase):
                 sqlite3.connect("file:" + T.p1(".coverage.real") + "?mode=ro", uri=True)
             self.refused(sqlite3.connect, "file:" + T.p1(".coverage.real") + "?mode=ro", uri=False)
             self.refused(sqlite3.connect, "file:" + T.p1(".coverage.real") + "?mode=ro")
+            uri = "file:" + T.p1(".coverage.real") + "?mode=ro"
+            class F(sqlite3.Connection): pass
+            def fac(name, *a, **k): return sqlite3.Connection(name, uri=False)      # a factory that opens the literal name with the real flag off
+            for factory in (F, fac):
+                self.refused(sqlite3.connect, uri, uri=True, factory=factory)
+            self.refused(sqlite3.connect, uri, 5.0, 0, "DEFERRED", True, fac, 128, True)
+            self.refused(sqlite3.Connection, uri, uri=True)
+            self.refused(sqlite3.connect, uri, uri=1)
+            for factory in ({}, {"factory": sqlite3.Connection}):
+                with self.assertRaises(sqlite3.OperationalError):
+                    sqlite3.connect(uri, uri=True, **factory)
+            with self.assertRaises(sqlite3.OperationalError):
+                sqlite3.connect(uri, 5.0, 0, "DEFERRED", True, sqlite3.Connection, 128, True)
+            class Lies(str):
+                def startswith(self, *a): return False
+            class Shows(str):
+                def __str__(self): return "x"
+                def __fspath__(self): return "x"
+            class Spells(os.PathLike):
+                def __fspath__(self): return "x"
+            class Dir(type(pathlib.Path())): pass
+            for name in (Lies("file:/x"), Lies("file:" + T.p2("db")), Shows("file:" + T.p2("db")), Spells(), Dir("file:" + T.p2("db")), Dir(T.p1("db"))):
+                self.refused(G._hook, "sqlite3.connect", (name,))
+                with mock.patch.object(G._busy, "uri", True, create=True):
+                    self.refused(G._hook, "sqlite3.connect", (name,))
             self.assertEqual(sorted(os.listdir(T.t1)), [".coverage.link", "f", "sub"])
         with tempfile.TemporaryDirectory() as d:                                # what coverage does: a real database file in a temp dir
             c = sqlite3.connect(os.path.join(d, ".coverage.1"))

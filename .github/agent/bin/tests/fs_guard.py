@@ -24,7 +24,7 @@ Design (installed once, on import, by test_0000_arm_fs_guard.py, the first modul
     (the connection denies ATTACH / VACUUM INTO). os.scandir returns entries that judge stat/is_dir/is_file on a symlink.
 Subprocesses (bash, git, a spawned python3) are not covered here; the static scan in test_fs_guard.py covers the shell tests.
 """
-import errno, os, re, shutil, site, sys, sysconfig, tempfile
+import errno, os, pathlib, re, shutil, site, sys, sysconfig, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
@@ -466,15 +466,18 @@ def _hook(event, args):
     if event == "sqlite3.connect" and args:
         # coverage keeps its data file in sqlite, so a plain path is judged like any other write. Refused (fail closed): a `file:` URI in
         # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "",
-        # except one exact str, coverage's own data-file URI, in a call made with uri=True: it is judged as the path it names. Without
-        # uri=True sqlite opens that text as a relative file name, so it is refused like any other `file:` name. The connection itself
-        # denies ATTACH and VACUUM INTO (no audit event exists for them), so a database can write nowhere else.
-        if type(args[0]) is str and getattr(_busy, "uri", False):
-            path = _coverage_uri_path(args[0]) if args[0].startswith("file:") else None
+        # except one exact str, coverage's own data-file URI, in a call the wrapper saw made with uri=True and the default factory: it is
+        # judged as the path it names. Anywhere else sqlite opens that text as a relative file name, so it is refused like any other
+        # `file:` name. Only an exact str, bytes or pathlib path is read at all: a subclass can answer startswith or __fspath__ differently
+        # from what sqlite then opens. The connection itself denies ATTACH and VACUUM INTO (no audit event exists for them), so a database
+        # can write nowhere else.
+        arg = args[0]
+        if type(arg) is str and getattr(_busy, "uri", False):
+            path = _coverage_uri_path(arg) if arg.startswith("file:") else None
             if path:
                 check(path, event, write=True)
                 return
-        name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else None
+        name = os.fsdecode(arg) if type(arg) in (str, bytes, pathlib.PurePosixPath, pathlib.PosixPath, pathlib.PureWindowsPath, pathlib.WindowsPath) else None
         if name is None or name == "" or name.startswith("file:"):
             raise SystemPathAccess("test touched a real system path (sqlite3.connect): a file: URI or empty name is refused: %r" % (args[:1],))
         if name == ":memory:":
@@ -592,9 +595,11 @@ def _wrap_sqlite():
         return
 
     def uri_call(orig, a, k):
-        """orig(*a, **k) with _busy.uri telling the audit hook whether this call is made with uri=True (the event does not carry it)."""
+        """orig(*a, **k) with _busy.uri telling the audit hook that this call is made with uri=True and the default factory (the event
+        carries neither). A custom factory may open the name with another flag, so it never gets the grant."""
         prev = getattr(_busy, "uri", False)
-        _busy.uri = k.get("uri", a[7] if len(a) > 7 else False) is True
+        factory = k["factory"] if "factory" in k else a[5] if len(a) > 5 else Connection
+        _busy.uri = k.get("uri", a[7] if len(a) > 7 else False) is True and (factory is Connection or factory is base)
         try:
             return orig(*a, **k)
         finally:
@@ -613,7 +618,7 @@ def _wrap_sqlite():
 
     class Connection(base):
         def __init__(self, *a, **k):
-            uri_call(super().__init__, a, k)
+            super().__init__(*a, **k)
             self.set_authorizer(_deny_attach)
     Connection.__name__ = Connection.__qualname__ = "Connection"
     for mod in (sqlite3, sqlite3.dbapi2, _sqlite3):
