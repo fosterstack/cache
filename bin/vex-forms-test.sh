@@ -400,12 +400,13 @@ check("AC1 CVE-2026-111943 has exactly one product: the cache image (@id, purl) 
 check("AC1 no product of CVE-2026-111943 names cache-candidates", "cache-candidates" not in json.dumps(_p))
 check("AC2 CVE-2026-111943's impact_statement does not name cache-candidates",
       "cache-candidates" not in _s.get("impact_statement", ""))
-from datetime import datetime as _dt, timezone as _tz
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 _ts = lambda t: _dt.fromisoformat(t.replace("Z", "+00:00"))
 check("AC3 the document timestamp is not before the newest statement timestamp",
       _ts(real["timestamp"]) >= max(_ts(s["timestamp"]) for s in real["statements"]), real["timestamp"])
+# 10 minutes of slack: a runner's clock can lag the time the file was stamped
 check("AC3 the document timestamp is not in the future",
-      _ts(real["timestamp"]) <= _dt.now(_tz.utc), real["timestamp"])
+      _ts(real["timestamp"]) <= _dt.now(_tz.utc) + _td(minutes=10), real["timestamp"])
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
@@ -692,6 +693,18 @@ check("G pkg:generic/stdlib@1.27.2 stays a plain generic package, apart from pkg
       == [([D("1")], ("stdlib", "1.27.2"))])
 check("G the empty version leaves no stray space in the published text",
       "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
+def rule_text(cve, impact):
+    s_ = scoped(cve, "not_affected", BB)
+    if impact: s_["impact_statement"] = impact
+    else: s_.pop("impact_statement")
+    return V.inspector({"statements": [s_]}, IMAGES, "v0.3.0")["filters"][0]["description"]
+LONG = "".join("Reason %d. " % i for i in range(300))[:1960] + " This holds only while the default config is unchanged."
+for what, impact in (("a 2000-character impact statement", LONG), ("no impact statement", None)):
+    d_ = rule_text("CVE-D1", impact)
+    check("D the description with %s is short, names version, CVE, status and package, and points to the CSAF file" % what,
+          len(d_) <= 200 and all(x in d_ for x in ("v0.3.0", "CVE-D1", "not_affected", "busybox", "1.37.0", "CSAF")), d_)
+    check("D the description with %s has balanced parentheses and no piece of the impact statement" % what,
+          d_.count("(") == d_.count(")") and not (impact and any(impact[i:i + 40] in d_ for i in range(len(impact) - 39))), d_)
 check("G the published document no longer describes a :debug image or busybox",
       "busybox" not in json.dumps(real).lower() and ":debug" not in json.dumps(real) and "distroless" not in json.dumps(real).lower())
 check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
