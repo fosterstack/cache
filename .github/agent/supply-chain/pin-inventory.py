@@ -423,10 +423,10 @@ _DOCKER_BOOL_OPTS = {"--rm", "-d", "--detach", "-i", "--interactive", "-t", "--t
 def _docker_operand(cmd_args):
     """(the image of a docker run/pull/create, the effective --pull policy): the image is the first argument that is not an option or an option's
     value (quotes read as a shell would); the policy is the LAST --pull among the options before it (pflag keeps the final value), read by the SAME
-    walk so the two can never disagree about which words are options, values or the operand (Codex #187 rounds 2-3). The `never` policy only
+    walk so the two can never disagree about which words are options, values or the operand. The `never` policy only
     counts when EVERY option before the operand has a known arity (a value option, a boolean, a short cluster of booleans, or --name=value of a
     known option): a guessed arity (a number after an unknown option is taken as its value) once let `--rm 123 --pull=never localhost/x` read the
-    container's own arguments as a policy (round 4), so an unknown option withholds the exemption."""
+    container's own arguments as a policy, so an unknown option withholds the exemption."""
     try:
         toks = shlex.split(cmd_args)
     except ValueError:
