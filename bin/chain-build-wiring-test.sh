@@ -2656,8 +2656,7 @@ out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/release-
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
-# rules 61 and 62 (advisor Oct 12; REQ-REL-009, the base-input-changed signal): every base input .github/policy/base-inputs.json names is a file of origin/main (the cache lane's
-# locks and records). Expected red until the cache lane lands them: KR-BASE-LOCKS lists each one that is not there, so the entry shrinks as they land. A ref that cannot be read
+# rules 61 and 62 (advisor Oct 12; REQ-REL-009, the base-input-changed signal): every base input .github/policy/base-inputs.json names is a file of origin/main. A ref that cannot be read
 # counts every path as absent (never a pass).
 absent=$(python3 - "$root" <<'PY'
 import json, subprocess, sys
