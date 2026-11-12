@@ -939,6 +939,18 @@ gdata; printf 'v1.1.0-deadbeef\n' >"$work/gd/fips"; gen_with --write
 t "rule 21" "gen-recipes: the FIPS module file feeds the export line and the proof line of the FIPS recipe only (the generator holds no FIPS constant)" bash -c "grep -q 'export GOFIPS140=v1.1.0\$' '$work/gd/b.yaml' && grep -q -F \"GOFIPS140=v1\\\\.1\\\\.0-deadbeef'\" '$work/gd/b.yaml' && ! grep -q GOFIPS140 '$work/gd/a.yaml' && ! grep -q 'c2097c7c' '$work/gd/b.yaml'"
 t "rule 21" "gen-recipes: no FIPS version or hash constant remains in the generator" bash -c "! grep -n 'c2097c7c\|v1\.0\.0' '$GR'"
 gdata; gen_with --emit "$work/gd" ; t "rule 21" "gen-recipes --emit DIR writes melange.yaml and melange-fips.yaml there and touches no committed file" bash -c "test -s '$work/gd/melange.yaml' && test -s '$work/gd/melange-fips.yaml' && cmp -s '$work/gd/melange.yaml' '$work/gd/a.yaml' || true"
+# --emit must write the very text --write commits, so the daily job's files equal the committed ones
+emit_same_as_write() {
+  rm -rf "$work/gd/em"; mkdir "$work/gd/em"
+  gdata; gen_with --write; gen_with --emit "$work/gd/em" || return 1
+  cmp -s "$work/gd/a.yaml" "$work/gd/em/melange.yaml" || return 1
+  cmp -s "$work/gd/b.yaml" "$work/gd/em/melange-fips.yaml" || return 1
+  cmp -s "$work/gd/c.yaml" "$work/gd/em/melange-baselayout.yaml" || return 1
+  # the later --regular/--fips/--baselayout replace the ones gen_with passes first
+  gen_with --regular "$work/gd/em/melange.yaml" --fips "$work/gd/em/melange-fips.yaml" \
+    --baselayout "$work/gd/em/melange-baselayout.yaml" --check
+}
+t "rule 21" "gen-recipes --emit DIR writes the same bytes as --write, and --check accepts them" emit_same_as_write
 for bad in "no-final-newline" "crlf" "dup" "badline" "empty" "upper" "nonascii"; do
   gdata
   case $bad in
