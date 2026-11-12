@@ -1502,8 +1502,8 @@ requirements:
     title: Continuous scan gate and toolchain freshness
     statement: >
       A newly disclosed vulnerability shall be caught before release, not on
-      tag day: the full scanner set shall run as a required check on every
-      pull request, every push to main, and every tag; scanner installers
+      tag day: the full scanner set shall run in the full suite (REQ-CI-001),
+      before a release-candidate tag and nightly on main, and on every tag; scanner installers
       shall be pinned by checksum so a scanner that cannot run fails the
       pipeline rather than passing silently; main's latest candidate shall be
       rescanned daily; and the Go toolchain shall be kept on its latest patch
@@ -1515,9 +1515,9 @@ requirements:
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-REL-004-AC1
-        given: any pull request, push to main, or tag
-        when: the required scan check runs
-        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
+        given: a release-candidate tag, the nightly run on main, or a tag
+        when: the scan check runs
+        then: "The scan check runs Grype and Amazon Inspector before a release-candidate tag, nightly on main, and on tags, as part of the full suite (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 2, which replaces the earlier every-pull-request run); it does not run on pull requests. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-004-AC2
@@ -2157,6 +2157,68 @@ requirements:
         given: "a dispatch of the record job with the word release as the pull request and a commit sha"
         when: "the writer's prepare script runs"
         then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-CI-001
+    title: Quick checks on each pull request, the full suite at promotion
+    statement: >
+      On each pull request the required checks are quick: static checks and only the tests for the files the change
+      touched, a few minutes in total (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 1, owner Nov 10 2026:
+      "you run a full test suite end to end etc on code promotions not CI"). The full suite (coverage, fips140-only,
+      gosec, the CodeQL analysis, both acceptance suites, reproducibility, the scan and the long wiring suites) never runs on a
+      pull request; it runs before a release-candidate tag and nightly on main (rule 2). A failed nightly run opens a
+      fix item and never blocks a merge (rule 3).
+    source: [.github/workflows/ci.yml, .github/workflows/full-suite.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/stage-admission.yml, .github/policy/required-checks.json, .github/policy/test-paths.json, bin/select-tests.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: owner ratified Nov 10 2026; the cache half built Nov 12 2026
+    confidence: implementation-only
+    notes: >
+      The merge queue does not exist on main and no workflow has the merge_group trigger, so none is added; the quick
+      workflows would run the same checks there if it came. The ruleset change that drops the removed contexts is the
+      owner's, applied at the merge.
+    acceptance_criteria:
+      - id: REQ-CI-001-AC1
+        given: "a pull request into main"
+        when: "the workflows run on the pull_request event"
+        then: "the required contexts that run are exactly test, lint, requirements, allowlist, vendor, govulncheck, pin-age and auditor-review-gate, each with no job-level condition that can skip it, and .github/policy/required-checks.json lists exactly those eight as required_checks; the contexts gosec, analyze (go), allowlist-persona, allowlist-chain, allowlist-pins-auditor, dependency-review, fips140-only, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), reproducibility, coverage and scan are not in it"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC2
+        given: "every workflow file"
+        when: "bin/workflow-consolidation-test.sh judges them"
+        then: "none of the jobs named in AC1 as removed runs on pull_request, in ci.yml, acceptance.yml, scan.yml, codeql.yml or any other workflow; ci.yml triggers only on push to main and pull_request; acceptance.yml triggers only on workflow_call; codeql.yml has no pull_request; scan.yml triggers only on schedule, workflow_dispatch and tags v* and still cannot be called (REQ-SCAN-015); no workflow gains a merge_group trigger"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC3
+        given: "bin/select-tests.sh run with a base and a head commit, and the committed map .github/policy/test-paths.json of path globs to suite commands"
+        when: "it reads the changed files from git diff --name-only BASE...HEAD"
+        then: "it prints, one per line, in the map's order and without repeats, the suite commands of every map entry that a changed file matches; a changed file that matches no entry fails it (exit 1, the path named) so a new directory forces a map entry; an entry may list its paths as covered by no suite (docs), which selects nothing; a base or head that is not a commit fails it"
+        verification: { method: shell-test, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC4
+        given: "the test job of ci.yml on a pull request"
+        when: "it runs"
+        then: "it runs go vet, the static build (CGO_ENABLED=0) and go test over only the packages of the changed Go files (every package when go.mod, go.sum or vendor/ changed), without -race and without the fips settings; the allowlist job runs the suites bin/select-tests.sh selects for the changed files as steps that run only when selected, plus the allowlist check of every tracked file and the action-pin checks (docs/ratify/2026-11-11-no-release-age-hold.md:15)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC5
+        given: ".github/workflows/full-suite.yml"
+        when: "its triggers and jobs are read"
+        then: "it triggers only on a daily schedule, workflow_dispatch and workflow_call; it holds coverage, fips140-only, gosec and the three allowlist shards under their old job names, each running its whole suite, and calls acceptance.yml; the scan and the CodeQL analysis keep their own workflows, whose daily schedule is the nightly run"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC6
+        given: "a scheduled run of full-suite.yml, scan.yml or codeql.yml on main that fails"
+        when: "the run ends"
+        then: "an issue with a fixed title and a fixed label is opened, or commented on when one is already open, naming the run; a green run opens nothing; nothing required on a pull request reads the issue"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC7
+        given: "a release-candidate tag reaching stage-admission.yml, and the promotion_checks list in .github/policy/required-checks.json (the contexts of the full suite, with their scope)"
+        when: "admission reads the checks of the exact tagged commit"
+        then: "it continues only if every context in promotion_checks has a successful run on that commit; a missing, red or older-commit run stops admission and names the context"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
