@@ -23,6 +23,7 @@ try:
     text = open(page, encoding="utf-8").read()
 except OSError:
     print("the page %s does not exist" % page); sys.exit(1)
+text = re.sub(r"<!--.*?-->", "", text, flags=re.S)   # a comment is in the file, not on the page
 lines = text.replace("\r", "").split("\n")
 
 WANT = ["cosign verify-blob --key release-key-root.pub --signature release-key-manifest.sig --insecure-ignore-tlog release-key-manifest.json",
@@ -154,6 +155,7 @@ mutant "a command outside a fence"       "outside a fence"   's.replace("Run the
 mutant "no line on when to run the second command"  "the run sentence" 's.replace("Run the second command only if the first prints Verified OK.\n\n", "")'
 mutant "Verified OK stated, no instruction"         "the run sentence" 's.replace("Run the second command only if the first prints Verified OK.", "The first command prints Verified OK.")'
 mutant "second command run whatever the first says" "the run sentence" 's.replace("only if the first prints Verified OK", "whether or not the first prints Verified OK")'
+mutant "validity and revocation paragraphs inside an HTML comment" "the revocation sentence" 's.replace("Check `valid_from`", "<!-- Check `valid_from`").replace("publish date.", "publish date. -->").replace("Stop if the manifest has", "<!-- Stop if the manifest has").replace("current time.\n", "current time. -->\n")'
 mutant "no sentence on why the log is skipped"      "why the first command has"  's.replace("The first command has `--insecure-ignore-tlog` because the root key is kept offline, so its signature has no log entry.\n\n", "")'
 mutant "the flag named, no reason given"            "why the first command has"  's.replace("because the root key is kept offline, so its signature has no log entry", "in this page")'
 mutant "validity: check sentence without the current time" "the check sentence" 's.replace(" in the manifest against the current time.", " in the manifest.")'
