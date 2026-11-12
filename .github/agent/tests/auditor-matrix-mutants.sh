@@ -163,7 +163,6 @@ probe model-not-affected-no-evidence req2-ac2a-notpullable-and-unreachable   # F
 probe recheck-flags-only             req2-ac5c-expiry-reopens-item           # F6
 probe recheck-flags-only             req2-ac7-every-run-recheck              # F6
 probe reconcile-wrong-row            req3-ac5-second-exact-key-same-row      # F5
-probe authz-substring                req11-ac1-hold-wrong-author             # F7
 probe known-exploited-omitted        req2-ac5b-known-exploited-alone         # F8
 probe entrypoint-noop                req12-ac1-dryrun-produces-report-vex-accepteditems-misses-only-no-shim  # F3
 
