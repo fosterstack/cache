@@ -1119,17 +1119,11 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
         sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was judged\n" % (a.verdict, e))
         return 2
     try:
-        state = reviewed.read(a.state, spec=SPECS["panel-state.json"]) or new_state()      # absent = the first run; a PRESENT state without its content is a stop, never a fresh start
-        profiles = reviewed.read(a.profiles, spec=SPECS["scanner-profiles.json"])
-        if profiles is None:
-            raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an absent file means the tree is wrong" % a.profiles)
+        state = reviewed.read(a.state, spec=SPECS["panel-state.json"])      # absent = the first run; a PRESENT state without its content is a stop, never a fresh start
+        state = _checked_state(state, a.state) if state is not None else new_state()
+        profiles = _read_profiles(a.profiles)
     except reviewed.ReviewedInputInvalid as e:
         sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % e)
-        return 3
-    bad = validate_state(state)
-    if bad:
-        for e in bad:
-            sys.stderr.write("::error::panel state %s: %s; nothing was judged\n" % (a.state, e))
         return 3
     errs = validate_profiles(profiles)
     if errs:
@@ -1205,16 +1199,16 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     return 0
 
 
-_DISTRO_PURL = re.compile(r"pkg:(?:deb|rpm|apk|alpm)/[^/@?#]+/([^/@?#]+)@([^?#]+)(?:\?[^#]*)?")
 _GENERIC_PURL = re.compile(r"pkg:generic/([^/@?#]+)@([^?#]+)")
 
 
 def _purl_identity(purl):
-    """(name, version) of a distro or generic package URL, percent-DECODED (the release generators decode them), or None when the purl cannot be written
-    as a generic one: any other type (a Go module, npm: no distro namespace to drop, so the name would widen), a missing version, a subpath or a nested name."""
+    """(name, version) of a pkg:generic package URL, percent-DECODED (the release generators decode them), or None for anything else. A distro purl (deb, rpm, apk,
+    alpm) is refused: absence proven in one ecosystem must not be rewritten into a generic purl, which claims "not affected" for every ecosystem. Also None for a
+    missing version, a subpath or a nested name."""
     if not isinstance(purl, str):
         return None
-    m = _DISTRO_PURL.fullmatch(purl) or _GENERIC_PURL.fullmatch(purl)
+    m = _GENERIC_PURL.fullmatch(purl)
     if not m:
         return None
     name, ver = urllib.parse.unquote(m.group(1)), urllib.parse.unquote(m.group(2))
@@ -1223,14 +1217,13 @@ def _purl_identity(purl):
 
 def vex_package(purl):
     """The one package-URL form the release generators (bin/vex-forms.py: Inspector rules and CSAF) accept for a VEX subcomponent: pkg:generic/<name>@<version>
-    with the DECODED name and version encoded again, or None when the purl cannot be written that way. A distro package (deb, rpm, apk, alpm) loses its type,
-    its distro namespace and its qualifiers (arch, distro: the scanners and the gate already match a package by name and version alone). chain-v030 review S3."""
+    with the DECODED name and version encoded again, or None when the purl is not already a generic one (see _purl_identity). chain-v030 review S3."""
     ident = _purl_identity(purl)
     return "pkg:generic/%s@%s" % (urllib.parse.quote(ident[0], safe=""), urllib.parse.quote(ident[1], safe="")) if ident else None
 
 
 def vex_subcomponents(purls, package=None, version=None):
-    """The sorted, de-duplicated generic subcomponents of a statement, or None when there is none or any purl cannot be written that way: a statement with no
+    """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None when there is none or any purl cannot be written that way: a statement with no
     subcomponents would cover the whole image, so an empty set is never proposed. With package and version (the finding's own, which the audits judged), every
     purl's DECODED name and version must equal them: the generators decode the written purl, so a purl naming another package (libstdc%2B%2B6 against a finding
     for libstdc%2B%2B6 that the bundle never matched) would suppress a package the evidence did not cover."""
@@ -1265,6 +1258,8 @@ def validate_vex(doc):
 
 def validate_day(day):
     """The run-written day.json the delivery consumes (the issue text, the VEX proposals, the profile proposals, the owner items): checked before anything is fetched or written."""
+    if not isinstance(day, dict):
+        return ["day: is not a JSON object"]
     errs = []
     if not isinstance(day.get("issue"), str):
         errs.append("day: 'issue' is missing or is not text")
@@ -1291,6 +1286,22 @@ def validate_day(day):
     return errs
 
 
+def _checked_state(doc, label):
+    """The panel's own member checks on a state document that passed the shared rules; returns it, or raises ReviewedInputInvalid."""
+    bad = validate_state(doc)
+    if bad:
+        raise reviewed.ReviewedInputInvalid("%s: %s" % (label, "; ".join(bad)))
+    return doc
+
+
+def _read_profiles(path):
+    """The scanner profiles file; absent is a stop (checked-in policy), as is an invalid one."""
+    prof = reviewed.read(path, spec=SPECS["scanner-profiles.json"])
+    if prof is None:
+        raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an absent file means the tree is wrong" % path)
+    return prof
+
+
 def check_delivery_inputs(root, day, st=None):
     """The checkout's state, VEX and profiles, validated with the shared rules before anything is fetched, checked out, written or published (cache#707, B2). An absent state is the
     first delivery; absent profiles are a stop (checked-in policy); an absent VEX is a stop when the day proposes VEX statements. Raises ReviewedInputInvalid."""
@@ -1298,17 +1309,12 @@ def check_delivery_inputs(root, day, st=None):
         if not isinstance(st, dict):
             raise reviewed.ReviewedInputInvalid("state.json of this run is not a JSON object")
         reviewed.check(st, "state.json of this run", spec=SPECS["panel-state.json"])
-        bad = validate_state(st)
-        if bad:
-            raise reviewed.ReviewedInputInvalid("state.json of this run: %s" % "; ".join(bad))
+        _checked_state(st, "state.json of this run")
     bad = validate_day(day)
     if bad:
         raise reviewed.ReviewedInputInvalid("day.json of this run: %s" % "; ".join(bad))
     _main_state_text(root)
-    prof = reviewed.read(os.path.join(root, PROFILES), spec=SPECS["scanner-profiles.json"])
-    if prof is None:
-        raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an absent file means the tree is wrong" % os.path.join(root, PROFILES))
-    errs = validate_profiles(prof)
+    errs = validate_profiles(_read_profiles(os.path.join(root, PROFILES)))
     if errs:
         raise reviewed.ReviewedInputInvalid("%s: %s" % (PROFILES, "; ".join(errs)))
     vdoc = reviewed.read(os.path.join(root, VEX))
@@ -1415,30 +1421,18 @@ def _require_app_tip(repo, tip, plan, real, run):
 
 def _checked_state_text(text, where):
     """A state document read as text (git show): it must be a JSON object that passes the panel's rules; returns the text."""
-    try:
-        doc = json.loads(text)
-    except ValueError:
-        raise reviewed.ReviewedInputInvalid("%s: the panel state of %s is not JSON" % (STATE, where))
-    if not isinstance(doc, dict):
-        raise reviewed.ReviewedInputInvalid("%s: the panel state of %s is not a JSON object" % (STATE, where))
-    reviewed.check(doc, "%s of %s" % (STATE, where), spec=SPECS["panel-state.json"])
-    bad = validate_state(doc)
-    if bad:
-        raise reviewed.ReviewedInputInvalid("%s of %s: %s" % (STATE, where, "; ".join(bad)))
+    doc = reviewed.parse(text, "%s of %s" % (STATE, where), spec=SPECS["panel-state.json"])
+    _checked_state(doc, "%s of %s" % (STATE, where))
     return text
 
 
 def _main_state_text(repo):
     """main's state file as text, or None on the first day. The reader owns existence (lstat): a dangling link or an unreachable file is a stop."""
     path = os.path.join(repo, STATE)
-    doc = reviewed.read(path, spec=SPECS["panel-state.json"])
-    if doc is None:
-        return None
-    bad = validate_state(doc)
-    if bad:
-        raise reviewed.ReviewedInputInvalid("%s: %s" % (path, "; ".join(bad)))
-    with open(path) as fh:
-        return fh.read()
+    text = _text_of(path)
+    if text is not None:
+        _checked_state(reviewed.parse(text, path, spec=SPECS["panel-state.json"]), path)
+    return text
 
 
 def _stops_on_damaged_input(fn):
@@ -1513,15 +1507,20 @@ def _conflict(path, why):
     return RuntimeError("auditor-panel: %s: the open PR and main both changed %s since the PR's base (conflict); refusing to pick a winner" % (path, why))
 
 
+def _text_of(path):
+    """The text of a file, None when it is absent (reviewed.present: a dangling link is present); a file that is there but cannot be read is a stop."""
+    if not reviewed.present(path):
+        return None
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except OSError as ex:
+        raise reviewed.ReviewedInputInvalid("%s is present but cannot be read (%s)" % (path, type(ex).__name__))
+
+
 def _checked_doc(text, path, where, rel):
     """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of its file (cache#707, B2); the parsed document."""
-    try:
-        doc = json.loads(text)
-    except ValueError:
-        raise reviewed.ReviewedInputInvalid("%s of %s is not JSON" % (path, where))
-    if not isinstance(doc, dict):
-        raise reviewed.ReviewedInputInvalid("%s of %s is not a JSON object" % (path, where))
-    reviewed.check(doc, "%s of %s" % (path, where), spec=SPECS["scanner-profiles.json"] if rel == PROFILES else None, as_name="x.openvex.json")
+    doc = reviewed.parse(text, "%s of %s" % (path, where), as_name=VEX, spec=SPECS["scanner-profiles.json"] if rel == PROFILES else None)
     bad = validate_profiles(doc) if rel == PROFILES else validate_vex(doc)
     if bad:
         raise reviewed.ReviewedInputInvalid("%s of %s: %s" % (path, where, "; ".join(bad)))
@@ -1544,7 +1543,7 @@ def check_carried_documents(repo, ref, base_ref, pr_files, plan, real, run):
         pr_txt = _sh(["git", "-C", repo, "show", "%s:%s" % (ref, path)], plan, real, run)
         base_txt = _sh(["git", "-C", repo, "show", "%s:%s" % (base_ref, path)], plan, real, run) if base_here else None
         cur = os.path.join(repo, path)
-        cur_txt = open(cur).read() if os.path.lexists(cur) else None
+        cur_txt = _text_of(cur)
         if pr_txt == base_txt or pr_txt == cur_txt:
             continue                                       # untouched by the PR, or already on main: not merged
         _checked_doc(pr_txt, path, "the open PR's branch", path)
