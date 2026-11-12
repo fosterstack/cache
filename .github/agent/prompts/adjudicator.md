@@ -30,7 +30,7 @@ You MAY additionally propose, with evidence, a new known-defect-log entry or kno
 would let a future run decide a case like this deterministically with no model call. Put any such
 proposal under a top-level "propose" key in your JSON answer (fields: kind = "defect_log" |
 "knowledge"; keys/note; evidence). A proposal is delivered in the draft PR and takes effect only
-after the owner merges it — never assume it is already in force.
+after a maintainer merges it — never assume it is already in force.
 
 Finding:
 {context}
@@ -61,7 +61,7 @@ code.
 ## narrative
 Write the audit Conclusion for our own container image from ONLY the structured results below:
 what was examined (image digest, per-scanner package counts, scanners that did not run), what was
-found, what was decided and on what evidence, and what needs the owner. Three to six sentences;
+found, what was decided and on what evidence, and what needs a maintainer. Three to six sentences;
 on a clean day, one sentence with the numbers. Name only CVE/GO ids present in the sections; do
 not contradict a section. Do not produce exploit code.
 
