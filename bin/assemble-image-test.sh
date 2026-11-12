@@ -2029,6 +2029,26 @@ for v_ in badname upper short; do
   python3 "$OD" unpack "$work/oci-$v_.tar" "$work/unp-$v_" "$work/unp-$v_.digest" "$work/unp-$v_.manifests" >"$work/oci-$v_.u.out" 2>&1; r2_=$?
   t "BT-002-AC1" "a layout with a blob-namespace member named '$v_' (not 64 lowercase hex digits) is refused by the digest-only read and by unpack, naming the member" bash -c "test $r1_ != 0 && test $r2_ != 0 && grep -q 'blob namespace' '$work/oci-$v_.out'"
 done
+# the digest in index.json is upper-cased; the blobs keep their lowercase names, so only the digest form is wrong
+python3 - "$work" <<'P'
+import io, json, sys, tarfile
+work = sys.argv[1]
+for src_name, name in (("oci-apko-ok", "oci-apko-upperdigest"), ("oci-ok", "oci-std-upperdigest")):
+    with tarfile.open("%s/%s.tar" % (work, src_name)) as src, tarfile.open("%s/%s.tar" % (work, name), "w") as dst:
+        for m in src.getmembers():
+            data = src.extractfile(m).read()
+            if m.name == "index.json":
+                index = json.loads(data)
+                digest = index["manifests"][0]["digest"]
+                index["manifests"][0]["digest"] = "sha256:" + digest[len("sha256:"):].upper()
+                data = json.dumps(index).encode()
+            m.size = len(data)
+            dst.addfile(m, io.BytesIO(data))
+P
+for v_ in apko std; do
+  python3 "$OD" "$work/oci-$v_-upperdigest.tar" >"$work/oci-$v_-upperdigest.out" 2>&1; r_=$?
+  t "BT-002-AC1" "a $v_ layout whose index.json digest is sha256: plus upper-case hex is refused, saying lowercase hex" bash -c "test $r_ != 0 && grep -q 'lowercase hex' '$work/oci-$v_-upperdigest.out'"
+done
 # --digests-out by every spelling that reaches the proof's own results: dot components and doubled slashes resolve away before the containment check
 for spell_ in dots slashes; do
   oo_="$work/dgo2-$spell_"; rm -rf "$oo_"
