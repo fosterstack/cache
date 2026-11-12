@@ -617,22 +617,26 @@ def std_doc(cve): return {"statements": [scoped(cve, "not_affected", STD_PRODUCT
 def std_scopes():
     try: return V._scopes(std_doc("CVE-G11")["statements"][0], [D("1")])
     except ValueError as e: return str(e)    # a refusal is a failed check, not a crash of the whole run
-check("G the Go standard library with a version is the package (stdlib, 1.27.2)",
-      std_scopes() == [([D("1")], ("stdlib", "1.27.2"))], std_scopes())
+check("G the Go standard library with a version is the package (stdlib, go1.27.2: the form scanners report)",
+      std_scopes() == [([D("1")], ("stdlib", "go1.27.2"))], std_scopes())
 try: gs = [f["filterCriteria"]["vulnerablePackages"]
            for f in V.inspector(std_doc("CVE-G12"), IMAGES, "v0.3.0")["filters"]]
 except ValueError as e: gs = str(e)
-check("G the Inspector rule names the standard library and its version",
-      gs == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "1.27.2"}}]], gs)
+check("G the Inspector rule names the standard library and its version as the scanner field has it (go1.27.2, one rule)",
+      gs == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "go1.27.2"}}]], gs)
 try: grels = V.csaf(std_doc("CVE-G13"), IMAGES, "v0.3.0")["product_tree"].get("relationships", [])
 except ValueError as e: grels = str(e)
-check("G the CSAF names the standard library component inside each image",
-      isinstance(grels, list) and grels and all(r["product_reference"] == "component-stdlib@1.27.2" for r in grels), grels)
-for sub_ in ("pkg:golang/stdlib", "pkg:golang/stdlibx@1", "pkg:golang/std@1",
-             STD + "?goos=linux", "pkg:golang/stdlib/sub@1.27.2"):
+GIDS = sorted("fosterstack-cache-v0.3.0-" + x for x in ("production", "production-linux-amd64", "production-linux-arm64",
+                                                         "fips", "fips-linux-amd64", "fips-linux-arm64"))
+check("G the CSAF names the standard library component inside each of the six images",
+      isinstance(grels, list) and len(grels) == 6 and all(r["product_reference"] == "component-stdlib@go1.27.2" for r in grels)
+      and sorted(r["relates_to_product_reference"] for r in grels) == GIDS, grels)
+for sub_ in ("pkg:golang/stdlib", "pkg:golang/stdlib@", "pkg:golang/stdlibx@1", "pkg:golang/std@1", "pkg:golang/%73tdlib@1.27.2",
+             STD + "?goos=linux", STD + "%3Fgoos=linux", STD + "%2Fx", "pkg:golang/stdlib/sub@1.27.2"):
     check("G a standard library name outside the one allowed form stops generation: " + sub_,
           refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
-check("G pkg:generic/stdlib@1.27.2 stays a plain generic package",
+# pkg:golang/stdlib@1.27.2 is (stdlib, go1.27.2) and pkg:generic/stdlib@1.27.2 is (stdlib, 1.27.2): two packages, so two Inspector rules and two CSAF components
+check("G pkg:generic/stdlib@1.27.2 stays a plain generic package, apart from pkg:golang/stdlib@1.27.2",
       V._scopes(scoped("CVE-G14", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/stdlib@1.27.2"}]}]),
                 [D("1")])
       == [([D("1")], ("stdlib", "1.27.2"))])
