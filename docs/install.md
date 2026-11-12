@@ -87,7 +87,8 @@ curl -fsS localhost:8080/healthz             # -> ok
 
 `BIN` carries through the shell commands in this section and the next one, "Verify what
 you downloaded"; the systemd unit names its binary itself, so for the FIPS build you
-edit its `ExecStart` as described there. The source build below uses `fscache` in its own command.
+edit its `ExecStart` as described there. The source build below uses `fscache` in its
+own command.
 
 The FIPS build keeps `-fips` in its filename, its install path, and its process
 name on purpose: which build is running stays visible in `ps`, in the unit file,
