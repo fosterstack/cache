@@ -24,7 +24,7 @@ Design (installed once, on import, by test_0000_arm_fs_guard.py, the first modul
     (the connection denies ATTACH / VACUUM INTO). os.scandir returns entries that judge stat/is_dir/is_file on a symlink.
 Subprocesses (bash, git, a spawned python3) are not covered here; the static scan in test_fs_guard.py covers the shell tests.
 """
-import errno, os, re, shutil, site, sys, sysconfig, tempfile
+import errno, os, pathlib, re, shutil, site, sys, sysconfig, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
@@ -454,12 +454,31 @@ def _judged_path(event, args, i):
     return p
 
 
+def _coverage_uri_path(name):
+    """The path of coverage's data-file URI `file:///abs/.coverage.<x>?mode=ro`, else None."""
+    path, sep, query = name[5:].partition("?")
+    path = path[2:] if path.startswith("///") else path             # coverage writes `file:///abs`: an empty host, then the path
+    if sep and query == "mode=ro" and path.startswith("/") and not path.startswith("//") and not set(path) & set("%#"):
+        return path if os.path.basename(path).startswith(".coverage.") else None
+
+
 def _hook(event, args):
     if event == "sqlite3.connect" and args:
         # coverage keeps its data file in sqlite, so a plain path is judged like any other write. Refused (fail closed): a `file:` URI in
-        # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "". The
-        # connection itself denies ATTACH and VACUUM INTO (no audit event exists for them), so a database can write nowhere else.
-        name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else None
+        # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "",
+        # except one exact str, coverage's own data-file URI, in a call the wrapper saw made with uri=True, the default factory and plain arguments, for that one event: it is
+        # judged as the path it names. Anywhere else sqlite opens that text as a relative file name, so it is refused like any other
+        # `file:` name. Only an exact str, bytes or pathlib path is read at all: a subclass can answer startswith or __fspath__ differently
+        # from what sqlite then opens. The connection itself denies ATTACH and VACUUM INTO (no audit event exists for them), so a database
+        # can write nowhere else.
+        arg = args[0]
+        granted, _busy.uri = getattr(_busy, "uri", False), False        # a grant is for this one event: spent here, whatever the name
+        if type(arg) is str and granted:
+            path = _coverage_uri_path(arg) if arg.startswith("file:") else None
+            if path:
+                check(path, event, write=True)
+                return
+        name = os.fsdecode(arg) if type(arg) in (str, bytes, pathlib.PurePosixPath, pathlib.PosixPath, pathlib.PureWindowsPath, pathlib.WindowsPath) else None
         if name is None or name == "" or name.startswith("file:"):
             raise SystemPathAccess("test touched a real system path (sqlite3.connect): a file: URI or empty name is refused: %r" % (args[:1],))
         if name == ":memory:":
@@ -576,11 +595,24 @@ def _wrap_sqlite():
     except ImportError:
         return
 
+    def uri_call(orig, a, k):
+        """orig(*a, **k) with _busy.uri telling the audit hook that this call is made with uri=True and the default factory (the event
+        carries neither). A custom factory may open the name with another flag, and an argument or keyword name of another type runs its own code while
+        sqlite converts it (a nested connect(uri=False) would inherit the grant), so neither gets it."""
+        prev = getattr(_busy, "uri", False)
+        factory = k["factory"] if "factory" in k else a[5] if len(a) > 5 else Connection
+        plain = all(type(n) is str for n in k) and all(type(v) in (str, bytes, int, float, bool, type(None)) for v in [*a[:5], *a[6:], *(v for n, v in k.items() if n != "factory")])
+        _busy.uri = k.get("uri", a[7] if len(a) > 7 else False) is True and (factory is Connection or factory is base) and plain
+        try:
+            return orig(*a, **k)
+        finally:
+            _busy.uri = prev
+
     def make_connect(orig):
         def connect(*a, **k):
             if "factory" not in k and len(a) < 6:
                 k["factory"] = Connection                  # so connect() still returns an instance of sqlite3.Connection
-            c = orig(*a, **k)
+            c = uri_call(orig, a, k)
             c.set_authorizer(_deny_attach)
             return c
         connect.__name__ = "connect"; connect.__wrapped__ = orig
