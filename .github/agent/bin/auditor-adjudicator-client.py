@@ -109,7 +109,7 @@ def _handle(req, client):
     if req.get("attempt") == "fallback":
         model = os.environ.get("AUDITOR_MODEL_FALLBACK", model)
     if req.get("mode") == "narrative":
-        # R12 item 3: write the top-of-report Conclusion from the STRUCTURED results only.
+        # write the top-of-report Conclusion from the STRUCTURED results only.
         prompt = _fill(_require_prompt("narrative"), context=json.dumps(req.get("structured"), indent=1))
         msg = client.messages.create(model=model, max_tokens=512,
                                      messages=[{"role": "user", "content": prompt}])
@@ -134,7 +134,7 @@ def _handle(req, client):
         ans.setdefault("proposed", True)
         ans["token_usage"] = _usage(msg)
         return ans
-    # Full finding context, not a bare id (R11 rank 6): the model reasons about THIS package,
+    # Full finding context, not a bare id: the model reasons about THIS package,
     # version, scanner set, and reachability summary. Its answer is still only a proposal our
     # code re-verifies against evidence before any VEX is written.
     ctx = "\n".join("- %s: %s" % (k, req.get(k)) for k in
@@ -192,8 +192,9 @@ def main():
 
 
 def _whole_answer(text):
-    """The model's disposition answer: the WHOLE response must be exactly one JSON object (the prompt asks for nothing else). An object found inside prose, a second object, an array
-    or any other top-level value is not an answer (rc-5b R5): an example in the model's wording or an injected leading object can never choose the disposition."""
+    """The model's answer: the WHOLE response must be exactly one JSON object. An object inside
+    prose, a second object, an array or any other top-level value is not an answer, so an example
+    in the model's wording or an injected leading object can never choose the disposition."""
     def _no_dup(pairs):
         d = {}
         for k, v in pairs:
@@ -218,8 +219,7 @@ def _one_object(text):
 
 
 def _usage(msg):
-    """Real token cost from the SDK response so the driver's budget actually advances
-    (R1 outer round-1 #8)."""
+    """Real token cost from the SDK response so the driver's budget actually advances."""
     u = getattr(msg, "usage", None)
     if not u:
         return 0
