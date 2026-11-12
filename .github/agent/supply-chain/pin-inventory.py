@@ -1401,10 +1401,26 @@ def _line_id(tainted, line):
 # the test builds a vendor/ fixture to prove it.
 # bin/build-apk-helper.py holds the "$src/vendor is missing" refusal that moved out of bin/build-apk.sh;
 # bin/chain-test-shape.py holds, as exact text, the build-apk.sh line that names $src/vendor/modules.txt.
-# .github/agent/bin/auditor-classify.py and auditor-panel.py use "vendor" for the company behind an audit seat.
+# The listed .github/agent files use the word "vendor" for the company behind an audit seat or a record.
 _VENDOR_NAMING_FILES = frozenset("""
 .github/agent/bin/auditor-classify.py
 .github/agent/bin/auditor-panel.py
+.github/agent/bin/auditor-run.py
+.github/agent/bin/auditorlib/policy.py
+.github/agent/bin/auditorlib/signed_commit.py
+.github/agent/bin/auditorlib/vendor_records.py
+.github/agent/bin/auditorlib/vex.py
+.github/agent/bin/check-action-pins.py
+.github/agent/bin/tests/test_cov_run.py
+.github/agent/bin/tests/test_panel.py
+.github/agent/bin/tests/test_panel_io.py
+.github/agent/bin/tests/test_signed_commit.py
+.github/agent/bin/tests/test_vendor_records.py
+.github/agent/supply-chain/pin-inventory.py
+.github/agent/tests/auditor-matrix-test.sh
+.github/agent/tests/pin-age-check-test.sh
+.github/agent/tests/pin-audit-test.sh
+.github/agent/tests/pin-wiring-test.sh
 .github/workflows/ci.yml
 .github/workflows/release.yml
 bin/assemble-image-test.sh
