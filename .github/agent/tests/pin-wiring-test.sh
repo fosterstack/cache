@@ -321,7 +321,7 @@ def _by_shape(st):
     return st
 
 
-# The allowlist job's action steps are judged like the split jobs' steps: exactly these two, a full-hex digest may differ, any other `uses` step is refused.
+# each job's actions are judged on their own, so one job cannot borrow another's
 ALLOWLIST_ACTIONS = [_by_shape(st) for st in (
     {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"fetch-depth": "0"}},
     {"name": "set up Python for the workflow-permission check", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
@@ -945,12 +945,14 @@ for j in allowlist-chain allowlist-persona allowlist-pins-auditor; do
   case_msg "uses-literal-marker-$j" "$(bump $j "$BAD_MARKER")" "$want"
 done
 
-for kind in tag-ref:"$BAD_TAG" short-digest:"$BAD_SHORT" upper-digest:"$BAD_UPPER" other-action-name:"$BAD_NAME" literal-marker:"$BAD_MARKER"; do
-  name=${kind%%:*}
-  ref=${kind#*:}
-  case_msg "uses-$name-allowlist" "$(bump allowlist "$ref")" "the allowlist step"
-  case_msg "uses-$name-allowlist-not-judged" "$(bump allowlist "$ref")" "is not a judged action step"
-done
+want="the allowlist step 7 (set up Python for the workflow-permission check) is not a judged action step"
+case_msg uses-tag-ref-allowlist           "$(bump allowlist "$BAD_TAG")"    "$want"
+case_msg uses-short-digest-allowlist      "$(bump allowlist "$BAD_SHORT")"  "$want"
+case_msg uses-upper-digest-allowlist      "$(bump allowlist "$BAD_UPPER")"  "$want"
+case_msg uses-other-action-name-allowlist "$(bump allowlist "$BAD_NAME")"   "$want"
+case_msg uses-literal-marker-allowlist    "$(bump allowlist "$BAD_MARKER")" "$want"
+case_msg uses-checkout-tag-ref-allowlist  "d['jobs']['allowlist']['steps'][0]['uses'] = 'actions/checkout@v4'" \
+  "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
 RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
 case_msg run-changed-names-key "$RUNX" "the allowlist-persona step 8 (persona UAT — driver suite) differs in: run"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
