@@ -1691,7 +1691,7 @@ requirements:
     source: [.github/workflows/dependabot-reviewer.yml, bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt]
     tier: community
     introduced: v0.3.0
-    origin: register row 75 (owner, Sep 29 2026); row 80 sentences 4-5 (owner, Sep 30 2026); every update kind and the reviewer as the only review (owner, Nov 11 2026, rules 1 and 2)
+    origin: register row 75 (owner, Sep 29 2026); row 80 sentences 4-5 (owner, Sep 30 2026); every update kind, with the reviewer as a Dependabot pull request's only review (Nov 11 2026)
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-DEP-001-AC1
@@ -1751,7 +1751,7 @@ requirements:
       - id: REQ-DEP-001-AC10
         given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
         when: the reviewer picks its candidates and gathers its evidence
-        then: "it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it, it is named flagged in the bundle, and an auto-merge armed on its head with no verdict is turned off before the review; a bump whose notes say neither is read by the same readers too, and keeps through the review the arm the patch and minor lane gave it; a pull request whose update lines cannot be read is read as one update of its own kind (unparsed) and is not the lane's: an auto-merge armed on its head with no verdict is turned off before the review"
+        then: "it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it, it is named flagged in the bundle, and an auto-merge armed on its head with no verdict is turned off before the review; a bump whose notes say neither is read by the same readers too, and keeps through the review the arm the auto-merge workflow gave it; a pull request whose update lines cannot be read is read as one update of its own kind (unparsed) and is never treated as a plain patch or minor: an auto-merge armed on its head with no verdict is turned off before the review"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC11
@@ -1763,7 +1763,7 @@ requirements:
       - id: REQ-DEP-001-AC12
         given: a reviewer run that took one or more heads up for review
         when: its act step and its cancellation cleanup have ended, whether the run finished, failed or was cancelled
-        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head whose every update is a plain patch or minor (none major, flagged or unparsed) that was armed when the reviewer took it up (the patch and minor lane arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head, after the required-check guard matches; a head with a success verdict is left as the act step left it; a lookup or a write that fails fails the run"
+        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head whose every update is a plain patch or minor (none major, flagged or unparsed) that was armed when the reviewer took it up (the auto-merge workflow arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head, after the required-check guard matches; a head with a success verdict is left as the act step left it; a lookup or a write that fails fails the run"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC13
@@ -1819,13 +1819,13 @@ requirements:
       - id: REQ-DEP-003-AC2
         given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
         when: the auto-merge lane runs
-        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell (its metadata step or its screen failed), it arms nothing and turns off an auto-merge not backed by the reviewer's success on the current head
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the auto-merge workflow cannot tell (its metadata step or its screen failed), it arms nothing and turns off an auto-merge not backed by the reviewer's success on the current head
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC3
         given: a Dependabot pull request, of any update kind, whose head carries the reviewer's failure verdict
-        when: the auto-merge lane runs on it, and at every hourly reviewer run
-        then: "the lane reads the reviewer's verdict on the head before it arms and does not arm a failed head (if it cannot read the verdict the step fails and nothing is armed); the lane's last step, after the arm, turns off any auto-merge armed on a current head that carries the failure verdict; and the reviewer turns off any auto-merge it finds armed on a head with the failure verdict, in its settle step and at every hourly run"
+        when: the auto-merge workflow runs on it, and at every hourly reviewer run
+        then: "the auto-merge workflow reads the reviewer's verdict on the head before it arms and does not arm a failed head (if it cannot read the verdict the step fails and nothing is armed); its last step, after the arm, turns off any auto-merge armed on a current head that carries the failure verdict; and the reviewer turns off any auto-merge it finds armed on a head with the failure verdict, in its settle step and at every hourly run"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

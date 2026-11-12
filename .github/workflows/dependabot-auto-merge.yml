@@ -222,9 +222,10 @@ jobs:
           if [ "$verdict" = failure ]; then echo "the reviewer failed this head (${HEAD_SHA:0:7}); it is not armed"; exit 0; fi
           gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
 
-      # After the arm, so a failure published while it armed is seen. A major, a flagged bump, or one whose kind this run
-      # could not tell (the metadata or the screen failed) keeps an arm only with the reviewer's success on the CURRENT head
-      # (owner, Oct 1: a verdict holds for the head that was read); a plain patch or minor keeps the lane's arm unless failed.
+      # After the arm, so a failure published while it armed is seen. A major, a flagged bump, or one whose kind this
+      # run could not tell (the metadata or the screen failed) keeps an arm only with the reviewer's success on the
+      # CURRENT head (a verdict holds only for the head that was read); a plain patch or minor keeps this workflow's
+      # arm unless failed.
       - name: no arm without the reviewer's leave — a failed head, or a new head of a major, has auto-merge turned off
         if: ${{ !cancelled() }}
         env:

@@ -887,13 +887,12 @@ case "$1 $2" in
               else printf '%b' "${EVENTS99:-}"; fi ;;
   "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
-  # the review gate's own check on a head (the App's latest): GATE99 / GATE90, none unless set
+  # the review gate's own check on a head (the App's latest): GATE99, none unless set; no gate check on any other head
   "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate") [ "${GATELOOKUP:-}" = fail ] && exit 1
               if [ -n "${GATE99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" <<<"$GATE99_JSON"   # the step's own filter, run for real
               else echo "${GATE99:-none}"; fi ;;
-  "api repos/o/r/commits/"*"/check-runs?check_name=auditor-review-gate") echo none ;;   # every other head: no gate check
+  "api repos/o/r/commits/"*"/check-runs?check_name=auditor-review-gate") echo none ;;
   "api repos/o/r/commits/sha77/check-runs?check_name=dependabot-reviewer") echo "${PRIOR77:-none}" ;;   # #77: a PR whose title and body name no update that can be read
-  "api repos/o/r/commits/sha90/check-runs?check_name=auditor-review-gate"|"api repos/o/r/commits/sha91/check-runs?check_name=auditor-review-gate") echo "${GATE90:-none}" ;;
   "pr view") case "$3" in 90) v="${ARMED90:-${ARMED99:-false}}" ;; 77) v="${ARMED77:-false}" ;; *) v="${ARMED99:-false}" ;; esac   # the PR as GitHub gives it, read by the step's own filter
               h="sha$3"; [ "${MOVED:-}" = "$3" ] && h=shaNEW
               case "$v" in true) j='{"state":"OPEN","headRefOid":"'$h'","autoMergeRequest":{"mergeMethod":"SQUASH"}}' ;; closed) j='{"state":"MERGED","headRefOid":"'$h'","autoMergeRequest":null}' ;; *) j='{"state":"OPEN","headRefOid":"'$h'","autoMergeRequest":null}' ;; esac

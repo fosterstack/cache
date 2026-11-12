@@ -3,7 +3,7 @@ name: Dependabot reviewer
 # Register row 75: three dependency lanes. The auditor (cron) opens CVE bumps; Dependabot opens
 # "latest" bumps; THIS workflow reads every pull request Dependabot opens into main, whatever its
 # update kind (patch, minor, major, flagged) and whoever pushed a commit onto it since, and is its
-# only review (owner, Nov 11 2026: no review seats, no audit rounds for a Dependabot PR).
+# only review: a Dependabot pull request gets no other one.
 # dependabot-auto-merge.yml still arms a plain patch/minor at once; this workflow leaves that arm
 # on while it reads the bump and takes it away only with a failure verdict or for a forced re-review.
 #
@@ -150,8 +150,8 @@ jobs:
             gate_fail "$2" "The Dependabot reviewer's verdict on this head is $3: it is not passed." || return 1
             echo "PR #$1 ${2:0:7}: the review gate's check said success over the reviewer's $3 — failed again"
           }
-          # The gate's sweep never judges a failure older than six hours again, so a head the reviewer passes after that would stay red.
-          # Publishing the failure anew (never a success) puts it back inside the sweep's window; the sweep then judges the head itself.
+          # The gate's sweep does not look again at a failure older than six hours, so a head the reviewer passes after
+          # that would stay red. Publishing the failure anew (never a success) puts it back inside the sweep's window.
           gate_refresh() { # <n> <sha>: a stale gate failure over a success verdict is published again (1: that could not be done)
             local g
             g=$(gate_of "$2") && [ -n "$g" ] || return 1
@@ -170,8 +170,6 @@ jobs:
                    --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json"; then
               echo "::error::PR #$n: could not read its updates"; lookup_failed=1; continue
             fi
-            # An arm before a verdict is the patch/minor lane's only when every update is a plain patch or minor: a major, a flagged
-            # update or one whose lines could not be read (kind unparsed) is not the lane's to arm.
             lane=$(jq -r 'if length > 0 and all(.[]; .kind == "not-major") then "yes" else "no" end' "$RUNNER_TEMP/work/updates-$n.json") \
               || { echo "::error::PR #$n: could not tell its update kinds"; lookup_failed=1; continue; }
             if ! prior=$(verdict_of "$sha") || [ -z "$prior" ]; then
@@ -212,12 +210,8 @@ jobs:
               fi
               if [ "$prior" = success ]; then
                 gate_refresh "$n" "$sha" || { echo "::error::PR #$n ${sha:0:7}: could not publish its stale gate failure again"; lookup_failed=1; }
-                # The auto-merge lane turns an arm off when a head it does not arm has no verdict (REQ-DEP-003-AC2); the reviewer arms and THEN
-                # publishes success, and a carried success lands after the lane saw the new head, so the lane can leave an approved head unarmed.
-                # GitHub records who turned auto-merge on or off: a success verdict, no arm, and the LAST auto-merge event (on, by any merge
-                # method, or off) being a disable by the workflow token (github-actions) means exactly that (a person's disarm, or any later
-                # enable, is not). Put the arm back for this head, after the same required-check guard as every other arm; the enable event
-                # that follows ends it. Nothing here reads a comment.
+                # The reviewer arms and THEN publishes success, and a carried success lands after the auto-merge
+                # workflow saw the new head: that workflow can so turn an approved arm off (REQ-DEP-003-AC2).
                 if ! armed_now=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
                   echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
                 fi

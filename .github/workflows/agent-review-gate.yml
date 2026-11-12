@@ -27,11 +27,9 @@ name: Agent review gate
 #   secret; the publisher holds the App token and never touches PR data.
 # - Only PRs into the default branch are judged, against the checked-out default branch (never the
 #   event's base), and `edited` (a retarget) re-runs the gate.
-# - A PR run that holds no App credentials publishes nothing and says so in a notice. The runs
-#   Dependabot triggered did hold them when their logs were read (Nov 12 2026: first attempts and
-#   re-runs alike), so this is a fallback, not the usual path of a Dependabot PR. The scheduled SWEEP
-#   judges every open PR into the default branch whose head has no auditor-review-gate check from
-#   the App yet, and publishes.
+# - A PR run that holds no App credentials publishes nothing and says so in a notice. The scheduled
+#   SWEEP judges every open PR into the default branch whose head has no auditor-review-gate check
+#   from the App yet, or a failed one it still judges again, and publishes.
 #   The sweep holds the App token while reading PR data — still as git objects only, never
 #   executed; it runs only the default branch's gate script.
 
@@ -128,7 +126,7 @@ jobs:
           APP_ID: ${{ secrets.AUDITOR_APP_ID }}
         run: |
           if [ -n "$APP_ID" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
-          else echo "::notice::no App credentials in this run (a Dependabot-triggered run gets none) — the scheduled sweep publishes this PR's check"; echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+          else echo "::notice::no App credentials in this run — the scheduled sweep publishes this PR's check"; echo "ok=false" >> "$GITHUB_OUTPUT"; fi
 
       - name: mint the App token (checks:write only)
         id: app
@@ -278,7 +276,7 @@ jobs:
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \
               -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
               -f "output[title]=auditor review gate: ${conclusion}" \
-              -f "output[summary]=Judged by the scheduled sweep (the PR's own run had no App credentials)." >/dev/null || fail=1
+              -f "output[summary]=Judged by the scheduled sweep." >/dev/null || fail=1
             echo "PR #${n} ${sha:0:7}: ${conclusion}"
           done < "$RUNNER_TEMP/prs.txt"
           exit "$fail"

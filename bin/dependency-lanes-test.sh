@@ -504,5 +504,54 @@ sys.exit(1 if bad else 0)
 PY
 then pass=$((pass+1)); echo "PASS screen-agrees-with-reviewer"; else failn=$((failn+1)); echo "FAIL screen-agrees-with-reviewer"; fi
 
+# REQ-DEP-001-AC13: the reviewer publishes a gate failure again only when the gate's sweep has stopped judging it.
+# Each reads the age of the App's newest gate check with its own command. Run for real over the same check runs, the
+# two must give the same answer at every age, or a failure falls between them (too old for the sweep, not old enough
+# for the reviewer) and the head stays red.
+if python3 - "$root" "$work" <<'PY'
+import datetime, json, os, re, subprocess, sys, yaml
+root, work = sys.argv[1], sys.argv[2]
+def run_text(workflow, job, pick):
+    steps = yaml.safe_load(open(os.path.join(root, ".github/workflows", workflow)))["jobs"][job]["steps"]
+    (text,) = [s["run"] for s in steps if pick(s)]
+    return text
+sweep = run_text("agent-review-gate.yml", "sweep", lambda s: "check_name=auditor-review-gate" in (s.get("run") or ""))
+cand = run_text("dependabot-reviewer.yml", "review", lambda s: s.get("id") == "candidates")
+# each workflow's own lookup, cut out whole: the sweep's `last="$(…)"` and the reviewer's function gate_of
+(sweep_cmd,) = re.findall(r'last="\$\((GH_TOKEN="\$APP_TOKEN" gh api [^\n]*check_name=auditor-review-gate.*?)\)" \\\n',
+                          sweep, re.S)
+(gate_of,) = re.findall(r'(?m)^(gate_of\(\) \{.*?\n\})\n', cand, re.S)
+stub = os.path.join(work, "window-stub"); os.makedirs(stub, exist_ok=True)
+open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
+f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
+jq -r "$f" "$CHECK_RUNS"
+""")
+os.chmod(os.path.join(stub, "gh"), 0o755)
+def answer(script, runs):
+    path = os.path.join(work, "window-runs.json")
+    json.dump({"check_runs": runs}, open(path, "w"))
+    env = {**os.environ, "PATH": stub + ":" + os.environ["PATH"], "CHECK_RUNS": path, "APP_TOKEN": "t",
+           "APP_SLUG": "the-app", "GITHUB_REPOSITORY": "o/r", "sha": "abc"}
+    p = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 else "error: " + p.stderr.strip()[-80:]
+def aged(conclusion, hours):
+    at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+    return {"conclusion": conclusion, "completed_at": at.strftime("%Y-%m-%dT%H:%M:%SZ"), "app": {"slug": "the-app"}}
+bad, seen = [], set()
+cases = [("no check", [])] + [("a success %sh old" % h, [aged("success", h)]) for h in (1, 30)] \
+    + [("a failure %sh old" % h, [aged("failure", h)]) for h in (0.1, 1, 3, 5, 5.9, 6.1, 7, 9, 12, 24, 72)]
+for name, runs in cases:
+    a, b = answer(sweep_cmd, runs), answer(gate_of + "\ngate_of abc", runs)
+    seen.add(a)
+    if a != b or a not in ("none", "success", "failure", "stale"):
+        bad.append("%s: the sweep reads %r, the reviewer reads %r" % (name, a, b))
+if seen != {"none", "success", "failure", "stale"}:
+    bad.append("the cases did not reach all four answers: %s" % sorted(seen))
+print("gate window: " + ("the sweep and the reviewer read every age alike" if not bad else "; ".join(bad)))
+sys.exit(1 if bad else 0)
+PY
+then pass=$((pass+1)); echo "PASS gate-window-same-in-both"
+else failn=$((failn+1)); echo "FAIL gate-window-same-in-both"; fi
+
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
