@@ -1126,7 +1126,7 @@ tally_count() { # -> number of findings (CVE-2099-0001) the tally attributes to 
   python3 - "$root/bin/panel.py" "$root/.vex/fosterstack-cache.openvex.json" "$sim/tmp/panel" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("panel", sys.argv[1]); P = importlib.util.module_from_spec(spec); spec.loader.exec_module(P)
-v = P.tally(sys.argv[3], P.load_vex(sys.argv[2]))
+v = P.tally(sys.argv[3], P.load_vex(sys.argv[2]), {"inspector": sys.argv[3] + "/inspector"})  # the direct tree: only Inspector ran
 print(sum(1 for f in v["findings"] if f["id"] == "CVE-2099-0001" and "inspector" in f["seen_by"]))
 PY
 }
