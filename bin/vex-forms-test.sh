@@ -340,7 +340,13 @@ check("AC7 the generator imports no clock, randomness or network module and read
 # does not belong in its forms. "Applies" is computed here from the products alone, independent of the generator.
 real = json.load(open(OPENVEX))
 WHOLE = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+BUILD_GO = "1.27.4"                 # build/melange.yaml's pin (AC-B2): a stdlib subcomponent at any other version is left out of the forms
+STALE = "pkg:golang/stdlib@"
+def stale_only(s):                  # every subcomponent of the statement is a left-out stdlib: nothing of it reaches the forms
+    subs = [c["@id"] for p in s.get("products") or [] for c in p.get("subcomponents") or []]
+    return bool(subs) and all(x.startswith(STALE) and x != STALE + BUILD_GO for x in subs)
 def applies(s, imgs):
+    if stale_only(s): return False
     for p in s.get("products") or []:
         pid = p.get("@id") or (p.get("identifiers") or {}).get("purl", "")
         m = _re.fullmatch(r"pkg:oci/cache@sha256%3A([0-9a-f]{64})\?repository_url=ghcr\.io/fosterstack/cache", pid)
@@ -355,8 +361,10 @@ named = lambda s: any(p.get("subcomponents") for p in s["products"] if "pkg:oci/
 wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed") and named(s)})
 rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
 check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies and names a package, and no other", rcv == wsup, (rcv, wsup))
-check("the real file's CSAF passes the loader's checks; its two package statements stay scoped to the jwt/v4 module and the Go standard library go1.27.2",
-      bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@", "component-stdlib@go1.27.2"})
+check("the real file's CSAF passes the loader's checks; its jwt/v4 statement stays scoped to that module and the stdlib@1.27.2 statement is absent (the build ships go1.27.4)",
+      bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@"}
+      and "CVE-2026-111943" not in {v["cve"] for v in rc["vulnerabilities"]} and "CVE-2024-51744" in {v["cve"] for v in rc["vulnerabilities"]}
+      and "go1.27.2" not in json.dumps(rc))
 # cache#772 round 1 (A2, ruled): the relationship SET above does not say which statement points at which component. For every vulnerability of the real
 # file's CSAF, each product id in its product_status must resolve to a relationship whose product_reference is the component that statement names
 # (computed here from the OpenVEX subcomponent purls, independent of the generator), and none may be a whole-image product id. A statement that names
@@ -386,10 +394,10 @@ check("A2 every product id of each real vulnerability resolves to a relationship
       stmt_scope_ok(real, rc))
 import copy as _copy
 wide = _copy.deepcopy(rc)
-_v = next(v for v in wide["vulnerabilities"] if v["cve"] == "CVE-2026-111943")
+_v = next(v for v in wide["vulnerabilities"] if v["cve"] == "CVE-2024-51744")
 _k = next(iter(_v["product_status"]))
 _v["product_status"][_k] = sorted({b["product"]["product_id"] for b in wide["product_tree"]["branches"]})
-check("A2 red proof: widening CVE-2026-111943's product_status to every whole-image product (a temporary copy) is refused", not stmt_scope_ok(real, wide))
+check("A2 red proof: widening CVE-2024-51744's product_status to every whole-image product (a temporary copy) is refused", not stmt_scope_ok(real, wide))
 # cache#772 audit: the cache-candidates claim for CVE-2026-111943 has no evidence
 _s = next(s for s in real["statements"] if s["vulnerability"]["name"] == "CVE-2026-111943")
 _img = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
@@ -661,32 +669,32 @@ check("G an encoded dot in the host segment is still a Go module path (decoded o
 check("G an encoded slash in a Go module path (host or later segment) stops generation",
       all(refused({"@id": OURS, "subcomponents": [{"@id": x}]}) for x in ("pkg:golang/github%2Ecom%2Fgolang-jwt/jwt/v4", "pkg:golang/github.com/golang-jwt%2Fjwt/v4")))
 # rc-5a G amended: the Go standard library is the one name allowed outside a full module path, and only with a version
-STD = "pkg:golang/stdlib@1.27.2"
+STD = "pkg:golang/stdlib@1.27.4"
 STD_PRODUCT = [{"@id": OURS, "subcomponents": [{"@id": STD}]}]
 def std_doc(cve): return {"statements": [scoped(cve, "not_affected", STD_PRODUCT)]}
 def std_scopes():
     try: return V._scopes(std_doc("CVE-G11")["statements"][0], [D("1")])
     except ValueError as e: return str(e)    # a refusal is a failed check, not a crash of the whole run
-check("G the Go standard library with a version is the package (stdlib, go1.27.2: the form scanners report)",
-      std_scopes() == [([D("1")], ("stdlib", "go1.27.2"))], std_scopes())
+check("G the Go standard library with a version is the package (stdlib, go1.27.4: the form scanners report)",
+      std_scopes() == [([D("1")], ("stdlib", "go1.27.4"))], std_scopes())
 try: gs = [f["filterCriteria"]["vulnerablePackages"]
            for f in V.inspector(std_doc("CVE-G12"), IMAGES, "v0.3.0")["filters"]]
 except ValueError as e: gs = str(e)
-check("G the Inspector rule names the standard library and its version as the scanner field has it (go1.27.2, one rule)",
-      gs == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "go1.27.2"}}]], gs)
+check("G the Inspector rule names the standard library and its version as the scanner field has it (go1.27.4, one rule)",
+      gs == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "go1.27.4"}}]], gs)
 try: grels = V.csaf(std_doc("CVE-G13"), IMAGES, "v0.3.0")["product_tree"].get("relationships", [])
 except ValueError as e: grels = str(e)
 GIDS = sorted("fosterstack-cache-v0.3.0-" + x for x in ("production", "production-linux-amd64", "production-linux-arm64",
                                                          "fips", "fips-linux-amd64", "fips-linux-arm64"))
 check("G the CSAF names the standard library component inside each of the six images",
-      isinstance(grels, list) and len(grels) == 6 and all(r["product_reference"] == "component-stdlib@go1.27.2" for r in grels)
+      isinstance(grels, list) and len(grels) == 6 and all(r["product_reference"] == "component-stdlib@go1.27.4" for r in grels)
       and sorted(r["relates_to_product_reference"] for r in grels) == GIDS, grels)
-for sub_ in ("pkg:golang/stdlib", "pkg:golang/stdlib@", "pkg:golang/stdlibx@1", "pkg:golang/std@1", "pkg:golang/%73tdlib@1.27.2",
-             STD + "?goos=linux", STD + "%3Fgoos=linux", STD + "%2Fx", "pkg:golang/stdlib/sub@1.27.2",
-             "pkg:golang/stdlib@go1.27.2", "pkg:golang/stdlib@v1.27.2", STD + "@x", STD + "%40x"):
+for sub_ in ("pkg:golang/stdlib", "pkg:golang/stdlib@", "pkg:golang/stdlibx@1", "pkg:golang/std@1", "pkg:golang/%73tdlib@1.27.4",
+             STD + "?goos=linux", STD + "%3Fgoos=linux", STD + "%2Fx", "pkg:golang/stdlib/sub@1.27.4",
+             "pkg:golang/stdlib@go1.27.4", "pkg:golang/stdlib@v1.27.4", STD + "@x", STD + "%40x"):
     check("G a standard library name outside the one allowed form stops generation: " + sub_,
           refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
-# pkg:golang/stdlib@1.27.2 is (stdlib, go1.27.2) and pkg:generic/stdlib@1.27.2 is (stdlib, 1.27.2): two packages (_scopes checked here)
+# pkg:golang/stdlib@1.27.4 is (stdlib, go1.27.4) and pkg:generic/stdlib@1.27.2 is (stdlib, 1.27.2): two packages (_scopes checked here)
 check("G pkg:generic/stdlib@1.27.2 stays a plain generic package, apart from pkg:golang/stdlib@1.27.2",
       V._scopes(scoped("CVE-G14", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/stdlib@1.27.2"}]}]),
                 [D("1")])
@@ -710,6 +718,69 @@ check("G the published document no longer describes a :debug image or busybox",
 check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
 check("G the busybox fixture keeps the three retired statements for the generator's tests",
       sorted(s_["vulnerability"]["name"] for s_ in json.load(open(BBVEX))["statements"]) == ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"])
+# --- AC-B2: the generator leaves out every Go standard library subcomponent whose version is not the one build/melange.yaml pins
+def sub_doc(*subs):
+    return {"statements": [scoped("CVE-B2", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": x} for x in subs]}])]}
+def forms_of(doc):
+    return V.inspector(doc, IMAGES, "v0.3.0"), V.csaf(doc, IMAGES, "v0.3.0")
+fi_, fc_ = forms_of(sub_doc("pkg:golang/stdlib@1.27.2"))
+check("AC-B2-1 stdlib@1.27.2 (not the build's 1.27.4) is left out of the Inspector file: no rule",
+      fi_["filters"] == [], fi_["filters"])
+check("AC-B2-1 …and of the CSAF: no vulnerability, product, component or relationship for it",
+      fc_["vulnerabilities"] == [] and not fc_["product_tree"].get("relationships") and "stdlib" not in json.dumps(fc_)
+      and "go1.27.2" not in json.dumps(fc_) and not fc_["product_tree"].get("full_product_names"), fc_)
+fi_, fc_ = forms_of(sub_doc("pkg:golang/stdlib@1.27.4"))
+check("AC-B2-2 stdlib@1.27.4 (the build's) stays: one Inspector rule naming stdlib at go1.27.4",
+      [f["filterCriteria"]["vulnerablePackages"] for f in fi_["filters"]]
+      == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "go1.27.4"}}]], fi_["filters"])
+check("AC-B2-2 …and the CSAF has component-stdlib@go1.27.4 with its six relationships and its vulnerability",
+      [v["cve"] for v in fc_["vulnerabilities"]] == ["CVE-B2"] and len(fc_["product_tree"]["relationships"]) == 6
+      and all(r["product_reference"] == "component-stdlib@go1.27.4" for r in fc_["product_tree"]["relationships"]), fc_["product_tree"].get("relationships"))
+# AC-B2-5: nothing but a Go stdlib at another version is left out
+fi_, fc_ = forms_of(sub_doc("pkg:generic/stdlib@1.27.2", "pkg:generic/busybox@1.37.0", JWT, "pkg:golang/stdlib@1.27.2"))
+names_ = sorted(f["filterCriteria"]["vulnerablePackages"][0]["name"]["value"] for f in fi_["filters"])
+check("AC-B2-5 a generic stdlib@1.27.2, busybox and a Go module stay while the Go stdlib@1.27.2 beside them is left out (Inspector)",
+      names_ == ["busybox", "github.com/golang-jwt/jwt/v4", "stdlib"]
+      and not any(f["filterCriteria"]["vulnerablePackages"][0].get("version", {}).get("value") == "go1.27.2" for f in fi_["filters"]), names_)
+check("AC-B2-5 …and in the CSAF the three stay, with no go1.27.2 component",
+      sorted({r["product_reference"] for r in fc_["product_tree"]["relationships"]})
+      == ["component-busybox@1.37.0", "component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@", "component-stdlib@1.27.2"], fc_["product_tree"]["relationships"])
+fi_, fc_ = forms_of(sub_doc("pkg:golang/stdlib@1.27.2"))
+check("AC-B2-5 a statement whose only subcomponent was a left-out stdlib adds nothing: it does not widen into a whole-image statement",
+      fi_["filters"] == [] and fc_["vulnerabilities"] == [] and not any("CVE-B2" in json.dumps(x) for x in (fi_, fc_)), (fi_, fc_))
+# AC-B2-3, AC-B2-4: the generator finds build/melange.yaml next to its own bin/; a copy of the script in a temp tree reads that tree's file
+MEL = open(os.path.join(root, "build/melange.yaml")).read()
+def melange_with(ver_amd, ver_arm):
+    return MEL.replace("go1.27.4.linux-amd64", "go%s.linux-amd64" % ver_amd).replace("go1.27.4.linux-arm64", "go%s.linux-arm64" % ver_arm)
+def run_in_tree(melange_text, doc):
+    t_ = tempfile.mkdtemp(); os.makedirs(t_ + "/bin"); os.makedirs(t_ + "/build"); os.makedirs(t_ + "/out")
+    open(t_ + "/bin/vex-forms.py", "w").write(open(GEN).read())
+    if melange_text is not None: open(t_ + "/build/melange.yaml", "w").write(melange_text)
+    p_ = t_ + "/in.openvex.json"; json.dump(doc, open(p_, "w")); o_ = t_ + "/out"
+    f_ = t_ + "/digests.json"; open(f_, "w").write(J(IMAGES))
+    r_ = subprocess.run([sys.executable, "-I", t_ + "/bin/vex-forms.py", "--openvex", p_, "--images", f_, "--version", "v0.3.0", "--out-dir", o_],
+                        capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    got_ = {n: json.load(open(os.path.join(o_, n))) for n in FORMS if os.path.isfile(os.path.join(o_, n))}
+    return r_, got_, o_
+two = {"statements": sub_doc("pkg:golang/stdlib@1.27.4")["statements"] + [scoped("CVE-B2b", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/stdlib@1.28.0"}]}])]}
+r_, got_, o_ = run_in_tree(melange_with("1.28.0", "1.28.0"), two)
+ic_ = got_.get(FORMS[0], {}).get("filters", []); cc_ = got_.get(FORMS[1], {"vulnerabilities": [], "product_tree": {}})
+check("AC-B2-3 a tree whose melange.yaml pins 1.28.0: 1.28.0 stays and 1.27.4 is left out (Inspector)",
+      r_.returncode == 0 and [f["filterCriteria"]["vulnerabilityId"][0]["value"] for f in ic_] == ["CVE-B2b"]
+      and ic_[0]["filterCriteria"]["vulnerablePackages"][0]["version"]["value"] == "go1.28.0", (r_.returncode, r_.stderr[-300:], ic_))
+check("AC-B2-3 …and in the CSAF (component-stdlib@go1.28.0 only)",
+      r_.returncode == 0 and [v["cve"] for v in cc_["vulnerabilities"]] == ["CVE-B2b"]
+      and {r["product_reference"] for r in cc_["product_tree"]["relationships"]} == {"component-stdlib@go1.28.0"}, cc_["product_tree"].get("relationships"))
+r_, got_, o_ = run_in_tree(MEL, two)
+check("AC-B2-3 the copied tree with the real melange.yaml keeps 1.27.4 and drops 1.28.0",
+      r_.returncode == 0 and [f["filterCriteria"]["vulnerabilityId"][0]["value"] for f in got_[FORMS[0]]["filters"]] == ["CVE-B2"], (r_.returncode, r_.stderr[-300:]))
+BADS = {"no go.dev Go fetch line": _re.sub(r"https://go\.dev/dl/\S+", "https://example.invalid/x.tar.gz", MEL),
+        "a missing file": None,
+        "two different Go versions": melange_with("1.27.4", "1.27.3")}
+for what, text in BADS.items():
+    r_, got_, o_ = run_in_tree(text, sub_doc("pkg:golang/stdlib@1.27.4"))
+    check("AC-B2-4 melange.yaml with %s makes the generator refuse (exit 1, refused on stderr, nothing written) when the OpenVEX has a stdlib subcomponent" % what,
+          r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_, (r_.returncode, r_.stderr[-300:], list(got_)))
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
