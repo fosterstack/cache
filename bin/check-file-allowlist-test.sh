@@ -841,7 +841,7 @@ passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/releas
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
 # the chain's path families (landing on main): one accepted path each; passfam adds the near-misses
-passfam "feature/x" "chain: verifier, helpers, hostile step, signer table and the three trust files" "bin/chain-verify.py" "bin/chain_common.py" "bin/chain_hostile.py" "bin/chain-hostile-step.sh" "bin/chain-verify-test.sh" "bin/chain-no-keyless-tag-test.sh" "bin/chain-test-signers.json" ".github/policy/rekor.pub" ".github/policy/fulcio-chain.pem" "test-evidence/witness-real/apk-collection.real.txt" "results/.gitkeep"
+passfam "feature/x" "chain: verifier, helpers, hostile step, signer table and the two trust files" "bin/chain-verify.py" "bin/chain_common.py" "bin/chain_hostile.py" "bin/chain-hostile-step.sh" "bin/chain-verify-test.sh" "bin/chain-no-keyless-tag-test.sh" "bin/chain-test-signers.json" ".github/policy/rekor.pub" ".github/policy/fulcio-chain.pem" "test-evidence/witness-real/apk-collection.real.txt" "results/.gitkeep"
 passfam "feature/x" "build-stage: the stage scripts, the admission and archive helpers, the suites" "bin/build-stage-apk.sh" "bin/build-stage-snapshot-rebuild-assemble.sh" "bin/build-stage-refuse-mode.sh" "bin/build-admit.py" "bin/build-version-check.py" "bin/chain_items.py" "bin/chain-bind-test.sh" "bin/chain-known-red.py" "test-evidence/known-red.json"
 passfam "feature/x" "vm: the two package lists, their locks, the kernel lock and key" "build/vm-host.yaml" "build/vm-guest.yaml" "build/locks/vm-host.lock" "build/locks/vm-guest.lock" "build/locks/vm-kernel.lock" "build/vm-keys/kernel-key-6165ee59.rsa.pub"
 passfam "feature/x" "baselayout: recipe, template, member list, copied files and scripts" "build/melange-baselayout.yaml" "build/melange-baselayout.yaml.tmpl" "build/baselayout/members.txt" "build/baselayout/etc/nsswitch.conf" "build/baselayout/etc/passwd" "bin/baselayout-test.sh" "bin/build-baselayout-apk.sh" "bin/build-baselayout-apk-test.sh"
@@ -850,6 +850,8 @@ passfam "feature/x" "check: stage scripts, phases, helpers and the customer-word
 passfam "feature/x" "release: the Witness-step scripts and the Release suites" "bin/release-verify.sh" "bin/release-postverify.py" "bin/chain-install-crane-test.sh" "bin/chain-release-shape.py"
 # main's .github/policy/*.txt line already admitted the word list, so no near-miss can be refused there
 runeach pass "feature/x" "check: the customer-word allow list" ".github/policy/customer-words-allow.txt"
+# the existing .github/policy/[A-Za-z0-9._-]+.json line admits the cosign signing config; it has no line of its own
+runeach pass "feature/x" "policy: the cosign signing config" ".github/policy/cosign-signing-config.json"
 # main's own entries the chain dropped stay accepted, each with its near-misses refused
 passfam "feature/x" "main keepers: goreleaser, image Dockerfiles, acceptance authorizer, scout scan, dispatch-fixer" ".goreleaser.yaml" "build/docker/Dockerfile.base" "bin/authorize-acceptance-check.py" "bin/authorize-acceptance-check-test.sh" "bin/scout-vex-scan.sh" "bin/dispatch-fixer.sh"
 runeach fail "feature/x" "suite-guard: only bin/suite-guard.sh and its test are admitted" "bin/suite-guard-run.sh"

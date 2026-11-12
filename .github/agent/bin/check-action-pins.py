@@ -303,6 +303,9 @@ class FsTree:
     def read(self, rel):
         return (self.root / rel).read_text(encoding="utf-8", errors="replace")
 
+    def read_bytes(self, rel):
+        return (self.root / rel).read_bytes()
+
 
 class GitTree:
     """A commit's tree read as git objects: nothing is checked out, nothing is executed."""
@@ -323,8 +326,10 @@ class GitTree:
                 self.blobs[path] = obj
 
     def read(self, rel):
-        return subprocess.run(["git", "cat-file", "blob", self.blobs[rel]], capture_output=True,
-                              check=True).stdout.decode("utf-8", "replace")
+        return self.read_bytes(rel).decode("utf-8", "replace")
+
+    def read_bytes(self, rel):
+        return subprocess.run(["git", "cat-file", "blob", self.blobs[rel]], capture_output=True, check=True).stdout
 
 
 # ---------------------------------------------------------------------------- the walk
@@ -2221,14 +2226,12 @@ TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)
 
 # Documented exclusion (the same charter): the sandbox-wall probe is a dry-run-only step of Build that runs the sealed
 # melange call of bin/build-apk.sh through fixed absolute paths held in variables (the lines of the script that end in
-# TEST-SUBST), the one form the chain judge (bin/chain-test-signers.py) admits, while this check reads a variable
-# program as unreadable. It installs nothing, pulls no image and starts only the pinned tools at fixed paths. It is
-# still read at its committed bytes and bound like any script (READ_SCRIPTS), never inlined; it is held whole by
-# sha256 (chain-scripts.json, NS_SHA) and every change to it gets both reviewers; the chain judge refuses on this
-# listed script a deny word not in its tools, a deny name by path and an interpreter handed an unlisted path. ONE
-# exact path: no pattern, no directory match, so the same text under another name, or in another directory, is read as
-# every script is. The exemption holds only for the bytes that were reviewed: the sha256 of the file at the chain commit
-# d7cab146 (main has none of the chain's other controls, so any other text at this path is read like every script).
+# TEST-SUBST), while this check reads a variable program as unreadable. It installs nothing, pulls no image and starts
+# only the pinned tools at fixed paths. It is still read at its committed bytes and bound like any script
+# (READ_SCRIPTS), never inlined, and every change to it gets both reviewers. ONE exact path: no pattern, no directory
+# match, so the same text under another name, or in another directory, is read as every script is. The exemption holds
+# only for the bytes that were reviewed: the sha256 of the raw file at the chain commit d7cab146 (any other text at this
+# path, even a CRLF copy, is read like every script).
 SEALED_PROBE = {"bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30"}
 
 
@@ -2312,7 +2315,6 @@ def _drop_foreign_heredocs(text):
 # (/tmp/pf-forward.sh, /tmp/smoke-assert.sh) that main's stage-acceptance-k8s.yml writes itself. Any other eval of a
 # variable, anywhere, is refused by the variable-program rule.
 GENERATED_OK = {
-    # main's keepers: main's stage-acceptance-k8s.yml still writes these two scripts itself (the chain moved that step into Check's scripts)
     (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
         "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
         "heredoc; they assert against the kind cluster and fetch nothing",
@@ -2542,7 +2544,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("runs %s from a working directory this check cannot place; refused" % path)
             continue
         READ_SCRIPTS.append((rel, tree.read(rel)))       # bound to its committed bytes after inlining (check_runs)
-        sealed = SEALED_PROBE.get(rel) == hashlib.sha256(tree.read(rel).encode()).hexdigest()
+        sealed = rel in SEALED_PROBE and SEALED_PROBE[rel] == hashlib.sha256(tree.read_bytes(rel)).hexdigest()
         if TEST_HARNESS.search(rel) or sealed:
             continue                                     # a test harness (its probes are fixture data) or the sealed probe: documented exclusions
         if depth >= 4:

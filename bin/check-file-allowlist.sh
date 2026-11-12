@@ -357,7 +357,7 @@ ALLOW_PATTERNS=(
   '^bin/verify-release-guide-test\.sh$'
   # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
   '^bin/verify-key-page-test\.sh$'
-  # The release layout archive and its test.
+  # Turns an OCI layout into a docker-save tar, so the scanner reads it without a Docker daemon, and its test.
   '^bin/layout-archive(-test)?\.sh$'
   # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
   # two tests and the signatory text.
