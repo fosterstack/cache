@@ -51,6 +51,11 @@ expect 0 "count: with no summary, the ok/PASS lines are the count" "3" -- count 
 expect 1 "count: a count of zero fails" "zero" -- count "$work/l4"
 expect 1 "count: an empty log fails" "no case count" -- count "$work/l5"
 expect 0 "count: failures do not change the count (the suite's own exit code says them)" "12" -- count "$work/l6"
+# the count is read from the suite's own summary line: a look-alike line before or after it must not win
+printf 'a note: an old run said pass=999 fail=0\npass=55 fail=0\nsee 888 passed in the log above\n' > "$work/l11"
+printf 'case 3 expects 777 passed, 0 failed\nx: 53 passed, 0 failed\nthe next run may print 666 passed\n' > "$work/l12"
+expect 0 "count: a look-alike line before or after a pass=N summary is not the count" "55" -- count "$work/l11"
+expect 0 "count: a look-alike line before or after a N passed summary is not the count" "53" -- count "$work/l12"
 
 # ---- floor: a suite below its committed floor, or unlisted, fails ---------------------------------------------------------------
 printf '{"suite-a": 50, "suite-b": 10}\n' > "$work/floors.json"
@@ -278,11 +283,19 @@ printf '{"required_checks": [{"context": "other", "integration_id": 15368, "scop
 cwf "" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step in a job that no required check is or needs is not trusted: its suite is still run here"; else bad "non-required job trusted: ${out:0:200}"; fi
 { printf 'jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: %s a-test.sh bin/a-test.sh\n  other:\n    runs-on: x\n    needs: [j]\n    steps:\n      - run: echo gate\n' "$CNT"; } > "$work/cw/.github/workflows/ci.yml"
-out=$(cwall) || true; if grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step in a job that a required check needs is trusted"; else bad "needed job not trusted: ${out:0:200}"; fi
+out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step in a job that a required check only needs is not trusted"; else bad "needs-only job trusted: ${out:0:200}"; fi
+# trusted only when the required job checks the result of the counting job
+{ printf 'jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: %s a-test.sh bin/a-test.sh\n  other:\n    runs-on: x\n    needs: [j]\n    steps:\n      - env:\n          R: ${{ needs.j.result }}\n        run: test "$R" = success\n' "$CNT"; } > "$work/cw/.github/workflows/ci.yml"
+out=$(cwall) || true; if grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step in a job whose result a required check reads from needs is trusted"; else bad "checked job not trusted: ${out:0:200}"; fi
 rm "$work/cw/.github/policy/required-checks.json"
 cwf "" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: with no required-checks policy no counting step is trusted (fail closed)"; else bad "no policy trusted: ${out:0:200}"; fi
 printf '{"required_checks": [{"context": "j", "integration_id": 15368, "scope": "push"}]}\n' > "$work/cw/.github/policy/required-checks.json"
+# a workflow-level shell or BASH_ENV can blank the counting step: the step is not trusted, or the file is refused
+for label in 'defaults: {run: {shell: "true {0}"}}' 'env: {BASH_ENV: prelude.sh}'; do
+  cwf "" "$CNT a-test.sh bin/a-test.sh"; { printf '%s\n' "$label"; cat "$work/cw/.github/workflows/ci.yml"; } > "$work/cw/ci.new"; mv "$work/cw/ci.new" "$work/cw/.github/workflows/ci.yml"
+  out=$(cwall) || true; if ! grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: a workflow with $label does not make a counting step trusted"; else bad "workflow $label trusted: ${out:0:200}"; fi
+done
 # (4) a jobs: that is not a mapping is a named refusal, never a traceback
 printf 'jobs: []\n' > "$work/cw/.github/workflows/ci.yml"
 out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$out" && grep -q 'cannot be read as a workflow' <<< "$out"; then ok "REQ-CI-005-AC2 all: a ci.yml whose jobs: is not a mapping is refused by name, no traceback"; else bad "jobs list: rc=$rc ${out:0:200}"; fi
@@ -290,7 +303,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=115
+EXPECT=120
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
