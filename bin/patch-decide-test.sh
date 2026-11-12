@@ -505,9 +505,9 @@ Behavior changes since the last release, carried into its notes.
 
 - Go 1.27: a request with more than 500 header values is rejected with 431 before it
   reaches the cache.
-  Source: advisor 0115
+  Source: #152
 - Second change, one line.
-  Source: advisor 0130
+  Source: #130
 """
 ents = P.behavior_entries(NRN)
 check("0130 entries parsed, continuation lines joined", ents == [
@@ -517,16 +517,17 @@ check("0130 an empty file has no entries", P.behavior_entries("# Notes for the n
 for bad in ["- A change nobody judged.\n", "- A change.\n  Source:\n",
             "- A change (owner said so).\n  Source: x\n", "- A change (advisor 0130).\n  Source: x\n",
             "- A change from a handoff.\n  Source: x\n", "- The orchestrator changed it.\n  Source: x\n",
-            "- A change in the lane.\n  Source: x\n", "- Ratified change.\n  Source: x\n"]:
+            "- A change in the lane.\n  Source: x\n", "- Ratified change.\n  Source: x\n",
+            "- A change.\n  Source: advisor 0130\n"]:
     try:
         P.behavior_entries(bad); raised = False
     except ValueError:
         raised = True
     check("0130 an entry with no source, or with shop talk or a visible citation, is refused: %r" % bad, raised)
 check("0130 the source line is read but is not part of the entry",
-      P.behavior_entries("- A change.\n  Source: advisor 0130\n") == ["A change."])
+      P.behavior_entries("- A change.\n  Source: #130\n") == ["A change."])
 check("0130 a public requirement id stays in an entry", P.behavior_entries("- Fixes REQ-REL-001.\n  Source: x\n") == ["Fixes REQ-REL-001."])
-published_ = P.changelog(P.notes("v0.2.3", [], [], behavior=["A change."]), None, "- A change.\n  Source: advisor 0130\n")[0]
+published_ = P.changelog(P.notes("v0.2.3", [], [], behavior=["A change."]), None, "- A change.\n  Source: #130\n")[0]
 check("0130 the source line is never published", "Source" not in published_ and "advisor" not in published_, published_)
 nb = P.notes("v0.2.2", fixes, vex, behavior=ents)
 check("0130 notes list behavior changes under their heading", "### Behavior changes\n- Go 1.27: a request" in nb, nb)

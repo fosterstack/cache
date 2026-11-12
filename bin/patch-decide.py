@@ -12,8 +12,8 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   daily_cut               rule 2: at most one daily patch (a critical/high fix may cut at once, outside this rule).
   notes                   rule 5: per fix the CVE, package, old -> new, severity, variants; each VEX change; a
                           no-behavior-change line, or (advisor 0130) the behavior changes listed in
-                          docs/next-release-notes.md, each with a Source line that is never published; no shop words
-                          in an entry; no vendor or model names.
+                          docs/next-release-notes.md, each with a Source line naming a public cache PR or issue, never published;
+                          no shop words in an entry or its Source; no vendor or model names.
                           Its sources are refused, never rewritten, when a line holds a form Markdown could hide text in
                           (REQ-REL-009-AC14, advisor step 5): file:line, exit 2, nothing written.
   removed_critical_high   rule 2: the latest release's critical/high findings that HEAD removes (a Go module or the
@@ -544,15 +544,17 @@ def _source_entries(text, name):
 
 def behavior_entries(text, name="docs/next-release-notes.md", located=False):
     """The entries of docs/next-release-notes.md (advisor 0130). An entry is only a change judged unable to affect
-    supported clients, so each must have a "  Source:" line under it, read here and never published; an entry without
-    one, or with shop talk in its text, is refused (ValueError) and nothing is cut. The file is a notes source
-    (REQ-REL-009-AC14): a refused form or two entries publishing the same line are refused, naming name:line. located:
-    each entry with its location 'name:line:'."""
+    supported clients, so each must have a "  Source:" line under it, naming a public cache PR or issue,
+    read here and never published; an entry without one, or with shop talk in its text or its Source, is refused
+    (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two entries
+    publishing the same line are refused, naming name:line. located: each entry with its location 'name:line:'."""
     ents = _source_entries(text, name)
     for e, n, src in ents:
         try:
             if not src:
                 raise ValueError("next-release-notes entry has no Source line: %r" % e)
+            if SHOP.search(src):
+                raise ValueError("next-release-notes Source line holds shop talk: %r" % src)
             _check_entry(e)
         except ValueError as x:
             raise ValueError("%s:%d: %s" % (name, n, x))
