@@ -36,6 +36,8 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot, as REST names it; GraphQL says dependabot, a Bot
 REVIEWER_CHECK = "dependabot-reviewer"       # the check run dependabot-reviewer.yml publishes as its verdict on a head
+# the conclusions GitHub documents for a completed check run; anything else in that field is not a verdict
+CONCLUSIONS = ("action_required", "cancelled", "failure", "neutral", "skipped", "stale", "success", "timed_out")
 MAX_UPDATES = 50                             # the merges of main followed back from a head
 UNREAD_TYPES = ("", "version-update:semver-minor", "version-update:semver-patch")   # "": a digest bump gives no type
 
@@ -124,18 +126,23 @@ def dependabot_pull(pr):
 def bump_pull(head, pulls):
     """The one open pull request with this head sha, when Dependabot opened it (`gh api repos/R/commits/SHA/pulls`),
     else None. The gate's check run belongs to the commit, so it would pass every pull request with that head: any
-    other open one, an item that cannot be read, or a full page of 100 leaves the record rule in force."""
-    if not isinstance(pulls, list) or len(pulls) >= 100 or not all(
-            isinstance(p, dict) and isinstance(p.get("state"), str) and isinstance(p.get("head"), dict) for p in pulls):
+    other open one, an item whose state or head sha cannot be read, or a full page of 100 leaves the record rule in
+    force."""
+    if not isinstance(pulls, list) or len(pulls) >= 100:
         return None
-    same = [p for p in pulls if p["state"] == "open" and p["head"].get("sha") == head]
+    for p in pulls:
+        sha = p["head"].get("sha") if isinstance(p, dict) and isinstance(p.get("head"), dict) else None
+        if not isinstance(sha, str) or not _SHA.match(sha) or p.get("state") not in ("open", "closed"):
+            return None
+    same = [p for p in pulls if p["state"] == "open" and p["head"]["sha"] == head]
     return same[0] if len(same) == 1 and dependabot_pull(same[0]) else None
 
 
 def reviewer_verdict(checks, writers):
     """The conclusion of the newest dependabot-reviewer check run that an audit writer's App put on a commit: "none"
     when it put none there, "unfinished" for one still running, None when the writers policy or the answer of
-    `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&per_page=100` is malformed or cut.
+    `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&filter=all&per_page=100` is malformed or
+    cut, or when the run is completed with a conclusion GitHub does not document (so no answer reads as "none").
     The reviewer publishes as the App that writes the records, whose bot login is the App's slug plus [bot]."""
     allowed = _writers(writers)
     runs = checks.get("check_runs") if isinstance(checks, dict) else None
@@ -152,8 +159,9 @@ def reviewer_verdict(checks, writers):
     if not mine:
         return "none"
     last = max(mine, key=lambda r: r["id"])
-    done = last.get("status") == "completed" and isinstance(last.get("conclusion"), str)
-    return last["conclusion"] if done else "unfinished"
+    if last.get("status") != "completed":
+        return "unfinished"
+    return last["conclusion"] if last.get("conclusion") in CONCLUSIONS else None
 
 
 def own_commit(commit, sha):
@@ -198,12 +206,14 @@ def named(updates):
 
 def only_dependabot_edited(answer):
     """True when GitHub's edit history of the pull request's body (the answer to EDITS) names no editor but
-    Dependabot, and is whole. Release-note flags are taken from a body only then: a writer can edit one out."""
+    Dependabot, and is whole: GitHub keeps the first edit and the latest 99, so a history of 100 may have lost one.
+    Release-note flags are taken from a body only then: a writer can edit one out."""
     bot = {"__typename": "Bot", "login": "dependabot", "databaseId": DEPENDABOT[1]}
     try:
         edits = answer["data"]["repository"]["pullRequest"]["userContentEdits"]
         nodes = edits["nodes"]
-        return isinstance(nodes, list) and edits["totalCount"] == len(nodes) and all(n["editor"] == bot for n in nodes)
+        whole = isinstance(nodes, list) and edits["totalCount"] == len(nodes) and len(nodes) < 100
+        return whole and all(n["editor"] == bot for n in nodes)
     except (KeyError, TypeError):
         return False
 
@@ -373,7 +383,7 @@ def _update_of(root, commit):
     the second a commit of main, and the very tree git makes of merging the two. Whoever made such a commit put
     nothing of their own in it."""
     parents = _parents(root, commit)
-    if len(parents) != 2 or not all(_SHA.match(x) for x in parents) or not _on_main(root, parents[1]):
+    if len(parents) != 2 or not _on_main(root, parents[1]):
         return None
     merged, tree = _git(root, "merge-tree", "--write-tree", *parents), _git(root, "rev-parse", commit + "^{tree}")
     return parents[0] if merged and merged == tree else None
@@ -415,7 +425,7 @@ def bump(head, repo, root):
         return None, ""
 
     def verdict_of(commit):
-        path = "repos/%s/commits/%s/check-runs?check_name=%s&per_page=100" % (repo, commit, REVIEWER_CHECK)
+        path = "repos/%s/commits/%s/check-runs?check_name=%s&filter=all&per_page=100" % (repo, commit, REVIEWER_CHECK)
         return reviewer_verdict(_gh(path), writers)
 
     def unread(commit):
@@ -438,7 +448,7 @@ def bump(head, repo, root):
         if type(pr.get("number")) is not int or not only_dependabot_edited(_gh(
                 "graphql", "-f", "query=" + EDITS, "-f", "owner=" + owner, "-f", "name=" + name,
                 "-F", "number=%d" % pr["number"])):
-            return "its body was edited by someone other than Dependabot, so no flag is taken from it"
+            return "the edit history of its body is not Dependabot's alone, or not whole, so no flag is taken from it"
         return ""
     ok, why = bump_passes(head, verdict_of, lambda commit: _update_of(root, commit), unread)
     if ok:

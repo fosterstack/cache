@@ -12,6 +12,7 @@
 set -uo pipefail
 # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
 head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}
+repo=
 here=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 args=()
@@ -52,7 +53,7 @@ cd "$here" || exit 1
 said=$(python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . \
   "${args[@]+"${args[@]}"}"); rc=$?
 # repo is set only above, for a base of main and a head of 40 lower-case hex
-if [ "$rc" = 1 ] && [ -n "${repo:-}" ]; then
+if [ "$rc" = 1 ] && [ -n "$repo" ]; then
   bump=$(python3 -I bin/audit-record.py bump --head "$head" --repo "$repo" --base-root .); b=$?
   if [ "$b" = 3 ]; then exit 3; fi
   # a line: the head is a Dependabot pull request's, and its verdict is the one printed

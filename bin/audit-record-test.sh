@@ -550,6 +550,11 @@ for name, pulls in (
     ("the answer is a full page of 100", [DEP] + [mut(HUMAN, ["state"], "closed")] * 99),
     ("an item is not a pull request", [DEP, "x"]), ("an item has no state", [DEP, mut(HUMAN, ["state"], A)]),
     ("an item has no head", [DEP, mut(HUMAN, ["head"], None)]),
+    ("an item has an empty head", [DEP, mut(HUMAN, ["head"], {})]),
+    ("an item's head sha is null", [DEP, mut(HUMAN, ["head", "sha"], None)]),
+    ("an item's head sha is not 40 lower-case hex", [DEP, mut(HUMAN, ["head", "sha"], HEAD.upper())]),
+    ("an item's state is neither open nor closed", [DEP, mut(HUMAN, ["state"], "OPEN")]),
+    ("a closed item's head sha cannot be read", [DEP, mut(mut(HUMAN, ["state"], "closed"), ["head", "sha"], None)]),
     ("no pull request at all", []), ("the answer is not a list", DEP), ("no answer", None),
 ):
     check("bump: the record rule stands when " + name, A.bump_pull(HEAD, pulls) is None, A.bump_pull(HEAD, pulls))
@@ -571,6 +576,12 @@ for name, answer, want in (
     ("another App's success after the reviewer's failure", runs(run(1, "failure"), run(2, slug="someone")), "failure"),
     ("a success under another check name", runs(run(1, name="dependabot reviewer")), "none"),
     ("a check run still in progress", runs(run(1, None, status="in_progress")), "unfinished"),
+    ("a completed run that was cancelled", runs(run(1, "cancelled")), "cancelled"),
+    ("a completed run whose conclusion is the word none (not GitHub's, and not the absence of a run)", runs(run(1, "none")), None),
+    ("a completed run whose conclusion is the word unfinished", runs(run(1, "unfinished")), None),
+    ("a completed run with a conclusion GitHub does not document", runs(run(1, "passed")), None),
+    ("a completed run with no conclusion", runs(run(1, None)), None),
+    ("an undocumented conclusion after the reviewer's success: the newest counts", runs(run(1), run(2, "none")), None),
     ("a list GitHub cut (more runs than it returned)", {"total_count": 2, "check_runs": [run(1)]}, None),
     ("an entry with no App", runs(dict(run(1), app=None)), None),
     ("an entry whose App has no slug", runs(dict(run(1), app={"id": 5054756})), None),
@@ -583,6 +594,8 @@ for name, answer, want in (
 ):
     check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
 check("bump: the reviewer's verdict: no writers policy -> unreadable", verdict(runs(run(1)), None) is None)
+check("bump: the conclusions read as verdicts are the eight GitHub documents, and neither sentinel is one of them",
+      sorted(A.CONCLUSIONS) == ["action_required", "cancelled", "failure", "neutral", "skipped", "stale", "success", "timed_out"])
 
 # Dependabot's own commit, verified by GitHub: the evidence a writer cannot edit
 def message(subject=DEP["title"], types=("version-update:semver-patch",), text=DEP["body"]):
@@ -639,6 +652,7 @@ def edits(*editors, total=None):
         "totalCount": len(editors) if total is None else total, "nodes": [{"editor": e} for e in editors]}}}}}
 check("bump: a body nobody edited is Dependabot's alone", A.only_dependabot_edited(edits()) is True)
 check("bump: a body only Dependabot edited is Dependabot's alone", A.only_dependabot_edited(edits(BOT, BOT)) is True)
+check("bump: 99 edits, all Dependabot's, are a whole history", A.only_dependabot_edited(edits(*[BOT] * 99)) is True)
 for name, answer in (
     ("a writer edited it", edits(BOT, {"__typename": "User", "login": "fosterstack-admin"})),
     ("another bot edited it", edits(dict(BOT, login="fosterstack-harness", databaseId=318010174))),
@@ -646,6 +660,8 @@ for name, answer in (
     ("an editor has Dependabot's name and another id", edits(dict(BOT, databaseId=5))),
     ("an editor is unknown (null)", edits(BOT, None)),
     ("the history is cut (more edits than returned)", edits(BOT, total=101)),
+    ("the history holds 100 edits, all Dependabot's (GitHub keeps no more, so one may be lost)", edits(*[BOT] * 100)),
+    ("the history counts 100 edits", edits(BOT, total=100)),
     ("the edits are not a list", {"data": {"repository": {"pullRequest": {"userContentEdits": {"totalCount": 1, "nodes": {"editor": BOT}}}}}}),
     ("the pull request is not found", {"data": {"repository": {"pullRequest": None}}}),
     ("the answer holds errors only", {"errors": [{"message": "x"}]}), ("a malformed answer", []), ("no answer", None),
@@ -736,7 +752,7 @@ case "$2" in
   graphql) f="$FAKE/edits"; none='{"data": {"repository": {"pullRequest": {"userContentEdits": {"totalCount": 0, "nodes": []}}}}}' ;;
   repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; none="" ;;
   repos/o/r/commits/*/pulls\\?per_page=100) f="$FAKE/pulls-$sha"; none="[]" ;;
-  repos/o/r/commits/*/check-runs\\?check_name=dependabot-reviewer\\&per_page=100) f="$FAKE/checks-$sha"; none='{"total_count": 0, "check_runs": []}' ;;
+  repos/o/r/commits/*/check-runs\\?check_name=dependabot-reviewer\\&filter=all\\&per_page=100) f="$FAKE/checks-$sha"; none='{"total_count": 0, "check_runs": []}' ;;
   repos/o/r/commits/*) f="$FAKE/commit-$sha"; [ -f "$f.json" ] || [ -f "$f.err" ] || f="$FAKE/commit"; none="" ;;
   repos/o/r/pulls/*) f="$FAKE/pr"; none="" ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
@@ -750,7 +766,7 @@ def dep(head, **kw):
     pr = mut(DEP, ["head", "sha"], head)
     for k, v in kw.items(): pr[k] = v
     return pr
-def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, root=G, base_ref="main", bump=None, policy=WRITERS):
+def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, root=G, base_ref="main", bump=None, policy=WRITERS, more=None):
     # bump: the commit answer for D (Dependabot's own verified patch commit unless a case says otherwise; False: none)
     fk = tempfile.mkdtemp(dir=d)
     def put(name, obj): open(os.path.join(fk, name), "w").write(obj if isinstance(obj, str) else json.dumps(obj))
@@ -761,6 +777,7 @@ def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, ro
     for name, text in (errs or {}).items(): put(name + ".err", text)
     calls = os.path.join(fk, "calls"); open(calls, "w").close()
     env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r", GH_TOKEN="x", AUDIT_ACTOR="fosterstack-admin")
+    env.update(more or {})
     cwd = tempfile.mkdtemp(dir=d)
     cmd = ["bash", root + "/bin/audit-record-judge.sh", head, base_ref] if script is None else ["bash", root + "/bin/" + script, "7", head]
     if policy is None: os.remove(POLICY)
@@ -778,7 +795,8 @@ def stands(r, c): return r.returncode == 1 and "no passed-audit record for this 
 r, c = gate(D, pulls=[dep(D)])
 check("gate: Dependabot's patch bump with no record passes; GitHub is asked for the record, the pull request, the verdict, the commit and the body's editors",
       r.returncode == 0 and "Dependabot pull request #7 needs no passed-audit record" in r.stdout and c.count("gh api") == 5
-      and "check-runs" in c and ("repos/o/r/commits/%s\n" % D) in c and "owner=o -f name=r -F number=7" in c, said(r, c))
+      and ("check-runs?check_name=dependabot-reviewer&filter=all&per_page=100") in c and ("repos/o/r/commits/%s\n" % D) in c
+      and "owner=o -f name=r -F number=7" in c, said(r, c))
 r, c = gate(U2, pulls=[dep(U2)])
 check("gate: the same bump after main was merged in twice passes too, each head asked for a verdict", r.returncode == 0 and c.count("check-runs") == 3, said(r, c))
 DIGEST = dict(title="Bump x from `aaa1111` to `bbb2222`", body="Bumps x from `aaa1111` to `bbb2222`.")
@@ -834,14 +852,15 @@ for name, kw, why in (
     ("the release notes say breaking", dict(pulls=[dep(D, body=FLAGGED)]), "breaking or deprecated"),
     ("the text of both names a major though the commit's type says minor", dict(pulls=[dep(D, body="Bumps left-pad from 1.2.3 to 2.0.0.")],
         bump=owned(D, message(text="Bumps left-pad from 1.2.3 to 2.0.0."))), "names a major"),
-    ("a writer edited the body (a flag may have been edited out)", dict(pulls=[dep(D)], files={"edits": edits(BOT, WRITER)}), "edited by someone other than Dependabot"),
-    ("the body's edit history is cut", dict(pulls=[dep(D)], files={"edits": edits(BOT, total=101)}), "edited by someone other than Dependabot"),
+    ("a writer edited the body (a flag may have been edited out)", dict(pulls=[dep(D)], files={"edits": edits(BOT, WRITER)}), "not Dependabot's alone"),
+    ("the body's edit history is cut", dict(pulls=[dep(D)], files={"edits": edits(BOT, total=101)}), "not Dependabot's alone"),
+    ("the body's edit history holds 100 edits, all Dependabot's", dict(pulls=[dep(D)], files={"edits": edits(*[BOT] * 100)}), "not whole"),
 ):
     kw.setdefault("pulls", [dep(D)])
     r, c = gate(D, **kw)
     check("gate refused: " + name, refused(r, why), said(r, c))
 r, c = gate(D, pulls=[dep(D, number=None)])
-check("gate refused: a pull request with no number (its body's editors cannot be asked for)", r.returncode == 1 and "edited by someone" in r.stdout and "graphql" not in c, said(r, c))
+check("gate refused: a pull request with no number (its body's editors cannot be asked for)", r.returncode == 1 and "not Dependabot's alone" in r.stdout and "graphql" not in c, said(r, c))
 
 # a verdict other than success is never passed over, whatever the title and body say now
 for name, head, verdicts in (
@@ -853,9 +872,13 @@ for name, head, verdicts in (
     ("a check entry on the head has no name, though the head before was passed", U1, {U1: runs({k: v for k, v in run(3).items() if k != "name"}), D: [run(1)]}),
     ("a check entry on the head has no App, though the head before was passed", U1, {U1: runs(dict(run(3), app=None)), D: [run(1)]}),
     ("the list of check runs on the head is cut", U1, {U1: {"total_count": 2, "check_runs": [run(3, slug="github-actions")]}, D: [run(1)]}),
+    ("the reviewer's completed run on the head has the conclusion none, though the head before was passed", U1, {U1: [run(3, "none")], D: [run(1)]}),
 ):
     r, c = gate(head, pulls=[dep(head)], verdicts=verdicts)
     check("gate refused: " + name, refused(r, "newest verdict on") and "not success" in r.stdout and ("repos/o/r/commits/%s\n" % D) not in c, said(r, c))
+r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, "none")]})
+check("gate refused: a patch bump whose reviewer run is completed with the conclusion none (it is not the absence of a run)",
+      refused(r, "is unreadable, not success") and ("repos/o/r/commits/%s\n" % D) not in c, said(r, c))
 r, c = gate(D, pulls=[dep(D, body=FLAGGED)], verdicts={D: [run(1, slug="github-actions")]})
 check("gate refused: a flagged bump that only another App passed", refused(r, "breaking or deprecated"), said(r, c))
 
@@ -879,6 +902,9 @@ for name, pulls in (("a human pull request shares the head with Dependabot's", [
                     ("it is closed", [dep(D, state="closed")]), ("it is into another branch", [mut(dep(D), ["base", "ref"], "chain-v030")]),
                     ("the Dependabot pull request GitHub names has another head", [dep(U1)]),
                     ("two Dependabot pull requests have the head", [dep(D), dep(D, number=8)]),
+                    ("another entry has an empty head", [dep(D), mut(dep(D, number=8, user={"login": "x", "id": 9, "type": "User"}), ["head"], {})]),
+                    ("another entry's head sha is null", [dep(D), mut(dep(D, number=8, user={"login": "x", "id": 9, "type": "User"}), ["head", "sha"], None)]),
+                    ("another entry's state is unknown", [dep(D), dep(U1, number=8, state="draft")]),
                     ("GitHub answers a full page of 100 pull requests", [dep(D)] + [dep(D, state="closed")] * 99),
                     ("no pull request has the head", [])):
     r, c = gate(D, pulls=pulls)
@@ -901,6 +927,8 @@ for name, errs in (("the pull request", {"pulls-" + D: "gh: HTTP 502: Bad Gatewa
     check("gate: a GitHub API error asking for %s exits 3 and says it is an API error" % name, r.returncode == 3 and "GitHub API error" in r.stderr and r.stdout == "", said(r, c))
 r, c = gate(D, pulls=[dep(D)], base_ref="chain-v030")
 check("gate: a base that is not main still passes without asking anything", r.returncode == 0 and c == "", said(r, c))
+r, c = gate(D, pulls=[dep(D)], base_ref="", more={"repo": "o/r"})
+check("gate: a repo variable inherited from the caller is not used: an empty base exits 1 and asks nothing", r.returncode == 1 and c == "", said(r, c))
 
 # the writer: no record for a Dependabot pull request, whatever the reviewer says of it
 for name, verdicts in (("passed by the reviewer", {D: [run(1)]}), ("not read by the reviewer yet", {})):
