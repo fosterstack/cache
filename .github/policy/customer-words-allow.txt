@@ -12,7 +12,6 @@ docs/quality/traceability.md|Once a month the release chain drafts one letter th
 docs/quality/traceability.md|> The site publication and the email to Compliance customers are other lanes' work (www; payments compliance-send). The signatory (the owner's typed name and title) and the closing words are committed in docs/evidence-letter-signatory.txt. The job refuses to make a letter until docs/controls.md (the controls document, ratified rules 6 to 8) exists: the letter quotes it. Round 2 (Nov 1) reworded the statement and AC5 to what the code does (the read-back was removed in round 1, F14); wording pending the owner's approval.
 # Workflow files: GitHub's own field names (repository_owner, context.repo.owner), program and file names that carry the word, and one check name other files read.
 .github/workflows/auditor.yml|for (const k of ['sub','aud','ref','job_workflow_ref','environment','repository','repository_owner_id']) {
-.github/workflows/ci.yml|run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json dependency-lanes-test.sh bin/dependency-lanes-test.sh
 .github/workflows/dependabot-auto-merge.yml|# heredoc because this workflow checks out nothing and fetches no script; bin/dependency-lanes-test.sh
 .github/workflows/dependabot-reviewer.yml|('sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id')}))
 .github/workflows/go-freshness.yml|REGISTRY_OWNER: ${{ github.repository_owner }}

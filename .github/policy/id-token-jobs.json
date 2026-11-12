@@ -87,11 +87,6 @@
    "reason": "Sign: the signer of the Check records (REQ-REL-011-AC1, cache#606): the Check jobs hold no identity token; Sign checks their records against the results and signs them with the release key"
   },
   {
-   "workflow": "ci.yml",
-   "job": "live-test",
-   "reason": "the rule-12 live test of our VEX files (REQ-SCAN-012): OIDC federation into the dedicated live-test AWS account and Google project only (environment live-test); signs and publishes nothing"
-  },
-  {
    "workflow": "release.yml",
    "job": "live-test",
    "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
