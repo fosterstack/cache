@@ -2645,7 +2645,7 @@ for f in sys.argv[1:]:
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 GUARDTXT
 out=$(python3 "$work/tmpguard.py" --selftest 2>&1) && ok "no fixed /tmp path: the guard catches redirections, file commands and open() on /tmp and leaves fixture text alone" || bad "no fixed /tmp path: the guard itself is wrong: $out"
-out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/release-patch-wiring-test.sh bin/install-scanner-test.sh bin/patch-decide-test.sh 2>&1) && ok "no fixed /tmp path: no chain suite reads or writes a literal /tmp path (every file lives in its own mktemp -d)" || bad "no fixed /tmp path: $out"
+out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/install-scanner-test.sh bin/patch-decide-test.sh 2>&1) && ok "no fixed /tmp path: no chain suite reads or writes a literal /tmp path (every file lives in its own mktemp -d)" || bad "no fixed /tmp path: $out"
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
@@ -2710,7 +2710,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
           path: /tmp/oci
@@ -3548,7 +3548,7 @@ vim r2 "REQ-REL-010-AC5 the daily rescan naming vex-index in a line that is not 
 vim r3 "REQ-REL-010-AC4 a reviewed rescan line with the layout changed to Build's images is refused" $RS '' "$RSHEAD"$'          python3 bin/vex-index.py layout --layout /tmp/oci/production --vex /tmp/attach/selfcheck-ours.json\n'
 vim r4 "REQ-REL-010-AC4 a reviewed rescan line in another workflow file is refused" .github/workflows/other.yml '' "$RSHEAD$R2"
 vim r8 "REQ-REL-010-AC5 a reviewed rescan line twice (once more than reviewed) is refused (cache#561 ruling: each admitted line exactly once)" $RS '' "$RSHEAD$R2$R2"
-vim r9 "REQ-REL-010-AC5 a reviewed rescan line inside a job other than vex-attach is refused (R2 probe: the line steered at a published copy in scout-root-cause)" $RS '' "$RSHEAD$R2"$'  scout-root-cause:\n    steps:\n      - run: |\n'"$R1"
+vim r9 "REQ-REL-010-AC5 a reviewed rescan line inside a job other than vex-attach is refused (R2 probe: the line steered at a published copy in panel-scout)" $RS '' "$RSHEAD$R2"$'  panel-scout:\n    steps:\n      - run: |\n'"$R1"
 PT=bin/panel-wiring-test.sh
 R3=$(printf '%s\n' '        if "vex-index" in att[0].get("run", ""):'); R3="$R3"$'\n'
 vimok r5 "REQ-REL-010-AC4 the panel wiring test's reviewed lines that name the tool (its checks and one mutation fixture) are admitted in bin/panel-wiring-test.sh only" $PT "$R3"

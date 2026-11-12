@@ -1890,7 +1890,7 @@ for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.
 done
 # the real tree: the scripts the real release workflow runs are in its set
 cbx list --commit HEAD --repo "$root" || true; rl=$(cat "$work/cb.out")
-for f in bin/patch-decide.py $AG/bin/auditor-signed-commit.py $AG/bin/auditorlib/__init__.py $AG/bin/auditorlib/signed_commit.py bin/chain-verify.py bin/chain-bytes-sha.py; do
+for f in bin/chain-verify.py bin/chain-bytes-sha.py; do
   grep -F -q "  $f" <<< "$rl" && ok "AC6 bytes: the real chain set holds $f" || bad "AC6 bytes: the real chain set lacks $f"
 done
 rcg checkout -q -b gone "$C1"; printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"},{"path":"bin/gone.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
@@ -2205,7 +2205,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=797
+EXPECT=793
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

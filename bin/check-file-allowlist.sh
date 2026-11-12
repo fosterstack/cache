@@ -30,7 +30,7 @@ ALLOW_PATTERNS=(
   '^docs/[A-Za-z0-9._-]+\.json$'
 
   # Build, lint, scan and release configuration.
-  '^\.(gitignore|golangci\.yml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
+  '^\.(gitignore|golangci\.yml|grype\.yaml|ko\.yaml)$'
 
   # CI/CD. Note these are ALSO gated in autoMode soft_deny — the allowlist
   # says a workflow file may live here, not that it may change freely.
@@ -105,14 +105,12 @@ ALLOW_PATTERNS=(
   '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-test\.sh$'
+  '^bin/dependabot-screen\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
   '^bin/scout-selfcheck\.py$'
-  '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
-  '^bin/scout-older-versions(\.sh|-test\.sh)$'
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
-  '^bin/release-patch-wiring-test\.sh$'
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'

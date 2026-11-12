@@ -68,7 +68,7 @@ CHAIN_JOBS = ["build", "sign", "rebuild", "sign-rebuild", "check", "sign-check",
 # the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
 TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\[0-9\]\+\)\?\$ \]\] \|\| '
            r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rcN" >&2; exit 1; \}')
-RC_IF = "${{ !contains(github.ref_name, '-') }}"   # every step after release-verify: a release candidate (a tag with a hyphen) ends after release-verify
+RC_IF = "${{ !contains(github.ref_name, '-') }}"   # the release job's own if: a release candidate (a tag with a hyphen) ends after the verify job
 VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order, nothing else (PROPOSED: stage-start takes --rekor-stub for provenance)
     TAGLINE,
     r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" --out policy\.json',
@@ -307,10 +307,8 @@ def stage(path):
             kinds.append("RE:" + r.split()[-1].split("/")[0][len("witness-"):])
         else:
             bad.append("a step that is none of checkout, install, download, witnessed or upload: %r" % (r or s.get("name")))
-        want_if = RC_IF if kinds and kinds[-1][:2] in ("W:", "RE") and kinds[-1] not in ("W:release-verify", "RE:release-verify") else None
-        if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
-            bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
-                       % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
+        if len(kinds) > nk and "if" in s:   # only a step that was classified is judged; the job-level if skips the whole job for a release candidate
+            bad.append("step %r must carry no if (the job-level if %s ends a release candidate before any step)" % (r or u, RC_IF))
     want = ["checkout"] + ["install:" + t for t in INSTALLS]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]

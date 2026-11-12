@@ -73,7 +73,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "15c886f0ea9d4dc9e00465ab710448c075e4f43b251a75d8d3a45c0809d07b66",
+      "sha256": "dc85ffcd9d6c3d9d87c5c3279c8502900d3ebb74b3dfd53f03997859ecd9f7c6",
       "tools": [
         "at",
         "aws",
@@ -100,13 +100,6 @@
           "rule": "deny",
           "line": "  [ \"$got\" = \"$SUM\" ] || pipeline_fail \"${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner\"",
           "line_sha256": "9f7919497d8fd256779d60755071eb60aebbee18846b7523a220c2d4aa169370",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    [ \"$TOOL\" = docker-scout ] || SCOUT_VER=\"${TOOL#docker-scout-}\"",
-          "line_sha256": "8836e172326e4cd0efaa0f586ca851977c876876c95f642b8e9120ec577a589f",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -2649,7 +2642,7 @@
     },
     {
       "path": "bin/pack-govulncheck.sh",
-      "sha256": "8a982c3a166e9603f68fad21ede4942242ed785c6be5ca76c80924f0800722eb",
+      "sha256": "75cd58c848a72ca5277270795de1291c3878d8b6d143104d6cbe3269801cba0b",
       "tools": [
         "install",
         "mkdir"

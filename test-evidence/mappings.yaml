@@ -440,9 +440,9 @@ mappings:
   - ac: REQ-REL-004-AC10
     evidence:
       - { type: inspection, ref: "Verified by reviewer inspection; there is no coded check." }
-      - { type: inspection, ref: "The guard before every first use of skopeo, in these 3 jobs, spelled the same in each:" }
+      - { type: inspection, ref: "The guard before every first use of skopeo, in these 2 jobs, spelled the same in each:" }
       - { type: inspection, ref: "command -v skopeo > /dev/null || { echo \"::error::skopeo is not on this runner image\"; exit 1; }" }
-      - { type: inspection, ref: "auditor.yml: audit. main-candidate-rescan.yml: vex-attach, scout-root-cause." }
+      - { type: inspection, ref: "auditor.yml: audit. main-candidate-rescan.yml: vex-attach." }
       - { type: inspection, ref: "The scan and panel jobs that scan the candidate read a tar made by bin/layout-archive.sh and use no skopeo." }
       - { type: inspection, ref: "No job installs skopeo. The job token reaches docker login only through env: GH_TOKEN," }
       - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
@@ -638,8 +638,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }   # requires the rescan's Scout self-check (real Scout, real VEX)
-      - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
-      - { type: shell-test, ref: "bin/scout-older-versions-test.sh" }
   - ac: REQ-SCAN-005-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-labels-test.sh" }
@@ -774,7 +772,6 @@ mappings:
   - ac: REQ-REL-009-AC1
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-009-AC2
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
@@ -784,7 +781,6 @@ mappings:
   - ac: REQ-REL-009-AC8
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-009-AC11
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
@@ -797,13 +793,6 @@ mappings:
   - ac: REQ-REL-009-AC3
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
-  - ac: REQ-REL-009-AC5
-    evidence:
-      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
-  - ac: REQ-REL-009-AC10
-    evidence:
-      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-009-AC6
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
@@ -811,7 +800,6 @@ mappings:
   - ac: REQ-REL-009-AC13
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
-      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-010-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
@@ -1058,7 +1046,6 @@ mappings:
       - { type: shell-test, ref: "bin/chain-verify-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
-      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
   - ac: REQ-CHAIN-002-AC1
     evidence:
@@ -1373,7 +1360,6 @@ mappings:
   - ac: REQ-CHAIN-006-AC10
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
-      - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
   - ac: REQ-CHAIN-006-AC11
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }

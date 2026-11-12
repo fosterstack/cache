@@ -70,7 +70,7 @@
 #       --out hostile-results.json` and an upload of the artifact `hostile-results`. Job `hostile-verdict` (needs hostile-verify;
 #       permissions {contents: read}) downloads that artifact and runs `python3 bin/chain-verify.py hostile-verdict
 #       hostile-results/hostile-results.json`. No hostile-results*.json may be a file of the repository tree (it must come from
-#       the run). Every dry-run-gated job (the release caller, the `decide` tag job) has an `if:` that has the conjunct
+#       the run). Every dry-run-gated job (the release caller, the promotion job) has an `if:` that has the conjunct
 #       `!inputs.dry-run` and no `||`, so a dry run neither tags nor publishes.
 #   No throwaway caller workflow exists any more (the sixth case is not a runtime case); this test makes no exception for one and has no
 #       environment-variable bypass: a hostile step that reads a record named hostile-caller is a finding of the wiring judge.
@@ -97,7 +97,7 @@
 #   chain-verify.py hostile-verdict RESULTS.json   (the REAL script is run here; there is no inline copy of it): the five attempts
 #       must be refused with their own stage and cause, AND positive_control must be accepted. The hostile step's two material
 #       functions write the transcript line (the code contains `transcript:` twice).
-# Modelled on: this repo's bin/release-patch-wiring-test.sh (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
+# Modelled on: this repo's bin/chain-release-shape.py (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
 # verifier's refusal is its exit code and message, not a field the attacker writes); the spike evidence
 # 2026-10-09-harness-witness-spikes-a-c.md:83-100 (the five ways a Build step reaches the signing identity).
 set -euo pipefail
@@ -621,7 +621,6 @@ else:
         BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
         if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build job must carry `if: %s` (else a dry run skips it, and with it sign and the hostile jobs, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
         if need(bj): bad.append("the build job needs nothing (admission is Build's first step, not a job): %r" % need(bj))
-        if "decide" not in jobs: bad.append("release.yml has no `decide` tag job to gate (the patch-tag job must not run in a dry run)")
 # Release makes its policy in its stage file or, since PR 4 (every Release step is a committed script under Witness), in its first step, bin/release-verify.sh
 cands = [os.path.join(root, ".github/workflows/stage-promote.yml"), os.path.join(root, "bin/release-verify.sh")]
 if not os.path.exists(cands[0]): bad.append("stage-promote.yml missing (Release makes its policy there or in bin/release-verify.sh)")
@@ -676,11 +675,6 @@ EOF
   { cat <<EOF
 on: {workflow_dispatch: {inputs: {dry-run: {type: boolean}}}}
 jobs:
-  decide:
-    if: \${{ github.ref == 'refs/heads/main' && !inputs.dry-run }}
-    runs-on: ubuntu-24.04
-    steps:
-      - run: echo tag
   build:
     if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
@@ -1128,7 +1122,7 @@ d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'pu
     uses: ./.github/workflows/stage-build.yml" "    uses: ./.github/workflows/stage-build.yml"; wexpect caught "wiring: the build job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
 d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build:
 " "  build:
-    needs: decide
+    needs: sign
 "; wexpect caught "wiring: the build job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
 d=$(mk w_buildtagonly); pymut "$(rel "$d")" "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true" "startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the build gate is the tag test alone (a dry run on a branch would never run)" "$d"
 d=$(mk w_hostileold); pymut "$(rel "$d")" "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')" "inputs.dry-run"; wexpect caught "wiring: the build call passes the bare dry-run input (null on a tag push; the hostile step must run on an rc-tag push only): step-8 SF-5" "$d"
@@ -1164,10 +1158,10 @@ d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key
 d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr /tmp/mint_sign_cert.err" "--stderr /tmp/other.err"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
 d=$(mk w_other); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  patch-notes:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
+t = open(sys.argv[1]).read() + "  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: any other job (patch-notes) without the dry-run gate still runs in a dry run" "$d"
+wexpect caught "wiring: any other job (extra) without the dry-run gate still runs in a dry run" "$d"
 d=$(mk w_okjobs); python3 - "$(rel "$d")" <<'PY'
 import sys
 t = open(sys.argv[1]).read() + "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  check:\n    needs: build\n    uses: ./.github/workflows/stage-verify.yml\n"
@@ -1175,9 +1169,8 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect ok "wiring: the rebuild and check stages run in a dry run (allowlist: build, sign, rebuild, check, hostile-*)" "$d"
 d=$(mk w_tracked); echo '{"attempts":[]}' > "$d/hostile-results.json"; wexpect caught "wiring: a hostile-results.json is checked into the tree" "$d"
-d=$(mk w_nodry); sed -i.bak 's/if: .*!inputs.dry-run }}$/if: true/' "$(rel "$d")"; wexpect caught "wiring: the release job (or the tag job) still runs in a dry run" "$d"
-d=$(mk w_nodrydecide); sed -i.bak "s/ \&\& !inputs.dry-run//" "$(rel "$d")"; wexpect caught "wiring: the decide (tag) job is not gated by !inputs.dry-run" "$d"
-d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run }}/!inputs.dry-run || true }}/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
+d=$(mk w_nodry); sed -i.bak "s/if: .*!inputs.dry-run && startsWith(github.ref, 'refs\/tags\/v') }}\$/if: true/" "$(rel "$d")"; wexpect caught "wiring: the release job still runs in a dry run" "$d"
+d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run \&\& startsWith/!inputs.dry-run || true \&\& startsWith/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
 d=$(mk w_noscript); rm "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile script is missing" "$d"
 d=$(mk w_missatt); sed -i.bak '/^attempt_read_sign_key$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: one of the attempts is never called" "$d"
 d=$(mk w_missother); sed -i.bak '/^attempt_forge_provenance$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the forge attempt is never made" "$d"
@@ -1239,10 +1232,10 @@ wexpect caught "wiring: a hostile-* named job with write permission" "$d"
 d=$(mk w_notrans); sed -i.bak 's/# transcript: //' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the material attempts do not write a transcript line" "$d"
 d=$(mk w_nogatedecide2); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("&& !inputs.dry-run", "&& inputs.dry-run == false", 1)
+t = open(sys.argv[1]).read().replace("!inputs.dry-run && startsWith", "inputs.dry-run == false && startsWith", 1)
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: the tag job's gate is a differently-written condition, not the exact !inputs.dry-run conjunct" "$d"
+wexpect caught "wiring: the promotion job's gate is a differently-written condition, not the exact !inputs.dry-run conjunct" "$d"
 # ---- round 6: key allowlists, dry-run and tag gates, Release's policy step ---------------------------------------------------
 d=$(mk w_jobenv); pymut "$(rel "$d")" "    needs: sign
     runs-on: ubuntu-24.04
@@ -1454,7 +1447,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=283
+EXPECT=282
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

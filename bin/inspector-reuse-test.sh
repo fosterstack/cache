@@ -1282,9 +1282,9 @@ else:
     job, scan_name, marker = "panel-inspector", "Amazon Inspector every image", None
     perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
              "vex-attach": {"contents": "read", "packages": "write"}, "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read", "packages": "read"},
-             "scout-root-cause": {"contents": "read", "packages": "write"}, "panel-inspector": {"contents": "read", "id-token": "write"},
+             "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},
-             "scout-older-versions": {"contents": "read"}, "manifests": None, "rescan": {"contents": "read", "issues": "write", "packages": "read"}}
+             "manifests": None, "rescan": {"contents": "read", "issues": "write", "packages": "read"}}
 # the triggers, exactly: a PR's saved entry is never restored by a main or tag run (the cache scope is the ref)
 if d.get("on") != triggers:
     bad.append("the workflow triggers changed: %s" % json.dumps(d.get("on")))

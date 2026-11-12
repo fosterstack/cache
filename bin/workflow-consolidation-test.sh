@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
-# The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
-# own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
-# both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
-# copy must be caught.
+# The ratified workflow consolidation (owner, Oct 2): go-freshness.yml keeps the freshness check on its daily schedule (and on a
+# dispatch) and the weekly cron of persona-uat. The real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -16,47 +14,16 @@ bad = []
 crons = [c.get("cron") for c in (d.get("on") or {}).get("schedule") or []]
 daily, weekly = "23 6 * * *", "43 6 * * 1"
 if sorted(crons) != sorted([daily, weekly]):
-    bad.append("schedules are not exactly the daily freshness cron and the weekly mutation cron: %s" % crons)
+    bad.append("schedules are not exactly the daily freshness cron and the weekly persona-uat cron: %s" % crons)
 if "workflow_dispatch" not in (d.get("on") or {}):
     bad.append("no workflow_dispatch")
-jobs = d.get("jobs") or {}
-m, c = jobs.get("mutation"), jobs.get("check")
-if not m or m.get("name") != "mutation":
-    bad.append("no mutation job named mutation")
+c = (d.get("jobs") or {}).get("check")
 if not c:
     bad.append("no freshness check job")
-if m and c:
-    mi, ci = str(m.get("if", "")).replace(" ", ""), str(c.get("if", "")).replace(" ", "")
-    if "github.event.schedule=='%s'" % weekly.replace(" ", "") not in mi or "github.event_name=='workflow_dispatch'" not in mi:
-        bad.append("the mutation job is not guarded to the weekly schedule (or dispatch)")
+else:
+    ci = str(c.get("if", "")).replace(" ", "")
     if "github.event.schedule=='%s'" % daily.replace(" ", "") not in ci or "github.event_name=='workflow_dispatch'" not in ci:
         bad.append("the freshness check is not guarded to the daily schedule (or dispatch)")
-    if not any("gremlins" in (s.get("run") or "") for s in m.get("steps") or []):
-        bad.append("the mutation job does not run gremlins")
-    import re as _re
-    # EVERY `go install` target, one by one: module@<full commit> (a tag, a branch, @latest or no version fails). The run
-    # text is split into words the way the shell splits them (escapes and quotes undone: g\o is go), command by command.
-    import shlex
-    targets, unparsed = [], []
-    for st in m.get("steps") or []:
-        lx = shlex.shlex(st.get("run") or "", posix=True, punctuation_chars=True)
-        lx.whitespace_split = True
-        lx.commenters = "#"
-        try:
-            words = list(lx)
-        except ValueError:
-            unparsed.append(st.get("name")); continue
-        for i in range(len(words) - 1):
-            if words[i].rsplit("/", 1)[-1] == "go" and words[i + 1] == "install":
-                rest = [w for w in words[i + 2:] if not w.startswith("-")]
-                targets.append(rest[0] if rest else "")
-    if unparsed or not targets or not all(_re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", t) for t in targets):
-        bad.append("a go install in the mutation job is not pinned to a full commit: %s %s" % (targets, unparsed))
-if os.path.exists(os.path.join(root, ".github/workflows/mutation.yml")):
-    bad.append("mutation.yml still exists")
-doc = open(os.path.join(root, "docs/quality/mutation.md")).read()
-if "workflows/go-freshness.yml" not in doc or "workflows/mutation.yml" in doc:
-    bad.append("docs/quality/mutation.md does not link to go-freshness.yml")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -78,19 +45,9 @@ PY
 }
 J='d["jobs"]'
 case_ real                    ok  ""
-case_ mutation-daily          bad "d['on']['schedule'] = [{'cron': '23 6 * * *'}]"
-case_ mutation-unguarded      bad "$J['mutation'].pop('if')"
+case_ weekly-cron-gone       bad "d['on']['schedule'] = [{'cron': '23 6 * * *'}]"
 case_ check-unguarded         bad "$J['check'].pop('if')"
 case_ no-dispatch             bad "d['on'].pop('workflow_dispatch')"
-case_ mutation-renamed        bad "$J['mutation']['name'] = 'mutation testing'"
-case_ no-gremlins             bad "$J['mutation']['steps'] = [s for s in $J['mutation']['steps'] if 'gremlins' not in (s.get('run') or '')]"
-case_ gremlins-by-tag          bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('@e05b1d47b8c55748e50abc28ff6b132c536bacca', '@latest')"
-case_ second-install-by-tag    bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = 'go install github.com/x/y@latest; ' + s['run']"
-case_ install-no-version      bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\ngo install github.com/x/y'"
-case_ escaped-go-by-tag        bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\ng\\\\o install github.com/x/y@v0.6.0'"
-case_ quoted-go-by-tag        bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\n\\\"go\\\" install github.com/x/y@v0.6.0'"
-case_ full-path-go-by-tag     bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\n/usr/local/go/bin/go install github.com/x/y@main'"
-case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if']; $J['mutation']['if'], $J['check']['if'] = b, a"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml and requirements.yml (REQ-REL-008-AC2). Every moved job

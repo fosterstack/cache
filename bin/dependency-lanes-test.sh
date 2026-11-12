@@ -149,7 +149,7 @@ elif kind == "automerge":
         bad.append("checks out the PR")
     nonmajor = "steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'"
     # REQ-DEP-003-AC2: a non-major whose release notes say breaking/deprecat is screened by main's own
-    # reviewer script (same code that decides who the reviewer reads), before any arming
+    # reviewer (through bin/dependabot-screen.sh, fetched from main), before any arming
     scr = [i for i, s in enumerate(steps) if s.get("id") == "screen"]
     if len(scr) != 1:
         bad.append("no single screen step for flagged non-majors")
@@ -157,17 +157,20 @@ elif kind == "automerge":
         st, sr = steps[scr[0]], steps[scr[0]].get("run") or ""
         if "continue-on-error" in st or "if" in st:
             bad.append("the screen step is conditional or can fail silently")
-        if "<<'PY'" not in sr or 'os.environ["PR_BODY"]' not in sr or ">> \"$GITHUB_OUTPUT\"" not in sr:
-            bad.append("the screen is not a quoted heredoc that reads PR_BODY from env and writes flagged= to GITHUB_OUTPUT")
-        if re.search(r"https?://|\bgh\b|contents/", sr):
-            bad.append("the screen downloads something (a downloaded script is refused by the pin checker, handoff 0094)")
+        if sr.strip() != 'bash "${RUNNER_TEMP}/dependabot-screen.sh" >> "$GITHUB_OUTPUT"':
+            bad.append("the screen is not exactly the wrapper run with bash, its output going to GITHUB_OUTPUT")
+        fetch = [r for _, r in runs(job) if "ref=main" in r]
+        if len(fetch) != 1 or "for f in bin/dependabot-screen.sh bin/dependabot-reviewer.py bin/required-check-guard.sh .github/policy/required-checks.json; do" not in fetch[0]:
+            bad.append("one step must fetch the wrapper, the reviewer, the guard and the list from main (the workflow checks out nothing)")
+        if len(scr) == 1 and fetch and not any("ref=main" in r for _, r in runs(job)[:scr[0]]):
+            bad.append("the screen runs before main's copies are fetched")
         if "${{" in sr:
             bad.append("the screen interpolates an expression into a script (pass it by env)")
         if "github.event.pull_request.body" not in str((st.get("env") or {}).get("PR_BODY", "")):
             bad.append("the screen does not take the PR body from env PR_BODY")
     if any("${{" in r for _, r in runs(job)):
         bad.append("an expression is interpolated into a script (the metadata outputs go through env, quoted)")
-    guard = [i for i, (s, r) in enumerate(runs(job)) if "required-check-guard.sh" in r]
+    guard = [i for i, (s, r) in enumerate(runs(job)) if 'bash "${RUNNER_TEMP}/required-check-guard.sh"' in r]
     arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r) and "--disable-auto" not in r]
     if len(arm) != 1:
         bad.append("no single squash auto-merge step")
@@ -260,9 +263,10 @@ case_ automerge $A automerge-real          ok  ""
 case_ automerge $A automerge-target        bad "d['on'] = 'pull_request_target'"
 case_ automerge $A automerge-any-author    bad "d['jobs']['auto-merge']['if'] = 'true'"
 case_ automerge $A automerge-majors-too    bad "[s.pop('if', None) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
-case_ automerge $A automerge-no-guard      bad "$as_[:] = [s for s in $as_ if 'required-check-guard.sh' not in (s.get('run') or '')]"
-case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if 'required-check-guard.sh' in (s.get('run') or '')]"
-case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'required-check-guard.sh' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
+case_ automerge $A automerge-no-guard      bad "$as_[:] = [s for s in $as_ if 'bash \"\${RUNNER_TEMP}/required-check-guard.sh\"' not in (s.get('run') or '')]"
+case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if 'bash \"\${RUNNER_TEMP}/required-check-guard.sh\"' in (s.get('run') or '')]"
+case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'bash \"\${RUNNER_TEMP}/required-check-guard.sh\"' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
+case_ automerge $A automerge-no-fetch      bad "$as_[:] = [s for s in $as_ if 'ref=main' not in (s.get('run') or '')]"
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('select(.major or .flagged)', 'select(.major)')) for s in $rs if s.get('id') == 'candidates']"
@@ -277,7 +281,6 @@ case_ automerge $A automerge-flagged-arms   bad "[s.__setitem__('if', \"steps.me
 case_ automerge $A automerge-arm-any-head   bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$HEAD_SHA\" ', '')) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-no-screen      bad "$as_[:] = [s for s in $as_ if s.get('id') != 'screen']"
 case_ automerge $A automerge-screen-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if s.get('id') == 'screen']"
-case_ automerge $A automerge-screen-fetches bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set -euo pipefail\\necho contents/bin/dependabot-reviewer.py')) for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-summary-inline bad "[s.__setitem__('run', s['run'].replace('\${DEPENDENCY_NAMES}', '\${{ steps.meta.outputs.dependency-names }}')) for s in $as_ if 'Major bump' in (s.get('run') or '')]"
 case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($as_) if s.get('id') == 'screen'][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
@@ -379,51 +382,24 @@ sys.exit(1 if bad else 0)
 PY
 then pass=$((pass+1)); echo "PASS disarm-only-an-unsupported-arm"; else failn=$((failn+1)); echo "FAIL disarm-only-an-unsupported-arm"; fi
 
-# REQ-DEP-003-AC2: the screen's heredoc IS the reviewer's rule, byte for byte: the workflow's code must equal what is generated from
-# bin/dependabot-reviewer.py (imports, the patterns, _Text, _drop_targets, is_flagged), so the two lanes cannot drift apart.
-if python3 - "$root" <<'PY'
-import ast, os, sys, yaml
-root = sys.argv[1]
-def heredoc(py_path):
-    src = open(py_path).read(); lines = src.splitlines(); tree = ast.parse(src); chunks = []
-    for node in tree.body:
-        name = None
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in {"_FLAG", "_MDADJ", "_MDEXOTIC", "_MDLINK", "_CHARREF", "_MDLABEL", "_MDDEF"}: name = 1
-        elif isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in ("_Text", "_drop_targets", "is_flagged"): name = 1
-        if name: chunks.append("\n".join(lines[node.lineno - 1:node.end_lineno]))
-    return "import html, os, re\nfrom html.parser import HTMLParser\n" + "\n".join(chunks) + '\nprint("flagged=" + str(is_flagged(os.environ["PR_BODY"])).lower())\n'
-d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
-run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if s.get("id") == "screen"][0]
-got = run.split("<<'PY'\n", 1)[1].rsplit("PY", 1)[0]
-want = heredoc(os.path.join(root, "bin/dependabot-reviewer.py"))
-print("screen heredoc == generated from the reviewer: " + ("ok" if got == want else "DIFFERS"))
-sys.exit(0 if got == want else 1)
-PY
-then pass=$((pass+1)); echo "PASS screen-is-the-reviewers-code"; else failn=$((failn+1)); echo "FAIL screen-is-the-reviewers-code"; fi
-
-# REQ-DEP-003-AC2: the screen's heredoc and the reviewer's is_flagged are the same rule. Run the workflow's
-# own code against a corpus (the real Dependabot bodies and written edge cases) and compare.
-if python3 - "$root" <<'PY'
-import importlib.util, json, os, subprocess, sys, yaml
-root = sys.argv[1]
-d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
-run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if s.get("id") == "screen"][0]
-spec = importlib.util.spec_from_file_location("reviewer", os.path.join(root, "bin/dependabot-reviewer.py"))
-r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
-corpus = [json.load(open(os.path.join(root, "test-evidence/dependabot-reviewer", "pr-%d.json" % n)))["body"] for n in (99, 91, 124, 90, 400)]
-corpus += ["", "Bumps a from 1.0.0 to 1.1.0.", "x <details>Breaking</details>", "breaking <details>fine</details>",
-           "<DETAILS>DEPRECATED</DETAILS>", "<details><summary>a</summary><details>nested deprecates</details></details>",
-           "<details>unclosed breaking", "<details>break<!-- > -->ing</details>", "<details>depre<span title=\">\">cat</span>ed</details>", "<code>&lt;breaking&gt;</code>", "<details><!-- </details> -->Breaking change<!-- <details> --></details>", "```\n<details>deprecated</details>\n```", "plain text, nothing", "**Break**ing change", "Depre*cat*ed", "[Break](https://example.invalid)ing", "![break*ing*](https://e.invalid/i.png)", "**Fixes** a [typo](https://e.invalid)", "[Break][ref]ing", "[Break](u (a)b)ing", "[Break](https://e.invalid/a(b)/c)**ing**", "[Break][ref]**ing**\n\n[ref]: https://e.invalid", "[Break](u \"a)b\")ing", "[Break](unterminated", "[Break][ref\\]*x]**ing** change\n\n[ref\\]*x]: https://e.invalid", "[Break](<#a)/b>)**ing** change", "[Break][r&#93; x]**ing**", "[Break][r\\] x]**ing**", "[Break](a&#41;b)<em>ing</em>", "[Break](a&#0041;b)<em>ing</em>", "[Break](a&#X29;b)<em>ing</em>", "[Break](a&#x0029;b)<em>ing</em>", "[Break](a&#41b)<em>ing</em>", "See [the docs](https://e.invalid/a(b)/c \"t\") and (parens)", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
+# REQ-DEP-003-AC2: the screen is bin/dependabot-screen.sh over the reviewer's is_flagged, run as the workflow runs it: the wrapper and the reviewer copied into
+# one folder, the body in PR_BODY, flagged=... on stdout. Flagged and clean bodies, and an empty one.
+if python3 - "$root" "$work" <<'PY'
+import os, shutil, subprocess, sys
+root, work = sys.argv[1], sys.argv[2]
+d = os.path.join(work, "screen"); os.makedirs(d)
+for f in ("dependabot-screen.sh", "dependabot-reviewer.py"):
+    shutil.copy(os.path.join(root, "bin", f), d)
 bad = []
-for body in corpus:
-    p = subprocess.run(["bash", "-c", run], env={**os.environ, "PR_BODY": body, "GITHUB_OUTPUT": "/dev/stdout"}, capture_output=True, text=True)
-    got = p.stdout.strip() == "flagged=true"
-    if p.returncode != 0 or got != r.is_flagged(body):
-        bad.append((body[:40], p.stdout.strip(), r.is_flagged(body), p.stderr[-80:]))
-print("screen heredoc == reviewer is_flagged on %d bodies" % len(corpus) if not bad else "DISAGREE: %s" % bad)
+for body, want in (("<details>Breaking change</details>", "flagged=true"), ("**Break**ing change", "flagged=true"), ("This is deprecated", "flagged=true"),
+                   ("Bumps a from 1.0.0 to 1.1.0.", "flagged=false"), ("", "flagged=false")):
+    p = subprocess.run(["bash", os.path.join(d, "dependabot-screen.sh")], env={**os.environ, "PR_BODY": body}, capture_output=True, text=True)
+    if p.returncode != 0 or p.stdout.strip() != want:
+        bad.append((body[:30], p.returncode, p.stdout.strip(), p.stderr[-80:]))
+print("DISAGREE: %s" % bad if bad else "screen wrapper ok")
 sys.exit(1 if bad else 0)
 PY
-then pass=$((pass+1)); echo "PASS screen-agrees-with-reviewer"; else failn=$((failn+1)); echo "FAIL screen-agrees-with-reviewer"; fi
+then pass=$((pass+1)); echo "PASS screen-wrapper-flags-the-reviewers-way"; else failn=$((failn+1)); echo "FAIL screen-wrapper-flags-the-reviewers-way"; fi
 
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

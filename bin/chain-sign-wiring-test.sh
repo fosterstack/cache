@@ -87,7 +87,7 @@ R_PRINTF_REC = r"printf '%s' \"\$RECORDS\" > rebuild-records\.json"
 R_PRINTF_CREC = r"printf '%s' \"\$RECORDS\" > check-records\.json"
 R_PRINTF_CRECA = r"printf '%s' \"\$RECORDS_ARM64\" > check-records-arm64\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
-R_INSTALL_AWS = r"bash bin/install-scanner\.sh aws-cli"      # KA-2 p4 group 4: the pinned aws CLI, installed right after cosign in the three jobs that reach KMS
+R_INSTALL_AWS = r"bash bin/install-scanner\.sh aws-cli"      # KA-2 p4 group 4: the pinned aws CLI, installed in the three jobs that reach KMS
 R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
 # the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
@@ -106,13 +106,13 @@ EXPECT_STEPS = {
                ("upload", "signed-witness-build", "signed/witness-build")],
     "sign-rebuild": [("checkout",)]
             + [("download", "witness-rapk-" + r, "witness-rapk-" + r) for r in RUNNERS]
-            + [("download", "witness-rebuild", "witness-rebuild"), ("install", "cosign"), ("install", "aws-cli"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
+            + [("download", "witness-rebuild", "witness-rebuild"), ("install", "aws-cli"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
             + [("upload", "signed-witness-rapk-" + r, "signed/witness-rapk-" + r) for r in RUNNERS]
             + [("upload", "signed-witness-rebuild", "signed/witness-rebuild")],
     # REQ-REL-011-AC1 (cache#606): the third call signs the Check jobs' records; Sign receives the records and the check-results the records name, nothing else
     "sign-check": [("checkout",), ("download", "witness-check", "rec-check"), ("download", "witness-check-arm64", "rec-arm64/witness-arm64"),
                    ("download", "check-results", "artifacts/check-results"), ("download", "check-results-arm64", "artifacts/check-results-arm64"),
-                   ("install", "cosign"), ("install", "aws-cli"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
+                   ("install", "aws-cli"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
                    ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64")],
 }
 R_SIGN = r"bash bin/with-aws-token\.sh sign --check --signer cosign --digests digests\.json --items witness-build/items\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
@@ -280,7 +280,7 @@ def frozen_files(base, bad):
     return frozen
 
 # BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): pinned by sha256
-BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".grype.yaml", ".ko.yaml", ".gremlins.yaml", ".githooks/*")
+BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".grype.yaml", ".ko.yaml", ".githooks/*")
 def build_config(base, bad):
     """Every build configuration file is listed with its sha256 in .github/policy/build-config-files.json; a changed, missing or unlisted
     one is a finding (rule 61: goreleaser and the Dockerfiles are removed, so there is no file whose keys need a closed set)."""
@@ -770,8 +770,6 @@ jobs:
         with:
           name: witness-rebuild
           path: witness-rebuild
-      - name: install the signing tool (pinned by checksum)
-        run: bash bin/install-scanner.sh cosign
       - name: install the aws CLI (pinned by checksum)
         run: bash bin/install-scanner.sh aws-cli
       - name: write the digest list to a file
@@ -828,8 +826,6 @@ jobs:
         with:
           name: check-results-arm64
           path: artifacts/check-results-arm64
-      - name: install the signing tool (pinned by checksum)
-        run: bash bin/install-scanner.sh cosign
       - name: install the aws CLI (pinned by checksum)
         run: bash bin/install-scanner.sh aws-cli
       - name: write the digest list to a file
@@ -922,9 +918,7 @@ caught "WIT3 the whole signed directory uploaded (only the named signed-witness-
 caught "WIT3 an unsigned record directory uploaded as a signed artifact" 'name: signed-witness-build\n          path: signed/witness-build\n' 'name: signed-witness-build\n          path: witness-build\n'
 caught "WIT3 cosign is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: cu''''rl -sL https://example.com/cosign -o /usr/local/bin/cosign'
 caught "WIT3 sign installs no cosign (the provenance and the records are signed through it)" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
-# ---- W1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-001-AC2, whose text lists Sign's steps with a Witness install and a Witness sign step and no step env, REQ-CHAIN-001-AC1, whose text says step env names come from the closed env_names list, and REQ-CHAIN-007-AC18): the signing steps carry exactly the three federation entries as step-level literals; sign-rebuild and sign-check install cosign
-caught "W1 sign-rebuild installs no cosign" '(?<=path: witness-rebuild\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
-caught "W1 sign-check installs no cosign" '(?<=path: artifacts/check-results-arm64\n)      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
+# ---- W1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-001-AC2, whose text lists Sign's steps with a Witness install and a Witness sign step and no step env, REQ-CHAIN-001-AC1, whose text says step env names come from the closed env_names list, and REQ-CHAIN-007-AC18): the signing steps carry exactly the three federation entries as step-level literals
 caught "KA-2 p4 group 4 sign installs no aws CLI (the pinned one the signing call needs)" '      - name: install the aws CLI \(pinned by checksum\)\n        run: bash bin/install-scanner.sh aws-cli\n' ''
 caught "W1 the staged-signing step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witness-sign-staged.sh' '        run: bash bin/witness-sign-staged.sh'
 caught "W1 the provenance step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/with-aws-token.sh sign --check' '        run: bash bin/with-aws-token.sh sign --check'
@@ -2951,7 +2945,7 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .github/ and bin/ of REPO (default: the real tree)
   local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
   # .github/ and bin/, plus the build configuration the build tooling reads outside them (pinned in .github/policy/build-config-files.json)
-  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .grype.yaml .ko.yaml .gremlins.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .grype.yaml .ko.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
 # a tracked file deleted in the working tree would make the copy silently partial: fail clearly instead (CI checks out every tracked file)
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
@@ -3436,7 +3430,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='fdf4947feee238a938d769d519e476be0b575e63e5d36f1d6aabb63a4506dbbf'
+FX_PIN='680f7b71775420876889e4a82cb7dd51331551941707892d8f084fa39817297f'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4996,7 +4990,6 @@ d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py"
 # release-assets.sh (release-postverify.sh holds no token). bin/witnessed.sh is bound for GH_TOKEN at exactly those two
 # places and for the secrets in Release. Every other name, place or script is refused.
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
-RCIF="if: \${{ !contains(github.ref_name, '\\''-'\\'') }}"
 for f in stage-sign stage-reproducibility stage-verify stage-build; do
   probe "sec_$f" "stored secret outside Release" "a stored secret (secrets.X_KEY) in a step env of $f.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/$f.yml"
 done
@@ -5009,9 +5002,9 @@ probe perm_apk "must hold exactly the permissions" "a write permission (packages
 probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
   "repl .github/workflows/stage-promote.yml '      packages: write\n      id-token: write\n    steps:' '      packages: write\n      id-token: write\n      attestations: write\n    steps:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
-  "repl .github/workflows/stage-promote.yml '      - name: release-sign under Witness\n        $RCIF\n        env:\n' '      - name: release-sign under Witness\n        $RCIF\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
+  "repl .github/workflows/stage-promote.yml '      - name: release-sign under Witness\n        env:\n' '      - name: release-sign under Witness\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
 probe apk_wrong_step "not in the closed secret list" "a secret that no row names on the publish step" \
-  "repl .github/workflows/stage-promote.yml '      - name: release-publish under Witness\n        $RCIF\n        env:\n' '      - name: release-publish under Witness\n        $RCIF\n        env:\n          OTHER_KEY: \${{ secrets.OTHER_KEY }}\n'"
+  "repl .github/workflows/stage-promote.yml '      - name: release-publish under Witness\n        env:\n' '      - name: release-publish under Witness\n        env:\n          OTHER_KEY: \${{ secrets.OTHER_KEY }}\n'"
 probe token_unlisted_script "not in the closed secret list" "DOCKERHUB_TOKEN bound to release-apks.sh (an unlisted script)" \
   "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"DOCKERHUB_TOKEN\",\"script\":\"bin/release-apks.sh\",\"why\":\"x\",\"file\":\".github/workflows/stage-promote.yml\",\"job\":\"release\"});[r.__setitem__(\"reads_env\",[\"RELEASE_KMS_KEY_REF\",\"DOCKERHUB_TOKEN\"]) for r in d[\"scripts\"] if r[\"path\"]==\"bin/release-apks.sh\"];json.dump(d,open(p,\"w\"))'"
 probe name_twice "listed twice" "the same name listed twice at one place" \
@@ -5025,7 +5018,7 @@ probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret inst
 probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
   "repl .github/workflows/stage-promote.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
-  "repl .github/workflows/stage-promote.yml '      - name: release-assets under Witness\n        $RCIF' '      - name: release-assets under Witness\n        if: \${{ !contains(github.ref_name, \"-\") && secrets.DOCKERHUB_TOKEN != \"\" }}'"
+  "repl .github/workflows/stage-promote.yml '      - name: release-assets under Witness\n' '      - name: release-assets under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
 
 # ---- Codex A r2 blocker 4 / r3 F4 (advisor): NO actions/setup-go anywhere; Go comes from the checksum-pinned `bash bin/install-scanner.sh go` line -------------
 # the stage grammar run on the REAL stage-build.yml (and on edited copies): the installer line is accepted, every use of setup-go is refused
@@ -5229,7 +5222,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2136
+EXPECT=2134
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
