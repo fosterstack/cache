@@ -1,7 +1,7 @@
 # Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: network. Never published.
 # The probe renders it into a temporary folder (@BUSYBOX@ is replaced there) and runs it sealed.
-# Any IPv4 route in /proc/net/route, or any IPv6 route in /proc/net/ipv6_route that is not on lo, means the namespace is open;
-# the control reads both tables, so a sandbox without one is a probe error, never a held wall.
+# Any IPv4 route in /proc/net/route, or any IPv6 route in /proc/net/ipv6_route that is not on lo, means the
+# namespace is open; the control reads both tables, so a sandbox without one is a probe error, never a held wall.
 package:
   name: probe-network
   version: 0.0.1
