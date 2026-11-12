@@ -2525,14 +2525,14 @@ class ProposalEvidence(unittest.TestCase):
             self.assertIsNotNone(R._valid_proposal(pr, self.root, None), text)
 
     def test_a_path_that_is_not_a_regular_file_in_the_checkout_is_refused(self):
-        os.symlink("/etc/hostname", os.path.join(self.root, "link.txt"))
+        os.symlink("top.txt", os.path.join(self.root, "link.txt"))
         for path in ("docs", "missing.txt", "docs/missing.md", "link.txt"):
             self.assertIsNone(self.ask(path), path)
 
     def test_a_path_that_leaves_the_root_or_is_absolute_is_refused(self):
         outside = os.path.join(self.root, "docs", "tracker.md")
-        for path in ("/etc/hostname", "/top.txt", outside, "../top.txt", "docs/../top.txt",
-                     "docs/../../etc/hostname", "./../top.txt"):
+        for path in ("/top.txt", outside, "../top.txt", "docs/../top.txt",
+                     "docs/../../top.txt", "./../top.txt"):
             self.assertIsNone(self.ask(path), path)
 
     def test_a_path_with_a_nul_byte_is_refused(self):
