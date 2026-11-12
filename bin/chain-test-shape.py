@@ -906,7 +906,7 @@ NS_SHA = {
     "bin/build-apk-helper.py": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
-    "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
+    "bin/chain-bytes-sha.py": "a26fdee306ab7e62ec3ffbc21c9578f205ca37e2e8978df2efc5a55e18442975",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
     "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
     "bin/chain-verify.py": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",

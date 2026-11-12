@@ -244,7 +244,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
+      "sha256": "a26fdee306ab7e62ec3ffbc21c9578f205ca37e2e8978df2efc5a55e18442975",
       "tools": [
         "at",
         "git"
@@ -823,7 +823,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "79c4dd3a911d3063721bf27d41bd7fc67253a22976df9d290144c4bc8ebf7898",
+      "sha256": "bab3e4bddf9b59e36611adc957cf8a3f52d03f14978d78890f74b094a932b677",
       "tools": [
         "env",
         "go",
