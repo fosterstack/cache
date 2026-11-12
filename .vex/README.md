@@ -45,7 +45,7 @@ release's own image digests — never edited by hand:
 | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement about this release's images, as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
 
 In other words: the CSAF file carries every OpenVEX statement; the Inspector file
-carries a rule only for each not_affected or fixed statement that names a package.
+carries one rule for each package a `not_affected` or `fixed` statement names.
 
 The Google VEX upload is a **preview feature** of Google Cloud
 (`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is
