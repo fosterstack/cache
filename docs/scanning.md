@@ -70,12 +70,12 @@ check them against the signed release manifest as described in
 | Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
 | Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
 | Docker Scout | none | Scout reads the statements attached to the image, not a file (see [Docker Scout](#docker-scout)) |
-| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per `not_affected` or `fixed` statement that names a package: `aws inspector2 create-filter`, one rule per call |
+| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per package a `not_affected` or `fixed` statement names: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
 The three files are generated from the same statements. The OpenVEX and CSAF files
 carry every statement; the Inspector file carries a rule only for each `not_affected`
-or `fixed` statement that names a package. Google applies
+or `fixed` statement, one rule for each package it names. Google applies
 whole-image statements only. [`.vex/README.md`](../.vex/README.md) has the detail.
 
 ## Suppression rules
@@ -88,12 +88,12 @@ statement**.
   our repository must cite the statement that governs it
   ([`.vex/README.md`](../.vex/README.md)), and the Inspector rules above are
   generated from the statements, never written by hand.
-- **Which statements become rules.** A `not_affected` or `fixed` statement that
-  names a package becomes a suppression rule. `affected` and `under_investigation`
+- **Which statements become rules.** A `not_affected` or `fixed` statement
+  becomes one suppression rule for each package it names. `affected` and `under_investigation`
   statements never do, and neither does a statement that names no package: those
   findings stay visible in your scanner.
 - **Scoped to what we shipped.** Each rule is scoped by the CVE, by the digests
-  of the release it was written for and by the package and version, so it does not
+  of the release it was written for and by the package, plus the version when the statement names one, so it does not
   hide the same CVE in a different image.
 - **Your own rules.** Put the statement ID in the rule's reason or comment, so a
   reviewer on your side can trace it back to our file the same way.
@@ -103,7 +103,7 @@ statement**.
 Docker Scout does not apply a VEX file you give it on the command line. The
 `--vex-location` option is accepted, but our statements are not applied on any Scout
 release we tested, from 1.9.3 through 1.26.0 (Docker's open report is <!-- pinned: upstream -->
-[docker/scout-cli#207](https://github.com/docker/scout-cli/issues/207)). Our
+[docker/scout-cli#207](https://github.com/docker/scout-cli/issues/207)). From v0.3.0 our <!-- pinned: historical -->
 releases attach the statements to each image instead, and
 [Using our VEX files](using-our-vex.md#docker-scout) gives the Scout command. We have not
 yet confirmed on a published release that Scout applies them, so read a Scout scan
