@@ -1808,8 +1808,8 @@
     {
       "file": "bin/acceptance-egress.sh",
       "form": "a system package install",
-      "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
-      "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
+      "key": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
+      "line": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
       "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     },
     {

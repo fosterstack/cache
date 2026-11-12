@@ -2087,7 +2087,7 @@ check python3 - "$root/.github/supply-chain-exceptions.json" "$root/bin/acceptan
 import hashlib, json, os, re, sys
 rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith("build-container install, advisor reading Oct 19: ")]
 assert len(rows) <= 1, rows
-line = "apk add --no-cache build-base linux-headers xz >/dev/null"
+line = "apk add --no-cache build-base=0.5-r3 linux-headers=6.6-r0 xz=5.8.3-r0 >/dev/null"
 h = hashlib.sha256(line.encode()).hexdigest()
 for r in rows:
     assert r["file"] == "bin/acceptance-egress.sh" and r["form"] == "a system package install" and r["key"] == r["line"] == h and "count" not in r and "context" not in r, r

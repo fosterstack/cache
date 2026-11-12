@@ -47,7 +47,7 @@ get_static_strace() {
   chmod 0777 "$TRACE_OUT"
   [ -n "$STRACE_SHA256" ] || fail "STRACE_SHA256 is not pinned; refusing to build the syscall tracer from unverified source (fail closed). Pin the published checksum of strace-${STRACE_VER}.tar.xz."
   docker run --rm -v "$TRACE_BIN":/out -e V="$STRACE_VER" -e SUM="$STRACE_SHA256" alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc sh -euc '
-    apk add --no-cache build-base linux-headers xz >/dev/null
+    apk add --no-cache build-base=0.5-r3 linux-headers=6.6-r0 xz=5.8.3-r0 >/dev/null
     cd /tmp
     wget -q -O "strace-${V}.tar.xz" "https://github.com/strace/strace/releases/download/v${V}/strace-${V}.tar.xz"
     echo "${SUM}  strace-${V}.tar.xz" | sha256sum -c -
