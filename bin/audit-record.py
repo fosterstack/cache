@@ -123,8 +123,9 @@ def dependabot_pull(pr):
 
 def bump_pull(head, pulls):
     """The one open pull request with this head sha, when Dependabot opened it (`gh api repos/R/commits/SHA/pulls`),
-    else None. The gate's check run belongs to the commit, so any other open pull request on it, or an item that
-    cannot be read, leaves the record rule in force."""
+    else None. The gate's check run belongs to the commit, so the record rule stays in force for any other open pull
+    request on it, for an item whose state (or, for an open item, head sha) cannot be read, and for a full page, which
+    GitHub may have cut."""
     if not isinstance(pulls, list) or len(pulls) >= 100:
         return None
     for p in pulls:

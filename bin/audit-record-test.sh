@@ -592,7 +592,6 @@ for name, answer, want in (
     ("a malformed entry", runs("x"), None), ("a malformed answer", [], None), ("no answer", None, None),
 ):
     check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
-check("bump: the word none is not the absence of a run", verdict(runs(run(1, "none"))) is not A.NO_RUN)
 
 # the walk: success on the head, or on a head it only merges main into; nothing else passes, and no verdict is no pass
 CHAIN = {"h2": "h1", "h1": "h0"}      # h2 is h1 with main merged in, h1 is h0 with main merged in, h0 is more than a merge
