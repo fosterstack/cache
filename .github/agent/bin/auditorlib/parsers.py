@@ -4,8 +4,9 @@ Each parser returns a list of findings keyed EXACTLY by (scanner, finding_id, pu
 verbatim as the scanner emits them, with the scanner-reported alias set attached.
 No normalization, no string surgery: a DEBIAN-CVE id is matched to a CVE only
 through OSV's own aliases, never by editing the string. A malformed report raises
-ParseError rather than guessing. (Round-2 design rule: code does only what is exact.)
+ParseError rather than guessing.
 """
+import functools
 import json, re
 from auditorlib import policy
 
@@ -21,7 +22,7 @@ def _load(path):
         raise ParseError("cannot load %s: %s" % (path, e))
 
 
-def _finding(scanner, fid, purl, aliases=(), package=None, fixed_version=None,
+def finding(scanner, fid, purl, aliases=(), package=None, fixed_version=None,
              severity=None, extra=None):
     return {
         "scanner": scanner,
@@ -39,7 +40,7 @@ PANEL_SCANNERS = ("grype", "scout", "inspector", "google")
 _PANEL = []
 
 
-def _panel_module():
+def panel_module():
     """bin/panel.py (the rescan's tally) is the one source of the fixed scanner/image matrix and the quorum; it is
     loaded from the same checkout rather than copied here. Unloadable = ParseError (fail closed)."""
     if not _PANEL:
@@ -57,25 +58,25 @@ def _panel_module():
 
 def panel_images():
     """The set of images the panel scans (every image any scanner is expected on)."""
-    return {i for imgs in _panel_module().EXPECTED.values() for i in imgs}
+    return {i for imgs in panel_module().EXPECTED.values() for i in imgs}
 
 
 def panel_expected(scanner, image):
     """Scanner-panel rule 1, from bin/panel.py: is `scanner` expected on `image`? (Google: linux/amd64 only.)"""
-    return image in _panel_module().EXPECTED.get(scanner, [])
+    return image in panel_module().EXPECTED.get(scanner, [])
 
 
-def _no_dup_pairs(pairs):
+def no_dup_pairs(pairs):
     out = {}
     for k, v in pairs:
         if k in out:
-            raise ParseError("panel verdict: the JSON key %r appears twice (the last would silently win)" % k)
+            raise ParseError("the JSON key %r appears twice (the last would silently win)" % k)
         out[k] = v
     return out
 
 
-def refuse_constant(name):
-    raise ParseError("panel verdict: %s is not valid JSON" % name)
+def refuse_constant(document, name):
+    raise ParseError("%s: %s is not valid JSON" % (document, name))
 
 
 def load_panel_verdict(path):
@@ -83,7 +84,8 @@ def load_panel_verdict(path):
     reader can see a different document from the one a stricter reader refuses. OSError for a missing file."""
     with open(path) as fh:
         try:
-            return json.load(fh, object_pairs_hook=_no_dup_pairs, parse_constant=refuse_constant)
+            return json.load(fh, object_pairs_hook=no_dup_pairs,
+                             parse_constant=functools.partial(refuse_constant, "panel verdict"))
         except RecursionError as e:
             raise ParseError("panel verdict: nested too deeply (%s)" % e)
 
@@ -102,13 +104,12 @@ _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")
 # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result; capped, and the same grammar the
 # unsettled-run counter keeps
 _ID = policy.FINDING_ID
-_NOCTL = r"[^\s\x00-\x1f\x7f"
 class _PurlGrammar:
     """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs (bin/panel.py
     purl_ok)."""
     @staticmethod
     def fullmatch(purl):
-        return True if _panel_module().purl_ok(purl) else None
+        return True if panel_module().purl_ok(purl) else None
 
 
 _PURL = _PurlGrammar
@@ -144,7 +145,7 @@ def _validate_panel_verdict(d):
     disjoint, known scanner names whose union is exactly the scanners expected there; counts are positive integers
     for exactly the scanners that ran; counts_for_day is the quorum. Each finding is complete, names a known image,
     and its seen_by (scanners that ran on THAT image), 'of' (how many ran there), 'unique' and 'status' agree."""
-    pm = _panel_module()
+    pm = panel_module()
     if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not isinstance(d.get("findings"), list):
         raise ParseError("panel verdict: no images object or findings array")
     # default deny: every level lists its keys, an unknown one is refused
@@ -196,7 +197,7 @@ def _validate_panel_verdict(d):
             if not _PURL.fullmatch(purl):
                 raise ParseError("panel verdict: finding %s on %s has a package URL that is not pkg:TYPE/..."
                                  % (f["id"], f["image"]))
-            name, ver = pm._purl_name_version(purl)
+            name, ver = pm.purl_name_version(purl)
             if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"],
                                                                                       f["version"])[2:]:
                 raise ParseError("panel verdict: finding %s on %s has a package URL for a different package or "
@@ -217,14 +218,14 @@ def _validate_panel_verdict(d):
                         and not (isinstance(rec["fixed_version"], str) and rec["fixed_version"]
                                  and _TEXT.fullmatch(rec["fixed_version"])))
                     or not isinstance(al, list) or len(set(map(str, al))) != len(al)
-                or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
+                    or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
                     or ("aliases" in rec and not al) or not isinstance(rec.get("known_exploited", True), bool)
                     or ("purl" in rec and not (isinstance(rec["purl"], str) and _PURL.fullmatch(rec["purl"])))):
                 raise ParseError("panel verdict: finding %s on %s has a malformed value in %s's details"
                                  % (f["id"], f["image"], sc))
             # that scanner's own package URL names the package and version the finding names
             if "purl" in rec:
-                name, ver = pm._purl_name_version(rec["purl"])
+                name, ver = pm.purl_name_version(rec["purl"])
                 if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"],
                                                                                           f["package"],
                                                                                           f["version"])[2:]:
@@ -289,7 +290,7 @@ def parse_panel(path, scanner):
         key = (f["id"], purl)
         rec = seen.get(key)
         if rec is None:
-            rec = seen[key] = _finding(scanner, f["id"], purl, (), f.get("package"), None, None,
+            rec = seen[key] = finding(scanner, f["id"], purl, (), f.get("package"), None, None,
                                        {"images": [], "version": f.get("version"), "by_image": {}})
         rec["extra"]["images"].append(f["image"])
         if mine.get("severity") and (rec["severity"] is None
@@ -302,11 +303,10 @@ def parse_panel(path, scanner):
         rec["aliases"] = sorted(set(rec["aliases"]) | set(mine.get("aliases") or []))
         rec["extra"]["by_image"][f["image"]] = {"seen_by": sorted(f["seen_by"]), "of": f["of"], "unique": f["unique"]}
     # What the tally recorded as HIDDEN by our published VEX for this scanner (its Inspector and Google results are
-    # filtered against the document, bin/panel.py): a carried
-    # statement must stay re-judgeable each run, so each entry is emitted as a finding flagged `carried` (REQ-AUD-2 AC7,
-    # REQ-AUD-13 AC7). It carries no package URL of its
-    # own (the tally keeps package and version); the run resolves it to the carried statement's scope, or drops it when
-    # no carried statement matches.
+    # filtered against the document, bin/panel.py): a carried statement must stay re-judgeable each run, so each
+    # entry is emitted as a finding flagged `carried`. It carries no package URL of its own (the tally keeps package
+    # and version); the run resolves it to the carried statement's scope, or drops it when no carried statement
+    # matches.
     for c in d["vex_covered"]:
         if c["scanner"] != scanner:
             continue
@@ -314,7 +314,7 @@ def parse_panel(path, scanner):
         key = (c["id"], purl)
         rec = seen.get(key)
         if rec is None:
-            rec = seen[key] = _finding(scanner, c["id"], purl, (), c["package"], None, None,
+            rec = seen[key] = finding(scanner, c["id"], purl, (), c["package"], None, None,
                                        {"images": [], "version": c["version"], "by_image": {}, "carried": True})
         if c["image"] not in rec["extra"]["images"]:
             rec["extra"]["images"].append(c["image"])
@@ -367,14 +367,13 @@ def parse_govulncheck(path):
                 if mm.get("path") and mm.get("version"):
                     sbom_ver[mm["path"]] = mm["version"]
             mods = [(mm.get("path") or "") for mm in (sbom.get("modules") or []) if mm.get("path")]
-            # roots[0] is the scanned PACKAGE import path, NOT the module (R1 outer round-3 #3):
+            # roots[0] is the scanned PACKAGE import path, NOT the module:
             # the module is the SBOM module whose path is a prefix of that package (longest
             # match, excluding stdlib). Fall back to roots[0] only if no module matches.
             root0 = roots[0] if roots else None
             if root0:
                 cands = [p for p in mods if p != "stdlib" and (root0 == p or root0.startswith(p + "/"))]
                 module = max(cands, key=len) if cands else root0
-        # the stream's own advisory entry: its aliases
         if isinstance(obj.get("osv"), dict) and obj["osv"].get("id"):
             osv_aliases[obj["osv"]["id"]] = sorted(a for a in (obj["osv"].get("aliases") or []) if isinstance(a, str))
         f = obj.get("finding")
@@ -384,7 +383,7 @@ def parse_govulncheck(path):
         if not osv:
             raise ParseError("govulncheck: finding with no osv id")
         # A REAL frame names a module, package, or function; a bare {} is not a frame
-        # (R11 rank 2: `[{}]` is not a trace). A function-bearing frame is a real call
+        # (`[{}]` is not a trace). A function-bearing frame is a real call
         # path; a non-empty trace of real frames WITHOUT a function is imported-but-not-
         # called; an empty (or all-bare) trace proves nothing.
         trace = [fr for fr in f.get("trace", [])
