@@ -241,8 +241,8 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow
-    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
+    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
+    "b4bc93d8183b1bf08f5ce77eb698d468a9ac2d95e188da10b86ca57fd0f893c5",   # the gate workflow that judges four things and keeps the record for release tags only (REQ-REL-012)
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
