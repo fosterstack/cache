@@ -54,7 +54,7 @@ def gvc_verdict(gvc_path, ids, expected_module=None, usable=True):
     finding for one of the ids (a non-empty trace of real frames with no function frame — an
     EMPTY or all-bare trace proves nothing), and no reachable message for any id."""
     if not usable:
-        return "no-evidence", {"reason": "govulncheck stream not usable (incomplete or not bound to the candidate)"}
+        return "no-evidence", {"reason": "govulncheck stream not usable (incomplete or not bound to this candidate)"}
     if not gvc_path or not os.path.exists(gvc_path):
         return "no-evidence", {"reason": "no govulncheck stream"}
     try:
@@ -108,6 +108,8 @@ def validate_manifest(m):
     """The driver validates the manifest on load. Every scanner the driver reads
     must be present as a path or an explicit null (with a reason in scanner_status); a
     missing key is a manifest error, never a KeyError mid-run."""
+    if not isinstance(m, dict):
+        raise ValueError("manifest: not a JSON object")
     r = m.get("scanner_reports")
     if not isinstance(r, dict):
         raise ValueError("manifest: scanner_reports object is missing")
