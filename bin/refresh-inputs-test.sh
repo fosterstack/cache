@@ -969,7 +969,7 @@ for what, line in variants.items():
     assert not g.match(line), "refused: " + what
 assert '"-fsSL"' not in s   # the embedded Python passes no fetch flags: it runs no download
 PYT
-t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unpredictable name, so a planted symlink is never followed" bash -c "grep -q 'O_EXCL' '$RF' && grep -q 'secrets\\|token_hex\\|urandom' '$RF'"
+t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unpredictable name, so a planted symlink is never followed" bash -c "grep -q 'O_EXCL' '$RFPY' && grep -q 'secrets\\|token_hex\\|urandom' '$RFPY'"
 # the previous pointer's TARGET is hashed too
 mkrepo; mkdir -p "$work/ar/x86_64/index"; tgt="APKINDEX-$live_sha_x.tar.gz"; cp "$fx/live/x86_64/APKINDEX.tar.gz" "$work/ar/x86_64/index/$tgt"; rm -f "$work/ar/x86_64/APKINDEX.tar.gz"; ln -s "index/$tgt" "$work/ar/x86_64/APKINDEX.tar.gz"; before=$(treehash "$work/ar" "$work/rp")
 run_s4 "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar" 2>/dev/null || true
@@ -2058,7 +2058,7 @@ t "AC41" "refresh: a missing kernel key file is refused (non-zero, names the key
   bash -c "$(declare -f rcnz inlog nopr); CALLS='$CALLS'; work='$work'; rcnz && inlog kernel-key-6165ee59 && nopr"
 # the archive lacks the package: it is downloaded from the one pinned Alpine address and kept only when it passes
 KURL=https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/linux-virt-6.18.60-r0.apk
-mkrepo; rm -f "$work/ar/$KAPK"; mkdir -p "$work/kdl/x86_64"; cp "$fx/kernel/good.apk" "$work/kdl/$KAPK"
+mkrepo; rm -f "$work/ar/$KAPK"; mkdir -p "$work/kdl/x86_64"; cp -R "$fx/live/." "$work/kdl/"; cp "$fx/kernel/good.apk" "$work/kdl/$KAPK"
 RRE STUB_CURL_DIR="$work/kdl"
 t "AC41" "refresh: a kernel package the archive lacks is downloaded from the pinned address, checked and kept" \
   bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q '$KURL' '$CALLS' && test -f '$work/ar/$KAPK'"
