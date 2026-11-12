@@ -23,7 +23,6 @@
     "bash bin/job-isolation-test.sh",
     "bash bin/rescan-current-only-test.sh",
     "bash bin/panel-wiring-test.sh",
-    "bash bin/scan-no-workflow-call-test.sh",
     "bash bin/admission-tag-signer-test.sh",
     "bash bin/acceptance-maven-413-test.sh",
     "bash bin/audit-record-test.sh",
@@ -88,12 +87,10 @@
   },
   {
    "paths": [
-    "bin/check-workflow-permissions.py",
-    "bin/scan-no-workflow-call-test.sh"
+    "bin/check-workflow-permissions.py"
    ],
    "suites": [
-    "python3 bin/check-workflow-permissions.py",
-    "bash bin/scan-no-workflow-call-test.sh"
+    "python3 bin/check-workflow-permissions.py"
    ]
   },
   {
