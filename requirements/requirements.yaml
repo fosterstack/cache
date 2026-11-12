@@ -1703,7 +1703,7 @@ requirements:
       - id: REQ-DEP-001-AC2
         given: an open Dependabot pull request into main with no verdict on its head yet, whatever its updates are (patch, minor, major, flagged) and whoever pushed commits onto it
         when: the reviewer runs
-        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit gives no bundle and no verdict; only while the vendor check is on main's required-check list, a file under vendor/ is given by its header line and a count of the lines not shown); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
+        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit, or one that names a changed binary file, whose bytes a diff does not carry, gives no bundle and no verdict; only while the vendor check is on main's required-check list, a file under vendor/ is given by its header line and a count of the lines not shown); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC3
@@ -1751,7 +1751,7 @@ requirements:
       - id: REQ-DEP-001-AC10
         given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
         when: the reviewer picks its candidates and gathers its evidence
-        then: it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it, it is named flagged in the bundle, and an auto-merge armed on its head with no verdict is turned off before the review; a bump whose notes say neither is read by the same readers too, and keeps through the review the arm the patch and minor lane gave it
+        then: "it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it, it is named flagged in the bundle, and an auto-merge armed on its head with no verdict is turned off before the review; a bump whose notes say neither is read by the same readers too, and keeps through the review the arm the patch and minor lane gave it; a pull request whose update lines cannot be read is read as one update of its own kind (unparsed) and is not the lane's: an auto-merge armed on its head with no verdict is turned off before the review"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC11
@@ -1763,13 +1763,13 @@ requirements:
       - id: REQ-DEP-001-AC12
         given: a reviewer run that took one or more heads up for review
         when: its act step and its cancellation cleanup have ended, whether the run finished, failed or was cancelled
-        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head with no major and no flagged update that was armed when the reviewer took it up (the patch and minor lane arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head, after the required-check guard matches; a head with a success verdict is left as the act step left it; a lookup or a write that fails fails the run"
+        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head whose every update is a plain patch or minor (none major, flagged or unparsed) that was armed when the reviewer took it up (the patch and minor lane arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head, after the required-check guard matches; a head with a success verdict is left as the act step left it; a lookup or a write that fails fails the run"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC13
         given: a verdict of the reviewer on a head that is not success (failure; or neutral, for a forced re-review, a review that did not finish over an earlier verdict, or a cancelled run whose verdict cannot be confirmed)
         when: the reviewer publishes it
-        then: "it first publishes the review gate's own check on that head as failure (the check run named auditor-review-gate, created with the same App token as its own check, with the gate's fields), and publishes its own check only after that succeeded; it never publishes that check as anything but failure; at every hourly run, a head whose latest verdict is failure or neutral and whose latest auditor-review-gate check from the App is success gets the gate failure again; a gate failure that cannot be published or read fails the run"
+        then: "it first publishes the review gate's own check on that head as failure (the check run named auditor-review-gate, created with the same App token as its own check, with the gate's fields), and publishes its own check only after that succeeded; it never publishes that check as anything but failure; at every hourly run, a head whose latest verdict is failure or neutral and whose latest auditor-review-gate check from the App is success gets the gate failure again; and a head whose latest verdict is success (read or carried) and whose latest auditor-review-gate check from the App is a failure more than six hours old, which the gate's sweep no longer judges, gets that gate failure published again, so that the sweep judges the head anew; a gate failure that cannot be published or read fails the run"
         verification: { method: unit, release_blocking: false }
         status: approved
 
@@ -1819,7 +1819,7 @@ requirements:
       - id: REQ-DEP-003-AC2
         given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
         when: the auto-merge lane runs
-        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell (its metadata step or its screen failed), it arms nothing and turns off an auto-merge not backed by the reviewer's success on the current head
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC3

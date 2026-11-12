@@ -27,9 +27,11 @@ name: Agent review gate
 #   secret; the publisher holds the App token and never touches PR data.
 # - Only PRs into the default branch are judged, against the checked-out default branch (never the
 #   event's base), and `edited` (a retarget) re-runs the gate.
-# - Dependabot-triggered runs get no environment secrets, so a Dependabot PR's publish finds no
-#   App credentials. The scheduled SWEEP (not Dependabot-triggered) judges every open PR into the
-#   default branch whose head has no auditor-review-gate check from the App yet, and publishes.
+# - A PR run that holds no App credentials publishes nothing and says so in a notice. The runs
+#   Dependabot triggered did hold them when their logs were read (Nov 12 2026: first attempts and
+#   re-runs alike), so this is a fallback, not the usual path of a Dependabot PR. The scheduled SWEEP
+#   judges every open PR into the default branch whose head has no auditor-review-gate check from
+#   the App yet, and publishes.
 #   The sweep holds the App token while reading PR data — still as git objects only, never
 #   executed; it runs only the default branch's gate script.
 

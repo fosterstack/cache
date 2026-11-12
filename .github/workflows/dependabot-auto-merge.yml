@@ -214,9 +214,7 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # Bound to the head this run screened: an older run (an older body) cannot arm a newer head.
-        # Never a head the reviewer failed (REQ-DEP-003-AC3): its check on this head is read first, and if that
-        # read fails the step fails and nothing is armed. This job can start many minutes after the push, so the
-        # failure may already be there; one that lands while this step arms is caught by the step below.
+        # This job can start many minutes after the push, so the reviewer's failure may already be on the head: read first.
         run: |
           set -euo pipefail
           verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer" \
@@ -224,25 +222,16 @@ jobs:
           if [ "$verdict" = failure ]; then echo "the reviewer failed this head (${HEAD_SHA:0:7}); it is not armed"; exit 0; fi
           gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
 
-      # Last, for every bump: no arm stands that the reviewer's verdict on the CURRENT head does not allow.
-      #  - A failure verdict: auto-merge comes off, whatever the bump is (REQ-DEP-003-AC3). It runs after the arm above, so a
-      #    failure published while that step armed is seen here; one published after this step is the reviewer's to turn off
-      #    (its act step, its settle step, and every hourly sweep).
-      #  - Owner, Oct 1: a merge verdict holds only for the head the reviewer read. A push to a major or flagged PR
-      #    (a Dependabot rebase or a new version) voids it: unless the reviewer has already approved THIS
-      #    head (its success check is on it — the reviewer may have got there first), auto-merge comes off
-      #    here at once and the hourly reviewer judges the new head afresh. Also when the screen itself failed: its answer
-      #    is unknown, so an arm without a verdict on the current head still comes off (arming stays off: the arm step
-      #    needs the screen to have succeeded).
-      #  - A plain patch or minor with no verdict yet keeps the arm this lane gave it.
-      # Fails loudly if it cannot.
+      # After the arm, so a failure published while it armed is seen. A major, a flagged bump, or one whose kind this run
+      # could not tell (the metadata or the screen failed) keeps an arm only with the reviewer's success on the CURRENT head
+      # (owner, Oct 1: a verdict holds for the head that was read); a plain patch or minor keeps the lane's arm unless failed.
       - name: no arm without the reviewer's leave — a failed head, or a new head of a major, has auto-merge turned off
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          WAITS_FOR_VERDICT: ${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure' }}
+          WAITS_FOR_VERDICT: ${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure' || steps.meta.outcome == 'failure' }}
         run: |
           set -euo pipefail
           # judge the PR's CURRENT head, never this event's: a stale job (an older push) must not disarm a

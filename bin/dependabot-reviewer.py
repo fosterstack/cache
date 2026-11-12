@@ -9,7 +9,8 @@ secrets, so the federation identity is only reachable from a scheduled run on ma
 
 Subcommands (each one is small and testable on its own; the workflow strings them together):
 
-  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, kind}
+  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, kind}; kind is major, flagged,
+                                                 not-major or unparsed
   gather   --pr N --sha SHA --updates F --out DIR
                                               -> DIR/bundle.md (commits + the whole diff of SHA against main + release notes + our usage)
   same-diff --repo R --base B SHA SHA         -> exit 0 only when both commits change B by the same diff text
@@ -242,7 +243,7 @@ def parse_updates(title, body):
         # The update lines cannot be read (markup, an odd title): the pull request is still read. One placeholder
         # so the readers judge the diff; it names no repository, so no notes are fetched.
         found.append({"name": "(unparsed Dependabot update)", "from": "?", "to": "?", "major": False,
-                      "flagged": flagged, "kind": "flagged" if flagged else "not-major"})
+                      "flagged": flagged, "kind": "unparsed"})
     return found
 
 
@@ -417,15 +418,9 @@ def head_diff(repo, base, sha):
 
 
 def pr_commits(pr, sha):
-    """(text, state): one line per commit of the pull request, oldest first; state is "ok", "unavailable" or "moved".
-    The list must end at `sha`, the commit the verdict is for: if its last commit is another one, the head moved
-    ("moved": nothing is judged). A commit is Dependabot's own only when GitHub
-    reports all of: author dependabot[bot] (that id, a bot), committer web-flow, signature verified, one parent; every
-    other commit is marked NOT Dependabot's (somebody else pushed it: a lane's mend, a merge of the base branch). The
-    mark is GitHub's report, not proof, and decides nothing: the diff below it in the bundle is the whole pull request
-    either way, and the list tells the readers which commits to hold it against. A failed or empty read, or a list of
-    250 commits (GitHub lists no more, so its end cannot be shown to be `sha`), is "unavailable" — an error, never
-    "no other commits"."""
+    """(text, state): one line per commit of the pull request, oldest first, each one GitHub does not report as Dependabot's
+    own marked; state is "ok", "unavailable" (a failed or empty read, or 250 commits: GitHub lists no more) or "moved" (the
+    list does not end at `sha`, the commit the verdict is for)."""
     repo = os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}"
     commits = []
     for page in range(1, MAX_COMMIT_PAGES + 1):
@@ -468,11 +463,8 @@ def vendor_is_required(path=".github/policy/required-checks.json"):
 
 
 def shown_diff(diff, omit_vendor):
-    """The pull request's diff as the readers get it: every file's section whole. One exception, only when omit_vendor
-    (the `vendor` check is required on main): a section whose old and new path are both under vendor/ keeps its header
-    line and loses its body to one line saying how many lines are not shown and which required check judges them. A
-    vendored module file is not ours to read: its bytes are what `go mod vendor` makes of go.mod and go.sum, which the
-    readers do get. A path with a space or a quote does not match and is shown whole."""
+    """The diff as the readers get it. With omit_vendor, a section whose old and new path are both under vendor/ keeps its
+    header line and a count of its lines: the required `vendor` check compares those bytes with what go.mod and go.sum make."""
     if not omit_vendor:
         return diff
     out = []
@@ -489,7 +481,9 @@ def shown_diff(diff, omit_vendor):
     return "".join(out)
 
 
-_KIND_LABEL = {"major": "MAJOR", "flagged": "FLAGGED: its release notes say breaking or deprecated", "not-major": "not major"}
+_KIND_LABEL = {"major": "MAJOR", "flagged": "FLAGGED: its release notes say breaking or deprecated", "not-major": "not major",
+               "unparsed": "UNPARSED: the title and description name no update that could be read"}
+_BINARY = re.compile(r"(?m)^(?:Binary files |GIT binary patch)")   # a changed binary file: its bytes are not in a diff
 
 
 def cmd_gather(a):
@@ -509,7 +503,10 @@ def cmd_gather(a):
         sys.stderr.write("gather: could not fetch the diff of %s (PR #%s, rc %s) — no bundle, no review\n" % (a.sha, a.pr, rc))
         sys.exit(3)
     diff = shown_diff(diff, vendor_is_required())
-    if len(diff) > CAP_DIFF:  # never a cut diff: what the readers were not shown could merge unread
+    if _BINARY.search(diff):  # the readers cannot be given a binary file's bytes: what they were not shown could merge unread
+        sys.stderr.write("gather: the diff of PR #%s names a binary file, whose bytes are not in a diff — no bundle, no review\n" % a.pr)
+        sys.exit(3)
+    if len(diff) > CAP_DIFF:  # never a cut diff, for the same reason
         sys.stderr.write("gather: the diff of PR #%s is %d characters, over the %d the readers are given — no bundle, no review\n"
                          % (a.pr, len(diff), CAP_DIFF))
         sys.exit(3)
@@ -558,7 +555,7 @@ def same_diff(repo, base, shas):
         return False, "the diffs against %s differ" % base
     if len(texts[0]) > CAP_DIFF:
         return False, "the diff is %d characters, over %d" % (len(texts[0]), CAP_DIFF)
-    if re.search(r"(?m)^(?:Binary files |GIT binary patch)", texts[0]):
+    if _BINARY.search(texts[0]):
         return False, "the diff names a binary file"
     return True, "the same %d characters of diff against %s" % (len(texts[0]), base)
 

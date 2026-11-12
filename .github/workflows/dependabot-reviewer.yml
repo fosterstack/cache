@@ -43,7 +43,8 @@ name: Dependabot reviewer
 # that head: the same check run the gate publishes (same name, same App: the token of step
 # app-checks, checks:write), so a gate success published earlier cannot outlive it. It never
 # publishes a gate success: after a later success here the gate's sweep judges the head again (it
-# re-judges a failure from the last six hours), and a new head gets the gate's own run.
+# re-judges a failure from the last six hours; an older one is published again here, as a failure,
+# so that it does), and a new head gets the gate's own run.
 #
 # It scans nothing, opens no PRs, edits nothing. Two App tokens with disjoint permissions:
 # checks:write (publish the check) and contents+pull-requests (arm auto-merge), mirroring the
@@ -119,26 +120,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ONLY_PR: ${{ inputs.pr }}
           FORCE: ${{ inputs.force }}
-        # Every open Dependabot PR into main is a candidate, whatever its updates are: patch, minor, major, flagged.
-        # A verdict is the LATEST dependabot-reviewer check from the App on the head: success or
-        # failure. `neutral` (a re-review that did not finish) or none means review this hour.
-        # Spend guard: a head with no verdict that is a merge commit whose first parent (or that one's, up to five merges
-        # back) carries the success verdict, and whose diff against main is byte for byte that commit's diff, changes main
-        # exactly as the head the readers passed did. The success is published on it here and no reader is called. Anything
-        # else (a failure or neutral on the way back, a diff that differs, a read that fails, a forced run) is read.
-        # Arms before a verdict: the patch/minor lane arms a bump with no major and no flagged update at once, and that arm is
-        # the lane's to keep: it is left on and written to lane-arms.txt, so the settle step can put it back if the review does
-        # not finish. On every other head no auto-merge may be armed that its CURRENT verdict does not support: a head
-        # without a success verdict that is armed (a cancelled run between arming and publishing) is disarmed HERE, before
-        # any later setup step can fail. A failure verdict that is armed again is disarmed here every hour. A FORCED
-        # re-review invalidates the old verdict here too: auto-merge off, the review gate's check failed, then a `neutral` check.
-        # The gate: a head whose latest verdict here is failure or neutral and whose `auditor-review-gate` check from the App
-        # is nevertheless success (a gate run that read the checks before the verdict and published after it) gets the gate
-        # failure again, every hour.
-        # If any of that cannot be done the PR is skipped this hour and the step fails. A success
-        # verdict whose PR someone disarmed is left alone: a human's disarm is not re-armed.
-        # A lookup that fails is never "nothing to do": the PR is skipped this hour and the step
-        # fails, so the run counts as unfinished (the failure streak sees it).
+        # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is read this hour.
+        # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same change was read.
+        # A plain patch/minor keeps the lane's arm through the review (the gate holds the merge); any other arm without a success comes
+        # off before the review, so a setup step that fails later cannot leave it standing. A person's disarm is never undone.
+        # A lookup that fails is never "nothing to do": the PR is skipped and the step fails, so the failure streak sees it.
         run: |
           set +e -uo pipefail
           mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
@@ -151,13 +137,27 @@ jobs:
               -f head_sha="$1" -f status=completed -f conclusion=failure -f details_url="$RUN_URL" \
               -f "output[title]=auditor review gate: failure" -f "output[summary]=$2" >/dev/null
           }
-          gate_stands() { # <n> <sha> <verdict>: no gate success stands over a failure or neutral verdict (0: it does not, or was failed again; 1: could not be made so)
+          gate_of() { # <sha>: the App's newest gate check on that commit, as the gate's sweep reads it: none, success, failure (six hours old at most) or stale
+            GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=auditor-review-gate" \
+              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
+                    | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
+                      elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end"
+          }
+          gate_stands() { # <n> <sha> <verdict>: no gate success stands over a failure or neutral verdict (1: that could not be made sure)
             local g
-            g=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/$2/check-runs?check_name=auditor-review-gate" \
-                  --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last | .conclusion // \"none\"") && [ -n "$g" ] || return 1
+            g=$(gate_of "$2") && [ -n "$g" ] || return 1
             [ "$g" = success ] || return 0
             gate_fail "$2" "The Dependabot reviewer's verdict on this head is $3: it is not passed." || return 1
             echo "PR #$1 ${2:0:7}: the review gate's check said success over the reviewer's $3 — failed again"
+          }
+          # The gate's sweep never judges a failure older than six hours again, so a head the reviewer passes after that would stay red.
+          # Publishing the failure anew (never a success) puts it back inside the sweep's window; the sweep then judges the head itself.
+          gate_refresh() { # <n> <sha>: a stale gate failure over a success verdict is published again (1: that could not be done)
+            local g
+            g=$(gate_of "$2") && [ -n "$g" ] || return 1
+            [ "$g" = stale ] || return 0
+            gate_fail "$2" "The Dependabot reviewer passed this head, and this check last failed more than six hours ago: failed again so that the gate's sweep judges the head anew." || return 1
+            echo "PR #$1 ${2:0:7}: passed by the reviewer over a stale gate failure — the gate failure is published again for the sweep to judge"
           }
           gh pr list --base main --state open --author 'app/dependabot' --limit 100 \
             --json number,title,body,headRefOid > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
@@ -170,9 +170,9 @@ jobs:
                    --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json"; then
               echo "::error::PR #$n: could not read its updates"; lookup_failed=1; continue
             fi
-            # Whose arm is it before a verdict: the patch/minor lane arms a bump with no major and no flagged update (lane=yes) and
-            # leaves every other one unarmed (lane=no).
-            lane=$(jq -r 'if any(.[]; .major or .flagged) then "no" else "yes" end' "$RUNNER_TEMP/work/updates-$n.json") \
+            # An arm before a verdict is the patch/minor lane's only when every update is a plain patch or minor: a major, a flagged
+            # update or one whose lines could not be read (kind unparsed) is not the lane's to arm.
+            lane=$(jq -r 'if length > 0 and all(.[]; .kind == "not-major") then "yes" else "no" end' "$RUNNER_TEMP/work/updates-$n.json") \
               || { echo "::error::PR #$n: could not tell its update kinds"; lookup_failed=1; continue; }
             if ! prior=$(verdict_of "$sha") || [ -z "$prior" ]; then
               echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — skipped this hour"; lookup_failed=1; continue
@@ -202,8 +202,6 @@ jobs:
               echo "PR #$n ${sha:0:7}: verdict already $prior"
               if [ "$prior" = failure ]; then
                 gate_stands "$n" "$sha" failure || { echo "::error::PR #$n ${sha:0:7}: could not make sure the review gate's check is not success over the failure verdict"; lookup_failed=1; }
-                # A failure verdict never stays armed (REQ-DEP-003-AC3). The act step turns the arm off before it publishes the failure
-                # and the settle step looks again after; an arm made since, by anyone, comes off here.
                 if ! armed_now=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
                   echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
                 fi
@@ -213,6 +211,7 @@ jobs:
                 fi
               fi
               if [ "$prior" = success ]; then
+                gate_refresh "$n" "$sha" || { echo "::error::PR #$n ${sha:0:7}: could not publish its stale gate failure again"; lookup_failed=1; }
                 # The auto-merge lane turns an arm off when a head it does not arm has no verdict (REQ-DEP-003-AC2); the reviewer arms and THEN
                 # publishes success, and a carried success lands after the lane saw the new head, so the lane can leave an approved head unarmed.
                 # GitHub records who turned auto-merge on or off: a success verdict, no arm, and the LAST auto-merge event (on, by any merge
@@ -249,11 +248,9 @@ jobs:
                 echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
               fi
               if [ "$armed" != false ] && [ "$lane" = yes ]; then
-                # the patch/minor lane's arm (REQ-DEP-003-AC1): it stays on through the review; the settle step puts it back if the review does not finish
                 echo "$n $sha" >> "$RUNNER_TEMP/work/lane-arms.txt"
                 echo "PR #$n: armed by the patch/minor lane — left armed through the review"
               elif [ "$armed" != false ]; then
-                # no verdict supports an armed merge on this head: turn it off before anything else
                 if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
                   echo "::error::PR #$n: armed with no verdict and could not be disarmed — skipped this hour"; lookup_failed=1; continue
                 fi
@@ -264,7 +261,6 @@ jobs:
                    && [ "$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null')" != false ]; then
                 echo "::error::PR #$n: forced re-review could not turn auto-merge off — skipped, old verdict kept"; lookup_failed=1; continue
               fi
-              # the gate's check first, the reviewer's own check last: a head that carries the neutral always carries the gate failure
               if ! gate_fail "$sha" "The Dependabot reviewer is reading this head again (forced); its earlier '$prior' verdict no longer stands."; then
                 echo "::error::PR #$n: forced re-review could not fail the review gate's check — skipped, old verdict kept (auto-merge is off)"; lookup_failed=1; continue
               fi
@@ -370,10 +366,7 @@ jobs:
             echo "::add-mask::$tok"
             printf '%s' "$tok" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
           }
-          # Every verdict of this step goes up here. One that is not success (failure, neutral) FIRST fails the review gate's own
-          # check on that head, the check run the gate itself publishes (same name, same App, same fields): the gate's sweep skips
-          # a head whose gate check is green, so a gate success from before must not outlive this verdict. If the gate failure
-          # cannot be published the reviewer's own check is not published either (the caller treats that as any failed publish).
+          # The gate's sweep skips a head whose gate check is green: a gate success must not outlive a verdict that is not success.
           publish() { # <sha> <conclusion> <summary>
             if [ "$2" != success ]; then
               GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate \
@@ -473,9 +466,9 @@ jobs:
                   else unfinished "$n" "$sha" attempted "the success check could not be published (auto-merge turned back off)"; fi
                 else unfinished "$n" "$sha" "$prior" "auto-merge could not be armed"; fi ;;
               hold)
-                title="bump held: $names"
+                title="bump held: PR #$n"   # short and the same for every head of the PR: one issue per PR, whatever the group holds
                 {
-                  echo "Dependabot PR #$n (\`${sha:0:7}\`) is a bump that a reader says breaks a line of ours."
+                  echo "Dependabot PR #$n (\`${sha:0:7}\`: $names) is a bump that a reader says breaks a line of ours."
                   echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
                   echo; echo "Run: $RUN_URL"; echo
                   echo "## breaks-us findings"; echo
@@ -552,18 +545,8 @@ jobs:
             else echo "::error::PR #$n: could not turn auto-merge off; the next hourly sweep disarms it"; fi
           done < "$f"
 
-      # The act step is hash-pinned and treats every head alike: a review that does not finish turns auto-merge off, and a
-      # hold turns it off BEFORE the failure check goes up. Two things are settled here, after it and after the cancellation
-      # cleanup, for every head this run took up for review:
-      #  - a head that now carries the failure verdict is not armed (REQ-DEP-003-AC3): the patch/minor lane, whose job can
-      #    start many minutes after a push, may have armed it between the act step's disarm and its failure check;
-      #  - a patch/minor head the lane had armed (lane-arms.txt) whose review did not finish (still no verdict, or neutral) is
-      #    armed again as the lane left it (REQ-DEP-003-AC1): for that exact head, after the required-check guard. While the
-      #    review gate does not ask for the reviewer's verdict, such a bump merges on green as it did before this workflow
-      #    read patch and minor bumps; once it does, the arm only waits for the verdict.
-      # A pull request that is closed, or whose head is no longer the commit this run took up, is left alone: its new head
-      # has the lane's own run and the next hourly review.
-      # A lookup or a write that fails is an error and fails the step, so the run counts as unfinished.
+      # The lane's job can start many minutes after a push and arm a head between the decision loop's disarm and its failure
+      # check; and the loop turns off the lane's own arm when a review does not finish. Both are put right here, after it.
       - name: settle the arms — none over a failure verdict, the lane's arm back after an unfinished review
         id: settle
         if: ${{ always() && steps.candidates.outputs.count != '0' && steps.candidates.outputs.count != '' && steps.app-merge.outcome == 'success' }}

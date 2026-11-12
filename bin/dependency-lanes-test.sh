@@ -101,9 +101,14 @@ if kind == "reviewer":
             or not in_order(canc[0], "check-runs\" -f name=auditor-review-gate", "check-runs\" -f name=dependabot-reviewer") \
             or not re.search(r"name=auditor-review-gate(?:[^\n]*\\\n)*[^\n]*>/dev/null \\\n\s*&& \\\n\s*GH_TOKEN=\"\$APP_TOKEN\" gh api \"repos/\$\{GITHUB_REPOSITORY\}/check-runs\" -f name=dependabot-reviewer", canc[0]):
         bad.append("the cancellation step does not fail the review gate's check before its neutral (the neutral only after it)")
-    # REQ-DEP-001-AC10 / REQ-DEP-003-AC1: whose arm a head's is before a verdict: the lane's only when no update is a major OR flagged, never majors only
-    if len(cand) == 1 and ("any(.[]; .major or .flagged)" not in cand[0] or "any(.[]; .major)" in cand[0]):
-        bad.append("the candidate step does not count a flagged non-major beside a major when it decides whose arm a head's is")
+    # REQ-DEP-001-AC10 / REQ-DEP-003-AC1: whose arm a head's is before a verdict: the lane's only when EVERY update is a plain patch or minor
+    # (not a major, not flagged, not one that could not be read)
+    if len(cand) == 1 and """lane=$(jq -r 'if length > 0 and all(.[]; .kind == "not-major") then "yes" else "no" end'""" not in cand[0]:
+        bad.append("the candidate step does not keep the lane's arm for plain patch and minor bumps only (every update of kind not-major)")
+    # REQ-DEP-001-AC13: a success verdict (read or carried) over a stale gate failure has the failure published again, by the gate's own six-hour line
+    if len(cand) == 1 and (not re.search(r'if \[ "\$prior" = success \]; then\n\s+gate_refresh "\$n" "\$sha" \|\|', cand[0])
+                           or '[ "$g" = stale ] || return 0' not in cand[0] or "(now - (.completed_at | fromdate)) < 21600" not in cand[0]):
+        bad.append("the candidate step does not publish a stale gate failure again over a success verdict")
     if len(cand) == 1 and ("auto_merge_disabled github-actions" not in cand[0] or "required-check-guard.sh" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
         bad.append("the candidate step does not put back (guard first, exact head) an arm the lane turned off after the reviewer approved the head")
     # REQ-DEP-001-AC11: the one success this step publishes itself (the carried one) comes only past the same-diff proof, never on a forced run
@@ -248,7 +253,7 @@ elif kind == "automerge":
         bad.append("the arm step does not read the reviewer's verdict on this head first and leave a failed head unarmed")
     # the last step: no arm the reviewer's verdict on the current head does not allow. Run for every bump (a failed patch too); the
     # no-verdict disarm applies to a major, a flagged bump or a failed screen (WAITS_FOR_VERDICT)
-    major = "${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure' }}"
+    major = "${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure' || steps.meta.outcome == 'failure' }}"
     disarm = [(i, s, r) for i, (s, r) in enumerate(runs(job)) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][1].get("if") != "${{ !cancelled() }}" or "continue-on-error" in disarm[0][1]:
         bad.append("no single last step, run for every bump, that turns off an arm the reviewer's verdict does not allow")
@@ -340,7 +345,9 @@ case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-erro
 case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'required-check-guard.sh' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
-case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('any(.[]; .major or .flagged)', 'any(.[]; .major)')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('all(.[]; .kind == \"not-major\")', 'all(.[]; .major | not)')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-no-stale-refresh bad "[s.__setitem__('run', s['run'].replace('gate_refresh \"\$n\" \"\$sha\" ||', 'true ||')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-refresh-any-failure bad "[s.__setitem__('run', s['run'].replace('[ \"\$g\" = stale ] || return 0', '[ \"\$g\" != success ] || return 0')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-update-unnamed  bad "[s.__setitem__('run', s['run'].replace('[.[]|\"', '[.[]|select(.major)|\"')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-patches-skipped bad "[s.__setitem__('run', s['run'].replace('lane=\$(jq', 'jq -e \"any(.[]; select(.major))\" x || continue; lane=\$(jq')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-gather-any-head bad "[s.__setitem__('run', s['run'].replace('gather --pr \"\$n\" --sha \"\$sha\"', 'gather --pr \"\$n\"')) for s in $rs if s.get('id') == 'act']"
@@ -375,6 +382,7 @@ case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($a
 case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-failed-screen-keeps-arm bad "[s['env'].__setitem__('WAITS_FOR_VERDICT', \"\${{ steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' }}\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-flagged-no-void bad "[s['env'].__setitem__('WAITS_FOR_VERDICT', \"\${{ steps.meta.outputs.update-type == 'version-update:semver-major' }}\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-failed-meta-keeps-arm bad "[s['env'].__setitem__('WAITS_FOR_VERDICT', s['env']['WAITS_FOR_VERDICT'].replace(\" || steps.meta.outcome == 'failure'\", '')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-failed-patch-keeps-arm bad "[s.__setitem__('if', \"\${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-arms-failed-head bad "[s.__setitem__('run', '\\n'.join(l for l in s['run'].split('\\n') if 'verdict' not in l)) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-arms-blind      bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set +e')) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"

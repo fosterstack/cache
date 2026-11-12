@@ -3085,7 +3085,7 @@ done
 case3_ ac3-unreadable-bad "$(dlj "bash bin/x-test.sh
 curl -fsSL \"unterminated $U")" "$DLS"
 
-# the one exact exclusion (auditor.yml, job audit, step 9, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
+# the exact exclusions (auditor.yml's catalog download; the reviewer's identity-token request in its two steps): a copy anywhere else, an edit, or a broken condition is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
 import importlib.util, sys
@@ -3115,23 +3115,47 @@ assert judge(F, "audit", 9, run + "\n# edited"), "an edited step is a finding"
 assert judge(F, "audit", 9, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
 assert judge(F, "audit", 9, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
 D = ".github/workflows/dependabot-reviewer.yml"
+TOKEN_STEP = "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"   # step 4: the identity-token request
+MAIN_LOOP = "95e44c8ccb8ac27ab0ffcf34f61f7111cfbaf6d70676cc36b5dee4724f6c5727"    # step 8, the decision loop, as main had it before the reviewer read every bump
+NEW_LOOP = "69bc42e58433720251404d2f518c0989f76d6dde8547c2f449b954e4a4106ee1"     # step 8, the decision loop of the reviewer that reads every bump
+URL = "ACTIONS_ID_TOKEN_REQUEST_URL"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
-for idx in (4, 8):
-    drun = dsteps[idx]["run"]
-    assert not judge(D, "review", idx, drun, {D: dwf}), "the exact identity-token step %d is excluded" % idx
-    assert judge(D, "review", idx + 1, drun, {D: dwf}), "the same text at another step index is a finding"
-    assert judge(D, "other", idx, drun, {D: dwf}), "the same text in another job is a finding"
-    assert judge(".github/workflows/x.yml", "review", idx, drun, {".github/workflows/x.yml": dwf}), "the same text in another file is a finding"
-    assert judge(D, "review", idx, drun + "\n# edited", {D: dwf}), "an edited step is a finding"
-    assert judge(D, "review", idx, drun, {D: dwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
-assert judge(D, "review", 4, dsteps[8]["run"], {D: dwf}), "one excluded step's key does not exclude the other's text"
-# the reviewer's excluded steps are a closed set: the identity-token step and the decision loop, one text each
-rk = sorted((k[2], k[3]) for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D)
-assert rk == [(4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"),
-              (8, "30a945d16294846fbc89c18c10b2a21fa5406cd2162713dc19e06ec6dff873d1")], "the reviewer's excluded steps are not exactly the two expected: %r" % (rk,)
+real = {4: dsteps[4]["run"], 8: dsteps[8]["run"]}
+loop_hash = m.hashlib.sha256(real[8].encode("utf-8", "replace")).hexdigest()
+def judge_job(steps, files, file=D, job="review", shells={}):
+    """the REQ-REL-005-AC3 findings for a job whose run steps are {index: text}, as the checker reads a whole job"""
+    bad = []
+    m.READ_SCRIPTS.clear()
+    scripts = [(f"{file}.jobs.{job}.steps[{i}].run", text, shells.get(i)) for i, text in sorted(steps.items())]
+    m.check_runs(file, scripts + [(f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files))
+    return sorted({int(b.split(".steps[")[1].split("]")[0]) for b in bad if "REQ-REL-005-AC3" in b})
+assert judge_job(real, {D: dwf}) == [], "the two exact identity-token steps are excluded"
+assert judge_job({5: real[4], 8: real[8]}, {D: dwf}) == [5, 8], "the same text at another step index is a finding (and the name is then outside the excluded steps)"
+assert judge_job(real, {D: dwf}, job="other") == [4, 8], "the same texts in another job are findings"
+assert judge_job(real, {".github/workflows/x.yml": dwf}, file=".github/workflows/x.yml") == [4, 8], "the same texts in another file are findings"
+assert judge_job({4: real[4], 8: real[8] + "\n# edited"}, {D: dwf}) == [4, 8], "an edited step is a finding, and the other step with it: the name now stands outside the excluded steps"
+assert judge_job({4: real[8], 8: real[8]}, {D: dwf}) == [4, 8], "one excluded step's key does not exclude the other's text"
+# a `shell:` on the step (or a default shell) can set the variable before the script runs: such a step is never excluded, whatever its text
+for shell in ("bash", "bash -c 'export %s=file:///x; exec bash -e {0}'" % URL, ""):
+    assert 8 in judge_job(real, {D: dwf}, shells={8: shell}), "the decision loop with shell: %r is a finding" % shell
+    assert 4 in judge_job(real, {D: dwf}, shells={4: shell}), "the identity-token step with shell: %r is a finding" % shell
+# the name stands in the file only inside the excluded steps' run text; any other mention keeps both findings
+for what, more in (("a block-style env key", "\n          %s: file:///x\n" % URL),
+                   ("a flow-style env", "\n        env: {%s: 'file:///x'}\n" % URL),
+                   ("a quoted env key", "\n          \"%s\": file:///x\n" % URL),
+                   ("a line for GITHUB_ENV in another step", "\n      - run: echo \"%s=file:///x\" >> \"$GITHUB_ENV\"\n" % URL),
+                   ("a comment", "\n# %s\n" % URL)):
+    assert judge_job(real, {D: dwf + more}) == [4, 8], "%s that names the URL variable is a finding" % what
+env_step = 'echo "%s=file:///x" >> "$GITHUB_ENV"\n' % URL
+assert judge_job({2: env_step, **real}, {D: dwf.replace("    steps:\n", "    steps:\n      - run: " + env_step, 1)}) == [4, 8], "a step of the job that writes the variable to GITHUB_ENV is a finding"
+assert judge_job(real, {D: dwf.replace(URL, "OTHER_URL", 1)}) == [4, 8], "a file that holds the name fewer times than the excluded steps do is a finding"
+assert judge_job(real, {}) == [4, 8], "a workflow file the tree cannot read keeps the findings"
+# the entries: a closed set, all in job review, each with the one condition (the URL variable, no assignment line)
 assert [k for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D and k[1] != "review"] == [], "an excluded step of the reviewer outside its review job"
-assert m.hashlib.sha256(dsteps[8]["run"].encode("utf-8", "replace")).hexdigest() == rk[1][1], "the repository's decision loop is not the accepted text"
+assert {m.DOWNLOAD_EXCLUSIONS[k][1:] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D} == {(URL, None)}, "an entry of the reviewer with another condition than the URL variable's"
+assert sorted((k[2], k[3]) for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [(4, TOKEN_STEP), (8, NEW_LOOP)], "the reviewer's excluded steps are not exactly these two"
+assert loop_hash == NEW_LOOP, "the repository's decision loop is not the accepted text"
 PY
 fi
 

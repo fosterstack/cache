@@ -146,11 +146,11 @@ check("a body the parser cannot read is flagged (fail toward the readers)", _unr
 # a body whose update lines cannot be read is still read: one placeholder, flagged or not (round 2, seat A; every bump is read)
 u = r.parse_updates("Bump the actions group with 1 update",
     "Bumps the actions group with 1 update.\n<!-- <details> -->\nUpdates `x/y` from 1.0.0 to 1.1.0\n<details><summary>Release notes</summary>Breaking: removed.</details>\n<!-- </details> -->\n<!-- <details> -->\n")
-check("flagged body with unreadable update lines -> one placeholder, flagged, major false",
-      len(u) == 1 and u[0]["kind"] == "flagged" and u[0]["flagged"] is True and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
+check("flagged body with unreadable update lines -> one placeholder of its own kind (unparsed), flagged, major false",
+      len(u) == 1 and u[0]["kind"] == "unparsed" and u[0]["flagged"] is True and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
 u = r.parse_updates("t", "nothing to see")
-check("an unflagged body with no update lines -> one placeholder too, not flagged: the pull request is still read",
-      len(u) == 1 and u[0]["kind"] == "not-major" and u[0]["flagged"] is False and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
+check("an unflagged body with no update lines -> one placeholder too, kind unparsed (never not-major: it is not the lane's), not flagged: the pull request is still read",
+      len(u) == 1 and u[0]["kind"] == "unparsed" and u[0]["flagged"] is False and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
 check("title-only fallback (no body) is not flagged", one("", "Build(deps): bump x/y from 1.2.0 to 1.3.0")[0]["flagged"] is False, "")
 check("kind = major, else flagged, else not-major (what the bundle calls the update)",
       [x["kind"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == ["major", "flagged"]
@@ -303,6 +303,22 @@ check("gather: the pull request's commits end at another commit than the one the
 for bad_sha in ("main", "a" * 39, "A" * 40, "refs/pull/7/head"):
     code, b, err = gather_diff("diff --git a/x b/x\n+one\n", False, sha=bad_sha)
     check("gather: %r is not a full commit id -> exit 3, nothing read, no bundle" % bad_sha, code == 3 and b is None and ran == [], (code, ran))
+
+# --- a binary file's bytes are not in a diff: gather refuses such a diff, with the test same-diff uses (REQ-DEP-001-AC2)
+BIN_FILE = "diff --git a/go.mod b/go.mod\n+require a/b v1.1.0\ndiff --git a/tool.bin b/tool.bin\nindex 1..2 100755\nBinary files a/tool.bin and b/tool.bin differ\n"
+code, b, err = gather_diff(BIN_FILE, False)
+check("gather: a diff that names a changed binary file -> exit 3, no bundle (the readers cannot be given its bytes)", code == 3 and b is None and "binary file" in err, (code, err))
+code, b, err = gather_diff("diff --git a/x.bin b/x.bin\nindex 1..2 100644\nGIT binary patch\nliteral 3\n", False)
+check("gather: a git binary patch -> exit 3, no bundle", code == 3 and b is None and "binary file" in err, (code, err))
+code, b, _ = gather_diff("diff --git a/x b/x\n+Binary files are mentioned in a changed line\n-GIT binary patch, said a removed line\n", False)
+check("gather: the words inside a changed line are not a binary file: bundled", code == 0 and "+Binary files are mentioned" in b, code)
+VBIN = "diff --git a/go.mod b/go.mod\n+require a/b v1.1.0\ndiff --git a/vendor/a/b/data.bin b/vendor/a/b/data.bin\nindex 1..2 100644\nBinary files a/vendor/a/b/data.bin and b/vendor/a/b/data.bin differ\n"
+code, b, _ = gather_diff(VBIN, True)
+check("gather: a binary file under vendor/ while the vendor check is required is shown by its header like any vendored file (that check compares its bytes): bundled",
+      code == 0 and "diff --git a/vendor/a/b/data.bin b/vendor/a/b/data.bin\n(a vendored module file:" in b and "Binary files" not in b, code)
+code, b, _ = gather_diff(VBIN, False)
+check("gather: the same vendored binary file while the vendor check is NOT required -> exit 3, no bundle", code == 3 and b is None, code)
+check("gather and same-diff use one test for a binary file", r._BINARY.search(BIN_FILE) is not None and "_BINARY.search(texts[0])" in open(os.environ["REVIEWER_PY"]).read(), "")
 
 # --- same-diff: the spend guard's proof that two heads change main in the same way (REQ-DEP-001-AC11)
 D1 = "diff --git a/go.mod b/go.mod\nindex 1..2 100644\n--- a/go.mod\n+++ b/go.mod\n@@ -1 +1 @@\n-require a/b v1.0.0\n+require a/b v1.1.0\n"
@@ -671,8 +687,13 @@ grep -q -- "-f conclusion=success" "$w/gh.log" && grep -q "a/b: 4.0.0 -> 4.0.1 (
 A="$CLEAN" B="$BREAKS" UPDATES="$PATCH" ARMED=true act; expect "a plain patch a reader says breaks us -> auto-merge off, issue, THEN the failure check, like a major" \
   "+pr merge --disable-auto 99" "+issue create" "+$CHK" "-pr merge --auto --squash" "ORDER:disable-auto>issue create" "ORDER:issue create>$CHK" ERRORED=0
 grep -q -- "-f conclusion=failure" "$w/gh.log" && { echo "ok: act: the patch's check says failure"; pass=$((pass+1)); } || { echo "FAIL: act: patch failure"; fail=$((fail+1)); }
-grep -q -- "issue create --title bump held: a/b 4.0.0→4.0.1 " "$w/gh.log" && grep -q "is a bump that a reader says breaks a line of ours" "$w/run/work/pr-99/issue.md" && ! grep -qi "major" "$w/run/work/pr-99/issue.md" \
-  && { echo "ok: act: a held patch's issue names the bump and never calls it a major"; pass=$((pass+1)); } || { echo "FAIL: act: held patch issue text"; fail=$((fail+1)); }
+grep -q -- "issue create --title bump held: PR #99 --body-file" "$w/gh.log" && grep -q "^Dependabot PR #99 (\`0000000\`: a/b 4.0.0→4.0.1) is a bump that a reader says breaks a line of ours" "$w/run/work/pr-99/issue.md" && ! grep -qi "major" "$w/run/work/pr-99/issue.md" \
+  && { echo "ok: act: a held patch's issue is titled by its PR, names the bump in its body and never calls it a major"; pass=$((pass+1)); } || { echo "FAIL: act: held patch issue text"; fail=$((fail+1)); }
+# a grouped bump: the title stays the PR's (GitHub cuts a title off at 256 characters, and a group's members change), every member is in the body and in the check
+GROUP=$(jq -cn '[range(0; 40) | {name: "a-pip-dependency-with-quite-a-long-name-\(.)", from: "1.0.\(.)", to: "1.1.\(.)", major: false, flagged: false, kind: "not-major"}]')
+A="$CLEAN" B="$BREAKS" UPDATES="$GROUP" act; expect "a held group of 40 updates -> one issue titled by the PR, failure check published" "+issue create --title bump held: PR #99 --body-file" "+$CHK" ERRORED=0
+grep -q "a-pip-dependency-with-quite-a-long-name-0 1.0.0→1.1.0, " "$w/run/work/pr-99/issue.md" && grep -q "a-pip-dependency-with-quite-a-long-name-39 1.0.39→1.1.39" "$w/run/work/pr-99/issue.md" \
+  && { echo "ok: act: the group's members are named in the issue body, first to last"; pass=$((pass+1)); } || { echo "FAIL: act: group members in the issue"; fail=$((fail+1)); }
 
 # REQ-DEP-001-AC13: a verdict that is not success first fails the review gate's own check on that head (same name, same App token, the gate's
 # own fields); a success publishes nothing on the gate; without the gate failure the reviewer's own check does not go up
@@ -867,9 +888,13 @@ case "$1 $2" in
   "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   # the review gate's own check on a head (the App's latest): GATE99 / GATE90, none unless set
-  "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate") [ "${GATELOOKUP:-}" = fail ] && exit 1; echo "${GATE99:-none}" ;;
+  "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate") [ "${GATELOOKUP:-}" = fail ] && exit 1
+              if [ -n "${GATE99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" <<<"$GATE99_JSON"   # the step's own filter, run for real
+              else echo "${GATE99:-none}"; fi ;;
+  "api repos/o/r/commits/"*"/check-runs?check_name=auditor-review-gate") echo none ;;   # every other head: no gate check
+  "api repos/o/r/commits/sha77/check-runs?check_name=dependabot-reviewer") echo "${PRIOR77:-none}" ;;   # #77: a PR whose title and body name no update that can be read
   "api repos/o/r/commits/sha90/check-runs?check_name=auditor-review-gate"|"api repos/o/r/commits/sha91/check-runs?check_name=auditor-review-gate") echo "${GATE90:-none}" ;;
-  "pr view") case "$3" in 90) v="${ARMED90:-${ARMED99:-false}}" ;; *) v="${ARMED99:-false}" ;; esac   # the PR as GitHub gives it, read by the step's own filter
+  "pr view") case "$3" in 90) v="${ARMED90:-${ARMED99:-false}}" ;; 77) v="${ARMED77:-false}" ;; *) v="${ARMED99:-false}" ;; esac   # the PR as GitHub gives it, read by the step's own filter
               h="sha$3"; [ "${MOVED:-}" = "$3" ] && h=shaNEW
               case "$v" in true) j='{"state":"OPEN","headRefOid":"'$h'","autoMergeRequest":{"mergeMethod":"SQUASH"}}' ;; closed) j='{"state":"MERGED","headRefOid":"'$h'","autoMergeRequest":null}' ;; *) j='{"state":"OPEN","headRefOid":"'$h'","autoMergeRequest":null}' ;; esac
               f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" <<<"$j" ;;
@@ -931,10 +956,50 @@ PRIOR99=failure GATELOOKUP=fail cand "91 none," 1 "the gate's check cannot be re
 PRIOR99=neutral GATE99=success cand "99 neutral,91 none," 0 "a neutral verdict whose gate check says success -> failed again, then reviewed"
 also "candidates: the gate's check is failed again over the neutral verdict" "+$GFAIL"
 PRIOR99=neutral GATE99=success GATEFAIL=1 cand "91 none," 1 "the gate's check cannot be failed again over a neutral verdict -> skipped this hour, the step fails"
-PRIOR99=success GATE99=success cand "91 none," 0 "a success verdict: the gate's check is never touched"
-also "candidates: no gate lookup and no gate publish over a success verdict" "-auditor-review-gate"
+# the other way round: a head the reviewer passed whose gate failure is older than the six hours the gate's sweep looks back never gets
+# judged again; the failure is published anew (never a success), which puts it back in the sweep's window
+GREFRESH="$GFAIL .*passed this head, and this check last failed more than six hours ago"
+PRIOR99=success GATE99=stale cand "91 none," 0 "a success verdict over a stale gate failure"
+also "candidates: the stale gate failure is published again, as a failure" "+$GREFRESH" "-name=auditor-review-gate.*conclusion=success"
+PRIOR99=success GATE99=success cand "91 none," 0 "a success verdict over a gate success"
+also "candidates: a gate success over a success verdict is left alone" "-check-runs -f name=auditor-review-gate"
+PRIOR99=success GATE99=failure cand "91 none," 0 "a success verdict over a gate failure of the last six hours"
+also "candidates: a recent gate failure is left to the sweep, which still judges it" "-check-runs -f name=auditor-review-gate"
+PRIOR99=success cand "91 none," 0 "a success verdict with no gate check yet"
+also "candidates: nothing to refresh without a gate check" "-check-runs -f name=auditor-review-gate"
+PRIOR99=success GATE99=stale GATEFAIL=1 cand "91 none," 1 "the stale gate failure cannot be published again -> the step fails (retried next hour)"
+PRIOR99=success GATELOOKUP=fail cand "91 none," 1 "the gate's check cannot be read over a success verdict -> the step fails"
+ONLY=99 PARENT=p1 PRIORP1=success GATE99=stale cand "" 0 "a carried success over a stale gate failure"
+also "candidates: the carried success is published, then the stale gate failure again" "+name=dependabot-reviewer -f head_sha=sha99 .*conclusion=success" "+$GREFRESH"
+PRIOR99=failure GATE99=stale cand "91 none," 0 "a failure verdict over a stale gate failure"
+also "candidates: a stale gate failure over a failure verdict is not published again" "-check-runs -f"
+# the step's own filter over check runs as GitHub lists them: the App's newest by completion time decides; six hours is the line
+runs_json() { jq -cn --argjson r "$1" '{check_runs: [$r[] | {conclusion: .[0], completed_at: .[1], app: {slug: (.[2] // "fosterstack-automation")}}]}'; }
+RECENT=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); OLD=$(date -u -d '-7 hours' +%Y-%m-%dT%H:%M:%SZ); OLDER=$(date -u -d '-9 hours' +%Y-%m-%dT%H:%M:%SZ)
+PRIOR99=success GATE99_JSON=$(runs_json "[[\"failure\",\"$OLD\"]]") cand "91 none," 0 "real check runs: a gate failure seven hours old over a success verdict"
+also "candidates: seven hours is stale: published again" "+$GREFRESH"
+PRIOR99=success GATE99_JSON=$(runs_json "[[\"failure\",\"$RECENT\"]]") cand "91 none," 0 "real check runs: a gate failure two hours old over a success verdict"
+also "candidates: two hours is inside the sweep's window: left alone" "-check-runs -f name=auditor-review-gate"
+PRIOR99=success GATE99_JSON=$(runs_json "[[\"failure\",\"$OLDER\"],[\"success\",\"$OLD\"]]") cand "91 none," 0 "real check runs: an old failure, then a later success"
+also "candidates: the newest check is the success: left alone" "-check-runs -f name=auditor-review-gate"
+PRIOR99=success GATE99_JSON=$(runs_json "[[\"success\",\"$OLDER\"],[\"failure\",\"$OLD\"]]") cand "91 none," 0 "real check runs: an old success, then a later failure that is stale now"
+also "candidates: the newest check is the stale failure: published again" "+$GREFRESH"
+PRIOR99=success GATE99_JSON=$(runs_json "[[\"failure\",\"$OLD\",\"github-actions\"]]") cand "91 none," 0 "real check runs: a same-named check from another app"
+also "candidates: another app's check is not the gate's: nothing published" "-check-runs -f name=auditor-review-gate"
+PRIOR99=failure GATE99_JSON=$(runs_json "[[\"failure\",\"$OLDER\"],[\"success\",\"$RECENT\"]]") cand "91 none," 0 "real check runs: a gate success newer than its failure, over a failure verdict"
+also "candidates: the gate success over the failure verdict is failed again" "+$GFAIL .*verdict on this head is failure"
+
+# REQ-DEP-001-AC10: a PR whose update lines cannot be read is read like any other, and is not the lane's: an arm with no verdict comes off first
+jq -n '[{number: 77, title: "An odd title", body: "nothing here names an update", headRefOid: "sha77"}]' > "$w/prs-unparsed.json"
+PRSFILE="$w/prs-unparsed.json" ARMED77=true cand "77 none," 0 "an armed PR whose updates cannot be read, no verdict -> a candidate"
+also "candidates: its arm is turned off before the review (it is not the lane's)" "+pr merge --disable-auto 77"
+[ ! -s "$w/cand/work/lane-arms.txt" ] && [ "$(jq -c '[.[]|[.kind, .major, .flagged]]' "$w/cand/work/updates-77.json")" = '[["unparsed",false,false]]' ] \
+  && { echo "ok: candidates: the unreadable PR is not remembered as a lane arm; its one update is of kind unparsed"; pass=$((pass+1)); } \
+  || { echo "FAIL: candidates: unparsed PR"; cat "$w/cand/work/lane-arms.txt" "$w/cand/work/updates-77.json"; fail=$((fail+1)); }
+PRSFILE="$w/prs-unparsed.json" cand "77 none," 0 "an unarmed PR whose updates cannot be read -> a candidate, nothing to turn off"
+also "candidates: no disarm call for it" "-disable-auto"
 GATE99=success cand "99 none,91 none," 0 "a head with no verdict: the gate's check is not touched here (the act step fails it with any verdict that is not success)"
-also "candidates: no gate publish for a head with no verdict" "-name=auditor-review-gate"
+also "candidates: no gate publish for a head with no verdict" "-check-runs -f name=auditor-review-gate"
 PRIOR99=success FORCE=true DISARMFAIL=1 ARMED99=true cand "" 1 "force: auto-merge cannot be turned off -> skipped, step fails (the stub shows #91 armed too: skipped as well)"
 PRIOR99=success ARMED99=false cand "91 none," 0 "a success verdict whose PR someone disarmed is left alone (no re-arm, round-4 P1)"
 ARMED99=true cand "99 none,91 none," 0 "armed with no verdict (cancelled mid-act) -> disarmed BEFORE review (round-4 P1)"

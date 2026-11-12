@@ -40,6 +40,8 @@ def fake_run(cmd):
     calls.append(cmd)
     if cmd[:3] == ["gh", "api", "-H"]:
         assert cmd[3:] == ["Accept: application/vnd.github.diff", "repos/{owner}/{repo}/compare/main..." + HEAD], cmd
+        if os.environ.get("BINARY"):
+            return "diff --git a/logo.png b/logo.png\nindex 1..2 100644\nBinary files a/logo.png and b/logo.png differ\n", 0
         return ("" if os.environ.get("NODIFF") else "-uses: actions/checkout@aaaa # v4.2.2\n+uses: actions/checkout@bbbb # v7.0.1\n"), (1 if os.environ.get("NODIFF") else 0)
     if cmd[:2] == ["gh", "api"] and "/pulls/99/commits?" in cmd[2]:
         return ("", 1) if os.environ.get("COMMITS") == "fail" else (json.dumps(commits if "page=1" in cmd[2] else []), 0)
@@ -96,6 +98,15 @@ except SystemExit as e:
     code = e.code
 check(code == 3 and not os.path.exists("out2/bundle.md"), "no diff -> exit 3 and no bundle (no review)")
 del os.environ["NODIFF"]
+os.environ["BINARY"] = "1"
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        class C(A): out = "out2b"
+        r.cmd_gather(C); code = 0
+except SystemExit as e:
+    code = e.code
+check(code == 3 and not os.path.exists("out2b/bundle.md"), "a diff that names a changed binary file -> exit 3 and no bundle (its bytes cannot be given to the readers)")
+del os.environ["BINARY"]
 def gather_to(out):
     class G(A): pass
     G.out = out
