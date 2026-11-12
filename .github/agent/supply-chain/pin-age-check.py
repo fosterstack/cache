@@ -51,7 +51,7 @@ def parse_time(s, clock=False):
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
     d = d.replace(tzinfo=dt.timezone.utc)
     if frac and not clock:
-        d += dt.timedelta(seconds=1)   # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated: an age is never over-counted (AC3)
+        d += dt.timedelta(seconds=1)   # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated: a publication time is never shown earlier than it was
     return d
 
 
@@ -1117,7 +1117,7 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     return out
 
 
-GO_INSTALL_REASON = "Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies"
+GO_INSTALL_REASON = "Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Nov 11 2026, REQ-SUP-001-AC27); the advisory check still applies"
 _GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
 _GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
 _GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')

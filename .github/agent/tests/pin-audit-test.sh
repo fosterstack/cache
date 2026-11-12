@@ -132,8 +132,14 @@ assert "actions/checkout" in title and "GHSA-aaaa-bbbb-cccc" in title, title
 body = open(sys.argv[2]).read()
 assert "v4.1.0" in body and "GHSA-aaaa-bbbb-cccc" in body, body
 PY
-CASE="the rollback is the NEWEST CLEAN version: v4.3.0 (not the affected v4.2.0), whatever its age"
-check grep -q 'v4.3.0' "$work/hit.gh.bodies"; check bash -c "! grep -q 'roll back to v4.2.0\|rollback: v4.2.0' '$work/hit.gh.bodies'"
+run newest "$(python3 - "$HIT_GH" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); v = d["versions"]["actions/checkout"]; v[0]["lists"] = v[1]["lists"]; print(json.dumps(d))
+PY
+)" "$work/r-cur"
+CASE="the rollback is the NEWEST CLEAN version: with v4.3.0 and v4.2.0 both affected it is v4.1.1, whatever its age"
+check grep -qx 'Rollback: pin the newest clean version: v4.1.1.*' "$work/newest.gh.bodies"
+check bash -c "! grep '^Rollback:' '$work/newest.gh.bodies' | grep -q 'v4\.[23]\.0'"
 CASE="a hit on a PR's NEW pin (present in its head, absent from its base: it has not run) with a clean rollback available is NOT labelled owner-decision"
 run hitpr "$HIT_GH" "$work/r-pr" --base HEAD~1
 check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/hitpr.gh"; check none_match 'owner-decision' "$work/hitpr.gh"; check grep -q 'v4.3.0' "$work/hitpr.gh.bodies"
@@ -551,7 +557,7 @@ line = lambda rb: [l for l in pa.body_of(f, rb, True, False, "2026-10-05").split
 assert line({"version": "v2", "sha": "2" * 40, "published": None}) == "Rollback: pin the newest clean version: v2 (commit " + "2" * 40 + ").", line({"version": "v2", "sha": "2" * 40, "published": None})
 assert line({"version": "v2", "sha": None, "published": "2026-08-01T00:00:00Z"}).endswith("v2, published 2026-08-01T00:00:00Z."), "x"
 PY
-CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges can never pass the age check; commits, digests and dotted numbers can"
+CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges are never a pin; commits, digests and dotted numbers can"
 check python3 - "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
