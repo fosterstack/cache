@@ -25,8 +25,11 @@ export RELEASE_BIN="${RELEASE_BIN:-$root/bin}"
 export RELEASE_ROOT="$root"
 export REPO_ROOT="$root"
 python3 - "$@" <<'PY'
-import ast, base64, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
+import ast, atexit, base64, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
+SCRATCH = tempfile.mkdtemp()
+tempfile.tempdir = SCRATCH      # every tree below is made inside SCRATCH
+atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
 SENT = {"DOCKERHUB_USERNAME": "sentinel-user-91", "DOCKERHUB_TOKEN": "SENTINEL-HUB-TOKEN-5c2e", "GH_TOKEN": "SENTINEL-GH-TOKEN-b814"}
 passn, failn = 0, 0
 def ok(l): global passn; passn += 1; print("ok   " + l)
