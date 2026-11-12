@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""The supply-chain audit (REQ-SUP-001-AC5 to AC10): advisories, malicious-package reports, upstream reachability, disputed hits, held-PR re-runs.
+"""The supply-chain audit (REQ-SUP-001-AC5 to AC10): advisories, malicious-package reports, upstream reachability,
+disputed hits, held-PR re-runs.
 
   pin-audit.py --root REPO [--base REV] [--fixtures FILE] [--now ISO] [--gh CMD] [--exceptions FILE] [--rerun-held]
 
-Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull request mode (--base REV): only the
-items the head moved. A hit becomes ONE issue (found again later: updated, never a second issue) labelled supply-chain-hit, naming the version,
-the advisory id and the rollback; it is also labelled owner-decision when no clean version at least 7 days old exists or the version ran in the last
-90 days. A disputed hit (the two lists disagree about the same incident) is reported without rolling back unless a checked-in exception applies.
---rerun-held does only the re-run of held pull requests whose moved versions have turned 7 days old; it never touches issues.
+Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull request
+mode (--base REV): only the
+items the head moved. A hit becomes ONE issue (found again later: updated, never a second issue) labelled
+supply-chain-hit, naming the version,
+the advisory id and the rollback; it is also labelled owner-decision when no clean version at least 7 days old exists or
+the version ran in the last
+90 days. A disputed hit (the two lists disagree about the same incident) is reported without rolling back unless a
+checked-in exception applies.
+--rerun-held does only the re-run of held pull requests whose moved versions have turned 7 days old; it never touches
+issues.
 Exit 0: clean (or only excepted disputes); 1: a hit or an unexcepted disputed hit; 2: it could not do its job.
 Only public facts go in an issue: versions, advisory ids, dates. It never produces run, environment or secret names.
 """
@@ -50,7 +56,8 @@ class Fail(Exception):
     """The audit could not do its job (exit 2)."""
 
 
-_ADVISORY = (("vulnerabilities", list),)      # a GitHub advisory answer holds its vulnerabilities list; the package, range and updated_at inside are read fail closed
+# a GitHub advisory answer holds its vulnerabilities list; the package, range and updated_at inside are read fail closed
+_ADVISORY = (("vulnerabilities", list),)
 
 
 # ---------- versions and ranges (OSV events, GitHub's comma-separated comparators) ----------
@@ -66,7 +73,8 @@ SUBPROCESS_TIMEOUT = 120
 
 
 def _run(cmd, **kw):
-    """subprocess.run with a timeout (the gh and git calls of this file); a hung one stops the run (a Fail: never reported as a clean day).
+    """subprocess.run with a timeout (the gh and git calls of this file); a hung one stops the run (a Fail: never
+    reported as a clean day).
     The gh helpers shared with pin-age-check.py have their own timeout there."""
     try:
         return subprocess.run(cmd, **dict({"timeout": SUBPROCESS_TIMEOUT}, **kw))
@@ -75,10 +83,12 @@ def _run(cmd, **kw):
 
 
 def _vt(v):
-    """(release numbers without trailing zeros, class, suffix parts): class 0 = pre-release (before the final), 1 = final, 2 = post-release.
+    """(release numbers without trailing zeros, class, suffix parts): class 0 = pre-release (before the final), 1 =
+    final, 2 = post-release.
     1.0.0-rc.1 and 1.0.0rc1 are BEFORE 1.0.0; 1.0.post1 is AFTER 1.0; 1.2 equals 1.2.0.
     A suffix of any other kind raises ValueError (callers read it as affected)."""
-    m = re.match(r"^v?(\d+(?:\.\d+)*)(.*)$", str(v).split("+", 1)[0].strip(), re.I)  # build metadata (+build.1) does not order versions
+    # build metadata (+build.1) does not order versions
+    m = re.match(r"^v?(\d+(?:\.\d+)*)(.*)$", str(v).split("+", 1)[0].strip(), re.I)
     if not m:
         raise ValueError(f"not a version: {v}")
     nums = [int(x) for x in m.group(1).split(".")]
@@ -105,13 +115,19 @@ def _cmp(a, b):
     return (kx > ky) - (kx < ky)
 
 
-_SEMVER = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+_SEMVER = re.compile(
+    r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
 
 
 def _semver_key(v):
-    """Strict semver 2.0 ordering key (Go versions, pseudo-versions and +incompatible included): a pre-release is below its release, its identifiers
-    compare numerically when numeric and lexically otherwise (numeric below alphanumeric), build metadata is ignored. Identifiers that
-    SemVer 2.0.0 forbids (empty, or numeric with a leading zero) make the value unparsable, which callers read as affected. The OSV value "0" is the minimum."""
+    """Strict semver 2.0 ordering key (Go versions, pseudo-versions and +incompatible included): a pre-release is below
+    its release, its identifiers
+    compare numerically when numeric and lexically otherwise (numeric below alphanumeric), build metadata is ignored.
+    Identifiers that
+    SemVer 2.0.0 forbids (empty, or numeric with a leading zero) make the value unparsable, which callers read as
+    affected. The OSV value "0" is the minimum."""
     if str(v) == "0":
         return (-1,)
     m = _SEMVER.fullmatch(str(v))
@@ -130,7 +146,8 @@ def _semver_cmp(a, b):
 
 
 def covered_by_events(version, events, semver=False):
-    """Is the version inside the OSV range described by the events? semver=True compares strictly as semver (Go); the default also reads the
+    """Is the version inside the OSV range described by the events? semver=True compares strictly as semver (Go); the
+    default also reads the
     post-release forms of other ecosystems. A value that cannot be ordered is never read as unaffected."""
     try:
         return _covered_by_events(version, events, _semver_cmp if semver else _cmp)
@@ -139,8 +156,10 @@ def covered_by_events(version, events, semver=False):
 
 
 def _covered_by_events(version, events, cmp):
-    """OSV range events: sort by version (introduced "0" is the minimum element; at one version introduced comes before fixed, so the fixed wins), then
-    introduced switches affected on, fixed and last_affected (after it) switch it off. A limit is an upper bound: the version must be below ANY limit."""
+    """OSV range events: sort by version (introduced "0" is the minimum element; at one version introduced comes before
+    fixed, so the fixed wins), then
+    introduced switches affected on, fixed and last_affected (after it) switch it off. A limit is an upper bound: the
+    version must be below ANY limit."""
     order = {"introduced": 0, "fixed": 1, "last_affected": 1}
     kinds = [(k, e[k]) for e in events for k in order if k in e]
     kinds.sort(key=lambda ke: (ke != ("introduced", "0"), functools.cmp_to_key(cmp)(ke[1]), order[ke[0]]))
@@ -194,7 +213,8 @@ class FixtureNet:
         return version_of(item)
 
     def open_pr_items(self):
-        return [(p["number"], [inv.Item(*_split_key(k)) for k in p.get("items", [])]) for p in (self.fx.get("open_prs") or [])]
+        return [(p["number"], [inv.Item(*_split_key(k)) for k in p.get("items", [])]) for p
+                in (self.fx.get("open_prs") or [])]
 
     def live_ranges(self, item, source, advisory_id):
         return (self.fx.get("live_ranges") or {}).get(advisory_id)
@@ -221,21 +241,28 @@ class FixtureNet:
         return self.fx.get("observed")
 
 
-GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
+GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype",
+            "syft": "github.com/anchore/syft",
             "osv": "github.com/google/osv-scanner/v2", "golangci-lint": "github.com/golangci/golangci-lint/v2",
-            "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign/v3",
+            "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli",
+            "cosign": "github.com/sigstore/cosign/v3",
             "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3",
-            "go": "stdlib"}   # Go's own toolchain: the Go vulnerability database files the standard library under the package stdlib (REQ-SUP-001-AC27: the exempt release is still audited)
+            # Go's own toolchain: the Go vulnerability database files the standard library under the package stdlib
+            # (REQ-SUP-001-AC27: the exempt release is still audited)
+            "go": "stdlib"}
 NPM_TOOLS = {"snyk": "snyk"}
 
-# REQ-SUP-001-AC14: Go gives a module of major N >= 2 the path ending in /vN, and majors 0 and 1 the bare path. The table above holds the path of the
-# major we pin; a pin that moves to another major must move its table entry in the same change (the audit fails closed, a hit, until it does).
+# REQ-SUP-001-AC14: Go gives a module of major N >= 2 the path ending in /vN, and majors 0 and 1 the bare path. The
+# table above holds the path of the
+# major we pin; a pin that moves to another major must move its table entry in the same change (the audit fails closed,
+# a hit, until it does).
 _PLAIN_VERSION = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 IGNORED_NOTE = "ignored advisory entry"
 
 
 class GoRule:
-    """AC14: the module paths of one pinned tool. major and right are None for a non-empty version that is not plain MAJOR.MINOR.PATCH."""
+    """AC14: the module paths of one pinned tool. major and right are None for a non-empty version that is not plain
+    MAJOR.MINOR.PATCH."""
 
     def __init__(self, item, version):
         self.table = GO_TOOLS[item.name]
@@ -246,17 +273,21 @@ class GoRule:
 
     @property
     def paths(self):
-        """Every path OSV and GitHub are asked for: the table path, the path of the pinned major and the bare path (AC14: queried by /vMAJOR as well)."""
+        """Every path OSV and GitHub are asked for: the table path, the path of the pinned major and the bare path
+        (AC14: queried by /vMAJOR as well)."""
         return list(dict.fromkeys([self.table, self.right, self.bare] if self.right else [self.table, self.bare]))
 
 
 def _without_paths(record):
-    """The record with every affected entry's package removed, so that one name filter (_osv_says) takes all entries into account."""
+    """The record with every affected entry's package removed, so that one name filter (_osv_says) takes all entries
+    into account."""
     return dict(record, affected=[dict(a, package={}) for a in record["affected"]])
 
 
-# AC14: the allow-schema of a well-formed OSV Go record, as the Go vulnerability database writes it. The keys are the ones real records carry (see
-# the fixtures) plus the OSV schema's versions and severity. Anything else, a wrong type or an empty string is not trusted: the record is a hit.
+# AC14: the allow-schema of a well-formed OSV Go record, as the Go vulnerability database writes it. The keys are the
+# ones real records carry (see
+# the fixtures) plus the OSV schema's versions and severity. Anything else, a wrong type or an empty string is not
+# trusted: the record is a hit.
 _ENTRY_KEYS = {"package", "ranges", "versions", "ecosystem_specific", "database_specific", "severity"}
 _PACKAGE_KEYS = {"ecosystem", "name", "purl"}
 _RANGE_KEYS = {"type", "events", "repo", "database_specific"}
@@ -268,22 +299,26 @@ def _text(x):
 
 
 def _readable_record(v):
-    """AC14: the metadata read from a record (OSV schema: id and modified are required strings; aliases is a list of strings, absent or null)."""
+    """AC14: the metadata read from a record (OSV schema: id and modified are required strings; aliases is a list of
+    strings, absent or null)."""
     aliases = v.get("aliases") if isinstance(v, dict) else None
     return (isinstance(v, dict) and _text(v.get("id")) and _text(v.get("modified"))
             and (aliases is None or (isinstance(aliases, list) and all(isinstance(a, str) for a in aliases))))
 
 
 def _well_formed_event(event, allow_limit):
-    """One of the OSV event keys, alone, with a non-empty string value that has no v prefix (Go records have none). A limit event belongs to GIT ranges."""
+    """One of the OSV event keys, alone, with a non-empty string value that has no v prefix (Go records have none). A
+    limit event belongs to GIT ranges."""
     if not (isinstance(event, dict) and len(event) == 1):
         return False
     (key, value), = event.items()
-    return (key in _EVENT_KEYS and (allow_limit or key != "limit") and _text(value) and not value.lower().startswith("v"))
+    return (key in _EVENT_KEYS and (allow_limit or key != "limit") and _text(value)
+            and not value.lower().startswith("v"))
 
 
 def _well_formed_range(rg):
-    """Every range lists events with an introduced among them (their order is free, the evaluator sorts) and not both fixed and last_affected;
+    """Every range lists events with an introduced among them (their order is free, the evaluator sorts) and not both
+    fixed and last_affected;
     a GIT range also names its repo and is never read for a version; a SEMVER or ECOSYSTEM range has no limit."""
     if not (isinstance(rg, dict) and set(rg) <= _RANGE_KEYS and rg.get("type") in ("SEMVER", "ECOSYSTEM", "GIT")):
         return False
@@ -301,7 +336,9 @@ def _well_formed_package(package):
 
 
 def _well_formed_severity(severity):
-    return isinstance(severity, list) and all(isinstance(x, dict) and _text(x.get("type")) and _text(x.get("score")) for x in severity)
+    return isinstance(severity,
+                      list) and all(isinstance(x, dict) and _text(x.get("type")) and _text(x.get("score")) for x
+                                    in severity)
 
 
 def _well_formed_entry(entry):
@@ -325,13 +362,17 @@ def _reads_git(entry):
 
 
 def _decidable(entry):
-    """AC14: an exact-path entry may clear a version only if it is Go and its ranges are all SEMVER or ECOSYSTEM (a GIT range cannot be judged by version)."""
-    return entry["package"].get("ecosystem") == "Go" and bool(entry.get("ranges")) and all(rg["type"] != "GIT" for rg in entry["ranges"])
+    """AC14: an exact-path entry may clear a version only if it is Go and its ranges are all SEMVER or ECOSYSTEM (a GIT
+    range cannot be judged by version)."""
+    return (entry["package"].get("ecosystem") == "Go" and bool(entry.get("ranges"))
+            and all(rg["type"] != "GIT" for rg in entry["ranges"]))
 
 
 def _go_rule(item, version):
-    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table (the Go toolchain itself is asked as stdlib and toolchain, not by module path), other kinds of item, an empty version."""
-    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and item.name != "go" and version else None
+    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table (the Go
+    toolchain itself is asked as stdlib and toolchain, not by module path), other kinds of item, an empty version."""
+    return GoRule(item,
+                  version) if item.kind == "tool" and item.name in GO_TOOLS and item.name != "go" and version else None
 
 
 class LiveNet:
@@ -339,12 +380,16 @@ class LiveNet:
         self.gh, self.root = gh, root
         self._memo, self._lock = {}, threading.Lock()
         self.incomplete_prs = []
-        self.ignored_entries, self._reported = [], 0   # AC14: every OSV entry the rule did not use, {"id", "path", "reason"}, each once
+        # AC14: every OSV entry the rule did not use, {"id", "path", "reason"}, each once
+        self.ignored_entries, self._reported = [], 0
 
     def _gh_json(self, path, *, need=None, rows=None, strict=False):
-        """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent').
-        The caller says what it reads: `need` ((key, type), ...) for an object answer, `rows` for a list whose every row is an object holding those keys
-        (exactly one of the two, no default): an answer of another shape, or without a needed key, is Fail, never 'nothing there'."""
+        """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not
+        'absent').
+        The caller says what it reads: `need` ((key, type), ...) for an object answer, `rows` for a list whose every row
+        is an object holding those keys
+        (exactly one of the two, no default): an answer of another shape, or without a needed key, is Fail, never
+        'nothing there'."""
         if (need is None) == (rows is None):
             raise TypeError("_gh_json needs exactly one of need= (an object answer) and rows= (a list answer)")
         val = self._gh_json_raw(path, strict)
@@ -370,11 +415,14 @@ class LiveNet:
         try:
             val = None if r.returncode else json.loads(r.stdout)
         except ValueError:
-            raise Fail(f"gh api {path.split('?')[0]} did not return JSON")      # in either mode: a body that is not JSON is not 'absent'
+            # in either mode: a body that is not JSON is not 'absent'
+            raise Fail(f"gh api {path.split('?')[0]} did not return JSON")
         if val is None and not r.returncode:
-            raise Fail(f"gh api {path.split('?')[0]} returned null")      # a decoded null is not 'absent' either; only a 404 is
+            # a decoded null is not 'absent' either; only a 404 is
+            raise Fail(f"gh api {path.split('?')[0]} returned null")
         if strict and r.returncode:
-            if "(HTTP 404)" not in r.stderr + r.stdout or "?" in path:      # only a 404 on a record is "absent"; a list endpoint answers 200
+            # only a 404 on a record is "absent"; a list endpoint answers 200
+            if "(HTTP 404)" not in r.stderr + r.stdout or "?" in path:
                 raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
         with self._lock:
             self._memo[(path, strict)] = val
@@ -384,13 +432,15 @@ class LiveNet:
         vulns, token = [], None
         for _ in range(20):
             body = dict(q, **({"page_token": token} if token else {}))
-            req = urllib.request.Request("https://api.osv.dev/v1/query", json.dumps(body).encode(), {"Content-Type": "application/json"})
+            req = urllib.request.Request("https://api.osv.dev/v1/query", json.dumps(body).encode(),
+                                         {"Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=30) as r:
                     d = json.load(r)
             except (OSError, ValueError) as e:
                 raise Fail(f"the OSV query failed: {e}")
-            age._shaped(d, (), "the OSV query answer")      # "vulns" and "next_page_token" are optional: OSV answers {} for no vulnerabilities
+            # "vulns" and "next_page_token" are optional: OSV answers {} for no vulnerabilities
+            age._shaped(d, (), "the OSV query answer")
             page = d.get("vulns", [])
             if not isinstance(page, list) or not isinstance(d.get("next_page_token", ""), str):
                 raise Fail("the OSV query answered with vulns that are not a list or a page token that is not text")
@@ -403,7 +453,8 @@ class LiveNet:
 
     def _osv_get(self, advisory_id):
         try:
-            with urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(advisory_id)}", timeout=30) as r:
+            with urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(advisory_id)}",
+                                        timeout=30) as r:
                 return age._shaped(json.load(r), (("id", str),), "the OSV record")
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -428,7 +479,8 @@ class LiveNet:
 
     @staticmethod
     def _object_of(answer):
-        """The {type, sha} object of a git ref or tag answer (None for a miss); an object without a text type and sha is unreadable."""
+        """The {type, sha} object of a git ref or tag answer (None for a miss); an object without a text type and sha is
+        unreadable."""
         if answer is None:
             return None
         try:
@@ -452,9 +504,12 @@ class LiveNet:
     def _version_of(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):
             tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)]
-            if tags:  # the most specific tag at the commit (v4.1.5 over v4): a coarse label must not move the commit out of a range
+            # the most specific tag at the commit (v4.1.5 over v4): a coarse label must not move the commit out of a
+            # range
+            if tags:
                 return sorted(tags, key=lambda t: (t.count("."), len(t)), reverse=True)[0]
-            return None  # no tag at the commit resolves to a version: even a # label is only a comment, so the commit is UNRESOLVED
+            # no tag at the commit resolves to a version: even a # label is only a comment, so the commit is UNRESOLVED
+            return None
         return item.version  # a tag/branch ref, or a tool/package version
 
     def _query(self, item, version):
@@ -467,14 +522,17 @@ class LiveNet:
         mod = None
         if item.kind == "gotool":
             # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
-            mod = age._go_module(item.name, item.version)[0]   # a proxy outage is CouldNotLook (exit 2), never "not covered"
+            # a proxy outage is CouldNotLook (exit 2), never "not covered"
+            mod = age._go_module(item.name, item.version)[0]
         elif item.kind == "tool":
-            mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
+            mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name)
+                                              else None)
         return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
 
     @staticmethod
     def _ranges_of(adv, names):
-        """(readable ranges, unreadable?) of an advisory's entries for our package: an entry with a null, empty or missing range cannot be evaluated, so it counts as a hit (fail closed)."""
+        """(readable ranges, unreadable?) of an advisory's entries for our package: an entry with a null, empty or
+        missing range cannot be evaluated, so it counts as a hit (fail closed)."""
         rngs, unreadable = [], False
         for x in age._dicts((adv or {"vulnerabilities": []})["vulnerabilities"], "an advisory's vulnerabilities", ()):
             if _norm_name((x.get("package") or {}).get("name", "")) not in names:
@@ -487,24 +545,30 @@ class LiveNet:
         return rngs, unreadable
 
     def live_ranges(self, item, source, advisory_id):
-        """The authoritative advisory's affected ranges for this package, read live (GitHub only: the rulings so far name GitHub)."""
+        """The authoritative advisory's affected ranges for this package, read live (GitHub only: the rulings so far
+        name GitHub)."""
         if str(source).lower() != "github":
             return None
         adv = self._gh_json(f"advisories/{advisory_id}", need=_ADVISORY, strict=True)
         q = self._query(item, self._version_of(item) or "")
-        names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
+        names = {_norm_name(package_of(item)),
+                 _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
         rule = _go_rule(item, self._version_of(item) or "")
-        names |= {_norm_name(p) for p in (rule.paths if rule else [])}   # AC14: GitHub files some Go ranges under the bare path
+        # AC14: GitHub files some Go ranges under the bare path
+        names |= {_norm_name(p) for p in (rule.paths if rule else [])}
         rngs, unreadable = self._ranges_of(adv, names)
-        return None if unreadable else (rngs or None)   # an entry of ours with no readable range: the ranges are not known, never a narrower list
+        # an entry of ours with no readable range: the ranges are not known, never a narrower list
+        return None if unreadable else (rngs or None)
 
     def covered(self, item):
-        """Is there an advisory source for this kind of item at all? (None-query items are reported as not checked, never as clean.)"""
+        """Is there an advisory source for this kind of item at all? (None-query items are reported as not checked,
+        never as clean.)"""
         v = self._version_of(item)
         return bool(v) and self._query(item, v) is not None
 
     def lists(self, item):
-        if item.kind == "action" and inv.SHA40.match(item.version):  # EVERY version-like tag at the commit: one tag must not hide another's advisory
+        # EVERY version-like tag at the commit: one tag must not hide another's advisory
+        if item.kind == "action" and inv.SHA40.match(item.version):
             tags = self._bounded([t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)])
             if len(tags) > 1:
                 gh_all, osv_all = [], []
@@ -515,7 +579,8 @@ class LiveNet:
                     gh_all += [tag_(x) for x in g]
                     osv_all += [tag_(x) for x in o]
                 return gh_all, osv_all
-        if item.kind == "tool" and item.name == "go":   # the Go database files the standard library under stdlib and the go command under toolchain: both are asked
+        # the Go database files the standard library under stdlib and the go command under toolchain: both are asked
+        if item.kind == "tool" and item.name == "go":
             gh_all, osv_all = [], []
             for pkg in ("stdlib", "toolchain"):
                 g, o = self._lists_for(item, self._version_of(item), pkg)
@@ -533,36 +598,47 @@ class LiveNet:
         rule = _go_rule(item, version)
         paths = rule.paths if rule else [q["package"]["name"]]
         for copies in self._osv_records(q, paths, strict=bool(rule)).values():
-            v = dict(copies[0], aliases=sorted({a for c in copies for a in (c.get("aliases") or [])}))   # AC14: the aliases of every copy
+            # AC14: the aliases of every copy
+            v = dict(copies[0], aliases=sorted({a for c in copies for a in (c.get("aliases") or [])}))
             if rule:
-                says = any([self._go_says(c, rule, version) for c in copies])   # AC14: a copy that is unsettled or affected makes the record a hit
+                # AC14: a copy that is unsettled or affected makes the record a hit
+                says = any([self._go_says(c, rule, version) for c in copies])
             else:
                 says = self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
-            osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")})
-            for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
+            osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"),
+                        "malicious": v["id"].startswith("MAL-")})
+            # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
+            for alias in [v["id"], *v.get("aliases", [])]:
                 if alias.startswith("GHSA-"):
                     adv = self._gh_json(f"advisories/{alias}", need=_ADVISORY, strict=True)
                     names = {_norm_name(q["package"]["name"]), _norm_name(item.name)} | {_norm_name(p) for p in paths}
                     rngs, unreadable = self._ranges_of(adv, names)
                     if adv and (rngs or unreadable):
-                        ghs.append({"id": alias, "incident": v["id"], "affected": unreadable or in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
-        eco = {"actions": "actions", "PyPI": "pip", "Go": "go", "npm": "npm"}.get(q["package"]["ecosystem"].replace("GitHub Actions", "actions"))
+                        ghs.append({"id": alias, "incident": v["id"],
+                                    "affected": unreadable or in_range(version, "|".join(rngs)),
+                                    "modified": adv.get("updated_at")})
+        eco = {"actions": "actions", "PyPI": "pip", "Go": "go",
+               "npm": "npm"}.get(q["package"]["ecosystem"].replace("GitHub Actions", "actions"))
         pkg = q["package"]["name"]
         if eco:
             seen = {g["id"] for g in ghs}
             page = []
             asked = list(dict.fromkeys([pkg, *paths]))
             if q["package"]["ecosystem"] == "PyPI":
-                info = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json", (("info", dict),)) or {"info": {}}
+                info = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json",
+                                      (("info", dict),)) or {"info": {}}
                 published = info["info"].get("name")      # optional, text when there
                 if published is not None and not isinstance(published, str):
                     raise age.CouldNotLook("pypi.org answered with a published name that is not text")
                 if published and published != pkg:
-                    asked.append(published)            # jaraco.context vs jaraco-context: GitHub matches the exact published name
+                    # jaraco.context vs jaraco-context: GitHub matches the exact published name
+                    asked.append(published)
             for typ in ("", "&type=malware"):
               for nm in asked:
                 for n in range(1, 11):
-                    got = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(nm)}{typ}&per_page=100&page={n}", rows=(("ghsa_id", str),), strict=True)
+                    got = self._gh_json(
+                        f"advisories?ecosystem={eco}&affects={urllib.parse.quote(nm)}{typ}&per_page=100&page={n}",
+                        rows=(("ghsa_id", str),), strict=True)
                     if not isinstance(got, list):
                         raise Fail("GitHub's advisory list was not a list: refusing to read it as 'no advisories'")
                     page += got
@@ -570,49 +646,63 @@ class LiveNet:
                         break
                 else:
                     raise Fail("GitHub's advisory list has more than 10 pages")
-            for adv in page:  # GitHub-only advisories (never copied to OSV) and malware reports: the ranges are read here, not trusted to a filter
+            # GitHub-only advisories (never copied to OSV) and malware reports: the ranges are read here, not trusted to
+            # a filter
+            for adv in page:
                 if adv.get("ghsa_id") in seen:
                     continue
                 rngs, unreadable = self._ranges_of(adv, {_norm_name(a) for a in asked})
                 if unreadable or (rngs and in_range(version, "|".join(rngs))):
-                    ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"),
+                    ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True,
+                                "modified": adv.get("updated_at"),
                         "malicious": adv.get("type") == "malware"})
                     rec = self._osv_get(adv["ghsa_id"])
-                    if rec and rec.get("id"):  # OSV knows this incident too: its own verdict for this version decides whether the lists AGREE
-                        osv.append({"id": rec["id"], "incident": adv["ghsa_id"], "affected": self._osv_says(rec, pkg, version, versioned=False),
+                    # OSV knows this incident too: its own verdict for this version decides whether the lists AGREE
+                    if rec and rec.get("id"):
+                        osv.append({"id": rec["id"], "incident": adv["ghsa_id"],
+                                    "affected": self._osv_says(rec, pkg, version, versioned=False),
                                     "modified": rec.get("modified"), "malicious": rec["id"].startswith("MAL-")})
         return ghs, osv
 
     def _osv_records(self, q, paths, strict=False):
-        """The OSV records for the query, asked once per module path (AC14): {id: [the distinct copies returned]}. Copies of one id can differ by path."""
+        """The OSV records for the query, asked once per module path (AC14): {id: [the distinct copies returned]}.
+        Copies of one id can differ by path."""
         records = {}
         for p in paths:
             for v in self._osv_post(dict(q, package=dict(q["package"], name=p))):
                 if strict and not _readable_record(v):
-                    v = {"id": "UNREADABLE-OSV-RECORD", "affected": "not a record"}   # AC14: an answer that is not a record is a hit, with this id
+                    # AC14: an answer that is not a record is a hit, with this id
+                    v = {"id": "UNREADABLE-OSV-RECORD", "affected": "not a record"}
                 copies = records.setdefault(v["id"], [])
                 if v not in copies:
                     copies.append(v)
         return records
 
     def _go_says(self, v, rule, version):
-        """AC14: does this OSV record cover a Go tool's pinned version? Where the rule cannot settle it the answer is yes (fail closed)."""
-        if rule.right is None:                       # AC14: a non-empty version that is not plain MAJOR.MINOR.PATCH is a hit
+        """AC14: does this OSV record cover a Go tool's pinned version? Where the rule cannot settle it the answer is
+        yes (fail closed)."""
+        # AC14: a non-empty version that is not plain MAJOR.MINOR.PATCH is a hit
+        if rule.right is None:
             return True
         if not _well_formed_record(v):
-            return True                              # AC14: one strict schema for every entry the rule reads, before any branch
+            # AC14: one strict schema for every entry the rule reads, before any branch
+            return True
         entries = v["affected"]
         path = lambda a: a["package"]["name"]
         ambiguous = rule.major <= 1 and any(path(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries)
         if (rule.table != rule.right or ambiguous) and any(_reads_git(a) for a in entries):
-            return True                              # AC14: the two branches below skip GIT ranges, so an entry that has one is a hit
-        if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
+            # AC14: the two branches below skip GIT ranges, so an entry that has one is a hit
+            return True
+        # AC14: the table path is for another major: any entry of any path that covers the version is a hit
+        if rule.table != rule.right:
             return self._osv_says(_without_paths(v), "", version, versioned=True, semver=True)
         if ambiguous:
-            return self._osv_says(v, rule.right, version, versioned=True, semver=True)   # AC14: a /v0 or /v1 path is ambiguous: the old verdict
+            # AC14: a /v0 or /v1 path is ambiguous: the old verdict
+            return self._osv_says(v, rule.right, version, versioned=True, semver=True)
         exact = [a for a in entries if path(a) == rule.right]
         if not exact or not all(_decidable(a) for a in exact):
-            return True                              # AC14: no entry for the exact path, or one that is not plainly Go with readable ranges: a hit
+            # AC14: no entry for the exact path, or one that is not plainly Go with readable ranges: a hit
+            return True
         for a in entries:
             if a not in exact:
                 self._log_ignored(v["id"], path(a), self._ignore_reason(a, rule))
@@ -621,25 +711,30 @@ class LiveNet:
     @staticmethod
     def _ignore_reason(entry, rule):
         eco = entry["package"].get("ecosystem")
-        return f"not the module path of major {rule.major} ({rule.right})" if eco == "Go" else f"ecosystem {eco or 'missing'} is not Go"
+        return (f"not the module path of major {rule.major} ({rule.right})" if eco == "Go"
+                else f"ecosystem {eco or 'missing'} is not Go")
 
     def _log_ignored(self, advisory_id, path, reason):
-        """AC14: an entry the rule did not use is logged, once per id, path and reason (two queries return the same record)."""
+        """AC14: an entry the rule did not use is logged, once per id, path and reason (two queries return the same
+        record)."""
         entry = {"id": advisory_id, "path": path, "reason": reason}
         with self._lock:
             if entry not in self.ignored_entries:
                 self.ignored_entries.append(entry)
 
     def take_ignored(self):
-        """The entries logged since the last call. The net is shared by the judging pool, so a line is attached to whichever item's judge drains it first."""
+        """The entries logged since the last call. The net is shared by the judging pool, so a line is attached to
+        whichever item's judge drains it first."""
         with self._lock:
             new, self._reported = self.ignored_entries[self._reported:], len(self.ignored_entries)
         return new
 
     @staticmethod
     def _osv_says(v, name, version, versioned, semver=False):
-        """Does OSV's record cover this version? Each affected entry's ranges are judged separately and OR-ed (never one merged event list)."""
-        entries = [a for a in v.get("affected", []) if (a.get("package") or {}).get("name", "").lower() == name.lower()] or v.get("affected", [])
+        """Does OSV's record cover this version? Each affected entry's ranges are judged separately and OR-ed (never one
+        merged event list)."""
+        entries = [a for a in v.get("affected", [])
+                   if (a.get("package") or {}).get("name", "").lower() == name.lower()] or v.get("affected", [])
         judged = False
         for a in entries:
             for ev in (a.get("versions") or []):
@@ -655,8 +750,11 @@ class LiveNet:
                     if covered_by_events(version, rg.get("events", []), semver):
                         return True
         if not versioned and any(rg.get("type") == "GIT" for a in entries for rg in a.get("ranges", [])):
-            return True  # a commit range cannot be judged by version: unresolved is never "not affected", whatever the other ranges say
-        return versioned and not judged  # a versioned query already filtered by version; with no ranges to read, trust it
+            # a commit range cannot be judged by version: unresolved is never "not affected", whatever the other ranges
+            # say
+            return True
+        # a versioned query already filtered by version; with no ranges to read, trust it
+        return versioned and not judged
 
     def upstream(self, item):
         if item.kind != "action" or not inv.SHA40.match(item.version):
@@ -666,16 +764,20 @@ class LiveNet:
         branch = r.stdout.strip()
         if r.returncode or not branch:
             return False
-        c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{branch}", "--jq", ".status"], capture_output=True, text=True)
+        c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{branch}", "--jq", ".status"],
+                 capture_output=True, text=True)
         self._api_ok(c, item)
-        # compare/<pin>...<branch>: the branch is "ahead" of (or identical to) the pin exactly when the pin is an ancestor of the branch
+        # compare/<pin>...<branch>: the branch is "ahead" of (or identical to) the pin exactly when the pin is an
+        # ancestor of the branch
         if c.stdout.strip() in ("identical", "ahead"):
             return True
         if age._tag_for_commit(item.name, item.version) is not None:
             return True
-        for br in (self._gh_json(f"repos/{item.name}/branches?per_page=100", rows=(("name", str),)) or []):  # a release branch of the same repository
+        # a release branch of the same repository
+        for br in (self._gh_json(f"repos/{item.name}/branches?per_page=100", rows=(("name", str),)) or []):
             if br.get("name") != branch:
-                c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
+                c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq",
+                          ".status"], capture_output=True, text=True)
                 self._api_ok(c, item)
                 if c.stdout.strip() in ("identical", "ahead"):
                     return True
@@ -683,7 +785,8 @@ class LiveNet:
 
     @staticmethod
     def _api_ok(r, item):
-        """A 404/422 means the commit or repo is not there (a finding); anything else (rate limit, outage) means we could not look, never a hit."""
+        """A 404/422 means the commit or repo is not there (a finding); anything else (rate limit, outage) means we
+        could not look, never a hit."""
         if r.returncode and not re.search(r"\b(404|422)\b", r.stderr):
             raise Fail(f"could not check {item.name}@{item.version[:12]} upstream: {r.stderr.strip()[:120]}")
 
@@ -700,7 +803,8 @@ class LiveNet:
                 except inv.yaml.YAMLError:
                     raise Fail(f"{item.name}: its action metadata is not YAML")
                 runs = doc.get("runs") or {}
-                refs = [st.get("uses") for st in (runs.get("steps") or []) if isinstance(st, dict) and isinstance(st.get("uses"), str)]
+                refs = [st.get("uses") for st in (runs.get("steps") or []) if isinstance(st, dict)
+                        and isinstance(st.get("uses"), str)]
                 if isinstance(runs.get("image"), str):
                     refs.append(runs["image"])  # docker://... or a Dockerfile in the action's repository
                 for ref in refs:
@@ -709,23 +813,32 @@ class LiveNet:
         raise Fail(f"{item.name}: its action metadata was not found")
 
     def versions(self, item):
-        """Candidate versions with their publish times; None when this kind of item cannot be enumerated (then nobody searched, and it is a decision)."""
+        """Candidate versions with their publish times; None when this kind of item cannot be enumerated (then nobody
+        searched, and it is a decision)."""
         if item.kind == "package":
-            d = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(item.name.split('/', 1)[1])}/json", (("info", dict), ("releases", dict)))
+            d = age._http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(item.name.split('/', 1)[1])}/json",
+                               (("info", dict), ("releases", dict)))
             if d is None:
                 return None
             out = []
             for ver, files in d["releases"].items():
-                ups = [f.get("upload_time_iso_8601") for f in age._dicts(files, "pypi release files", ()) if f.get("upload_time_iso_8601") and not f.get("yanked")]      # upload time and yanked are optional
+                # upload time and yanked are optional
+                ups = [f.get("upload_time_iso_8601") for f in age._dicts(files, "pypi release files", ())
+                       if f.get("upload_time_iso_8601") and not f.get("yanked")]
                 if ups:
-                    out.append({"version": ver, "sha": None, "published": min(ups), "_item": inv.Item("package", item.name, ver, ver)})
+                    out.append({"version": ver, "sha": None, "published": min(ups),
+                                "_item": inv.Item("package", item.name, ver, ver)})
             return out
-        repo = item.name if item.kind == "action" else (age.TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None))
+        repo = item.name if item.kind == "action" else (age.TOOL_REPOS.get(item.name)
+                                                        or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name)
+                                                            else None))
         if not repo:
             return None
         rels = []
         for pg in range(1, 11):
-            chunk = self._gh_json(f"repos/{repo}/releases?per_page=100&page={pg}", rows=(("tag_name", str), ("draft", bool), ("prerelease", bool), ("published_at", (str, type(None)))))
+            chunk = self._gh_json(f"repos/{repo}/releases?per_page=100&page={pg}",
+                                  rows=(("tag_name", str), ("draft", bool), ("prerelease", bool),
+                                        ("published_at", (str, type(None)))))
             if chunk is None:
                 if pg == 1:
                     return None
@@ -740,14 +853,15 @@ class LiveNet:
             sha = None
             if item.kind == "action":
                 obj_need = (("object", dict),)
-                ref = self._object_of(self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(r['tag_name'])}", need=obj_need))
+                ref = self._object_of(self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(r['tag_name'])}",
+                                                    need=obj_need))
                 if ref and ref["type"] == "commit":
                     sha = ref["sha"]
                 elif ref and ref["type"] == "tag":
                     t = self._object_of(self._gh_json(f"repos/{repo}/git/tags/{ref['sha']}", need=obj_need))
                     sha = t["sha"] if t else None
-            cand = inv.Item(item.kind, item.name, sha, r["tag_name"]) if (item.kind == "action" and sha) else inv.Item(item.kind, item.name, r["tag_name"],
-                r["tag_name"])
+            cand = (inv.Item(item.kind, item.name, sha, r["tag_name"]) if (item.kind == "action" and sha)
+                    else inv.Item(item.kind, item.name, r["tag_name"], r["tag_name"]))
             out.append({"version": r["tag_name"], "sha": sha, "published": r["published_at"], "_item": cand})
         return out
 
@@ -757,7 +871,8 @@ class LiveNet:
         if not repo:
             return []
         out = []
-        pulls = age._gh_pages(f"repos/{repo}/pulls?state=open&per_page=100", (("number", int), ("base", dict), ("head", dict)))
+        pulls = age._gh_pages(f"repos/{repo}/pulls?state=open&per_page=100",
+                              (("number", int), ("base", dict), ("head", dict)))
         if pulls is None:
             raise Fail("could not list the open pull requests")
         for p in pulls:
@@ -773,7 +888,8 @@ class LiveNet:
                 print(f"information: open pull request #{p['number']} could not be fetched: not audited")
                 continue
             try:
-                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
+                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]],
+                          capture_output=True, text=True).stdout.strip()
                 if not mb:
                     self.incomplete_prs.append(p["number"])
                     print(f"information: open pull request #{p['number']} shares no history with its base: not audited")
@@ -786,20 +902,24 @@ class LiveNet:
         return out
 
     def _fetch_pull(self, number, base_ref):
-        """The pull request's head and its base branch, fetched from the public repository: no token goes into git's argv (any process can read it there)."""
-        return _run(["git", "-C", self.root, "fetch", "-q", "origin", f"pull/{number}/head", base_ref], capture_output=True, text=True)
+        """The pull request's head and its base branch, fetched from the public repository: no token goes into git's
+        argv (any process can read it there)."""
+        return _run(["git", "-C", self.root, "fetch", "-q", "origin", f"pull/{number}/head", base_ref],
+                    capture_output=True, text=True)
 
     def prs(self):
         repo = os.environ.get("GITHUB_REPOSITORY")
         if not repo:
             raise Fail("GITHUB_REPOSITORY is not set")
-        r = _run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "1000"], capture_output=True,
+        r = _run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName",
+                  "--limit", "1000"], capture_output=True,
             text=True)
         if r.returncode:
             raise Fail("could not list open pull requests: " + r.stderr.strip())
         out = []
         try:
-            listed = age._dicts(json.loads(r.stdout or "[]"), "gh pr list", (("number", int), ("title", str), ("headRefOid", str), ("baseRefName", str)))
+            listed = age._dicts(json.loads(r.stdout or "[]"), "gh pr list",
+                                (("number", int), ("title", str), ("headRefOid", str), ("baseRefName", str)))
         except (ValueError, age.CouldNotLook) as e:
             raise Fail(f"gh pr list did not return a list of pull requests ({type(e).__name__})")
         for p in listed:
@@ -808,22 +928,29 @@ class LiveNet:
             if f.returncode:
                 continue
             try:
-                head = _run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True).stdout.strip()
-                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]], capture_output=True, text=True).stdout.strip()
+                head = _run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True,
+                            text=True).stdout.strip()
+                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]],
+                          capture_output=True, text=True).stdout.strip()
                 moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
             except (RuntimeError, ValueError):
                 continue
             try:
-                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100", need=(("workflow_runs", list),)) or {"workflow_runs": []}
+                runs = self._gh_json(
+                    f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100",
+                    need=(("workflow_runs", list),)) or {"workflow_runs": []}
                 age._dicts(runs["workflow_runs"], "the workflow runs of a pull request", (("id", int),))
             except (Fail, age.CouldNotLook) as e:
                 print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
                 continue
-            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
+            mine = sorted((x for x in runs.get("workflow_runs", [])
+                           if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
                 key=lambda x: x.get("created_at", ""), reverse=True)
-            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
+            # the NEWEST run decides: a later green run needs no re-run
+            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []
             if moved and failed:
-                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved,
+                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"],
+                            "moved": [m.key for m in moved], "_items": moved,
                     "_base": mb, "_head": p["headRefOid"]})
         return out
 
@@ -834,7 +961,8 @@ class LiveNet:
         return age.observed()
 
     def tag_map(self, items):
-        """{"owner/repo@tag": commit} for the latest tags of every action we use plus the tags we pin: what today's run observed."""
+        """{"owner/repo@tag": commit} for the latest tags of every action we use plus the tags we pin: what today's run
+        observed."""
         out = {}
         for repo in sorted({i.name for i in items if i.kind == "action"}):
             for t in age._gh_pages(f"repos/{repo}/tags?per_page=100", (("name", str), ("commit", dict))) or []:
@@ -851,19 +979,24 @@ def _is_text_list(x):
 
 
 def _well_formed_exception(e):
-    """One exceptions row: the ids it covers, the authoritative advisory, the ruling, its evidence and the one version it covers."""
+    """One exceptions row: the ids it covers, the authoritative advisory, the ruling, its evidence and the one version
+    it covers."""
     if not isinstance(e, dict) or not _is_text_list(e.get("ids")):
         return False
     au = e.get("authoritative")
-    if not isinstance(au, dict) or str(au.get("source")).lower() not in ("github", "osv") or not au.get("id") or not _is_text_list(au.get("ranges")):
+    if (not isinstance(au, dict) or str(au.get("source")).lower() not in ("github", "osv") or not au.get("id")
+            or not _is_text_list(au.get("ranges"))):
         return False
-    if not isinstance(e.get("modified"), dict) or not e.get("package") or not set(e["ids"]) <= set(e["modified"]) or au["id"] not in e["ids"]:
+    if (not isinstance(e.get("modified"), dict) or not e.get("package") or not set(e["ids"]) <= set(e["modified"])
+            or au["id"] not in e["ids"]):
         return False
     if not isinstance(e.get("ruling"), str) or not e["ruling"] or not isinstance(e.get("osv_modified", {}), dict):
         return False
-    if not isinstance(e.get("evidence"), list) or not e["evidence"] or not isinstance(e.get("date"), str) or not e["date"]:
+    if (not isinstance(e.get("evidence"), list) or not e["evidence"] or not isinstance(e.get("date"), str)
+            or not e["date"]):
         return False
-    return isinstance(e.get("version"), str) and bool(e["version"].strip())      # every exception names the one version it covers
+    # every exception names the one version it covers
+    return isinstance(e.get("version"), str) and bool(e["version"].strip())
 
 
 # ---------- exceptions (the same format as the ops repo's docs/supply-chain-exceptions.json) ----------
@@ -887,23 +1020,28 @@ def load_exceptions(path, required):
 
 
 class RulingLog:
-    """REQ-SUP-001-AC15: what the rulings did in one run. matched: rulings for the package and ids of a real dispute; applied: those that then decided it."""
+    """REQ-SUP-001-AC15: what the rulings did in one run. matched: rulings for the package and ids of a real dispute;
+    applied: those that then decided it."""
 
     def __init__(self):
         self.matched, self.applied = [], []
 
 
 def undecided_exceptions(exceptions, log, held, net):
-    """REQ-SUP-001-AC15: the rulings that decided no dispute in this run, split into (lapsed, dead, dormant). Lapsed: it matched a real dispute but failed
-    the version, time or live-range check (the dispute stays reported). Dead: no dispute, and a held pin (main, its history or an open pull request)
-    is named by the ruling. Dormant: nobody holds its pin. Judged from what the run matched, applied and held, never from a list."""
+    """REQ-SUP-001-AC15: the rulings that decided no dispute in this run, split into (lapsed, dead, dormant). Lapsed: it
+    matched a real dispute but failed
+    the version, time or live-range check (the dispute stays reported). Dead: no dispute, and a held pin (main, its
+    history or an open pull request)
+    is named by the ruling. Dormant: nobody holds its pin. Judged from what the run matched, applied and held, never
+    from a list."""
     lapsed, dead, dormant = [], [], []
     for e in exceptions:
         if any(e is a for a in log.applied):
             continue
         if any(e is m for m in log.matched):
             lapsed.append(e)
-        elif any(package_of(it) == e["package"] and _ruling_covers(e, it, _pin_versions(it, net), every=False) for it in held):
+        elif any(package_of(it) == e["package"] and _ruling_covers(e, it, _pin_versions(it, net), every=False) for it
+                 in held):
             dead.append(e)
         else:
             dormant.append(e)
@@ -911,13 +1049,17 @@ def undecided_exceptions(exceptions, log, held, net):
 
 
 def dead_message(e, held, net):
-    """The DEAD EXCEPTION text; when the ruling names only some of a held pin's versions (tags v3 and v3.37.8) it says how to write the series."""
-    msg = f"the ruling for {_ruling_label(e)} decided no dispute while its pin is held: remove it from the exceptions file"
+    """The DEAD EXCEPTION text; when the ruling names only some of a held pin's versions (tags v3 and v3.37.8) it says
+    how to write the series."""
+    msg = (f"the ruling for {_ruling_label(e)} decided no dispute while its pin is held: "
+           f"remove it from the exceptions file")
     for it in held:
         vers = _pin_versions(it, net)
-        if package_of(it) == e["package"] and _ruling_covers(e, it, vers, every=False) and not _ruling_covers(e, it, vers):
+        if (package_of(it) == e["package"] and _ruling_covers(e, it, vers, every=False)
+                and not _ruling_covers(e, it, vers)):
             series = str(e["version"]).lstrip("v").split(".")[0] + ".*"
-            return msg + f" (it names only some of the versions of the held pin {', '.join(vers)}; to cover the pin write the ruling as {series})"
+            return msg + (f" (it names only some of the versions of the held pin {', '.join(vers)}; "
+                          f"to cover the pin write the ruling as {series})")
     return msg
 
 
@@ -947,7 +1089,8 @@ def _pin_versions(item, net):
 
 
 def _ruling_covers(e, item, vers, every=True):
-    """Does the ruling name this pin: its one version, or its one series ("4.*"), for EVERY version the pin stands for (to apply a ruling) or for ANY of
+    """Does the ruling name this pin: its one version, or its one series ("4.*"), for EVERY version the pin stands for
+    (to apply a ruling) or for ANY of
     them (to tell a dead ruling from a dormant one)?"""
     covered = {str(x).lstrip("v") for x in [*vers, item.label] if x} or {str(item.version).lstrip("v")}
     want = str(e.get("version", "")).lstrip("v")
@@ -956,14 +1099,17 @@ def _ruling_covers(e, item, vers, every=True):
 
 
 def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
-    """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
-    Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
+    """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged
+    since it was written.
+    Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges)
+    or "hit" (inside them:
     an exception never covers a version the authoritative source lists as affected)."""
     return ruling_for(item, dispute_ids, current, exceptions, net, osv_times)[1]
 
 
 def ruling_for(item, dispute_ids, current, exceptions, net=None, osv_times=None, log=None):
-    """excepted() with the ruling that decided: (entry, "pass" | "hit"), or (None, None). REQ-SUP-001-AC15 reads the entry to know a ruling is alive."""
+    """excepted() with the ruling that decided: (entry, "pass" | "hit"), or (None, None). REQ-SUP-001-AC15 reads the
+    entry to know a ruling is alive."""
     vers = _pin_versions(item, net)
     ver = vers[0] if vers else None
     for e in exceptions:
@@ -974,15 +1120,21 @@ def ruling_for(item, dispute_ids, current, exceptions, net=None, osv_times=None,
             # never a wildcard, never one tag speaking for another
             continue
         if log is not None:
-            log.matched.append(e)   # AC15: it names this dispute and this held pin; a failure of the time or range checks below is a lapse, not a dead ruling
-        if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
+            # AC15: it names this dispute and this held pin; a failure of the time or range checks below is a lapse, not
+            # a dead ruling
+            log.matched.append(e)
+        if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i
+                   in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
-        # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it, unchanged
-        if any(t is None or e.get("osv_modified", {}).get(i) != t for i, t in (osv_times or {}).items() if i in e["ids"]):
+        # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it,
+        # unchanged
+        if any(t is None or e.get("osv_modified", {}).get(i) != t for i,
+               t in (osv_times or {}).items() if i in e["ids"]):
             continue  # unknown is not unchanged: a missing time refuses
         if not ver:
             return None, None  # no version to compare with the ranges: stays disputed
-        # the ruling verifies itself (advisor 0182): its copied ranges must equal the authoritative advisory's LIVE ranges, or a wrong entry could hide a hit
+        # the ruling verifies itself (advisor 0182): its copied ranges must equal the authoritative advisory's LIVE
+        # ranges, or a wrong entry could hide a hit
         au = e["authoritative"]
         live = net.live_ranges(item, au["source"], au["id"]) if net is not None else None
         if not live or _norm_ranges(live) != _norm_ranges(au["ranges"]):
@@ -1004,9 +1156,11 @@ def judge(item, net, exceptions, notes, current=True, log=None):
     findings = _judge(item, net, exceptions, notes, current, log)
     for e in (net.take_ignored() if hasattr(net, "take_ignored") else []):   # AC14: nothing is ignored silently
         notes.append(f"{IGNORED_NOTE} {e['id']} {e['path']}: {e['reason']}")
-    if (item.kind == "action" and inv.SHA40.match(item.version) and hasattr(net, "version_of") and net.version_of(item) is None and isinstance(net, LiveNet)):
+    if (item.kind == "action" and inv.SHA40.match(item.version) and hasattr(net, "version_of")
+        and net.version_of(item) is None and isinstance(net, LiveNet)):
         findings.append(Finding(item, "unresolved", ["unresolved"],
-            "no tag of the action's repository points at the pinned commit, so its advisories cannot be matched to a version (the # label is not evidence)"))
+            "no tag of the action's repository points at the pinned commit, so its advisories cannot be matched to a "
+            "version (the # label is not evidence)"))
     return findings
 
 
@@ -1022,7 +1176,9 @@ def _judge(item, net, exceptions, notes, current=True, log=None):
         ids = [a["id"] for a in advs]
         if yes and no:
             cur = {}
-            for x in advs:  # GitHub's time for a GHSA id, OSV's otherwise: the ops file's rule; an id both databases hold must be unchanged in BOTH
+            # GitHub's time for a GHSA id, OSV's otherwise: the ops file's rule; an id both databases hold must be
+            # unchanged in BOTH
+            for x in advs:
                 if x["id"] not in cur or (x["id"].startswith("GHSA-") and x in gh_l):
                     cur[x["id"]] = x.get("modified")
             osv_times = {a2["id"]: a2.get("modified") for a2 in osv_l if any(g["id"] == a2["id"] for g in gh_l)}
@@ -1034,18 +1190,24 @@ def _judge(item, net, exceptions, notes, current=True, log=None):
                              "is outside the authoritative source's affected ranges")
                 continue
             if ruling == "hit":
-                findings.append(Finding(item, "advisory", ids, "the authoritative source for this incident lists this version as affected"))
+                findings.append(Finding(item, "advisory", ids,
+                                        "the authoritative source for this incident lists this version as affected"))
                 continue
             findings.append(Finding(item, "disputed", ids, "the two advisory lists disagree about this incident: "
-                                    + "; ".join(f"{_safe(a['id'])} says {'affected' if a.get('affected') else 'not affected'}" for a in advs), True))
+                                    + "; ".join(f"{_safe(a['id'])} says "
+                                                f"{'affected' if a.get('affected') else 'not affected'}"
+                                                for a in advs), True))
         elif yes:
             mal = any(a.get("malicious") for a in yes)
             findings.append(Finding(item, "malicious" if mal else "advisory", [a["id"] for a in yes],
-                                    "a malicious-package report covers this version" if mal else "an advisory covers this version"))
-    reach = net.upstream(item) if current else None  # only today's pins are checked upstream (history items: advisories only)
+                                    "a malicious-package report covers this version" if mal
+                                    else "an advisory covers this version"))
+    # only today's pins are checked upstream (history items: advisories only)
+    reach = net.upstream(item) if current else None
     if item.kind == "action" and reach is False:
         findings.append(Finding(item, "unreachable", ["not-upstream"],
-            "the pinned commit is not reachable from a branch or tag of the action's own repository (a fork-only commit)"))
+            "the pinned commit is not reachable from a branch or tag of the action's own repository (a fork-only "
+            "commit)"))
     return findings
 
 
@@ -1058,14 +1220,16 @@ UNKNOWN = "unknown"
 
 
 def rollback(item, net, now):
-    """The newest clean version public at least 7 days; never a younger one. None: drop it. UNKNOWN: this kind of item could not be searched."""
+    """The newest clean version public at least 7 days; never a younger one. None: drop it. UNKNOWN: this kind of item
+    could not be searched."""
     versions = net.versions(item)
     if versions is None:
         return UNKNOWN
     eligible = []
     for v in versions:
         pub = age.parse_time(v.get("published"))
-        if pub is None or (now - pub).total_seconds() < WAIT_DAYS * 86400 or v["version"] == (item.label or item.version) or v.get("sha") == item.version:
+        if (pub is None or (now - pub).total_seconds() < WAIT_DAYS * 86400
+                or v["version"] == (item.label or item.version) or v.get("sha") == item.version):
             continue
         eligible.append((pub, v))
     def vkey(x):
@@ -1073,9 +1237,11 @@ def rollback(item, net, now):
             nums, cls, parts = _vt(x[1]["version"])
         except ValueError:
             return None
-        return (nums, cls, [(0, q) if isinstance(q, int) else (1, q) for q in parts]) if cls != 0 else None   # a pre-release is never a rollback target
+        # a pre-release is never a rollback target
+        return (nums, cls, [(0, q) if isinstance(q, int) else (1, q) for q in parts]) if cls != 0 else None
     ordered = [x for x in eligible if vkey(x) is not None]
-    # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is reached
+    # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is
+    # reached
     for pub, v in sorted(ordered, key=vkey, reverse=True):
         lists = v.get("lists")
         if lists is None:
@@ -1086,9 +1252,12 @@ def rollback(item, net, now):
         cand = v.get("_item")
         proofs = net.proofs(cand) if cand is not None else None
         if proofs is not None and not age.judge_item(cand, proofs, now)[0]:
-            continue  # the candidate commit must itself be provably old enough (a tag moved under an old release is not an old version)
+            # the candidate commit must itself be provably old enough (a tag moved under an old release is not an old
+            # version)
+            continue
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
-            # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
+            # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised
+            # child is no replacement
             try:
                 dirty, level, seen_c = False, [cand], {cand.key}
                 for _depth in range(3):
@@ -1116,7 +1285,8 @@ def rollback(item, net, now):
 
 
 def clean(text):
-    """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
+    """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no
+    log-command injection."""
     # control characters out, and an expression (a secret's name) never printed
     text = re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))
     # the runner reads ##[command] anywhere in a line; last, so a removed character cannot join the two
@@ -1124,9 +1294,11 @@ def clean(text):
 
 
 def _safe(text, limit=64):
-    """Only a plain version-like token is echoed into an issue (a hostile label from a fork's pin could carry a link or an @mention)."""
+    """Only a plain version-like token is echoed into an issue (a hostile label from a fork's pin could carry a link or
+    an @mention)."""
     t = str(text)
-    return t if re.fullmatch(r"[A-Za-z0-9._+/@:, \-]{1,%d}" % limit, t) and "@" not in t.replace("@sha256", "") and "//" not in t else "(unparseable)"
+    return t if (re.fullmatch(r"[A-Za-z0-9._+/@:, \-]{1,%d}" % limit, t) and "@" not in t.replace("@sha256", "")
+                 and "//" not in t) else "(unparseable)"
 
 
 def title_of(f):
@@ -1134,7 +1306,8 @@ def title_of(f):
     ver = _safe(it.label or it.version[:12])
     pkg = _safe(package_of(it))
     ids = ", ".join(_safe(i) for i in f.ids)
-    return f"supply-chain: {'disputed ' if f.disputed else ''}{pkg}@{ver}", f"supply-chain: {'disputed ' if f.disputed else ''}{pkg}@{ver} ({ids})"
+    return (f"supply-chain: {'disputed ' if f.disputed else ''}{pkg}@{ver}",
+            f"supply-chain: {'disputed ' if f.disputed else ''}{pkg}@{ver} ({ids})")
 
 
 def body_of(f, rb, owner, ran, today):
@@ -1144,12 +1317,15 @@ def body_of(f, rb, owner, ran, today):
         80)}`" + (f" ({ver})" if it.label else "") + ".", "",
              f"Finding: {f.why}.", f"Advisories: {', '.join(_safe(i) for i in f.ids)}.", ""]
     if f.disputed:
-        lines += ["This is a DISPUTED hit, for the advisor to rule on. Nothing was rolled back and nothing was reported clean.",
-                  "A ruling goes in `.github/supply-chain-exceptions.json` (advisory ids, package, version, evidence links, date, "
+        lines += ["This is a DISPUTED hit, for the advisor to rule on. Nothing was rolled back and nothing was "
+                  "reported clean.",
+                  "A ruling goes in `.github/supply-chain-exceptions.json` (advisory ids, package, version, evidence "
+                  "links, date, "
                   "each advisory's last-modified time); it lapses when either advisory changes."]
         return "\n".join(lines) + "\n"
     if f.via:
-        lines.append(f"This action is called inside `{_safe(f.via)}`: replace or drop the outer action. Nothing here can be pinned by us.")
+        lines.append(f"This action is called inside `{_safe(f.via)}`: replace or drop the outer action. Nothing here "
+                     f"can be pinned by us.")
         lines.append("There is no rollback of ours to a clean version of a nested action: the owner decides.")
         return "\n".join(lines) + "\n"
     if rb == UNKNOWN:
@@ -1157,11 +1333,14 @@ def body_of(f, rb, owner, ran, today):
                      "nobody has looked for a clean one, so the owner decides.")
     elif rb:
         lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {_safe(rb['version'])}"
-                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + f", published {_safe(rb['published'])}.")
+                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha")
+                        else "") + f", published {_safe(rb['published'])}.")
     else:
-        lines.append(f"No clean version public at least {WAIT_DAYS} days exists: drop it (remove its use) until one does.")
+        lines.append(f"No clean version public at least {WAIT_DAYS} days exists: drop it (remove its use) until one "
+                     f"does.")
     if ran:
-        lines.append(f"This version was in our workflows within the last {LOOKBACK_DAYS} days: the owner decides what follows.")
+        lines.append(f"This version was in our workflows within the last {LOOKBACK_DAYS} days: the owner decides what "
+                     f"follows.")
     if owner and not ran:
         lines.append("There is no clean rollback: the owner decides.")
     return "\n".join(lines) + "\n"
@@ -1170,15 +1349,19 @@ def body_of(f, rb, owner, ran, today):
 # ---------- history: what we ran in the last 90 days ----------
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
-    refs = ["HEAD", "--glob=refs/pull/*/head"] if start == "HEAD" else [start]      # daily mode: main and the pull request refs, not every branch and tag
+    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
+             ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
+    # daily mode: main and the pull request refs, not every branch and tag
+    refs = ["HEAD", "--glob=refs/pull/*/head"] if start == "HEAD" else [start]
     revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
     tip = inv.git(root, "rev-parse", start).strip()
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
     if before:
         revs.append(before)
     items = {}
-    memo = {}   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
+    # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses
+    # that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
+    memo = {}
     for r in revs:
         key = inv.tree_key(root, r)
         if key not in memo:
@@ -1187,7 +1370,8 @@ def history_items(root, start, now):
             except RuntimeError as e:
                 if r == tip or "refusing to read it partially" not in str(e):
                     raise
-                print(f"information: revision {r[:12]} is unmeasured: {clean(e)}")      # an old revision with a very long line is counted, not fatal
+                # an old revision with a very long line is counted, not fatal
+                print(f"information: revision {r[:12]} is unmeasured: {clean(e)}")
                 continue
         items.update(memo[key])
     return items
@@ -1209,9 +1393,11 @@ def file_issues(gh, plan, today):
     gh.run("label", "create", HIT_LABEL, "--description", "A supply-chain hit on a pinned version", ok_fail=True)
     if any(p["owner"] for p in plan):
         gh.run("label", "create", OWNER_LABEL, "--description", "Needs the owner's decision", ok_fail=True)
-    r = gh.run("issue", "list", "--label", HIT_LABEL, "--state", "all", "--json", "number,title,state", "--limit", "1000")
+    r = gh.run("issue", "list", "--label", HIT_LABEL, "--state", "all", "--json", "number,title,state", "--limit",
+               "1000")
     try:
-        open_issues = age._dicts(json.loads(r.stdout or "[]"), "gh issue list", (("number", int), ("title", str)))      # state is optional
+        # state is optional
+        open_issues = age._dicts(json.loads(r.stdout or "[]"), "gh issue list", (("number", int), ("title", str)))
     except (ValueError, age.CouldNotLook):
         raise Fail("gh issue list did not return a list of issues")
     done = set()
@@ -1221,8 +1407,10 @@ def file_issues(gh, plan, today):
         if title in done or prefix in done:
             continue
         done.add(title); done.add(prefix)
-        open_issues = [i for i in open_issues if i.get("number") not in consumed]    # an issue already serving a finding in this run is out of BOTH lookups
-        existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title",
+        # an issue already serving a finding in this run is out of BOTH lookups
+        open_issues = [i for i in open_issues if i.get("number") not in consumed]
+        existing = next((i for i in open_issues if i.get("number", -1) > 0
+                         and (str(i.get("title", "")) == title or str(i.get("title",
             "")).startswith(prefix + " ("))), None)
         pkg_of_prefix = prefix[len("supply-chain: "):].split("@")[0]
         # a dispute that became a confirmed hit is the SAME issue (one per hit), retitled
@@ -1235,10 +1423,13 @@ def file_issues(gh, plan, today):
         try:
             labels = ["--label", HIT_LABEL] + (["--label", OWNER_LABEL] if p["owner"] else [])
             if existing:
-                consumed.add(existing["number"])       # one issue serves one finding in a run: a second finding never overwrites it
-                gh.run("issue", "edit", str(existing["number"]), "--title", title, "--body-file", path, *(["--add-label", OWNER_LABEL] if p["owner"] else []))
+                # one issue serves one finding in a run: a second finding never overwrites it
+                consumed.add(existing["number"])
+                gh.run("issue", "edit", str(existing["number"]), "--title", title, "--body-file", path,
+                       *(["--add-label", OWNER_LABEL] if p["owner"] else []))
                 if str(existing.get("state", "OPEN")).upper() == "CLOSED":
-                    gh.run("issue", "reopen", str(existing["number"]))  # still a hit: the same issue, never a replacement
+                    # still a hit: the same issue, never a replacement
+                    gh.run("issue", "reopen", str(existing["number"]))
                 print(f"audit: updated issue #{existing['number']}: {title}")
             else:
                 gh.run("issue", "create", "--title", title, "--body-file", path, *labels)
@@ -1252,15 +1443,20 @@ def file_issues(gh, plan, today):
 def rerun_held(gh, net, now, exceptions=None):
     n = 0
     base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
-    src = age.FilePinSource(net, age.load_file_pins(exceptions or age.DEFAULT_EXCEPTIONS, required=bool(exceptions)))   # REQ-SUP-001-AC34: the same trusted file-pin proof the age check takes, or a held update never turns green on day seven
+    # REQ-SUP-001-AC34: the same trusted file-pin proof the age check takes, or a held update never turns green on day
+    # seven
+    src = age.FilePinSource(net, age.load_file_pins(exceptions or age.DEFAULT_EXCEPTIONS, required=bool(exceptions)))
     for pr in net.prs():
         phase(f"pull request #{pr.get('number')}")
-        try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
+        # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being
+        # re-run
+        try:
             items = pr.get("_items") or [_item_from_key(k) for k in pr["moved"]]
             for it in items:     # a key-built item (fixtures): its repository path is the part after file:
                 if it.raw is None and it.kind == "tool" and it.version == "(file)" and it.name.startswith("file:"):
                     it.raw = it.name[5:]
-            items, _ = age.split_base_inputs(items, base_inputs)   # REQ-SUP-001-AC21: the same trusted decision the age check takes, or a mixed pull request is never re-run
+            # REQ-SUP-001-AC21: the same trusted decision the age check takes, or a mixed pull request is never re-run
+            items, _ = age.split_base_inputs(items, base_inputs)
             rows = [age.judge_item(it, src.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
         except (Fail, age.CouldNotLook, RuntimeError, ValueError) as e:
             print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")
@@ -1271,14 +1467,16 @@ def rerun_held(gh, net, now, exceptions=None):
             except Fail as e:
                 print(f"information: pull request #{pr.get('number')}: the re-run failed: {clean(e)}")
                 continue
-            print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
+            print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} "
+                  f"days old; re-ran its check")
             n += 1
     if not n:
         print("audit: no held pull request is ready to re-run")
 
 
 def _item_from_key(k):
-    """The item a key names; a file item's key ends in #content:<hex> (its identity), which is its step and not part of the version."""
+    """The item a key names; a file item's key ends in #content:<hex> (its identity), which is its step and not part of
+    the version."""
     it = inv.Item(*_split_key(k.split("#", 1)[0]))
     if "#" in k:
         it.step = k.split("#", 1)[1]
@@ -1314,7 +1512,8 @@ def _deadline_passed(seconds):
     lock can stop it."""
     was_blocking = True
     try:
-        # non-blocking, so a full stderr pipe cannot stop the exit; the flag sits on the step's shared pipe, so it is put back below
+        # non-blocking, so a full stderr pipe cannot stop the exit; the flag sits on the step's shared pipe, so it is
+        # put back below
         was_blocking = os.get_blocking(2)
         os.set_blocking(2, False)
         os.write(2, f"audit: could not finish: still in {PHASE[0]} after {seconds} s\n".encode())
@@ -1329,14 +1528,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base")
-    ap.add_argument("--head", help="PR mode: the pull request's head commit (its blobs are read, as pin-age-check does)")
+    ap.add_argument("--head",
+                    help="PR mode: the pull request's head commit (its blobs are read, as pin-age-check does)")
     ap.add_argument("--fixtures")
     ap.add_argument("--now")
     ap.add_argument("--gh", default="gh")
     ap.add_argument("--exceptions")
     ap.add_argument("--rerun-held", action="store_true")
-    ap.add_argument("--observations-out", help="write the cumulative tag observations (state.json) FIRST, before judging anything")
-    ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
+    ap.add_argument("--observations-out",
+                    help="write the cumulative tag observations (state.json) FIRST, before judging anything")
+    ap.add_argument("--report-only", action="store_true",
+                    help="print findings and exit 1; never touch issues (the pull request job's token cannot write "
+                         "them)")
     ap.add_argument("--deadline", type=int,
                     help="seconds the whole run may take before it ends itself with exit 2 "
                          "(1 to 86400; default 900, or 600 for --rerun-held and --base)")
@@ -1377,9 +1580,11 @@ def main(argv=None):
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
         except RuntimeError as e:
             raise Fail(str(e))
-        if a.observations_out and not a.base:   # before the history is read: a history that cannot be read must not lose the observations
+        # before the history is read: a history that cannot be read must not lose the observations
+        if a.observations_out and not a.base:
             phase("tag observations")
-            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]),
+                                      now.strftime("%Y-%m-%dT%H:%M:%SZ"))
             os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
             tmp = a.observations_out + ".tmp"
             # a deadline in the middle of the write must not leave half a file at the published path
@@ -1401,15 +1606,21 @@ def main(argv=None):
             raise Fail(str(e))
         # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
         audited = [i for i in audited if i.version not in ("(local)", "(source)")]
-        if a.base:    # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the age check reports it), never as an advisory hit
+        # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the age check
+        # reports it), never as an advisory hit
+        if a.base:
             try:
-                audited = age.drop_ruled_unpinned(audited, age.ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or age.DEFAULT_EXCEPTIONS))
+                audited = age.drop_ruled_unpinned(audited,
+                                                  age.ruled_unpinned_lines(a.root, a.base, a.head,
+                                                                           a.exceptions or age.DEFAULT_EXCEPTIONS))
             except RuntimeError as e:
                 raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
         try:
             seen_um = {}
-            for (path, what, _line), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
+            for (path, what,
+                 _line), n in inv.unmeasured({**inv.tree_files(a.root, None),
+                                              **inv.tree_scripts(a.root, None)}).items():
                 seen_um[(path, what)] = seen_um.get((path, what), 0) + n
             for (path, what), n in sorted(seen_um.items()):
                 print(f"information: not covered by this check: {what} in {clean(path)} ({n}x)")
@@ -1420,15 +1631,19 @@ def main(argv=None):
             print(f"  {clean(k)}")
         phase("judging")
         notes, findings, incomplete, log = [], [], False, RulingLog()
-        held = list(audited)   # AC15: the pins the run inventories (main and its 90-day history); the pins of open pull requests are added below
+        # AC15: the pins the run inventories (main and its 90-day history); the pins of open pull requests are added
+        # below
+        held = list(audited)
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
                 if not age._tag_for_commit(it.name, it.version):
-                    print(f"information: {it.name}@{it.version[:12]} has no version label or tag: its advisories could not be looked up")
+                    print(f"information: {it.name}@{it.version[:12]} has no version label or tag: its advisories could "
+                          f"not be looked up")
 
         for it in audited:
             if not net.covered(it):
-                print(f"information: not checked against the advisory lists (no source for this kind of item): {clean(it.key)}")
+                print(f"information: not checked against the advisory lists (no source for this kind of item): "
+                      f"{clean(it.key)}")
 
         def one(it):
             n2 = []
@@ -1439,7 +1654,9 @@ def main(argv=None):
                 findings += fs
                 notes += n2
         pr_actions = []
-        if not a.base:  # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches an issue)
+        # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches
+        # an issue)
+        if not a.base:
             seen_keys = {i.key for i in audited}
             phase("open pull requests")
             try:
@@ -1453,23 +1670,28 @@ def main(argv=None):
             for number, items in open_prs:
                 pr_actions.extend(items)
                 if len(items) > 100:
-                    print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were audited")
+                    print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were "
+                          f"audited")
                     incomplete = True
                 held.extend(items[:100])
                 for it in items[:100]:
                     if it.key in seen_keys:
                         continue
                     seen_keys.add(it.key)
-                    try:  # one pull request's failure (a rate limit, a bad response) must never hide main's own findings or other PRs'
+                    # one pull request's failure (a rate limit, a bad response) must never hide main's own findings or
+                    # other PRs'
+                    try:
                         for f in judge(it, net, exceptions, notes, current=True, log=log):
                             f.pr = number
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
                         print(f"information: a pin of open pull request #{number} could not be checked: {clean(e)}")
                         incomplete = True
-        # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the same advisory lists
+        # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the
+        # same advisory lists
         seen = {it.key for it in audited} | set(head)
-        queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [(it, 0) for it in pr_actions if it.kind == "action"]
+        queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [
+            (it, 0) for it in pr_actions if it.kind == "action"]
         phase("nested references")
         while queue:
             def nested_safe(q):
@@ -1488,13 +1710,16 @@ def main(argv=None):
                 for n in refs:
                     ref = n["ref"]
                     if not n.get("pinned"):
-                        print(f"information: {outer.name} uses {clean(ref)}, not pinned to a digest (a moving tag; not a hit)")
+                        print(f"information: {outer.name} uses {clean(ref)}, not pinned to a digest (a moving tag; not "
+                              f"a hit)")
                     m = re.match(r"^([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@(\S+)$", ref)
                     if ref.startswith("docker://"):
-                        print(f"information: not checked against the advisory lists (a nested image has no source): {clean(ref)} inside {outer.name}")
+                        print(f"information: not checked against the advisory lists (a nested image has no source): "
+                              f"{clean(ref)} inside {outer.name}")
                         continue
                     if not m:
-                        print(f"information: not checked (a nested reference this check cannot resolve: a local action or a Dockerfile): "
+                        print(f"information: not checked (a nested reference this check cannot resolve: a local action "
+                              f"or a Dockerfile): "
                               f"{clean(ref)} inside {outer.name}")
                         continue
                     child = inv.Item("action", m.group(1), m.group(2), "", (ref.split("@")[0].split("/", 2) + [""])[2])
@@ -1502,18 +1727,23 @@ def main(argv=None):
                         try:
                             sha = net.resolve_ref(child.name, child.version)
                         except (Fail, age.CouldNotLook) as e:
-                            print(f"information: a nested reference of {clean(outer.name)} could not be resolved: {clean(e)}")
+                            print(f"information: a nested reference of {clean(outer.name)} could not be resolved: "
+                                  f"{clean(e)}")
                             incomplete = True
                             continue
                         if sha:
-                            child = inv.Item("action", child.name, sha, child.version, child.path)  # the moving tag's CURRENT commit, labelled by the tag
+                            # the moving tag's CURRENT commit, labelled by the tag
+                            child = inv.Item("action", child.name, sha, child.version, child.path)
                         else:
-                            print(f"information: the moving tag {clean(ref)} inside {outer.name} could not be resolved to a commit; "
+                            print(f"information: the moving tag {clean(ref)} inside {outer.name} could not be resolved "
+                                  f"to a commit; "
                                   "checked by its literal name")
                     if child.key in seen:
                         continue
                     seen.add(child.key)
-                    print(f"audit: nested action {clean(child.name)}@{clean(child.version[:12])} inside {clean(outer.name)}")    # listed, clean or not
+                    # listed, clean or not
+                    print(f"audit: nested action {clean(child.name)}@{clean(child.version[:12])} inside "
+                          f"{clean(outer.name)}")
                     try:
                         for f in judge(child, net, exceptions, notes, current=True, log=log):
                             f.via = outer.name
@@ -1530,17 +1760,22 @@ def main(argv=None):
             print(f"audit: {clean(n)}")
         phase("exceptions")
         # AC15: the daily run over the checked-in file only
-        lapsed, dead, dormant = ([], [], []) if (a.base or a.exceptions) else undecided_exceptions(exceptions, log, held, net)
+        lapsed, dead, dormant = (([], [], []) if (a.base or a.exceptions)
+                                 else undecided_exceptions(exceptions, log, held, net))
         for e in lapsed:
-            print(f"audit: LAPSED EXCEPTION: the ruling for {_ruling_label(e)} no longer matches the live advisory; write a fresh ruling")
+            print(f"audit: LAPSED EXCEPTION: the ruling for {_ruling_label(e)} no longer matches the live advisory; "
+                  f"write a fresh ruling")
         for e in dead:
             print(f"audit: DEAD EXCEPTION: {dead_message(e, held, net)}")
         for e in dormant:
-            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
+            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds "
+                  f"it")
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
-            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}"
-                  + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
+            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): "
+                  f"{f.why}"
+                  + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]"
+                                                                      if getattr(f, "pr", None) else ""))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault(package_of(f.item), []).append(f)
                 continue
@@ -1559,18 +1794,21 @@ def main(argv=None):
             t = title_of(f)
             if t[0] in by_prefix:        # same identity (e.g. two commits both labelled v4): one issue carrying both
                 e = by_prefix[t[0]]
-                e["body"] += "\n---\nAlso, at commit `%s`:\n\n%s" % (_safe(f.item.version, 80), body_of(f, rb, owner, ran, today))
+                e["body"] += "\n---\nAlso, at commit `%s`:\n\n%s" % (_safe(f.item.version, 80),
+                                                                     body_of(f, rb, owner, ran, today))
                 e["owner"] = e["owner"] or owner
                 e["ids"] = sorted(set(e["ids"]) | set(f.ids))
                 e["title"] = (t[0], "%s (%s)" % (t[0], ", ".join(_safe(i) for i in e["ids"])))
                 continue
-            e = {"finding": f, "title": t, "body": body_of(f, rb, owner, ran, today), "owner": owner, "ids": list(f.ids)}
+            e = {"finding": f, "title": t, "body": body_of(f, rb, owner, ran, today), "owner": owner,
+                 "ids": list(f.ids)}
             by_prefix[t[0]] = e
             plan.append(e)
         for pkg, fs in sorted(disputes.items()):
             versions = sorted({x.item.label or x.item.version for x in fs})
             first = fs[0]
-            first.ids = sorted({i for x in fs for i in x.ids})                              # EVERY incident of the package in one issue
+            # EVERY incident of the package in one issue
+            first.ids = sorted({i for x in fs for i in x.ids})
             first.why = "; ".join(sorted({x.why for x in fs}))[:1500]
             first.item = inv.Item(first.item.kind, first.item.name, first.item.version, ", ".join(versions))
             plan.append({"finding": first, "title": (f"supply-chain: disputed {_safe(pkg)}",
@@ -1582,21 +1820,27 @@ def main(argv=None):
                 file_issues(gh, plan, today)
             return 1
         unchecked = [i for i in audited if not net.covered(i)]
-        excepted_n = len([n for n in notes if not n.startswith(IGNORED_NOTE)])   # AC14: the log lines of ignored entries are not exceptions
+        # AC14: the log lines of ignored entries are not exceptions
+        excepted_n = len([n for n in notes if not n.startswith(IGNORED_NOTE)])
         if incomplete:
-            print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made today", file=sys.stderr)
+            print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made "
+                  "today", file=sys.stderr)
             return 1
         if lapsed or dead:
             return 1
         print(f"audit: no known-compromised versions as of {today}"
               + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
-              + (f"; {len(dormant)} dormant exception ruling(s) wait for their pin: {', '.join(_ruling_label(e) for e in dormant)}" if dormant else "")
-              + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
+              + (f"; {len(dormant)} dormant exception ruling(s) wait for their pin: "
+                 f"{', '.join(_ruling_label(e) for e in dormant)}" if dormant else "")
+              + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed "
+                 f"above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
         print(f"audit: cannot do its job: {clean(e)}", file=sys.stderr)
         return 2
-    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the audit cannot do its job, it never says 'as of' and never ends in a traceback
+    # an answer of a shape nobody guarded: the audit cannot do its job, it never says 'as of' and never ends in a
+    # traceback
+    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:
         print(f"audit: cannot do its job: an answer could not be read ({type(e).__name__})", file=sys.stderr)
         return 2
     finally:
@@ -1610,8 +1854,10 @@ if __name__ == "__main__":
         sys.stdout.flush()
     except BrokenPipeError:
         # the reader of stdout is gone: stdout goes to /dev/null so the flush at exit does not fail a second time;
-        # the exit code stays 120, what Python gave a block-buffered run in this case: a real exit code 1 or 2 becomes 120
-        # here, as CPython's own shutdown does when the final flush fails (a lane that needs the real code reads the log)
+        # the exit code stays 120, what Python gave a block-buffered run in this case: a real exit code 1 or 2 becomes
+        # 120
+        # here, as CPython's own shutdown does when the final flush fails (a lane that needs the real code reads the
+        # log)
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         code = 120
     sys.exit(code)
