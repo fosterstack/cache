@@ -528,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
+      "sha256": "d18d4672579a35f45b244a62b95f94f680e2e3de73a928b9e7640bd1f5c5c711",
       "reads_env": [
         "GH_TOKEN"
       ],
