@@ -122,7 +122,7 @@ def witnessed_text():           # bin/witnessed.sh, the witness line broken at i
     i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
     for flag in (" --signer-file-key-path", " -a ", " -o "):
         lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
-    comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
+    comment = "# run one Release script under Witness with a throwaway key made in the job (the Release job holds no KMS key, no identity token): the attestors (rule 68)"
     return "#!/usr/bin/env bash\n" + comment + "\n" + "\n".join(lines) + "\n"
 
 
@@ -735,7 +735,7 @@ expect caught "AC1 stage-admission.yml still present" "still exists" workflows "
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
 hm() { replace "$work/witnessed.sh" "$work/h_$1.sh" "$3" "$4" && expect caught "$2" "helper command" helper "$work/h_$1.sh"; return 0; }
-hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "$local_record"' '-d out -o "$local_record"'
+hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "witness-${step#snapshot-}/$step-collection.local.json"' '-d out -o "witness-${step#snapshot-}/$step-collection.local.json"'
 hm fextra  "AC2 an extra Witness flag" '--env-filter-sensitive-vars' '--enable-archivista --env-filter-sensitive-vars'
 hm fnoflt  "AC8 no environment filter flag (tokens would be recorded)" '--env-filter-sensitive-vars' ''
 hm fnokey  "AC8 no token-variable key pattern" "--env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'" ''
@@ -743,38 +743,32 @@ hm fnogh   "AC8 GH_TOKEN not on the sensitive-key list" '--env-add-sensitive-key
 hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git,material,product' 'environment,git,material,slsa'
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
-hm fout    "AC2 the signed record written to another path" '--out "witness-${step#snapshot-}/$step-collection.json"' '--out out/x.json'
+hm fout    "AC2 the record written to another path than witness-DIR/STEP-collection.local.json" '-o "witness-${step#snapshot-}/$step-collection.local.json"' '-o out/x.json'
 hm fopen   "AC2 the step list is open" 'release-verify' '*'
-hm ftee "AC2 the token written elsewhere" '| jq -r .value' '| jq -r .value | tee /tmp/leak'
-hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
-hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
-hm kref    "AC2 Witness run with another key file than the step's throwaway key" '--signer-file-key-path "$td/key.pem"' '--signer-file-key-path /etc/signing-key.pem'
+hm kref    "AC2 Witness run with another key file than the step's throwaway key" '--signer-file-key-path "$kd/key.pem"' '--signer-file-key-path /etc/signing-key.pem'
 hm kfulcio "AC2 a Fulcio flag (keyless signing is gone)" '--signer-file-key-path' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-file-key-path'
 hm ktsa    "AC2 a timestamp authority flag (the Rekor entry carries the time)" '--signer-file-key-path' '-t https://tsa.example/ts --signer-file-key-path'
-hm kkms    "AC2 Witness told to sign with the KMS key itself again (the one signing function does it)" '--signer-file-key-path "$td/key.pem"' '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'
-hm knosign "AC2 the collection is not signed with the release key (the signing function is not called)" 'sign-record' 'verify'
-hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts.amazonaws.com)" 'audience=sts.amazonaws.com' 'audience=sigstore'
-hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
-hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
+hm kkms    "AC2 Witness told to sign with the KMS key itself again (the Release job holds no key)" '--signer-file-key-path "$kd/key.pem"' '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'
+hm knosign "AC2 a KMS signing call added after Witness (the Release job holds no key, no token: its record is evidence signed with the throwaway key)" $'rm -rf "$kd"\n[ ! -e' $'bash bin/with-aws-token.sh sign-record --payload x\nrm -rf "$kd"\n[ ! -e'
+hm knotrap "AC2 no trap: the key directory outlives an interrupted run" $'trap \'rm -rf "$kd"\' EXIT HUP INT TERM\n' ''
+hm ktmp    "AC2 the key directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-key.XXXXXX"' '/tmp/witness-key.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 Witness and the wrapped script keep the AWS variables" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n' ':\n'
-hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE' 'unset AWS_ROLE_ARN'
-hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
-hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$role" bash "$@"'
-hm ksignall "AC2 every step gets the signing variables, not release-sign and release-apks alone" 'signers=" release-sign release-apks "' 'signers=" release-verify release-apks release-publish release-sign release-assets release-postverify "'
+hm kwrap0  "AC2 Witness and the wrapped script keep the identity and AWS variables" $'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' $':\n'
+hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" ' AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN' ' AWS_ROLE_ARN'
+hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@"' '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
+hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@"' '-o "witness-${step#snapshot-}/$step-collection.local.json" -- env "AWS_ROLE_ARN=$role" bash "$@"'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
-hm kghenv  "AC2 the token file written to GITHUB_ENV" 'mv "$td/token" "$td/step/token";' 'mv "$td/token" "$td/step/token"; echo "AWS_WEB_IDENTITY_TOKEN_FILE=$td/step/token" >> "$GITHUB_ENV";'
-hm kclean  "AC2 the token directory not removed after Witness returns" $'rm -rf "$td"\n[ ! -e' '[ ! -e'
+hm kclean  "AC2 the key directory not removed after Witness returns" $'rm -rf "$kd"\n[ ! -e' '[ ! -e'
 hm fexec   "AC2 witness exec'd (the cleanup after it would never run)" 'witness run --step' 'exec witness run --step'
 hm fignore "AC2 a failure of the witnessed command is ignored" '|| rc=$?' '|| true'
-hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
+hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" ' ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
-    '"witness-${step#snapshot-}/$step-collection.json"' \
-       '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
+    '"witness-${step#snapshot-}/$step-collection.local.json"' \
+       '"witness-${step#snapshot-}/${step#snapshot-}-collection.local.json"'
 hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-verify|' \
     'in snapshot-evil|release-verify|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
@@ -819,7 +813,7 @@ lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environ
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
 lm lnounset "WIT1 the token variables not unset" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' ''
-lm ltimeout "WIT1 no time limit on the build" '-- timeout -k 20 540 bash' '-- bash'
+lm ltimeout "WIT1 a time limit on the build (the local helper has had no timeout wrapper since handoff 0713)" '-- bash "$@"' '-- timeout -k 20 540 bash "$@"'
 lm lsnapdir "WIT1 a snapshot record in its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 { cat "$work/witnessed-local.sh"; echo "witness run --step x -- true"; } > "$work/l_second.sh"
 expect caught "WIT1 a second witness invocation in the local helper" "local helper" localhelper "$work/l_second.sh"
@@ -3799,7 +3793,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1319
+EXPECT=1313
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

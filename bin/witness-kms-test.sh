@@ -5,26 +5,22 @@
 #  any other env name refused), REQ-CHAIN-007-AC18 (any other env name refused), REQ-CHAIN-001-AC1 (step env names come from the closed env_names list), REQ-CHAIN-001-AC2 (Sign's steps: a Witness install and a
 #  Witness sign step, no step env, cosign in one job), REQ-CHAIN-007-AC9 (what is attached: no entries files). REQ-CHAIN-004-AC10 (Sign signs keyless with the Sigstore timestamp) was already made false by the
 #  KMS signing of the base and is named here for the same reason.)
-# Tests for how the two Witness helpers that hold an identity token sign with the release KMS key (handoff 0713, rows P2 and P9):
-#   bin/witnessed.sh STEP SCRIPT...      Release's six steps: `witness run` with a throwaway key, then the one signing function
-#   bin/witness-sign-staged.sh STAGED SIGNED   Sign's step for Build's, Rebuild's and Check's records: the same signing function
-# Offline: `witness`, the token endpoint helper (bin/loopback-get.sh) and the verifier (which holds the signing function, `sign-record`) are doubles made here;
+# Tests for how Sign's helpers sign with the release KMS key (handoff 0713, rows P2 and P9) and for the Release helper that does not (S2, R1, R3):
+#   bin/witnessed.sh STEP SCRIPT...      Release's six steps: `witness run` with a throwaway ed25519 key made under RUNNER_TEMP, nothing else. The Release job holds no KMS role, no key, no AWS name and no identity
+#                                        token: no token fetch, no `signers` list, no sign-record tail; the record is witness-DIR/STEP-collection.local.json (DIR: the step without a leading snapshot-). Its text is judged exactly by
+#                                        bin/chain-test-shape.py (`python3 -I -B bin/chain-test-shape.py helper bin/witnessed.sh` prints ok); here it is run against doubles.
+#   bin/witness-sign-staged.sh STAGED SIGNED   Sign's step for Build's, Rebuild's and Check's records: the one signing function (sign-record, through bin/with-aws-token.sh)
+# Offline: `witness`, the token endpoint helper (bin/loopback-get.sh, which only Sign's wrapper uses) and the verifier (which holds the signing function, `sign-record`) are doubles made here;
 # nothing reaches AWS, KMS, a network or a public log (the signing function itself is tested in bin/chain-rekor-key-test.sh with a fake cosign).
-# What it proves, by running the real helper against the doubles (the doubles record what they were given):
-#   - Witness runs with a throwaway key file made for the step (never the KMS key, no Fulcio, timestamp or certificate flag); the collection's payload is then signed by
-#     `sign-record` (the key named by RELEASE_KMS_KEY_REF, the job pins the value awskms:///alias/fosterstack-release-signing); a failing Witness is not signed; a failing signature fails the helper
-#   - the identity token is asked for once for the step and once for the signing call on release-sign and release-apks, exactly once on every other step, with audience sts.amazonaws.com (the audience the AWS
-#     trust requires), and lands in a file of mode 0600 in a directory under RUNNER_TEMP, outside the repository tree; the file holds only the token, and the token is in no argument, log line or record
-#   - Witness's own environment holds no AWS role or token-path variable, no AWS_ name at all on a step that does not sign, and no request variable, for every step; the AWS SDK is pointed at a token file by
-#     AWS_WEB_IDENTITY_TOKEN_FILE and at the role by AWS_ROLE_ARN for the signing call only (sign-record, with a fresh token). The wrapped command is the plain `bash SCRIPT` for every step (the command-run
-#     attestor records it, and record-env refuses a record that names the AWS role or token-file variables). release-sign and release-apks only are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE
-#     (sensitive keys, so no record holds them), and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the two AWS variables themselves, each before its first aws or cosign call, refusing (naming only RELEASE_*)
-#     when either is empty; the token file is removed when Witness returns, before the fresh token for the signing call is fetched; nothing is written to GITHUB_ENV
-#   - bin/with-aws-token.sh (Sign's one token fetch, of its provenance signature and of each staged record): a fresh token, mode 0600 in a 0700 directory under RUNNER_TEMP, for one call only,
+# What it proves for bin/witnessed.sh, by running the real helper against the doubles (the doubles record what they were given):
+#   - for every one of the six steps, with none of AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF or ACTIONS_ID_TOKEN_REQUEST_* in the environment: Witness runs with a throwaway ed25519 key file of mode 0600 in a directory
+#     of mode 0700 under RUNNER_TEMP (never the KMS key, no Fulcio, timestamp or certificate flag), attestors environment,git,material,product, the wrapped command the plain `bash SCRIPT`, from the repository root; the
+#     key directory is gone when the helper ends; no identity token is fetched and no signing call is made; neither Witness nor the wrapped script sees an AWS_, RELEASE_, request or SIGSTORE name
+#   - with those names set anyway Witness still sees no request variable, no role and no token file, no token is fetched; a failing Witness keeps its exit status and leaves nothing; an unknown step exits 2; a job with no RUNNER_TEMP stops before Witness runs
+#   - the helper's text names no signers list, sign-record, kms-sign, with-aws-token, loopback helper, RELEASE_* name, audience or old record name
+#   bin/with-aws-token.sh (Sign's one token fetch, of its provenance signature and of each staged record): a fresh token, mode 0600 in a 0700 directory under RUNNER_TEMP, for one call only,
 #     removed the moment the call ends, its exit status kept; no request variable reaches the call; no call on a failed, empty or null token
-#   - both variables are sensitive keys of the record; no SIGSTORE_ID_TOKEN is used
-#   - the token directory is gone after success, after a failing Witness (its exit status is kept), and after a refusal
-#   - a job with no role or region, a missing RUNNER_TEMP, or an empty or null token stops before Witness runs
+#   - the Release scripts name no RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE or AWS_ROLE_ARN
 # Each property is also proven on a MUTANT of the helper (a copy with that one property broken): a judge that cannot fail proves nothing.
 set -uo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -71,6 +67,11 @@ set -u
     echo "TOKDIRMODE $(stat -c %a "$(dirname "$AWS_WEB_IDENTITY_TOKEN_FILE")" 2> /dev/null || echo none)"
     echo "TOKCONTENT $(cat "$AWS_WEB_IDENTITY_TOKEN_FILE" 2> /dev/null)"
   fi
+  kp=""; prev=""; for a in "$@"; do [ "$prev" = --signer-file-key-path ] && kp=$a; prev=$a; done
+  echo "KEYPATH $kp"
+  echo "KEYEXISTS $([ -f "$kp" ] && echo yes || echo no)"
+  echo "KEYMODE $(stat -c %a "$kp" 2> /dev/null || echo none) $(stat -c %a "$(dirname "$kp")" 2> /dev/null || echo none)"
+  echo "KEYALG $(openssl pkey -in "$kp" -noout -text 2> /dev/null | head -1)"
   echo "CWD $(pwd)"
   echo "RTFILES $(find "$RUNNER_TEMP" -type f -name token 2> /dev/null | wc -l)"
   echo "LOOPN $(cat "$LOG/loop.log" 2> /dev/null | wc -l)"
@@ -199,8 +200,6 @@ def tree(helper, text, wrapper=None):
         sh(os.path.join(repo, "bin", "with-aws-token.sh"), wrapper if wrapper is not None else open(os.path.join(root, "bin", "with-aws-token.sh")).read())
     sh(os.path.join(repo, "bin", "loopback-get.sh"), FAKE_LOOP)
     sh(os.path.join(repo, "bin", "inner.sh"), FAKE_INNER)
-    sh(os.path.join(repo, "bin", "release-sign.sh"), FAKE_INNER)
-    sh(os.path.join(repo, "bin", "release-apks.sh"), FAKE_INNER)      # the target of release-apks, the other step whose script signs itself (bin/release-sign-apks.sh maps the sensitive names itself)      # the target of release-sign, the one step whose script signs itself (bin/release-sign.sh maps the sensitive names itself, see problems_creds)
     sh(os.path.join(repo, "bin", "chain-verify.py"), FAKE_CV)
     os.makedirs(os.path.join(repo, ".github/policy"))
     open(os.path.join(repo, ".github/policy/release-policy.template.json"), "w").write("{}")
@@ -232,197 +231,108 @@ def lines(log, name, key):
     return [l.split(" ", 1)[1] if " " in l else "" for l in read(os.path.join(log, name)).splitlines() if l.split(" ", 1)[0] == key]
 
 
-def run_witnessed(text, step="release-verify", extra=None, drop=()):
+STEPS = ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify")
+IDENTITY = ("AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL")
+
+
+def run_witnessed(text, step="release-verify", extra=None, drop=(), identity=False):
+    """R3/I5: the Release job holds no KMS role, no key and no identity token, so by default none of those names is in the environment; identity=True puts them back (a workflow that still sets them)"""
     t, repo, log, runner, fakebin = tree("witnessed.sh", text)
     e = env_of(t, log, runner, fakebin, extra, drop)
-    r = subprocess.run(["bash", "bin/witnessed.sh", step, ("bin/%s.sh" % step) if step in ("release-sign", "release-apks") else "bin/inner.sh"], cwd=repo, env=e, capture_output=True, text=True, timeout=60)
+    if not identity:
+        for k in IDENTITY:
+            if k not in (extra or {}):
+                e.pop(k, None)
+    r = subprocess.run(["bash", "bin/witnessed.sh", step, "bin/inner.sh"], cwd=repo, env=e, capture_output=True, text=True, timeout=60)
     return t, repo, log, runner, r
 
 
-def problems_witnessed(text):
-    """Everything wrong with a witnessed.sh, judged by running it for release-verify (a step with no key of its own) and for release-sign."""
+def problems_witnessed(text, shape=True):
+    """Everything wrong with a witnessed.sh (R3): Witness signs with a throwaway ed25519 key made under RUNNER_TEMP; no identity token, no signers, no KMS tail; the record is witness-DIR/STEP-collection.local.json"""
     bad = []
-    t, repo, log, runner, r = run_witnessed(text, "release-verify")
-    argv = (lines(log, "witness.log", "ARGV") or [""])[0]
-    tokfile = (lines(log, "witness.log", "TOKFILE") or [""])[0]
-    tokdir = os.path.dirname(tokfile) if tokfile and tokfile != "UNSET" else ""
-    if r.returncode != 0:
-        bad.append("release-verify exit %d: %s" % (r.returncode, r.stderr.strip()[:120]))
-    if "--signer-kms-ref" in argv or not re.search(r"--signer-file-key-path \S+/key\.pem", argv):
-        bad.append("Witness is not told to sign with a throwaway key file (or is still told the KMS key)")
-    sr = [l for l in read(os.path.join(log, "cv.log")).splitlines() if l.startswith("sign-record ")]
-    want_sr = "sign-record --payload %s --out witness-release-verify/release-verify-collection.json --template .github/policy/release-policy.template.json --aws " + runner + "/aws-cli/aws --public-key build/keys/release.rsa.pub"     # KA-2 p4 g3: the pinned aws CLI and the committed public key
-    if len(sr) != 1 or not re.fullmatch(re.escape(want_sr).replace("%s", r"\S+/payload"), sr[0].replace("\\", "")) and not re.fullmatch(want_sr % r"\S+/payload", sr[0]):
-        bad.append("the collection is not signed once by sign-record with --payload, --out and --template as pinned: %r" % sr)
-    se = read(os.path.join(log, "signrec.env")).splitlines()
-    if len(se) != 1 or not se[0].startswith("ROLE=" + ROLE) or "TOKEXISTS=yes" not in se[0] or not se[0].endswith("REQ=UNSET|UNSET|UNSET"):
-        bad.append("sign-record does not see the role and the token file, or sees a request variable: %r" % se)
-    if read(os.path.join(log, "signrec.payload")) != "PAYLOAD-OF-WITNESS":
-        bad.append("sign-record is not handed the payload Witness wrote")
-    if re.search(r"fulcio|oidc|--timestamp|timestamp\.sigstore|\s-t\s|certificate", argv):
-        bad.append("a Fulcio, OIDC, timestamp or certificate flag is still given to Witness")
-    if "timeout" in argv:
-        bad.append("the wrapped command is still under the ten-minute certificate timeout")
-    loops = read(os.path.join(log, "loop.log")).splitlines()
-    if len(loops) != 1 or not loops[0].endswith("&audience=sts.amazonaws.com"):
-        bad.append("the identity token is not asked for exactly once with audience sts.amazonaws.com: %r" % loops)
-    # T1 (#822 round 1): Witness and the wrapped command run first, with no token file and no AWS variable; the token is fetched just before sign-record
-    if read(os.path.join(log, "seq")).split() != ["witness", "loop", "sign-record"]:
-        bad.append("the order is not Witness, then one token fetch, then sign-record: %r" % read(os.path.join(log, "seq")).split())
-    if tokfile not in ("", "UNSET") or (lines(log, "witness.log", "RTFILES") or ["0"])[0] != "0" or (lines(log, "witness.log", "LOOPN") or ["9"])[0] != "0":
-        bad.append("Witness runs with a token already fetched (token variable %r, files under RUNNER_TEMP %r, fetches so far %r)" % (
-            tokfile, (lines(log, "witness.log", "RTFILES") or ["?"])[0], (lines(log, "witness.log", "LOOPN") or ["?"])[0]))
-    stok = read(os.path.join(log, "signrec.tok")).splitlines()
-    srtf = re.search(r"TOKFILE=(\S+)", (read(os.path.join(log, "signrec.env")).splitlines() or [""])[0])
-    tokdir = os.path.dirname(srtf.group(1)) if srtf and srtf.group(1) != "UNSET" else ""
-    if len(stok) != 1 or not stok[0].startswith("MODE=600 DIRMODE=700 CONTENT=" + TOKEN + " ") or not stok[0].endswith(" REGION=us-east-1 KEYREF=" + KEY):
-        bad.append("sign-record does not see a mode 0600 token file in a 0700 directory holding exactly the token, with the region and the key reference: %r" % stok)
-    if srtf and (not os.path.realpath(srtf.group(1)).startswith(os.path.realpath(runner) + os.sep) or os.path.realpath(srtf.group(1)).startswith(os.path.realpath(repo) + os.sep)):
-        bad.append("the token file is not under RUNNER_TEMP, outside the repository tree")
-    if (lines(log, "witness.log", "ROLE") or [""])[0] != "UNSET":
-        bad.append("Witness sees AWS_ROLE_ARN")
-    if (lines(log, "witness.log", "NAMES") or ["x"])[0].strip() != "":
-        bad.append("release-verify: Witness sees AWS_ or RELEASE_ variables (it must see none on a step that does not sign): %r" % (lines(log, "witness.log", "NAMES") or [""])[0])
-    if (lines(log, "witness.log", "REQ") or [""])[0] != "UNSET|UNSET|UNSET":
-        bad.append("the identity-token request or runtime variables reach Witness: %r" % (lines(log, "witness.log", "REQ") or [""])[0])
-    inner = read(os.path.join(log, "inner.log"))
-    if "ran" not in inner:
-        bad.append("the wrapped script did not run")
-    if re.search(r"^(AWS_|RELEASE_)", inner, re.M):
-        bad.append("the wrapped script of release-verify still sees an AWS variable")
-    if "RTFILES 0" not in inner:
-        bad.append("a token file exists while the wrapped script of release-verify runs")
-    if re.search(r"^ACTIONS_ID_TOKEN|^SIGSTORE", inner, re.M):
-        bad.append("the wrapped script sees a request variable or SIGSTORE_ID_TOKEN")
-    for k in ("AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"):
-        if "--env-add-sensitive-key " + k not in argv:
-            bad.append("%s is not a sensitive key of the record" % k)
-    if "SIGSTORE_ID_TOKEN" in argv:
-        bad.append("SIGSTORE_ID_TOKEN is still a sensitive key (it no longer exists)")
-    if TOKEN in argv or TOKEN in read(os.path.join(log, "inner.log")) or TOKEN in r.stderr.replace("::add-mask::" + TOKEN, ""):
-        bad.append("the token is in an argument, the script's environment or the output")
-    if read(os.path.join(log, "github_env")):
-        bad.append("something was written to GITHUB_ENV")
-    if tokdir and os.path.exists(tokdir):
-        bad.append("the token directory still exists after success")
-    for stp in ("release-sign", "release-apks"):
-        def badx(m, stp=stp):
-            bad.append(m.replace("release-sign", stp))
-        # release-sign: the one wrapped script that signs with the key itself is handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (bin/release-sign.sh maps them onto the AWS variables
-        # itself, see problems_creds); Witness's argv and environment hold no AWS role or token-path name, value or path (REQ-CHAIN-007-AC12, AC15), because the command-run attestor records argv
-        t2, repo2, log2, runner2, r2 = run_witnessed(text, stp)
-        inner2 = read(os.path.join(log2, "inner.log"))
-        wargv2 = (lines(log2, "witness.log", "ARGV") or [""])[0]
-        after2 = wargv2.split(" -- ", 1)[1] if " -- " in wargv2 else wargv2
-        if not re.search(r"^RELEASE_ROLE_ARN=" + re.escape(ROLE) + "$", inner2, re.M):
-            badx("the wrapped script of release-sign does not see RELEASE_ROLE_ARN = the role")
-        if re.search(r"^AWS_(ROLE_ARN|WEB_IDENTITY_TOKEN_FILE)=", inner2, re.M):
-            badx("the wrapped script of release-sign sees an AWS_ role or token variable from the helper (bin/release-sign.sh maps RELEASE_* itself)")
-        if read(os.path.join(log2, "seq")).split() != ["loop", "witness", "loop", "sign-record"]:
-            badx("release-sign: the order is not a token for its own signing script, Witness, a fresh token, sign-record: %r" % read(os.path.join(log2, "seq")).split())
-        if "RTFILES 1" not in inner2:
-            badx("release-sign: the token file does not exist while its script runs")
-        # A2 (#822 round 2) and F1 (round 3): Witness's own environment holds no AWS role or token path for ANY step; on release-sign it holds only RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE (sensitive keys) beside the
-        # region and the key alias (not credentials); the token made for the wrapped script is removed before the fresh one for sign-record is fetched
-        if (lines(log2, "witness.log", "ROLE") or [""])[0] != "UNSET" or (lines(log2, "witness.log", "TOKFILE") or [""])[0] != "UNSET":
-            badx("release-sign: Witness itself sees AWS_ROLE_ARN or a token path: %r %r" % ((lines(log2, "witness.log", "ROLE") or [""])[0], (lines(log2, "witness.log", "TOKFILE") or [""])[0]))
-        if (lines(log2, "witness.log", "NAMES") or [""])[0].split() != ["AWS_REGION", "RELEASE_KMS_KEY_REF", "RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]:
-            badx("release-sign: Witness's environment holds other AWS_ or RELEASE_ names than AWS_REGION, RELEASE_KMS_KEY_REF, RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE: %r" % (lines(log2, "witness.log", "NAMES") or [""])[0])
-        mt2 = re.search(r"^RELEASE_TOKEN_FILE=(\S+)$", inner2, re.M)
-        if ROLE in wargv2 or "role/" in wargv2 or TOKEN in wargv2 or not mt2 or mt2.group(1) in wargv2 or "/step/token" in wargv2:
-            badx("release-sign: Witness's argv holds the role value or the token path (the command-run attestor records argv): %r" % wargv2[-300:])
-        if "AWS_" in wargv2.replace("--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE", "").replace("--env-add-sensitive-key AWS_ROLE_ARN", ""):
-            badx("release-sign: Witness's argv holds an AWS_ name outside the two sensitive-key flags: %r" % wargv2[-300:])
-        if after2.strip() != "bash bin/%s.sh" % stp:
-            badx("release-sign: the wrapped command is not the plain `bash SCRIPT`: %r" % after2[-200:])
-        if not (re.search(r"^TOKEXISTS yes$", inner2, re.M) and re.search(r"^TOKMODE 600$", inner2, re.M) and re.search(r"^TOKCONTENT " + re.escape(TOKEN) + "$", inner2, re.M)):
-            badx("release-sign: its script does not see an existing mode 0600 token file holding the token while it runs: %r" % inner2[-300:])
-        # the record the command-run attestor writes for this step (cmd = the argv after `--`), judged by the real record-env: a minimal collection and the committed real Witness record
-        shutil.rmtree(t2, ignore_errors=True)
-        for kind, rec in (("min", "min"), ("real", os.path.join(root, "test-evidence", "witness-real", "build-collection.real.txt"))):
-            t7, repo7, log7, runner7, r7 = run_witnessed(text, stp, {"FAKE_WITNESS_REC": rec})
-            pl = os.path.join(log7, "signrec.payload")
-            if not os.path.exists(pl):
-                badx("release-sign: no %s record was signed (exit %d)" % (kind, r7.returncode))
-            else:
-                envp = os.path.join(t7, "record.json")
-                json.dump({"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(open(pl, "rb").read()).decode(), "signatures": []}, open(envp, "w"))
-                rv = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-verify.py"), "record-env", "--record", envp], capture_output=True, text=True)
-                if rv.returncode != 0:
-                    badx("release-sign: record-env refuses the %s record the step writes: %s" % (kind, (rv.stdout + rv.stderr).strip()[:160]))
-            shutil.rmtree(t7, ignore_errors=True)
-        t2, repo2, log2, runner2, r2 = run_witnessed(text, stp)
-        pr2 = read(os.path.join(log2, "signrec.prior")).strip()
-        tf2 = re.search(r"TOKFILE=(\S+)", (read(os.path.join(log2, "signrec.env")).splitlines() or [""])[0])
-        mprior = re.fullmatch(r"PRIOR=(\S+) EXISTS=(\S+)", pr2)
-        if not mprior or mprior.group(1) == "none" or mprior.group(2) != "False" or (tf2 and mprior.group(1) == tf2.group(1)):
-            badx("release-sign: the token made for the wrapped script is not removed, as a separate file, before sign-record's fresh one: %r" % pr2)
-    # a failing Witness: its exit status is kept and the token directory is gone
+    for stp in STEPS:
+        t, repo, log, runner, r = run_witnessed(text, stp)
+        argv = (lines(log, "witness.log", "ARGV") or [""])[0]
+        if r.returncode != 0:
+            bad.append("%s exit %d without any AWS, KMS or identity-token variable: %s" % (stp, r.returncode, r.stderr.strip()[:120]))
+        mk = re.search(r"--signer-file-key-path (\S+)/key\.pem", argv)
+        kp = (lines(log, "witness.log", "KEYPATH") or [""])[0]
+        if not mk or "--signer-kms-ref" in argv:
+            bad.append("%s: Witness is not told to sign with a throwaway key file (or is told a KMS key)" % stp)
+        elif not os.path.realpath(kp).startswith(os.path.realpath(runner) + os.sep) or os.path.realpath(kp).startswith(os.path.realpath(repo) + os.sep):
+            bad.append("%s: the throwaway key is not under RUNNER_TEMP, outside the repository tree: %s" % (stp, kp))
+        if (lines(log, "witness.log", "KEYEXISTS") or [""])[0] != "yes" or (lines(log, "witness.log", "KEYMODE") or [""])[0] != "600 700":
+            bad.append("%s: the key is not a file of mode 600 in a directory of mode 700 while Witness runs: %r" % (stp, lines(log, "witness.log", "KEYMODE")))
+        if "ED25519" not in (lines(log, "witness.log", "KEYALG") or [""])[0].upper():
+            bad.append("%s: the throwaway key is not an ed25519 key: %r" % (stp, lines(log, "witness.log", "KEYALG")))
+        if runner and os.listdir(runner):
+            bad.append("%s: the key directory is left behind after success: %r" % (stp, os.listdir(runner)))
+        if re.search(r"fulcio|oidc|--timestamp|timestamp\.sigstore|\s-t\s|certificate|kms", argv):
+            bad.append("%s: a Fulcio, OIDC, timestamp, certificate or KMS flag is given to Witness" % stp)
+        if not re.search(r" -a environment,git,material,product( |$)", argv):
+            bad.append("%s: the attestors are not exactly environment,git,material,product" % stp)
+        if argv.split(" -- ", 1)[-1].strip() != "bash bin/inner.sh":
+            bad.append("%s: the wrapped command is not the plain `bash SCRIPT`: %r" % (stp, argv[-120:]))
+        out = os.path.join(repo, "witness-" + stp)
+        if " -o witness-%s/%s-collection.local.json" % (stp, stp) not in argv or not os.path.isfile(os.path.join(out, stp + "-collection.local.json")) or os.listdir(out) != [stp + "-collection.local.json"]:
+            bad.append("%s: the record is not written to witness-%s/%s-collection.local.json (and nowhere else): %r" % (stp, stp, stp, os.path.isdir(out) and os.listdir(out)))
+        if os.path.exists(os.path.join(log, "loop.log")) or os.path.exists(os.path.join(log, "cv.log")) or os.path.exists(os.path.join(log, "signrec.tok")):
+            bad.append("%s: an identity token is fetched or a signing call is made (the Release job has no key)" % stp)
+        if (lines(log, "witness.log", "NAMES") or ["x"])[0].strip() != "":
+            bad.append("%s: Witness sees AWS_ or RELEASE_ variables: %r" % (stp, (lines(log, "witness.log", "NAMES") or [""])[0]))
+        if (lines(log, "witness.log", "CWD") or [""])[0] != repo and os.path.realpath((lines(log, "witness.log", "CWD") or [""])[0]) != os.path.realpath(repo):
+            bad.append("%s: Witness does not run from the repository root" % stp)
+        inner = read(os.path.join(log, "inner.log"))
+        if "ran" not in inner:
+            bad.append("%s: the wrapped script did not run" % stp)
+        if re.search(r"^(AWS_|RELEASE_|ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|SIGSTORE)", inner, re.M):
+            bad.append("%s: the wrapped script sees an AWS_, RELEASE_, request or SIGSTORE variable: %r" % (stp, inner[:120]))
+        for k in ("--env-filter-sensitive-vars", "--env-add-sensitive-key GH_TOKEN", "--env-add-sensitive-key GITHUB_TOKEN", "--env-add-sensitive-key DOCKERHUB_USERNAME", "--env-add-sensitive-key DOCKERHUB_TOKEN"):
+            if k not in argv:
+                bad.append("%s: %s is not given to Witness (the record would hold Release's credentials)" % (stp, k))
+        if read(os.path.join(log, "github_env")):
+            bad.append("%s: something was written to GITHUB_ENV" % stp)
+        shutil.rmtree(t, ignore_errors=True)
+    # a workflow that still sets the old names: Witness and the wrapped script still see none of them, and still no token is fetched
+    t, repo, log, runner, r = run_witnessed(text, "release-sign", identity=True)
+    if r.returncode != 0 or (lines(log, "witness.log", "REQ") or [""])[0] != "UNSET|UNSET|UNSET" or (lines(log, "witness.log", "ROLE") or [""])[0] != "UNSET" or (lines(log, "witness.log", "TOKFILE") or [""])[0] != "UNSET":
+        bad.append("with the old identity names set, Witness still sees the request variables, the role or a token file, or the helper fails (exit %d): %r" % (r.returncode, lines(log, "witness.log", "REQ")))
+    if os.path.exists(os.path.join(log, "loop.log")) or os.path.exists(os.path.join(log, "cv.log")) or os.listdir(runner):
+        bad.append("with the old identity names set, a token is fetched, a signing call is made or a directory is left")
+    shutil.rmtree(t, ignore_errors=True)
+    # a failing Witness: its exit status is kept, nothing is left, no output
     t3, repo3, log3, runner3, r3 = run_witnessed(text, "release-verify", {"FAKE_WITNESS_RC": "7"})
-    d3 = ""
-    if os.path.exists(os.path.join(log3, "loop.log")):
-        bad.append("a token is fetched although Witness failed")
     if r3.returncode != 7:
         bad.append("a failing Witness (7) ends the helper with %d" % r3.returncode)
-    if "sign-record" in read(os.path.join(log3, "cv.log")):
-        bad.append("a failing Witness is still signed")
-    # a failing signature fails the helper and leaves no token directory
-    t6, repo6, log6, runner6, r6 = run_witnessed(text, "release-verify", {"FAKE_SIGN_RC": "3"})
-    if r6.returncode == 0:
-        bad.append("a failing signature does not fail the helper")
-    if os.listdir(runner6):
-        bad.append("a token directory is left after a failing signature")
-    shutil.rmtree(t6, ignore_errors=True)
     if os.listdir(runner3):
-        bad.append("the token directory still exists after a failing Witness")
-    # refusals: nothing is run, nothing is left
-    for label, extra, drop in (("no role", {}, ("AWS_ROLE_ARN",)), ("no region", {}, ("AWS_REGION",)), ("no key reference", {}, ("RELEASE_KMS_KEY_REF",)), ("no RUNNER_TEMP", {}, ("RUNNER_TEMP",)),
-                               ("an empty token", {"FAKE_TOKEN": ""}, ()), ("a null token", {"FAKE_TOKEN": "null"}, ()), ("a failed fetch", {"FAKE_FETCH_FAIL": "1"}, ())):
-        t4, repo4, log4, runner4, r4 = run_witnessed(text, "release-verify", extra, drop)
-        late = label in ("an empty token", "a null token", "a failed fetch")      # the token is fetched after Witness ran: the step ran, nothing is signed
-        if r4.returncode == 0 or (os.path.exists(os.path.join(log4, "witness.log")) and not late) or "sign-record" in read(os.path.join(log4, "cv.log")):
-            bad.append("%s: the helper went on (exit %d)" % (label, r4.returncode))
-        if label != "no RUNNER_TEMP" and os.listdir(runner4):
-            bad.append("%s: a token directory is left behind" % label)
-        if label in ("no role", "no region", "no key reference") and os.path.exists(os.path.join(log4, "loop.log")):
-            bad.append("%s: a token was asked for before the job was checked" % label)
-    # P1 (#822 round 1): a collection with no payload is refused before the signing function is called (jq -er: a missing field is an error, not the text null)
-    t7, repo7, log7, runner7, r7 = run_witnessed(text, "release-verify", {"FAKE_WITNESS_NOPAYLOAD": "1"})
-    if r7.returncode == 0 or "sign-record" in read(os.path.join(log7, "cv.log")):
-        bad.append("a collection with no payload is not refused before sign-record (exit %d)" % r7.returncode)
-    if os.listdir(runner7):
-        bad.append("a token directory is left after a collection with no payload")
-    shutil.rmtree(t7, ignore_errors=True)
+        bad.append("the key directory still exists after a failing Witness")
+    # no RUNNER_TEMP: nothing runs; an unknown step exits 2
+    t4, repo4, log4, runner4, r4 = run_witnessed(text, "release-verify", drop=("RUNNER_TEMP",))
+    if r4.returncode == 0 or os.path.exists(os.path.join(log4, "witness.log")):
+        bad.append("without RUNNER_TEMP the helper goes on (exit %d)" % r4.returncode)
     t5, repo5, log5, runner5, r5 = run_witnessed(text, "release-nonsense")
-    if r5.returncode != 2:
-        bad.append("an unknown step does not exit 2")
-    for d in (t, t2, t3, t4, t5):
+    if r5.returncode != 2 or os.path.exists(os.path.join(log5, "witness.log")):
+        bad.append("an unknown step does not exit 2 before Witness runs")
+    # the text: R3 says what is not in the helper
+    code = "\n".join(l for l in text.split("\n") if not l.lstrip().startswith("#"))
+    for pat in (r"\bsigners\b", r"sign-record", r"kms-sign", r"with-aws-token", r"loopback", r"RELEASE_ROLE_ARN", r"RELEASE_TOKEN_FILE", r"RELEASE_KMS_KEY_REF", r"AWS_REGION", r"audience", r"-collection\.json", r"\bjq\b", r"\bcurl\b"):
+        if re.search(pat, code):
+            bad.append("witnessed.sh still names %s" % pat)
+    if shape:
+        tf = tempfile.mkdtemp()
+        open(os.path.join(tf, "w.sh"), "w").write(text)
+        rs = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "bin", "chain-test-shape.py"), "helper", os.path.join(tf, "w.sh")], capture_output=True, text=True, cwd=root)
+        shutil.rmtree(tf, ignore_errors=True)
+        if rs.stdout.strip() != "ok":
+            bad.append("bin/chain-test-shape.py helper does not print ok: %s" % (rs.stdout + rs.stderr).strip()[:200])
+    for d in (t3, t4, t5):
         shutil.rmtree(d, ignore_errors=True)
-    return bad
-
-
-def problems_none(text, step):
-    """A step that does not sign (S5 gap 2(a)): Witness and the wrapped script see no AWS_ or RELEASE_ variable, no token file exists while it runs, and the step exits 0."""
-    bad = []
-    t, repo, log, runner, r = run_witnessed(text, step)
-    if r.returncode != 0:
-        bad.append("%s exit %d: %s" % (step, r.returncode, r.stderr.strip()[:120]))
-    if (lines(log, "witness.log", "NAMES") or ["x"])[0].strip() != "":
-        bad.append("%s: Witness sees AWS_ or RELEASE_ variables (a step that does not sign must see none): %r" % (step, (lines(log, "witness.log", "NAMES") or [""])[0]))
-    inner = read(os.path.join(log, "inner.log"))
-    if "ran" not in inner:
-        bad.append("%s: the wrapped script did not run" % step)
-    if re.search(r"^(AWS_|RELEASE_)", inner, re.M):
-        bad.append("%s: the wrapped script sees an AWS_ or RELEASE_ variable" % step)
-    if "RTFILES 0" not in inner:
-        bad.append("%s: a token file exists while the wrapped script runs" % step)
-    shutil.rmtree(t, ignore_errors=True)
     return bad
 
 
 src = open(os.path.join(root, "bin", "witnessed.sh")).read()
 b = problems_witnessed(src)
-check("witnessed.sh: signs with the KMS key, token to a private file, variables scoped, cleaned up", not b, "; ".join(b))
+check("witnessed.sh: Witness signs with a throwaway ed25519 key under RUNNER_TEMP, no identity token, no KMS, record at witness-DIR/STEP-collection.local.json, cleaned up, shape ok", not b, "; ".join(b))
 
 
 def mutant(label, fn):
@@ -430,100 +340,28 @@ def mutant(label, fn):
     if text == src:
         check("mutant (%s) changed nothing: the mutation is wrong" % label, False)
         return
-    bad = problems_witnessed(text)
+    bad = problems_witnessed(text, shape=False)
     check("witnessed.sh mutant caught: %s" % label, bool(bad), "caught nothing")
 
 
-NONSIGN = ("release-verify", "release-publish", "release-assets", "release-postverify")
-for stp in NONSIGN:
-    b = problems_none(src, stp)
-    check("witnessed.sh: %s is a step that does not sign: Witness and the wrapped script see no AWS_ or RELEASE_ name and no token file" % stp, not b, "; ".join(b))
-_ms = src.replace('signers=" release-sign release-apks "\n', 'signers=" release-sign release-apks release-publish "\n')
-check("witnessed.sh mutant caught: release-publish added to the signers", _ms != src and bool(problems_none(_ms, "release-publish")), "caught nothing" if _ms != src else "the mutation changed nothing")
-
-mutant("audience sigstore", lambda s: s.replace("audience=sts.amazonaws.com", "audience=sigstore"))
-mutant("no trap and no removal of the token directory", lambda s: re.sub(r"^trap .*\n", "", s, flags=re.M).replace('rm -rf "$td"\n', ""))
-mutant("Witness keeps the AWS role and the token path", lambda s: s.replace("unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n", ":\n"))
-mutant("the other steps keep the region and the key reference", lambda s: s.replace("*) unset AWS_REGION RELEASE_KMS_KEY_REF ;;", "*) : ;;"))
-mutant("the token is fetched before Witness for every step", lambda s: s.replace('signers=" release-sign release-apks "\n', 'signers=" release-sign release-apks "\noidc_token\nexport AWS_WEB_IDENTITY_TOKEN_FILE="$td/token"\n'))
-mutant("no fresh token before sign-record", lambda s: s.replace("  oidc_token\n  AWS_WEB_IDENTITY_TOKEN_FILE=", "  AWS_WEB_IDENTITY_TOKEN_FILE="))
-mutant("Witness itself gets the role (exported, not only in the wrapped command)", lambda s: s.replace('signers=" release-sign release-apks "\n', 'signers=" release-sign release-apks "\nexport AWS_ROLE_ARN=$role\n', 1))
-mutant("the token made for the wrapped script stays until the end", lambda s: s.replace('rm -rf "$td/step"\n', "", 1))
-LIT = """bash -c 'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"' release-creds"""
-mutant("the release-creds literal (AWS names in the recorded command) put back in front of the wrapped script", lambda s: s.replace('-- bash "$@" || rc=$?', "-- " + LIT + ' bash "$@" || rc=$?'))
-mutant("the values in the wrapped command (env AWS_ROLE_ARN=... in front of the script)", lambda s: s.replace('-- bash "$@" || rc=$?', '-- env "AWS_ROLE_ARN=$role" "AWS_WEB_IDENTITY_TOKEN_FILE=$td/step/token" bash "$@" || rc=$?'))
-mutant("RELEASE_ROLE_ARN exported for every step", lambda s: s.replace('signers=" release-sign release-apks "\n', 'signers=" release-sign release-apks "\nexport RELEASE_ROLE_ARN=$role\n', 1))
-mutant("a wrong token path for the script", lambda s: s.replace('RELEASE_TOKEN_FILE="$td/step/token"', 'RELEASE_TOKEN_FILE="$td/token"'))
-mutant("RELEASE_ROLE_ARN not a sensitive key", lambda s: s.replace("  --env-add-sensitive-key RELEASE_ROLE_ARN \\\n", ""))
-mutant("RELEASE_TOKEN_FILE not a sensitive key", lambda s: s.replace("  --env-add-sensitive-key RELEASE_TOKEN_FILE \\\n", ""))
-mutant("a payload read with jq -r (null passes)", lambda s: s.replace("jq -er .payload", "jq -r .payload"))
-mutant("a value written to GITHUB_ENV", lambda s: s.replace("rc=0\nwitness run", 'echo "AWS_ROLE_ARN=$AWS_ROLE_ARN" >> "${GITHUB_ENV:-/dev/null}"\nrc=0\nwitness run'))
-mutant("release-apks dropped from the signers", lambda s: s.replace('signers=" release-sign release-apks "\n', 'signers=" release-sign "\n'))
-mutant("the token directory inside the repository", lambda s: s.replace('"${RUNNER_TEMP:?}/witness-aws.XXXXXX"', '"./witness-aws.XXXXXX"'))
-mutant("AWS_ROLE_ARN not a sensitive key", lambda s: s.replace("  --env-add-sensitive-key AWS_ROLE_ARN \\\n", ""))
-mutant("a Fulcio flag", lambda s: s.replace("witness run --step", "witness run --signer-fulcio-url https://fulcio.sigstore.dev --step"))
-mutant("Witness told to sign with the KMS key itself again", lambda s: s.replace('--signer-file-key-path "$td/key.pem"', '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'))
-mutant("the collection is not signed with the release key", lambda s: s.replace("sign-record", "verify"))
-mutant("a failing signature ignored", lambda s: s.replace("--public-key build/keys/release.rsa.pub || rc=$?", "--public-key build/keys/release.rsa.pub || true"))     # KA-2 p4 g3: the sign-record line now ends with the two options witnessed.sh adds
-mutant("the token request variables exported to the wrapped script", lambda s: s.replace("req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n", "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL\n"))
-mutant("a failing Witness signed anyway", lambda s: s.replace('if [ "$rc" -eq 0 ]; then', "if true; then"))
-mutant("the ten-minute timeout kept", lambda s: s.replace('-- bash "$@" || rc=$?', '-- timeout -k 20 540 bash "$@" || rc=$?'))
+mutant("the key directory inside the repository", lambda s: re.sub(r'"\$\{RUNNER_TEMP:\?\}/witness-key\.XXXXXX"', '"./witness-key.XXXXXX"', s))
+mutant("no trap and no removal of the key directory", lambda s: re.sub(r'^trap .*\n', "", s, flags=re.M).replace('rm -rf "$kd"\n', ""))
+mutant("Witness told to sign with the KMS key again", lambda s: s.replace('--signer-file-key-path "$kd/key.pem"', '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'))
+mutant("the record keeps the old name", lambda s: s.replace("-collection.local.json", "-collection.json"))
 mutant("the exit status of Witness lost", lambda s: s.replace('exit "$rc"', "exit 0"))
-mutant("the token file readable by others", lambda s: s.replace("umask 077\n", "umask 022\n"))
-mutant("no role check before the token is asked for", lambda s: s.replace(': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"\n', "").replace("role=$AWS_ROLE_ARN ", "role=${AWS_ROLE_ARN-} "))
-mutant("the token not checked for null", lambda s: s.replace('[ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }\n', ""))
+mutant("the github attestor added", lambda s: s.replace("environment,git,material,product", "environment,git,github,material,product"))
+mutant("the identity request variables left in Witness's environment", lambda s: re.sub(r'^unset ACTIONS_ID_TOKEN_REQUEST_TOKEN.*\n', "", s, flags=re.M))
+mutant("an identity token fetched before Witness", lambda s: s.replace("rc=0\n", "rc=0\nsh bin/loopback-get.sh -sSf https://token.example/ > /dev/null\n", 1))
+mutant("the role handed to the wrapped script", lambda s: s.replace('-- bash "$@"', '-- env RELEASE_ROLE_ARN=x bash "$@"'))
+mutant("a KMS tail signs the record", lambda s: s.replace('rm -rf "$kd"\n', 'bash bin/with-aws-token.sh sign-record --payload x\nrm -rf "$kd"\n', 1))
+mutant("an ed25519 key replaced by an RSA key", lambda s: s.replace("-algorithm ed25519", "-algorithm RSA"))
+mutant("GH_TOKEN not a sensitive key", lambda s: s.replace("  --env-add-sensitive-key GH_TOKEN \\\n", ""))
+mutant("an unknown step goes on", lambda s: re.sub(r'  \*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;; esac', "  *) : ;; esac", s))
 
-# ---------------------------------------------------------------------------------------------------------------------------------------
-# the two scripts that sign with the key map RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE onto the AWS variables themselves (P11 round 3, F1; REQ-CHAIN-007-AC12, AC15): one export line, preceded by a
-# refusal that names only RELEASE_* when either is empty, before the script's first signing call
-
-EXPORT = 'export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"'
-
-
-def problems_creds(text, name, behave):
-    bad = []
-    if text.count(EXPORT) != 1:
-        return ["%s: the line `%s` is not there exactly once" % (name, EXPORT)]
-    at = text.index(EXPORT)
-    before = text[:at]
-    for v in ("RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"):
-        mm = [m for m in re.finditer(r'^[^#\n]*\$\{%s:-\}[^\n]*$' % v, before, re.M)]
-        if not mm:
-            bad.append("%s: no refusal of an empty %s before the export" % (name, v))
-        elif "AWS_" in mm[-1].group(0):
-            bad.append("%s: the refusal of %s names an AWS variable" % (name, v))
-    first = re.search(r"^(?!\s*#).*(?<![\w./-])(cosign\s+(sign|attest|login)|kms-sign\s|sign-record\s|aws\s)", text, re.M)
-    if first and first.start() < at:
-        bad.append("%s: a signing call comes before the export" % name)
-    if behave:
-        t = tempfile.mkdtemp()
-        try:
-            os.makedirs(os.path.join(t, "bin"))
-            sh(os.path.join(t, "bin", name), text)
-            base = {"PATH": os.environ["PATH"], "HOME": t, "DOCKERHUB_USERNAME": "u", "DOCKERHUB_TOKEN": "t", "GH_TOKEN": "g", "RELEASE_KMS_KEY_REF": KEY, "RUNNER_TEMP": "/x/runner", "GITHUB_REF_NAME": "not-a-tag"}   # KA-2 p4 group 4: release-sign.sh refuses an unset RUNNER_TEMP first (the pinned aws CLI lives under it)
-            for drop in ("RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"):
-                e = dict(base, RELEASE_ROLE_ARN=ROLE, RELEASE_TOKEN_FILE="/x/token")
-                e[drop] = ""
-                r = subprocess.run(["bash", "bin/" + name], cwd=t, env=e, capture_output=True, text=True, timeout=60)
-                if r.returncode != 2 or drop not in r.stderr or "AWS_" in r.stderr:
-                    bad.append("%s: an empty %s is not refused with exit 2 naming only RELEASE_*: rc %d %r" % (name, drop, r.returncode, r.stderr.strip()[:120]))
-            r = subprocess.run(["bash", "bin/" + name], cwd=t, env=dict(base, RELEASE_ROLE_ARN=ROLE, RELEASE_TOKEN_FILE="/x/token"), capture_output=True, text=True, timeout=60)
-            if "tag refused" not in r.stderr:
-                bad.append("%s: with both set the script does not go on to its next check: rc %d %r" % (name, r.returncode, r.stderr.strip()[:120]))
-        finally:
-            shutil.rmtree(t, ignore_errors=True)
-    return bad
-
-
-apk_src = open(os.path.join(root, "bin", "release-sign-apks.sh")).read()
-rs_src = open(os.path.join(root, "bin", "release-sign.sh")).read()
-b = problems_creds(apk_src, "release-sign-apks.sh", False)
-check("release-sign-apks.sh: maps RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE onto the AWS variables once, after a refusal naming only RELEASE_*, before it signs", not b, "; ".join(b))
-b = problems_creds(rs_src, "release-sign.sh", True)
-check("release-sign.sh: the same export, refused with exit 2 naming only RELEASE_* when either is empty, and it goes on to its next check when both are set", not b, "; ".join(b))
-for nm, txt, beh in (("release-sign-apks.sh", apk_src, False), ("release-sign.sh", rs_src, True)):
-    mt = txt.replace(EXPORT, "true")
-    check("%s mutant caught: the export line removed" % nm, mt != txt and bool(problems_creds(mt, nm, beh)), "caught nothing")
+# release-sign-apks.sh and release-sign.sh no longer map RELEASE_ROLE_ARN / RELEASE_TOKEN_FILE (R3): the Release job has no role and no token file
+for nm in ("release-sign-apks.sh", "release-sign.sh", "release-apks.sh", "release-publish.sh"):
+    code = "\n".join(l for l in open(os.path.join(root, "bin", nm)).read().split("\n") if not l.lstrip().startswith("#"))
+    check("%s: names no RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE or AWS_ROLE_ARN (R3: nothing hands a Release step a role or a token file)" % nm, not re.search(r"RELEASE_ROLE_ARN|RELEASE_TOKEN_FILE|AWS_ROLE_ARN|AWS_WEB_IDENTITY_TOKEN_FILE", code))
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # bin/witness-sign-staged.sh: Sign's step for the records of the jobs that hold no token
@@ -760,7 +598,7 @@ mutant3("the token file readable by others", lambda s: s.replace("umask 077\n", 
 mutant3("the wrapper no longer passes kms-sign through (KA-2 p4 group 4)", lambda s: s.replace("sign-record|sign|kms-sign)", "sign-record|sign)"))
 
 
-EXPECT = 58
+EXPECT = 36
 print("pass=%d fail=%d" % (passn, failn))
 if passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT))

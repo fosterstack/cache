@@ -89,12 +89,13 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
     "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
-    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
+    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3"], "signs": False, "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # S2: Release holds no key; the script it calls only checks Sign's signatures and attaches them
     "bin/release-compare.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-compare.py"]},   # the compare job's one plain step: a wrapper around the Python file
     "bin/release-compare.py": {"tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"]},   # no key, no signing, no network: it reads the two apk trees, binds Rebuild's apks to the signed rapk records (chain-verify.py verify and bind) and writes the result file; `make` is the word of `policy make`
     "bin/release-publish.sh": {"tools": ["crane", "jq", "python3", "trap"], "signs": False, "runs": ["bin/release-layout.py"]},   # round 1 B4: the layout is checked first
     "bin/release-layout.py":  {"tools": [], "signs": False, "runs": []},
-    "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
+    "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "sha256sum", "trap"], "signs": False, "runs": ["bin/chain-verify.py"]},   # S2: Release checks Sign's signatures (bundle-check) and pushes them (cosign login, attach, verify); it signs nothing
+    "bin/release-signatures.sh": {"tools": ["bash", "git", "jq", "python3", "sha256sum", "trap"], "signs": "other", "runs": ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"]},   # S2: the Sign job's release step: the one place the release KMS key is reached
     "bin/release-stage.sh":   {"tools": ["python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # B-F22: gathers the release's files before release-postverify; no credential, no gh
     "bin/release-assets.sh":  {"tools": ["gh", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},   # B-F22: creates the release after release-postverify has passed
     "bin/release-postverify.sh": {"tools": ["bash", "python3"], "signs": False, "runs": ["bin/release-postverify.py", "bin/release-stage.sh"]},   # rule 79 amended; runs the staging first
@@ -508,7 +509,7 @@ def scan(path, jsonpath):
     for n, l in enumerate(text.split("\n"), 1):
         if n == 1 and l.startswith("#!"):
             continue
-        bare = re.sub(r"\b(docker\.io|ghcr\.io)\b|\bpolicy make\b", " ", l)   # registry host names and the one subcommand are not commands
+        bare = re.sub(r"\b(docker\.io|ghcr\.io)\b|\bpolicy make\b|cosign container image signature", " ", l)   # registry host names, the one subcommand and the type text of the simple-signing payload are not commands
         for w in DENY:
             if w not in tools and re.search(r"(?<![\w./$-])" + re.escape(w) + r"(?![\w-])", bare):
                 bad.append("%s:%d uses %r which the row does not list" % (os.path.basename(path), n, w))
@@ -578,52 +579,56 @@ def record(path, values):
 
 
 def metadata(path):
-    """REQ-CHAIN-007-AC13 (advisor 0386 item 2, cache-ce): the VEX and CSAF files are generated BEFORE the signed manifest and before release-files.sha256, the manifest records their
-    sha256, the vex-forms input is made from Build's verified digests and items, and nothing is signed before all of it exists."""
+    """REQ-CHAIN-007-AC13 (advisor 0386 item 2, cache-ce), S2: bin/release-signatures.sh (the Sign job's release signing step) makes the metadata: the VEX and CSAF files are generated BEFORE the signed manifest and before
+    release-files.sha256, the manifest records their sha256, the vex-forms input is made from Build's verified digests and items, and nothing is signed before all of it exists. Every signature is one
+    `bash bin/with-aws-token.sh kms-sign` call (R1: no cosign, no registry, no push in this script); every python3 line is `python3 -I -B` (R4)."""
     lines = [l.strip() for l in open(path).read().split("\n") if l.strip() and not l.strip().startswith("#")]
     def at(pat, start=0):
         return next((i for i in range(start, len(lines)) if re.search(pat, lines[i])), None)
-    marks = {"images": at(r"release-metadata\.py images "), "cp": at(r"^cp \.vex/fosterstack-cache\.openvex\.json release-metadata/"), "vex": at(r"python3 bin/vex-forms\.py "),
-             "baseline": at(r"release-metadata\.py baseline "), "manifest": at(r"release-metadata\.py manifest "), "list": at(r"release-metadata\.py list "), "first": at(r"^cosign (login|sign)"), "attest": at(r"^cosign attest "), "lsign": at(r"cosign sign-blob .*release-files\.sha256\.bundle")}
-    bad = ["release-sign.sh has no %s step" % k for k, v in marks.items() if v is None]
+    def first_call():      # the first signing CALL: a line that runs the wrapper outside a function body, or the first call of a helper function that does (a definition is not a call)
+        helpers, depth = set(), None
+        for i, l in enumerate(lines):
+            m = re.match(r"(\w+)\(\) \{", l)
+            if m and depth is None:
+                depth = (m.group(1), False)
+            if depth is not None:
+                if "bash bin/with-aws-token.sh kms-sign " in l:
+                    depth = (depth[0], True)
+                if l == "}":
+                    if depth[1]: helpers.add(depth[0])
+                    depth = None
+                continue
+            if "bash bin/with-aws-token.sh kms-sign " in l or any(re.match(h + r" ", l) for h in helpers):
+                return i
+        return None
+    marks = {"images": at(r"release-metadata\.py images "), "cp": at(r"^cp \.vex/fosterstack-cache\.openvex\.json "), "vex": at(r"python3 -I -B bin/vex-forms\.py "),
+             "baseline": at(r"release-metadata\.py baseline "), "manifest": at(r"release-metadata\.py manifest "), "list": at(r"release-metadata\.py list "), "first": first_call()}
+    bad = ["release-signatures.sh has no %s step" % k for k, v in marks.items() if v is None]
     if bad:
         return bad
-    order = ["images", "cp", "vex", "baseline", "manifest", "list", "first", "attest", "lsign"]
+    order = ["images", "cp", "vex", "baseline", "manifest", "list", "first"]
     for a, b in zip(order, order[1:]):
         if not marks[a] < marks[b]:
             bad.append("the %s step must come before the %s step (the VEX and CSAF files are generated before the manifest and the list, and nothing is signed before them)" % (a, b))
     for k, need in (("images", ["--items witness-build/items.json", "--digests witness-build/digests.json", "--images-dir images"]),
-                    ("vex", ["--openvex .vex/fosterstack-cache.openvex.json", "--images release-metadata/vex-images.json", '--version "$GITHUB_REF_NAME"']),
+                    ("vex", ["--openvex .vex/fosterstack-cache.openvex.json", "release-metadata/vex-images.json", '--version "$GITHUB_REF_NAME"']),
                     ("baseline", ["--admission witness-build/admission-baseline.json", '--tag "$GITHUB_REF_NAME"', '--commit "$GITHUB_SHA"']),
-                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata", "--digests witness-build/digests.json", '--baseline-version "$baseline"',
+                    ("manifest", ["--items witness-build/items.json", "--vex-dir ", "--digests witness-build/digests.json", '--baseline-version "$baseline"',
                                   "--modules-dir apks/ubuntu-24.04 "])):
         for n in need:
             if n not in lines[marks[k]]:
                 bad.append("the %s step must carry %s" % (k, n))
-    # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays an OCI referrer of each public digest (the v0.2.x attestation customers have):
-    # one `cosign attest` per registry inside the loop over both digests, after every image signature, GHCR required and Docker Hub a loud, best-effort mirror
-    atts = [l for l in lines if l.startswith("cosign attest ")]
-    base = ('cosign attest --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '
-            '--type https://fosterstack.com/attestations/release-manifest/v1 ')
-    want = {base + '"ghcr.io/$repo@$digest"', base + '"docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"'}
-    if sorted(atts) != sorted(want):
-        bad.append("release-sign.sh must hold exactly these two `cosign attest` lines (the manifest as a release-manifest/v1 referrer of each public digest; GHCR required, "
-                   "the Docker Hub mirror best-effort with a warning): %r" % atts)
-    keyed = 'cosign {} --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json '
-    blob = re.compile(re.escape(keyed.format("sign-blob")) + r"--bundle [\w./-]+ [\w./-]+")
-    allowed = want | {keyed.format("sign") + '"$host/$repo@$digest"', 'cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"',
-                      'cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"'}
-    # handoff 0713 P3: every signature is made with the release KMS key the job pins and keeps its Rekor entry through the signing config; any other line that runs cosign is refused
-    odd = [l for l in lines if re.search(r"(?<![\w-])cosign(?![\w-])", l) and l not in allowed and not blob.fullmatch(l)]
+    # R1: every signature of the release is one KMS call through the token wrapper, with the pinned aws CLI, the job's key reference, the signing config and the release public key
+    kms = re.compile(r'bash bin/with-aws-token\.sh kms-sign --aws "\$RUNNER_TEMP/aws-cli/aws" --key-ref "\$RELEASE_KMS_KEY_REF" --signing-config (?:"\$cfg"|\.github/policy/cosign-signing-config\.json) '
+                     r'--public-key (?:"\$pub"|build/keys/release\.rsa\.pub) --(?:digest|dsse-statement) ')
+    odd = [l for l in lines if "kms-sign" in l and not kms.match(l)]
     if odd:
-        bad.append("every cosign signing line must be exactly `--yes --key \"$RELEASE_KMS_KEY_REF\" --signing-config .github/policy/cosign-signing-config.json ...` and nothing else: %r" % odd[:2])
-    if sorted(atts) == sorted(want) and marks.get("attest") is not None:
-        loop = next((i for i in range(marks["attest"], -1, -1) if lines[i].startswith("for digest in ")), None)
-        if loop is None or lines[loop] != 'for digest in "$prod" "$fips"; do':
-            bad.append('the manifest attestations must sit inside `for digest in "$prod" "$fips"; do` (both public digests)')
-        last_img_sign = max((i for i, l in enumerate(lines) if re.match(r'cosign sign --yes ', l)), default=-1)
-        if marks["attest"] < last_img_sign:
-            bad.append("the manifest attestations must come after every image signature (nothing is attached to an unsigned image)")
+        bad.append("every kms-sign line must be exactly `bash bin/with-aws-token.sh kms-sign --aws \"$RUNNER_TEMP/aws-cli/aws\" --key-ref \"$RELEASE_KMS_KEY_REF\" --signing-config ... --public-key ... --digest|--dsse-statement ...`: %r" % odd[:2])
+    if any(re.search(r"(?:^|[;&|(]\s*|\$\()(cosign|crane|gh)\s", l) for l in lines):
+        bad.append("release-signatures.sh runs no cosign, crane or gh: it only makes files in release-signed/ (R1: Release pushes)")
+    py = [l for l in lines if re.search(r"(?<![\w./-])python3(?![\w-])", l) and not re.search(r"python3 -I -B ", l)]
+    if py:
+        bad.append("every python3 line must be `python3 -I -B` (R4): %r" % py[:2])
     return bad
 
 
