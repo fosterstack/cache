@@ -4,8 +4,6 @@
 
 This release is rebuilt with **Go 1.27.3**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: `Certificate.Verify` in crypto/x509 now returns an error for known intermediate certificates that are no longer trusted, which covers systems whose trust store has not been updated. The fix ships in this release; there is no separate patch release for it.
 
-The CA certificate bundle is also updated, to Wolfi's `ca-certificates-bundle` 20260909-r3, which removes three eMudhra roots: emSign Root CA C1, emSign ECC Root CA C3 and emSign ECC Root CA G3. This ships in this release too.
-
 ### What changes for Gradle and Maven users
 
 - **Optional HTTPS.** Set `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` and the cache serves HTTPS, with TLS 1.2 as the minimum.
@@ -31,7 +29,6 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 
 - Go 1.27.3<!-- pinned: upstream --> (above).
 - `github.com/prometheus/client_golang` 1.24.1 to 1.25.0, with its supporting libraries (`prometheus/common` 0.72.0, `prometheus/procfs` 0.22.0, `golang.org/x/sys` 0.48.0). <!-- pinned: upstream -->
-- The CA certificate bundle in the images (above).
 
 ### What this release does not do
 
