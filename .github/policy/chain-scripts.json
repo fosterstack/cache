@@ -24,7 +24,7 @@
       ],
       "signs": false,
       "reason": "the stage's archive pull: fetches the archive by the digest committed in build/archive.json with the pinned crane into a new directory and checks every file against the pointer (REQ-CHAIN-004-AC16); nothing is pulled by tag and there is no fallback source",
-      "sha256": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
+      "sha256": "a5799f46e362f45600f3c052358c51cbc618494d371ea34a9ec7414c9a0d83bf",
       "exceptions": [
         {
           "rule": "script-name",
@@ -42,7 +42,7 @@
       "runs": [],
       "signs": false,
       "reason": "reads the archive pointer and verifies the archive artifact and each file's sha256 and size against it (run by bin/archive-pull.sh)",
-      "sha256": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31"
+      "sha256": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b"
     },
     {
       "path": "bin/install-host-bwrap.py",

@@ -898,8 +898,8 @@ NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
     "bin/apk-tool.py": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
-    "bin/archive-pull.sh": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
-    "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
+    "bin/archive-pull.sh": "a5799f46e362f45600f3c052358c51cbc618494d371ea34a9ec7414c9a0d83bf",
+    "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485",
     "bin/audit-record.py": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f",
     "bin/build-admit.py": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
