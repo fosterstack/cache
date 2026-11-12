@@ -20,7 +20,7 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
 
-CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\npython3 trusted/.github/agent/supply-chain/pin-scan.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n# the advisor\'s rulings come from the base branch too: a pull request must not bring its own\nexceptions=trusted/.github/supply-chain-exceptions.json\nif [ ! -f "$exceptions" ]; then\n  exceptions="$RUNNER_TEMP/no-exceptions.json"\n  echo \'{"exceptions": []}\' > "$exceptions"\nfi\npython3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1\nexit $status\n', 'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py'}
+CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\npython3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n# the advisor\'s rulings come from the base branch too: a pull request must not bring its own\nexceptions=trusted/.github/supply-chain-exceptions.json\nif [ ! -f "$exceptions" ]; then\n  exceptions="$RUNNER_TEMP/no-exceptions.json"\n  echo \'{"exceptions": []}\' > "$exceptions"\nfi\npython3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1\nexit $status\n', 'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py'}
 
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -77,10 +77,10 @@ def judge_wf(d, real=False):
     if int(str(j.get("timeout-minutes", "999"))) > 15:
         bad.append("pin-age has no short timeout-minutes (<= 15): it must pass fast (a refresh pull request moves many files and runs longer than 8 minutes)")
     runs = "\n".join(str(s.get("run", "")) for s in j.get("steps", []))
-    for prog, flag in ((".github/agent/supply-chain/pin-scan.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
+    for prog, flag in ((".github/agent/supply-chain/pin-age-check.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
         if prog not in runs or flag not in runs:
             bad.append(f"pin-age does not run {prog} {flag} (the pin scan and the audit of what the PR moves)")
-    if ("python3 trusted/.github/agent/supply-chain/pin-scan.py" not in runs or "python3 trusted/.github/agent/supply-chain/pin-audit.py" not in runs
+    if ("python3 trusted/.github/agent/supply-chain/pin-age-check.py" not in runs or "python3 trusted/.github/agent/supply-chain/pin-audit.py" not in runs
             or "checker=" in runs or "$checker" in runs or "pr/.github/agent" in runs):
         bad.append("pin-age does not run the BASE branch's checker (trusted/) at literal paths: the pull request's copy never runs, and no variable names the program (REQ-SUP-001, advisor 0198)")
     if "exceptions=trusted/.github/supply-chain-exceptions.json" not in runs or '--exceptions "$exceptions"' not in runs or "pr/.github/supply-chain-exceptions.json" in runs:
@@ -145,7 +145,7 @@ def judge_wf(d, real=False):
     for jn, want in CANONICAL_RUNS.items():
         for st in jobs[jn].get("steps", []):
             r = str(st.get("run", ""))
-            if r and ("pin-scan" in r or "pin-audit" in r) and norm(r) != norm(want):
+            if r and ("pin-age-check" in r or "pin-audit" in r) and norm(r) != norm(want):
                 bad.append(f"{jn}: the check step's commands differ from the ratified text (any added flag, assignment or duplicated argument is a change)")
     if re.search(r"secrets\s*\[", text):
         bad.append("the workflow indexes secrets[...]: no secrets anywhere")
@@ -223,7 +223,7 @@ def judge_rest():
     if not m or "REQ-SUP-001" not in m.group(1):
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
     ci = open(CI).read()
-    for t in ("pin-scan-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
+    for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
         if f"bash .github/agent/tests/{t}" not in ci:
             bad.append(f"ci.yml does not run .github/agent/tests/{t}")
     return bad
@@ -301,12 +301,12 @@ mut_wf("pin-age reads actions again", "pin-age's permissions are not exactly con
 mut_wf("pin-age has no timeout", "no short timeout-minutes", lambda d: J(d, "pin-age").pop("timeout-minutes"))
 mut_wf("pin-age timeout above 15", "no short timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 16}))
 mut_wf("pin-age timeout far above", "no short timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 360}))
-mut_wf("pin-age never runs the pin scan", "does not run .github/agent/supply-chain/pin-scan.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-scan" not in str(s.get("run", ""))]))
+mut_wf("pin-age never runs the pin scan", "does not run .github/agent/supply-chain/pin-age-check.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
 mut_wf("pin-age never audits what moves", "does not run .github/agent/supply-chain/pin-audit.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-audit" not in str(s.get("run", ""))]))
 mut_wf("pin-age compares the wrong commits", "does not compare the PR's base and head", lambda d: [s.update(run=s["run"].replace("github.event.pull_request.base.sha", "github.sha")) for s in J(d, "pin-age")["steps"] if "run" in s])
-mut_wf("the PR's own checker runs", "does not run the BASE branch's checker", lambda d: [x.update(run=x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-scan.py", "python3 pr/.github/agent/supply-chain/pin-scan.py")) for x in J(d, "pin-age")["steps"] if "run" in x])
+mut_wf("the PR's own checker runs", "does not run the BASE branch's checker", lambda d: [x.update(run=x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-age-check.py", "python3 pr/.github/agent/supply-chain/pin-age-check.py")) for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("the audit runs from the PR's tree", "does not run the BASE branch's checker", lambda d: [x.update(run=x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-audit.py", "python3 pr/.github/agent/supply-chain/pin-audit.py")) for x in J(d, "pin-age")["steps"] if "run" in x])
-mut_wf("a variable names the checker again", "does not run the BASE branch's checker", lambda d: [x.update(run="checker=trusted\n" + x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-scan.py", 'python3 "$checker/.github/agent/supply-chain/pin-scan.py"')) for x in J(d, "pin-age")["steps"] if "run" in x])
+mut_wf("a variable names the checker again", "does not run the BASE branch's checker", lambda d: [x.update(run="checker=trusted\n" + x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-age-check.py", 'python3 "$checker/.github/agent/supply-chain/pin-age-check.py"')) for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("exceptions are read from the PR's tree", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace("exceptions=trusted/.github", "exceptions=pr/.github")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the audit stops passing --exceptions", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace(' --exceptions "$exceptions"', "")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the pin scan's failure hides the audit", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("set -uo pipefail", "set -euo pipefail")) for s in J(d, "pin-age")["steps"] if "run" in s])
@@ -329,7 +329,7 @@ mut_wf("a job-level env appears", "job-level env", lambda d: J(d, "pin-age").upd
 mut_wf("a shell default appears", "job-level defaults", lambda d: J(d, "pin-age").update(defaults={"run": {"shell": "python3 {0}"}}))
 mut_wf("a third checkout appears", "exactly two checkouts", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40, "with": {"persist-credentials": "false"}}))
 mut_wf("fixtures are passed to the checker", "test-only flag", lambda d: [x.update(run=x["run"].replace("--report-only", "--report-only --fixtures pr/fx.json")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
-mut_wf("--now is passed", "test-only flag", lambda d: [x.update(run=x["run"].replace("pin-scan.py", "pin-scan.py --now 2020-01-01T00:00:00Z")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("--now is passed", "test-only flag", lambda d: [x.update(run=x["run"].replace("pin-age-check.py", "pin-age-check.py --now 2020-01-01T00:00:00Z")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("a step sets PYTHONPATH", "sets env", lambda d: [x.setdefault("env", {}).update(PYTHONPATH="pr") for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("PYTHONPATH in the script", "test-only flag", lambda d: [x.update(run="export PYTHONPATH=pr\n" + x["run"]) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("status=0 before the exit", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("exit $status", "status=0\nexit $status")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])

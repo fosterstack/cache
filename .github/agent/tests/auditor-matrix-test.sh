@@ -4037,7 +4037,7 @@ o="$WORK/pm-ok-run"
 { grep 'CVE-2011-3374' "$o/report.md" | grep -qi 'critical' && grep 'CVE-2011-3374' "$o/report.md" | grep -qi 'grype.*high\|high.*grype'; } \
   && ok || no "row for CVE-2011-3374 shows critical (highest) and grype's high" "$(grep 'CVE-2011-3374' "$o/report.md" | head -3 | cut -c1-300)"
 
-begin "panel-10-a-panel-run-writes-and-delivers-the-vex-only" "in panel mode the run's suppression package contains the OpenVEX document and NO .snyk or osv-scanner.toml (scanner-panel rule 4: the VEX is the only exception)"
+begin "panel-10-a-panel-run-writes-and-delivers-the-vex-only" "in panel mode the run's suppression package holds the OpenVEX document and NO .snyk or osv-scanner.toml (scanner-panel rule 4: the VEX is the only exception)"
 o="$WORK/pm-ok-run"
 { [ -s "$o/suppressions/fosterstack-cache.openvex.json" ] && [ ! -e "$o/suppressions/.snyk" ] && [ ! -e "$o/suppressions/osv-scanner.toml" ]; } \
   && ok || no "suppressions/ has the VEX and neither .snyk nor osv-scanner.toml" "$(ls -A "$o/suppressions" 2>&1 | tr '\n' ' ')"

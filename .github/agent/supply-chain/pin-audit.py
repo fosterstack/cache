@@ -40,7 +40,7 @@ def _load(name):
 
 
 inv = _load("pin-inventory")
-age = _load("pin-scan")
+age = _load("pin-age-check")
 
 
 class Fail(Exception):
@@ -61,7 +61,7 @@ SUBPROCESS_TIMEOUT = 120
 
 def _run(cmd, **kw):
     """subprocess.run with a timeout (the gh and git calls of this file); a hung one stops the run (a Fail: never reported as a clean day).
-    The gh helpers shared with pin-scan.py have their own timeout there."""
+    The gh helpers shared with pin-age-check.py have their own timeout there."""
     try:
         return subprocess.run(cmd, **dict({"timeout": SUBPROCESS_TIMEOUT}, **kw))
     except subprocess.TimeoutExpired:
@@ -959,6 +959,8 @@ def rollback(item, net):
         if any_affected(lists):
             continue
         cand = v.get("_item")
+        if cand is not None and not age.judge_item(cand)[0]:
+            continue  # the candidate must itself be an exact pin (an action named by its commit): a tag or a missing sha is no rollback target
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
             # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
             try:
@@ -1186,7 +1188,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base")
-    ap.add_argument("--head", help="PR mode: the pull request's head commit (its blobs are read, as pin-scan does)")
+    ap.add_argument("--head", help="PR mode: the pull request's head commit (its blobs are read, as pin-age-check does)")
     ap.add_argument("--fixtures")
     ap.add_argument("--now")
     ap.add_argument("--gh", default="gh")

@@ -104,7 +104,7 @@
 #  34  -fips image has no shell      36  lock-proof.sh (four failing-first cases)      37  two lock files and their compare
 #  38  user 65532 and its home      38a melange hermetic       38b apko hermetic       39-42 sealed-proof.sh
 #  43  NOT TESTABLE HERE (a report, no gate)
-#  44-49 refresh job and bin/refresh-inputs.sh (re-lock, dependabot silent, key change stops, gone version noted, no waiting period,
+#  44-49 refresh job and bin/refresh-inputs.sh (re-lock, dependabot silent, key change stops, gone version noted, no 7-day wait,
 #      PR only)       72  build-side FIPS checks (buildinfo of the -fips apk)       73  weekly certified-module check
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)

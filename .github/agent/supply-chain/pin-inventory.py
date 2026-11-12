@@ -9,7 +9,7 @@ One item is "<kind>:<name>@<version>":
   image    name@sha256:digest           container:/services: images and docker:// actions (name:tag@sha256:digest is the SAME item: Docker ignores the tag)
 NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go modules and the Go toolchain.
 
-Used as a module by pin-scan.py and pin-audit.py; run alone it prints the inventory of a tree.
+Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
 import copy
 import fnmatch

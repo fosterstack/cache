@@ -570,7 +570,7 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "name": "the pin scan \u2014 names every moved version, passes only a pin it can read (REQ-SUP-001 AC2)",
-   "run": "bash .github/agent/tests/pin-scan-test.sh"
+   "run": "bash .github/agent/tests/pin-age-check-test.sh"
   },
   {
    "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions (REQ-SUP-001 AC5-AC10)",
@@ -728,7 +728,7 @@ PY
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
 
-# case_msg <name> <python edit> <text>: the judge refuses the copy and its message carries the text
+# case_msg <name> <python edit> <text>: the judge refuses the copy and its message holds the text
 case_msg() {
   local f="$work/$1.yml"
   cp "$here/.github/workflows/ci.yml" "$f"

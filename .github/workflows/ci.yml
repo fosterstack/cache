@@ -593,7 +593,7 @@ jobs:
       - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
         run: bash .github/agent/tests/k8s-harness-fence-test.sh
       - name: the pin scan — names every moved version, passes only a pin it can read (REQ-SUP-001 AC2)
-        run: bash .github/agent/tests/pin-scan-test.sh
+        run: bash .github/agent/tests/pin-age-check-test.sh
       - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions (REQ-SUP-001 AC5-AC10)
         run: bash .github/agent/tests/pin-audit-test.sh
       - name: where the supply-chain checks run — the PR job's read-only token, one writer per job (REQ-SUP-001 AC4)

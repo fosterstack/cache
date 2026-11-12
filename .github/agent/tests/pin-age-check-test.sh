@@ -3,7 +3,7 @@
 # The pin scan (owner ratified Oct 5, rule 1; the owner removed the wait for new versions on Nov 11 2026): a pull request that moves an action pin, or the version of a
 # tool, image or package a workflow downloads, has every moved version NAMED, and fails only for an item the scan cannot read or pin and no ruling covers. Proved offline:
 # each case builds a small git repository (a base commit and a head commit that moves one thing) and runs the real scan on it.
-#   python3 bin/pin-scan.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
+#   python3 bin/pin-age-check.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
 #   exit 0: nothing moved, or every moved version is a readable pin or ruled; exit 1: a moved item that is not a pin the scan can read and has no ruling.
 #   An item is "<kind>:<name>@<version>"; kinds: action (version = the pinned commit), tool (the installer actions' version inputs and install-scanner.sh's
 #   *_VER pins), gotool (go install path@version in run steps), package (pypi/<name>@<version> from the hash-pinned requirements), image (name@sha256:digest).
@@ -11,7 +11,7 @@ set -euo pipefail
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
-chk="$here/../supply-chain/pin-scan.py"
+chk="$here/../supply-chain/pin-age-check.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
@@ -203,10 +203,10 @@ shutil.copy('.github/workflows/ci.yml', '.github/workflows/\u00e9.yml')
 pathlib.Path('.github/workflows/ci.yml').write_text(pathlib.Path('.github/workflows/ci.yml').read_text().replace('actions/checkout@$NEW1', 'actions/checkout@$SHA1'))"
 runck unicode
 CASE="a new pin in .github/workflows/\u00e9.yml (a non-ASCII file name) is named like any other (the copied file also holds placeholders no pin can resolve, so the scan exits 1)"
-check test "$rc" -eq 1; check grep -qF "action:actions/checkout@$NEW1" "$work/unicode.out"
+check test "$rc" -eq 1; check grep -qF "action:actions/checkout@$NEW1" "$work/unicode.out"; check grep -qE 'FAIL .*not a pin|FAIL unmeasured' "$work/unicode.out"
 
 # --- the scan reads no time and asks no server: no live or fixture source is left in it ---------------------------------------------------
-CASE="the scan has no time source: no live proof, no observer, no PR clock, no fixture class"
+CASE="the scan defines none of the time-source names: live proof, observer, PR clock, registry and index times, fixture class, minimum age"
 check python3 - "$chk" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -276,6 +276,12 @@ spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib
 for v in (">=2.0", "(unpinned)", "latest", "${{expression}}"):
     ok, why = ac.judge_item(inv.Item("package", "pypi/p", v))
     assert not ok and "not a pin" in why, (v, why)
+for v in ("v2", "2.17", "v2.17"):     # a tag-form ref is no pin where a commit is needed (an action), and a tag-only image has no digest
+    ok, why = ac.judge_item(inv.Item("action", "o/r", v))
+    assert not ok and "not a pin" in why, (v, why)
+for k in ("image:alpine:3.99@", "image:busybox:1.36@"):
+    ok, why = ac.judge_item(got[k])
+    assert not ok and "not a pin" in why, (k, why)
 PY
 CASE="inventory: a subdirectory taken from untrusted action metadata is redacted like every other part of a key"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -421,7 +427,7 @@ need = ("tool:o/r/t.tgz@v${var}", "image:(variable)@", "package:pypi/foo@${var}"
 for k in need:
     assert k in got, (k, sorted(got))
 import importlib.util as u
-spec = u.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-scan")); ac = u.module_from_spec(spec); spec.loader.exec_module(ac)
+spec = u.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-age-check")); ac = u.module_from_spec(spec); spec.loader.exec_module(ac)
 for k in need:
     ok, why = ac.judge_item(got[k])
     assert not ok and "not a pin" in why, (k, why)
@@ -539,7 +545,7 @@ CASE="round 15 (Codex): the exact download tag is the identity (v1.2.3 and 1.2.3
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import datetime, importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-spec2 = importlib.util.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-scan")); ac = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(ac)
+spec2 = importlib.util.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-age-check")); ac = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(ac)
 wf = lambda run: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + run + "\n"}
 k1 = set(inv.inventory(wf("curl -L https://github.com/o/r/releases/download/v1.2.3/x.tgz -o x")))
 k2 = set(inv.inventory(wf("curl -L https://github.com/o/r/releases/download/1.2.3/x.tgz -o x")))
@@ -662,7 +668,7 @@ two = lambda second: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n     
 assert len([k for k in inv.inventory(two("")) if "(default)" in k]) == 2
 sep = lambda sm: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: curl -L https://github.com/o/r/releases/download/v1.2.3/tool.tgz -o tool.tgz\n      - run: echo " + sm + "  tool.tgz | sha256sum --check\n"}
 assert set(inv.inventory(sep("a" * 64))) != set(inv.inventory(sep("b" * 64)))
-spec2 = importlib.util.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-scan")); ac = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(ac)
+spec2 = importlib.util.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-age-check")); ac = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(ac)
 for name, ver in (("python", "3.12"), ("java", "21"), ("node", "22")):
     assert not ac.judge_item(inv.Item("tool", name, ver))[0], name
 assert ac.judge_item(inv.Item("tool", "python", "3.12.4"))[0]
@@ -1896,7 +1902,7 @@ CASE="AC16: rows that only the pull request adds (its own .github/supply-chain-e
 check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
 mkdir -p "$work/trusted-gh/agent"; cp -R "$here/../supply-chain" "$work/trusted-gh/agent/supply-chain"
 git -C "$work/rthead" show HEAD:.github/supply-chain-exceptions.json >"$work/trusted-gh/supply-chain-exceptions.json"; rc=0
-python3 "$work/trusted-gh/agent/supply-chain/pin-scan.py" --root "$work/rthead" --base HEAD~1 --head HEAD >"$work/rt.out" 2>&1 || rc=$?
+python3 "$work/trusted-gh/agent/supply-chain/pin-age-check.py" --root "$work/rthead" --base HEAD~1 --head HEAD >"$work/rt.out" 2>&1 || rc=$?
 CASE="AC16: the default rulings file is the one beside the checkout the script runs from (CI: trusted/.github/supply-chain-exceptions.json): the same rows there pass (exit 0)"
 check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 2
 rm -rf "$work/trusted-gh"
@@ -2335,7 +2341,7 @@ def load(name):
 def die(msg):
     print("install-build-tools: " + msg); sys.exit(1)
 def inventory(path):
-    inv = load("pin-inventory"); age = load("pin-scan")
+    inv = load("pin-inventory"); age = load("pin-age-check")
     text = open(path).read(); f = {"bin/install-build-tools.sh": text}
     um = inv.unmeasured(f)
     if um:
@@ -3198,7 +3204,7 @@ assert len(inv.moved(inv.inventory(co("x.tgz")), inv.inventory(co("y.tgz")))) ==
 PY
 
 CASE="an item whose asset path is a placeholder is no pin: judge_item refuses it (REQ-SUP-001-AC2, AC3)"
-check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-scan.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, datetime as dt
 def load(n, p):
     s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
@@ -3230,7 +3236,7 @@ assert set(inv.inventory(wfk)) == {"package:pypi/black@(unpinned)#step:875cc02f0
 PY
 
 CASE="release downloads behind variables, round 3 findings: assignment ORDER, a name holding \$( ) with a space, composite input context kept apart from other items' keys, and a query variable that is not part of the name (REQ-SUP-001-AC2)"
-check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-scan.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, datetime as dt
 def load(n, p):
     s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
@@ -3266,7 +3272,7 @@ assert coll(".github/workflows/ci.yml", wf(latest), wf(latest.replace("'a  b'", 
 PY
 
 CASE="release downloads behind variables, round 4 findings: a variable after a quote that closed the URL, a name with a command substitution or backticks or a positional parameter, and assignments in the forms A=x B=old, export A=x B=old and declare -r A= are each part of the identity and refused (REQ-SUP-001-AC2)"
-check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-scan.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, json, datetime as dt
 def load(n, p):
     s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
@@ -3387,7 +3393,7 @@ for path in ("bin/x.sh", "bin/install-scanner.sh"):
 PY
 
 CASE="release downloads behind variables, round 8 findings (same class, nested quoting): a release URL inside a quoted program string that holds a variable, a substitution or a command separator is unresolved (whole-file identity, refused by the age judge), a variable after a quoted parenthesis is part of the name, and a plain quoted download keeps its key (REQ-SUP-001-AC2)"
-check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-scan.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, json, datetime as dt
 def load(n, p):
     s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
@@ -3409,7 +3415,7 @@ for run in ("curl \"" + url + "x.tgz\" -o \"$OUT\"", "bash -c 'curl " + url + "x
 PY
 
 CASE="release downloads behind variables, round 9 finding (both seats, same class): a quote segment that merely BEGINS with the release URL inside a quoted program string (eval 'curl \"''https://.../tool;\${A}.tgz''\"') is not an ordinary URL operand: the name is unresolved (whole-file identity, refused by the age judge) and a variable edit is a moved item; a word that is the URL itself keeps its concrete key (REQ-SUP-001-AC2)"
-check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-scan.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys, json, datetime as dt
 def load(n, p):
     s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
@@ -3965,5 +3971,5 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
-echo "pin-scan: $pass passed, $failn failed"
+echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

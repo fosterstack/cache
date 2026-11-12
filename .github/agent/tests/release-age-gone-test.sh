@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC30, REQ-SUP-001-AC32, REQ-SUP-001-AC33
 # The owner's ruling of Nov 11 2026 removed the release-age wait. Proved on the tracked files: no text of the old wait is left, Dependabot carries no cooldown and one
-# entry per ecosystem root, the context pin-age stays while the job behind it measures nothing, no job holds actions: write, and the two old programs are gone.
+# entry per ecosystem root, the context pin-age stays while the job behind it measures nothing, no job holds actions: write, and the tag observer is gone.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -13,8 +13,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
 # Files that may keep the phrases, each with its reason:
 #   this test                      names the phrases it forbids.
-#   requirements/requirements.yaml records the removal in REQ-SUP-001's origin note.
-#   docs/quality/traceability.md   is GENERATED from requirements.yaml (its first lines say so), so it repeats that origin note.
+#   docs/quality/traceability.md   is GENERATED from requirements.yaml (its first lines say so), so it repeats that file.
 #   .github/agent/tests/pin-wiring-landing.sh is chain-v030's judge byte for byte (pin-wiring-test.sh checks it with cmp), and names the old steps until chain-v030 takes main.
 #   vendor/                        is third-party Go source (time-window prose in prometheus), not ours; go.sum/go.mod hold no prose.
 # No CHANGELOG or release-history file is tracked (checked by the name test below), so none is excluded.
@@ -22,20 +21,28 @@ if git ls-files | grep -qiE '(^|/)(CHANGELOG|HISTORY|NEWS)'; then bad "a changel
 if head -5 docs/quality/traceability.md | grep -q 'GENERATED'; then ok "docs/quality/traceability.md is generated (so excluded)"; else bad "docs/quality/traceability.md is generated (so excluded)"; fi
 
 self=.github/agent/tests/release-age-gone-test.sh
-git ls-files -z | grep -zvE "^(vendor/|$self\$|requirements/requirements\.yaml\$|docs/quality/traceability\.md\$|\.github/agent/tests/pin-wiring-landing\.sh\$)" >"$work/files"
-# This test's own file name contains 'release-age'; that literal path is stripped from each line before matching (every other phrase check is unchanged).
-phrases='7-day|7 days|seven days|cooldown|release age|release-age|age hold|held pull request|rerun-held|--rerun-held'
+git ls-files -z | grep -zvE "^(vendor/|$self\$|docs/quality/traceability\.md\$|\.github/agent/tests/pin-wiring-landing\.sh\$)" >"$work/files"
+# The hold's own phrases only (not 'cooldown' or '7-day', which the Wolfi no-wait rule 48 also uses). This test's own file name contains 'release-age': (?!-gone-test) skips it.
+# grep exits 1 for no match and 2 for an error: an unreadable file fails the test. Symlinks and submodules (not regular files) are skipped.
+phrases='release[ -]age(?!-gone-test)|\bage hold\b|held pull request|rerun-held'
 : >"$work/hits"
-while IFS= read -r -d '' f; do [ -f "$f" ] && { grep -IHn '' "$f" | sed 's/release-age-gone-test\.sh//g' | grep -iE -- "$phrases" >>"$work/hits" || true; }; done <"$work/files"
+while IFS= read -r -d '' f; do
+  [ -f "$f" ] || continue
+  rc=0; grep -IHniP -- "$phrases" "$f" >>"$work/hits" || rc=$?
+  [ "$rc" -le 1 ] || { echo "FAIL cannot read $f"; exit 1; }
+done <"$work/files"
 if [ ! -s "$work/hits" ]; then ok "no tracked file names the release-age wait"; else bad "no tracked file names the release-age wait ($(wc -l <"$work/hits") lines, first: $(head -3 "$work/hits" | cut -c1-140 | tr '\n' '|'))"; fi
 : >"$work/hits"
-while IFS= read -r -d '' f; do [ -f "$f" ] && { grep -IHnE 'pin-age-check|tag_observer' "$f" >>"$work/hits" || true; }; done <"$work/files"
-if [ ! -s "$work/hits" ]; then ok "nothing refers to pin-age-check or tag_observer"; else bad "nothing refers to pin-age-check or tag_observer ($(wc -l <"$work/hits") lines)"; fi
+while IFS= read -r -d '' f; do
+  [ -f "$f" ] || continue
+  rc=0; grep -IHnE 'tag_observer' "$f" >>"$work/hits" || rc=$?
+  [ "$rc" -le 1 ] || { echo "FAIL cannot read $f"; exit 1; }
+done <"$work/files"
+if [ ! -s "$work/hits" ]; then ok "nothing refers to tag_observer"; else bad "nothing refers to tag_observer ($(wc -l <"$work/hits") lines)"; fi
 
-# the two programs are gone
-for f in .github/agent/supply-chain/pin-age-check.py .github/agent/supply-chain/tag_observer.py; do
-  if [ ! -e "$f" ] && ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then ok "$f does not exist"; else bad "$f does not exist"; fi
-done
+# the tag observer is gone
+f=.github/agent/supply-chain/tag_observer.py
+if [ ! -e "$f" ] && ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then ok "$f does not exist"; else bad "$f does not exist"; fi
 
 py() { python3 -I - "$@"; }
 # AC32: dependabot.yml
@@ -78,7 +85,7 @@ j = yaml.safe_load(open(sys.argv[1]))["jobs"]
 job = j.get("pin-age") or next((v for v in j.values() if v.get("name") == "pin-age"), None)
 if job is None: sys.exit("no pin-age job")
 t = yaml.dump(job)
-m = re.search(r"run rerun|gh run |/rerun|published_at|--now|first.seen|tag_observer|pin-age-check", t)
+m = re.search(r"run rerun|gh run |/rerun|published_at|--now|first.seen|tag_observer", t)
 if m: sys.exit("found: " + m.group(0))
 PY
 

@@ -5,8 +5,7 @@
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE]
 #   exit 0: no hit and no unexcepted dispute; exit 1: a hit or a disputed hit (the issue says so); exit 2: it could not do its job (a failed gh, unreadable input).
 #   Fixtures: {"lists": {ITEM: {"github": [ADV], "osv": [ADV]}}, "upstream": {"owner/repo@sha": {"reachable": bool}}, "nested": {"owner/repo@sha": [REF]},
-#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}, "prs": [{"number", "title", "run_id", "moved": [ITEM]}],
-#              "times": {ITEM: {"time", "source"}}, "first_seen": {ITEM: ISO}}   with ADV = {"id", "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
+#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}}   with ADV = {"id", "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
 #   gh calls it may make: issue list / issue create / issue edit / label create, NEVER anything about runs, environments or
 #   secrets: the private details are produced on the Mac, not by this workflow (advisor 0175 amendment 5).
 set -euo pipefail
@@ -90,7 +89,7 @@ calls = [json.loads(l) for l in open(sys.argv[1])]
 print(len([c for c in calls if c[:2] == ["issue", "create"]]))
 PY
 }
-CLEAN='{"lists": {}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}'
+CLEAN='{"lists": {}, "upstream": {}, "nested": {}, "versions": {}}'
 mkrepo "$work/r-clean" "5:$CLEANSHA"
 mkrepo "$work/r-cur" "120:$SHA1"                 # the bad pin is on main today: it has been RUN (the workflows execute daily)
 mkrepo "$work/r-ranpast" "120:$SHA1" "20:$CLEANSHA"     # the bad pin was replaced 20 days ago: we ran it within 90 days
@@ -431,7 +430,7 @@ PY
 CASE="no module-level name or class method is defined twice in the three programs (a duplicated block once silently replaced LiveNet), and LiveNet has every method the audit calls"
 check python3 - "$root" <<'PY'
 import ast, sys
-for n in ("pin-inventory", "pin-scan", "pin-audit"):
+for n in ("pin-inventory", "pin-age-check", "pin-audit"):
     tree = ast.parse(open(f"{sys.argv[1]}/.github/agent/supply-chain/{n}.py").read())
     names = [x.name for x in tree.body if isinstance(x, (ast.FunctionDef, ast.ClassDef))]
     assert len(names) == len(set(names)), (n, sorted(x for x in names if names.count(x) > 1))
@@ -531,7 +530,7 @@ for text in (title, body):
 assert "(unparseable)" in title
 PY
 CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges can never pass the age check; commits, digests and dotted numbers can"
-check python3 - "$here/../supply-chain/pin-scan.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 for v in ("main", "master", "nightly", "lts/*", "1.*", "3.x", "latest", "stable", ">=1.0", "(unpinned)", "${{expression}}", "v1.x", "1.2.x", "", "release-1"):
@@ -597,7 +596,7 @@ spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib
 work = sys.argv[2]
 sha = "1" * 40
 fx = {"lists": {"action:actions/checkout@" + sha: {"github": [{"id": "GHSA-main-main", "incident": "I", "affected": True, "modified": "2026-01-01T00:00:00Z"}], "osv": []}},
-      "upstream": {}, "nested": {}, "versions": {}, "prs": [], "open_prs": [{"number": 9, "items": ["action:actions/boom@v1"]}]}
+      "upstream": {}, "nested": {}, "versions": {}, "open_prs": [{"number": 9, "items": ["action:actions/boom@v1"]}]}
 class N(pa.FixtureNet):
     def lists(self, item):
         if item.name == "actions/boom":
@@ -820,7 +819,7 @@ else
   ok "$CASE (skipped as root: file modes do not bind)"
 fi
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
-check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-scan.py" "$here/../supply-chain/pin-audit.py"
+check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
 # REQ-SUP-001-AC27: Go's own toolchain release is read by the install-line rule of the pin scan; the advisory audit still covers it (the Go vulnerability database files the standard
 # library under the package stdlib): the item go is covered, queried as Go/stdlib at its version, and a stdlib record affecting the pin is a hit.
@@ -1356,7 +1355,7 @@ CASE="markers: that stall happened inside git log, so the history read was reach
 check test -e "$work/phstall.log-entered"
 CASE="markers: its stderr is exactly one line: still in history after 10 s"
 check python3 -c 'import sys; assert open(sys.argv[1]).read() == "audit: could not finish: still in history after 10 s\n"' "$work/phstall.err"
-run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}' "$work/r-cur"
+run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
 run phbase "$CLEAN" "$work/r-pr" --base HEAD~1 --head HEAD --report-only

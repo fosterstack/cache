@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The pin scan (REQ-SUP-001-AC2): names every version a pull request moves and passes only a pin it can read.
 
-  pin-scan.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
+  pin-age-check.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
 
 Exit 0: nothing moved, or every moved version is a pin the scan can read (an exact version, a commit or a digest) or is ruled. Exit 1: a moved item the scan
 cannot read or pin (a range, a moving name, an expression, an unpinned install) and that no ruling covers. Exit 2: the check could not run (unreadable input,
@@ -510,7 +510,7 @@ def _runs_input(words, funcs, seen=None):
 
 # Functions that may receive a written file's CONTENT as an argument ("$(cat FILE)"), by the sha256 of the whitespace-flattened definition (a new one is a change here: a human gate).
 _REVIEWED_FUNCS = {"run": frozenset((
-    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-scan-test.sh fixture
+    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-age-check-test.sh fixture
     "004f644d043348ed9bf307882a5ffe652f7fb62628cf16b2cc1508b957796d46",   # bin/persona-uat-test.sh run()
 ))}
 
@@ -738,7 +738,7 @@ _REVIEWED_WRAPPERS = {
     "check": frozenset((
         "d9f0551a0eefa0c75ab77d72fe9446ac100bf33458d956b500c865ccf33f2b43",   # persona-uat-agent-test.sh
         "0eeb4484c724571050ef124103472beb31a6983886cd15e2f00c6e6e1a1f2629",   # persona-uat-test.sh
-        "9d447de27fa81cc5ba86eada6ef1be1830accd4258ebd950e1e1255ef6ce881d",   # pin-scan-test.sh (fixture)
+        "9d447de27fa81cc5ba86eada6ef1be1830accd4258ebd950e1e1255ef6ce881d",   # pin-age-check-test.sh (fixture)
     )),
 }
 

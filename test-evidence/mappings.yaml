@@ -785,7 +785,7 @@ mappings:
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
@@ -815,35 +815,35 @@ mappings:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
   - ac: REQ-SUP-001-AC16
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC18
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC19
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC20
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC21
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC22
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC23
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC25
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC26
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC27
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-scan-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC28
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }

@@ -50,7 +50,7 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          python3 trusted/.github/agent/supply-chain/pin-scan.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1
+          python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1
           # the advisor's rulings come from the base branch too: a pull request must not bring its own
           exceptions=trusted/.github/supply-chain-exceptions.json
           if [ ! -f "$exceptions" ]; then

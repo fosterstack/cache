@@ -782,7 +782,7 @@ try: pa.Gh("gh").run("api", "x"); raise AssertionError("no Fail")
 except pa.Fail: pass
 assert seen and all(t for t in seen), seen
 import ast
-for path in (sys.argv[1], os.path.dirname(sys.argv[1]) + "/pin-scan.py"):
+for path in (sys.argv[1], os.path.dirname(sys.argv[1]) + "/pin-age-check.py"):
     tree = ast.parse(open(path).read())
     # _run and _gh_run add the timeout themselves
     wrapped = [(f.lineno, f.end_lineno) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name in ("_run", "_gh_run")]
@@ -888,7 +888,7 @@ assert c("1.0.0-0", "1.0.0-0a") < 0 and c("1.0.0-alpha", "1.0.0-alpha.1") < 0 an
 assert c("v0.0.0-20230101000000-abcdef123456", "v0.0.0-20240101000000-abcdef123456") < 0
 assert c("v0.0.0-00010101000000-000000000000", "v0.0.0-20230101000000-abcdef123456") < 0      # the zero-time pseudo-version is one valid identifier
 PY
-py "B22: the shared gh helpers of pin-scan.py have a timeout too: a hanging gh is CouldNotLook (the run stops, exit 2), never clean" <<'PY'
+py "B22: the shared gh helpers of pin-age-check.py have a timeout too: a hanging gh is CouldNotLook (the run stops, exit 2), never clean" <<'PY'
 import tempfile, time
 age = pa.age
 d = tempfile.mkdtemp(prefix="pa-hang-")

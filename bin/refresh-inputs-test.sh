@@ -159,8 +159,8 @@ echo "not-a-module" >"$gr/lib/fips140/certified.txt"
 sf "rule 73" "fips-module: an unreadable value fails closed" 'certified|format|module' "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 
 # ---- P3 review round 1 (Opus): blockers B1-B7 and residuals R1, R2, R4, R7 (tests first) -------------------------------------------
-# B6 (AC7, rule 48): the SCRIPT has no waiting-period or minimum-age rule (the job text part waits for the workflow PR)
-t "rule 48" "refresh-inputs.sh has no waiting-period or minimum-age rule anywhere" bash -c "test -f '$RF' && ! grep -Eqi 'cool[d]own|7[ -]?day|min(imum)?[-_ ]?age|-mtime' '$RF'"
+# B6 (AC7, rule 48): the SCRIPT has no cooldown, 7-day or minimum-age rule (the job text part waits for the workflow PR)
+t "rule 48" "refresh-inputs.sh has no cooldown, 7-day or minimum-age rule anywhere" bash -c "test -f '$RF' && ! grep -Eqi 'cooldown|7[ -]?day|min(imum)?[-_ ]?age|-mtime' '$RF'"
 # B7 (AC3): every apko lock is given the ARCHIVED key and only that key, and never a switch that skips signature checks
 mkrepo; run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 32" "refresh: every apko lock carries exactly one --keyring-append, the archived Wolfi key file, no URL" bash -c "test \"\$(grep -c '^apko lock ' '$CALLS')\" -ge 3 && ! grep '^apko lock ' '$CALLS' | grep -v -- '--keyring-append $work/ar/keys/wolfi-signing.rsa.pub ' | grep -q . && test \"\$(grep '^apko lock ' '$CALLS' | grep -o -- '--keyring-append' | wc -l | tr -d ' ')\" = \"\$(grep -c '^apko lock ' '$CALLS')\" && ! grep '^apko lock ' '$CALLS' | grep -Eq -- '--keyring-append [a-z]+://'"
@@ -1632,7 +1632,7 @@ assert lock == sorted(lock) and 'zlib=1.3.2-r0' in lock, lock
 assert open(r + '/build/locks/melange.lock').read() == open(fx + '/melange.lock').read()
 P"
 t "AC38" "refresh: the host lock change goes in the one refresh pull request (one gh pr create, the lock among the committed paths)" bash -c "test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/host-tools.lock' && ! grep -Eq '^gh pr merge|--admin|--auto|--no-verify' '$CALLS'"
-t "AC38" "refresh: the host tools carry no waiting period (a version resolved today is archived today: no waiting period or minimum age in the output)" bash -c "! grep -Eqi 'cool[d]own|too young|minimum age|waiting period' '$work/log'"
+t "AC38" "refresh: the host tools carry no waiting period (a version resolved today is archived today: no cooldown or minimum age in the output)" bash -c "! grep -Eqi 'cooldown|too young|minimum age|waiting period' '$work/log'"
 # nothing moved: the host resolution equals the committed host lock -> still no commit, no push, no pull request
 mkrepo; run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC35" "refresh: a host resolution equal to the committed host-tools.lock changes nothing (exit 0, no commit, no push, no pull request)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -Eq '^(gh |git( -C [^ ]+)? (commit|push|checkout))' '$CALLS'"
