@@ -36,7 +36,7 @@ PY
   js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
   f=$(jq --arg ids "$BUSYBOX_CVES" '[.matches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
   ig=$(jq --arg ids "$BUSYBOX_CVES" '[.ignoredMatches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
-  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; else got=FLAG; fi
+  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
   # cache#772 round 1 (A1/B1, ruled): no --fail-on. Its exit code comes from the whole scan, so an unrelated advisory left in .matches would turn a correct
   # SUPPRESS red. A scan that ran exits 0 in both buckets; any other exit is an operational error and fails the case. The bucket is decided by the counts
   # and the exact vulnerability-id assertions below.
