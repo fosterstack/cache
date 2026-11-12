@@ -32,7 +32,7 @@ import pyyaml as yaml   # the vendored reader, never whatever PyYAML the host ha
 
 root = os.environ["PIPPIN_ROOT"]
 REQ = ".github/agent/pip-requirements.txt"
-GOLDEN = "26.2.1"
+GOLDEN = "26.3"
 PIN_FLAGS_REQUIRED = {"--require-hashes", "--only-binary=:all:"}
 PIN_FLAGS_ALLOWED = PIN_FLAGS_REQUIRED | {"--quiet", "--break-system-packages"}
 ALLOW_OTHER = {}   # "<file>:<job>" -> reason a pipx / ensurepip / uv install may run without a pin first (none today)
