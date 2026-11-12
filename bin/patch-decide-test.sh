@@ -535,7 +535,11 @@ for bad in ["- A change nobody judged.\n", "- A change.\n  Source:\n",
             "- A change.\n\tSource: #130\n  Source: #131\n", "- A change.\n   Source: #130\n  Source: #131\n",
             "- A change.\n  Source:  #130\n", "- A change.\n  SOURCE: #130\n  Source: #131\n",
             "- A change.\n  Source: #130 \n", "- A change.\n\n  Source: #130\n", "- A change.\nSource: #130\n  Source: #131\n",
-            "Source: #130\n- A change.\n  Source: #131\n"]:
+            "Source: #130\n- A change.\n  Source: #131\n",
+            # the entry's own text never carries a source, and shop words are judged as they render
+            "- Source: internal/private\n  Source: #1\n", "- SOURCE : internal\n  Source: #1\n",
+            "- A change. source: private\n  Source: #1\n", "- The ow**ner** changed it.\n  Source: #1\n",
+            "- The `lane` changed.\n  Source: #1\n", "- The _advisor_ agreed.\n  Source: #1\n"]:
     try:
         P.behavior_entries(bad); raised = False
     except ValueError:
