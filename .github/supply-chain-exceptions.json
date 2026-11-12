@@ -1491,7 +1491,7 @@
       "form": "a download",
       "key": "f0e3e2f9c65769916baa11aebb72b72e2e2ada67b0d68f27395238bd44798162",
       "line": "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd",
-      "ruling": "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): the helper's one curl line, pinned by hash; it reaches only the cache under test or the runner's own token endpoint, host and URL checked before curl starts, and fetches no software"
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the helper's one curl line, pinned by hash; it reaches only the cache under test or the runner's own token endpoint, host and URL checked before curl starts, and fetches no software"
     },
     {
       "file": "bin/acceptance-gradle.sh",
