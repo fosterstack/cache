@@ -207,6 +207,27 @@ got = covered_by([{"@id": CAND}, {"@id": R + "&variant=fips&arch=arm64"}], "p2c.
 check("a statement naming both repositories covers the real one only", got == ["fips-arm64"], got)
 got = covered_by([{"@id": "pkg:golang/github.com/fosterstack/cache"}], "p2d.json")
 check("the unversioned Go product still covers every image", len(got) == 4, got)
+# Scanners spell the Go standard library with a go prefix; our statement does not
+def go_covered(scanner, pkg, version, purl):
+    root = tempfile.mkdtemp()
+    WRITE[scanner](os.path.join(root, scanner, "production-amd64"), [(pkg, version)], [("CVE-2099-0027", pkg, version)])
+    f = os.path.join(tempfile.mkdtemp(), "go.json")
+    json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0027"}, "status": "not_affected",
+        "products": [{"@id": R + "&variant=production&arch=amd64", "subcomponents": [{"@id": purl}]}]}]}, open(f, "w"))
+    v = P.tally(root, P.load_vex(f), {scanner: os.path.join(root, scanner)})
+    return [c["id"] for c in v["vex_covered"]], [x["id"] for x in v["findings"]]
+STD = "pkg:golang/stdlib@1.27.2"
+check("AC1 a Google stdlib go1.27.2 finding is covered by the stdlib@1.27.2 statement",
+      go_covered("google", "stdlib", "go1.27.2", STD) == (["CVE-2099-0027"], []), go_covered("google", "stdlib", "go1.27.2", STD))
+check("AC2 a Google stdlib go1.27.3 finding is not covered by the stdlib@1.27.2 statement",
+      go_covered("google", "stdlib", "go1.27.3", STD) == ([], ["CVE-2099-0027"]), go_covered("google", "stdlib", "go1.27.3", STD))
+check("AC3 a go-prefixed version of another package is not covered",
+      go_covered("google", "gopher", "go1.27.2", "pkg:generic/gopher@1.27.2") == ([], ["CVE-2099-0027"]),
+      go_covered("google", "gopher", "go1.27.2", "pkg:generic/gopher@1.27.2"))
+check("AC4 an Inspector stdlib 1.27.2 finding is covered by the stdlib@1.27.2 statement",
+      go_covered("inspector", "stdlib", "1.27.2", STD) == (["CVE-2099-0027"], []), go_covered("inspector", "stdlib", "1.27.2", STD))
+check("AC4 an Inspector stdlib go1.27.2 finding is covered by the stdlib@1.27.2 statement",
+      go_covered("inspector", "stdlib", "go1.27.2", STD) == (["CVE-2099-0027"], []), go_covered("inspector", "stdlib", "go1.27.2", STD))
 pub = P.load_vex(VEX)
 want_ids = ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"]
 check("the published VEX covers the same ids (the four CVEs and their aliases) on every one of the four images as before",
