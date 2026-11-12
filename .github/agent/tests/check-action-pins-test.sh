@@ -3088,7 +3088,7 @@ curl -fsSL \"unterminated $U")" "$DLS"
 # the exact exclusions (auditor.yml's catalog download; the reviewer's identity-token request in its two steps): a copy anywhere else, an edit, or a broken condition is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
-import importlib.util, os, sys
+import ast, importlib.util, os, re, sys
 spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import yaml
 wf = open(sys.argv[2]).read()
@@ -3140,9 +3140,7 @@ assert judge_job({4: real[8], 8: real[8]}, {D: dwf}) == [4, 8], "one excluded st
 for shell in ("bash", "bash -c 'export %s=file:///x; exec bash -e {0}'" % URL, ""):
     assert 8 in judge_job(real, {D: dwf}, shells={8: shell}), "the decision loop with shell: %r is a finding" % shell
     assert 4 in judge_job(real, {D: dwf}, shells={4: shell}), "the identity-token step with shell: %r is a finding" % shell
-for what, more in (("a block-style env key", "\n          %s: file:///x\n" % URL),
-                   ("a flow-style env", "\n        env: {%s: 'file:///x'}\n" % URL),
-                   ("a quoted env key", "\n          \"%s\": file:///x\n" % URL),
+for what, more in (("a flow-style env", "\n        env: {%s: 'file:///x'}\n" % URL),
                    ("a GITHUB_ENV line elsewhere", "\n      - run: echo '%s=file:///x' >> \"$GITHUB_ENV\"\n" % URL)):
     assert judge_job(real, {D: dwf + more}) == [4, 8], "%s that names the URL variable is a finding" % what
 env_step = 'echo "%s=file:///x" >> "$GITHUB_ENV"\n' % URL
@@ -3164,7 +3162,6 @@ def whole(text):
     m.check_file(Changed(text), D, [], bad)
     return sorted({int(b.split(".steps[")[1].split("]")[0]) for b in bad if "REQ-REL-005-AC3" in b})
 def put(after, more, text=None):
-    """the workflow with `more` put in right after its one occurrence of `after`"""
     text = dwf if text is None else text
     assert text.count(after) == 1, after
     return text.replace(after, after + more)
@@ -3196,6 +3193,37 @@ for what, text in (
          put(STEP3, '          printf \'PATH<<E\\n/tmp/bin\\nE\\n\' >> "$GITHUB_ENV"\n')),
         ("a write to GITHUB_PATH in step 3", put(STEP3, '          echo /tmp/bin >> "$GITHUB_PATH"\n'))):
     assert whole(text) == [4, 8], "%s is a finding" % what
+# the ways a step sets the environment or the search path of the steps after it: held to the excluded steps' run text
+STEP3_ENV = "        id: candidates\n        env:\n"
+LAST = ("\n      - uses: actions/github-script@0000000000000000000000000000000000000000 # v9.0.0\n"
+        "        with:\n          script: ")
+for what, text in (
+        ("a name after printf's \\n", put(STEP3, "          printf 'OK=1\\nBASH_ENV=/tmp/h\\n' >> \"$GITHUB_ENV\"\n")),
+        ("a name as a printf argument", put(STEP3, "          printf '%s=%s\\n' BASH_ENV /tmp/h >> \"$GITHUB_ENV\"\n")),
+        ("a quoted name", put(STEP3, "          echo \"'BASH_ENV'=/tmp/h\" >> \"$GITHUB_ENV\"\n")),
+        ("github.env through an env value, then a write to it",
+         put(STEP3_ENV, '          OUT: "${{ github.env }}"\n',
+             put(STEP3, '          echo "BASH_ENV=/tmp/h" >> "$OUT"\n'))),
+        ("GITHUB.PATH through an env value, then a write to it",
+         put(STEP3_ENV, '          OUT: "${{ GITHUB.PATH }}"\n', put(STEP3, '          echo /tmp/bin >> "$OUT"\n'))),
+        ("CURL_HOME in the job's env", put(JOB, "    env:\n      CURL_HOME: /tmp/curl\n")),
+        ("ACTIONS_ALLOW_UNSECURE_COMMANDS with ::add-path::",
+         put(JOB, "    env:\n      ACTIONS_ALLOW_UNSECURE_COMMANDS: true\n",
+             put(STEP3, '          echo "::add-path::/tmp/bin"\n'))),
+        ("::set-env alone", put(STEP3, '          echo "::set-env name=BASH_ENV::/tmp/h"\n')),
+        ("a script step that calls core.exportVariable", dwf + LAST + "core.exportVariable('BASH_ENV', '/tmp/h')\n"),
+        ("a script step that calls core.addPath", dwf + LAST + "core.addPath('/tmp/bin')\n"),
+        ("a merge key in an env", put(JOB, "    env: {<<: {BASH_ENV: /tmp/h}}\n")),
+        ("an env key that is not a plain ASCII identifier", put(JOB, '    env:\n      "BASH_ENV ": /tmp/h\n'))):
+    assert whole(text) == [4, 8], "%s is a finding" % what
+assert whole(dwf + LAST + "console.log('nothing set')\n") == [], "a script step that sets nothing is no finding"
+# the list of refused env names is a copy of the one the allowlist job's judge holds; CURL_HOME is this checker's own
+judge = open(os.path.join(os.path.dirname(sys.argv[1]), "..", "tests", "pin-wiring-test.sh")).read()
+(names,) = re.findall(r"\nrisky = (\{.*?\})\n", judge, re.S)
+(prefix,) = re.findall(r'\n    return k in risky or re\.match\(r"([^"]+)", k\) is not None\n', judge)
+assert m._RISKY_ENV == ast.literal_eval(names), "the copied names differ from pin-wiring-test.sh's"
+assert m._RISKY_ENV_PREFIX.pattern == prefix, "the copied prefixes differ from pin-wiring-test.sh's"
+assert m._RISKY_ENV_HERE == {"CURL_HOME"} and not m._risky_env("CURL_HOME"), "CURL_HOME is beside the copy, not in it"
 for what, text in (("the job's defaults.run.shell", put(JOB, "    defaults:\n      run:\n        shell: bash\n")),
                    ("the workflow's defaults.run.shell",
                     put("permissions: {}\n", "defaults:\n  run:\n    shell: bash\n"))):
