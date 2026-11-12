@@ -36,6 +36,8 @@ a list of at most 20 objects with exactly scanner, finding_id and purl; package,
 text is ASCII only and at most 2000 characters, and names no vendor or model; a proposal that
 breaks any of this is dropped and counted. A proposal is delivered in the draft PR and takes
 effect only after the owner merges it - never assume it is already in force.
+A proposal's evidence is a path relative to the repository root (no leading / and no .. part) that names a
+regular file present in the checked-out repository; a file written after adjudication cannot be named.
 
 Finding:
 {context}
