@@ -65,17 +65,17 @@ def check(doc, path, as_name=None, spec=None):
 
 
 def present(path):
-    """True when the file exists (lstat: a dangling symlink and a file in an unreachable folder are PRESENT), False when it is absent (the first run); any other failure to look is a stop."""
+    """True when the file exists (lstat: a dangling symlink is PRESENT; a path through a non-folder is damage, not absence), False when it is absent (the first run); any other failure to look is a stop."""
     try:
         os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError):
+    except FileNotFoundError:
         return False
     except OSError as ex:
         raise ReviewedInputInvalid("%s cannot be looked at (%s)" % (path, type(ex).__name__))
     return True
 
 
-def parse(data, label, as_name=None):
+def parse(data, label, as_name=None, spec=None):
     """The same rules for a document already in hand (the bytes of a git object read with `git show`, or text): decoded
     as UTF-8, then the parsed JSON object carrying its required keys,
     or ReviewedInputInvalid. `label` names it in the stop."""
@@ -85,7 +85,7 @@ def parse(data, label, as_name=None):
         raise ReviewedInputInvalid("%s cannot be read as JSON (%s)" % (label, type(ex).__name__))
     if not isinstance(doc, dict):
         raise ReviewedInputInvalid("%s is not a JSON object" % label)
-    return check(doc, label, as_name)
+    return check(doc, label, as_name, spec)
 
 
 def read(path, as_name=None, spec=None):
