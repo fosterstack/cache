@@ -65,7 +65,7 @@ vulnerability); this page is what we do.
 
 ## Build
 
-Releases are built by the release chain from v0.3.0; the lines about it below
+Releases are built by the release chain from v0.3.0; the lines about it below <!-- pinned: historical -->
 describe that chain.
 
 - **One build, promoted by digest.** The release is built once; the same bytes are
