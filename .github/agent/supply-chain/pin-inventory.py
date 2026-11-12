@@ -383,8 +383,8 @@ def _cap(text):
     for l in text.split("\n"):
         if len(l) > MAX_LINE:
             raise RuntimeError(
-                f"a command line of {len(l)} characters is longer than the {
-                MAX_LINE} this check reads: refusing to read it partially")
+                f"a command line of {len(l)} characters is longer than the {MAX_LINE} "
+                "this check reads: refusing to read it partially")
     return text
 
 
@@ -775,8 +775,8 @@ MAX_LINES_PER_FILE = 20000
 
 def _too_many_items():
     return RuntimeError(
-        f"a single step or script line yields more than {
-        MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
+        f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: "
+        "refusing to read it (a hostile line could exhaust the readers)")
 
 
 def _step(node, out, labels):
@@ -1524,7 +1524,7 @@ def unmeasured_occurrences(files):
     for path, text in sorted(files.items()):
         if path.startswith("vendor/") or (path.startswith(".github/agent/") and not path.endswith((".sh", ".py"))):
             continue    # the agent folder's code is scanned; its data files (requirement lists, fixtures) run nothing
-        scan_all = path.startswith(".github/") or path.endswith(".sh")
+        scan_all = path.startswith(".github/") or path.endswith((".sh", ".py"))
         if not scan_all and not _SURFACE.search(path):
             continue
         # a name split by a backslash-newline reads as vendor in the shell: the joined text has no space there
@@ -1546,8 +1546,8 @@ def unmeasured_occurrences(files):
             flat = " ".join(line.split())
             if len(flat) > MAX_LINE:
                 raise RuntimeError(
-                    f"{path}: a command line of {len(flat)} characters is longer than the {
-                    MAX_LINE} this check reads: refusing to read it partially")
+                    f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} "
+                    "this check reads: refusing to read it partially")
             if path not in _VENDOR_NAMING_FILES and _names_vendor(line):
                 yield (path, "a line that names the vendored folder",
                     hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":"
