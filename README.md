@@ -200,7 +200,7 @@ docker debug <container>
 ```
 
 This opens a shell in a toolbox attached to the container, even though the image
-has no shell. It ships with Docker Desktop and is free for all users. See
+has no shell. It ships with Docker Desktop and is free from Docker Desktop 4.50 on. See
 [Docker's announcement](https://www.docker.com/blog/docker-desktop-4-50/) and the
 [command reference](https://docs.docker.com/reference/cli/docker/debug/).
 
