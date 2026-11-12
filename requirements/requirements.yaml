@@ -2435,7 +2435,7 @@ requirements:
       - id: REQ-SCAN-008-AC8
         given: "a debate"
         when: "an auditor argues"
-        then: "it has been told the rule-13 scoring before it argues"
+        then: "it has been told the scoring of REQ-SCAN-013 before it argues"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SCAN-008-AC9
@@ -2573,7 +2573,7 @@ requirements:
       - id: REQ-SCAN-011-AC1
         given: "docs/using-our-vex.md"
         when: "a release is cut"
-        then: "it ships in the same release as the rule-10 files, never before"
+        then: "it ships in the same release as the REQ-SCAN-010 files, never before"
         verification: { method: inspection, release_blocking: false }
         status: approved
       - id: REQ-SCAN-011-AC2
@@ -3995,7 +3995,7 @@ requirements:
       over HTTPS from the projects' GitHub releases. Known residuals: bin/apk-tool.py refuses a PAX extended header as
       the FIRST header of stream 0 (the signature stream must start with a plain header); elsewhere only the exact key
       APK-TOOLS.checksum.SHA1 is accepted. A forwarded-value echo in error messages is not escaped. The real melange
-      and apko runs are pending the runner proof. Review-round-9 ruling: the generator closes the placeholders, the
+      and apko runs are pending the runner proof. The generator closes the placeholders, the
       substitutions, the step conditions and the places of the name and description, and pins the template by sha256;
       it does NOT judge the shell in the template (that is the human and reviewer checklist at the top of
       build/melange.yaml.tmpl); the final control for the FIPS binary is build-apk.sh's check of the packaged binary.
@@ -4742,9 +4742,6 @@ requirements:
         then: "the assembly pair is committed and starts with the line saying it is a non-secret assembly key that signs nothing a customer trusts; the third file, release.rsa.pub, holds no key and no PEM block (plain placeholder text) until a human commits the real public half of the release signing key; release signing refuses with 'not a readable public key' while it is a placeholder; and no private key text appears under build/keys except in the committed non-secret assembly.rsa"
         verification: { method: unit, release_blocking: false }
         status: approved
-      # NEW, PROPOSED (handoff 0431 read-back 2026-10-14-cache-readback-behavioural-path-proof.md): awaiting the owner's ratification.
-      # The read-back called it AC7 (the python-subprocess residual was closed by the advisor's ruling, same PR); AC7 and AC8 are already taken in this requirement, so it is AC9. The status below is "approved" only
-      # because the schema allows one status under an approved baseline; it is not ratified until the owner says so.
       - id: REQ-BUILDAPK-001-AC9
         given: "bin/build-apk.sh and bin/release-sign-apks.sh"
         when: "each runs in the test with a search path that holds only the coreutils it uses and none of the tools it names (melange, go, sudo, unshare, env, openssl, sha256sum, git, python3, apko)"
@@ -5076,7 +5073,7 @@ requirements:
       - id: REQ-ARCHIVE-001-AC2
         given: "a directory that holds a symlink, any entry that is not a regular file, no file, a file name outside letters, digits and . _ + ~ - (or starting with a dot), or a push after which crane reports a digest other than the one computed from the layout"
         when: "bin/archive-push.sh runs"
-        then: "it refuses before calling crane (exit 2, naming the entry) for the directory problems, and exits 1 printing nothing on stdout when crane fails or reports another digest than the computed one (read-back items 1 and 4: push output digest checked)"
+        then: "it refuses before calling crane (exit 2, naming the entry) for the directory problems, and exits 1 printing nothing on stdout when crane fails or reports another digest than the computed one"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-ARCHIVE-001-AC3
@@ -5100,13 +5097,13 @@ requirements:
       - id: REQ-ARCHIVE-001-AC6
         given: "an artifact that was altered after it was pushed, an artifact that holds a file the pointer does not list or lacks one it lists, a crane that fails half-way, or an output path that already exists"
         when: "bin/archive-pull.sh runs"
-        then: "it checks the manifest hashes to the committed digest, every layer hashes to its digest and annotation, and the files equal the pointer's list, in a staging directory beside the output; it renames the staging directory to the output path only after all checks passed, otherwise exits 1 naming the file and leaves nothing at the output path or beside it; an output path that already exists (a half-pulled directory) is refused (exit 2) untouched (read-back items 1 and 4: half-pulled directory refused)"
+        then: "it checks the manifest hashes to the committed digest, every layer hashes to its digest and annotation, and the files equal the pointer's list, in a staging directory beside the output; it renames the staging directory to the output path only after all checks passed, otherwise exits 1 naming the file and leaves nothing at the output path or beside it; an output path that already exists (a half-pulled directory) is refused (exit 2) untouched"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-ARCHIVE-001-AC7
         given: "the digest the refresh job's push printed and the pointer the job commits"
         when: "bin/archive-verify.py verify --pointer FILE --dir DIR --pushed-digest sha256:<hex> runs"
-        then: "it exits 1 naming both digests when the pointer's artifact does not name the pushed digest, and 0 when it does; a --pushed-digest that is not sha256:<64 hex> is refused (exit 2) (read-back item 4: the committed pointer must name the pushed digest)"
+        then: "it exits 1 naming both digests when the pointer's artifact does not name the pushed digest, and 0 when it does; a --pushed-digest that is not sha256:<64 hex> is refused (exit 2)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-ARCHIVE-001-AC8
