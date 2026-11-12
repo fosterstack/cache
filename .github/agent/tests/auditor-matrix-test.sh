@@ -568,10 +568,11 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$FX/run/manifest-01.j
 sys.path.insert(0,".github/agent/bin")
 from auditorlib import vex
 bad=[]
-for f in glob.glob(sys.argv[1]+"/vex/*.openvex.json")+glob.glob(sys.argv[1]+"/.vex/*.json"):
+fs=glob.glob(sys.argv[1]+"/vex/*.openvex.json")+glob.glob(sys.argv[1]+"/.vex/*.json")
+for f in fs:
     try: vex.validate(json.load(open(f)))
     except Exception as e: bad.append(f+": "+str(e))
-print("ok" if not bad else "BAD:"+";".join(bad))' "$o")"
+print("ok" if fs and not bad else "BAD:"+(";".join(bad) or "no VEX produced"))' "$o")"
   ins="$( { grep -rl "_evidence\|_target_date" "$o"/vex 2>/dev/null || true; } | wc -l | tr -d ' ')"
   { eq "$conf" "ok" && eq "$ins" "0"; } && ok || no "all produced VEX OpenVEX-conformant; no _evidence/_target_date in statements" "conformance=$conf inline_custom_keys=$ins"; }
 
@@ -5047,6 +5048,7 @@ for variant in counter-invalid finding-vex-empty-object finding-vex-invalid-stat
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding whose per-finding VEX is damaged, or whose unsettled-run counter cannot advance ($variant), stops the run (exit 3) BEFORE the owner-decision issue is created: no gh issue, no checkout, no push" "$r7"
 done
+begin "rc5b-13-mutating-classifier-lists-allowlist-forms" "the shared classifier counts each gh/git form as mutating or read-only"
 while read -r want cmdline; do
   got="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); import mutclass; print(int(mutclass.mutating(sys.argv[2:])))' "$WORK" $cmdline)"
   eq "$got" "$want" && ok || no "the matrix classifier counts '$cmdline' as mutating=$want (allowlist form: read-only commands are listed, everything else counts)" "$got"
@@ -5080,6 +5082,7 @@ done <<'LIST'
 0 gh pr list
 0 go get x
 LIST
+begin "rc5b-13-suite-leaves-checkout-untouched" "the suite changes nothing in the checkout"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
