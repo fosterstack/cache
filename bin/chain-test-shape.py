@@ -904,7 +904,7 @@ NS_SHA = {
     "bin/audit-record.py": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f",
     "bin/build-admit.py": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
     "bin/build-apk-helper.py": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
-    "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
+    "bin/build-archives.py": "982d1e6e31ee00c6e270b27805a964ce05a0d1d560985da9ce579f752192727d",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
@@ -1276,7 +1276,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '[ -f "$goarch_dir/$gofile" ] || { echo "build-apk.sh: the Go archive $goarch_dir has no $gofile" "(rule 12: '
         'Go comes from the archive)" >&2; exit 2; }',
         '[ -x "$SHA256SUM" ] || { echo "build-apk.sh: sha256sum is not installed at $SHA256SUM" >&2; exit 1; }',
-        'got=$("$SHA256SUM" "$goarch_dir/$gofile" | cut -d\' \' -f1)',
+        'mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/go-archive"',
+        'got=$("$SHA256SUM" "$tmp/cache/go-archive" | cut -d\' \' -f1)',
         '[ "$got" = "$gosha" ] || { echo "build-apk.sh: sha256 checksum of $gofile ($got) differs from the recipe\'s '
         'pin ($gosha)" >&2; exit 2; }',
         'sed -n \'s/^pin=//p\' "$tmp/recipe.facts" >"$tmp/pins"',
@@ -1290,7 +1291,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'rdir=${render:-$tmp/render}; mkdir -p "$rdir"',
         'rendered=$rdir/$(basename "$recipe")',
         'sed "s/@VERSION@/$apkver/g" "$recipe" >"$rendered"',
-        'mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"',
+        'mv "$tmp/cache/go-archive" "$tmp/cache/sha256:$gosha"',
         'excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || { echo '
         '"build-apk.sh: cannot locate the exclude file of $src (git rev-parse failed)" >&2; exit 1; }',
         'exdir=${excl%/*}',

@@ -3,7 +3,7 @@
 
   build-archives.py --melange-repo DIR --version V --out DIR      (V is the tag minus the leading v; SOURCE_DATE_EPOCH is read from the environment)
 
-DIR/x86_64/ and DIR/aarch64/ each hold one standard apk (fscache-<ver>-r0.apk) and one fips apk (fscache-fips-<ver>-r0.apk). For each variant and
+DIR/x86_64/ and DIR/aarch64/ each hold the standard apk fscache-<ver>-r0.apk and the fips apk fscache-fips-<ver>-r0.apk (<ver> is V with -rc written _rc). For each variant and
 architecture the binary is read with `python3 bin/apk-tool.py cat APK usr/bin/fscache` and written to OUT under the archive names of the release:
   fscache_<V>_linux_<amd64|arm64>.tar.gz       holds one file, fscache       (standard)
   fscache-fips_<V>_linux_<amd64|arm64>.tar.gz  holds one file, fscache-fips  (fips)
@@ -11,16 +11,17 @@ Layout choice (deterministic): the archive holds only the binary, at the top lev
 SOURCE_DATE_EPOCH (0 if unset), ustar format; gzip level 9 with a zero timestamp and no file name. Same apks give the same bytes.
 """
 import argparse
-import glob
 import gzip
 import io
 import os
+import re
 import subprocess
 import sys
 import tarfile
 
 ARCHES = (("x86_64", "amd64"), ("aarch64", "arm64"))
-VARIANTS = (("standard", "fscache", "fscache-[0-9]*-r0.apk"), ("fips", "fscache-fips", "fscache-fips-*-r0.apk"))
+VARIANTS = (("standard", "fscache"), ("fips", "fscache-fips"))
+VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?|0\.0\.0-rc\.1")   # X.Y.Z, X.Y.Z-rcN, or the snapshot 0.0.0-rc.1
 
 
 def refuse(why):
@@ -28,11 +29,11 @@ def refuse(why):
     sys.exit(1)
 
 
-def find_apk(repo, arch, pattern):
-    found = sorted(glob.glob(os.path.join(repo, arch, pattern)))
-    if len(found) != 1:
-        refuse("%d apks matching %s in %s/%s, exactly one is required" % (len(found), pattern, repo, arch))
-    return found[0]
+def find_apk(repo, arch, name):
+    apk = os.path.join(repo, arch, name)
+    if not os.path.isfile(apk):
+        refuse("%s is not a file" % apk)
+    return apk
 
 
 def read_binary(apk):
@@ -66,13 +67,16 @@ def main(argv):
         args = p.parse_args(argv)
     except SystemExit as e:
         return 2 if e.code else 0
+    if not VERSION.fullmatch(args.version):
+        refuse("version %r is not X.Y.Z, X.Y.Z-rcN or 0.0.0-rc.1" % args.version)
+    apk_version = args.version.replace("-rc.", "-rc").replace("-rc", "_rc")   # the apk spelling: 0.3.0-rc1 and 0.0.0-rc.1 are 0.3.0_rc1 and 0.0.0_rc1
     sde = os.environ.get("SOURCE_DATE_EPOCH", "0")
     if not sde.isdigit():
         refuse("SOURCE_DATE_EPOCH %r is not digits" % sde)
     os.makedirs(args.out, exist_ok=True)
-    for _variant, binary_name, pattern in VARIANTS:
+    for _variant, binary_name in VARIANTS:
         for arch, goarch in ARCHES:
-            binary = read_binary(find_apk(args.melange_repo, arch, pattern))
+            binary = read_binary(find_apk(args.melange_repo, arch, "%s-%s-r0.apk" % (binary_name, apk_version)))
             path = os.path.join(args.out, "%s_%s_linux_%s.tar.gz" % (binary_name, args.version, goarch))
             with open(path, "wb") as f:
                 f.write(archive_bytes(binary_name, binary, int(sde)))

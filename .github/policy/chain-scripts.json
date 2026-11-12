@@ -653,7 +653,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
-      "sha256": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77"
+      "sha256": "982d1e6e31ee00c6e270b27805a964ce05a0d1d560985da9ce579f752192727d"
     },
     {
       "path": "bin/chain_items.py",
@@ -2426,7 +2426,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "504727af0ee14276e11b5376467c068bdd8f116fc86081194490bf4212f1d87e",
+      "sha256": "b5819464b0ee3a5176207212bda2b66face01d96a006c7ecc73db4804dbfe934",
       "exceptions": [
         {
           "rule": "script-name",
