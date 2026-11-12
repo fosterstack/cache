@@ -2748,13 +2748,6 @@
       "file": ".github/agent/bin/check-action-pins.py",
       "form": "a download",
       "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
-      "line": "f4874a27a10e21ea03f47b8f98b19321763a9d840fecc353bf6d797158f858ca",
-      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/check-action-pins.py",
-      "form": "a download",
-      "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
       "line": "6b2a57cf8cb801ff5e3061747a5559c757fceb44e7e7d1d960ef3b93a7e43297",
       "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
@@ -2826,13 +2819,6 @@
       "form": "a download",
       "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
       "line": "6f24dd9137473df2177e3a16aeb900987664946e5da01151fa7b6ef444840fc2",
-      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/check-action-pins.py",
-      "form": "a download",
-      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
-      "line": "f4874a27a10e21ea03f47b8f98b19321763a9d840fecc353bf6d797158f858ca",
       "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
@@ -5870,6 +5856,20 @@
       "key": "529dbec1ffa0bf62575ab9ca4f67e4fb3c5d74e8beb3275b52dc6ac6a9672288",
       "line": "529dbec1ffa0bf62575ab9ca4f67e4fb3c5d74e8beb3275b52dc6ac6a9672288",
       "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/check-action-pins.py",
+      "form": "a download",
+      "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
+      "line": "0a79a0b49572685c21b44db52dd29749c6643cc84d420afddd0df788cb856c48",
+      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/check-action-pins.py",
+      "form": "a download",
+      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "line": "0a79a0b49572685c21b44db52dd29749c6643cc84d420afddd0df788cb856c48",
+      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
