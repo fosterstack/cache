@@ -29,9 +29,11 @@ cmd_files() {
   [ "$bad" = 0 ] || exit 1
   echo "suite-guard: every tracked test file has content"
 }
-count_of() { # prints the count or nothing: an explicit summary first, else the number of ok/PASS lines
+count_of() { # prints the count or nothing: an explicit summary line first, else the number of ok/PASS lines
   local n
-  n=$(sed -n -E 's/.*pass=([0-9]+).*/\1/p; s/.*[^0-9]([0-9]+) passed.*/\1/p; s/^([0-9]+) passed.*/\1/p; s/.*passed: ([0-9]+).*/\1/p; s/^Ran ([0-9]+) tests?.*/\1/p; s/.*[^0-9]([0-9]+) killed.*/\1/p' "$1" | tail -1)
+  # each form is a whole line (an optional one-word label first), so a note that merely mentions a count is not one; the last summary line is the suite's total
+  local w='([A-Za-z0-9_.-]+: )?'
+  n=$(sed -n -E "s/^pass=([0-9]+)( .*)?\$/\1/p; s/^${w}([0-9]+) passed(, .*)?\$/\2/p; s/^${w}passed: ([0-9]+)( .*)?\$/\2/p; s/^Ran ([0-9]+) tests?( .*)?\$/\1/p; s/^[0-9]+ mutants, ([0-9]+) killed(;.*)?\$/\1/p" "$1" | tail -1)
   if [ -z "$n" ]; then
     n=$(grep -c -E '^(ok|PASS)([: ]|$)' "$1" || true)
     [ "$n" != 0 ] || n=""
