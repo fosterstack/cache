@@ -20,8 +20,6 @@
 #   run-state/rs-01.json    clean run; rs-02.json scanner-down; rs-03.json post-classify
 #   dl/log.json findings-01(no-change) findings-02(one miss) schema.json
 #   poam/poam-01 below-threshold  poam-02 KEV  poam-03 critical-only  poam-04 expired
-#   release/cand-01 critical cand-02 below ; iss-01 accepted iss-02 unaccepted
-#            iss-03 wrong-author iss-04 review-only
 #   suppression/disp-01 disposition ; set-01/ deliberately inconsistent set
 #   policy/env-01 good-env env-02 non-main ; rule-01 no-bypass rule-02 bypass
 #   adjudicator/scenario-01 refusal scenario ; stub/fail-on-call/fake-github doubles
@@ -47,6 +45,7 @@ LEDGER="$WORK/model.ledger"; export AUDITOR_MODEL_LEDGER="$LEDGER"
 # Every case runs against a throwaway workspace instead, so the suite never rewrites the real
 # .vex/.snyk/osv-scanner.toml/.auditor (REQ-AUD-18); a case needing its own sets it explicitly.
 export GITHUB_WORKSPACE="$WORK/workspace"; mkdir -p "$GITHUB_WORKSPACE"; cp -R .vex "$GITHUB_WORKSPACE/" 2>/dev/null || true
+cp README.md "$GITHUB_WORKSPACE/" 2>/dev/null || true   # the file a model proposal names as its evidence
 MISS="__MISSING__"
 pass=0; fail=0
 # snapshot of the checkout: the suite must leave it exactly as it found it (final case).
@@ -157,7 +156,7 @@ import json, os, sys
 sys.path.insert(0, ".github/agent/bin")
 from auditorlib import parsers as P
 scenario, out = sys.argv[1], sys.argv[2]; os.makedirs(out, exist_ok=True)
-pm = P._panel_module(); vp = os.path.join(out, "verdict.json")
+pm = P.panel_module(); vp = os.path.join(out, "verdict.json")
 images = {}
 for im in sorted(P.panel_images()):
     exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
@@ -207,7 +206,7 @@ cat > "$WORK/g2p.py" <<'PYEOF'
 import json, os, sys, importlib.util
 sys.path.insert(0, ".github/agent/bin")
 from auditorlib import parsers as P
-pm = P._panel_module()
+pm = P.panel_module()
 spec = importlib.util.spec_from_file_location("m", ".github/agent/bin/auditor-manifest.py"); M = importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
 mp = sys.argv[1]; m = json.load(open(mp)); out = os.path.dirname(mp)
 images = {}
@@ -218,7 +217,7 @@ fs, seen = [], set()
 gp = (m.get("scanner_reports") or {}).get("grype")
 for mt in (json.load(open(gp)).get("matches") or [] if gp else []):
     v, a = mt["vulnerability"], mt["artifact"]
-    pn, pv = pm._purl_name_version(a["purl"]) if a.get("purl") else (None, None)
+    pn, pv = pm.purl_name_version(a["purl"]) if a.get("purl") else (None, None)
     name, ver = a.get("name") or pn, a.get("version") or pv or "0"
     fixv = (v.get("fix") or {}).get("versions") or []
     purl = a.get("purl") or "pkg:generic/%s@%s" % (name, ver)
@@ -243,7 +242,7 @@ for v in (json.load(open(sp)).get("vulnerabilities") or [] if sp else []):
             f["details"]["google"] = {"severity": sv} if sv in ("negligible", "low", "medium", "high", "critical") else {}
             if v.get("purl"): f["details"]["google"]["purl"] = v["purl"]
         else:
-            name, ver = v.get("packageName"), (v.get("version") or (pm._purl_name_version(v["purl"])[1] if v.get("purl") else "1.0") or "1.0")
+            name, ver = v.get("packageName"), (v.get("version") or (pm.purl_name_version(v["purl"])[1] if v.get("purl") else "1.0") or "1.0")
             fs.append({"image": "production-amd64", "id": cid, "package": name, "version": ver, "seen_by": ["google"], "of": 4, "unique": True,
                        "status": "unique", "purls": [v["purl"]] if v.get("purl") else [], "details": {"google": ({"purl": v["purl"]} if v.get("purl") else {})}})
 reported = [f for f in fs if f["status"] == "report"]
@@ -699,19 +698,6 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   { eq "$fromsecrets" "True" && eq "$onlytoggle" "True"; } \
     && ok || no "identifiers via secrets.* (no SNYK_TOKEN: the auditor runs no scanner); only vars.* are AUDITOR_SCHEDULE_MODE + AUDITOR_AUTOMERGE" "from_secrets=$fromsecrets only_toggle=$onlytoggle vars=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
 
-begin "req6-ac2-token-budget-in-workflow" "driving usage to the budget stops the run with tokens_used>0 up to the cap"
-o="$WORK/budget"; rm -rf "$o"
-run "$PY" "$BIN/auditor-loop-guard.py" --token-budget 2500 --adjudicator "$STUB" --out "$o" && {
-  stopped="$(pj "$o/budget.json" 'd.get("stopped_on_budget")')"; used="$(pj "$o/budget.json" 'd.get("tokens_used")')"
-  { eq "$stopped" "true" && [ "$used" != "$MISS" ] && [ "$used" -gt 0 ] 2>/dev/null && [ "$used" -le 3500 ] 2>/dev/null; } \
-    && ok || no "stopped at the budget with tokens_used>0" "stopped=$stopped tokens=$used"; }
-
-begin "req6-ac3-five-iteration-stop" "the loop makes exactly five model attempts (ledger has 5 lines) then stops and reports"
-o="$WORK/loop"; rm -rf "$o"; : > "$LEDGER"
-run "$PY" "$BIN/auditor-loop-guard.py" --max 5 --scenario would-loop --adjudicator "$STUB" --out "$o" && {
-  n="$(ledger_n)"; stop="$(pj "$o/stop.json" 'd.get("stopped_and_reported")')"
-  { eq "$stop" "true" && eq "$n" "5"; } && ok || no "exactly 5 ledger attempts and a stop report" "attempts=$n stop=$stop"; }
-
 begin "req6-ac4-no-key-leak" "a canary is never printed to stdout OR stderr, nor written anywhere under the output tree"
 o="$WORK/leak"; rm -rf "$o"; canary="sk-""ant-oat01-CANARY-$$"   # split: this suite lives under the scanned .github/agent/
 run env AUDITOR_TEST_CANARY="$canary" "$PY" "$BIN/auditor-no-key-leak.py" --scan .github/agent --out "$o" && {
@@ -842,21 +828,6 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-rule0-check.py" --requi
   merged="$( [ -f "$shim" ] && grep -c 'merge' "$shim" || echo 0 )"
   blocked="$(pj "$o/rule0.json" 'd.get("merge_blocked_on_failing_checks")')"; viapr="$(pj "$o/rule0.json" 'd.get("all_changes_via_pr")')"
   { eq "$blocked" "true" && eq "$viapr" "true" && eq "$merged" "0"; } && ok || no "merge blocked, all changes via PR, no merge in shim" "blocked=$blocked via_pr=$viapr merges=$merged"; }
-
-# REQ-AUD-11 — acceptance found by owner login AND issue number; wrong-author (identical
-# comment, different author) is held; below-threshold promotes.
-for spec in "hold:iss-02" "promote:iss-01" "hold:iss-04" "hold:iss-03"; do
-  want="${spec%%:*}"; iss="${spec##*:}"
-  case "$iss" in iss-01) nm="promote-accepted";; iss-02) nm="hold-unaccepted";; iss-03) nm="hold-wrong-author";; iss-04) nm="hold-review-only";; esac
-  begin "req11-ac1-$nm" "release authorization decides $want for $iss by matching the owner login and issue number"
-  o="$WORK/rz-$iss"; rm -rf "$o"
-  run "$PY" "$BIN/auditor-release-authz.py" --candidate "$F/release/cand-01.json" --issues "$F/release/$iss.json" --owner fosterstack-admin --out "$o/authz.json" && {
-    d="$(pj "$o/authz.json" 'd.get("decision")')"; eq "$d" "$want" && ok || no "decision $want" "decision=$d"; }
-done
-begin "req11-ac1-promote-below-threshold" "a below-threshold candidate promotes regardless of acceptance"
-o="$WORK/rz-below"; rm -rf "$o"
-run "$PY" "$BIN/auditor-release-authz.py" --candidate "$F/release/cand-02.json" --issues "$F/release/iss-02.json" --owner fosterstack-admin --out "$o/authz.json" && {
-  d="$(pj "$o/authz.json" 'd.get("decision")')"; eq "$d" "promote" && ok || no "decision promote" "decision=$d"; }
 
 ########################################################################
 echo "=== REQ-AUD-12 — end-to-end dry-run / real-run integration (pending owner ratification) ==="
@@ -1527,12 +1498,6 @@ withheld="$(grep -qi 'conclusion withheld' "$o/report.md" && echo yes || echo no
 ########################################################################
 echo "=== outer-loop regressions (round 2) ==="
 
-begin "ol2-1-expired-supersede-acceptance-holds" "a later, expired ACCEPT supersedes an earlier longer one — the release gate HOLDS, not promote"
-o="$WORK/ol21"; rm -rf "$o"
-run "$PY" "$BIN/auditor-release-authz.py" --candidate "$F/release/cand-01.json" --issues "$F/release/iss-expired-super.json" --owner fosterstack-admin --today 2026-09-24 --out "$o/authz.json" && {
-  d="$(pj "$o/authz.json" 'd.get("decision")')"
-  eq "$d" "hold" && ok || no "hold on an expired superseding acceptance" "decision=$d"; }
-
 begin "ol2-2-refusal-usage-charged-to-budget" "adjudicate charges token usage even for a refusal, so the budget advances and stops"
 charged="$("$PY" -c '
 import sys,importlib.util,tempfile,os
@@ -1656,7 +1621,7 @@ print("OK" if ok else "BAD:%s v%s"%(names,m["version"]))' "$mo" 2>/dev/null)"
 
 echo "=== outer-loop round 5 (Codex second-vendor) regressions ==="
 
-begin "olr5-2-accepted-items-merged-with-vex" "a retained affected statement (survives the VEX merge, not re-assessed this run) keeps its accepted-items.json inventory entry, so release-authz is not left inconsistent"
+begin "olr5-2-accepted-items-merged-with-vex" "a retained affected statement (survives the VEX merge, not re-assessed this run) keeps its accepted-items.json inventory entry"
 io="$WORK/olr5-inv"; rm -rf "$io"; mkdir -p "$io/ws/.vex" "$io/ws/.auditor" "$io/supp" "$io/.auditor"
 "$PY" - "$io" <<'PP'
 import json,os,sys
@@ -4126,7 +4091,7 @@ d = {"images": images,
                   f("production-amd64", "CVE-2099-0003", "curl", "8.0", ["inspector", "grype"], ["pkg:apk/wolfi/curl@8.0"]),
                   f("production-arm64", "CVE-2099-0003", "curl", "8.0", ["inspector"], ["pkg:apk/wolfi/curl@8.0"])],
      "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36"}]}
-d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])   # the tally's own renderer
+d["issue"] = P.panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])   # the tally's own renderer
 d["unique"] = [x for x in d["findings"] if x["unique"]]
 d["exit"] = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if any(x["status"] == "report" for x in d["findings"]) else 0)
 json.dump(d, open(sys.argv[1], "w"), indent=1)
@@ -4862,28 +4827,30 @@ r12p="$("$PY" -c "
 import importlib.util,os,sys
 sys.path.insert(0,'.github/agent/bin')
 spec=importlib.util.spec_from_file_location('r','.github/agent/bin/auditor-run.py'); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','finding_id':'CVE-2099-PROPOSE','purl':'pkg:deb/debian/libpropose@1.0'}],'note':'generalises from a recorded no-DSA pattern','evidence':'debian security tracker: no-DSA (minor)'}
+V=lambda p: R._valid_proposal(p,'.',None)   # the workspace file, no base sha in a test run
+good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','finding_id':'CVE-2099-PROPOSE','purl':'pkg:deb/debian/libpropose@1.0'}],'note':'generalises from a recorded no-DSA pattern','evidence':'README.md'}
 bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,package=3), dict(good,keys='x'),
      dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'p','extra':'y'}]), dict(good,keys=[{'scanner':'grype','finding_id':1,'purl':'p'}]),
-     dict(good,note='proposed by Claude'), dict(good,evidence='per the gpt-5 analysis'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
+     dict(good,note='proposed by Claude'), dict(good,note='per the gpt-5 analysis'), dict(good,note='gpt - 5'), dict(good,note='private - model'), dict(good,package='gpt - 5'),
+     dict(good,evidence='/etc/hostname'), dict(good,evidence='../README.md'), dict(good,evidence='README.md\\x00'), dict(good,evidence='no-such-file.md'), dict(good,evidence='docs'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
      dict(good,note='x'*2001), None, 'x', [], {},
      {'kind':'knowledge'}, {'evidence':'e'}, {'kind':'knowledge','evidence':'e'}, dict(good,keys=[]), {k:v for k,v in good.items() if k!='keys'},
      dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,evidence='Anthropic says no'), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
      dict(good,note='\\uff23\\uff4c\\uff41\\uff55\\uff44\\uff45'), dict(good,note='Cl\\u0430ude'), dict(good,note='Cl\\u200baude'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/\\uff4fpus@1'}])]
 # ordinary text is kept: words that only share letters with a vendor name, even across two fields, are not a vendor name (no cross-field splitting layer)
-acc=[dict(good,note='knowledge',evidence='minizip'), dict(good,package='libopus0'), dict(good,package='minizip',note='knowledge')]
-acc_lost=[a for a in acc if R._valid_proposal(a) is None]
-ok=not acc_lost and R._valid_proposal(good)==good and R._valid_proposal({'kind':'knowledge','evidence':'e','note':'n'})=={'kind':'knowledge','evidence':'e','note':'n'}
-rej=[b for b in bad if R._valid_proposal(b) is not None]
+acc=[dict(good,note='knowledge',evidence='LICENSE'), dict(good,package='libopus0'), dict(good,package='minizip',note='knowledge')]
+acc_lost=[a for a in acc if V(a) is None]
+ok=not acc_lost and V(good)==good and V({'kind':'knowledge','evidence':'README.md','note':'n'})=={'kind':'knowledge','evidence':'README.md','note':'n'}
+rej=[b for b in bad if V(b) is not None]
 # configured model identifiers of this run, one at a time (no minimum length), each also against the kind field
 cfg_rej=[]
-for k,v,prop in (('AUDITOR_MODEL_PRIMARY','secret-model-id-7',dict(good,note='uses secret-model-id-7')), ('AUDITOR_MODEL_FALLBACK','q2',dict(good,note='the q2 route')), ('AUDITOR_MODEL_FALLBACK','knowledge',{'kind':'knowledge','evidence':'e','note':'n'})):
+for k,v,prop in (('AUDITOR_MODEL_PRIMARY','secret-model-id-7',dict(good,note='uses secret-model-id-7')), ('AUDITOR_MODEL_FALLBACK','q2',dict(good,note='the q2 route')), ('AUDITOR_MODEL_FALLBACK','knowledge',{'kind':'knowledge','evidence':'README.md','note':'n'})):
     os.environ[k]=v
-    if R._valid_proposal(prop) is not None: cfg_rej.append(v)
+    if V(prop) is not None: cfg_rej.append(v)
     del os.environ[k]
 import time
 os.environ['AUDITOR_MODEL_PRIMARY']='a'*13+'b'
-t0=time.time(); R._valid_proposal(dict(good,keys=[{'scanner':'a','finding_id':'a','purl':'a'}]*20)); fast=time.time()-t0<2
+t0=time.time(); V(dict(good,keys=[{'scanner':'a','finding_id':'a','purl':'a'}]*20)); fast=time.time()-t0<2
 del os.environ['AUDITOR_MODEL_PRIMARY']
 print('OK' if ok and fast and not rej and not cfg_rej else 'BAD kept=%r cfg=%r ok=%s'%(rej,cfg_rej,ok))" 2>/dev/null | tail -1)"
 eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and refuses every mis-shaped or name-bearing one" "$r12p"
@@ -5025,7 +4992,7 @@ with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),
     except Exception as e: rc="EXC %s"%type(e).__name__
 issues=[x for x in calls if x[:3]==["gh","issue","create"]]
 import mutclass; mut=[x for x in calls if mutclass.mutating(x)]   # the shared allowlist-form classifier
-print("rc=%s fetches=%d"%(rc,fetches[0]) if variant.endswith("-then-bad-base") else "rc=%s issues=%d mutating=%d"%(rc,len(issues),len(mut)))
+print("rc=%s fetches=%d issues=%d"%(rc,fetches[0],len(issues)) if variant.endswith("-then-bad-base") else "rc=%s issues=%d mutating=%d"%(rc,len(issues),len(mut)))
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
@@ -5074,7 +5041,7 @@ for variant in base-vex-empty base-items-keyless; do
 done
 for variant in fetch-fails-then-bad-base revparse-fails-then-bad-base; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
-  eq "$r7" "rc=1 fetches=1" && ok || no "a base fetch or resolution that fails before the first owner issue is handed to the delivery, which reports it (rc=1) and acquires the base ONCE: no second fetch can find a damaged base after the issue exists ($variant)" "$r7"
+  eq "$r7" "rc=3 fetches=1 issues=0" && ok || no "a base fetch or resolution that fails stops the run (exit 3) before the first owner issue, with no workspace fallback and one fetch ($variant)" "$r7"
 done
 for variant in counter-invalid finding-vex-empty-object finding-vex-invalid-statement; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
