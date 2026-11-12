@@ -334,7 +334,7 @@ mods = {a.name for n in ast.walk(gsrc) if isinstance(n, ast.Import) for a in n.n
        {n.module for n in ast.walk(gsrc) if isinstance(n, ast.ImportFrom)}
 env_reads = [n.attr for n in ast.walk(gsrc) if isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv", "environb")]
 check("AC7 the generator imports no clock, randomness or network module and reads no environment variable",
-      mods <= {"argparse", "json", "os", "re", "sys", "urllib.parse"} and not env_reads, (sorted(mods), env_reads))
+      mods <= {"argparse", "importlib.util", "json", "os", "re", "sys", "urllib.parse"} and not env_reads, (sorted(mods), env_reads))
 # --- AC1, AC2 on the real OpenVEX file. AC2 is read as the advisor's reading (a), handoff 0389: "all statements" means
 # every statement that applies to THIS release's images; a statement whose products are images the release does not ship
 # does not belong in its forms. "Applies" is computed here from the products alone, independent of the generator.
@@ -617,6 +617,51 @@ check("G the published document no longer describes a :debug image or busybox",
 check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
 check("G the busybox fixture keeps the three retired statements for the generator's tests",
       sorted(s_["vulnerability"]["name"] for s_ in json.load(open(BBVEX))["statements"]) == ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"])
+# --- one reading of @id: null is skipped (the identifiers.purl is read), anything else that is not a string is a ValueError
+def tried(f):                      # the result, or the exception's name: a crash is one failed check, not the end of the run
+    try:
+        return f()
+    except Exception as e:
+        return type(e).__name__
+check("a null @id is skipped and the identifiers.purl names the product",
+      tried(lambda: V._purl_of({"@id": None, "identifiers": {"purl": OURS}}, "CVE-N1")) == OURS)
+def raises_value(c):
+    try:
+        V._purl_of(c, "CVE-N2"); return False
+    except ValueError:
+        return True
+    except Exception:
+        return False
+for name, comp in (("a null @id and no purl", {"@id": None}), ("a number @id", {"@id": 5}), ("a list @id", {"@id": ["x"]}),
+                   ("a dict @id", {"@id": {}}), ("a number @id beside a purl", {"@id": 5, "identifiers": {"purl": OURS}})):
+    check("%s raises ValueError" % name, raises_value(comp))
+check("a null @id on a subcomponent is read from its identifiers.purl",
+      tried(lambda: V._scopes(scoped("CVE-N3", "affected", [{"@id": OURS, "subcomponents": [
+          {"@id": None, "identifiers": {"purl": "pkg:generic/busybox@1.37.0"}}]}]), [D("1")])) == [([D("1")], ("busybox", "1.37.0"))])
+check("the panel reads a null @id as the identifiers.purl, as the forms do",
+      PANEL._product_id({"@id": None, "identifiers": {"purl": OURS}}) == OURS)
+# --- superseded statements are applied before the conflict check
+def two(first, second):
+    a, b = scoped("CVE-SUP", first, BB), scoped("CVE-SUP", second, BB)
+    a["timestamp"], b["timestamp"] = "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z"
+    return dict(VEX, statements=[a, b])
+def made(doc):
+    r = tried(lambda: V.inspector(doc, IMAGES, "v0.3.0"))
+    return "refused" if r == "ValueError" else [x["filterCriteria"]["vulnerabilityId"][0]["value"] for x in r["filters"]]
+check("a not_affected replaced by a later affected is no conflict, and makes no rule", made(two("not_affected", "affected")) == [],
+      made(two("not_affected", "affected")))
+check("an affected replaced by a later not_affected is no conflict, and makes the rule", made(two("affected", "not_affected")) == ["CVE-SUP"],
+      made(two("affected", "not_affected")))
+check("the CSAF form applies the same order", tried(lambda: V.csaf(two("not_affected", "affected"), IMAGES, "v0.3.0")) != "ValueError")
+other = scoped("CVE-SUP", "affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/zlib@1.3"}]}])
+check("a statement on another package does not supersede, so the conflict stays",
+      made(dict(VEX, statements=[scoped("CVE-SUP", "not_affected", [{"@id": OURS}]), other])) == "refused")
+# --- the delimiter count refuses a delimiter that was only percent-encoded, in the name or the version
+for sid in ("pkg:generic/busybox%2Fx@1", "pkg:generic/busybox%40x@1", "pkg:generic/busybox%3Fx@1", "pkg:generic/busybox%23x@1",
+            "pkg:generic/busybox@1%2F2", "pkg:generic/busybox@1%3Fx", "pkg:generic/busybox@1%23x",
+            "pkg:golang/github.com%2Fa/b@v1", "pkg:golang/github.com/a%40b@v1", "pkg:golang/github.com/a%3Fb@v1",
+            "pkg:golang/github.com/a%23b@v1", "pkg:golang/github.com/a/b@v1%2F2", "pkg:golang/github.com/a/b@v1%3Fx"):
+    check("an encoded delimiter is refused: %s" % sid, refused({"@id": OURS, "subcomponents": [{"@id": sid}]}))
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
