@@ -42,6 +42,17 @@ class Govulncheck(unittest.TestCase):
         self.assertRaises(P.ParseError, P.parse_govulncheck, w('{"finding": {"trace": []}}'))
 
 
+class RefuseConstant(unittest.TestCase):
+    def test_the_public_hook_refuses_nan_and_the_infinities_with_a_parse_error(self):      # row 25: nochange reads through it
+        for c in ("NaN", "Infinity", "-Infinity"):
+            self.assertRaises(P.ParseError, P.refuse_constant, c)
+            self.assertRaises(P.ParseError, json.loads, '{"a": %s}' % c, parse_constant=P.refuse_constant)
+        self.assertEqual(json.loads('{"a": 1.5}', parse_constant=P.refuse_constant), {"a": 1.5})
+
+    def test_the_old_private_name_is_gone(self):
+        self.assertFalse(hasattr(P, "_refuse_constant"))
+
+
 class Kev(unittest.TestCase):
     def test_real(self):
         self.assertIn("CVE-2023-4911", P.parse_kev(F + "/kev/kev.json"))
