@@ -172,6 +172,16 @@ def _qualifiers(pid, qs, cve):
     return urllib.parse.unquote(seen.get("repository_url", "")), seen.get("variant"), seen.get("arch")
 
 
+def _build_go_version():
+    """The Go the images' binary is built with: the one version build/melange.yaml fetches from go.dev."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "melange.yaml")
+    with open(path, encoding="utf-8") as fh:
+        found = {line.split("/dl/go")[1].split(".linux-")[0] for line in fh if "go.dev/dl/go" in line}
+    if len(found) != 1:
+        raise ValueError("build/melange.yaml names %d Go versions, not one" % len(found))
+    return found.pop()
+
+
 def _scopes(statement, digests, meta=None):
     """[(digests, package)] a statement covers in this release (Codex #165 r1, SEC-165-01): each product that is this
     repository's OCI image (`pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache`, or one digest of it), with each of
@@ -231,6 +241,8 @@ def _scopes(statement, digests, meta=None):
             if "/" in pm.group(1) and (any(c in seg for seg in name_.split("/") for c in "@?#") or name_.count("/") != pm.group(1).count("/")):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
             if stdlib:
+                if ver_ != _build_go_version():
+                    continue                             # the images ship one Go: another version's stdlib is not in them
                 # Scanners write the standard library's version go1.27.2 for purl version 1.27.2: Google's package list does; Inspector's
                 # spelling is a guess. go1.27.2 cannot be another package's version: the stdlib pattern refuses a go or v prefix, and a
                 # generic package keeps its version as written.
