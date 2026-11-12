@@ -10,6 +10,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 - "$root" <<'PY'
 import copy, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, yaml
+from itertools import takewhile
 root = sys.argv[1]
 passed = failed = 0
 def check(name, ok, got=""):
@@ -273,7 +274,7 @@ _run = open(os.path.join(root, "bin", "vex-live-run.sh")).read()
 check("main mode pages through every release before selecting", "gh api --paginate" in _run and "| jq -s ." in _run and "per_page=50" not in _run and "?per_page=50" not in _run)
 
 # --- AC4: at most 50 pushes per run (the counter in the orchestration script)
-out = subprocess.run(["bash", "-c", 'source "$0"; crane() { :; }; for i in $(seq 1 50); do push_copy a b || exit 9; done; push_copy a b && exit 7; exit 0',
+out = subprocess.run(["bash", "-c", 'source "$0"; export PUSHED_LOG=$(mktemp); crane() { :; }; for i in $(seq 1 50); do push_copy a b || exit 9; done; push_copy a b && exit 7; exit 0',
                       os.path.join(root, "bin/vex-live-run.sh")], capture_output=True, text=True, env=dict(os.environ, VEX_LIVE_TEST_LIB="1"))
 check("the 51st push fails the run", out.returncode == 0, (out.returncode, out.stderr[-300:]))
 
@@ -1146,7 +1147,12 @@ case "$*" in
   "logout "*) echo "SCOUT-LOGOUT" >> "$RUNNER_TEMP/events.log" ;;
   *"scout cves"*) echo "SCAN-ENV push-env=${DOCKERHUB_TEST_PUSH_TOKEN:+set}" >> "$RUNNER_TEMP/events.log"; n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
   *) exit 0 ;; esac'''
-    def leg(reports, env=None, mode="rc", extra=""):
+    # Docker Hub's repository API, stubbed: the visibility answer is the only thing the leg reads from it (PANEL:94, nothing is pushed anywhere public)
+    HUB_PRIVATE = '{"is_private": true}'
+    def hub_curl(answer):
+        call = 'echo "curl-call $*" >> "$RUNNER_TEMP/events.log"; '
+        return call + ("exit 22" if answer is None else "printf '%s' '" + answer + "'")
+    def leg(reports, env=None, mode="rc", extra="", hub=HUB_PRIVATE):
         files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
         body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
                 + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
@@ -1154,7 +1160,7 @@ case "$*" in
                 + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; echo \"push-tok-after=${DOCKERHUB_TEST_PUSH_TOKEN-UNSET} scout-tok-after=${DOCKERHUB_SCOUT_TOKEN-UNSET}\"; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
         e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
         e.update(env or {})
-        return sh(body, {"crane": CRANE, "docker": SCOUT}, e)
+        return sh(body, {"crane": CRANE, "docker": SCOUT, "curl": hub_curl(hub)}, e)
     OK_FIX = [gl_report(LEG_CVE, "CVE-A", OURS_CVE), gl_report("CVE-A", OURS_CVE)]
     OK_PROD = [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]
     rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)    # the first two answers belong to the informational probe of the Build layout (an unreadable report there is information)
@@ -1235,6 +1241,73 @@ case "$*" in
     check("scout leg (release): the published index is also scanned by tag and by exact digest, with Docker's authors and with ours",
           "leg-rc=0" in out and any("registry://ghcr.io/fosterstack/cache:0.3.0" in l for l in sc) and any("registry://ghcr.io/fosterstack/cache@" + prod_man in l for l in sc)
           and not any(l.startswith("scout cves --format gitlab oci-dir://") for l in sc), (rc, sc, out[-300:]))
+
+    # the Docker Hub repository must be private before the first push (PANEL:94): visibility is read from the API; anything but is_private true refuses
+    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)
+    ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
+    first_push = next((i for i, l in enumerate(ev) if l.startswith(("crane push", "crane copy"))), None)
+    seen_curl = [i for i, l in enumerate(ev) if l.startswith("curl-call")]
+    check("scout leg: with is_private true it reads the repository from Docker Hub's API before its first push, and proceeds",
+          "leg-rc=0" in out and seen_curl and first_push is not None and seen_curl[0] < first_push
+          and any("fosterstack-live/cache-live-test" in ev[i] and "hub.docker.com" in ev[i] for i in seen_curl), (rc, ev[:6], out[-200:]))
+    for why, answer in (("is_private false", '{"is_private": false}'), ("an answer without is_private", '{"name": "cache-live-test"}'),
+                        ("an answer that is not JSON", "<html>502</html>"), ("an empty answer", "")):
+        rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, hub=answer)
+        check("scout leg refuses to push when the API says %s: non-zero, and no crane push, copy or journal line" % why,
+              "leg-rc=0" not in out and "leg-rc=" in out and "crane push" not in out and "crane copy" not in out and "live-1-1" not in out, (rc, out[-300:]))
+    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, hub=None)
+    check("scout leg refuses to push when the API call itself fails", "leg-rc=0" not in out and "crane push" not in out and "crane copy" not in out, (rc, out[-300:]))
+
+# --- review rulings (s2-rows-P456, rows 85-86): sourcing runs nothing; one journal_push needing PUSHED_LOG; one root; a private Docker Hub repository
+def run_script(args, env, stubs, body=None):   # body: sourced with the stubs on PATH; else the script is executed; the stub calls come back as a list
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "stub"))
+        for name in stubs:
+            with open(os.path.join(t, "stub", name), "w") as fh:
+                fh.write('#!/usr/bin/env bash\necho "%s $*" >> "%s/calls"\n' % (name, t))
+            os.chmod(os.path.join(t, "stub", name), 0o755)
+        e = {"PATH": os.path.join(t, "stub") + ":" + os.environ["PATH"], "HOME": t, **env}
+        cmd = ["bash", "-c", body, script] + args if body else ["bash", script] + args
+        r = subprocess.run(cmd, cwd=t, env=e, capture_output=True, text=True)
+        calls = open(os.path.join(t, "calls")).read().split("\n")[:-1] if os.path.exists(os.path.join(t, "calls")) else []
+        return r.returncode, r.stdout + r.stderr, calls
+TOOLS = ["docker", "curl", "crane", "aws", "gcloud", "gh", "python3x"]
+LIVE_ENV = {"ECR": "1.dkr.ecr.us-east-1.amazonaws.com/x", "GAR": "r-docker.pkg.dev/p/r", "GITHUB_RUN_ID": "1", "GITHUB_WORKSPACE": root,
+            "RUNNER_TEMP": "/nonexistent-live-test-temp", "MODE": "rc", **ENV_OK}   # no VEX_LIVE_TEST_LIB: the hook is `return` alone
+for args in ([], ["run"], ["cleanup"]):
+    rc, out, calls = run_script(args, LIVE_ENV, TOOLS, 'set -euo pipefail; source "$0" "$@"; echo SOURCED-OK')
+    check("sourcing bin/vex-live-run.sh with %r runs nothing: it returns, and no docker, curl or other tool is called" % args,
+          rc == 0 and "SOURCED-OK" in out and calls == [], (rc, calls, out[-200:]))
+rc, out, calls = run_script(["run"], LIVE_ENV, TOOLS, 'source "$0" "$@"; type journal_push push_copy scout_leg >/dev/null; echo FUNCS-OK')
+check("sourcing defines the functions (journal_push, push_copy, scout_leg) for the test to call", "FUNCS-OK" in out, (rc, out[-200:]))
+for args in ([], ["run"], ["cleanup"]):
+    rc, out, calls = run_script(args, {}, TOOLS)
+    check("executed with %r and every input missing the script fails cleanly: non-zero, names a missing input, calls no tool" % args,
+          rc != 0 and re.search(r"ECR|GAR|RUNNER_TEMP|GITHUB_RUN_ID", out) and calls == [] and "command not found" not in out, (rc, calls, out[-200:]))
+
+# one journal_push, and PUSHED_LOG is required: no default of /dev/null, no push without the journal
+check("one journal_push function, and it is the only place that appends to PUSHED_LOG",
+      len(re.findall(r"(?m)^journal_push\(\)", _run)) == 1 and len(re.findall(r">>\s*\"?\$\{?PUSHED_LOG", _run)) == 1
+      and "PUSHED_LOG:-" not in _run and "${PUSHED_LOG:?" in _run)
+rc, out = sh('export PUSHED_LOG="$RUNNER_TEMP/p"; journal_push dst/cache:x; cat "$RUNNER_TEMP/p"', {})
+check("journal_push <ref> appends the ref as one line of PUSHED_LOG", rc == 0 and out.strip() == "dst/cache:x", (rc, out[-200:]))
+rc, out = sh('unset PUSHED_LOG; ( journal_push dst/cache:x ) && echo rc=0 || echo rc=1', {})
+check("journal_push without PUSHED_LOG fails", "rc=1" in out and "PUSHED_LOG" in out, (rc, out[-200:]))
+CRANE_LOG = 'echo "$*" >> "$RUNNER_TEMP/crane.log"; case "$1" in digest) echo sha256:%s ;; esac' % ("a" * 64)
+for why, call in (("copy_candidate", 'copy_candidate "$RUNNER_TEMP/layout" dst/cache:x sha256:%s' % ("a" * 64)), ("push_copy", "push_copy a b")):
+    rc, out = sh('unset PUSHED_LOG; ( %s ) && echo rc=0 || echo rc=1; echo crane-calls=$(cat "$RUNNER_TEMP/crane.log" 2>/dev/null | wc -l)' % call, {"crane": CRANE_LOG})
+    check("%s without PUSHED_LOG fails before any push (crane is never called)" % why,
+          "rc=1" in out and "crane-calls=0" in out.replace(" ", ""), (rc, out[-200:]))
+
+# one root variable: every path under the repository is built from the same one
+_code = "\n".join(l.split("  #")[0] for l in _run.split("\n") if not l.lstrip().startswith("#"))
+_roots = set(re.findall(r"\$\{?(GITHUB_WORKSPACE|root|here_lt)\}?/", _code))
+check("the script has one root variable, not two or three", len(_roots) == 1, sorted(_roots))
+_head = "\n".join(takewhile(lambda l: l.startswith("#") or l == "", _run.split("\n")[1:]))
+check("the header names every input the script needs, and no longer says Docker Scout is not tested here",
+      all(v in _head for v in ["MODE", "ECR", "GAR", "DH_REPO", "DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME",
+                               "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN", "RUNNER_TEMP", "GITHUB_RUN_ID"])
+      and "Scout is not tested" not in _head, _head[-300:])
 
 print("vex-live-test: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
