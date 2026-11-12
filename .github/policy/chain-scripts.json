@@ -1647,20 +1647,11 @@
         "bin/apk-tool.py",
         "bin/release-sign-apks.sh"
       ],
-      "signs": "other",
-      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (chain-verify.py kms-sign signs each apk's control section with the release KMS key named by RELEASE_KMS_KEY_REF, through the aws CLI, and posts one Rekor entry; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
-      "sha256": "29fc6f44658e2243d51b9118d6cf50c3839e892ccc4ff6d6564b04fde38e8b15",
-      "reads_env": [
-        "RELEASE_KMS_KEY_REF"
-      ],
+      "signs": false,
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh with Sign's signatures (release-signed/apks; it holds no key; comparing them with Rebuild's is bin/release-compare.sh's job) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
+      "sha256": "5f0843528895c57d13db50305f971612774a0cbdfa8ff0aecf74657a282ef25c",
+      "reads_env": [],
       "exceptions": [
-        {
-          "rule": "deny",
-          "line": "if [ -z \"${RELEASE_KMS_KEY_REF:-}\" ]; then echo \"release-apks: RELEASE_KMS_KEY_REF is unset\" >&2; exit 2; fi",
-          "line_sha256": "55301f2b6fd02ac18652a24c1c62f82e6723be5b539ec9e8be9598bd68fade4d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
         {
           "rule": "deny",
           "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-apks: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never signs)\" >&2; exit 1; }",
