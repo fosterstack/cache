@@ -53,7 +53,7 @@ CANNED = {
                     "keys": [{"scanner": "grype", "finding_id": "CVE-2099-PROPOSE",
                               "purl": "pkg:deb/debian/libpropose@1.0"}],
                     "note": "generalises from a recorded no-DSA pattern",
-                    "evidence": "debian security tracker: no-DSA (minor)"}},
+                    "evidence": "README.md"}},
     # a MALFORMED proposal (unsupported kind, no evidence) — must be dropped, never forwarded.
     ("CVE-2099-BADPROP", "primary"): {
         "refused": False, "category": "false_positive", "justification": "vulnerable_code_not_present",
