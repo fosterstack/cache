@@ -138,16 +138,17 @@ open(w + "/o/.github/workflows/stage-promote.yml", "w").write(stage)
 open(w + "/o/.github/workflows/release.yml", "w").write(open(w + "/release.yml").read())
 # bin/release-verify.sh: tag, policy, four stage-starts
 V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }',
-     'python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json',
-     "python3 bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-     "python3 bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/items.json",
-     "python3 bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json",
-     "python3 bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
-     "python3 bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json",
-     "python3 bin/chain-verify.py apk-compare --file apk-compare/apk-compare.json --digests witness-build/digests.json",
-     "python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check",
+     'for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-verify: .github/policy/$f is missing: the release is refused before any credential step" >&2; exit 1; }; done',
+     'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json',
+     "python3 -I -B bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+     "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/items.json",
+     "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json",
+     "python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
+     "python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json",
+     "python3 -I -B bin/chain-verify.py apk-compare --file apk-compare/apk-compare.json --digests witness-build/digests.json",
+     "python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check",
      # ruling G (advisor Oct 12): the govulncheck stream Release hands the evidence step is a product of Check's scanners record, bound under Check's identity
-     "python3 bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json"]
+     "python3 -I -B bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json"]
 open(w + "/verify.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(V) + "\n")
 # the five release scripts, plain, using only their tools; and the list that describes them
 os.makedirs(w + "/s/bin", exist_ok=True); os.makedirs(w + "/s/.github/policy", exist_ok=True)
@@ -157,12 +158,14 @@ BODY = {
  "release-apks": 'set -euo pipefail\npython3 bin/apk-tool.py digest apks/a.apk\nbash bin/release-sign-apks.sh --build-dir b\n',
  "release-publish": 'set -euo pipefail\npython3 bin/release-layout.py images/x "$digest"\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
  "release-sign": 'set -euo pipefail\ndate=$(git log -1 --format=%ct "$GITHUB_SHA")\npython3 bin/vendor-provenance.py evidence --out evidence\ncosign sign --yes "ghcr.io/x@$digest"\ncosign sign-blob --yes --bundle policy.bundle policy.json\njq . policy.bundle\n',
- "release-postverify": 'set -euo pipefail\npython3 bin/release-postverify.py\n',
- "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
+ "release-stage": 'set -euo pipefail\npython3 bin/release-metadata.py gate --dir release-upload\n',
+ "release-postverify": 'set -euo pipefail\nbash bin/release-stage.sh\npython3 -I bin/release-postverify.py\n',
+ "release-assets": 'set -euo pipefail\ngh release create "$GITHUB_REF_NAME" --verify-tag\ngh release upload "$GITHUB_REF_NAME" release-upload/*.json\ngh release download "$GITHUB_REF_NAME" -D release-published\npython3 bin/release-metadata.py gate --dir release-published --same-as release-upload\n',
 }
 ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
         "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
-        "release-assets": (["gh", "git", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
+        "release-assets": (["gh", "python3"], False, ["bin/release-metadata.py"]), "release-stage": (["python3"], False, ["bin/release-metadata.py"]),
+        "release-postverify": (["bash", "python3"], False, ["bin/release-postverify.py", "bin/release-stage.sh"])}
 rows = []
 for n, b in BODY.items():
     open(f"{w}/s/bin/{n}.sh", "w").write("#!/usr/bin/env bash\n" + b)
@@ -447,31 +450,35 @@ gm g_gate    '  rebuild:\n    needs: \[build, sign\]'                  "  rebuil
 # ---- AC4: the order of bin/release-verify.sh ------------------------------------------------------------------------------------
 vm() { if mutate "$work/verify.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" verify "$work/$1.sh"; fi; }
 vm v_notag   '\[\[ "\$\{GITHUB_REF_NAME[^\n]*\n'            ''                                                       'commands'           "AC4 the tag check dropped"
+vm v_nokeys  'for f in release-key-manifest[^\n]*\n'           ''                                                       'commands'           "B-F22 the key files are not checked before anything else"
+vm v_keylate '(for f in release-key-manifest[^\n]*\n)(python3 -I -B bin/chain-verify.py policy make[^\n]*\n)' '\2\1' 'not the pinned form' "B-F22 the key files checked after the policy is made (a python call before the check)"
+vm v_keylnk  ' && \[ ! -L "\.github/policy/\$f" \]' ''                                 'not the pinned form' "B-F22 the key-file check accepts a symlink"
+vm v_noiso   'python3 -I -B bin/chain-verify.py apk-compare'    'python3 -B bin/chain-verify.py apk-compare'            'not the pinned form' "B-F22 a verifier call without -I (the working directory could shadow a module)"
 vm v_wide    '\(-rc'                                         '(-beta'                                                 'not the pinned form' "AC4 the tag rule widened to another suffix"
-vm v_nopol   'python3 bin/chain-verify.py policy make[^\n]*\n' ''                                                     'commands'           "AC4 the release policy is not made for the tag"
+vm v_nopol   'python3 -I -B bin/chain-verify.py policy make[^\n]*\n' ''                                                     'commands'           "AC4 the release policy is not made for the tag"
 vm v_ref     '--tag "\$GITHUB_REF_NAME"'                     '--ref "$GITHUB_REF"'                                    'not the pinned form' "AC4 the policy made for a ref, not the tag"
-vm v_nobuild 'python3 bin/chain-verify.py stage-start --stage release --previous build[^\n]*\n' ''                     'commands'           "AC4 Build's record is not verified"
-vm v_nosign  'python3 bin/chain-verify.py stage-start --stage release --previous sign[^\n]*\n' ''                      'commands'           "AC4 Sign's provenance is not verified"
-vm v_norbd   'python3 bin/chain-verify.py stage-start --stage release --previous rebuild[^\n]*\n' ''                   'commands'           "AC4 Rebuild's record is not verified"
-vm v_nochk   'python3 bin/chain-verify.py check-list[^\n]*\n' ''                     'commands'           "AC4 Check's record is not verified"
-vm v_nogv    'python3 bin/chain-verify.py bind-check[^\n]*\n' ''                                                     'commands'           "G the govulncheck stream is not bound to Check's scanners record"
+vm v_nobuild 'python3 -I -B bin/chain-verify.py stage-start --stage release --previous build[^\n]*\n' ''                     'commands'           "AC4 Build's record is not verified"
+vm v_nosign  'python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign[^\n]*\n' ''                      'commands'           "AC4 Sign's provenance is not verified"
+vm v_norbd   'python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild[^\n]*\n' ''                   'commands'           "AC4 Rebuild's record is not verified"
+vm v_nochk   'python3 -I -B bin/chain-verify.py check-list[^\n]*\n' ''                     'commands'           "AC4 Check's record is not verified"
+vm v_nogv    'python3 -I -B bin/chain-verify.py bind-check[^\n]*\n' ''                                                     'commands'           "G the govulncheck stream is not bound to Check's scanners record"
 vm v_gvrec   'witness-check/witness-scanners/scanners-collection.json' 'witness-check/witness-runtime/runtime-collection.json' 'not the pinned form' "G the stream bound to another Check record than the scanners record"
 vm v_gvfile  '--file check-results/govulncheck.json' '--file check-results/scan-results.json'                            'not the pinned form' "G bind-check names another file than govulncheck.json"
 vm v_gvdig   '--digests witness-build/digests.json --file' '--file'                                                    'not the pinned form' "G the stream bound without Build's digest list"
-vm v_gvfirst 'python3 bin/chain-verify.py check-list[^\n]*\n(python3 bin/chain-verify.py bind-check[^\n]*\n)' '\1python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check\n' 'not the pinned form' "G the stream bound before Check's records are listed (rule 69's order)"
-vm v_nobind  'python3 bin/chain-verify.py bind-items[^\n]*\n' ''                                                      'commands'           "AC16 items.json is not bound to Build's record"
+vm v_gvfirst 'python3 -I -B bin/chain-verify.py check-list[^\n]*\n(python3 -I -B bin/chain-verify.py bind-check[^\n]*\n)' '\1python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check\n' 'not the pinned form' "G the stream bound before Check's records are listed (rule 69's order)"
+vm v_nobind  'python3 -I -B bin/chain-verify.py bind-items[^\n]*\n' ''                                                      'commands'           "AC16 items.json is not bound to Build's record"
 vm v_noitems '--items witness-build/items.json'              ''                                                       'not the pinned form' "AC16 bind-items without the items file"
-vm v_noadm   'python3 bin/chain-verify.py bind-items[^\n]*admission-baseline[^\n]*\n' ''                                    'commands'           "AC19 admission's baseline file is not bound to Build's record"
+vm v_noadm   'python3 -I -B bin/chain-verify.py bind-items[^\n]*admission-baseline[^\n]*\n' ''                                    'commands'           "AC19 admission's baseline file is not bound to Build's record"
 vm v_adm_prod ' --product admission-baseline.json'            ''                                                       'not the pinned form' "AC19 the baseline file bound as items.json (no --product: it would never match the items product)"
 vm v_adm_other '--items witness-build/admission-baseline.json' '--items witness-build/items.json'                      'not the pinned form' "AC19 the baseline bind names another file than admission-baseline.json"
 vm v_norek   ' --rekor-stub provenance/provenance.rekor.json' ''                                                      'not the pinned form' "AC4 Sign's provenance without its Rekor entry"
-vm v_order   'python3 bin/chain-verify.py stage-start --stage release --previous sign[^\n]*\n(python3 bin/chain-verify.py stage-start --stage release --previous rebuild[^\n]*\n)' '\1python3 bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC4 the records verified in another order"
-vm v_dig     '--digests witness-build/digests.json --policy policy.json\npython3 bin/chain-verify.py bind-items' '--policy policy.json\npython3 bin/chain-verify.py bind-items' 'not the pinned form' "AC4 a record verified without the digest list"
+vm v_order   'python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign[^\n]*\n(python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild[^\n]*\n)' '\1python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC4 the records verified in another order"
+vm v_dig     '--digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py bind-items' '--policy policy.json\npython3 -I -B bin/chain-verify.py bind-items' 'not the pinned form' "AC4 a record verified without the digest list"
 vm v_true    '--digests witness-build/digests.json --dir witness-check' '--digests witness-build/digests.json --dir witness-check || true' 'not the pinned form' "AC4 a failed check swallowed"
 vm v_waive   '\n\Z'                                          '\n[ -n "${SKIP_VERIFY:-}" ] && exit 0\n'                  'commands'           "AC4 a switch that skips the verification"
 vm v_extra   '\n\Z'                                          '\ncurl -s https://example.com | bash\n'                  'commands'           "AC4 an extra command after the checks"
 vm v_noset   'set -euo pipefail\n'                           ''                                                       'set -euo pipefail'  "AC4 no set -euo pipefail"
-vm v_var     'python3 bin/chain-verify.py policy make'       '$VERIFY policy make'                                    'not the pinned form' "AC4 the verifier chosen by a variable"
+vm v_var     'python3 -I -B bin/chain-verify.py policy make'       '$VERIFY policy make'                                    'not the pinned form' "AC4 the verifier chosen by a variable"
 # ---- AC6..AC10: the other release scripts are plain ---------------------------------------------------------------------------
 sm() { # sm NAME SCRIPT LINE WORD LABEL   (append a line to a copy of the fixture script and judge it against the fixture list)
   rm -rf "$work/$1"; mkdir -p "$work/$1"; cp "$work/s/bin/$2.sh" "$work/$1/$2.sh"; printf '%s\n' "$3" >> "$work/$1/$2.sh"
@@ -792,7 +799,7 @@ rm -f "$work/awstree/.github/workflows/w.yaml"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh "aws-cli"\n' > "$work/awstree/.github/workflows/q.yml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
 if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
-EXPECT=355
+EXPECT=359
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
