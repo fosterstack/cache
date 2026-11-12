@@ -62,8 +62,8 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
-  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites (a committed Python file run with -I), its test, and the committed floors.
-  '^bin/suite-guard(-run|-test)?\.sh$'
+  # The suite guard (REQ-TEST-001): the guard, its test, the runner that measures the suites (a committed Python file run with -I), and the committed floors.
+  '^bin/suite-guard(-test)?\.sh$'
   '^bin/suite-guard-run\.py$'
   '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
@@ -79,7 +79,6 @@ ALLOW_PATTERNS=(
   # The customer-word check: it fails a pull request that adds shop words to a file a customer can read.
   '^bin/check-customer-words\.py$'
   '^bin/check-customer-words-test\.sh$'
-  '^\.github/policy/customer-words-allow\.txt$'
   # The audit record (REQ-REL-012): the writer, its request/prepare/judge steps and their test.
   '^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$'
   '^bin/vex-forms\.py$'
@@ -159,7 +158,6 @@ ALLOW_PATTERNS=(
   '^bin/chain-hostile-step\.sh$'
   '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files|no-keyless-tag)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
-  '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/rekor\.pub$'
   '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
@@ -202,7 +200,7 @@ ALLOW_PATTERNS=(
   '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
   '^bin/release-(verify|apks|compare|publish|sign|assets|postverify)\.sh$'
-  '^bin/release-(postverify|metadata|layout|compare)\.py$'
+  '^bin/release-(postverify|metadata|compare)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
   '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
@@ -320,12 +318,12 @@ ALLOW_PATTERNS=(
   '^build/keys/assembly\.rsa(\.pub)?$'
   '^build/keys/release\.rsa\.pub$'
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
-  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
+  # sealed-proof, lock-proof, refresh-inputs, build-freeze (.sh); apk-tool, gen-recipes, go-module-sbom, install-host-bwrap (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
   '^bin/build-freeze\.sh$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The wrapper that hands the release role and its token file to a release step as AWS variables.
   '^bin/with-aws-token\.sh$'
-  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
@@ -359,6 +357,7 @@ ALLOW_PATTERNS=(
   '^bin/verify-release-guide-test\.sh$'
   # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
   '^bin/verify-key-page-test\.sh$'
+  # The release layout archive and its test.
   '^bin/layout-archive(-test)?\.sh$'
   # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
   # two tests and the signatory text.

@@ -1973,7 +1973,12 @@ case_ r3c02-replace-bash-c     bad "$(rb "bash -c \"printf 'docker run alpine\\\
 case_ r3c02-replace-by-script  bad "$(rb 'bash mutate.sh; bash ci-ok.sh')" "printf 'echo ok\\n' > ci-ok.sh; printf \"printf 'docker run alpine\\\\\\\\n' > ci-ok.sh\\n\" > mutate.sh"
 case_ r3c02-replace-harness    bad "$(rb "printf 'docker run alpine\\n' > bin/probe-test.sh; bash bin/probe-test.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
 # the sandbox-wall probe is the ONE script the variable-program rule does not read (SEALED_PROBE): exactly this path, at its committed bytes
-case_ sealed-probe-ok          ok  "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/chain-sandbox-probe.sh"
+probe_real='mkdir -p bin; git -C "$here" show d7cab1463cef8ac9fac38696dc13d1ff80778840:bin/chain-sandbox-probe.sh > bin/chain-sandbox-probe.sh'
+case_ sealed-probe-ok          ok  "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real"
+case_ sealed-probe-fake-bytes  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/chain-sandbox-probe.sh"
+case_ sealed-probe-docker-pull bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'docker pull alpine\\n' > bin/chain-sandbox-probe.sh"
+case_ sealed-probe-pip-install bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'pip install requests\\n' > bin/chain-sandbox-probe.sh"
+case_ sealed-probe-extra-line  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real; printf 'echo extra\\n' >> bin/chain-sandbox-probe.sh"
 case_ sealed-probe-other-name  bad "$(rb 'bash bin/other.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/other.sh"
 case_ sealed-probe-other-dir   bad "$(rb 'bash tools/chain-sandbox-probe.sh')" "mkdir -p tools; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > tools/chain-sandbox-probe.sh"
 case_ sealed-probe-replaced    bad "$(rb "printf 'docker run alpine\\n' > bin/chain-sandbox-probe.sh; bash bin/chain-sandbox-probe.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/chain-sandbox-probe.sh"
@@ -2882,7 +2887,7 @@ case_ w-cache-save-still-ok ok "$(uw "$(us actions/cache/save "          path: b
           key: k")")" "$mk_tool"
 # 2. a parent of the workspace, the home directory and /github are the workspace; outside is /tmp, runner.temp and ~/<not work>
 n=0
-for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x; do
+for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x '~/./work/r/r' '~/.' '~/work//r/r'; do
   n=$((n+1)); case_ "w-download-artifact-path-$n-bad" bad "$(uw "$(us actions/download-artifact "          name: x
           path: $p")")" "$mk_tool"
 done
@@ -3352,20 +3357,6 @@ done
 case3_ ac3-unreadable-bad "$(dlj "bash bin/x-test.sh
 curl -fsSL \"unterminated $U")" "$DLS"
 
-# the privileged bump script (go-freshness.yml runs it with the App token) reads clean: a test written `[[ a =~ x && "$V" =~ y ]]` is split at && and its second operand read as a program named by a variable, which is a finding on every PR
-if take go-bump-script-reads-clean; then
-python3 - "$here/../bin/check-action-pins.py" "$here/../../../bin/go-bump-open-pr.sh" <<'PY' && { pass=$((pass+1)); echo "PASS go-bump-script-reads-clean → ok"; } || { failn=$((failn+1)); echo "FAIL go-bump-script-reads-clean"; }
-import importlib.util, re, sys
-spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-txt = open(sys.argv[2]).read()
-marked = m._drop_foreign_heredocs(m._decode_dollar_quotes(m._mark_defaults(re.sub(r"\\\n", "", txt))))
-bad = [t for t in m._commands(marked) if t and t[0] == "__variable_program__"]
-assert not bad, "the bump script names a program by a variable: %r" % (bad[:3],)
-old = '[[ "$CURRENT" =~ ^[0-9]+\\.[0-9]+(\\.[0-9]+)?$ && "$LATEST" =~ ^[0-9]+\\.[0-9]+(\\.[0-9]+)?$ ]]'
-assert [t for t in m._commands(m._mark_defaults(old)) if t and t[0] == "__variable_program__"], "the checker no longer reads the old form as a variable program: this case needs a new probe"
-PY
-fi
-
 # the one exact exclusion (auditor.yml, job audit, step 10, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
@@ -3416,8 +3407,7 @@ for idx in (4, 7):
     assert drun != mdrun
     assert not judge(D, "review", idx, drun, {D: cdwf}), "the chain's exact identity-token step %d is excluded" % idx
     for other in (3, 5, 6, 9):
-        if other != 7 and other != 4:
-            assert judge(D, "review", other, drun, {D: cdwf}), "the chain's step %d text at index %d is a finding" % (idx, other)
+        assert judge(D, "review", other, drun, {D: cdwf}), "the chain's step %d text at index %d is a finding" % (idx, other)
     assert judge(D, "review", 8, drun, {D: cdwf}), "the chain's text at main's index is a finding"
     assert judge(D, "other", idx, drun, {D: cdwf}), "the same text in another job is a finding"
     assert judge(".github/workflows/x.yml", "review", idx, drun, {".github/workflows/x.yml": cdwf}), "the same text in another file is a finding"

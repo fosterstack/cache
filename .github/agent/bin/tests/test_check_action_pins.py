@@ -1257,6 +1257,7 @@ class MainKeepers(unittest.TestCase):
             fh.write(HEAD + "    steps:\n      - run: |\n          printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh\n")
         code, out = run([d])
         self.assertEqual(code, 1, out)
+        self.assertIn("is fenced as written only by its python heredoc", out)
 
     def test_the_generated_smoke_scripts_pass_in_the_k8s_workflow(self):
         for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-005-AC1, REQ-BUILDAPK-001-AC10
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
 # scoping of the daily CVE auditor's suppression outputs (.snyk,
 # osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
@@ -59,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 86 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 96 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -131,8 +130,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 234 allow patterns: the chain's 229 plus the five main patterns it dropped (Dockerfile, authorize-acceptance x2, scout-vex-scan, dispatch-fixer)
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 234, 6
+# 232 allow patterns: main's, plus the chain's forms that main's lines do not already match
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 232, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +179,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "e6d12baad2d469c5b555c5814c4fdfbe8c49bc14feb09348fe853c0c3ccc05a0"
+PINNED_SHA256 = "3b3d44414e86a0a22d9e80ab476b7c03d13b51c142e84cf3f023e248b3390c75"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -837,12 +836,12 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss ref
 passfam "feature/x" "REQ-CHAIN-008: the key page checker" "bin/verify-key-page-test.sh"
 runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused" "bin/verify-key-page-test.sh.bak" "bin/verify-key-page-test.shx" "bin/Verify-Key-Page-Test.sh" "bin/VERIFY-KEY-PAGE-TEST.SH" "bin/sub/verify-key-page-test.sh" "./bin/verify-key-page-test.sh" "bin/verify-key-page-test.py" "bin/verify-key-page.sh" "verify-key-page-test.sh" "bin/../verify-key-page-test.sh" "bin/verify-key-page-test.sh "
 
-# round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
+# every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
 # the chain's path families (landing on main): one accepted path each; passfam adds the near-misses
-passfam "feature/x" "chain: verifier, helpers, hostile step, signer table and the three trust files" "bin/chain-verify.py" "bin/chain_common.py" "bin/chain_hostile.py" "bin/chain-hostile-step.sh" "bin/chain-verify-test.sh" "bin/chain-no-keyless-tag-test.sh" "bin/chain-test-signers.json" ".github/policy/rekor.pub" "test-evidence/witness-real/apk-collection.real.txt" "results/.gitkeep"
+passfam "feature/x" "chain: verifier, helpers, hostile step, signer table and the three trust files" "bin/chain-verify.py" "bin/chain_common.py" "bin/chain_hostile.py" "bin/chain-hostile-step.sh" "bin/chain-verify-test.sh" "bin/chain-no-keyless-tag-test.sh" "bin/chain-test-signers.json" ".github/policy/rekor.pub" ".github/policy/fulcio-chain.pem" "test-evidence/witness-real/apk-collection.real.txt" "results/.gitkeep"
 passfam "feature/x" "build-stage: the stage scripts, the admission and archive helpers, the suites" "bin/build-stage-apk.sh" "bin/build-stage-snapshot-rebuild-assemble.sh" "bin/build-stage-refuse-mode.sh" "bin/build-admit.py" "bin/build-version-check.py" "bin/chain_items.py" "bin/chain-bind-test.sh" "bin/chain-known-red.py" "test-evidence/known-red.json"
 passfam "feature/x" "vm: the two package lists, their locks, the kernel lock and key" "build/vm-host.yaml" "build/vm-guest.yaml" "build/locks/vm-host.lock" "build/locks/vm-guest.lock" "build/locks/vm-kernel.lock" "build/vm-keys/kernel-key-6165ee59.rsa.pub"
 passfam "feature/x" "baselayout: recipe, template, member list, copied files and scripts" "build/melange-baselayout.yaml" "build/melange-baselayout.yaml.tmpl" "build/baselayout/members.txt" "build/baselayout/etc/nsswitch.conf" "build/baselayout/etc/passwd" "bin/baselayout-test.sh" "bin/build-baselayout-apk.sh" "bin/build-baselayout-apk-test.sh"
@@ -851,9 +850,10 @@ passfam "feature/x" "check: stage scripts, phases, helpers and the customer-word
 passfam "feature/x" "release: the Witness-step scripts and the Release suites" "bin/release-verify.sh" "bin/release-postverify.py" "bin/chain-install-crane-test.sh" "bin/chain-release-shape.py"
 # main's .github/policy/*.txt line already admitted the word list, so no near-miss can be refused there
 runeach pass "feature/x" "check: the customer-word allow list" ".github/policy/customer-words-allow.txt"
-# main's own entries the chain dropped stay accepted (B1), each with its near-misses refused
-passfam "feature/x" "main keepers: goreleaser, image Dockerfiles, acceptance authorizer, scout scan, dispatch-fixer, suite-guard-run" ".goreleaser.yaml" "build/docker/Dockerfile.base" "bin/authorize-acceptance-check.py" "bin/authorize-acceptance-check-test.sh" "bin/scout-vex-scan.sh" "bin/dispatch-fixer.sh" "bin/suite-guard-run.sh"
-# no new directory-wide wildcard: siblings of the chain's names stay refused
+# main's own entries the chain dropped stay accepted, each with its near-misses refused
+passfam "feature/x" "main keepers: goreleaser, image Dockerfiles, acceptance authorizer, scout scan, dispatch-fixer" ".goreleaser.yaml" "build/docker/Dockerfile.base" "bin/authorize-acceptance-check.py" "bin/authorize-acceptance-check-test.sh" "bin/scout-vex-scan.sh" "bin/dispatch-fixer.sh"
+runeach fail "feature/x" "suite-guard: only bin/suite-guard.sh and its test are admitted" "bin/suite-guard-run.sh"
+# siblings of the chain's names stay refused
 runeach fail "feature/x" "chain: unlisted siblings refused" "bin/chain-other.py" "bin/chain-verify.sh" "bin/build-stage-other.sh" "build/vm-other.yaml" "build/locks/vm-other.lock" "build/baselayout/etc/shadow" "bin/evidence-letter-other.sh" "bin/check-other.sh" "bin/release-other.sh" "build/keys/retired/2027-11-01/x.pub" "results/other.json" "build/docker/Dockerfile.Base" "build/docker/Dockerfile.base.bak"
 
 # pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only

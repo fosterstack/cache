@@ -44,12 +44,12 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Script-text inputs: an input an action executes as a command (github-script `script`,
              golangci-lint-action `args`, goreleaser-action `args`) is script text, the same class as
              a `run:` block — outside this check, covered by the review pass (see ACTIONS).
-  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (PyYAML for this checker)
+  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (skopeo from the runner's signed Ubuntu archive, PyYAML for this checker)
              are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly two digests while the passed-audit record judge (cache#669) is bootstrapped; a later change leaves one)
+             frozen set of exactly two digests: main's gate and the chain's merge-queue gate (cache#542); the landing leaves one)
              (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
              until this file is updated — a change under .github/agent/, so it needs the independent
              second review: the enforcement cannot be removed from its caller by an ordinary merge either.
@@ -167,6 +167,7 @@ Outside this check, each a documented exclusion with its reason (row 78):
     --iidfile; the build itself (FROM lines, context, Dockerfile) is still fully checked;
   - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
     as fixture data; it is not read recursively (it is committed and reviewed like any diff);
+  - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md, written by the step's own python heredoc;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -2226,8 +2227,9 @@ TEST_HARNESS = re.compile(r"^(\.github/agent/tests/[^/]+\.sh|bin/[^/]+-test\.sh)
 # sha256 (chain-scripts.json, NS_SHA) and every change to it gets both reviewers; the chain judge refuses on this
 # listed script a deny word not in its tools, a deny name by path and an interpreter handed an unlisted path. ONE
 # exact path: no pattern, no directory match, so the same text under another name, or in another directory, is read as
-# every script is.
-SEALED_PROBE = frozenset({"bin/chain-sandbox-probe.sh"})
+# every script is. The exemption holds only for the bytes that were reviewed: the sha256 of the file at the chain commit
+# d7cab146 (main has none of the chain's other controls, so any other text at this path is read like every script).
+SEALED_PROBE = {"bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30"}
 
 
 HEREDOC = re.compile(r"(?<!<)<<(-?)(?!<)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
@@ -2306,12 +2308,9 @@ def _drop_foreign_heredocs(text):
     return "\n".join(out)
 
 
-# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): the two of main's stage-acceptance-k8s.yml, kept
-# until the chain lands. The two generated scripts of the
-# Kubernetes harness (/tmp/pf-forward, /tmp/smoke-assert; advisor 0084 (4)) were excluded while the harness was a workflow step; it is now Check's
-# listed scripts (bin/acceptance-k8s.sh runs them, bin/acceptance-k8s-smoke.py writes them), which are judged by the chain judges, and the fence
-# facts are proven there by .github/agent/tests/k8s-harness-fence-test.sh. Any other eval of a variable, anywhere, is refused by the
-# variable-program rule; the branch below stays and is proven with an injected entry in that test.
+# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): the two scripts
+# (/tmp/pf-forward.sh, /tmp/smoke-assert.sh) that main's stage-acceptance-k8s.yml writes itself. Any other eval of a
+# variable, anywhere, is refused by the variable-program rule.
 GENERATED_OK = {
     # main's keepers: main's stage-acceptance-k8s.yml still writes these two scripts itself (the chain moved that step into Check's scripts)
     (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
@@ -2357,7 +2356,7 @@ def _resolve_script(path, text, entries, bases=()):
     d, base = m.group(1), m.group(2)
     dn = "$RUNNER_TEMP" if d.startswith("$") else d
     for wm_ in re.finditer(r"tar -x -C '([^']*)'", text):    # a writer step (or an extraction) into the copy's directory or a parent of it
-        w_ = "$RUNNER_TEMP" + wm_.group(1)[len("$RUNNER_TEMP"):] if wm_.group(1).startswith("$RUNNER_TEMP") else wm_.group(1)
+        w_ = wm_.group(1)
         if w_ == "." or dn == w_ or dn.startswith(w_.rstrip("/") + "/"):
             return None
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
@@ -2543,7 +2542,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("runs %s from a working directory this check cannot place; refused" % path)
             continue
         READ_SCRIPTS.append((rel, tree.read(rel)))       # bound to its committed bytes after inlining (check_runs)
-        if TEST_HARNESS.search(rel) or rel in SEALED_PROBE:
+        sealed = SEALED_PROBE.get(rel) == hashlib.sha256(tree.read(rel).encode()).hexdigest()
+        if TEST_HARNESS.search(rel) or sealed:
             continue                                     # a test harness (its probes are fixture data) or the sealed probe: documented exclusions
         if depth >= 4:
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
@@ -2811,7 +2811,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         runs = [n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel for t in _commands(ln))]
         via_other = any(any(t[0] in ("__script__", "__exec__") and (norm(t[1]) == rel or _base(t[1]) == _base(rel)) for t in _commands(ln))
                         for src in others for ln in src.split("\n"))
-        k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job           
+        k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job
         before = "\n".join(lines[:k + 1])               # the run's own line too (printf … > x; bash x)
         if any(_writes(t, rel, src) for src in [before] + others for t in _all_texts(src)):   # each in its own context
             bad.append(f"{scripts[0][0] if scripts else where_job}: {rel} is changed by the job before it runs; the "
@@ -2964,14 +2964,21 @@ def _writer_dir(value):
         return "$RUNNER_TEMP" + (os.path.normpath(rest) if rest.strip("/") else "")
     if "${{" in v or "$" in v or "'" in v or '"' in v or ".." in v:
         return "."
+    v = os.path.normpath(v)                              # before classifying: ~/./work is ~/work
     if v == "/tmp" or v.startswith("/tmp/") or re.match(r"~/(?!work(/|$))[^/]", v):
-        return os.path.normpath(v)                       # outside the workspace: still a directory a /tmp copy of a script can live in
+        return v                                         # outside the workspace: still a directory a /tmp copy of a script can live in
     if v.startswith(("/", "~")):
         return "."                                       # the workspace, a parent of it, or somewhere this check cannot place
-    return os.path.normpath(v)
+    return v
 
 
-def _uses_writes(uses, with_node, key_of):
+def _is_base_sha_fence(ref, path, has_repository, lfs_on):
+    """True for the base-sha fence: this repository's checkout at the base sha into one plain directory, no LFS."""
+    return (ref is not None and ref.strip() in BASE_SHA_REFS and not has_repository and not lfs_on
+            and re.fullmatch(r"[\w][\w-]*", path.strip()) is not None)
+
+
+def _uses_writes(uses, with_node):
     """rc-5b B2 (handoff 0663): the directories a `uses:` step fills, from a CLOSED list of writers; [] for any other action.
     actions/checkout with `repository`, `path`, a `ref` or `lfs` other than false (the plain default checkout and the base-sha fence
     form are not writers), actions/download-artifact, actions/cache and actions/cache/restore (save and the upload actions write
@@ -2990,8 +2997,7 @@ def _uses_writes(uses, with_node, key_of):
     if name == "actions/checkout":
         ref, pth, lfs = val("ref"), val("path"), val("lfs")
         lfs_on = lfs is not None and lfs.strip().strip("\"'").lower() != "false"
-        if "repository" not in wm and not lfs_on and ref is not None and ref.strip() in BASE_SHA_REFS and \
-                re.fullmatch(r"[\w][\w-]*", (pth or ".").strip()):
+        if _is_base_sha_fence(ref, pth or ".", "repository" in wm, lfs_on):
             return []                                    # the base-sha fence: main's copy, handled as a base directory
         if "repository" in wm or ref is not None or pth is not None or lfs_on:
             return [_writer_dir(pth if pth is not None else ".")]
@@ -3027,7 +3033,7 @@ def run_scripts(doc):
                                                               ifn.value if isinstance(ifn, yaml.ScalarNode) else "", tuple(base_dirs)))
                     uses, w = m.get("uses"), m.get("with")
                     if isinstance(uses, yaml.ScalarNode):
-                        wdirs = _uses_writes(uses.value, w, key_of)
+                        wdirs = _uses_writes(uses.value, w)
                         if wdirs:                        # rc-5b B2: a step that puts bytes into the tree is a writer, in step order
                             groups.setdefault(group, []).append((f"{base}[{i}].uses", "\n".join(f"tar -x -C '{d_}'" for d_ in wdirs),
                                                                   None, None, "if" in m, "", tuple(base_dirs)))
@@ -3041,9 +3047,8 @@ def run_scripts(doc):
                         dup = len({key_of(k_) for k_, _ in w.value}) != len(w.value) if isinstance(w, yaml.MappingNode) else False
                         lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
                         lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
-                        if (isinstance(ref, yaml.ScalarNode)
-                                and ref.value.strip() in BASE_SHA_REFS and "repository" not in wm
-                                and not lfs_on and not dup and re.fullmatch(r"[\w][\w-]*", pdir)):
+                        if (isinstance(ref, yaml.ScalarNode) and not dup
+                                and _is_base_sha_fence(ref.value, pdir, "repository" in wm, lfs_on)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
                         else:
@@ -3290,7 +3295,8 @@ def main():
     bad, pins, files = [], [], []
     for rel, kind in sorted(tree.entries.items()):
         if rel.startswith(".github/") and not _utf8(rel):
-            # rc-5b R10c: a name this check cannot read as text must not be skipped or merged with another; fail closed
+            # rc-5b R10c: a name this check cannot read as text must not be skipped or merged with another; fail closed.
+            # surrogateescape keeps each undecodable byte distinct; backslashreplace only makes the message printable.
             bad.append(f"{rel.encode('utf-8', 'surrogateescape').decode('ascii', 'backslashreplace')}: a name under .github/ that is not "
                        f"valid UTF-8; refused (the file would otherwise go unread)")
             continue

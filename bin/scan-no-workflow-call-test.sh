@@ -245,9 +245,9 @@ expect caught "scan.yml: empty on:" "$(mutate a8 .github/workflows/scan.yml $'on
 expect caught "scan.yml: an anchor elsewhere in the file" "$(mutate a9 .github/workflows/scan.yml $'on:\n  pull_request:\nenv: &e\n  A: b\njobs:\n  s:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: echo')"
 expect ok "scan.yml: pull_request with a branch filter and push with tags stays allowed" "$(mutate a10 .github/workflows/scan.yml $'on:\n  pull_request:\n  push:\n    branches: [main]\n    tags: [\'v*\']\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
 
-# the merge queue runs scan.yml (merge_group); the rescan stays scheduled-only
+# the merge queue runs scan.yml (merge_group); the rescan allows only schedule and workflow_dispatch
 expect ok "scan.yml: merge_group beside pull_request and push is allowed" "$(mutate q1 .github/workflows/scan.yml $'on:\n  pull_request:\n  merge_group:\n  push:\n    branches: [main]\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
-expect caught "main-candidate-rescan.yml: merge_group is not one of its triggers" "$(mutate q2 .github/workflows/main-candidate-rescan.yml $'on:\n  schedule:\n    - cron: "41 7 * * *"\n  merge_group:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "main-candidate-rescan.yml: merge_group is not one of its triggers" "$(mutate q2 .github/workflows/main-candidate-rescan.yml $'on:\n  schedule:\n    - cron: "41 7 * * *"\n  merge_group:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')" "merge_group"
 expect caught "scan.yml: workflow_call is still refused beside merge_group" "$(mutate q3 .github/workflows/scan.yml $'on:\n  pull_request:\n  merge_group:\n  workflow_call:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')" "workflow_call"
 
 # 2d. YAML forms that could hide a declaration from a reader (fail closed, each refusal names its reason)
