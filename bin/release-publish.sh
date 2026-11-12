@@ -27,7 +27,7 @@ for pair in "production:$prod" "fips:$fips"; do
   if [ "$own" != "${pair#*:}" ]; then echo "release-publish: images/${pair%%:*} is $own, Build attested ${pair#*:}: refusing to publish it" >&2; exit 1; fi
   # The sidecar is a name, not a proof: the layout's own bytes are the attested image (round 1 B4). index.json holds exactly one descriptor, the attested
   # digest; every blob hashes to its name; the index blob and every manifest, config and layer it reaches are present. Checked before any login or push.
-  python3 bin/release-layout.py "images/$v" "${pair#*:}"
+  python3 -I -B bin/release-layout.py "images/$v" "${pair#*:}"
 done
 
 digest_of() {
@@ -79,12 +79,8 @@ verify_end_state() {
   done
   return $bad
 }
-final=0
-if [[ "$ver" != *-* ]]; then
-  final=1
-  highest_now > /dev/null || exit 1       # an unreadable tag list stops the release before any push, as before
-  plan+=("production:${ver%.*}")
-fi
+highest_now > /dev/null || exit 1       # an unreadable tag list stops the release before any push, as before
+plan+=("production:${ver%.*}")
 
 for host in ghcr.io docker.io; do
   for entry in "${plan[@]:0:2}"; do
@@ -103,17 +99,15 @@ for host in ghcr.io docker.io; do
     got=$(digest_of "$ref")
     if [ "$got" != "$want" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $want" >&2; exit 1; fi
   done
-  if [ "$final" = 1 ]; then
-    # decided again now, not from the reading made before the exact tags were pushed
-    if ! highest=$(highest_now); then exit 1; fi
-    if [ "$highest" = "$ver" ]; then
-      for fl in "${ver%%.*}" latest; do
-        ref="$host/$repo:$fl"
-        crane push "images/production" "$ref"
-        got=$(digest_of "$ref")
-        if [ "$got" != "$prod" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $prod" >&2; exit 1; fi
-      done
-    fi
+  # decided again now, not from the reading made before the exact tags were pushed
+  if ! highest=$(highest_now); then exit 1; fi
+  if [ "$highest" = "$ver" ]; then
+    for fl in "${ver%%.*}" latest; do
+      ref="$host/$repo:$fl"
+      crane push "images/production" "$ref"
+      got=$(digest_of "$ref")
+      if [ "$got" != "$prod" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $prod" >&2; exit 1; fi
+    done
   fi
 done
-if [ "$final" = 1 ]; then verify_end_state || exit 1; fi
+verify_end_state || exit 1
