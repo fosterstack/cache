@@ -33,7 +33,7 @@ name: Agent review gate
 #   The sweep holds the App token while reading PR data — still as git objects only, never
 #   executed; it runs only the default branch's gate script.
 #
-# THE MERGE QUEUE (REQ-DEP-005-AC3, cache#542). The required check `auditor-review-gate` must also be posted on the
+# THE MERGE QUEUE (REQ-DEP-005-AC3). The required check `auditor-review-gate` must also be posted on the
 # merge queue's head, by the App. The queue judge is a `workflow_run` job, not a `merge_group` job, because a
 # merge_group run has a GITHUB_REF that is never the default branch, so it cannot reach the `agent` environment that
 # holds the App credentials. `workflow_run` runs the default branch's copy of this file, so the group never edits it.
