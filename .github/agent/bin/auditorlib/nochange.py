@@ -8,6 +8,7 @@ different-hash file therefore changes nothing: the run behaves as it always did 
 disposition; the deterministic checks after a verdict (evidence verification, reachability, expiry, carried statements)
 run on a reused verdict exactly as on a fresh one.
 """
+import functools
 import hashlib
 import json
 import os
@@ -151,7 +152,8 @@ def _read(path):
             raw = fh.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             return None
-        return json.loads(raw.decode("utf-8"), parse_constant=parsers.refuse_constant)
+        refuse = functools.partial(parsers.refuse_constant, "the state file")
+        return json.loads(raw.decode("utf-8"), parse_constant=refuse)
     except (OSError, ValueError):
         return None
 
