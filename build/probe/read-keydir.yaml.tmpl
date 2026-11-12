@@ -13,4 +13,4 @@ environment:
       - @BUSYBOX@
 pipeline:
   - runs: |
-      if cat @KEYDIR@/dummy > /dev/null; then exit 1; fi
+      if cat "@KEYDIR@/dummy" > /dev/null; then exit 1; fi
