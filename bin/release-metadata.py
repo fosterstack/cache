@@ -14,9 +14,18 @@
         file of this version, in this order
   release-metadata.py gate     --dir DIR [--same-as STAGED_DIR]
         every file of the release assets directory is covered; see GATE below
+  release-metadata.py baseline --admission F --tag TAG --commit SHA
+        prints the requirements baseline version of Build's admission-baseline.json for this tag and commit
+  release-metadata.py bind-archives --version V --digests D --dist DIR
+        DIR holds exactly the four Linux archives Build recorded, each with its digest; writes nothing
+  release-metadata.py checksums --version V --digests D --dist DIR --out F
+        checksums.txt: `<sha256>  <name>` for the four archives, after the checks of bind-archives
 
 Every refusal exits 1 and names the file or the key; an output file is written only after every check passed. Offline."""
 import argparse, hashlib, json, os, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import chain_common  # noqa: E402  (the one strict JSON reader)
 
 REPO_GHCR, REPO_HUB = "ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache"
 VARIANTS = ("production", "fips")
@@ -31,16 +40,10 @@ def refuse(msg):
 
 
 def strict_json(path):
-    def hook(pairs):
-        d = {}
-        for k, v in pairs:
-            if k in d:
-                refuse("%s: duplicate key %r" % (path, k))
-            d[k] = v
-        return d
+    """The JSON file at path; a repeated key, a constant such as NaN or an unreadable file is a refusal."""
     try:
         with open(path, "rb") as f:
-            return json.loads(f.read().decode("utf-8"), object_pairs_hook=hook)
+            return chain_common.strict_json(f.read())
     except (OSError, ValueError) as e:
         refuse("%s: unreadable or not JSON (%s)" % (path, e))
 
@@ -189,11 +192,7 @@ def cmd_baseline(a):
         refuse("%s is a symlink" % p)
     if not os.path.isfile(p):
         refuse("%s is missing: Build's verified admission-baseline.json is required" % p)
-    try:
-        with open(p, "rb") as f:
-            d = json.loads(f.read().decode("utf-8"))
-    except (OSError, ValueError):
-        refuse("%s is not JSON" % p)
+    d = strict_json(p)
     keys = ("baseline", "baseline_version", "sha", "tag")
     if not isinstance(d, dict) or sorted(d) != list(keys) or not all(isinstance(d[k], str) for k in keys):
         refuse("%s must be exactly the object {%s}, strings" % (p, ", ".join(keys)))
@@ -205,8 +204,7 @@ def cmd_baseline(a):
     if not FINAL.fullmatch(v) or d["baseline"] != "requirements/releases/%s.yaml" % v:
         refuse("baseline %r at %r is not a vX.Y.Z baseline at requirements/releases/<version>.yaml" % (v, d["baseline"]))
     num = lambda s: tuple(int(x) for x in s[1:].split("."))
-    tm = re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", a.tag or "")
-    if not tm or num(v) > num(a.tag):
+    if not FINAL.fullmatch(a.tag or "") or num(v) > num(a.tag):
         refuse("baseline %s is not a version at or before the tag %s" % (v, a.tag))
     print(v)
 
@@ -394,11 +392,7 @@ def cmd_gate(a):
 def bound_archives(a):
     """The check of bind-archives, returning {archive name: sha256 hex} of what it hashed: a caller that needs the hashes uses these, never a second read."""
     ver = a.version
-    try:
-        with open(a.digests) as f:
-            digests = json.load(f)
-    except (OSError, ValueError):
-        refuse("%s is not readable JSON" % a.digests)
+    digests = strict_json(a.digests)
     want = {}
     for arch in ("amd64", "arm64"):
         want["archive-linux-" + arch] = "fscache_%s_linux_%s.tar.gz" % (ver, arch)
@@ -436,35 +430,6 @@ def cmd_checksums(a):
     write_atomic(a.out, "".join("%s  %s\n" % (bound[n], n) for n in sorted(bound, key=lambda n: n.encode())))
 
 
-RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's tagger identity (release.yml): the one tagger of a generated patch tag
-PATCH_HEAD = re.compile(r"^## (v[0-9]+\.[0-9]+\.[0-9]+) \u2014 patch release$")
-
-
-def cmd_tag_notes(a):
-    """TAG-NOTES (REQ-REL-009-AC8; round 1 F5): --object is a file holding the release tag's object text; stdout is the notes a generated patch tag carries, else exit 1
-    with nothing on stdout (the release then keeps the fixed evidence text). Only the release workflow's own patch tag counts: its tagger, an x509
-    signature as the message's one and last signature block, and a first line `## <this tag> \u2014 patch release`. The notes were already cleaned of vendor
-    and model names when decide made the tag (the decide step applies the same rule when it reads the tag), and the signature block is dropped."""
-    try:
-        with open(a.object) as f:
-            raw = f.read()
-    except OSError:
-        sys.exit(1)
-    head, _, body = raw.partition("\n\n")
-    tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
-    tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
-    if body.count("-----BEGIN ") == 1:
-        body, _, sig = body.partition("-----BEGIN ")
-    else:
-        sig = ""
-    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
-        sys.exit(1)
-    m = PATCH_HEAD.match(body.split("\n", 1)[0])
-    if not m or m.group(1) != tag or m.group(1) != a.tag:
-        sys.exit(1)
-    sys.stdout.write(body.strip() + "\n")
-
-
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -476,11 +441,10 @@ def main(argv):
     b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
-    n = sub.add_parser("tag-notes"); n.add_argument("--tag", required=True); n.add_argument("--object", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
     c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums, "tag-notes": cmd_tag_notes}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums}[a.cmd](a)
 
 
 if __name__ == "__main__":
