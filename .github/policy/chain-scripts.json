@@ -2496,7 +2496,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "ab8a3922eb4326fb3c9aa03fdb668fe16633eee1d8e46f1215c52440f44e3929",
+      "sha256": "f8da6145fd56dca66af76de840bd46a4615034606459833ad9d6f445906c2e5d",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2557,7 +2557,7 @@
       "runs": [],
       "signs": false,
       "reason": "the OCI layout digest tool assemble-image.sh runs",
-      "sha256": "af7d0d83b780510abb292370b5fc51f4b83f178553b211412e5ba13d35bfbf62",
+      "sha256": "0a3644399e4c46d0104cde5d231747dfbf38778fda9ff76552aeeb6ea0514273",
       "exceptions": [
         {
           "rule": "script-name",

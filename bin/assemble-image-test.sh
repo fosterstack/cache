@@ -2392,30 +2392,6 @@ melrepo_case("nothing there: the x86_64 apk is asked for first", d, NOAPK % (d, 
 d = repo_with("apks-only", ARCHS, [])
 melrepo_case("the x86_64 index is asked for before the aarch64 apk", d, NOIDX % (d, "x86_64"))
 
-# ---- check-workdir
-EXISTS = "%s/%s already exists (%s)); refusing to replace it: remove it by hand if no other assembly is running"
-CRASHED = "a symlink, left by another run or a crashed one"
-case("check-workdir: nothing there", ["check-workdir", mkdir("wd", "clean")])
-case("check-workdir: a work directory that is not there", ["check-workdir", T + "/wd/none"])
-for name in ("archive", "melange-repo", "keyring"):
-    d = mkdir("wd", "dir-" + name)
-    mkdir("wd", "dir-" + name, name)
-    refuse("check-workdir: %s is a directory" % name, ["check-workdir", d], EXISTS % (d, name, "not a symlink"))
-    d = mkdir("wd", "file-" + name)
-    put(d + "/" + name)
-    refuse("check-workdir: %s is a file" % name, ["check-workdir", d], EXISTS % (d, name, "not a symlink"))
-    d = mkdir("wd", "link-" + name)
-    os.symlink(T + "/wd/clean", d + "/" + name)
-    refuse("check-workdir: %s is a link" % name, ["check-workdir", d], EXISTS % (d, name, CRASHED))
-    d = mkdir("wd", "dangling-" + name)
-    os.symlink(T + "/wd/none", d + "/" + name)
-    refuse("check-workdir: %s is a link to nothing" % name, ["check-workdir", d], EXISTS % (d, name, CRASHED))
-d = mkdir("wd", "two")
-put(d + "/keyring")
-mkdir("wd", "two", "melange-repo")
-refuse("check-workdir: archive, melange-repo, keyring: the first one there is named", ["check-workdir", d],
-       EXISTS % (d, "melange-repo", "not a symlink"))
-
 # ---- prepare-render
 tmp = mkdir("p", "tmp")
 NOT_EMPTY = ("--render-dir %s is not empty or cannot be listed; refusing "

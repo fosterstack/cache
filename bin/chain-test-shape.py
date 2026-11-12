@@ -917,7 +917,7 @@ NS_SHA = {
     "bin/install-host-bwrap.py": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
-    "bin/oci-digest.py": "af7d0d83b780510abb292370b5fc51f4b83f178553b211412e5ba13d35bfbf62",
+    "bin/oci-digest.py": "0a3644399e4c46d0104cde5d231747dfbf38778fda9ff76552aeeb6ea0514273",
     "bin/rebuild-records-digests.sh": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49",
     "bin/vex-index.py": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d",
 }
@@ -1026,9 +1026,6 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" fscache-baselayout "$apkver"',
         'workdir=$WORKDIR',
         'lock=$workdir/.assemble.lock',
-        '[ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" '
-        '"wait for it or remove the lock if no run is active" >&2; exit 2; }',
-        '"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"',
         'tmp=$(mktemp -d)',
         'made=()',
         'trap \'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true\' EXIT',

@@ -26,7 +26,6 @@ The decisions of the image assembler (so that its script is straight-line text).
   oci-digest.py check-keydir DIR          DIR holds the two key files
   oci-digest.py check-melrepo DIR PKG APKVER      our apk and an APKINDEX.tar.gz for both architectures are in the
     melange repository
-  oci-digest.py check-workdir DIR         none of the three links of the run exists yet in DIR
   oci-digest.py prepare-render RENDER TMP   prints the render directory: RENDER (made, or empty and not a link) or
     TMP/render
   oci-digest.py check-out OUT VARIANT     OUT is a directory that can be listed and holds none of the variant's own
@@ -717,7 +716,6 @@ VARIANTS = {"production": {"pkg": "fscache", "config": "build/apko.yaml",
 ROOT_NAMES = ("--archive", "--melange-repo", "--keyring-dir", "--out", "--render-dir")
 ARCH_NAMES = ("x86_64", "aarch64")
 KEY_FILES = ("wolfi-signing.rsa.pub", "assembly.rsa.pub")
-LINK_NAMES = ("archive", "melange-repo", "keyring")
 
 
 class Refused(Exception):
@@ -796,15 +794,6 @@ def check_melrepo(melrepo, pkg, apkver):
             raise Refused("the melange repository %s has no %s/%s-%s-r0.apk (our apk)" % (melrepo, arch, pkg, apkver))
         if not os.path.isfile("%s/%s/APKINDEX.tar.gz" % (melrepo, arch)):
             raise Refused("the melange repository %s has no %s/APKINDEX.tar.gz" % (melrepo, arch))
-
-
-def check_workdir(workdir):
-    for name in LINK_NAMES:
-        path = "%s/%s" % (workdir, name)
-        if os.path.lexists(path):
-            what = "a symlink, left by another run or a crashed one" if os.path.islink(path) else "not a symlink"
-            raise Refused("%s already exists (%s)); refusing to replace it: remove it by hand if no other assembly is "
-                "running" % (path, what))
 
 
 def prepare_render(render, tmp):
@@ -909,7 +898,6 @@ DECISIONS = {
     "check-inputs": (check_inputs, 6, 6),
     "check-keydir": (check_keydir, 1, 1),
     "check-melrepo": (check_melrepo, 3, 3),
-    "check-workdir": (check_workdir, 1, 1),
     "prepare-render": (prepare_render, 2, 2),
     "check-out": (check_out, 2, 2),
     "apko-verdict": (apko_verdict, 3, 3),

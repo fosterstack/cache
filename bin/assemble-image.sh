@@ -116,9 +116,6 @@ idxrec=build/locks/archive-index.sha256
 "$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" fscache-baselayout "$apkver"
 workdir=$WORKDIR
 lock=$workdir/.assemble.lock
-[ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" \
-  "wait for it or remove the lock if no run is active" >&2; exit 2; }
-"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"
 
 # ---- 2. render ----
 tmp=$(mktemp -d)
@@ -142,7 +139,7 @@ view=$rdir/archive-view
 # the cleanup now also removes the lock and the links this run made (and only those: made grows as each link is made)
 trap '{ "$SUDO" rm -f "${made[@]}"; "$SUDO" rmdir "$lock";
   rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true' EXIT
-# no -f: a link that is already there (another run won the race after the pre-checks) is an error
+# no -f: a link that is already there (another run's, or a leftover) is an error
 "$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link $workdir/archive" \
   "(it exists: another assembly?); stopping" >&2; exit 2; }
 made+=("$workdir/archive")
