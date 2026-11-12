@@ -4832,7 +4832,7 @@ good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','fin
 bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,package=3), dict(good,keys='x'),
      dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'p','extra':'y'}]), dict(good,keys=[{'scanner':'grype','finding_id':1,'purl':'p'}]),
      dict(good,note='proposed by Claude'), dict(good,note='per the gpt-5 analysis'), dict(good,note='gpt - 5'), dict(good,note='private - model'), dict(good,package='gpt - 5'),
-     dict(good,evidence='/etc/hostname'), dict(good,evidence='../README.md'), dict(good,evidence='README.md\\x00'), dict(good,evidence='no-such-file.md'), dict(good,evidence='docs'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
+     dict(good,evidence='/README.md'), dict(good,evidence='../README.md'), dict(good,evidence='README.md\\x00'), dict(good,evidence='no-such-file.md'), dict(good,evidence='docs'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
      dict(good,note='x'*2001), None, 'x', [], {},
      {'kind':'knowledge'}, {'evidence':'e'}, {'kind':'knowledge','evidence':'e'}, dict(good,keys=[]), {k:v for k,v in good.items() if k!='keys'},
      dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,evidence='Anthropic says no'), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
