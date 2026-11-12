@@ -25,15 +25,41 @@ jobs:
     permissions:
       contents: read
     steps:
+      # two commits are enough: on a pull request HEAD is the merge commit, on a push the commit itself, and HEAD^1 is the base side of either
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
           check-latest: true
+      # REQ-CI-001-AC4: only the packages of the changed files; every package when go.mod, go.sum or vendor/ changed (or there is no parent).
+      # The whole-tree race, fips and coverage runs are full-suite.yml's.
+      - name: the packages the change touches
+        id: pkgs
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet HEAD^1 >/dev/null; then
+            echo "list=./..." >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          if grep -qE '^(go\.mod|go\.sum|vendor/)' <<< "${changed}"; then
+            echo "list=./..." >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          dirs=$(grep -v '^vendor/' <<< "${changed}" | grep -v '/testdata/' | xargs -r -d '\n' -n1 dirname | sort -u | while read -r d; do
+            compgen -G "${d}/*.go" >/dev/null && echo "./${d}"
+          done || true)
+          echo "list=$(echo ${dirs})" >> "$GITHUB_OUTPUT"
       - name: go vet
-        run: go vet ./...
-      - name: go test (race)
-        run: go test -race -shuffle=on ./...
+        if: ${{ steps.pkgs.outputs.list != '' }}
+        env:
+          PKGS: ${{ steps.pkgs.outputs.list }}
+        run: go vet ${PKGS}
+      - name: go test
+        if: ${{ steps.pkgs.outputs.list != '' }}
+        env:
+          PKGS: ${{ steps.pkgs.outputs.list }}
+        run: go test -shuffle=on ${PKGS}
       - name: static build (CGO_ENABLED=0)
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/fscache
 
@@ -60,76 +86,6 @@ jobs:
       - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)
         run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json
 
-  # test-strategy.md §6: the coverage RATCHET. Fails when total statement
-  # coverage of non-excluded Go code drops below the committed floor
-  # (.github/policy/coverage.json). Coverage says the tests ran the
-  # code, not that they would notice it being wrong — the mutation-score
-  # companion is tracked separately; this gate is the floor, not the claim.
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
-      # Two Go modules, each measured and reported separately (an honest
-      # denominator - a root `go test ./...` does not include the nested
-      # tools/requirements module). -coverpkg=./... on the root credits a
-      # statement executed as a dependency of another package's test.
-      - name: measure root product module
-        run: go test -race -covermode=atomic -coverpkg=./... -coverprofile=/tmp/root.out ./...
-      - name: measure tools/requirements module
-        run: go -C tools/requirements test -covermode=atomic -coverprofile=/tmp/req.out ./...
-      # Enforce ZERO uncovered eligible statements per module (not a
-      # rounded 100.0% display). Exclusions live in the committed policy
-      # file and there are none.
-      - name: enforce the coverage floor
-        run: |
-          set -euo pipefail
-          max=$(jq -r '.max_uncovered' .github/policy/coverage.json)
-          fail=0
-          {
-            echo "## Statement coverage (zero-uncovered gate, max_uncovered=${max})"
-            echo
-            echo '```'
-            bash bin/coverage-gate.sh /tmp/root.out "root module" || fail=1
-            bash bin/coverage-gate.sh /tmp/req.out  "tools/requirements module" || fail=1
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          bash bin/coverage-gate.sh /tmp/root.out "root module"
-          bash bin/coverage-gate.sh /tmp/req.out  "tools/requirements module"
-          [ "$fail" -eq 0 ] || exit 1
-      # REQ-AUD-18 AC2: the auditor's Python (.github/agent/bin/) is held to the same gate —
-      # ZERO uncovered eligible statements over the parser tests + the matrix suite; the only
-      # exclusions are the reasoned line ranges in .github/agent/coverage-exclusions.txt.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: pin pip (hash-checked)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
-          python3 -m pip --version
-      - name: auditor Python coverage — zero uncovered (REQ-AUD-18 AC2)
-        run: |
-          set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/coverage-requirements.txt
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
-          COVERAGE_REPORT_OUT=/tmp/auditor-python-coverage.txt bash .github/agent/tests/coverage-gate.sh
-          { echo "## Auditor Python coverage (REQ-AUD-18 AC2)"; echo; echo '```'; cat /tmp/auditor-python-coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: publish both profiles as evidence
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: coverage-profiles
-          path: |
-            /tmp/root.out
-            /tmp/req.out
-            /tmp/auditor-python-coverage.txt
-          retention-days: 90
-
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -155,88 +111,6 @@ jobs:
           golangci-lint config verify   # the action ran this before every run (its verify input defaults to true)
           golangci-lint run ./...
 
-  gosec:
-    name: gosec
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
-      # gosec is pinned to v2.29.0 (the latest) and built from source under
-      # the CI Go toolchain (see the install step below) — NOT the
-      # securego/gosec Docker action, whose bundled Go cannot type-check a
-      # go.mod on the 1.26 line and fails at the import phase (it never
-      # reaches the checks). gosec still exits non-zero on any finding, so
-      # the gate is unchanged.
-      # gosec v2.29.0 (the latest release) requires golang.org/x/tools v0.49.0,
-      # whose export-data reader stops at version 4, while Go 1.27.2 writes
-      # version 5: every package then fails with "type errors". `go install
-      # ...@v2.29.0` cannot override a dependency, so gosec is built in a
-      # scratch module against golang.org/x/tools v0.50.0 (published
-      # 2026-09-08). Exact versions; go.sum comes from the Go checksum
-      # database. Drop this when a gosec release requires x/tools >= v0.50.0.
-      - name: install gosec (pinned, built against x/tools v0.50.0)
-        run: |
-          gobin="$(go env GOPATH)/bin"
-          mkdir "$RUNNER_TEMP/gosec-build"
-          cd "$RUNNER_TEMP/gosec-build"
-          go mod init gosecbuild
-          go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.50.0
-          go build -o "$gobin/gosec" github.com/securego/gosec/v2/cmd/gosec
-      - name: run gosec
-        run: |
-          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
-          gosec -fmt sarif -out gosec-results.sarif ./...
-      # Fork PRs get a read-only GITHUB_TOKEN that `permissions:` cannot
-      # elevate, so security-events: write is not granted and this upload
-      # cannot succeed. gosec is a REQUIRED status check: without this guard
-      # the upload failure sinks the job and every external contributor's PR
-      # arrives with a red required check it has no way to fix. The scan
-      # itself still runs and still gates the PR — only the results upload
-      # is skipped, and code scanning keeps its coverage from same-repo
-      # pushes and the default branch.
-      - name: upload SARIF
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
-        if: always() && github.event.pull_request.head.repo.fork != true
-        with:
-          sarif_file: gosec-results.sarif
-
-  # The mechanical oracle for our FIPS claim (punch list #10a). GOFIPS140
-  # selects Go's CMVP-validated cryptographic module (cert #5247) at build
-  # time; GODEBUG=fips140=only makes that module REFUSE any non-approved
-  # algorithm at runtime rather than quietly computing it. Running the full
-  # suite under both means every crypto path the tests exercise — ours or a
-  # dependency's — is proven approved-only on every commit.
-  #
-  # This bites: verified against a probe that calls crypto/md5, which panics
-  # under fips140=only with "not allowed in FIPS 140-only mode". A gate that
-  # cannot fail would prove nothing, so that was checked before this job was
-  # written, not assumed.
-  #
-  # Scope, stated honestly because SECURITY.md says the same: =only proves
-  # the paths the tests actually execute. The depguard crypto allowlist
-  # below covers the static side. Neither alone is the whole claim.
-  fips140-only:
-    name: fips140-only
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
-      - name: build the -fips variant (same env as the released binary)
-        run: CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -o /tmp/fscache-fips ./cmd/fscache
-      - name: full test suite, validated module, approved algorithms only
-        run: GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -race -shuffle=on ./...
-
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
@@ -253,10 +127,8 @@ jobs:
       - name: govulncheck
         run: govulncheck ./...
 
-  # ---------------------------------------------------------------------------------------------------------------
-  # Merged from hygiene.yml, requirements.yml and dependency-review.yml (workflow consolidation 2 of 4, owner RATIFIED
-  # Oct 2). Same events (push to main, pull_request); every job keeps its name, top-level placement and own
-  # permissions; dependency-review runs on pull requests only, the only scope it is required on.
+  # allowlist: every tracked file against the allowlist, the action-pin checks and the suites the changed files need (REQ-CI-001-AC4).
+  # The long regression suites run in full-suite.yml (allowlist-persona), and here only for the files they test.
   allowlist:
     name: allowlist
     runs-on: ubuntu-latest
@@ -283,16 +155,7 @@ jobs:
           GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: git ls-files | ./bin/check-file-allowlist.sh
 
-      - name: allowlist branch-scoping regressions (auditor suppression lane)
-        run: bash bin/check-file-allowlist-test.sh
-
-      - name: branch sweep and local prune regressions
-        run: bash bin/branch-sweep-test.sh
-
-      - name: govulncheck fixture modules materialize (never indexed by the dependency graph)
-        run: bash .github/agent/tests/govulncheck-fixtures-test.sh
-
-      - name: set up Python for the workflow-permission check
+      - name: set up Python for the selected suites
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -300,304 +163,28 @@ jobs:
         run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
           python3 -m pip --version
-      - name: every reusable-workflow caller covers its callees' permissions (R01)
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
         run: |
-          # hash-pinned (row 78 pin pass on #156: no mutable package content in a required check)
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'
-          pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
-          REQ
-          python3 bin/check-workflow-permissions.py
-      # REQ-SCAN-015 (advisor-accepted Oct 9; serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
-      # main-candidate-rescan.yml by file, so neither may be callable as a reusable workflow. Runs here, in the required
-      # `allowlist` job, so a violation blocks the merge; it reads the checked-out workflow files with the PyYAML installed above.
-      - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
-        run: bash bin/scan-no-workflow-call-test.sh
-
-      # Row 78: every action reference is a full commit digest with its version in
-      # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.
-      - name: the pin checker's own cases (row 78)
-        run: bash .github/agent/tests/check-action-pins-test.sh
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
       - name: every GitHub Action is pinned to a commit digest (row 78)
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/agent/bin/check-action-pins.py --verify-tags .
-      - name: the pin check's wiring cannot be skipped or weakened (REQ-REL-005-AC1)
-        run: bash .github/agent/tests/pin-wiring-test.sh
-      - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
-        run: bash .github/agent/tests/pip-pin-test.sh
-      - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
-        run: bash .github/agent/tests/docs-snippets-test.sh
 
-      # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
-      # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled
-      # auditor run at install. Resolving here makes such a bump fail the required check instead.
-      - name: auditor Python requirements resolve (hash-pinned SDK + coverage tool)
-        run: |
-          for r in .github/agent/adjudicator-requirements.txt .github/agent/coverage-requirements.txt .github/agent/test-requirements.txt; do
-            python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: \
-              --target "$RUNNER_TEMP/resolve-check" -r "$r"
-          done
-
-      - name: auditor layout — everything auditor-related under .github/agent/ (REQ-AUD-18 AC1)
-        run: git ls-files | python3 .github/agent/bin/auditor-layout-check.py
-
-      - name: auditor suites — parser unit tests and the requirements-matrix suite
+      # The suites the changed files need (REQ-CI-001-AC4): bin/select-tests.sh prints them, one command per line, from
+      # .github/policy/test-paths.json; a changed path that map does not name fails the step, so a new directory needs an entry.
+      # The rest of the suites run in full-suite.yml.
+      - name: the suites the changed files need
+        if: ${{ github.event_name == 'pull_request' }}
         env:
           BASE: ${{ github.base_ref }}
-        run: |
-          # REQ-SUP-001-AC28: when a pull request changes the Gradle wrapper pin, the online test compares it with Gradle's published sum
-          if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties; then
-            export GRADLE_SUM_ONLINE=1
-          fi
-          # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
-          bash .github/agent/tests/auditor-parser-tests.sh
-          bash .github/agent/tests/auditor-matrix-test.sh
-          bash .github/agent/tests/auditor-labels-test.sh
-
-      # The scanner-panel probe's request cap against the PINNED SDKs (Codex #155 phase-2 r2): both re-send once after a
-      # 401 outside max_retries, so the cap is proven on the real SDK code, offline (a mock transport serves every request).
-      - name: the probe's one-request-per-seat cap against the hash-pinned SDKs (scanner panel rule 8; REQ-SCAN-008)
         run: |
           set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/panel-sdk"
-          # the venv's own pip is the interpreter's bundled one: pin it first, from the same hash-checked file (REQ-SUP-001 AC13)
-          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
-          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip --version
-          "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
-          PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
+          suites=$(bash bin/select-tests.sh "origin/${BASE}" HEAD)
+          while IFS= read -r suite; do
+            [ -z "${suite}" ] || { echo "::group::${suite}"; bash -euo pipefail -c "${suite}"; echo "::endgroup::"; }
+          done <<< "${suites}"
 
-      # VEX tripwire (punch list #4b). A dependency we answered with a VEX
-      # statement is answered on the facts as they were: golang-jwt is not
-      # in the build at all, which is why CVE-2024-51744 does not apply to
-      # us. If it ever enters go.sum, that premise is dead and the published
-      # statement becomes a false public claim — the worst failure mode an
-      # attestation has. Fail loudly and make someone re-check it.
-      #
-      # go.sum, not `go mod graph`: the graph lists modules that packages we
-      # do not import happen to require, which is exactly the distinction
-      # the VEX statement rests on.
-      # Punch list #3c/#6c. Version literals in prose and commands rot at
-      # the next release, and this class has bitten twice: a README
-      # "Release pipeline (v0.1.0)" line, and an entire RELEASING.md
-      # verification section built around one tag. Owner doctrine is that
-      # "we need not forget" resolves to a mechanical check, never to
-      # memory. This is that check, and it lands only now that every doc is
-      # already clean, so it goes green on arrival rather than as a
-      # standing red.
-      - name: no unmarked version literals in public docs
-        run: ./bin/check-version-literals.sh
-
-      - name: VEX tripwire — components answered by a VEX statement must stay absent
-        run: |
-          set -euo pipefail
-          if grep -q 'golang-jwt' go.sum; then
-            echo "::error::golang-jwt has entered go.sum. The published VEX statement for CVE-2024-51744 claims component_not_present, which is no longer true on its face. VEX statement requires review before this can merge — see .vex/README.md." >&2
-            exit 1
-          fi
-          echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
-
-  # persona UAT suites (split out of the allowlist job; the driver suite is the long one)
-  allowlist-persona:
-    name: allowlist-persona
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: make sure the base branch ref exists
-        env:
-          BASE: ${{ github.base_ref }}
-        run: |
-          if [ -n "${BASE}" ]; then
-            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
-            [[ "${BASE}" != *..* ]] || exit 1
-            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
-          fi
-
-      - name: set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: pin pip (hash-checked)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
-          python3 -m pip --version
-      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
-
-
-      # The persona UAT (REQ-UAT-001): its three suites run here like their neighbours. Their fixtures pick free ports per run, so they never collide with
-      # each other or with a developer's machine. The driver suite is the long one (it runs the real driver through hundreds of cases).
-      - name: persona UAT — agent and provider suite
-        run: bash bin/persona-uat-agent-test.sh
-
-      - name: persona UAT — wiring suite (workflows, tools file, installer, identity refresher)
-        run: bash bin/persona-uat-wiring-test.sh
-
-      - name: persona UAT — driver suite
-        run: bash bin/persona-uat-test.sh
-
-  # build, archive, assembly, VEX and scanner-gate regression suites (split out of the allowlist job)
-  allowlist-chain:
-    name: allowlist-chain
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: make sure the base branch ref exists
-        env:
-          BASE: ${{ github.base_ref }}
-        run: |
-          if [ -n "${BASE}" ]; then
-            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
-            [[ "${BASE}" != *..* ]] || exit 1
-            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
-          fi
-
-      - name: set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: pin pip (hash-checked)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
-          python3 -m pip --version
-      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
-
-
-      - name: build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)
-        run: bash bin/build-helpers-test.sh
-
-      - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
-        run: bash bin/vendoring-test.sh </dev/null
-      - name: apk build driver and release signing regressions
-        run: bash bin/build-apk-test.sh
-
-      - name: input refresh script regressions
-        run: bash bin/refresh-inputs-test.sh
-
-      - name: archive push, pull and verify regressions
-        run: bash bin/archive-test.sh
-
-      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
-        run: python3 bin/gen-recipes.py --check
-
-      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
-        run: bash bin/vendor-provenance-test.sh </dev/null
-      - name: image assembly, lock proof and sealed proof regressions
-        run: bash bin/assemble-image-test.sh
-
-      - name: privacy candidate-trace analyzer regressions (B03)
-        run: bash bin/analyze-egress-trace-test.sh
-
-      - name: scanner installer failure-path regressions (pinned-checksum contract)
-        run: bash bin/install-scanner-test.sh
-
-      - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
-        run: bash bin/inspector-gate-test.sh
-
-      - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
-        run: |
-          ./bin/install-scanner.sh grype
-          bash bin/vex-scope-test.sh
-
-      - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
-        run: bash bin/vex-both-scanners-test.sh
-
-      - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
-        run: bash bin/vex-forms-test.sh
-
-      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
-        run: bash bin/scout-root-cause-test.sh
-
-      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
-        run: bash bin/scout-older-versions-test.sh
-
-      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
-        run: bash bin/go-bump-open-pr-test.sh
-
-  # supply-chain, panel, release-wiring and dependency-lane suites (split out of the allowlist job)
-  allowlist-pins-auditor:
-    name: allowlist-pins-auditor
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: make sure the base branch ref exists
-        env:
-          BASE: ${{ github.base_ref }}
-        run: |
-          if [ -n "${BASE}" ]; then
-            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
-            [[ "${BASE}" != *..* ]] || exit 1
-            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
-          fi
-
-      - name: set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: pin pip (hash-checked)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
-          python3 -m pip --version
-      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
-
-
-      - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
-        run: bash bin/dependabot-reviewer-test.sh
-      - name: dependency lanes wiring — reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)
-        run: bash bin/dependency-lanes-test.sh
-      - name: the Dependabot reviewer's bundle carries the diff, every in-range release note and our usage (row 75 b)
-        run: bash bin/dependabot-reviewer-gather-test.sh
-      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
-        run: bash bin/panel-test.sh
-      - name: the final image index that carries our OpenVEX for Docker Scout — the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)
-        run: bash bin/vex-index-test.sh </dev/null
-      - name: the auditor's fixtures and tests follow the panel's image set — the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)
-        run: bash .github/agent/tests/auditor-variants-test.sh
-      - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
-        run: bash bin/patch-decide-test.sh
-      - name: gate 6 of the release process — a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)
-        run: bash bin/audit-record-test.sh
-      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
-        run: bash bin/admission-tag-signer-test.sh
-
-      - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
-        run: bash bin/release-patch-wiring-test.sh
-      - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
-        run: bash bin/acceptance-maven-413-test.sh
-      - name: release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)
-        run: bash .github/agent/tests/release-notes-signed-test.sh
-      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)
-        run: bash bin/go-freshness-wiring-test.sh
-      - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)
-        run: bash bin/workflow-consolidation-test.sh
-      - name: a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)
-        run: bash bin/job-isolation-test.sh
-      - name: the daily rescan covers the current release only (REQ-REL-004-AC5)
-        run: bash bin/rescan-current-only-test.sh
-      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
-        run: bash bin/panel-wiring-test.sh
-      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
-        run: bash .github/agent/tests/k8s-harness-fence-test.sh
-      - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
-        run: bash .github/agent/tests/pin-age-check-test.sh
-      - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)
-        run: bash .github/agent/tests/pin-audit-test.sh
-      - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
-        run: bash .github/agent/tests/supply-chain-wiring-test.sh
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
@@ -743,13 +330,3 @@ jobs:
       # python3 + jq — no network, gh or scanners.
       - name: daily-rescan merge/classification/enumeration regressions
         run: bash bin/rescan-statement-test.sh
-
-  dependency-review:
-    if: ${{ github.event_name == 'pull_request' }}   # required on pull requests only; the action needs a PR
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
