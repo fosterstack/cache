@@ -30,7 +30,7 @@ def main(argv=None, run=None, regenerate=None):
         branches = a.branch
     else:
         r = run(["gh", "api", "--paginate", "repos/%s/branches?per_page=100" % a.repo, "--jq", ".[].name"],
-            capture_output=True, text=True)
+                capture_output=True, text=True)
         if r.returncode != 0:
             print("could not list the branches: %s" % (r.stderr or "").strip()[-300:], file=sys.stderr)
             return 1
