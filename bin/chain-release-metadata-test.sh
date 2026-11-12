@@ -16,8 +16,11 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export METADATA_BIN="${METADATA_BIN:-$root/bin}"
 python3 - <<'PY'
-import hashlib, json, os, shutil, subprocess, sys, tempfile
+import atexit, hashlib, json, os, shutil, subprocess, sys, tempfile
 BIN = os.environ["METADATA_BIN"]
+SCRATCH = tempfile.mkdtemp()
+tempfile.tempdir = SCRATCH      # every tree below is made inside SCRATCH
+atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
 passn = failn = 0
 def ok(l): global passn; passn += 1; print("ok   " + l)
 def bad(l): global failn; failn += 1; print("FAIL " + l)
