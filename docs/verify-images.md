@@ -346,7 +346,8 @@ key, as a bundle over that file:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt 2>/dev/null | grep OK   # checks each archive you downloaded
+# Check the archive you downloaded (BIN, VERSION and PLATFORM as in the install page)
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 ## 5. Enforcing this in your own cluster (Kyverno)
