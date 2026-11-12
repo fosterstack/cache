@@ -30,9 +30,10 @@ NOTIFY_CHANNEL = "owner-decision-issue"
 OWNER_LABEL = "owner-decision"
 OWNER_LOGIN = "fosterstack-admin"
 
-# The labels the auditor's issues carry. `gh issue create --label X` FAILS when X does not exist, and the first live run (Oct 5)
-# lost its owner report to exactly that, so every delivery path creates the labels it passes first (label_create_cmd). Creation is
-# NOT forced: --force would overwrite the colour and description of a label that already exists (security, daily-rescan).
+# The labels the auditor's issues carry. `gh issue create --label X` FAILS when X does not exist, and the first live run
+# (Oct 5) lost its owner report to exactly that, so every delivery path creates the labels it passes first
+# (label_create_cmd). Creation is NOT forced: --force would overwrite the colour and description of a label that already
+# exists (security, daily-rescan).
 LABELS = {
     "owner-decision": ("Needs an owner decision (auditor lane)", "B60205"),
     "daily-rescan": ("The daily rescan's tracking issue", "0E8A16"),
@@ -59,10 +60,13 @@ def subject(text):
 
 # Run bounds.
 MAX_ITERATIONS = 5
-# REQ-AUD-9 AC3 "a five-iteration stop" (register row 38, advisor reading Oct 24): the owner hears when the same finding is still unsettled after this many CONSECUTIVE runs
+# REQ-AUD-9 AC3 "a five-iteration stop" (register row 38, advisor reading Oct 24): the owner hears when the same finding
+# is still unsettled after this many CONSECUTIVE runs
 UNSETTLED_RUNS = 5
-# the one grammar of a finding id (the panel verdict's, with the tally's "?" for an id-less result), capped: the verdict parser and the unsettled-run counter both use it, so an id
+# the one grammar of a finding id (the panel verdict's, with the tally's "?" for an id-less result), capped: the verdict
+# parser and the unsettled-run counter both use it, so an id
 # the parser accepts is always one the counter can write and read back
+# matches "CVE-2026-1234" and "?"; not "bad id" (a space)
 FINDING_ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]{0,199}")
 TOKEN_BUDGET = 200000
 
