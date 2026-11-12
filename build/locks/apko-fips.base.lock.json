@@ -29,41 +29,41 @@
     "packages": [
       {
         "name": "tzdata",
-        "url": "/work/archive/x86_64/tzdata-2026e-r0.apk",
-        "version": "2026e-r0",
+        "url": "/work/archive/x86_64/tzdata-2026f-r0.apk",
+        "version": "2026f-r0",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-5447",
-          "checksum": "sha1-MHM0+rPotBcMXgdP2Yoh/s2vpO8="
+          "range": "bytes=0-11070",
+          "checksum": "sha1-WMaR+kGyCy9U6Y9VZAYskvvVveE="
         },
         "data": {
-          "range": "bytes=5448-565082",
-          "checksum": "sha256-Alclh5b/XuP2cN0UTSnY6A1BrRdFhZiXJHJEuoPuD9o="
+          "range": "bytes=11071-386492",
+          "checksum": "sha256-O0UAmpu8mMCdREdVqlQxg244UZ9H2zmA1caVxBGrvJk="
         },
-        "checksum": "Q1MHM0+rPotBcMXgdP2Yoh/s2vpO8="
+        "checksum": "Q1WMaR+kGyCy9U6Y9VZAYskvvVveE="
       },
       {
         "name": "tzdata",
-        "url": "/work/archive/aarch64/tzdata-2026e-r0.apk",
-        "version": "2026e-r0",
+        "url": "/work/archive/aarch64/tzdata-2026f-r0.apk",
+        "version": "2026f-r0",
         "architecture": "aarch64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-5480",
-          "checksum": "sha1-Vkg6p7vS82XZyZIvI/fwUvMeBi0="
+          "range": "bytes=0-11104",
+          "checksum": "sha1-pC6bIBmnC4Xb7Y9ocE9OUAIjGSU="
         },
         "data": {
-          "range": "bytes=5481-565115",
-          "checksum": "sha256-K8RM1v3x6eyGwSby5MMJ51PUmDmsYTT0/EZgJwZu1sg="
+          "range": "bytes=11105-386531",
+          "checksum": "sha256-tL1lsLw0b0v3wDkvC6qKqGLyKhC94wqQ1ZkENXRAwnA="
         },
-        "checksum": "Q1Vkg6p7vS82XZyZIvI/fwUvMeBi0="
+        "checksum": "Q1pC6bIBmnC4Xb7Y9ocE9OUAIjGSU="
       }
     ]
   }

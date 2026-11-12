@@ -2888,6 +2888,16 @@ for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x; do
 done
 case_ w-download-artifact-home-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
           path: ~/.cache/x")")" "$mk_tool"
+# 2b. "~/" paths are normalised (. segments and doubled slashes) before the ~/work test
+n=0
+for p in '~/./work' '~/./work/x/x/bin' '~//work/x'; do
+  n=$((n+1)); case_ "w-download-artifact-tilde-norm-$n-bad" bad "$(uw "$(us actions/download-artifact "          name: x
+          path: $p")")" "$mk_tool"
+done
+case_ w-download-artifact-tilde-norm-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: ~/./.cache/x")")" "$mk_tool"
+case_ w-download-artifact-relative-tilde-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: ./~cache")")" "$mk_tool"
 # 3. runner.temp is outside only when what follows has no expression, no $ and no ..
 case_ w-download-artifact-runner-temp-expression-bad bad "$(uw "$(us actions/download-artifact "          name: x
           path: \${{ runner.temp }}/\${{ '..' }}/x/bin")")" "$mk_tool"

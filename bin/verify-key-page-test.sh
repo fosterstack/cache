@@ -36,6 +36,8 @@ for l in lines:
             fence = s[3:].strip()
         else:
             prose.append(l)
+            if re.search(r"<[A-Za-z/!]", l): err("raw HTML outside code: " + s)   # it can hide a sentence from a reader
+            if "![" in l: err("image syntax outside code: " + s)   # it shows its text as alt text, not as a sentence
             if re.match(r"^(\$ +)?(cosign|jq)\s", s): err("a command outside a fence: " + s)
         continue
     if s == "```":
@@ -50,30 +52,34 @@ if cmds != WANT: err("the commands are %r; exactly %r, in this order" % (cmds, W
 
 body = "\n".join(prose)
 flat = re.sub(r"[`*]", "", re.sub(r"\s+", " ", body))
-paras = [re.sub(r"[`*]", "", re.sub(r"\s+", " ", p)) for p in re.split(r"\n\s*\n", body)]
 def need(ok, m):
     if not ok: err(m)
 need(".github/policy/release-key-root.pub" in flat, "setup text does not give .github/policy/release-key-root.pub")
 need(re.search(r"repository.{0,120}release tag|release tag.{0,120}repository", flat, re.I), "setup text does not say the root key comes from the repository at the release tag")
 need("release assets" in flat.lower(), "setup text does not name the release assets")
 need("release-key-manifest.json" in flat and "release-key-manifest.sig" in flat, "setup text does not name the manifest and its signature")
-sents = [x.strip() for x in re.split(r"(?<=[.;])\s+", flat) if x.strip()]
+paras = [re.sub(r"[`*]", "", re.sub(r"\s+", " ", q)) for q in re.split(r"\n\s*\n", body)]
+sents = [x.strip() for q in paras for x in re.split(r"(?<=[.;])\s+", q) if x.strip()]
 def sentence(*pats):
     return any(all(re.search(p, x, re.I) for p in pats) for x in sents)
-need(sentence(r"\bsecond\b", r"only if", r"\bfirst\b", r"Verified OK"), "no plain line says to run the second command only if the first prints Verified OK")
-need(sentence(r"--insecure-ignore-tlog", r"offline", r"no (transparency )?log entry|no entry"), "no sentence says why the first command has --insecure-ignore-tlog (root key offline, no log entry)")
-need(sentence(r"\bcheck\b", r"current time", r"valid_from", r"valid_to"), "no sentence tells the reader to check valid_from and valid_to against the current time")
-need(sentence(r"\bstop\b", r"current time", r"at or after valid_to", r"before valid_from"), "no sentence tells the reader to stop when the current time is at or after valid_to or before valid_from")
-need("valid_to is optional" in flat, "the page does not say valid_to is optional")
-need(re.search(r"whatever the release.s publish date", flat), "the page does not say whatever the release's publish date")
-need(sentence(r"newest manifest", r"signature", r"release assets", r"key_id"), "no sentence says the newest manifest and its signature for the same key_id are among the release assets")
-need(sentence(r"verif", r"same way"), "no sentence says to verify the newest manifest the same way")
-need(sentence(r"\bstop\b", r"revoked_at", r"at or before the current time"), "no sentence says to stop if revoked_at is at or before the current time")
+# the sentences that carry the checks, word for word as in docs/verify-key.md
+G_RUN = "Run the second command only if the first prints Verified OK."
+G_CHECK = "Check valid_from and valid_to in the manifest against the current time."
+G_STOP = "Stop if the current time is at or after valid_to (valid_to is optional) or before valid_from, whatever the release's publish date."
+G_VERIFY = "Verify them the same way as the first."
+G_REVOKE = "Stop if the manifest has a revoked_at that is at or before the current time."
+# the other sentences that mention a check may be these and no others
+OTHER = ["Check the release key", "Verify the release key", "Check the key before you trust a signature made with it."]
+for g, name in ((G_RUN, "run"), (G_CHECK, "check"), (G_STOP, "stop"), (G_VERIFY, "verify"), (G_REVOKE, "revocation")):
+    if sents.count(g) != 1: err("the %s sentence is not on the page exactly once, word for word: %s" % (name, g))
+if G_CHECK in sents and sents.index(G_CHECK) + 1 < len(sents) and sents[sents.index(G_CHECK) + 1] != G_STOP:
+    err("the stop sentence does not directly follow the check sentence")
 for x in sents:
-    if re.search(r"publish date", x) and re.search(r"valid_to|valid_from", x) and not re.search(r"whatever", x):
-        err("a sentence compares the publish date with valid_to or valid_from: " + x)
-    if re.search(r"valid_to|valid_from|revoked_at", x) and re.search(r"accept|allowed|still valid|carry on|continue|ignore", x, re.I):
-        err("a sentence accepts a key the rules refuse: " + x)
+    y = x.replace("TO-VERIFY", "").lstrip("# ")
+    if x.lstrip("# ") not in OTHER + [G_RUN, G_CHECK, G_STOP, G_VERIFY, G_REVOKE] and re.search(r"\b(stop|verif\w*|run|check\w*|valid\w*|revoked\w*|dates?|publi\w*)\b", y, re.I):
+        err("a sentence that mentions a check, a date or a stop is not one of the page's own: " + x)
+need(sentence(r"--insecure-ignore-tlog", r"offline", r"no (transparency )?log entry|no entry"), "no sentence says why the first command has --insecure-ignore-tlog (root key offline, no log entry)")
+need(sentence(r"newest manifest", r"signature", r"release assets", r"key_id"), "no sentence says the newest manifest and its signature for the same key_id are among the release assets")
 for i, l in enumerate(lines):
     if "TO-VERIFY" in l and re.search(r"manifest|root key|release-key-root|publish|release assets|repository", l, re.I):
         err("line %d: a TO-VERIFY mark about where the manifest or root key are published" % (i+1))
@@ -147,27 +153,54 @@ mutant "first command with another key"  "the commands are"  's.replace("--key r
 mutant "second command with another file" "the commands are" 's.replace("> release.rsa.pub", "> key.pub")'
 mutant "commands in a bash fence"        "not fenced as"     's.replace("```sh", "```bash")'
 mutant "a command outside a fence"       "outside a fence"   's.replace("Run the second", "jq . release-key-manifest.json\n\nRun the second")'
-mutant "no line on when to run the second command"  "only if the first prints Verified OK" 's.replace("Run the second command only if the first prints Verified OK.\n\n", "")'
-mutant "Verified OK stated, no instruction"         "only if the first prints Verified OK" 's.replace("Run the second command only if the first prints Verified OK.", "The first command prints Verified OK.")'
-mutant "second command run whatever the first says" "only if the first prints Verified OK" 's.replace("only if the first prints Verified OK", "whether or not the first prints Verified OK")'
+mutant "no line on when to run the second command"  "the run sentence" 's.replace("Run the second command only if the first prints Verified OK.\n\n", "")'
+mutant "Verified OK stated, no instruction"         "the run sentence" 's.replace("Run the second command only if the first prints Verified OK.", "The first command prints Verified OK.")'
+mutant "second command run whatever the first says" "the run sentence" 's.replace("only if the first prints Verified OK", "whether or not the first prints Verified OK")'
+mutant "validity and revocation paragraphs inside an HTML comment" "raw HTML outside code" 's.replace("Check `valid_from`", "<!-- Check `valid_from`").replace("publish date.", "publish date. -->").replace("Stop if the manifest has", "<!-- Stop if the manifest has").replace("current time.\n", "current time. -->\n")'
+mutant "an unclosed HTML comment before the validity paragraph" "raw HTML outside code" 's.replace("Check `valid_from`", "<!-- Check `valid_from`")'
+mutant "validity paragraph inside a hidden div" "raw HTML outside code" 's.replace("Check `valid_from`", "<div hidden>Check `valid_from`").replace("publish date.", "publish date.</div>")'
+mutant "validity paragraph as a Markdown image" "image syntax outside code" 's.replace("Check `valid_from`", "![Check `valid_from`").replace("publish date.", "publish date.](x.png)")'
+mutant "an unmatched backtick before the image syntax" "image syntax outside code" 's.replace("Check `valid_from`", "`![Check `valid_from`").replace("publish date.", "publish date.](x.png)")'
 mutant "no sentence on why the log is skipped"      "why the first command has"  's.replace("The first command has `--insecure-ignore-tlog` because the root key is kept offline, so its signature has no log entry.\n\n", "")'
 mutant "the flag named, no reason given"            "why the first command has"  's.replace("because the root key is kept offline, so its signature has no log entry", "in this page")'
-mutant "validity: check sentence without the current time" "against the current time" 's.replace(" in the manifest against the current time.", " in the manifest.")'
-mutant "validity: stop sentence without the current time" "to stop when the current time" 's.replace("Stop if the current time is at or after", "Stop if it is at or after")'
-mutant "validity: no stop instruction" "to stop when the current time" 's.replace("Stop if the current time is", "Note that the current time is")'
-mutant "validity: valid_from side dropped" "to stop when the current time" 's.replace(" or before `valid_from`, whatever", ", whatever")'
-mutant "validity: valid_to not optional" "valid_to is optional" 's.replace(" (`valid_to` is optional)", "")'
-mutant "validity: whatever the publish date dropped" "whatever the release" 's.replace(", whatever the release'"'"'s publish date", "")'
-mutant "validity: publish date compared instead" "compares the publish date" 's.replace("Stop if the current time is at or after `valid_to` (`valid_to` is optional) or before `valid_from`, whatever the release'"'"'s publish date.", "Compare the release'"'"'s publish date with `valid_to` in the manifest.")'
-mutant "validity: publish date comparison added" "compares the publish date" 's + "\nCompare the release'"'"'s publish date with `valid_to`.\n"'
-mutant "validity: expired key accepted" "to stop when the current time" 's.replace("Stop if the current time is at or after `valid_to`", "Accept the key even if the current time is at or after `valid_to`")'
+mutant "validity: check sentence without the current time" "the check sentence" 's.replace(" in the manifest against the current time.", " in the manifest.")'
+mutant "validity: stop sentence without the current time" "the stop sentence" 's.replace("Stop if the current time is at or after", "Stop if it is at or after")'
+mutant "validity: no stop instruction" "the stop sentence" 's.replace("Stop if the current time is", "Note that the current time is")'
+mutant "validity: valid_from side dropped" "the stop sentence" 's.replace(" or before `valid_from`, whatever", ", whatever")'
+mutant "validity: valid_to not optional" "the stop sentence" 's.replace(" (`valid_to` is optional)", "")'
+mutant "validity: whatever the publish date dropped" "the stop sentence" 's.replace(", whatever the release'"'"'s publish date", "")'
+mutant "validity: publish date compared instead" "the stop sentence" 's.replace("Stop if the current time is at or after `valid_to` (`valid_to` is optional) or before `valid_from`, whatever the release'"'"'s publish date.", "Compare the release'"'"'s publish date with `valid_to` in the manifest.")'
+mutant "validity: publish date comparison added" "is not one of the page's own" 's + "\nCompare the release'"'"'s publish date with `valid_to`.\n"'
+mutant "validity: expired key accepted" "the stop sentence" 's.replace("Stop if the current time is at or after `valid_to`", "Accept the key even if the current time is at or after `valid_to`")'
+mutant "reversed: first command only if the second prints Verified OK" "the run sentence" 's.replace("Run the second command only if the first prints", "Run the first command only if the second prints")'
+mutant "reversed: do not verify them the same way" "is not one of the page's own" 's.replace("Verify them the same way", "Do not verify them the same way")'
+mutant "reversed: do not stop, validity" "the stop sentence" 's.replace("Stop if the current time is", "Do not stop if the current time is")'
+mutant "reversed: do not stop, revocation" "the revocation sentence" 's.replace("Stop if the manifest has", "Do not stop if the manifest has")'
+mutant "validity: publish date compared, whatever kept in the sentence" "is not one of the page's own" 's + "\nCompare the publish date with `valid_to`, whatever you find.\n"'
+mutant "validity: publish date compared after the exact words" "the stop sentence" 's.replace("publish date.", "publish date, and compare the publish date with `valid_to`.")'
+mutant "reversed: second command run if the first fails" "the run sentence" 's.replace("Run the second command only if the first prints Verified OK.", "Run the second command if the first command fails.")'
+mutant "second command skipped, order kept" "the run sentence" 's.replace("Run the second", "Skip the second")'
+mutant "softened: no need to stop, validity" "the stop sentence" 's.replace("Stop if the current time is", "There is no need to stop if the current time is")'
+mutant "softened: you may stop, validity" "the stop sentence" 's.replace("Stop if the current time is", "You may stop if the current time is")'
+mutant "softened: unless, validity" "the stop sentence" 's.replace("whatever the release'"'"'s publish date.", "whatever the release'"'"'s publish date, unless you trust the release.")'
+mutant "softened: unless, revocation" "the revocation sentence" 's.replace("Stop if the manifest has", "Stop unless the manifest has")'
+mutant "softened: skip verifying the newest manifest" "is not one of the page's own" 's.replace("Verify them the same way", "Skip verifying them the same way")'
+mutant "softened: verifying the newest manifest optional" "is not one of the page's own" 's.replace("Verify them the same way as the first.", "Verify them the same way as the first, which is optional.")'
+mutant "a sentence between the check and the stop" "directly follow" 's.replace("against the current time. Stop", "against the current time. Read on. Stop")'
+mutant "validity: Publish date compared, capital letter" "is not one of the page's own" 's + "\nPublish date must be before `valid_to`.\n"'
+mutant "validity: release date compared" "is not one of the page's own" 's + "\nCompare the release date with `valid_to`.\n"'
+mutant "validity: date the release was published compared" "is not one of the page's own" 's + "\nCompare the date the release was published with `valid_from`.\n"'
+mutant "an extra stop sentence with a leading If"   "is not one of the page's own" 's + "\nIf the first command does not print Verified OK, stop.\n"'
+mutant "a leading If hides a reversed stop"         "the stop sentence" 's.replace("Stop if the current time is at or after `valid_to`", "If the key is not yet expired, stop if the current time is at or after `valid_to`")'
+mutant "validity: conditions joined by and"         "the stop sentence" 's.replace("`valid_to` (`valid_to` is optional) or before", "`valid_to` (`valid_to` is optional) and before")'
+mutant "validity: publication date compared"        "is not one of the page's own" 's + "\nCompare the publication date with `valid_to`.\n"'
 mutant "no newest manifest sentence, key_id kept"   "newest manifest and its signature" 's.replace("The newest manifest and its signature for the same `key_id` are among the release assets.", "A key has a `key_id`.")'
 mutant "newest manifest not among the release assets" "newest manifest and its signature" 's.replace("are among the release assets", "are on the website")'
-mutant "newest manifest not verified the same way"  "the same way"  's.replace("Verify them the same way as the first. ", "")'
-mutant "no stop instruction, revoked_at kept"       "stop if revoked_at"  's.replace("Stop if the manifest has a `revoked_at` that is at or before the current time.", "The manifest may have a `revoked_at`.")'
-mutant "revocation reversed: revoked key accepted"  "stop if revoked_at"  's.replace("Stop if the manifest has", "Carry on even if the manifest has")'
-mutant "revocation reversed, stop word kept"        "accepts a key"  's.replace("at or before the current time.", "at or before the current time, which is accepted. Stop if the page is wrong.")'
-mutant "revocation boundary: after the current time" "stop if revoked_at"  's.replace("at or before the current time", "after the current time")'
+mutant "newest manifest not verified the same way"  "the verify sentence"  's.replace("Verify them the same way as the first. ", "")'
+mutant "no stop instruction, revoked_at kept"       "the revocation sentence"  's.replace("Stop if the manifest has a `revoked_at` that is at or before the current time.", "The manifest may have a `revoked_at`.")'
+mutant "revocation reversed: revoked key accepted"  "the revocation sentence"  's.replace("Stop if the manifest has", "Carry on even if the manifest has")'
+mutant "revocation reversed, stop word kept"        "the revocation sentence"  's.replace("at or before the current time.", "at or before the current time, which is accepted. Stop if the page is wrong.")'
+mutant "revocation boundary: after the current time" "the revocation sentence"  's.replace("at or before the current time", "after the current time")'
 mutant "root key path not given"         "release-key-root.pub"        's.replace(": `.github/policy/release-key-root.pub`", "")'
 mutant "release tag not named"           "at the release tag"          's.replace("at the release tag", "at the latest commit")'
 mutant "repository not named"            "at the release tag"          's.replace("from the repository at", "from the web at")'
