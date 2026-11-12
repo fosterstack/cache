@@ -653,23 +653,39 @@ class LaneLists(unittest.TestCase):
         self.assertEqual(rec.calls, [])
 
 
+class IsBumpBranch(unittest.TestCase):
+    def test_the_two_bump_lanes_match(self):
+        for branch in ("dependabot/go_modules/github.com/a/b-1.2.3", "auditor/bump-example.com-m-1.1.0"):
+            self.assertIs(S.is_bump_branch(branch), True, branch)
+
+    def test_other_branches_do_not_match(self):
+        for branch in ("main", "auditor/panel", "dependabot/npm_and_yarn/x-1", "auditor/bump-",
+                       "dependabot/go_modules/", "xauditor/bump-a", "auditor/bump-a b"):
+            self.assertIs(S.is_bump_branch(branch), False, repr(branch))
+
+    def test_a_value_that_is_not_a_string_does_not_match(self):
+        for branch in (None, 7, b"auditor/bump-a"):
+            self.assertIs(S.is_bump_branch(branch), False, repr(branch))
+
+
 class CommitsAuthoredBy(unittest.TestCase):
-    """commits_authored_by(run, repo, base_sha, head_sha, logins): True only when the compare endpoint lists every
-    commit from base to head, each GitHub-verified and authored by one of `logins`. A truncated list, a failed or
-    malformed lookup and an empty list are False."""
+    """commits_authored_by(run, repo, base_sha, head_sha, logins, notes=None): True only when the compare endpoint lists
+    every commit from base to head, each GitHub-verified, authored by one of `logins`, and committed by GitHub itself
+    (web-flow) or one of `logins`. Anything else is False, with one cause line added to `notes`."""
     LOGINS = ("dependabot[bot]", APP)
 
     @staticmethod
-    def c(login="dependabot[bot]", verified=True):
-        return {"sha": "3" * 40, "author": {"login": login}, "commit": {"verification": {"verified": verified}}}
+    def c(login="dependabot[bot]", verified=True, committer="web-flow"):
+        return {"sha": "3" * 40, "author": {"login": login}, "committer": {"login": committer},
+                "commit": {"verification": {"verified": verified}}}
 
-    def ask(self, doc=None, rc=0, out=None, logins=LOGINS):
+    def ask(self, doc=None, rc=0, out=None, logins=LOGINS, notes=None):
         calls = []
         def run(cmd, **kw):
             calls.append(list(cmd))
             text = out if out is not None else json.dumps(doc)
             return subprocess.CompletedProcess(cmd, rc, text, "gh: HTTP 500" if rc else "")
-        return S.commits_authored_by(run, REPO, BASE, H1, logins), calls
+        return S.commits_authored_by(run, REPO, BASE, H1, logins, notes), calls
 
     def test_the_compare_endpoint_is_asked_for_base_to_head(self):
         ok, calls = self.ask({"total_commits": 1, "commits": [self.c()]})
@@ -687,8 +703,10 @@ class CommitsAuthoredBy(unittest.TestCase):
         cases = {"a stranger": [self.c("someone")], "a stranger among others": [self.c(), self.c("someone")],
                  "unverified": [self.c(verified=False)], "unverified among others": [self.c(), self.c(verified=False)],
                  "verified is a string": [self.c(verified="true")],
-                 "no author login": [{"sha": "3" * 40, "author": None, "commit": {"verification": {"verified": True}}}],
-                 "no verification": [{"sha": "3" * 40, "author": {"login": "dependabot[bot]"}, "commit": {}}],
+                 "no author login": [{"sha": "3" * 40, "author": None, "committer": {"login": "web-flow"},
+                                      "commit": {"verification": {"verified": True}}}],
+                 "no verification": [{"sha": "3" * 40, "author": {"login": "dependabot[bot]"},
+                                      "committer": {"login": "web-flow"}, "commit": {}}],
                  "an entry that is not an object": ["x"]}
         for name, commits in cases.items():
             self.assertFalse(self.ask({"total_commits": len(commits), "commits": commits})[0], name)
@@ -711,6 +729,56 @@ class CommitsAuthoredBy(unittest.TestCase):
         for logins in ((), ("dependabot[bot]",), ("app",), ("",)):
             self.assertFalse(self.ask(one, logins=logins)[0], logins)
         self.assertFalse(self.ask({"total_commits": 1, "commits": [self.c(None)]}, logins=("", None))[0])
+
+    def test_a_bot_author_signed_by_a_contributor_is_not_trusted(self):
+        one = {"total_commits": 1, "commits": [self.c(APP, committer="contributor")]}
+        self.assertFalse(self.ask(one)[0])
+
+    def test_a_commit_committed_by_github_is_trusted(self):
+        self.assertTrue(self.ask({"total_commits": 1, "commits": [self.c(APP, committer="web-flow")]})[0])
+
+    def test_a_commit_committed_by_a_listed_login_is_trusted(self):
+        for committer in (APP, "dependabot[bot]"):
+            self.assertTrue(self.ask({"total_commits": 1, "commits": [self.c(APP, committer=committer)]})[0], committer)
+
+    def test_a_commit_with_no_committer_login_is_not_trusted(self):
+        for committer in (None, ""):
+            one = {"total_commits": 1, "commits": [self.c(APP, committer=committer)]}
+            self.assertFalse(self.ask(one)[0], committer)
+        no_committer = self.c(APP)
+        del no_committer["committer"]
+        self.assertFalse(self.ask({"total_commits": 1, "commits": [no_committer]})[0])
+
+    def test_a_falsy_login_never_matches_a_commit_with_a_missing_login(self):
+        both_missing = self.c(None, committer=None)
+        self.assertFalse(self.ask({"total_commits": 1, "commits": [both_missing]}, logins=("", None, APP))[0])
+        self.assertFalse(self.ask({"total_commits": 1, "commits": [self.c(APP, committer=None)]},
+                                  logins=(None, APP))[0])
+
+    def test_a_refusal_adds_one_cause_line_to_the_notes(self):
+        two = [self.c(), self.c()]
+        cases = {"a failed lookup": dict(rc=1, doc={}),
+                 "a malformed answer": dict(out="not json"),
+                 "a truncated list": dict(doc={"total_commits": 300, "commits": two}),
+                 "a stranger": dict(doc={"total_commits": 1, "commits": [self.c("someone")]}),
+                 "an unverified commit": dict(doc={"total_commits": 1, "commits": [self.c(verified=False)]}),
+                 "a foreign committer": dict(doc={"total_commits": 1, "commits": [self.c(APP, committer="someone")]})}
+        for name, kw in cases.items():
+            notes = []
+            self.assertFalse(self.ask(notes=notes, **kw)[0], name)
+            self.assertEqual(len(notes), 1, name)
+            self.assertTrue(notes[0] and isinstance(notes[0], str), name)
+
+    def test_the_cause_lines_tell_a_lookup_failure_from_an_unsigned_commit(self):
+        down, unsigned = [], []
+        self.ask(rc=1, doc={}, notes=down)
+        self.ask({"total_commits": 1, "commits": [self.c(verified=False)]}, notes=unsigned)
+        self.assertNotEqual(down, unsigned)
+
+    def test_a_trusted_answer_adds_no_note(self):
+        notes = []
+        self.assertTrue(self.ask({"total_commits": 1, "commits": [self.c()]}, notes=notes)[0])
+        self.assertEqual(notes, [])
 
 
 class RecordsPaths(unittest.TestCase):
@@ -735,23 +803,35 @@ JM = S.records_message(BRANCH)    # the sweep's message on BRANCH
 
 
 class RecordsReusable(unittest.TestCase):
-    """branch_reusable accepts a head whose ONE extra commit is the sweep's records commit: GitHub-verified, by the App,
-    its message exactly records_message(branch), one parent; that parent is judged by the ordinary rules (by the App
-    too). The identity is not enough: every file in the records commit must be a records path (no renames), and a list of 300
-    or more files is unverifiable (the API truncates it), so it is refused."""
+    """branch_reusable accepts a head whose ONE extra commit is the sweep's records commit: GitHub-verified, by the
+    App, its message exactly records_message(branch), one parent; that parent is judged by the ordinary rules (by the
+    App too). Every file in the records commit must be a records path (no renames). The file list is read page by page
+    (300 a page) and must end on a short page within ten pages."""
     WANT = {"go.mod": b"module m\n", "go.sum": None}
 
     class Gh2(Gh):
-        """commit lookups by sha: `docs` maps sha -> (rc, out, err)"""
-        def __init__(self, docs, **kw):
-            super().__init__(**kw); self.docs = docs
+        """commit lookups by sha: `docs` maps sha -> (rc, out, err); the file list is cut into pages of 300 by the
+        page= query, and `pages` maps (sha, page) -> (rc, out, err) to replace one page's answer"""
+        def __init__(self, docs, pages=None, **kw):
+            super().__init__(**kw); self.docs, self.pages = docs, pages or {}
 
         def __call__(self, cmd, **kw):
             if "/commits/" in cmd[2]:
                 self.calls.append(list(cmd))
-                r = self.docs.get(cmd[2].rsplit("/", 1)[1], (1, "", "HTTP 404"))
+                path, _, query = cmd[2].partition("?")
+                sha = path.rsplit("/", 1)[1]
+                page = int(dict(q.split("=") for q in query.split("&") if q).get("page", 1))
+                r = self.pages.get((sha, page)) or self.docs.get(sha, (1, "", "HTTP 404"))
+                if r[0] == 0 and not self.pages.get((sha, page)):
+                    doc = json.loads(r[1])
+                    if isinstance(doc.get("files"), list):
+                        doc["files"] = doc["files"][(page - 1) * 300:page * 300]
+                    r = (0, json.dumps(doc), "")
                 return subprocess.CompletedProcess(list(cmd), r[0], r[1], r[2])
             return super().__call__(cmd, **kw)
+
+        def pages_asked(self, sha):
+            return [c[2].rsplit("?", 1)[1] for c in self.calls if "/commits/" + sha + "?" in c[2]]
 
     @staticmethod
     def doc(parent, files=(("go.mod", "modified"),), message="Bump", verified=True, login=APP, parents=None,
@@ -783,12 +863,55 @@ class RecordsReusable(unittest.TestCase):
         self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(job=self.doc(H2, many, JM)),
                                            app_login=APP), H1)
 
-    def test_a_records_commit_of_300_files_is_unverifiable_and_refused(self):
-        for n in (300, 400):
-            many = tuple(("vendor/f%d.go" % i, "modified") for i in range(n))
-            gh = self.gh(job=self.doc(H2, many, JM))
-            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), n)
-            self.assertEqual(gh.writes(), [])
+    def records_commit(self, n, last=None):
+        files = tuple(("vendor/f%d.go" % i, "modified") for i in range(n))
+        return self.gh(job=self.doc(H2, files + ((last,) if last else ()), JM))
+
+    def test_a_records_commit_of_347_files_is_reused_by_paging(self):
+        gh = self.records_commit(347)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), ["per_page=300&page=1", "per_page=300&page=2"])
+        self.assertEqual(gh.writes(), [])
+
+    def test_a_short_first_page_is_one_request(self):
+        gh = self.records_commit(299)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), ["per_page=300&page=1"])
+
+    def test_a_list_of_exactly_300_files_ends_on_the_empty_second_page(self):
+        gh = self.records_commit(300)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), ["per_page=300&page=1", "per_page=300&page=2"])
+
+    def test_the_tenth_page_may_be_the_short_one(self):
+        gh = self.records_commit(2999)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(len(gh.pages_asked(H1)), 10)
+
+    def test_a_list_with_no_short_page_by_page_ten_is_refused(self):
+        gh = self.records_commit(3000)
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+        self.assertEqual(len(gh.pages_asked(H1)), 10)
+        self.assertEqual(gh.writes(), [])
+
+    def test_a_bad_path_on_a_later_page_is_refused(self):
+        gh = self.records_commit(347, last=("go.sum", "modified"))
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+
+    def test_a_failed_second_page_is_refused(self):
+        gh = self.records_commit(347)
+        gh.pages[(H1, 2)] = (1, "", "HTTP 502")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+
+    def test_a_second_page_whose_files_are_not_a_list_is_refused(self):
+        gh = self.records_commit(347)
+        gh.pages[(H1, 2)] = (0, json.dumps({"files": "x"}), "")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+
+    def test_a_second_page_that_is_not_json_is_refused(self):
+        gh = self.records_commit(347)
+        gh.pages[(H1, 2)] = (0, "not json", "")
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
 
     def test_a_records_commit_must_touch_records_paths_only(self):
         bad = {"go.mod": (("go.mod", "modified"),),
