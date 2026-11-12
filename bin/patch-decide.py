@@ -511,8 +511,8 @@ def _lit(v, before_colon=False):
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
-# the words, references, rule numbers and ids of www bin/check-customer-words.py (the ratified customer-words check): one
-# list, so the two never disagree
+# the words, references, rule numbers and ids of the www repository's bin/check-customer-words.py (the ratified
+# customer-words check): one list, so the two never disagree
 _B, _A = r"(?<![A-Za-z])", r"(?![A-Za-z])"
 SHOP = re.compile("|".join("(?:%s)" % p for p in (
     _B + r"(owners?|lanes?|orchestrators?|advisors?|handoffs?|ratif(y|ied|ies|ication))" + _A,
@@ -524,9 +524,8 @@ SOURCE_IN_TEXT = re.compile(r"(?<![A-Za-z])source\s*:", re.I)
 SOURCE_LINE = re.compile(r"  Source: (#[0-9]+|https://github\.com/fosterstack/cache/(?:pull|issues)/[0-9]+)")
 
 
-def _rendered(s):
-    """the text as Markdown shows it: a link as its text, emphasis and code marks gone"""
-    return re.sub(r"[*_`~]", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s))
+# a construct an entry line may not hold: an entry is plain text, so no renderer has to be read to know what it shows
+MARKDOWN = re.compile(r"""[\\*`~]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|\]\(|<[A-Za-z/!?]|&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);""")
 
 
 def _block_end(lines, i):
@@ -561,8 +560,12 @@ def _entries(text, name="next-release-notes"):
                                  "PR or issue URL)" % (name, n + 1))
         if len(srcs) > 1:
             raise ValueError("%s:%d: the entry has more than one Source line" % (name, i + 1))
+        for part in parts:
+            if MARKDOWN.search(part):
+                raise ValueError("%s:%d: the entry holds markdown (a link, backslash, mark, HTML tag or entity); an entry is "
+                                 "plain text" % (name, i + 1))
         text = " ".join(parts)
-        if SOURCE_IN_TEXT.search(text) or SOURCE_IN_TEXT.search(_rendered(text)):
+        if SOURCE_IN_TEXT.search(text):
             raise ValueError("%s:%d: the entry's own text holds a Source-like part; only the indented '  Source: <ref>' line "
                              "carries a source" % (name, i + 1))
         out.append([text, i + 1, "".join(srcs)])
@@ -605,7 +608,7 @@ def behavior_entries(text, name="docs/next-release-notes.md", located=False):
 def _check_entry(e):
     """An entry holds no shop talk (customers read it), and no vendor or model name hides in it split by a space or the
     line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
-    if SHOP.search(e) or SHOP.search(_rendered(e)):      # also as it renders: "ow**ner**", "ow[ner](https://x)"
+    if SHOP.search(e):
         raise ValueError("next-release-notes entry holds shop talk: %r" % e)
     # any run of up to ten adjacent words that spells a name (the longest has nine letters): "Goo gle", "G o o g l e"
     # (Sonnet #158 r2b); a run starting with a word that is already a name is _clean's, which redacts it

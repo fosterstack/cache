@@ -8,7 +8,7 @@ set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd)
 python3 - "$here/patch-decide.py" <<'PY'
-import importlib.util, re, sys
+import importlib.util, os, re, sys
 spec = importlib.util.spec_from_file_location("pd", sys.argv[1]); P = importlib.util.module_from_spec(spec); spec.loader.exec_module(P)
 passed = failed = 0
 def check(name, ok, got=""):
@@ -543,12 +543,30 @@ for bad in ["- A change nobody judged.\n", "- A change.\n  Source:\n",
             "- A change.\n  More info, Source: internal only.\n  Source: #1\n",
             "- A change.\n  Details source: internal/private\n  Source: #1\n",
             "- **Source**: internal/private\n  Source: #1\n", "- A change.\n  **Source**: internal\n  Source: #1\n",
-            "- The ow[ner](https://x) changed it.\n  Source: #1\n"]:
+            "- The ow[ner](https://x) changed it.\n  Source: #1\n",
+            "- The ow[ne](https://x/a(b))r changed it.\n  Source: #1\n",
+            "- Sour[ce](https://x/a(b)): internal/private\n  Source: #1\n", "- Source\\: internal/private\n  Source: #1\n",
+            "- The &#111;wner changed it.\n  Source: #1\n", "- The <b>lane</b> changed.\n  Source: #1\n",
+            "- See <https://x>.\n  Source: #1\n", "- A change.\n  [a]: https://x\n  Source: #1\n",
+            "- The ~~lane~~ changed.\n  Source: #1\n", "- A \\[x]: y.\n  Source: #1\n"]:
     try:
         P.behavior_entries(bad); raised = False
     except ValueError:
         raised = True
     check("0130 an entry with no source, or with shop talk or a visible citation, is refused: %r" % bad, raised)
+for md in ["- The ow[ner](https://x) changed it.\n  Source: #1\n", "- The ow[ne](https://x/a(b))r changed it.\n  Source: #1\n",
+           "- Sour[ce](https://x/a(b)): internal/private\n  Source: #1\n", "- Source\\: internal/private\n  Source: #1\n",
+           "- A change.\n  The ow**ner** agreed.\n  Source: #1\n", "- The _advisor_ agreed.\n  Source: #1\n"]:
+    try:
+        P.behavior_entries(md); why_ = ""
+    except ValueError as x:
+        why_ = str(x)
+    check("0130 an entry holding markdown is refused as markdown: %r" % md, "holds markdown" in why_, why_)
+for ok in ["- Uses max_retries (default 3) and a [beta] flag, 2 = 3.\n  Source: #1\n",
+           "- A change: the cache_key is stored.\n  Source: #1\n"]:
+    check("0130 a plain-text entry is accepted: %r" % ok, len(P.behavior_entries(ok)) == 1)
+check("0130 docs/next-release-notes.md passes as plain text",
+      bool(P.behavior_entries(open(os.path.join(os.path.dirname(sys.argv[1]), "..", "docs", "next-release-notes.md")).read())))
 check("0130 the source line is read but is not part of the entry",
       P.behavior_entries("- A change.\n  Source: #130\n") == ["A change."])
 check("0130 a Source line may be a full public cache PR or issue URL",
@@ -2175,7 +2193,7 @@ for nrn_, n_ in (("# Notes\n[x]: /u\n", 2), ("# Notes\n   [x]: /u\n", 2), ("# No
                  ("# Notes\n1. [x]: /u\n", 2), ("# Notes\n\n- [x\n  ]: /u.\n", 3), ("# Notes\n[a\\]b]: /u\n", 2)):
     rc_, err_, out_, p_ = notes_cli(nrn_)
     check("AC14 R14-2: a reference-definition shape is refused: %r (line %d)" % (nrn_, n_), refused_at(rc_, err_, out_, p_["nn"] + ":%d:" % n_), (rc_, err_))
-for s_ in ("a [x]: y", "[x] y", "\\[x]: y"):
+for s_ in ("a [x]: y", "[x] y"):
     rc_, err_, out_, p_ = notes_cli("# Notes\n\n- %s.\n" % s_)
     check("AC14 R14-2: %r is not refused" % s_, rc_ == 0 and out_ is not None, (rc_, err_))
 # R14-3 character references, any length, real entity names or not
