@@ -582,6 +582,13 @@ SPLIT_STEPS = json.loads(r'''{
   }
  ]
 }''')
+NOHOLD_NAMES = {
+    "bash .github/agent/tests/pin-age-check-test.sh": "the pin scan \u2014 names every moved version, passes only a pin it can read (REQ-SUP-001 AC2)",
+    "bash .github/agent/tests/pin-audit-test.sh": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions (REQ-SUP-001 AC5-AC10)",
+    "bash .github/agent/tests/supply-chain-wiring-test.sh": "where the supply-chain checks run \u2014 the PR job's read-only token, one writer per job (REQ-SUP-001 AC4)",
+}
+NOHOLD_STEP = {"name": "no wait for new versions \u2014 no text of it, Dependabot proposes at once, the pin-age context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)",
+               "run": "bash .github/agent/tests/release-age-gone-test.sh"}
 GATE6_NAME = "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)"
 for jid, want_steps in SPLIT_STEPS.items():
     sj = d.get("jobs", {}).get(jid)
@@ -602,6 +609,8 @@ for jid, want_steps in SPLIT_STEPS.items():
         _gi = [k for k, x in enumerate(want_steps) if x.get("run") == "bash bin/patch-decide-test.sh"]
         if len(_gi) == 1 and not any(x.get("run") == "bash bin/audit-record-test.sh" for x in want_steps):
             accepted.append(want_steps[:_gi[0] + 1] + [{"name": GATE6_NAME, "run": "bash bin/audit-record-test.sh"}] + want_steps[_gi[0] + 1:])
+        # the transition (the 7-day hold's removal): the three hold-named steps carry their no-hold names, the no-hold suite is last, once
+        accepted.append([dict(x, name=NOHOLD_NAMES[x["run"]]) if x.get("run") in NOHOLD_NAMES else x for x in want_steps] + [NOHOLD_STEP])
     if [_by_shape(st) for st in got] not in [[_by_shape(st) for st in a] for a in accepted]:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
@@ -911,6 +920,38 @@ case_ g6-continue                 bad "${G6}g6['continue-on-error'] = 'true'; ps
 case_ g6-env                      bad "${G6}g6['env'] = {'X': '1'}; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-other-script             bad "${G6}g6['run'] = 'bash bin/other-test.sh'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
 case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+# The transition judge (the 7-day hold's removal): allowlist-pins-auditor is accepted in EXACTLY two forms: main's list, or the no-hold form (the three hold-naming steps renamed, the no-hold suite once, last)
+NH="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; "
+NH+="nm = {'bash .github/agent/tests/pin-age-check-test.sh': 'the pin scan \\u2014 names every moved version, passes only a pin it can read (REQ-SUP-001 AC2)', "
+NH+="'bash .github/agent/tests/pin-audit-test.sh': 'the daily supply-chain audit \\u2014 advisories, upstream, disputed hits with checked-in exceptions (REQ-SUP-001 AC5-AC10)', "
+NH+="'bash .github/agent/tests/supply-chain-wiring-test.sh': \"where the supply-chain checks run \\u2014 the PR job's read-only token, one writer per job (REQ-SUP-001 AC4)\"}; "
+NH+="rn = lambda only=None: [x.__setitem__('name', nm[x['run']]) for x in ps if x.get('run') in nm and only in (None, x['run'])]; "
+NH+="gone = {'name': 'no wait for new versions \\u2014 no text of it, Dependabot proposes at once, the pin-age context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)', 'run': 'bash .github/agent/tests/release-age-gone-test.sh'}; "
+case_ nohold-form                 ok  "${NH}rn(); ps.append(dict(gone))"
+case_ nohold-names-no-step        bad "${NH}rn()"
+case_ nohold-step-old-names       bad "${NH}ps.append(dict(gone))"
+case_ nohold-only-age-check-old   bad "${NH}rn(); ps[ix('bash .github/agent/tests/pin-age-check-test.sh')]['name'] = 'the pin age check'; ps.append(dict(gone))"
+case_ nohold-only-audit-old       bad "${NH}rn(); ps[ix('bash .github/agent/tests/pin-audit-test.sh')]['name'] = 'the daily audit'; ps.append(dict(gone))"
+case_ nohold-only-wiring-old      bad "${NH}rn(); ps[ix('bash .github/agent/tests/supply-chain-wiring-test.sh')]['name'] = 'where they run'; ps.append(dict(gone))"
+case_ nohold-only-age-check-new   bad "${NH}rn('bash .github/agent/tests/pin-age-check-test.sh'); ps.append(dict(gone))"
+case_ nohold-only-audit-new       bad "${NH}rn('bash .github/agent/tests/pin-audit-test.sh'); ps.append(dict(gone))"
+case_ nohold-only-wiring-new      bad "${NH}rn('bash .github/agent/tests/supply-chain-wiring-test.sh'); ps.append(dict(gone))"
+case_ nohold-step-first           bad "${NH}rn(); ps.insert(0, dict(gone))"
+case_ nohold-step-middle          bad "${NH}rn(); ps.insert(ix('bash bin/panel-test.sh') + 1, dict(gone))"
+case_ nohold-step-before-last     bad "${NH}rn(); ps.insert(len(ps) - 1, dict(gone))"
+case_ nohold-step-twice           bad "${NH}rn(); ps.append(dict(gone)); ps.append(dict(gone))"
+case_ nohold-step-or-true         bad "${NH}rn(); gone['run'] += ' || true'; ps.append(gone)"
+case_ nohold-step-other-script    bad "${NH}rn(); gone['run'] = 'bash .github/agent/tests/other-test.sh'; ps.append(gone)"
+case_ nohold-step-continue        bad "${NH}rn(); gone['continue-on-error'] = 'true'; ps.append(gone)"
+case_ nohold-step-env             bad "${NH}rn(); gone['env'] = {'X': '1'}; ps.append(gone)"
+case_ nohold-step-if-false        bad "${NH}rn(); gone['if'] = 'false'; ps.append(gone)"
+case_ nohold-step-renamed         bad "${NH}rn(); gone['name'] = 'x'; ps.append(gone)"
+case_ nohold-step-unnamed         bad "${NH}rn(); gone.pop('name'); ps.append(gone)"
+case_ nohold-another-step-after   bad "${NH}rn(); ps.append(dict(gone)); ps.append({'name': 'x', 'run': 'true'})"
+case_ nohold-another-step-before  bad "${NH}rn(); ps.append({'name': 'x', 'run': 'true'}); ps.append(dict(gone))"
+case_ nohold-renamed-run-changed  bad "${NH}rn(); ps[ix('bash .github/agent/tests/pin-audit-test.sh')]['run'] += ' || true'; ps.append(dict(gone))"
+case_ nohold-renamed-run-other    bad "${NH}rn(); ps[ix('bash .github/agent/tests/pin-age-check-test.sh')]['run'] = 'true'; ps.append(dict(gone))"
+case_ nohold-renamed-step-env     bad "${NH}rn(); ps[ix('bash .github/agent/tests/supply-chain-wiring-test.sh')]['env'] = {'X': '1'}; ps.append(dict(gone))"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 bump() {
   echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps']" \

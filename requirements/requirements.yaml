@@ -2686,6 +2686,7 @@ requirements:
       AC15 limit: the pins nested inside an action are not counted as held, so a ruling for a pin that is only nested can be dormant, never dead.
       AC15 expectation (step 8, Oct 9): the three cosign rulings (GO-2024-2718, GO-2024-2719, GO-2023-2181) are ALIVE now because main pinned cosign 3.1.3 inside the 90-day history window (until commit 8a7512d); they become dormant (or dead, if a cosign 3.1.3 pin has appeared and they decide nothing) about 2026-12-14, 90 days after that pin left main, unless a cosign 3.1.3 pin is held again (pull request 249).
       Finding at step 6 (Oct 9): with the corrected table paths, the existing package-name filter of the audit already clears cosign 3.1.3 against GO-2026-4309. The real work of AC14 is (1) the corrected table (goreleaser, osv and golangci-lint need their /v2 path), (2) GitHub names matched under both the bare and the /vMAJOR path so the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
+      Transition judge (the 7-day hold's removal): while the hold is removed, the pin-wiring judge accepts the allowlist-pins-auditor job in exactly two forms: today's step list, and the no-hold form, in which the three steps that name the hold carry their no-hold names and the no-hold suite is the last step, once; every other shape is refused.
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-SUP-001-AC1
