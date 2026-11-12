@@ -847,7 +847,7 @@ func TestRenderApprovedBaselineWithEvidenceAndGroups(t *testing.T) {
 	out := render(f, m)
 
 	for _, want := range []string{
-		"approved by the owner on 2026-09-11.",
+		"approved on 2026-09-11.",
 		"## Cache protocol",
 		"## ZZZQ",
 		"## Release evidence",
@@ -872,6 +872,28 @@ func TestRenderApprovedBaselineWithEvidenceAndGroups(t *testing.T) {
 	}
 	if !strings.HasSuffix(out, "|\n") || strings.HasSuffix(out, "\n\n") {
 		t.Error("rendered output must end with exactly one trailing newline")
+	}
+}
+
+func TestRenderUnapprovedBaselineHasNoShopWords(t *testing.T) {
+	richFixture(t)
+	f, m := wantValid(t)
+	f.Baseline.Approved = false
+	f.Baseline.ApprovedOn = ""
+	out := render(f, m)
+
+	if strings.Contains(strings.ToLower(out), "owner") {
+		t.Error("customer page must not contain the word \"owner\"")
+	}
+	// The sentence is wrapped over source lines; compare it on one line.
+	oneLine := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{
+		"pending",
+		"no test mapping happens until the baseline is approved",
+	} {
+		if !strings.Contains(oneLine, want) {
+			t.Errorf("rendered output lacks %q", want)
+		}
 	}
 }
 
