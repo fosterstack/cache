@@ -3,12 +3,15 @@
 
   install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools [--bin /usr/local/bin] [--arch x86_64|aarch64]
 
-melange's bubblewrap runner needs bwrap on the machine, and the hosted images do not ship it. It comes from the archive like every other build
-tool, never from a package manager: the packages the committed lock names (name=version rows, REQ-REFRESH-001-AC35) are read for this machine's
-architecture from archive/<arch>/<name>-<version>.apk, which the pull step before this one has already checked against the committed pointer. Each is checked
-once more here (the file is there, its control segment names the lock's name and version and this architecture, the sha256 of its data segment equals
-the datahash the control segment records), unpacked into the NEW directory --root, and a small wrapper --bin/bwrap runs the extracted loader with
---library-path over the extracted libraries and the extracted usr/bin/bwrap (the glibc of the archive, not the runner's).
+melange's bubblewrap runner needs bwrap on the machine, and the hosted images do not ship it. It comes from the
+archive like every other build tool, never from a package manager: the packages the committed lock names (name=version
+rows, REQ-REFRESH-001-AC35) are read for this machine's architecture from archive/<arch>/<name>-<version>.apk, which the
+pull step before this one has already checked against the committed pointer. Each is checked once more here: the file
+is there, and its control segment names the lock's name and version and this architecture. The sha256 of its data
+segment must equal the datahash the control segment records (REQ-CHAIN-004-AC17); the pointer already fixes the file's
+bytes, so that last check proves nothing beyond the pull. The packages are unpacked into the NEW directory --root, and a
+small wrapper --bin/bwrap runs the extracted loader with --library-path over the extracted libraries and the extracted
+usr/bin/bwrap (the glibc of the archive, not the runner's).
 
 Nothing is fetched, no other program is started and nothing needs a privilege: the apk is read as data (gzip and the archive format as a library). Everything is
 checked and unpacked in a staging directory beside --root and renamed to --root only when every check passed; a refusal leaves nothing at --root and
@@ -24,6 +27,7 @@ import hashlib
 import io
 import os
 import re
+import shutil
 import sys
 import tarfile
 import zlib
@@ -32,6 +36,7 @@ ARCHS = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~-]*")
 SAFE_PATH = re.compile(r"[A-Za-z0-9_./+-]+")
+INFLATE_CAP = 1 << 30   # 1 GiB for all the segments of one package, as in apk-tool.py
 USAGE = "usage: install-host-bwrap.py --archive DIR --lock FILE --root DIR [--bin DIR] [--arch x86_64|aarch64]"
 
 
@@ -63,13 +68,16 @@ def read_lock(path):
 
 def members(raw, what):
     """Split an apk into its gzip members (signature, control, data; the signature is optional): the raw bytes of each and what it decompresses to."""
-    out, rest = [], raw
+    out, rest, budget = [], raw, INFLATE_CAP
     while rest:
         d = zlib.decompressobj(31)
         try:
-            data = d.decompress(rest)
+            data = d.decompress(rest, budget + 1)
         except zlib.error as e:
             die("%s is not an apk (gzip: %s)" % (what, e))
+        budget -= len(data)
+        if budget < 0:
+            die("%s decompresses to more than %d MiB (refusing)" % (what, INFLATE_CAP >> 20))
         if not d.eof:
             die("%s is truncated" % what)
         used = len(rest) - len(d.unused_data)
@@ -159,21 +167,16 @@ def check_place(stage, norm, what, kind):
     cur = stage
     for part in norm.split("/")[:-1]:
         cur = os.path.join(cur, part)
-        if os.path.relpath(cur, stage) in SKIPPED:
-            die("%s: %s is written below %s, an absolute symlink that was not created" % (what, norm, os.path.relpath(cur, stage)))
         if os.path.islink(cur) or (os.path.lexists(cur) and not os.path.isdir(cur)):
             die("%s: %s is written below %s, which is a symlink or a file, not a directory" % (what, norm, os.path.relpath(cur, stage)))
-    if norm in SKIPPED:
-        die("%s: %s is the path of an absolute symlink that was not created: nothing of any kind is placed there" % (what, norm))
-    if kind != "dir" and any(sk.startswith(norm + "/") for sk in SKIPPED):
-        die("%s: %s is not a directory but an absolute symlink that was not created lies below it" % (what, norm))
+    check_skipped(norm, what, kind)
     dest = os.path.join(stage, norm)
     if os.path.lexists(dest) and not (kind == "dir" and os.path.isdir(dest) and not os.path.islink(dest)):
         die("%s: the place of %s is already taken" % (what, norm))
 
 
 def check_skipped(norm, what, kind):
-    """The skipped-absolute-link guard of check_place, for the path as the package names it."""
+    """Nothing is placed at, below or above the path of an absolute symlink that was not created."""
     for i in range(1, len(norm.split("/"))):
         if "/".join(norm.split("/")[:i]) in SKIPPED:
             die("%s: %s is written below an absolute symlink that was not created" % (what, norm))
@@ -348,25 +351,23 @@ def main(argv):
         loader = os.path.relpath(loaders[0], stage)
         os.rename(stage, root)
     except BaseException as e:
-        import shutil
         shutil.rmtree(stage, ignore_errors=True)
         if isinstance(e, SystemExit):
             raise
         die("cannot unpack the host tools (%s: %s); nothing was written" % (type(e).__name__, e))
     wrapper = '#!/bin/sh\nexec %s/%s --library-path %s/usr/lib:%s/lib %s/usr/bin/bwrap "$@"\n' % (root, loader, root, root, root)
+    tmp = os.path.join(binary, ".bwrap.%d" % os.getpid())
     try:
         os.makedirs(binary, exist_ok=True)
-        tmp = os.path.join(binary, ".bwrap.%d" % os.getpid())
         with open(tmp, "w") as f:
             f.write(wrapper)
         os.chmod(tmp, 0o755)
         os.replace(tmp, os.path.join(binary, "bwrap"))
     except OSError as e:
-        import shutil
         shutil.rmtree(root, ignore_errors=True)
         try:
             os.unlink(tmp)
-        except (OSError, NameError):
+        except OSError:
             pass
         die("cannot write the wrapper in %s: %s" % (binary, e))
     print("installed bubblewrap and %d package(s) from the archive (%s) into %s; wrapper %s/bwrap" % (len(plan), arch, root, binary))

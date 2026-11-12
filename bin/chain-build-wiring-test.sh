@@ -1055,7 +1055,7 @@ expect caught "AC3 a script that is not a row of chain-scripts.json is refused" 
 # as in Wolfi's packages), a lock and an archive directory; every refusal leaves NOTHING written (no host-tools directory, no wrapper).
 NOWORDS='curl|wget|apt-get|apk add|sudo|pip install|urllib|socket|http.client|requests|subprocess|os.system|shutil.which|dpkg|yum|dnf'
 python3 -I - "$root" "$work" "$NOWORDS" > "$work/ac17.out" <<'PY'
-import gzip, hashlib, io, os, shutil, subprocess, sys, tarfile
+import gzip, hashlib, io, os, shutil, subprocess, sys, tarfile, zlib
 root, work = sys.argv[1:3]
 script = root + "/bin/install-host-bwrap.py"
 base = work + "/hb"
@@ -1112,14 +1112,14 @@ LOCK = "bubblewrap=0.13.0-r0\nglibc=2.43-r13\nld-linux=2.43-r13\nlibcap=2.78-r4\
 n = [0]
 
 
-def case(label, setup=None, lock=LOCK, want=0, extra_args=(), arch=ARCH, after=None, nothing_written=None):
+def case(label, setup=None, lock=LOCK, want=0, extra_args=(), arch=ARCH, after=None, nothing_written=None, bin_dir="@D/bin"):
     n[0] += 1
     d = "%s/c%d" % (base, n[0]); os.makedirs(d + "/archive/" + ARCH); os.makedirs(d + "/bin")
     good_set(d + "/archive/" + ARCH)
     if setup: setup(d)
     lp = d + "/host-tools.lock"
     open(lp, "wb").write(lock.encode() if isinstance(lock, str) else lock)
-    args = ["python3", "-I", script, "--archive", d + "/archive", "--lock", lp, "--root", d + "/host-tools", "--bin", d + "/bin", "--arch", arch] + list(extra_args)
+    args = ["python3", "-I", script, "--archive", d + "/archive", "--lock", lp, "--root", d + "/host-tools", "--bin", bin_dir.replace("@D", d), "--arch", arch] + list(extra_args)  # @D is the case folder
     r = subprocess.run(args, capture_output=True, text=True)
     good = r.returncode == want
     if want != 0 and nothing_written is not False:
@@ -1256,6 +1256,68 @@ case("AC17 aarch64 is accepted and reads archive/aarch64/", arch="aarch64", setu
 case("AC17 a wrapper that cannot be published (bin/bwrap is a directory) is refused (exit 1) and leaves neither the host-tools directory, a staging directory nor a temporary wrapper", setup=lambda d: os.makedirs(d + "/bin/bwrap"), want=1, nothing_written=False,
      after=lambda d, r: (not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging") and not [f for f in os.listdir(d + "/bin") if f.startswith(".bwrap.")]) or (_ for _ in ()).throw(AssertionError("residue")))
 case("AC17 an unknown option is refused (exit 2)", extra_args=("--sudo",), want=2)
+
+
+def gz_padded(path, files, zero_mib):
+    # one gzip segment: the tar, then zero_mib MiB of zeros (tar readers ignore trailing zero blocks), streamed
+    z = zlib.compressobj(wbits=31)
+    seg = z.compress(tar_bytes(files))
+    zeros = bytes(1 << 20)
+    with open(path, "wb") as f:
+        f.write(seg)
+        for _ in range(zero_mib):
+            f.write(z.compress(zeros))
+        f.write(z.flush())
+
+
+def s_padded(zero_mib):
+    def setup(d):
+        files = [("usr/lib/libcap.so.2.78", "file", b"CAP", None)]
+        tmp = d + "/data.gz"
+        gz_padded(tmp, files, zero_mib)
+        h = hashlib.sha256()
+        with open(tmp, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        info = "pkgname = libcap\npkgver = 2.78-r4\narch = %s\ndatahash = %s\n" % (ARCH, h.hexdigest())
+        ctl = gz(tar_bytes([(".PKGINFO", "file", info.encode(), None)]))
+        with open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "wb") as out, open(tmp, "rb") as f:
+            out.write(ctl)
+            shutil.copyfileobj(f, out)
+        os.remove(tmp)
+    return setup
+
+
+case("AC17 a package whose data segment decompresses to a few MiB of trailing zeros still installs",
+     setup=s_padded(4), after=a_basic)
+case("AC17 a package whose gzip segments decompress to more than 1 GiB is refused (exit 1), nothing written",
+     setup=s_padded(1025), want=1)
+ABS = [("usr/share/x/y", "sym", "/proc/mounts", None)]
+case("AC17 a file at a parent path of a skipped absolute link in a LATER package is refused, nothing written",
+     setup=two_pk(ABS, [("usr/share/x", "file", b"E", None)]), lock=LOCK + "libpsx=2.78-r4\n", want=1)
+case("AC17 a file at a parent path of a skipped absolute link in the same package is refused, nothing written",
+     setup=two_pk(ABS + [("usr/share/x", "file", b"E", None)], [("usr/lib/other", "file", b"x", None)]),
+     lock=LOCK + "libpsx=2.78-r4\n", want=1)
+LIB64 = [("usr/lib64", "sym", "lib", None), ("usr/lib/z", "sym", "/proc/mounts", None)]
+case("AC17 a file below a skipped absolute link through a symlinked directory (usr/lib64 -> lib) is refused",
+     setup=two_pk(LIB64 + [("usr/lib64/z/f", "file", b"E", None)], [("usr/lib/other", "file", b"x", None)]),
+     lock=LOCK + "libpsx=2.78-r4\n", want=1)
+case("AC17 the same file below the skipped link through the symlinked directory in a LATER package is refused",
+     setup=two_pk(LIB64, [("usr/lib64/z/f", "file", b"E", None)]), lock=LOCK + "libpsx=2.78-r4\n", want=1)
+
+
+def below_a_file(d):
+    open(d + "/blocker", "w").write("x")
+
+
+def a_no_wrapper_residue(d, r):
+    assert "cannot write the wrapper" in r.stderr, r.stderr
+    assert not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging"), "residue"
+    assert os.listdir(d + "/bin") == [] and os.path.isfile(d + "/blocker"), "stray file"
+
+
+case("AC17 a --bin below a regular file is refused (exit 1) with 'cannot write the wrapper', nothing left behind",
+     setup=below_a_file, bin_dir="@D/blocker/bin", want=1, nothing_written=False, after=a_no_wrapper_residue)
 # REQ-CHAIN-004-AC18: a hard link to a regular file the SAME package already unpacked is copied, never linked;
 # every other hard link, a device or a fifo is refused; a lib64 alias stands beside files placed below it
 # only while no file path has two owners.
@@ -3799,7 +3861,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1319
+EXPECT=1326
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
