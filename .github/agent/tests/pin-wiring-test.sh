@@ -321,6 +321,15 @@ def _by_shape(st):
     return st
 
 
+# The allowlist job's action steps are judged like the split jobs' steps: exactly these two, a full-hex digest may differ, any other `uses` step is refused.
+ALLOWLIST_ACTIONS = [_by_shape(st) for st in (
+    {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"fetch-depth": "0"}},
+    {"name": "set up Python for the workflow-permission check", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+     "with": {"python-version": "3.12"}})]
+for _i, st in enumerate(steps_):
+    if "uses" in st and _by_shape(st) not in ALLOWLIST_ACTIONS:
+        bad.append(f"the allowlist step {_i + 1} ({st.get('name') or st['uses']}) is not a judged action step")
+
 # The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped,
 # or whose step is skipped, disabled through its environment, or whose failure is ignored, passes while the suites never ran). Each is exactly
 # name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
@@ -918,16 +927,29 @@ bump() {
 }
 BUMPED=actions/setup-python@abababababababababababababababababababab
 ALL_JOBS="allowlist allowlist-chain allowlist-persona allowlist-pins-auditor"
-all_bumped=; for j in $ALL_JOBS; do all_bumped+="$(bump $j $BUMPED); "; done
-case_ uses-digest-bumped       ok  "$all_bumped"
-# each split job is refused on its own: a refusal in one job must not hide a missing one in another
+for j in $ALL_JOBS; do case_ "uses-digest-bumped-$j" ok "$(bump $j $BUMPED)"; done
+
+DIGEST=5fda3b95a4ea91299a34e894583c3862153e4b97
+BAD_TAG=actions/setup-python@v7
+BAD_SHORT=actions/setup-python@${DIGEST:0:39}
+BAD_UPPER=actions/setup-python@${DIGEST^^}
+BAD_NAME=evil/setup-python@$DIGEST
+BAD_MARKER='actions/setup-python@<commit>'
+
 for j in allowlist-chain allowlist-persona allowlist-pins-auditor; do
   want="the $j step 3 (set up Python) differs in: uses"
-  case_msg "uses-tag-ref-$j" "$(bump $j actions/setup-python@v7)" "$want"
-  case_msg "uses-short-digest-$j" "$(bump $j actions/setup-python@abababababababababababababababababababa)" "$want"
-  case_msg "uses-upper-digest-$j" "$(bump $j actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB)" "$want"
-  case_msg "uses-other-action-name-$j" "$(bump $j evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97)" "$want"
-  case_msg "uses-literal-marker-$j" "$(bump $j 'actions/setup-python@<commit>')" "$want"
+  case_msg "uses-tag-ref-$j" "$(bump $j "$BAD_TAG")" "$want"
+  case_msg "uses-short-digest-$j" "$(bump $j "$BAD_SHORT")" "$want"
+  case_msg "uses-upper-digest-$j" "$(bump $j "$BAD_UPPER")" "$want"
+  case_msg "uses-other-action-name-$j" "$(bump $j "$BAD_NAME")" "$want"
+  case_msg "uses-literal-marker-$j" "$(bump $j "$BAD_MARKER")" "$want"
+done
+
+for kind in tag-ref:"$BAD_TAG" short-digest:"$BAD_SHORT" upper-digest:"$BAD_UPPER" other-action-name:"$BAD_NAME" literal-marker:"$BAD_MARKER"; do
+  name=${kind%%:*}
+  ref=${kind#*:}
+  case_msg "uses-$name-allowlist" "$(bump allowlist "$ref")" "the allowlist step"
+  case_msg "uses-$name-allowlist-not-judged" "$(bump allowlist "$ref")" "is not a judged action step"
 done
 RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
 case_msg run-changed-names-key "$RUNX" "the allowlist-persona step 8 (persona UAT — driver suite) differs in: run"
