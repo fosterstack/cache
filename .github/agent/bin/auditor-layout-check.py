@@ -30,6 +30,8 @@ EXEMPT = [
     (r"^bin/patch-decide(\.py|-test\.sh)$",
      "the patch-release classifier and its test: they name the auditor directory as data and hold no auditor code "
      "(REQ-AUD-18 AC1 amendment, owner Oct 3)"),
+    (r"^\.github/policy/test-paths\.json$",
+     "the changed-path map: it names test paths as data and holds no auditor code (REQ-CI-001-AC3)"),
     # exactly the output contract (auditor-run.py stages these paths; the allowlist scopes their
     # change to auditor/ branches) — never a directory wildcard, and a .json one must parse.
     (r"^(\.vex/fosterstack-cache\.openvex\.json|\.auditor/accepted-items\.json"
