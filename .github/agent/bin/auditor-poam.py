@@ -16,10 +16,11 @@ def _expiry(today):
     return d.strftime("%Y-%m-%d")
 
 
-def _remove_from_vex(path, aliases):
+def _plan_removal(path, aliases):
+    """(doc, kept statements) when the VEX at `path` holds statements for `aliases`, else None. Writes nothing."""
     d = reviewed.read(path, as_name="x.openvex.json")      # a present VEX without its statements list, or one that cannot be read, is a stop: never "nothing to remove" (cache#701)
     if d is None:
-        return False
+        return None
     kept = []
     for s in d["statements"]:
         v = s.get("vulnerability") or {}
@@ -27,25 +28,37 @@ def _remove_from_vex(path, aliases):
         if names & aliases:
             continue
         kept.append(s)
-    if len(kept) == len(d["statements"]):
-        return False
-    d["statements"] = kept
+    return (d, kept) if len(kept) != len(d["statements"]) else None
+
+
+def _apply_removal(path, d, kept):
     if kept:
+        d["statements"] = kept
         json.dump(d, open(path, "w"), indent=1)
     else:
         os.remove(path)
-    return True
+
+
+def _remove_from_vex(path, aliases):
+    plan = _plan_removal(path, aliases)
+    if plan:
+        _apply_removal(path, *plan)
+    return bool(plan)
 
 
 def _remove_ignores(root, aliases):
-    """Remove the finding's statements from every OpenVEX file under root (the VEX is the only exception there is)."""
-    removed = []
+    """Remove the finding's statements from every OpenVEX file under root (the VEX is the only exception there is).
+    Every file is read and checked first, then written: a file that cannot be read stops the run with nothing changed."""
+    plans = []
     for dp, _, fs in os.walk(root):
         for fn in fs:
             p = os.path.join(dp, fn)
-            if fn.endswith(".openvex.json") and _remove_from_vex(p, aliases):
-                removed.append(p)
-    return removed
+            plan = _plan_removal(p, aliases) if fn.endswith(".openvex.json") else None
+            if plan:
+                plans.append((p, *plan))
+    for p, d, kept in plans:
+        _apply_removal(p, d, kept)
+    return [p for p, _, _ in plans]
 
 
 def recheck(pkgfile, suppdir, today, out):
