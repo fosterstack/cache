@@ -454,11 +454,23 @@ def _judged_path(event, args, i):
     return p
 
 
+def _coverage_uri_path(name):
+    """The path of coverage's own data-file URI, `file:///abs/.coverage.<x>?mode=ro`, or None for any other name."""
+    path, sep, query = name[5:].partition("?")
+    path = path[2:] if path.startswith("///") else path             # coverage writes `file:///abs`: an empty host, then the path
+    if sep and query == "mode=ro" and path.startswith("/") and not path.startswith("//") and not set(path) & set("%#"):
+        return path if os.path.basename(path).startswith(".coverage.") else None
+
+
 def _hook(event, args):
     if event == "sqlite3.connect" and args:
         # coverage keeps its data file in sqlite, so a plain path is judged like any other write. Refused (fail closed): a `file:` URI in
         # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "". The
         # connection itself denies ATTACH and VACUUM INTO (no audit event exists for them), so a database can write nowhere else.
+        # The one URI let through is coverage's hot-journal check; any other would let a test touch a real system path.
+        if isinstance(args[0], str) and args[0].startswith("file:") and _coverage_uri_path(args[0]):
+            check(_coverage_uri_path(args[0]), event, write=True)
+            return
         name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else None
         if name is None or name == "" or name.startswith("file:"):
             raise SystemPathAccess("test touched a real system path (sqlite3.connect): a file: URI or empty name is refused: %r" % (args[:1],))

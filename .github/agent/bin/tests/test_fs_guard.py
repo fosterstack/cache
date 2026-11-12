@@ -1127,6 +1127,13 @@ class AuditRows(unittest.TestCase):
                 for name in ("file:" + T.p2("db"), "file:../x/db", os.fsencode("file:/x"), pathlib.Path("file:" + T.p2("db")), ""):
                     self.refused(G._hook, "sqlite3.connect", (name,))
             self.refused(G._hook, "sqlite3.connect", (5,))
+            for scheme in ("file:", "file://"):                                                  # coverage's own data-file URI
+                G._hook("sqlite3.connect", (scheme + T.p1(".coverage.host.pid1.x") + "?mode=ro",))
+            for name in ("file:/etc/.coverage.x?mode=ro", "file:" + T.p2(".coverage.x") + "?mode=ro", "file:" + T.p1("data") + "?mode=ro",
+                         "file:" + T.p1(".coverage.x") + "?mode=rw", "file:" + T.p1(".coverage.x"), "file:" + T.p1(".coverage.x") + "?mode=ro&x=1",
+                         "file://host" + T.p1(".coverage.x") + "?mode=ro", "file:////etc/.coverage.x?mode=ro", "file:" + T.p1("%2ecoverage.x") + "?mode=ro",
+                         "file:" + T.p1("..", "x", ".coverage.y") + "?mode=ro", "file:.coverage.x?mode=ro"):
+                self.refused(G._hook, "sqlite3.connect", (name,))
         with tempfile.TemporaryDirectory() as d:                                # what coverage does: a real database file in a temp dir
             c = sqlite3.connect(os.path.join(d, ".coverage.1"))
             c.execute("create table t(x)"); c.execute("insert into t values (1)"); c.commit(); c.close()
