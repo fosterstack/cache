@@ -21,7 +21,7 @@ BASE=0123456789abcdef0123456789abcdef01234567
 OID=89abcdef0123456789abcdef0123456789abcdef
 OTHER=fedcba9876543210fedcba9876543210fedcba98
 RIVAL=00112233445566778899aabbccddeeff00112233
-LIST="gh pr list --head $B --base main --state all --json number,state,mergedAt,comments"
+LIST="gh pr list --head $B --base main --state all --json number,state,mergedAt,comments,author,isCrossRepository"
 LSR="git ls-remote --exit-code --heads origin $B"
 CREATE="gh pr create --draft --base main --head $B --title chore(go): bump toolchain 1.26.6 -> 1.27.0 --body <body> --label dependencies"
 REVP="git rev-parse HEAD"
@@ -114,7 +114,7 @@ for a in "\$@"; do
 done
 echo "gh \${args[*]}" >> "${log}"
 case "\$1 \$2" in
-  "pr list") printf '%s' '${prs}' ;;
+  "pr list") printf '%s' '${prs}' | jq -c 'map((if has("comments") then .comments |= map({author:{login:"app/fosterstack-auditor"}} + .) else . end) | {author:{login:"app/fosterstack-auditor"},isCrossRepository:false} + .)' ;;
   "pr create") [ "${create_rc}" = 0 ] && echo "https://example/pr/1"; exit ${create_rc} ;;
   "api graphql") case "${gql}" in ok) echo ${OID} ;; badoid) echo "not-an-oid" ;; fail) echo "HTTP 502" >&2; exit 1 ;; esac ;;
   "api repos/{owner}/{repo}/commits/${OID}"|"api repos/{owner}/{repo}/commits/${OTHER}"|"api repos/{owner}/{repo}/commits/${RIVAL}") case "\$*" in
