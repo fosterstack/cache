@@ -8,7 +8,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
 
 # A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
 # its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels

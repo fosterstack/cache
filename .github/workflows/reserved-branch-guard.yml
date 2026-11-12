@@ -1,7 +1,7 @@
 name: Reserved branch guard
 
 # The `auditor/*` prefix is the daily CVE auditor's own delivery branch: the public-repo
-# allowlist relaxes the suppression outputs (.snyk, osv-scanner.toml, .auditor/accepted-items.json)
+# allowlist relaxes the suppression outputs (.auditor/accepted-items.json, the knowledge and panel files)
 # on it (bin/check-file-allowlist.sh). Only the delivery App may push there — a human/dev branch
 # must never use `auditor/*` (use feat/ or req/). This fails closed on any other pusher.
 # (The preventive complement is a main ruleset restricting `auditor/*` creation to the App; this
