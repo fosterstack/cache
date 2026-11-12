@@ -1841,7 +1841,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 25 approved files (maintainers approved amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, the release manager approved Oct 5, new-file amendment Oct 3)"
+        then: "it holds exactly the 26 approved files (maintainers approved amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, the release manager approved Oct 5, new-file amendment Oct 3; full-suite.yml added by REQ-CI-001, Nov 12)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
