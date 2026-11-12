@@ -344,6 +344,15 @@ class Handle(Base):
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('  {"category": "real_fixable"}\n')]))
         self.assertEqual(ans["category"], "real_fixable")
 
+    def test_a_repeated_key_is_no_answer(self):
+        for text in ('{"category": "real_fixable", "category": "false_positive"}',
+                     '{"refused": true, "refused": false}'):
+            with self.assertRaises(ValueError, msg=text):
+                C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
+
+    def test_the_duplicate_key_check_is_the_shared_one(self):
+        self.assertFalse(hasattr(C, "_no_dup"))
+
     def test_propose_passthrough_only_when_dict(self):
         text = '{"category": "real_fixable", "propose": {"kind": "defect", "evidence": "a}b"}}'
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
@@ -436,6 +445,21 @@ class Main(Base):
         self.assertIn("error", answers[0])
         self.assertNotIn("category", answers[0])
         self.assertEqual(answers[1]["category"], "real_fixable")
+
+    def test_serve_malformed_reply_answers_error_with_the_tokens_it_cost(self):
+        sdk = fake_sdk([Msg("I cannot decide this.", usage=(10, 5)),
+                        Msg('{"category": "real_fixable"} {"x": 1}', usage=(7, 3))])
+        lines = [json.dumps({"finding_id": "A"}), json.dumps({"finding_id": "B"})]
+        code, out, _err = self.run_main(["--serve"], "\n".join(lines) + "\n", sdk)
+        self.assertIsNone(code)
+        answers = [json.loads(l) for l in out.splitlines()]
+        self.assertEqual([a["token_usage"] for a in answers], [15, 10])
+        self.assertTrue(all(a["error"].startswith("adjudicator-client:") for a in answers))
+
+    def test_serve_malformed_reply_without_usage_costs_zero(self):
+        sdk = fake_sdk([Msg("I cannot decide this.", usage=None)])
+        code, out, _err = self.run_main(["--serve"], json.dumps({"finding_id": "A"}) + "\n", sdk)
+        self.assertEqual(json.loads(out).get("token_usage", 0), 0)
 
     def test_one_shot_no_token_exits_before_reading(self):
         del os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"]
