@@ -525,7 +525,15 @@ SOURCE_LINE = re.compile(r"  Source: (#[0-9]+|https://github\.com/fosterstack/ca
 
 
 # a construct an entry line may not hold: an entry is plain text, so no renderer has to be read to know what it shows
-MARKDOWN = re.compile(r"""[\\*`~]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|\]\(|<[A-Za-z/!?]|&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);""")
+MARKDOWN = re.compile(r"""[\\*`~]|\]\(|<[A-Za-z/!?]|&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);""")
+
+
+def _markdown(part):
+    """whether an entry line holds a markdown construct; an underscore inside a word (letters or digits of any script on
+    both sides) is plain text, one at a word edge is a mark"""
+    return bool(MARKDOWN.search(part)) or any(
+        not (k > 0 and part[k - 1].isalnum() and k + 1 < len(part) and part[k + 1].isalnum())
+        for k, c in enumerate(part) if c == "_")
 
 
 def _block_end(lines, i):
@@ -561,7 +569,7 @@ def _entries(text, name="next-release-notes"):
         if len(srcs) > 1:
             raise ValueError("%s:%d: the entry has more than one Source line" % (name, i + 1))
         for part in parts:
-            if MARKDOWN.search(part):
+            if _markdown(part):
                 raise ValueError("%s:%d: the entry holds markdown (a link, backslash, mark, HTML tag or entity); an entry is "
                                  "plain text" % (name, i + 1))
         text = " ".join(parts)

@@ -563,7 +563,8 @@ for md in ["- The ow[ner](https://x) changed it.\n  Source: #1\n", "- The ow[ne]
         why_ = str(x)
     check("0130 an entry holding markdown is refused as markdown: %r" % md, "holds markdown" in why_, why_)
 for ok in ["- Uses max_retries (default 3) and a [beta] flag, 2 = 3.\n  Source: #1\n",
-           "- A change: the cache_key is stored.\n  Source: #1\n"]:
+           "- A change: the cache_key is stored.\n  Source: #1\n",
+           "- A change: café_cache is stored.\n  Source: #1\n", "- A change: 缓存_key is stored.\n  Source: #1\n"]:
     check("0130 a plain-text entry is accepted: %r" % ok, len(P.behavior_entries(ok)) == 1)
 check("0130 docs/next-release-notes.md passes as plain text",
       bool(P.behavior_entries(open(os.path.join(os.path.dirname(sys.argv[1]), "..", "docs", "next-release-notes.md")).read())))
