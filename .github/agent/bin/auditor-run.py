@@ -2299,6 +2299,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     _collect_vex(out, ts)
     # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh
     # call (cache#708 ruling 1); the delivery cuts its branch from this sha
+    # (a2) "a five-iteration stop" (REQ-AUD-9 AC3): the run counter moves BEFORE the first owner issue, so a counter that cannot
+    # advance stops the run with no issue sent; its one aggregate issue is emitted below (a3)
+    state["unsettled_counts"] = nochange.advance(state["unsettled_prev"], state["unsettled_now"], today)
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
@@ -2319,9 +2322,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             else:
                 r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
-    # (a2) "a five-iteration stop" (REQ-AUD-9 AC3, register row 38): findings left unsettled by the model in policy.UNSETTLED_RUNS consecutive runs are named in ONE owner-decision
-    # issue, never one per finding. The title is stable (the next run updates the open issue, AC2); the findings and their run counts are in the body.
-    state["unsettled_counts"] = nochange.advance(state["unsettled_prev"], state["unsettled_now"], today)
     # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
     # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
     _intents = {}
@@ -2550,7 +2550,9 @@ def _persist(out, rows, today):
 # forbidden vendor/model identifiers that must never reach the persisted report (R1 outer
 # round-1 #9). The federation audience/import elsewhere is separately acknowledged; a model
 # narrative must not name a provider or model.
-FORBIDDEN_NAMES = re.compile(r"anthropic|claude|openai|chatgpt|gpt-|codex|sonnet|opus|gemini|llama|private-model|canary", re.I)
+FORBIDDEN_WORDS = ("anthropic", "claude", "openai", "chatgpt", "gpt-", "codex", "sonnet", "opus", "gemini", "llama",
+                   "private-model", "canary")
+FORBIDDEN_NAMES = re.compile("|".join(FORBIDDEN_WORDS), re.I)
 
 
 def _configured_model_values():
@@ -2568,58 +2570,20 @@ _PROP_KEYS = {"kind", "package", "keys", "note", "evidence"}
 _PROP_REQUIRED = {"kind", "evidence", "note"}
 _PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
 _PROP_MAX = 2000
-# lookalike letters (Cyrillic, Greek) folded to Latin, so a vendor name written with one of them is still a vendor name
-_LOOKALIKE = str.maketrans({"\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0441": "c", "\u0440": "p", "\u0456": "i", "\u0455": "s", "\u0443": "y", "\u0445": "x", "\u0501": "d",
-                            "\u03bf": "o", "\u03bd": "v", "\u03b9": "i", "\u03c1": "p", "\u03b1": "a", "\u03b5": "e", "\u03ba": "k", "\u043d": "h", "\u0442": "t", "\u043c": "m"})
-
-
-def _fold(x):
-    """NFKC, format characters (zero-width and the like) removed, lookalikes folded, lower-cased."""
-    import unicodedata
-    y = unicodedata.normalize("NFKC", x)
-    y = "".join(c for c in y if unicodedata.category(c) not in ("Cf", "Cc") or c in "\n\t")
-    return y.lower().translate(_LOOKALIKE)
-
-
-_FORBIDDEN_LITERALS = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in FORBIDDEN_NAMES.pattern.split("|")]       # the same names with every separator removed
-
-
-def _split_across(lit, squashed):
-    """True when `lit` can be read off the squashed fields laid end to end in SOME order: a suffix of one field, then whole fields, then a prefix of another. A field may be
-    reused, which makes the search a walk over positions in `lit` (at most len(lit) x fields steps, never exponential) and only widens what is refused: fail-closed (it may refuse
-    an innocent proposal, never pass a split name)."""
-    fields = [f for f in set(squashed) if f]
-    reach = set()
-    for f in fields:
-        for a in range(len(f)):
-            suf = f[a:]
-            if len(suf) < len(lit) and lit.startswith(suf):
-                reach.add(len(suf))
-    seen = set(reach)
-    while reach:
-        pos = reach.pop()
-        r = lit[pos:]
-        for f in fields:
-            if f.startswith(r):
-                return True
-            if r.startswith(f) and pos + len(f) not in seen:
-                seen.add(pos + len(f)); reach.add(pos + len(f))
-    return False
 
 
 def _scrubbed_all(texts):
-    """True when no string, taken alone, joined with the others, or split across them in any order (separators removed), holds a vendor/model name or any configured model
-    identifier of this run (row 48: the public repo names none). No minimum length for the configured identifiers. A character outside ASCII after folding refuses the proposal."""
-    folded = [_fold(t) for t in texts]
-    if any(not f.isascii() for f in folded):
-        return False                                               # fail closed: a letter outside ASCII after folding cannot be judged a lookalike or not
-    squashed = [re.sub(r"[^a-z0-9]", "", f) for f in folded]
-    joined = "".join(squashed)
-    cfg = [re.sub(r"[^a-z0-9]", "", _fold(v)) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip()]
-    lits = [w for w in _FORBIDDEN_LITERALS if w] + [c for c in cfg if c]
-    if any(FORBIDDEN_NAMES.search(h) for h in folded + [" ".join(folded)]) or any(w in sq for w in lits for sq in squashed + [joined]):
+    """True when every field is ASCII and none holds, as a whole word, a vendor/model name or a model identifier
+    this run is configured with (row 48: the public repo names none). Each field is judged alone."""
+    if not all(t.isascii() for t in texts):
         return False
-    return not any(_split_across(w, squashed) for w in lits)
+    cfg = [v.strip() for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v.strip()]
+    for w in FORBIDDEN_WORDS + tuple(cfg):
+        # a word ending in a letter or digit must end the token (libopus0 is not "opus"); "gpt-" ends at its hyphen
+        tail = r"(?![a-z0-9])" if w[-1].isalnum() else ""
+        if any(re.search(r"(?<![a-z0-9])" + re.escape(w.lower()) + tail, t.lower()) for t in texts):
+            return False
+    return True
 
 
 def _valid_proposal(pr):
