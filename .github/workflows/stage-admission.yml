@@ -253,7 +253,9 @@ jobs:
             echo '[]' > /tmp/pr-check-runs.json
           fi
 
-          jq -c '.required_checks[]' /tmp/policy/required-checks.json | while read -r req; do
+          # A release-candidate tag (-rc.N) is the promotion: the full suite's promotion_checks must be green on the tagged commit too (REQ-CI-001-AC7)
+          rc=0; case "${GITHUB_REF_NAME}" in *-rc.*) rc=1 ;; esac
+          jq -c --argjson rc "$rc" '.required_checks[], (if $rc == 1 then .promotion_checks[] else empty end)' /tmp/policy/required-checks.json | while read -r req; do
             ctx=$(jq -r '.context' <<<"$req")
             app=$(jq -r '.integration_id' <<<"$req")
             scope=$(jq -r '.scope // "push"' <<<"$req")
@@ -278,7 +280,7 @@ jobs:
                 ;;
             esac
           done | jq -s '.' > /tmp/verified-checks.json
-          n_req=$(jq '.required_checks | length' /tmp/policy/required-checks.json)
+          n_req=$(jq --argjson rc "$rc" '.required_checks + (if $rc == 1 then .promotion_checks else [] end) | length' /tmp/policy/required-checks.json)
           n_got=$(jq 'length' /tmp/verified-checks.json)
           [ "$n_got" = "$n_req" ] || { echo "::error::verified ${n_got} of ${n_req} required checks" >&2; exit 1; }
           echo "all ${n_got} required checks green (app-pinned, scope-aware)"
