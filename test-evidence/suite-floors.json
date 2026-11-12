@@ -37,7 +37,7 @@
  "docs-snippets-test.sh": 50,
  "evidence-letter-job-test.sh": 122,
  "evidence-letter-test.sh": 51,
- "go-bump-open-pr-test.sh": 96,
+ "go-bump-open-pr-test.sh": 101,
  "go-freshness-wiring-test.sh": 77,
  "govulncheck-fixtures-test.sh": 4,
  "inspector-gate-test.sh": 83,

@@ -266,6 +266,16 @@ run_case "AC9: a pull request this script closed itself is not a human's decline
                                                      "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"body":"closed by go-bump-open-pr.sh: the branch moved after its commit was verified"}]}]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
 run_case "a closed pull request with someone else's comment is still a decline" \
                                                      "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"body":"not now"}]}]' 1 0 0 "$LIST" old
+run_case "a fork's open pull request on the bump branch name is not the open bump PR -> recovery goes on" \
+                                                     "$SUT" '[{"number":42,"state":"OPEN","mergedAt":null,"isCrossRepository":true}]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
+run_case "a fork's merged pull request on the bump branch name is not a landed bump -> recovery goes on" \
+                                                     "$SUT" '[{"number":40,"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","isCrossRepository":true}]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
+run_case "a fork's closed pull request on the bump branch name is not a decline -> recovery goes on" \
+                                                     "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"isCrossRepository":true}]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
+run_case "a \"closed by\" comment from another user does not undo a decline" \
+                                                     "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"author":{"login":"someone-else"},"body":"closed by go-bump-open-pr.sh: the branch moved after its commit was verified"}]}]' 1 0 0 "$LIST" old
+run_case "an open pull request by another user on the bump branch name is not the open bump PR -> recovery goes on" \
+                                                     "$SUT" '[{"number":42,"state":"OPEN","mergedAt":null,"author":{"login":"someone-else"}}]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
 run_case "AC9: an orphan's branch moved after its tip was verified -> the PR is closed, exit 1" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" old ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
 run_case "AC9: an id that is not a commit id -> branch deleted, no PR, exit 1" \
