@@ -175,7 +175,8 @@ def _skip_reason(names, base_go_mod, head_go_mod):
 
 
 def process_branch(repo, branch, ws, run, regenerate, dry_run=False, app_login=None):
-    """One branch (app_login: the App's login, e.g. 'name[bot]'; without it only Dependabot's commits are trusted); returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
+    """One branch (app_login: the App's login, e.g. 'name[bot]'; without it only Dependabot's commits are trusted);
+    returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
     'skipped: <reason>' or 'failed: <reason>'."""
     if not signed_commit._BUMP_BRANCH.match(branch):
         return "skipped: not a dependency-bump branch"
