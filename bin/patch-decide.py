@@ -13,7 +13,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   notes                   rule 5: per fix the CVE, package, old -> new, severity, variants; each VEX change; a
                           no-behavior-change line, or (advisor 0130) the behavior changes listed in
                           docs/next-release-notes.md, each with a Source line naming a public cache PR or issue, never published;
-                          no shop words in an entry or its Source; no vendor or model names.
+                          no shop words in an entry; no vendor or model names.
                           Its sources are refused, never rewritten, when a line holds a form Markdown could hide text in
                           (REQ-REL-009-AC14, advisor step 5): file:line, exit 2, nothing written.
   removed_critical_high   rule 2: the latest release's critical/high findings that HEAD removes (a Go module or the
@@ -511,20 +511,52 @@ def _lit(v, before_colon=False):
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
-SHOP = re.compile(r"\b(?:owner|advisor|handoff|orchestrator|lane|ratified)\b", re.I)
+# the words, references, rule numbers and ids of www bin/check-customer-words.py (the ratified customer-words check): one
+# list, so the two never disagree
+_B, _A = r"(?<![A-Za-z])", r"(?![A-Za-z])"
+SHOP = re.compile("|".join("(?:%s)" % p for p in (
+    _B + r"(owners?|lanes?|orchestrators?|advisors?|handoffs?|ratif(y|ied|ies|ication))" + _A,
+    r"docs/ratify|(?<![A-Za-z])handoffs?/|(?<![A-Za-z])audits/|/srv/|lane-outbox|(?<![A-Za-z])ops#[0-9]+",
+    _B + r"rules?\s+[0-9]+",
+    _B + r"(SB|HS|CR|MC)-[0-9]+")), re.I)
+SOURCE_LOOKS = re.compile(r"\s*source\s*:", re.I)
+SOURCE_LINE = re.compile(r"  Source: (#[0-9]+|https://github\.com/fosterstack/cache/(?:pull|issues)/[0-9]+)")
 
 
-def _entries(text):
+def _block_end(lines, i):
+    """the index after the bullet at lines[i] and its indented continuation lines (an entry ends at a blank or an
+    unindented line)"""
+    i += 1
+    while i < len(lines) and lines[i].startswith("  ") and lines[i].strip():
+        i += 1
+    return i
+
+
+def _entries(text, name="next-release-notes"):
     """[entry, line number of its bullet, source] of a next-release-notes text: each "- " bullet, its indented continuation
-    lines joined; its source is the text of the indented "  Source:" line under it, which is not part of the entry"""
-    out = []
-    for n, ln in enumerate(text.splitlines(), 1):
-        if ln.startswith("- "):
-            out.append([ln[2:].strip(), n, ""])
-        elif out and ln.startswith("  Source:"):
-            out[-1][2] = ln[len("  Source:"):].strip()
-        elif out and ln.startswith("  ") and ln.strip():
-            out[-1][0] += " " + ln.strip()
+    lines joined; its source is the public reference on the one "  Source: <ref>" line under it, which is not part of the
+    entry. A line that looks like a Source line but is not that exact form, a second one, or one outside an entry's block
+    is refused (ValueError), never read as entry text"""
+    out, lines, i = [], text.splitlines(), 0
+    while i < len(lines):
+        if not lines[i].startswith("- "):
+            if SOURCE_LOOKS.match(lines[i]):
+                raise ValueError("%s:%d: a Source line outside an entry, or not the exact form '  Source: #<number>'" % (name, i + 1))
+            i += 1
+            continue
+        j, parts, srcs = _block_end(lines, i), [lines[i][2:].strip()], []
+        for n in range(i + 1, j):
+            if not SOURCE_LOOKS.match(lines[n]):
+                parts.append(lines[n].strip())
+            elif SOURCE_LINE.fullmatch(lines[n]):
+                srcs.append(lines[n][len("  Source: "):])
+            else:
+                raise ValueError("%s:%d: a Source line that is not the exact form '  Source: #<number>' (or a public cache "
+                                 "PR or issue URL)" % (name, n + 1))
+        if len(srcs) > 1:
+            raise ValueError("%s:%d: the entry has more than one Source line" % (name, i + 1))
+        out.append([" ".join(parts), i + 1, "".join(srcs)])
+        i = j
     return out
 
 
@@ -533,7 +565,7 @@ def _source_entries(text, name):
     every entry with its lines joined as notes() prints it, is refused (ValueError naming name:line) when it holds a
     refused form; two entries whose published lines are the same line are refused, both named"""
     _refuse_text(text, name)
-    ents = _entries(text)
+    ents = _entries(text, name)
     for e, n, _ in ents:
         why = _refused_form("- " + _oneline(e))
         if why:
@@ -544,8 +576,9 @@ def _source_entries(text, name):
 
 def behavior_entries(text, name="docs/next-release-notes.md", located=False):
     """The entries of docs/next-release-notes.md (advisor 0130). An entry is only a change judged unable to affect
-    supported clients, so each must have a "  Source:" line under it, naming a public cache PR or issue,
-    read here and never published; an entry without one, or with shop talk in its text or its Source, is refused
+    supported clients, so each must have one "  Source:" line under it, naming a public cache PR or issue
+    (#<number> or its URL), read here and never published; an entry without one, with a malformed or second one, or with
+    shop talk in its text, is refused
     (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two entries
     publishing the same line are refused, naming name:line. located: each entry with its location 'name:line:'."""
     ents = _source_entries(text, name)
@@ -553,8 +586,6 @@ def behavior_entries(text, name="docs/next-release-notes.md", located=False):
         try:
             if not src:
                 raise ValueError("next-release-notes entry has no Source line: %r" % e)
-            if SHOP.search(src):
-                raise ValueError("next-release-notes Source line holds shop talk: %r" % src)
             _check_entry(e)
         except ValueError as x:
             raise ValueError("%s:%d: %s" % (name, n, x))
@@ -1094,9 +1125,8 @@ def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHAN
     while i < len(lines):
         j = i + 1
         if lines[i].startswith("- "):                      # an entry and its indented continuation lines
-            while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
-                j += 1
-            entry = " ".join(ln.strip() for ln in lines[i:j] if not ln.startswith("  Source:"))[2:]
+            j = _block_end(lines, i)
+            entry = " ".join(ln.strip() for ln in lines[i:j] if not SOURCE_LOOKS.match(ln))[2:]
             if _entry_line(entry).rstrip() in published:
                 i = j
                 continue

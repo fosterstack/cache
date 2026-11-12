@@ -515,10 +515,27 @@ check("0130 entries parsed, continuation lines joined", ents == [
     "Second change, one line."], ents)
 check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
 for bad in ["- A change nobody judged.\n", "- A change.\n  Source:\n",
-            "- A change (owner said so).\n  Source: x\n", "- A change (advisor 0130).\n  Source: x\n",
-            "- A change from a handoff.\n  Source: x\n", "- The orchestrator changed it.\n  Source: x\n",
-            "- A change in the lane.\n  Source: x\n", "- Ratified change.\n  Source: x\n",
-            "- A change.\n  Source: advisor 0130\n"]:
+            "- A change (owner said so).\n  Source: #1\n", "- A change (advisor 0130).\n  Source: #1\n",
+            "- A change from a handoff.\n  Source: #1\n", "- The orchestrator changed it.\n  Source: #1\n",
+            "- A change in the lane.\n  Source: #1\n", "- Ratified change.\n  Source: #1\n",
+            # the ratified customer-words check's word list: plurals, stems, case, rule numbers and ids
+            "- Owners changed it.\n  Source: #1\n", "- The Advisors agreed.\n  Source: #1\n", "- Two lanes.\n  Source: #1\n",
+            "- Ratification done.\n  Source: #1\n", "- Ratifies it.\n  Source: #1\n", "- OWNER.\n  Source: #1\n",
+            "- Per rule 12.\n  Source: #1\n", "- Per Rules 3.\n  Source: #1\n", "- See SB-14.\n  Source: #1\n",
+            "- See ops#12.\n  Source: #1\n", "- See docs/ratify/x.md.\n  Source: #1\n", "- See /srv/x.\n  Source: #1\n",
+            # a Source line is a public reference, once, in the exact form
+            "- A change.\n  Source: x\n", "- A change.\n  Source: test\n", "- A change.\n  Source: advisor 0130\n",
+            "- A change.\n  Source: #\n", "- A change.\n  Source: #12 and more\n", "- A change.\n  Source: 152\n",
+            "- A change.\n  Source: https://example.com/fosterstack/cache/pull/1\n",
+            "- A change.\n  Source: https://github.com/other/cache/pull/1\n",
+            "- A change.\n  Source: https://github.com/fosterstack/cache/pull/1/files\n",
+            "- A change.\n  Source: advisor 0130\n  Source: #130\n", "- A change.\n  Source: #130\n  Source: #131\n",
+            "- A change.\n  Source: #130\n  Source: #130\n",
+            "- A change.\n  source: #130\n  Source: #131\n", "- A change.\n  Source : #130\n  Source: #131\n",
+            "- A change.\n\tSource: #130\n  Source: #131\n", "- A change.\n   Source: #130\n  Source: #131\n",
+            "- A change.\n  Source:  #130\n", "- A change.\n  SOURCE: #130\n  Source: #131\n",
+            "- A change.\n  Source: #130 \n", "- A change.\n\n  Source: #130\n", "- A change.\nSource: #130\n  Source: #131\n",
+            "Source: #130\n- A change.\n  Source: #131\n"]:
     try:
         P.behavior_entries(bad); raised = False
     except ValueError:
@@ -526,9 +543,22 @@ for bad in ["- A change nobody judged.\n", "- A change.\n  Source:\n",
     check("0130 an entry with no source, or with shop talk or a visible citation, is refused: %r" % bad, raised)
 check("0130 the source line is read but is not part of the entry",
       P.behavior_entries("- A change.\n  Source: #130\n") == ["A change."])
-check("0130 a public requirement id stays in an entry", P.behavior_entries("- Fixes REQ-REL-001.\n  Source: x\n") == ["Fixes REQ-REL-001."])
-published_ = P.changelog(P.notes("v0.2.3", [], [], behavior=["A change."]), None, "- A change.\n  Source: #130\n")[0]
-check("0130 the source line is never published", "Source" not in published_ and "advisor" not in published_, published_)
+check("0130 a Source line may be a full public cache PR or issue URL",
+      P.behavior_entries("- A.\n  Source: https://github.com/fosterstack/cache/pull/152\n- B.\n  Source: https://github.com/fosterstack/cache/issues/7\n") == ["A.", "B."])
+check("0130 a public requirement id stays in an entry", P.behavior_entries("- Fixes REQ-REL-001.\n  Source: #1\n") == ["Fixes REQ-REL-001."])
+# the changelog() filter itself: the entry's own notes line is published, and what stays in next-release-notes is the
+# unpublished entry with its Source line, never the published one's
+published_, left_ = P.changelog(P.notes("v0.2.3", [], [], behavior=["A change."]), None,
+                                "- A change.\n  Source: #130\n- Kept.\n  Source: #131\n")
+check("0130 the source line is never published", "Source" not in published_ and "#130" not in published_ and "#131" not in published_
+      and left_ == "- Kept.\n  Source: #131\n", (published_, left_))
+for bad_nn in ["- A change.\n  Source: x\n", "- A change.\n  Source: #1\n  Source: #2\n", "- A change.\n   Source: #1\n",
+               "- A change.\n\n  Source: #1\n"]:
+    try:
+        P.changelog(P.notes("v0.2.3", [], [], behavior=["A change."]), None, bad_nn); raised = False
+    except ValueError:
+        raised = True
+    check("0130 changelog refuses a next-release-notes Source line that is not the exact form: %r" % bad_nn, raised)
 nb = P.notes("v0.2.2", fixes, vex, behavior=ents)
 check("0130 notes list behavior changes under their heading", "### Behavior changes\n- Go 1.27: a request" in nb, nb)
 check("0130 with behavior changes the no-behavior-change line is dropped", "No behavior change" not in nb, nb)
@@ -2041,7 +2071,7 @@ for split in ("- G o o g l e rejects long headers.\n", "- the D e e p S e e k pa
         raised = True
     check("SEC-1 (Sonnet r2b) a name split into three or more pieces is refused: %r" % split, raised)
 check("SEC-1 the real entries still pass (Go 1.27; metadata; to 1.2)", len(P.behavior_entries(NRN)) == 2 and
-      P.behavior_entries("- metadata handling for a meta tag moved to 1.2.\n  Source: test\n") != [])
+      P.behavior_entries("- metadata handling for a meta tag moved to 1.2.\n  Source: #1\n") != [])
 # Codex #159 AC1(h) r1, B01: data is not executable — a changed file Git records as executable or as a symlink, or whose
 # added content starts a script (#!), is never neutral or fix-class; B02: a reviewed workflow by its full path only
 sh_ = "+#!/bin/sh\n+test 1 = 1 && printf AC1_EXECUTED\n"
@@ -2095,11 +2125,11 @@ def cli(argv, stdin=None):
 LAST_STDOUT = [""]    # r9 (B F7): the stdout of the last notes_cli / changelog_cli run
 R8_FIND = [{"id": "CVE-2099-1", "package": "golang.org/x/net", "installed": "v0.30.0", "fixed": "v0.33.0", "severity": "High", "type": "go-module"}]
 def with_source(text):
-    """next-release-notes text with a "  Source: test" line under each bullet that has none, for fixtures about something else"""
+    """next-release-notes text with a "  Source: #1" line under each bullet that has none, for fixtures about something else"""
     out, open_ = [], False
     for ln in text.splitlines(True) + ["\n"]:
         if open_ and not (ln.startswith("  ") and ln.strip()):
-            if not src_: out.append("  Source: test\n")
+            if not src_: out.append("  Source: #1\n")
             open_ = False
         if ln.startswith("- "): open_, src_ = True, False
         elif open_ and ln.startswith("  Source:"): src_ = True
