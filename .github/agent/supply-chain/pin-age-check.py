@@ -187,30 +187,31 @@ def _gh_pages(path, rows):
     return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-def _gh_api(path, need):
-    """A GitHub object answer holding every key of `need`; None only for a plain miss (404)."""
+_MISS = object()
+
+
+def _gh_json(path):
+    """The JSON a `gh api path` call prints; _MISS only for a plain miss (404)."""
     r = _gh_run(["gh", "api", path], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
-        return None
+        return _MISS
     try:
-        got = json.loads(r.stdout)
+        return json.loads(r.stdout)
     except ValueError:
         raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
-    return _shaped(got, need, f"GitHub API {path.split('?')[0]}")
+
+
+def _gh_api(path, need):
+    """A GitHub object answer holding every key of `need`; None only for a plain miss (404)."""
+    got = _gh_json(path)
+    return None if got is _MISS else _shaped(got, need, f"GitHub API {path.split('?')[0]}")
 
 
 def _gh_list(path, rows):
     """One page of a GitHub list answer, every row holding the keys of `rows`; None only for a plain miss (404)."""
-    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
-    if r.returncode:
-        _gh_failed(r)
-        return None
-    try:
-        got = json.loads(r.stdout)
-    except ValueError:
-        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
-    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
+    got = _gh_json(path)
+    return None if got is _MISS else _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
 _GONE = object()        # the server said 404 or 410, the one answer that means "not there"
@@ -249,14 +250,6 @@ TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version
 _RELEASE = (("published_at", (str, _NULL)), ("draft", bool))      # a release answer holds both (published_at is null on a draft): a missing key is no release, it is an unreadable answer
 
 
-def _release_time(repo, tags):
-    for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE)
-        if rel and rel["published_at"] and not rel["draft"]:
-            return rel["published_at"]
-    return None
-
-
 _TAGS = {}
 
 
@@ -292,19 +285,6 @@ def _tags_for_commit(repo, sha):
 def _tag_for_commit(repo, sha):
     tags = _tags_for_commit(repo, sha)
     return tags[0] if tags else None
-
-
-def _commit_date(repo, sha):
-    c = _gh_api(f"repos/{repo}/commits/{sha}", (("commit", dict),))
-    if c is None:
-        return None
-    committer = c["commit"].get("committer")      # optional: a commit without a committer has no date
-    if committer is None:
-        return None
-    date = _shaped(committer, (), "the commit's committer").get("date")
-    if date is not None and not isinstance(date, str):
-        raise CouldNotLook("GitHub API commit answered with a committer date that is not text")
-    return date
 
 
 def _go_escape(path):
@@ -641,17 +621,16 @@ def cosign_verify_images(root, rev, cosign_image, run):
             if it.kind != "image" or it.name not in pins or not by_digest or (it.name, it.version) in seen:
                 continue
             seen.add((it.name, it.version))
-            pin, ref, cmds = pins[it.name], f"{it.name}@{it.version}", []
+            pin, ref, cmds, docker_run = pins[it.name], f"{it.name}@{it.version}", [], ["docker", "run", "--rm"]
             if "key" in pin:
                 key_file = os.path.join(d, f"key{len(seen)}.pub")
                 with open(key_file, "w") as f:
                     f.write(pin["key"])
                 mount = f"{key_file}:/pin/key.pub:ro"
-                cmds.append(["docker", "run", "--rm", "-v", mount, cosign_image, "verify",
-                             "--key", "/pin/key.pub", ref])
+                cmds.append(docker_run + ["-v", mount, cosign_image, "verify", "--key", "/pin/key.pub", ref])
             for ident in pin.get("keyless", []):
-                cmds.append(["docker", "run", "--rm", cosign_image, "verify",
-                             "--certificate-identity", ident["subject"], "--certificate-oidc-issuer", ident["issuer"], ref])
+                cmds.append(docker_run + [cosign_image, "verify", "--certificate-identity", ident["subject"],
+                                          "--certificate-oidc-issuer", ident["issuer"], ref])
             codes = [run(c) for c in cmds]                      # every pinned identity is tried, so the log shows each
             ok = any(c == 0 for c in codes)
             reason = "" if ok else f"cosign verify found no pinned identity that signed it ({len(cmds)} tried)"
@@ -786,10 +765,6 @@ _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
 LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
 GO_RULING = "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): "   # the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
-LOOPBACK_RULING = "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): "   # the one line of the loopback helper that starts the fetch program (REQ-SUP-001-AC24): honored for that file and that line's sha256 only
-LOOPBACK_FILE = "bin/loopback-get.sh"
-LOOPBACK_LINE = """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?"""    # the raw text of the line, byte for byte (no indent, no trailing space, no carriage return)
-LOOPBACK_LINE_SHA256 = "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd"   # sha256 of that line as the scan hashes it (whitespace collapsed); the raw text above is what the head file must hold
 DOWNLOAD_FORM = "a download"
 _LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
 # the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash included, so the host cannot change) followed by
@@ -797,7 +772,6 @@ _LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
 _LIVE_URL_VAR = re.compile(r"https://packages\.wolfi\.dev/os/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 _GO_OUT = re.compile(r"(?:[A-Za-z0-9_./-]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})+")
 _GO_URL_VAR = re.compile(r"https://go\.dev/dl/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
-_ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
 
@@ -882,15 +856,17 @@ def _body_hashes(text, line_hash):
 
 
 
-_LOOPBACK_OK = {}
 
 
-PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "   # nineteen script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
+PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "   # the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
 HASH_LOCKED_RULING = "hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): "   # the one Alpine kernel package line of bin/refresh-inputs.sh (REQ-SUP-001-AC35)
 HL_FILE, HL_LOCK, HL_HOST, HL_PATH, HL_INDENT = "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f", " " * 8
 _HL_FLAGS = re.compile(re.escape('/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" '))
 _HL_DIE = 'die "could not download the kernel package from the Alpine mirror" 1'
 PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must hold each exactly once
+    "bin/loopback-get.sh": [
+        """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?""",
+    ],
     'bin/release-assets.sh': [
         'gh release download "$rel" -D release-published',
     ],
@@ -931,31 +907,23 @@ _PINNED_FETCH_SHA = {f: {hashlib.sha256(" ".join(l.split()).encode("utf-8", "rep
 _PINNED_OK = {}
 
 
+def _held_once(root, head, f, line):
+    """True only when the head file f (a regular file, not a link) holds `line` byte for byte exactly once, has no carriage return, and holds no other line that differs
+    from it only in whitespace (the scan hashes with whitespace collapsed, so the raw text is compared here). Unreadable: False."""
+    raw = _head_file(root, head, f)
+    if raw is None or b"\r" in raw:
+        return False
+    rows = raw.split(b"\n")
+    flat = " ".join(line.split())
+    return rows.count(line.encode()) == 1 and sum(" ".join(r.decode("utf-8", "replace").split()) == flat for r in rows) == 1
+
+
 def _pinned_line_ok(root, head, f, lh):
-    """True only when the pinned line of file f whose whole-line sha256 is lh is held by the head file byte for byte exactly once, the file is a regular file (not a link),
-    there is no carriage return in it and no other line that differs from the pinned one only in whitespace (the scan hashes with whitespace collapsed, so the raw
-    text is compared here). Unreadable, or a line the checker does not pin: False. The same shape as the loopback ruling (AC25), for the nineteen lines of AC26."""
+    """True only when the pinned line of file f whose whole-line sha256 is lh is held by the head file as _held_once says. A line the checker does not pin: False."""
     key = (root, head, f, lh)
     if key not in _PINNED_OK:
-        ok = False
         raw_line = _PINNED_FETCH_SHA.get(f, {}).get(lh)
-        try:
-            if raw_line is not None:
-                if head is None:
-                    path = os.path.join(root, f)
-                    ok = os.path.isfile(path) and not os.path.islink(path)
-                    raw = open(path, "rb").read() if ok else b""
-                else:
-                    ent = subprocess.run(["git", "-C", root, "ls-tree", head, "--", f], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
-                    ok = len(ent) >= 4 and ent[0] in ("100644", "100755") and ent[1] == "blob"
-                    raw = subprocess.run(["git", "-C", root, "show", f"{head}:{f}"], capture_output=True, check=True, timeout=120).stdout if ok else b""
-                if ok:
-                    lines = raw.split(b"\n")
-                    same = [ln for ln in lines if " ".join(ln.decode("utf-8", "replace").split()) == " ".join(raw_line.split())]
-                    ok = b"\r" not in raw and lines.count(raw_line.encode()) == 1 and len(same) == 1
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            ok = False
-        _PINNED_OK[key] = ok
+        _PINNED_OK[key] = raw_line is not None and _held_once(root, head, f, raw_line)
     return _PINNED_OK[key]
 
 
@@ -1004,40 +972,14 @@ def _hash_locked_line_ok(root, head, f, flat, ver):
     host, _, rest = url[8:].partition("/")
     if not url.startswith("https://") or host != HL_HOST or "/" + rest != HL_PATH:
         return False
-    raw = _head_file(root, head, f)
-    rows = raw.split(b"\n") if raw is not None else []
-    if raw is None or b"\r" in raw or sum(b" ".join(ln.split()) == flat.encode() for ln in rows) != 1 or (HL_INDENT + flat).encode() not in rows:
+    if not _held_once(root, head, f, HL_INDENT + flat):
         return False
+    raw = _head_file(root, head, f)
     text = _function_text(raw, ver[1]) if ver and ver[0] == HL_FILE else None
     if text is None or hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest() != ver[2]:
         return False
     lock = _head_file(root, head, HL_LOCK)
     return lock is not None and b"\r" not in lock
-
-
-def _loopback_line_ok(root, head):
-    """True only when the head file bin/loopback-get.sh is a regular file (not a link) holding the pinned line byte for byte exactly once, no carriage return anywhere
-    and no other line that differs from it only in whitespace (the scan hashes with whitespace collapsed, so the raw text is compared here). Unreadable: False."""
-    key = (root, head)
-    if key not in _LOOPBACK_OK:
-        ok = False
-        try:
-            if head is None:
-                path = os.path.join(root, LOOPBACK_FILE)
-                ok = os.path.isfile(path) and not os.path.islink(path)
-                raw = open(path, "rb").read() if ok else b""
-            else:
-                ent = subprocess.run(["git", "-C", root, "ls-tree", head, "--", LOOPBACK_FILE], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
-                ok = len(ent) >= 4 and ent[0] in ("100644", "100755") and ent[1] == "blob"
-                raw = subprocess.run(["git", "-C", root, "show", f"{head}:{LOOPBACK_FILE}"], capture_output=True, check=True, timeout=120).stdout if ok else b""
-            if ok:
-                lines = raw.split(b"\n")
-                same = [ln for ln in lines if " ".join(ln.decode("utf-8", "replace").split()) == " ".join(LOOPBACK_LINE.split())]
-                ok = b"\r" not in raw and lines.count(LOOPBACK_LINE.encode()) == 1 and len(same) == 1
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            ok = False
-        _LOOPBACK_OK[key] = ok
-    return _LOOPBACK_OK[key]
 
 
 def _body_proved(root, head, path, line_hash, row):
@@ -1368,16 +1310,14 @@ def _run(a, moved, fx, now):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         rs = [r if r is None or _body_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]    # a row whose body hash does not hold rules nothing
-        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING, HASH_LOCKED_RULING)) for r in rs):
+        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, PINNED_FETCH_RULING, HASH_LOCKED_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING) and not (k[0].endswith(".sh") and not k[0].startswith(".github/") and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a Go-toolchain ruling on a line that is not exactly the one go.dev/dl/ shape rules nothing (AC23)
-        if any(r and r[0].startswith(LOOPBACK_RULING) and not (k[0] == LOOPBACK_FILE and lh == LOOPBACK_LINE_SHA256 and _loopback_line_ok(a.root, a.head)) for r, lh in zip(rs, lines[k])):
-            rs = [None]                                  # the loopback ruling on any line but the helper's one pinned line rules nothing (AC25)
         if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r, lh in zip(rs, lines[k])):
-            rs = [None]                                  # the pinned-fetch ruling on any line but one of the nineteen pinned lines of its own file rules nothing (AC26)
+            rs = [None]                                  # the pinned-fetch ruling on any line but one of the pinned lines of its own file rules nothing (AC26)
         if any(r and r[0].startswith(HASH_LOCKED_RULING) and not _hash_locked_line_ok(a.root, a.head, k[0], _LINE_TEXT.get(lh, ""), r[3]) for r, lh in zip(rs, lines[k])):  # HL:gate
             rs = [None]                                  # the hash-locked ruling on any line but the kernel fetch line, with its lock at the head, rules nothing (AC35)
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
