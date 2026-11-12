@@ -257,5 +257,7 @@ for v in INSTALL_DOC OFFLINE_DOC VEX_DOC; do
   mutant "$v: the pointer moved into the fence as a comment" "$v" "$PTR"'; s=P.sub("",s,count=1); s=s.replace("build/keys/release.rsa.pub\"\n","build/keys/release.rsa.pub\"\n# see [the key page](verify-key.md)\n",1)'
   mutant "$v: the release key command changed, its key name kept" "$v" 's=s.replace("-fsSLO","-fsSL",1)'
 done
+# Checksum step back to the old form that hides errors and filters for OK.
+mutant "install.md: the checksum step back to 2>/dev/null | grep OK" INSTALL_DOC 'import re; s=re.sub(r"LINE=\$\(grep -F [^\n]*sha256sum -c -","grep -F checksums.txt | sha256sum -c - 2>/dev/null | grep OK",s,count=1)'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]
