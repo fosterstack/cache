@@ -1,6 +1,6 @@
 # Upgrading and pinning a version
 
-This page says how versions are named, how to pin one, and what to do when you move to another. The tag rules are read from `bin/release-publish.sh` and `RELEASING.md`; the single-writer rules from [Kubernetes](kubernetes.md) and the server code.
+This page says how versions are named, how to pin one, and what to do when you move to another.
 
 ## Which tag points at what
 

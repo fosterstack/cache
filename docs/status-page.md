@@ -1,6 +1,6 @@
 # The landing page and the status page
 
-These read-only paths tell you the server is up and what state it is in. This page is read from `internal/server/status.go` and `internal/server/server.go`.
+These read-only paths tell you the server is up and what state it is in.
 
 | Path | Answers | Credentials when authentication is on |
 |---|---|---|
