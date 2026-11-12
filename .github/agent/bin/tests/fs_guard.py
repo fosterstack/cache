@@ -597,11 +597,11 @@ def _wrap_sqlite():
 
     def uri_call(orig, a, k):
         """orig(*a, **k) with _busy.uri telling the audit hook that this call is made with uri=True and the default factory (the event
-        carries neither). A custom factory may open the name with another flag, and an argument of another type runs its own code while
+        carries neither). A custom factory may open the name with another flag, and an argument or keyword name of another type runs its own code while
         sqlite converts it (a nested connect(uri=False) would inherit the grant), so neither gets it."""
         prev = getattr(_busy, "uri", False)
         factory = k["factory"] if "factory" in k else a[5] if len(a) > 5 else Connection
-        plain = all(type(v) in (str, bytes, int, float, bool, type(None)) for v in [*a[:5], *a[6:], *(v for n, v in k.items() if n != "factory")])
+        plain = all(type(n) is str for n in k) and all(type(v) in (str, bytes, int, float, bool, type(None)) for v in [*a[:5], *a[6:], *(v for n, v in k.items() if n != "factory")])
         _busy.uri = k.get("uri", a[7] if len(a) > 7 else False) is True and (factory is Connection or factory is base) and plain
         try:
             return orig(*a, **k)

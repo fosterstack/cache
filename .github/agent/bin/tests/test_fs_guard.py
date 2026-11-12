@@ -1179,6 +1179,14 @@ class AuditRows(unittest.TestCase):
                     return 0
             for key in ("detect_types", "cached_statements"):
                 self.refused(sqlite3.connect, ":memory:", uri=True, **{key: Convert()})
+            granted = []
+            class Name(str):                                                # a keyword name's __eq__ runs while the outer call parses its arguments
+                def __eq__(self, other):
+                    granted.append(getattr(G._busy, "uri", False))
+                    return str.__eq__(self, other)
+                __hash__ = str.__hash__
+            sqlite3.connect(":memory:", **{Name("uri"): True}).close()
+            self.assertNotIn(True, granted)
             with mock.patch.object(G._busy, "uri", True, create=True):      # one grant, one event
                 G._hook("sqlite3.connect", (uri,))
                 self.refused(G._hook, "sqlite3.connect", (uri,))
