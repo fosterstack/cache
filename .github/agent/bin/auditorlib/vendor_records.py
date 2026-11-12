@@ -3,6 +3,8 @@ provenance records its go.mod and go.sum change calls for, so nobody finishes a 
 cache#394, cache#620 B1/B2).
 
 process_branch(repo, branch, ws, run, regenerate): for one dependabot/go_modules/* or auditor/bump-* branch,
+  0. every commit from the merge base to the head must be verified and authored by dependabot[bot] or the App
+     (the branch name alone proves nothing: anyone who can push can name a branch);
   1. the branch must change go.mod (and go.sum) and otherwise only records paths (anything under vendor/, the
      provenance record, the reviewed licences), and its go.mod must add no replace, toolchain or godebug line:
      go mod vendor decides what to vendor from the package imports, so the branch's own tree equals the base's
@@ -133,6 +135,8 @@ def _export(ws, head, dest):
             except UnicodeDecodeError:
                 raise Skip(NOT_UTF8)
             mode, _, sha = meta.split(" ")
+            if any(part in ("", ".", "..") for part in path.split("/")):
+                raise Skip("%r is not a plain relative path" % path)
             if mode not in ("100644", "100755"):
                 raise Skip("%s is a link or a submodule" % path)
             files[path] = sha
@@ -144,7 +148,10 @@ def _export(ws, head, dest):
     contents, out, at = {}, blobs.stdout, 0
     for sha in sorted(set(files.values())):
         header_end = out.index(b"\n", at)
-        size = int(out[at:header_end].split(b" ")[2])
+        header = out[at:header_end].split(b" ")
+        if len(header) != 3 or header[1] != b"blob":
+            raise RuntimeError("git cat-file has no blob %s" % sha)
+        size = int(header[2])
         contents[sha] = out[header_end + 1:header_end + 1 + size]
         at = header_end + 1 + size + 1
     for path, sha in files.items():
@@ -167,8 +174,8 @@ def _skip_reason(names, base_go_mod, head_go_mod):
     return None
 
 
-def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
-    """One branch; returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
+def process_branch(repo, branch, ws, run, regenerate, dry_run=False, app_login=None):
+    """One branch (app_login: the App's login, e.g. 'name[bot]'; without it only Dependabot's commits are trusted); returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
     'skipped: <reason>' or 'failed: <reason>'."""
     if not signed_commit._BUMP_BRANCH.match(branch):
         return "skipped: not a dependency-bump branch"
@@ -181,6 +188,9 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False):
         if _git(ws, "rev-parse", "refs/remotes/origin/" + branch).decode().strip() != head:
             return "skipped: the branch moved while it was fetched"
         base = _git(ws, "merge-base", "origin/main", head).decode().strip()
+        logins = {"dependabot[bot]", app_login}
+        if not signed_commit.commits_authored_by(run, repo, base, head, logins):
+            return "skipped: a commit on the branch is not verified and by dependabot[bot] or the App"
         names = [n for n in _git(ws, "diff", "--name-only", "-z", "--no-renames", base, head).decode().split("\0") if n]
         why = _skip_reason(names, _show(ws, base, "go.mod") or b"", _show(ws, head, "go.mod") or b"")
         if why:
