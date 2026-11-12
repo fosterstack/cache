@@ -7,9 +7,11 @@
 # holds PER ENVIRONMENT: every install through a venv (<venv>/bin/pip, <venv>/bin/python -m pip, or pip after `source <venv>/bin/activate`) needs the
 # pin installed INTO THAT VENV first (<venv>/bin/python -m pip install ... -r the file, then <venv>/bin/python -m pip --version).
 # The requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:. Dependabot watches that file's
-# directory under the 7-day cooldown. The required allowlist job in ci.yml runs this test.
+# directory under the 7-day cooldown. bin/select-tests.sh selects this test for a change to the workflows (the changed-path map, REQ-CI-001-AC3) and
+# full-suite.yml runs it whole (case 6); ci.yml's allowlist job does not name it.
 #
-# Which pin steps pull-request CI actually exercises: ci.yml `coverage` and `allowlist` (every pull request and push to main). The auditor.yml
+# Which pin steps pull-request CI actually exercises: ci.yml `allowlist` (every pull request and push to main; its pin steps are judged by case 1 like
+# every other job's), and full-suite.yml `coverage` and the allowlist shards (nightly and before a release-candidate tag). The auditor.yml
 # `audit` and `panel-probe` jobs and the dependabot-reviewer.yml `review` job run only on schedule / workflow_dispatch, so their pin steps are proven
 # here by reading the workflow, and live only on the next scheduled run.
 #
@@ -48,7 +50,27 @@ def load_tree():
     for p in sorted(glob.glob(os.path.join(root, ".github/workflows/*.y*ml")) + glob.glob(os.path.join(root, ".github/actions/**/action.y*ml"), recursive=True)):
         docs[os.path.relpath(p, root)] = yaml.safe_load(open(p)) or {}
     dep = rd(".github/dependabot.yml")
-    return {"docs": docs, "req": rd(REQ), "dep": yaml.safe_load(dep) if dep else None}
+    return {"docs": docs, "req": rd(REQ), "dep": yaml.safe_load(dep) if dep else None,
+            "map": rd(".github/policy/test-paths.json"), "selector": rd("bin/select-tests.sh")}
+
+_SELECTED = {}
+def selected_for(selector, tmap, changed):
+    """the lines bin/select-tests.sh prints for a change to `changed`, from this selector and this map, in a scratch repository (None: it failed)"""
+    key = (selector, tmap, changed)
+    if key not in _SELECTED:
+        import subprocess, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for rel, text in (("bin/select-tests.sh", selector), (".github/policy/test-paths.json", tmap), (changed, "a\n")):
+                os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True); open(os.path.join(d, rel), "w").write(text or "")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+            for a in (["init", "-q", "."], ["add", "-A"], ["commit", "-qm", "base"]):
+                subprocess.run(git + a, cwd=d, check=True, capture_output=True)
+            open(os.path.join(d, changed), "a").write("b\n")
+            for a in (["add", "-A"], ["commit", "-qm", "change"]):
+                subprocess.run(git + a, cwd=d, check=True, capture_output=True)
+            p = subprocess.run(["bash", "bin/select-tests.sh", "HEAD~1", "HEAD"], cwd=d, capture_output=True, text=True)
+        _SELECTED[key] = p.stdout.splitlines() if p.returncode == 0 else None
+    return _SELECTED[key]
 
 # ---------------------------------------------------------------- reading a run script
 def norm(s):
@@ -331,16 +353,28 @@ def judge(t):
         for u in pips:
             if u.get("cooldown") != want or u.get("cooldown") != {"default-days": 7}:
                 r.append(("C4", f"the pip entry's cooldown is {u.get('cooldown')}, not the neighbours' {{default-days: 7}}"))
-    # case 6: the CI wiring
+    # case 6: the wiring: selected by the changed-path map for a change to the workflows, run whole by full-suite.yml, not a step of ci.yml's allowlist job
+    me_line = "bash .github/agent/tests/pip-pin-test.sh"
+    sel = selected_for(t["selector"], t["map"], ".github/workflows/ci.yml") if t.get("selector") and t.get("map") else None
+    if sel is None or me_line not in sel:
+        r.append(("C6", "bin/select-tests.sh does not select this test for a change to the workflows"))
+    fs = t["docs"].get(".github/workflows/full-suite.yml") or {}
+    whole = [(jn, s) for jn, j in (fs.get("jobs") or {}).items() for s in ((j or {}).get("steps") or []) if "pip-pin-test.sh" in str((s or {}).get("run", ""))]
+    if len(whole) != 1:
+        r.append(("C6", f"full-suite.yml runs this test {len(whole)} times, not once"))
+    else:
+        jn, st = whole[0]
+        job = fs["jobs"][jn]
+        if str(st.get("run", "")).strip() != me_line or "select-tests" in str(st.get("run", "")):
+            r.append(("C6", "full-suite.yml does not run this test whole with its exact command"))
+        elif any(k in st for k in ("if", "continue-on-error", "shell", "working-directory", "env")):
+            r.append(("C6", "the step that runs this test has if / continue-on-error / shell / working-directory / env"))
+        elif job.get("if") or str(job.get("continue-on-error", "false")).lower() != "false":
+            r.append(("C6", "the job that runs this test has an if or continue-on-error"))
     ci = t["docs"].get(".github/workflows/ci.yml") or {}
-    job = (ci.get("jobs") or {}).get("allowlist")
-    me = [s for s in ((job or {}).get("steps") or []) if str((s or {}).get("run", "")).strip() == "bash .github/agent/tests/pip-pin-test.sh"]
-    if len(me) != 1:
-        r.append(("C6", f"ci.yml's required allowlist job runs this test {len(me)} times, not once"))
-    elif any(k in me[0] for k in ("if", "continue-on-error", "shell", "working-directory", "env")):
-        r.append(("C6", "the step that runs this test has if / continue-on-error / shell / working-directory / env"))
-    elif (job or {}).get("if") or str((job or {}).get("continue-on-error", "false")).lower() != "false":
-        r.append(("C6", "the allowlist job has an if or continue-on-error"))
+    named = [s for s in (((ci.get("jobs") or {}).get("allowlist") or {}).get("steps") or []) if "pip-pin-test.sh" in str((s or {}).get("run", ""))]
+    if named:
+        r.append(("C6", "ci.yml's allowlist job runs this test by name, not through the selection"))
     # case 7: job-level `uses:` is a local workflow (read here) or a digest-pinned external one, and the job has no steps of its own
     for f, d in t["docs"].items():
         for jn, j in ((d or {}).get("jobs") or {}).items():
@@ -370,7 +404,7 @@ for case, title in (("C1", "case 1: every pip-installing job pins pip first, in 
                     ("C2", "case 2: the pin step logs `python -m pip --version` of the pinned python"),
                     ("C3", "case 3: the requirement file is exactly one hash-pinned release pip==" + GOLDEN),
                     ("C4", "case 4: Dependabot watches the pin file's directory under the 7-day cooldown"),
-                    ("C6", "case 6: ci.yml's required allowlist job runs this test"),
+                    ("C6", "case 6: the changed-path map selects this test for a change to the workflows and full-suite.yml runs it whole"),
                     ("C8", "case 8: a pip install after a pin step cannot run when the pin step FAILED (no always()/cancelled()/failure() condition without success() or the pin's outcome)"),
                     ("C7", "case 7: a job-level `uses:` is a local or digest-pinned reusable workflow and the job has no steps of its own")):
     bad = [m for c, m in res if c == case]
@@ -541,19 +575,43 @@ def dep_dir(t):
 mutants += [("the Dependabot pip entry missing", "C4", dep_missing), ("the Dependabot pip entry without cooldown", "C4", dep_nocool),
             ("the Dependabot pip cooldown shortened to 3 days", "C4", dep_cool3), ("the Dependabot pip entry on directory /", "C4", dep_dir)]
 
-def ci_steps(t): return t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"]
-def ci_unwire(t):
-    s = ci_steps(t); n = len(s)
-    s[:] = [x for x in s if "pip-pin-test.sh" not in str(x.get("run", ""))]
-    return len(s) < n
-def ci_set(k, v):
+def fs_job_steps(t):
+    return [(j, x) for j in t["docs"][".github/workflows/full-suite.yml"]["jobs"].values() for x in j.get("steps") or [] if "pip-pin-test.sh" in str(x.get("run", ""))]
+def fs_unwire(t):
+    n = 0
+    for j in t["docs"][".github/workflows/full-suite.yml"]["jobs"].values():
+        if "steps" not in j: continue
+        before = len(j["steps"]); j["steps"][:] = [x for x in j["steps"] if "pip-pin-test.sh" not in str(x.get("run", ""))]; n += before - len(j["steps"])
+    return n > 0
+def fs_set(k, v):
     def f(t):
-        for x in ci_steps(t):
-            if "pip-pin-test.sh" in str(x.get("run", "")): x[k] = v; return True
-        return False
+        h = fs_job_steps(t)
+        if not h: return False
+        h[0][1][k] = v; return True
     return f
-mutants += [("ci.yml's allowlist job no longer runs this test", "C6", ci_unwire), ("the step is conditional", "C6", ci_set("if", "false")),
-            ("the step is continue-on-error", "C6", ci_set("continue-on-error", True))]
+def fs_job_set(k, v):
+    def f(t):
+        h = fs_job_steps(t)
+        if not h: return False
+        h[0][0][k] = v; return True
+    return f
+def fs_selected(t):
+    h = fs_job_steps(t)
+    if not h: return False
+    h[0][1]["run"] = "bash bin/select-tests.sh HEAD~1 HEAD | bash"; return True
+def ci_names_it(t):
+    t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"].append({"run": "bash .github/agent/tests/pip-pin-test.sh"}); return True
+def map_drops_it(t):
+    if not t.get("map") or "pip-pin-test.sh" not in t["map"]: return False
+    t["map"] = t["map"].replace("pip-pin-test.sh", "other-test.sh"); return True
+def selector_prints_nothing(t):
+    if not t.get("selector"): return False
+    t["selector"] = "#!/usr/bin/env bash\nexit 0\n"; return True
+mutants += [("full-suite.yml no longer runs this test", "C6", fs_unwire), ("the step is conditional", "C6", fs_set("if", "false")),
+            ("the step is continue-on-error", "C6", fs_set("continue-on-error", True)), ("the step carries an env", "C6", fs_set("env", {"X": "1"})),
+            ("the job is conditional", "C6", fs_job_set("if", "false")), ("the step runs a selection, not the whole test", "C6", fs_selected),
+            ("ci.yml's allowlist job runs this test by name", "C6", ci_names_it),
+            ("the map no longer selects this test for a workflow change", "C6", map_drops_it), ("the selector prints nothing", "C6", selector_prints_nothing)]
 
 def jobs_with_uses(t):
     return [(f, jn, j) for f, d in t["docs"].items() for jn, j in ((d or {}).get("jobs") or {}).items() if isinstance(j, dict) and "uses" in j]
