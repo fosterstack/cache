@@ -1052,10 +1052,10 @@ func render(f File, m Mappings) string {
 	w("this page is a generated view of it and CI fails if the two drift.")
 	w("")
 	if f.Baseline.Approved {
-		w("Baseline extracted from `%s` on %s; approved by the release manager on %s.",
+		w("Baseline extracted from `%s` on %s; approved on %s.",
 			f.Baseline.ExtractedFrom, f.Baseline.ExtractedOn, f.Baseline.ApprovedOn)
 	} else {
-		w("Baseline extracted from `%s` on %s. **Release manager review of the baseline is", f.Baseline.ExtractedFrom, f.Baseline.ExtractedOn)
+		w("Baseline extracted from `%s` on %s. **Review of the baseline is", f.Baseline.ExtractedFrom, f.Baseline.ExtractedOn)
 		w("pending; every acceptance criterion below is `proposed`, and no test")
 		w("mapping happens until the baseline is approved.**")
 	}

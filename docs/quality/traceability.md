@@ -8,7 +8,7 @@ requirement with measurable acceptance criteria, and the evidence for each.
 The machine-readable source is [`requirements/requirements.yaml`](../../requirements/requirements.yaml);
 this page is a generated view of it and CI fails if the two drift.
 
-Baseline extracted from `acd8bac2f9427dee63c71384dcbfecdb5c7ccf1b` on 2026-09-08; approved by the release manager on 2026-09-21.
+Baseline extracted from `acd8bac2f9427dee63c71384dcbfecdb5c7ccf1b` on 2026-09-08; approved on 2026-09-21.
 
 The baseline was extracted from the documentation and implementation at the
 revision above — it is retroactive and described as exactly that. Since
