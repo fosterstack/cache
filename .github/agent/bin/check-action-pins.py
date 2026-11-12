@@ -2948,7 +2948,8 @@ def _writer_dir(value):
         return "$RUNNER_TEMP" + (os.path.normpath(rest) if rest.strip("/") else "")
     if "${{" in v or "$" in v or "'" in v or '"' in v or ".." in v:
         return "."
-    v = os.path.normpath(v)                              # "~/./work" and "~//work" are "~/work": classify the path the shell reads
+    if v.startswith("~/"):
+        v = os.path.normpath(v)                          # "~/./work" and "~//work" are "~/work": classify the path the shell reads; a relative "./~cache" stays as written
     if v == "/tmp" or v.startswith("/tmp/") or re.match(r"~/(?!work(/|$))[^/]", v):
         return os.path.normpath(v)                       # outside the workspace: still a directory a /tmp copy of a script can live in
     if v.startswith(("/", "~")):

@@ -2896,6 +2896,8 @@ for p in '~/./work' '~/./work/x/x/bin' '~//work/x'; do
 done
 case_ w-download-artifact-tilde-norm-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
           path: ~/./.cache/x")")" "$mk_tool"
+case_ w-download-artifact-relative-tilde-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: ./~cache")")" "$mk_tool"
 # 3. runner.temp is outside only when what follows has no expression, no $ and no ..
 case_ w-download-artifact-runner-temp-expression-bad bad "$(uw "$(us actions/download-artifact "          name: x
           path: \${{ runner.temp }}/\${{ '..' }}/x/bin")")" "$mk_tool"
