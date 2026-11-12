@@ -4,7 +4,7 @@ merge/consolidate fallbacks, the narrative guard, the scanner tables and main()'
 
 No network, no real git/gh/go: every subprocess call is intercepted by FakeRun and asserted on by
 its exact argv. Every write goes to a temp dir."""
-import base64, contextlib, importlib.util, io, json, os, shlex, shutil, subprocess, sys, tempfile, unittest
+import base64, contextlib, importlib.util, inspect, io, json, os, shlex, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -320,6 +320,23 @@ class NoChange(Base):
             self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "real_fixable")
         self.assertEqual(ask.call_count, 1)
 
+    def test_a_malformed_reply_is_charged_to_the_token_budget(self):
+        ex = RuntimeError("client error: bad reply"); ex.token_usage = 40000
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=ex) as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "adjudicator_error")
+        self.assertGreaterEqual(ask.call_count, 1)
+        self.assertEqual(st["tokens"], 40000 * ask.call_count)
+
+    def test_malformed_replies_stop_the_run_at_the_budget(self):
+        ex = RuntimeError("client error: bad reply"); ex.token_usage = 90000
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=ex) as ask:
+            for _ in range(6):
+                R.adjudicate("/x/real.py", self.CTX, st)
+        self.assertLessEqual(ask.call_count, 3)
+        self.assertGreaterEqual(st["tokens"], R.policy.TOKEN_BUDGET)
+
     def test_a_refusal_or_an_error_is_never_recorded_as_a_verdict(self):
         st = self.state()
         with mock.patch.object(R.cli, "ask_model", side_effect=R.cli.Refused("no")):
@@ -533,6 +550,19 @@ class Pullability(Base):
         with mock.patch.object(R.cli, "ask_model", side_effect=ex):
             self.assertIsNone(R._pullability("/a", {"finding_id": "C"}, st))
         self.assertEqual(st["tokens"], 16); self.assertEqual(st["calls"], 1)
+
+    def test_a_malformed_reply_is_billed_and_returns_none(self):
+        ex = RuntimeError("client error: bad reply"); ex.token_usage = 7
+        st = {"tokens": 5}
+        with mock.patch.object(R.cli, "ask_model", side_effect=ex):
+            self.assertIsNone(self.quiet(R._pullability, "/a", {"finding_id": "C"}, st)[0])
+        self.assertEqual(st["tokens"], 12)
+
+    def test_an_error_without_usage_charges_nothing(self):
+        st = {"tokens": 5}
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            self.quiet(R._pullability, "/a", {"finding_id": "C"}, st)
+        self.assertEqual(st["tokens"], 5)
 
     def test_error_recorded_once_masked(self):
         st = {"tokens": 0}
@@ -850,6 +880,7 @@ class PurlVersion(unittest.TestCase):
         self.assertEqual(R._ver_from_purl("pkg:deb/debian/openssl@3.0.1+deb12u1"), "3.0.1+deb12u1")
         self.assertEqual(R._ver_from_purl("pkg:golang/x/y@v1.2.3#sub/path"), "v1.2.3")
         self.assertIsNone(R._ver_from_purl("pkg:generic/x"))
+        self.assertEqual(R._ver_from_purl("pkg:deb/debian/x@1.0%2541"), "1.0%41")      # decoded once: a literal % stays
         self.assertIsNone(R._ver_from_purl(None))
 
 
@@ -870,7 +901,7 @@ class ResolveCarried(unittest.TestCase):
         self.assertEqual(R._resolve_carried({}, stmts), ["CVE-2099-1"])
 
     def _groups(self):
-        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
         return {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
 
     @staticmethod
@@ -880,16 +911,31 @@ class ResolveCarried(unittest.TestCase):
 
     def test_names_that_differ_only_by_percent_encoding_or_case_are_the_same_package(self):
         """the carried entry says libfoo / 1.0+b1; the statement spells the purl LibFoo@1.0%2Bb1: one package, so the statement is re-judged this run"""
-        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0+b1"})
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0+b1"})
         groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
         stmt = {"vulnerability": {"name": "CVE-2099-7"},
                 "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": "pkg:deb/debian/LibFoo@1.0%2Bb1?arch=amd64"}]}]}
         R._resolve_carried(groups, [stmt])
         self.assertEqual([x["purl"] for x in groups["CVE-2099-7"]["findings"]], ["pkg:deb/debian/LibFoo@1.0%2Bb1?arch=amd64"])
 
+    def _resolved(self, version, purl):
+        carried = {"carried": True, "version": version}
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, carried)
+        groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
+        stmt = {"vulnerability": {"name": "CVE-2099-7"},
+                "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": purl}]}]}
+        return R._resolve_carried(groups, [stmt])
+
+    def test_a_purl_version_is_decoded_once_so_a_literal_percent_is_not_read_as_an_escape(self):
+        purl = "pkg:deb/debian/libfoo@1.0%2541?arch=amd64"      # the version is "1.0%41"
+        self.assertEqual(self._resolved("1.0A", purl), ["CVE-2099-7"])
+
+    def test_the_same_version_spelled_plainly_is_the_same_package(self):
+        self.assertEqual(self._resolved("1.0A", "pkg:deb/debian/libfoo@1.0A?arch=amd64"), [])
+
     def test_aliases_of_one_statement_add_no_duplicate_finding(self):
         """the group is known by its id and an alias and the statement names both: the finding is resolved once (one scanner, finding_id and purl)"""
-        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
         groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": ["GHSA-aaaa-bbbb-cccc"], "findings": [f], "lineages": {"inspector"}}}
         stmt = self._stmt("amd64")
         stmt["vulnerability"]["aliases"] = ["GHSA-aaaa-bbbb-cccc"]
@@ -1129,12 +1175,6 @@ class SuppressionPR(Base):
             with self.assertRaises(R.ReviewedInputInvalid):
                 self.real(fr, base_sha="b" * 40)
 
-    def test_a_delivery_given_the_base_failure_returns_it_and_fetches_nothing_again(self):
-        fr = ApiRun()
-        self.assertEqual(self.real(fr, base_err="git fetch: offline"), (None, "git fetch: offline"))
-        # not a second fetch, not a read, not a checkout
-        self.assertEqual(fr.argvs(), [])
-
     def test_the_suppression_pr_title_and_body_are_plain_and_pass_the_customer_words_check(self):
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.real(fr)
@@ -1287,6 +1327,24 @@ class SuppressionPR(Base):
             self.assertIn("--comment", first)
             self.assertIn("supersed", first[first.index("--comment") + 1].lower())
             self.assertNotIn("--delete-branch", first)                      # the branch stays: nothing here deletes refs
+
+    def test_the_daily_branch_pattern_matches_a_day_and_a_hex_sha_only(self):
+        for branch in ("auditor/2026-09-22-abcdef123456",
+                       "auditor/2026-01-01-0123456789abcdef0123456789abcdef01234567"):
+            self.assertTrue(R._DAILY_BRANCH.match(branch), branch)
+        for branch in ("auditor/2026-09-22-abcdef123456\n", "auditor/2026-09-22-ABCDEF123456",
+                       "auditor/2026-09-22-zzzzzzzz", "auditor/2026-09-22", "auditor/2026-9-22-abcdef123456",
+                       "auditor/panel", "feature/2026-09-22-abcdef123456",
+                       "auditor/\u0662\u0660\u0662\u0666-09-22-abcdef123456", "auditor/2026-09-22-abcdef123456/x"):
+            self.assertFalse(R._DAILY_BRANCH.match(branch), repr(branch))
+
+    def test_a_branch_that_only_looks_like_a_daily_one_is_never_closed(self):
+        lookalikes = "20 auditor/2026-09-19-zzzzzzzzzzzz\n21 auditor/2026-09-19\n22 auditor/2026-09-19-ABCDEF123456\n"
+        listing = self.OPEN + lookalikes
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, listing, "")})
+        self.assertIsNotNone(self.real(fr)[0])
+        closed = sorted(a[3] for a in fr.argvs() if a[:3] == ["gh", "pr", "close"])
+        self.assertEqual(closed, ["10", "5"])
 
     def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # reviewer r1 blocker 2
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
@@ -1606,6 +1664,15 @@ class FixPR(Base):
             self.assertIsNone(got, msg=repr(out)); self.assertIn("gh pr list", err or "", msg=repr(out))
         with mock.patch.object(R.subprocess, "run", FakeRun({("gh", "pr", "list"): (0, "[]", "")})):
             self.assertEqual(R._open_dependabot_prs(self.d("ws")), ([], None))         # a real empty list is still "no open PRs"
+
+    def test_a_row_without_a_positive_integer_number_is_a_failed_lookup_not_a_pr_to_defer_to(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        for number in (0, -1, "5", 5.5, None):
+            rows = [{"number": number, "title": "Bump example.com/m from 1.0.0 to 1.1.0", "url": "https://x/pull/0"}]
+            with mock.patch.object(R.subprocess, "run", FakeRun({("gh", "pr", "list"): (0, json.dumps(rows), "")})):
+                got, err = R._open_dependabot_prs(self.d("ws"))
+            self.assertIsNone(got, msg=repr(number)); self.assertIn("gh pr list", err or "", msg=repr(number))
 
     def test_a_real_run_defers_to_an_open_dependabot_pr_and_survives_a_failed_lookup(self):
         dep = {("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, json.dumps([{"number": 5,
@@ -2141,7 +2208,7 @@ def panel_manifest_fields(tmp):
     path = os.path.join(tmp, "verdict-ok.json")
     with open(path, "w") as fh:
         json.dump({"images": images, "not_counted": [], "scanner_failures": [], "findings": [], "vex_covered": [],
-                   "issue": PL._panel_module().render_issue([]), "unique": [], "exit": 0}, fh)
+                   "issue": PL.panel_module().render_issue([]), "unique": [], "exit": 0}, fh)
     return {"scanner_set": "panel", "panel": {"verdict": path}, "scanner_status": PANEL_STATUS,
             "scanner_reports": {x: path for x in PL.PANEL_SCANNERS}}
 
@@ -2255,6 +2322,22 @@ class Run(Base):
         self.assertEqual(cls[r]["action"], "OWNER ESCALATION FAILED")
         self.assertIn("2 owner-decision issue(s) failed to open", whole["status"])
         self.assertIn("1 findings unassessed: adjudicator unavailable (RuntimeError: HTTP 500)", whole["status"])
+
+    def test_a_base_that_cannot_be_fetched_stops_the_run_before_any_owner_issue(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+        self.wj(os.path.join(self.d("ws"), ".vex", "fosterstack-cache.openvex.json"), {"statements": []})
+        def ask(adj, fid, **kw):
+            if fid == "CONCLUSION":
+                return {"narrative": ""}
+            raise R.cli.Refused(fid)
+        fr = FakeRun({("git", "fetch"): (1, "", "offline"), ("gh", "issue", "list"): (0, "[]", "")})
+        with mock.patch.object(R.subprocess, "run", fr):
+            with self.assertRaises(R.ReviewedInputInvalid) as cm:
+                self.go(self.grp(F("CVE-2099-68", "pkg:deb/debian/libg@1", "libg")), dry=False,
+                        adjudicator="/x/real-adjudicator.py", ask=mock.Mock(side_effect=ask))
+        self.assertIn("git fetch: offline", str(cm.exception))
+        self.assertFalse(any(a[:3] == ["gh", "issue", "create"] for a in fr.argvs()))
+        self.assertFalse(any(a[:2] == ["git", "checkout"] for a in fr.argvs()))
 
     def test_go_bump_unresolvable_stays_section3(self):
         c = "CVE-2099-67"
@@ -2412,6 +2495,75 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         self.assertEqual([a[4] for a in co], ["b" * 40])
 
 
+class ProposalEvidence(unittest.TestCase):
+    """A proposal's evidence is a repo-root-relative path naming a regular file in the checkout the run reads."""
+    GOOD = {"kind": "defect_log", "package": "libpropose", "note": "generalises from a recorded pattern",
+            "keys": [{"scanner": "grype", "finding_id": "CVE-2099-1", "purl": "pkg:deb/debian/libpropose@1.0"}]}
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.root, True)
+        os.makedirs(os.path.join(self.root, "docs"))
+        for name in ("docs/tracker.md", "top.txt"):
+            open(os.path.join(self.root, name), "w").write("x\n")
+
+    def ask(self, evidence, sha=None, root=None):
+        return R._valid_proposal(dict(self.GOOD, evidence=evidence), root or self.root, sha)
+
+    def test_a_regular_file_by_its_relative_path_is_kept(self):
+        for path in ("top.txt", "docs/tracker.md"):
+            self.assertEqual(self.ask(path), dict(self.GOOD, evidence=path), path)
+
+    def test_a_model_name_split_by_separators_is_refused_in_every_text_field(self):
+        for text in ("per the gpt-5 analysis", "gpt - 5", "gpt _ 5", "gpt . 5", "private - model", "private model"):
+            for field in ("note", "package"):
+                pr = dict(self.GOOD, evidence="top.txt", **{field: text})
+                self.assertIsNone(R._valid_proposal(pr, self.root, None), (field, text))
+
+    def test_ordinary_words_that_share_letters_with_a_model_name_are_kept(self):
+        for text in ("libopus0", "minizip", "knowledge"):
+            pr = dict(self.GOOD, evidence="top.txt", package=text)
+            self.assertIsNotNone(R._valid_proposal(pr, self.root, None), text)
+
+    def test_a_path_that_is_not_a_regular_file_in_the_checkout_is_refused(self):
+        os.symlink("/etc/hostname", os.path.join(self.root, "link.txt"))
+        for path in ("docs", "missing.txt", "docs/missing.md", "link.txt"):
+            self.assertIsNone(self.ask(path), path)
+
+    def test_a_path_that_leaves_the_root_or_is_absolute_is_refused(self):
+        outside = os.path.join(self.root, "docs", "tracker.md")
+        for path in ("/etc/hostname", "/top.txt", outside, "../top.txt", "docs/../top.txt",
+                     "docs/../../etc/hostname", "./../top.txt"):
+            self.assertIsNone(self.ask(path), path)
+
+    def test_a_path_with_a_nul_byte_is_refused(self):
+        self.assertIsNone(self.ask("top.txt\x00.md"))
+        self.assertIsNone(self.ask("\x00"))
+
+    def test_a_value_that_is_not_a_path_string_is_refused(self):
+        for evidence in ("", "  ", None, 7, ["top.txt"], {"path": "top.txt"}, "debian security tracker: no-DSA"):
+            self.assertIsNone(self.ask(evidence), repr(evidence))
+
+    def test_with_a_base_sha_the_file_must_be_in_that_commit(self):
+        def git(*a):
+            return subprocess.run(["git", "-C", self.root, "-c", "user.name=t", "-c", "user.email=t@example.org", *a],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+        git("init", "-q"); git("add", "top.txt"); git("commit", "-qm", "base")
+        sha = git("rev-parse", "HEAD")
+        self.assertIsNotNone(self.ask("top.txt", sha=sha))
+        self.assertIsNone(self.ask("docs/tracker.md", sha=sha))     # in the workspace, not in the commit
+        self.assertIsNone(self.ask("docs", sha=sha))
+        self.assertIsNone(self.ask("../top.txt", sha=sha))
+
+
+class DeletedNames(unittest.TestCase):
+    def test_the_helpers_that_only_a_removed_feature_used_are_gone(self):
+        for name in ("_nofix_reason", "FORBIDDEN_NAMES", "MAX_ITERATIONS"):
+            self.assertFalse(hasattr(R, name), name)
+
+    def test_the_suppression_delivery_no_longer_takes_a_base_error(self):
+        self.assertNotIn("base_err", inspect.signature(R._deliver_suppression_pr).parameters)
+
+
 class SupplyCves(unittest.TestCase):
     """The suppression PR's plan entry names the CVEs its VEX package carries."""
     def test_names_from_the_package_and_none_without_one(self):
@@ -2446,10 +2598,19 @@ class DefectLogLoading(unittest.TestCase):
         self.assertEqual(list(R.log_index(log)), [("grype", "CVE-1", "pkg:x")])
 
     def test_malformed_and_non_object_logs_raise_log_error(self):
-        for text, want in (("{", "Expecting property name"), ("[]", "top level is list")):
+        for text in ("{", "[]", "{}", '{"defects": null}'):
+            path = self._log(text)
+            with self.assertRaises(R.DefectLogInvalid, msg=text) as cm:
+                R.load_defect_log(path)
+            self.assertIn(path, str(cm.exception))
+
+    def test_the_log_is_read_through_the_shared_reader(self):
+        path = self._log(json.dumps({"defects": []}))
+        with mock.patch.object(R.reviewed, "read", side_effect=R.ReviewedInputInvalid("shared reader refused")) as rd:
             with self.assertRaises(R.DefectLogInvalid) as cm:
-                R.load_defect_log(self._log(text))
-            self.assertIn(want, str(cm.exception))
+                R.load_defect_log(path)
+        self.assertIn("shared reader refused", str(cm.exception))
+        self.assertEqual(rd.call_count, 1)
 
     def test_main_reports_log_not_manifest(self):
         out = io.StringIO()
