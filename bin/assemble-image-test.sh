@@ -935,10 +935,7 @@ sr2 "rule 42" "sealed-proof: ImageOS/ImageVersion set to 'unknown' are refused o
 # ---- snapshot-4 round 4 (Opus P5) -----------------------------------------------------------------------------------------------------------------------------
 # the proofs supply the paths themselves; a pass-through argument cannot put a reason into an error message
 for bad in --archive --out --render-dir --apko-config; do
-  sr2 "rule 36" "lock-proof refuses $bad after -- (the proof supplies it; a forwarded value could be printed back as a 'reason')" 'supplied by|after --' run_s "${aie[@]}" bash -c 'cd "$0" && exec "$@"' "$air" "$air/bin/lock-proof.sh" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL" "$bad" "x/ca-certificates-bundle-20260101-r0.apk does not match APKINDEX live repository"
-done
-for bad in --source-dir --out --render-dir; do
-  sr2 "rule 41" "sealed-proof refuses $bad in --build-args" 'supplied by' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --arch x86_64 $bad x" --assemble-args "--variant production --version 0.3.0"
+  sr2 "rule 36" "lock-proof refuses $bad after -- like any unknown argument" 'unknown argument after --' run_s "${aie[@]}" bash -c 'cd "$0" && exec "$@"' "$air" "$air/bin/lock-proof.sh" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL" "$bad" "x/ca-certificates-bundle-20260101-r0.apk does not match APKINDEX live repository"
 done
 # a build that fails with a message that merely prints the source directory does not count as the vendor refusal
 printf '#!/bin/sh\nfor a in "$@"; do last=$a; done\necho "build-apk.sh: melange failed: network unreachable while building $*" >&2\nexit 2\n' >"$work/pathfail.sh"; chmod +x "$work/pathfail.sh"
@@ -994,9 +991,8 @@ empty directory too)" 'symlink' "${aie[@]}" "$AI" "${w12[@]}" --index-record "$i
 t "rule 31" "...and nothing was written through it" test -z "$(ls -A "$work/real-out")"
 # every filter of the round-4 reason rule is pinned
 for bad in --archive --out --render-dir; do
-  sr2 "rule 41" "sealed-proof refuses $bad in --assemble-args" 'supplied by' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard" --assemble-args "--variant production $bad x"
+  sr2 "rule 41" "sealed-proof refuses $bad in --assemble-args (not one of the four options it parses)" 'unknown argument in --assemble-args' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard" --assemble-args "--variant production $bad x"
 done
-sr2 "rule 41" "sealed-proof refuses --apk-cache-dir in --build-args" 'supplied by' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --apk-cache-dir x" --assemble-args "--variant production --version 0.3.0"
 printf '#!/bin/sh\nfor a in "$@"; do case "$a" in --source-dir) n=1;; *) [ "$n" = 1 ] && { echo "build-apk.sh: $a/vendor is missing: the build uses only vendored Go code" >&2; n=0; }; esac; done\necho "build-apk.sh: then something else failed" >&2\nexit 2\n' >"$work/vendor-then-other.sh"; chmod +x "$work/vendor-then-other.sh"
 sf "rule 41" "sealed-proof: a builder whose LAST prefixed line is something else after the vendor line is not the vendor refusal" 'vendor|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/vendor-then-other.sh" "${sp_common[@]}"
 printf '#!/bin/sh\necho "build-apk.sh: /elsewhere/vendor is missing" >&2\nexit 2\n' >"$work/vendor-elsewhere.sh"; chmod +x "$work/vendor-elsewhere.sh"
@@ -1667,6 +1663,28 @@ for v_ in cfg-mt layer-mt cfg-size layer-size; do
   python3 "$OD" "$work/oci-$v_.tar" >"$work/oci-$v_.out" 2>&1; r_=$?
   t "BT-002-AC1" "a layout whose $v_ descriptor lies (all hashes right) is refused by the digest-only read" bash -c "test $r_ != 0 && grep -Eqi 'media type|size' '$work/oci-$v_.out'"
 done
+# base-lock-victim: the first package by (name, architecture) names the file the sealed proof corrupts
+bl_lock() { printf '{"contents": {"packages": [%s]}}\n' "$2" >"$work/$1.lock.json"; }
+bl_pkg() { printf '{"name": "%s", "architecture": "%s", "version": "%s"}' "$1" "$2" "$3"; }
+bl_first() { python3 -I -B "$OD" base-lock-victim "$work/$1.lock.json" my-script.sh; }
+bl_lock bl-order "$(bl_pkg zlib x86_64 1.3-r0), $(bl_pkg busybox x86_64 1.36-r1)"
+t "BT-002" "base-lock-victim: two packages in reverse order print the first by name" \
+  test "$(bl_first bl-order)" = x86_64/busybox-1.36-r1.apk
+bl_lock bl-arch "$(bl_pkg musl x86_64 1.2-r0), $(bl_pkg musl aarch64 1.2-r0)"
+t "BT-002" "base-lock-victim: with equal names aarch64 sorts before x86_64" \
+  test "$(bl_first bl-arch)" = aarch64/musl-1.2-r0.apk
+bl_refused() {
+  bl_first "$1" >"$work/o" 2>"$work/bl.err"; local r=$?
+  if [ $r = 2 ] && [ "$(head -c 14 "$work/bl.err")" = "my-script.sh: " ]; then ok
+  else bad "BT-002" "base-lock-victim: $2 (exit $r, wanted 2 and 'my-script.sh: ')"; fi; }
+bl_lock bl-armv7 "$(bl_pkg musl armv7 1.2-r0)"
+bl_refused bl-armv7 "architecture armv7 is refused"
+bl_lock bl-dots "$(bl_pkg ca..bundle x86_64 1.2-r0)"
+bl_refused bl-dots "a name with .. is refused"
+bl_lock bl-dash "$(bl_pkg -musl x86_64 1.2-r0)"
+bl_refused bl-dash "a name starting with - is refused"
+bl_lock bl-slash "$(bl_pkg musl x86_64 1.2/r0)"
+bl_refused bl-slash "a version containing / is refused"
 # ===== review round 3 of PR 352 ==============================================================================================================
 # B1 (both seats): the host guard is not caller input: an inherited OSTYPE does not change what the unchanged production file decides
 bash_host=$(bash -c 'printf %s "${BASH_VERSINFO[5]}"')

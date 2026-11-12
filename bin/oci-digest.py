@@ -10,6 +10,8 @@
   oci-digest.py check-keys REC DIR        the keyring directory holds exactly the recorded keys
   oci-digest.py check-index REC ARCHIVE   print "<arch><TAB><path>" of the recorded package index per architecture
   oci-digest.py render-date EPOCH         print EPOCH as YYYY-MM-DDTHH:MM:SSZ
+  oci-digest.py base-lock-victim LOCK SCRIPT   print <arch>/<name>-<version>.apk of the first package of the base lock;
+                                          the proofs damage it (a refusal is printed with the script's name)
 
 The decisions of the image assembler (so that its script is straight-line text). Each prints its answer, or the refusal
 "<script name>: <reason>" on standard error with the exit status the script had for it:
@@ -876,6 +878,27 @@ def pick_sbom(folder):
     return chosen
 
 
+VICTIM_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-")
+
+
+def base_lock_victim(lock, script):
+    """The first package of the base lock by name and architecture. Its name and version become a path, so only plain
+    characters are accepted."""
+    first = min(json.load(open(lock))["contents"]["packages"], key=lambda p: (p["name"], p["architecture"]))
+    if first["architecture"] not in ("x86_64", "aarch64"):
+        print("%s: the base lock's first package has the architecture %r, not x86_64 or aarch64" %
+              (script, first["architecture"]), file=sys.stderr)
+        sys.exit(2)
+    for field in ("name", "version"):
+        value = first[field]
+        plain = isinstance(value, str) and not set(value) - VICTIM_CHARS
+        if not plain or value in ("", ".") or value.startswith("-") or ".." in value:
+            print("%s: the base lock's first package has the %s %r; only letters, digits and ._+- are accepted"
+                  % (script, field, value), file=sys.stderr)
+            sys.exit(2)
+    return "%s/%s-%s.apk" % (first["architecture"], first["name"], first["version"])
+
+
 # name -> (function, fewest words, most words); the answer a function returns is printed
 DECISIONS = {
     "variant-field": (variant_field, 2, 2),
@@ -940,6 +963,8 @@ def main():
     elif len(a) == 3 and a[0] == "check-index":
         for arch, path in sorted(check_index(a[1], a[2]).items()):
             print("%s\t%s" % (arch, path))
+    elif len(a) == 3 and a[0] == "base-lock-victim":
+        print(base_lock_victim(a[1], a[2]))
     elif len(a) == 2 and a[0] == "render-date":
         try:
             print(datetime.datetime.fromtimestamp(int(a[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -949,7 +974,7 @@ def main():
         print("\n".join(read_digests(a[0])[0]))
     else:
         print("usage: oci-digest.py TAR | unpack TAR DIR DIGEST MANIFESTS | make-view REC ARCHIVE VIEW | "
-            "render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH "
+            "render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH | base-lock-victim LOCK SCRIPT "
             "| " + " | ".join(sorted(DECISIONS)) + " ...", file=sys.stderr)
         sys.exit(2)
 
