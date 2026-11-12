@@ -72,8 +72,8 @@ describe that chain.
   scanned, tested and promoted, and the promoted digest is asserted equal to the
   scanned digest after every copy ([release chain](../.github/workflows/release.yml)).
 - **Every record is signed by a stage that builds nothing.** Build, Rebuild and Check
-  record what they did and hold no key; the Sign stage checks and signs each record, and
-  the next stage verifies it ([RELEASING.md](../RELEASING.md)).
+  record what they did and hold no release signing key; the Sign stage checks and signs each
+  record, and the next stage verifies it ([RELEASING.md](../RELEASING.md)).
 - **Pinned toolchain.** The build uses the Go version from `go.mod` with downloads
   of a newer toolchain disabled, and module manifests are verified, never rewritten
   ([build stage](../.github/workflows/stage-build.yml)).
