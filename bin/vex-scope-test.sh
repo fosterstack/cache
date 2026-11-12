@@ -171,6 +171,49 @@ for v in production fips; do for a in amd64 arm64; do
   if child_is $v $a fail; then echo "PASS check path: a variant/arch-scoped statement is not applied to the $v image's linux/$a child (grype keeps blocking: fail-closed)"; pass=$((pass+1))
   else echo "FAIL check path: a variant/arch-scoped statement changed the $v image's linux/$a child's verdict"; fail=$((fail+1)); fi
 done; done
+# The Go standard library statement (GO-2026-6809, CVE-2026-111943): the same scope rules, with grype's own stdlib package form (type go-module,
+# version go1.27.2, purl pkg:golang/stdlib@1.27.2) in place of busybox. The vulnerability id grype reports is the GO id; the statement names the CVE
+# with the GO id as an alias, so a suppress here proves grype matches through the alias. 1.27.1 is inside the advisory's range but not the pinned version.
+check_stdlib() { # label name tag digest ver want
+  local label="$1" name="$2" tag="$3" digest="$4" ver="$5" want="$6"
+  local sbom="$work/sbom.json" js f ig got rc rc_ok=1
+  python3 - "$base" "$sbom" "$name" "$tag" "$digest" "$ver" <<'PY'
+import json,sys
+base,out,name,tag,digest,ver=sys.argv[1:7]
+d=json.load(open(base)); m=d['source']['metadata']
+d['source']['name']=name
+m['userInput']=tag or name
+m['tags']=[tag] if tag else []
+m['repoDigests']=[digest] if digest else []
+d['artifacts']=[{'id':'stdlib-fixture','name':'stdlib','version':'go'+ver,'type':'go-module','foundBy':'go-module-binary-cataloger',
+                 'locations':[],'licenses':[],'language':'go',
+                 'cpes':[{'cpe':'cpe:2.3:a:golang:go:%s:*:*:*:*:*:*:*'%ver,'source':'fosterstack-vex-scope-fixture'}],
+                 'purl':'pkg:golang/stdlib@'+ver}]
+json.dump(d,open(out,'w'))
+PY
+  js="$("$grype" "sbom:$sbom" -o json --vex "$repo/.vex/fosterstack-cache.openvex.json" 2>/dev/null)"; rc=$?
+  f=$(jq '[.matches[]?|select(.vulnerability.id=="GO-2026-6809")]|length' <<<"$js" 2>/dev/null || echo -1)
+  ig=$(jq '[.ignoredMatches[]?|select(.vulnerability.id=="GO-2026-6809")]|length' <<<"$js" 2>/dev/null || echo -1)
+  # each case judges only its own advisory: grype's database grows every day
+  if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
+  if [ "$rc" -ne 0 ]; then rc_ok=0; fi   # no --fail-on (see check()): exit 0 is the only completed scan
+  if [ "$got" = "$want" ] && [ "$rc_ok" = 1 ]; then
+    echo "ok: ${label} (${got}, exit ${rc})"; pass=$((pass+1))
+  else
+    echo "FAIL: ${label} got=${got} want=${want} (find=${f} ign=${ig} exit=${rc} rc_ok=${rc_ok})"; fail=$((fail+1))
+  fi
+}
+# the products are the repository-wide ones and the scope is the stdlib 1.27.2 subcomponent: the nine v0.2.2 digests (index, amd64 and arm64 of production, debug and fips, where the evidence was gathered) suppress, and so does any other digest of the cache repository whose stdlib is 1.27.2
+V022P=ghcr.io/fosterstack/cache@sha256:f2b330cf27b3814405230cc001a771909ae5bbf3b1e223a90ee7a9ee5d0e53dd
+V022D=ghcr.io/fosterstack/cache@sha256:9e8268329d7266b64a1a4258c83b23140ff8f266b283b835ce591deb1e3efad2
+V022F=ghcr.io/fosterstack/cache@sha256:e5cfd3249fa4d751f5fe2e56a2b3e36e2e45b15d1d29534f22833bc4cf7535b6
+check_stdlib "stdlib 1.27.2, v0.2.2 production index digest"                ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "$V022P" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, v0.2.2 debug amd64 digest"                     ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-debug  "$V022D" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, v0.2.2 fips arm64 digest"                      ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2-fips   "$V022F" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, the same repository and tag, another digest"   ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:0.2.2        "ghcr.io/fosterstack/cache@sha256:${D64}" 1.27.2 SUPPRESS
+check_stdlib "stdlib 1.27.2, foreign vendor, SAME basename (cache)"     ghcr.io/another-vendor/cache ghcr.io/another-vendor/cache:1.0 ""                                    1.27.2 FLAG
+check_stdlib "stdlib 1.27.1 (vulnerable, not the pinned version)"        ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache:v0.2.1 ""                                       1.27.1 FLAG
+check_stdlib "stdlib 1.27.2, missing image identity (no tags, no digests)" ghcr.io/fosterstack/cache ""                          ""                                                    1.27.2 FLAG
 echo "----"
 echo "vex-scope: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
