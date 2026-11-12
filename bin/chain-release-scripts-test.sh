@@ -28,7 +28,7 @@ python3 - "$@" <<'PY'
 import ast, atexit, base64, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
 BIN = os.environ["RELEASE_BIN"]
 SCRATCH = tempfile.mkdtemp()
-tempfile.tempdir = SCRATCH      # every tree below is made inside SCRATCH
+tempfile.tempdir = SCRATCH      # a failing or aborted run leaves nothing in TMPDIR
 atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
 SENT = {"DOCKERHUB_USERNAME": "sentinel-user-91", "DOCKERHUB_TOKEN": "SENTINEL-HUB-TOKEN-5c2e", "GH_TOKEN": "SENTINEL-GH-TOKEN-b814"}
 passn, failn = 0, 0
