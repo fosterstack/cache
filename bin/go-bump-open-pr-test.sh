@@ -323,7 +323,7 @@ CURL
 printf '#!/usr/bin/env bash\ncase "$1 $2" in "pr list") echo "[]" ;; "api graphql") echo 1111111111111111111111111111111111111111 ;; "pr view") echo 1111111111111111111111111111111111111111 ;; "api repos/{owner}/{repo}/commits/1111111111111111111111111111111111111111") echo true ;; *) : ;; esac\n' > "$e2e/fake/gh"
 printf '#!/usr/bin/env bash\ncase "$1" in ls-remote) exit 2 ;; rev-parse) echo 0123456789abcdef0123456789abcdef01234567 ;; *) exit 0 ;; esac\n' > "$e2e/fake/git"
 chmod +x "$e2e/fake/"*
-( cd "$e2e" && sed -i.bak -E "s/^go [0-9.]+\$/go ${cur}/" go.mod && PATH="$e2e/fake:$PATH" bash "$SUT" "$cur" "$new" > "$e2e/bump.out" 2>&1 ) || { echo "FAIL: e2e: the bump script failed: $(tail -3 "$e2e/bump.out")"; fail=$((fail+1)); }
+( cd "$e2e" && sed -i.bak -E "s/^go [0-9.]+\$/go ${cur}/" go.mod && PATH="$e2e/fake:$PATH" AUDITOR_APP_SLUG=fosterstack-auditor bash "$SUT" "$cur" "$new" > "$e2e/bump.out" 2>&1 ) || { echo "FAIL: e2e: the bump script failed: $(tail -3 "$e2e/bump.out")"; fail=$((fail+1)); }
 e2e_check() { # e2e_check LABEL CMD...
   local label=$1; shift; local o rc=0; o=$( cd "$e2e" && "$@" 2>&1 ) || rc=$?
   if [ "$rc" = 0 ]; then echo "ok: e2e bump ${cur} -> ${new}: ${label}"; pass=$((pass+1)); else echo "FAIL: e2e bump: ${label}: ${o:0:300}"; fail=$((fail+1)); fi; }
