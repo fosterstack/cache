@@ -44,6 +44,19 @@ class RemoveIgnores(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(d, "list.openvex.json")))
         self.assertTrue(os.path.exists(os.path.join(d, "ig.json")))
 
+    def test_a_bad_second_file_leaves_the_first_untouched(self):
+        """every VEX file is checked before any is written: a damaged later file stops the removal with the earlier valid file byte for byte as it was"""
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
+        good = os.path.join(d, "a.openvex.json")
+        with open(good, "w") as fh:
+            json.dump({"statements": [{"vulnerability": {"name": "CVE-1"}}, {"vulnerability": {"name": "CVE-2"}}]}, fh)
+        with open(os.path.join(d, "b.openvex.json"), "w") as fh:
+            fh.write("{not json")
+        before = open(good).read()
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid):
+            P._remove_ignores(d, {"CVE-1"})
+        self.assertEqual(open(good).read(), before)
+
     def test_a_valid_vex_beside_is_removed(self):
         d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
         with open(os.path.join(d, "a.openvex.json"), "w") as fh:
