@@ -57,13 +57,6 @@ if mode == "reconcile-wrong-row" and name == "auditor-defectlog" and args and ar
     json.dump(log, open(logp, "w"))
     put("reconcile.json", {"added": True}); mark("wrong-row-and-purl"); sys.exit(0)
 
-# F7 — release authorization accepts a substring, not the parsed acceptance form.
-if mode == "authz-substring" and name == "auditor-release-authz":
-    issues = json.load(open(arg("--issues")))
-    txt = json.dumps(issues)
-    decision = "promote" if "ACCEPT" in txt else "hold"   # ignores author, form, date
-    put("authz.json", {"decision": decision}); mark("substring-accept"); sys.exit(0)
-
 # F8 — threshold omits known-exploited.
 if mode == "known-exploited-omitted" and name == "auditor-poam" and "--recheck" not in args:
     f = json.load(open(arg("--finding")))
