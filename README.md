@@ -94,11 +94,6 @@ with. There is no published schedule: the list above is direction, not dates.
 There is no waitlist and no signup. Pull the image and run it — the quickstart
 below is the whole gate.
 
-Each item above names the workflow or command that demonstrates it —
-Actions history for the CI claims, the commands in
-[`RELEASING.md`](RELEASING.md) for signatures and provenance. What those
-commands prove, and what they do not, is stated in RELEASING.md itself.
-
 Full core (eviction, size limits, metrics) is free under MIT — see
 [`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a 48-hour CVE
 response target, and compliance support on top of the same open core; nothing is
@@ -174,8 +169,7 @@ unit: **[docs/install.md](docs/install.md)**.
 
 The production and `-fips` images have no shell, so you debug them from the
 outside by attaching a second container that carries the tools. Three ways
-below. None of them has been run against a v0.3 image yet (details at the end
-of this section).
+below.
 
 **Kubernetes: `kubectl debug`.** An ephemeral debug container joins the running
 pod (stable since Kubernetes v1.25):
@@ -206,11 +200,7 @@ docker debug <container>
 ```
 
 This opens a shell in a toolbox attached to the container, even though the image
-has no shell. It ships with Docker Desktop and was a paid feature (Pro, Team or
-Business) until Docker Desktop 4.50 (announced 12 Nov 2025), when Docker made it
-free for all users; Docker's earlier announcement (Docker Desktop 4.33, July 2024)
-described it as available with a Pro, Team or Business license, so an older Docker
-Desktop may still need one. See
+has no shell. It ships with Docker Desktop and is free for all users. See
 [Docker's announcement](https://www.docker.com/blog/docker-desktop-4-50/) and the
 [command reference](https://docs.docker.com/reference/cli/docker/debug/).
 
@@ -282,9 +272,9 @@ Every externally observable behavior of this server is a written requirement
 with measurable acceptance criteria, and the matrix at
 [docs/quality/traceability.md](docs/quality/traceability.md) maps each
 criterion to its evidence — including, honestly, the criteria that have no
-sufficient evidence yet. The baseline was extracted from the code and docs
-and owner-approved; since Sep 8, 2026, acceptance criteria are written
-before implementation. CI fails if the matrix drifts from its sources.
+sufficient evidence yet. The baseline was extracted from the code and docs.
+Since Sep 8, 2026, acceptance criteria are written before implementation. CI fails
+if the matrix drifts from its sources.
 
 ## Documentation
 

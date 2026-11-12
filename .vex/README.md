@@ -32,25 +32,24 @@ for the life of the shipped bytes:
 It ships as a release asset, so anyone auditing an artifact gets our claims alongside
 the SBOM and the provenance rather than having to take the scan result on faith.
 
-## The same statements, three ways (scanner-panel rule 10)
+## The same statements, three ways
 
-From the first release cut after this change, every release also carries two files
+From v0.3.0, every release also carries two files
 generated at release time from this one OpenVEX file (`bin/vex-forms.py`) and the
 release's own image digests — never edited by hand:
 
 | File | For | Statements |
 |---|---|---|
 | `fosterstack-cache.openvex.json` | scanners that read OpenVEX | the source |
-| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. the golang-jwt/jwt/v4 module), by that package and version | <!-- pinned: upstream -->
+| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule for each `not_affected` or `fixed` statement that names a package (e.g. the golang-jwt/jwt/v4 module), scoped by its CVE, the released image digests the statement covers and that package and version; no rule for `affected`, `under_investigation` or a statement that names no package | <!-- pinned: upstream -->
 | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement about this release's images, as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
 
 In other words: the CSAF file carries every OpenVEX statement; the Inspector file
-carries one rule per suppressible statement (not_affected, fixed) and none for
-affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
+carries a rule only for each not_affected or fixed statement that names a package.
 
 The Google VEX upload is a **preview feature** of Google Cloud
 (`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is
-proven by the release candidate's live test (scanner-panel rule 12), not assumed.
+tested on the release candidate, not assumed.
 Google's loader matches the file to the image path you load it for, and applies one image per load, so
 name the digest you run (one of this release's digests, listed in `release-manifest.json`) and your own image path:
 `jq --arg u "$IMAGE" --arg d "$DIGEST" '.product_tree.branches |= map(if (.product.product_identification_helper.purl | startswith("pkg:oci/cache@" + $d + "?")) then .name = $u else . end)' <file> > vex-for-my-image.json`,
