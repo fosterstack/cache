@@ -45,8 +45,12 @@ per-writer identity is not built, and is tracked as issue #8.
 running the Build Cache Node container):
 
 ```sh
-docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:latest
+docker run -d -p 127.0.0.1:8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:latest
 ```
+
+This binds the port to this machine only. For a server your team or CI
+shares, use the Basic Auth example in
+[One-command Docker deploy](docker-deploy.md#a-slightly-more-real-deployment-docker-compose).
 
 (The volume mounts at `/home/nonroot`, not `/data` — see
 [One-command Docker deploy](docker-deploy.md#the-one-command) for why, and
@@ -85,9 +89,8 @@ unchanged sources.
 
 ## Why now, not December 31
 
-The incumbent image has been unpatched since June 2025 — 2 critical and 8
-high-severity known CVEs as of this writing, and that count only grows
-while it sits frozen. Every scanner-gated pipeline (Trivy, Snyk, and
+The incumbent image has been unpatched since June 2025, so its list of
+known CVEs only grows while it sits frozen. Every scanner-gated pipeline (Trivy, Snyk, and
 similar tools failing builds on known-vulnerable images) that touches that
 image is already accruing findings today, not on the EOL date. Moving
 earlier means moving on your own schedule instead of during a January
@@ -101,7 +104,7 @@ The free Build Cache Node had a small web UI — status, usage, settings, and a
 purge button. FosterStack Cache has no equivalent settings page, and that is a
 deliberate choice rather than a missing feature.
 
-Configuration is flags and environment variables only, so the running server
+Configuration is environment variables only, so the running server
 always matches the deployment manifest in your git repository: diffable,
 reviewable, and with no drift between what is deployed and what is described.
 It also means there is no mutable admin surface for whoever finds the port —
@@ -132,21 +135,12 @@ FosterStack Cache adds (all in the free MIT core — nothing here is paywalled):
 - Maven support in the same server, if you're a mixed Gradle+Maven shop
   (see [Maven setup](maven.md))
 
-Paid tiers (Team/Business/Compliance) add SSO, HA/replication, a
-48-hour CVE response target, and compliance support on top of the
-same core — see the pricing page. Security patches are never withheld
-from the free tier.
+For what the paid tiers add, and what stays free, see the
+[README](../README.md#status).
 
 The security evidence itself is public and free: SBOMs, SLSA provenance,
 signatures, scan results, VEX statements, and the FIPS 140-3 module
 certificate number ship with every release and are verifiable by anyone, with
-no account and no purchase. The FIPS-mode image is publicly pullable too. What
-the Compliance tier sells is the authored analysis — a FIPS applicability
-statement mapping the validated module boundary onto this product — plus
-a monthly attestation letter signed by FosterStack LLC, and time on your
-security questionnaires.
+no account and no purchase.
 
-FosterStack Cache is not "FedRAMP compliant" or "CMMC compliant". Those attach
-to your service and your organization, never to a component you deploy. What
-you get is Go's CMVP-validated FIPS 140-3 module (certificate #5247), inside
-our `-fips` build, plus publishable evidence **for** your compliance program.
+For what the FIPS build covers and what it does not, see [FIPS 140-3](fips.md).

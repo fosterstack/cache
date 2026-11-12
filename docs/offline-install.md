@@ -9,10 +9,7 @@ is across the gap.
 FosterStack Cache is a single static binary with zero runtime dependencies
 (`CGO_ENABLED=0`, a minimal image — nothing to `apt-get` on the
 host, nothing the binary reaches out for at startup), so an air-gapped
-install is cheap: move the artifact across, verify it, run it. This page is
-the DISA CHPG §2.1(7) deliverable ("no build-time downloads; dependencies
-pre-staged") — the product ships that way by construction, not as a special
-disconnected-mode build.
+install is cheap: move the artifact across, verify it, run it.
 
 ## What to bring across the gap
 

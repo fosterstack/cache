@@ -232,8 +232,8 @@ from the first scrape, so `increase()` and `rate()` work immediately.
   mid-upload is the client's doing, not the server's).
 
 The probe writes only inside the data volume, so `readOnlyRootFilesystem: true`
-does not matter. Not delivered, by decision: taking a pod with a bad disk out of
-the Service. That needs a readiness path, which is a protocol change.
+does not matter. The server has no readiness path for disk trouble, so a pod with
+a bad disk stays in the Service.
 
 ### Startup and reconcile
 
@@ -388,7 +388,6 @@ The explicit `secretKeyRef` mapping matters: the Secret's keys are
 `username` and `password`, so an `envFrom` shortcut would inject variables
 with *those* names — not the `FSCACHE_USERNAME` and `FSCACHE_PASSWORD` the
 `settings.gradle.kts` above reads — and the remote would answer 401.
-(An earlier revision of this page made exactly that mistake.)
 
 ## Reaching it from outside the cluster
 
