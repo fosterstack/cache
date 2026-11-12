@@ -9,7 +9,7 @@ This step, run by auditor.yml right after the rescan, judges them:
             vendor); real only if both say real, each quoting evidence found verbatim in the image's evidence
             bundle; an audit that errors, or quotes nothing found in the image, cites no evidence;
   rule 8(c) round-1 disagreement opens a debate (rounds 2-4): each seat builds and delivers its case, reads the
-            other's, gives a verdict; it stops at agreement; no agreement after round 4 is false by default;
+            other's, gives a verdict; it stops at agreement; no agreement after the fourth round is false by default;
   rule 9    false WITH evidence -> a not_affected VEX proposal; false by default -> logged only; a finding judged
             false that another scanner later reports is real, an "audit miss" reported to the owner, and any
             statement turns "affected";
@@ -18,7 +18,8 @@ This step, run by auditor.yml right after the rescan, judges them:
 Public text names the seats ("vendor A", "vendor B", "primary", "second"); vendor and model names live only in the
 environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 """
-import argparse, copy, datetime, hashlib, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
+import argparse, copy, datetime, hashlib, io, json, os, re, subprocess, sys, tarfile, tempfile, time
+import urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import parsers, policy, reviewed, signed_commit  # noqa: E402
@@ -31,6 +32,7 @@ LEAD = 3                    # rule 14: the primary seat moves at a lead of 3 or 
 SCANNERS = ("grype", "scout", "inspector", "google")
 KINDS = ("sees_alone", "blind_spot")
 # a leading boundary only, so a vendor name inside an identifier (OpenAIError, AnthropicAPIError) is caught too
+# matches "OpenAIError" and "o1-mini"; not "motion"
 VENDOR_WORDS = re.compile(r"(?i)(?<![a-z])(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini)[\w.-]*|"
                           r"\bo[1-9][\w.-]*-?mini\b")
 
@@ -43,10 +45,12 @@ def scoring_text():
             "-2. Argue only from evidence you can quote from the image.")
 
 
+# matches "sk-abc123" and "Bearer abcdef"; not "skip"
 KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_-]{6,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|"
                      r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+|(?i:bearer)\s+[A-Za-z0-9._-]{6,})")
 SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID",
-               "ANTHROPIC_WORKSPACE_ID", "PANEL_AUDIT_A_MODEL", "PANEL_AUDIT_B_MODEL", "PANEL_AUDIT_B_IDENTITY_PROVIDER_ID",
+               "ANTHROPIC_WORKSPACE_ID", "PANEL_AUDIT_A_MODEL", "PANEL_AUDIT_B_MODEL",
+               "PANEL_AUDIT_B_IDENTITY_PROVIDER_ID",
                "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID", "PANEL_AUDIT_B_PROJECT_ID")
 
 
@@ -119,8 +123,9 @@ def validate_profiles(doc):
 
 
 def validate_state(doc):
-    """The members of the panel state's lists, which the judge indexes and scores: checked before any seat is asked, so a damaged entry is a named stop and not a crash after the
-    model spend. Extra metadata is allowed (cache#707, B4). Returns the errors."""
+    """The members of the panel state's lists, which the judge indexes and scores: checked before any seat is asked, so
+    a damaged entry is a named stop and not a crash after the
+    model spend. Extra metadata is allowed. Returns the errors."""
     errs = []
     def text(e, k, where, required=True, empty=False):
         v = e.get(k)
@@ -139,7 +144,8 @@ def validate_state(doc):
                 continue
             for k in ("image", "id", "package"):
                 text(e, k, where)
-            text(e, "version", where, empty=True)          # the scanners' unknown version is the empty string, and the panel writes it
+            # the scanners' unknown version is the empty string, and the panel writes it
+            text(e, "version", where, empty=True)
             for k in ("seen_by", "purls"):
                 if k in e and not (isinstance(e[k], list) and all(isinstance(x, str) for x in e[k])):
                     errs.append("%s: %r is not a list of text" % (where, k))
@@ -158,7 +164,8 @@ def validate_state(doc):
                 errs.append("%s: 'outcome' is not text" % where)
             if e.get("prevailing") not in (None, "A", "B"):
                 errs.append("%s: 'prevailing' is not A or B" % where)
-            if not (e.get("installed_then") is None or isinstance(e.get("installed_then"), bool)):      # a real boolean: 1 is not true (the settlement tests `is True`)
+            # a real boolean: 1 is not true (the settlement tests `is True`)
+            if not (e.get("installed_then") is None or isinstance(e.get("installed_then"), bool)):
                 errs.append("%s: 'installed_then' is not true, false or null" % where)
     return errs
 
@@ -228,7 +235,7 @@ def absence_is_complete(bundle, f):
     with no record in a package database of its kind that was actually read AND no file path mentioning it, or a
     Go module (not the standard library) in an image whose Go binaries carry build information. Anything else
     (a static non-Go binary such as busybox, an unknown type) can never be shown absent by this evidence
-    (Codex r3 B1)."""
+    """
     ev = str(bundle).split(EVIDENCE_MARK, 1)[1] if EVIDENCE_MARK in str(bundle) else ""
     pkg = str(f.get("package") or "").lower()
     short = pkg.rsplit("/", 1)[-1]
@@ -283,7 +290,8 @@ def validated(answer, bundle, f):
     # false: the image records NO installed copy at the reported version, and the quote shows absence or another version
     if have is None or ver in have:
         return none
-    absent = [q for q in quotes if any(a.lower() in q.lower() for a in ABSENT) and (pkg in q.lower() or short in q.lower())]
+    absent = [q for q in quotes if any(a.lower() in q.lower() for a in ABSENT)
+              and (pkg in q.lower() or short in q.lower())]
     other = [q for q in quotes if record(q) and re.search(r"(?i)(Version:\s*\S|(?:dep|mod)\s+\S+\s+v?\d)", q)]
     proof = (absent if not have and absence_is_complete(bundle, f) else []) + other
     return ("false", proof) if proof else none
@@ -440,7 +448,7 @@ def _ident(f):
 
 def purls_for(f):
     """The finding's purls whose decoded version is the version the audits validated: a statement never names a
-    package identity other than the one judged (Codex r4 R6)."""
+    package identity other than the one judged."""
     ver = _ver(f.get("version")).lower()
     out = []
     for p in f.get("purls") or []:
@@ -468,8 +476,9 @@ def osv_advisory(f, opener=urllib.request.urlopen):
     want = str(f.get("id") or "").upper()
     try:
         for p in purls:
+            query = {"package": {"purl": urllib.parse.unquote(p.split("?", 1)[0])}}
             req = urllib.request.Request("https://api.osv.dev/v1/query", method="POST",
-                                         data=json.dumps({"package": {"purl": urllib.parse.unquote(p.split("?", 1)[0])}}).encode(),
+                                         data=json.dumps(query).encode(),
                                          headers={"Content-Type": "application/json"})
             with opener(req, timeout=30) as r:
                 for v in (json.load(r).get("vulns") or []):
@@ -529,7 +538,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
         if r["debate"]:
             then = installed_versions(bundles(f), f)
             st["debates"].append(dict(_ident(f), on=today, settled=None,
-                                      installed_then=(_ver(f.get("version")).lower() in then) if then is not None else None,
+                                      installed_then=(_ver(f.get("version")).lower() in then) if then is not None
+                                      else None,
                                       **r["debate"]))
         if r["status"] == "report":
             if k in false_mem:      # a later audit reversed a remembered false judgment: that is an audit miss too
@@ -545,7 +555,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
                 continue        # a recorded behavior took this finding (rule 8(a)), or today already proposes it
             prop = {"scanner": f["seen_by"][0], "kind": "sees_alone",
                     "match": {"package": "^%s$" % re.escape(f["package"])},
-                    "behavior": r["why"] or "unexplained: the audits confirmed the finding but not why only this scanner saw it",
+                    "behavior": r["why"]
+                    or "unexplained: the audits confirmed the finding but not why only this scanner saw it",
                     "finding": "%s on %s (%s %s), %s" % (f["id"], f["image"], f["package"], f["version"], today),
                     "evidence": "; ".join(r["proof"])[:500],
                     "unexplained": r["unexplained"]}
@@ -564,18 +575,21 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             quotes = r["proof"]       # only quotes vote() validated against the image, never an answer's raw text
             elsewhere = [img for img in images if not _not_in_image(bundles, f, img)]
             purls = purls_for(f)
-            false_mem[k]["purls"] = list(purls)      # what is judged NOW replaces what an earlier, rejected day remembered (turnover finds the statement by it)
+            # what is judged NOW replaces what an earlier, rejected day remembered (turnover finds the statement by it)
+            false_mem[k]["purls"] = list(purls)
             if purls and vex_subcomponents(purls, f.get("package"), f.get("version")) is None:
                 false_mem[k]["vex"] = False
-                out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence, but its package identity (%s) is not a form "
+                out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence, but its "
+                                    "package identity (%s) is not a form "
                                     "the release's VEX forms can represent, so no VEX statement was written: %s" %
-                                    (f["id"], f["image"], f["package"], f["version"], ", ".join(purls)[:200], "; ".join(quotes)[:300]))
+                                    (f["id"], f["image"], f["package"], f["version"], ", ".join(purls)[:200],
+                                     "; ".join(quotes)[:300]))
             elif purls and images and not elsewhere:
                 out["vex"].append(dict(_ident(f), status="not_affected", purls=purls,
                                        impact_statement="Audited from the images: " + "; ".join(quotes)[:500]))
             elif purls:
                 # the statement would cover every image; one that has the package at that version (or could not be
-                # read) means no statement — never broader than the evidence (Codex r3 B2)
+                # read) means no statement — never broader than the evidence
                 false_mem[k]["vex"] = False
                 out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence there, but "
                                     "the package at that version is present in, or could not be checked on: %s — so no "
@@ -620,12 +634,15 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             out["vex"].append(dict(_ident(e), status="affected", purls=list(e.get("purls") or []),
                                    impact_statement="an image now contains this package version; under investigation"))
             e["vex"] = False
-            out["owner"].append("Scanner panel: %s (%s %s) was stated not affected, but %s now contain(s) that version; "
-                                "the statement is turned affected." % (e["id"], e["package"], e["version"], ", ".join(present)))
+            out["owner"].append("Scanner panel: %s (%s %s) was stated not affected, but %s now contain(s) that "
+                                "version; "
+                                "the statement is turned affected." % (e["id"], e["package"], e["version"],
+                                                                       ", ".join(present)))
     # (3) a fix shipped: the debated image HAD the debated version when debated, and today that same image is readable,
-    # carries another version of the package, and no longer has the debated one (Codex final verification, item 1)
+    # carries another version of the package, and no longer has the debated one
     for d in st["debates"]:
-        if d.get("settled") or d.get("installed_then") is not True or key_of(d) in seen_today or d["image"] not in images:
+        if (d.get("settled") or d.get("installed_then") is not True or key_of(d) in seen_today
+                or d["image"] not in images):
             continue
         now = installed_versions(bundles(dict(d)), dict(d))
         if now and _ver(d["version"]).lower() not in now:
@@ -642,13 +659,16 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
     if out["misses"]:
         out["owner"].append("Scanner panel: %d audit miss(es) — a finding the audits judged false was then reported "
                             "by another scanner: %s" % (len(out["misses"]),
-                                                        ", ".join("%s on %s" % (m["id"], m["image"]) for m in out["misses"])))
+                                                        ", ".join("%s on %s" % (m["id"], m["image"])
+                                                                  for m in out["misses"])))
     if reported:
-        lines = ["The daily scanner panel's audits confirm %d finding(s) on main's candidate (rule 5):" % len(reported), ""]
+        lines = ["The daily scanner panel's audits confirm %d finding(s) on main's candidate (rule 5):" % len(reported),
+                 ""]
         missed = {key_of(m) for m in out["misses"]}
         for f in reported:
             lines.append("- `%s` in `%s %s` on %s%s" % (f["id"], f["package"], f["version"], f["image"],
-                                                        " — **audit miss** (judged false earlier)" if key_of(f) in missed else ""))
+                                                        " — **audit miss** (judged false earlier)"
+                                                        if key_of(f) in missed else ""))
         out["issue"] = public("\n".join(lines) + "\n")
     out["owner"] = [public(o) for o in out["owner"]]
     return st, out
@@ -674,16 +694,18 @@ def _pick_manifest(idx, blob, arch):
 
 
 class _Layout:
-    """An OCI image layout DIRECTORY (Build's images artifact: images/<variant>/ with oci-layout, index.json, blobs/sha256/<hex>), read with the small
-    surface the readers use from a tar: extractfile(name).read() and getmember(name). Only index.json and blobs/sha256/<64 hex> are readable; a symlink,
-    a directory without an oci-layout file (a docker-save shape) or any other name is refused. The old archive file is not read: the digest would not
-    be the one Build recorded."""
+    """An OCI image layout DIRECTORY (Build's images artifact: images/<variant>/ with oci-layout, index.json,
+    blobs/sha256/<hex>), read with the small surface the readers use from a tar: extractfile(name).read() and
+    getmember(name). Only index.json and blobs/sha256/<64 hex> are readable; a symlink,
+    a directory without an oci-layout file (a docker-save shape) or any other name is refused. The old archive file is
+    not read: the digest would not be the one Build recorded."""
 
     def __init__(self, path):
         if os.path.islink(path) or not os.path.isdir(path):
             raise OSError("%s is not an OCI layout directory" % os.path.basename(path))
         if not os.path.isfile(os.path.join(path, "oci-layout")):
-            raise ValueError("%s has no oci-layout file: not an OCI layout (a docker-save shape?)" % os.path.basename(path))
+            raise ValueError("%s has no oci-layout file: not an OCI layout (a docker-save shape?)"
+                             % os.path.basename(path))
         self.root = path
 
     def _path(self, name):
@@ -695,7 +717,8 @@ class _Layout:
         return p
 
     def _bytes(self, name):
-        """The blob's bytes, re-hashed against the sha256 in its file name (fail closed on a mismatch: the digest is the evidence's identity)."""
+        """The blob's bytes, re-hashed against the sha256 in its file name (fail closed on a mismatch: the digest is the
+        evidence's identity)."""
         p = self._path(name)
         with open(p, "rb") as fh:
             data = fh.read()
@@ -784,7 +807,8 @@ def bundle_text(facts, buildinfo, f):
     paths that mention it, and the Go build information lines that mention it; their absence is stated in words."""
     pkg = str(f.get("package") or "")
     low = pkg.lower().rsplit("/", 1)[-1]
-    lines = ["image %s (%s %s, reported by %s)" % (f.get("image"), pkg, f.get("version"), ", ".join(f.get("seen_by") or [])),
+    lines = ["image %s (%s %s, reported by %s)" % (f.get("image"), pkg, f.get("version"),
+                                                   ", ".join(f.get("seen_by") or [])),
              EVIDENCE_MARK]
     stanzas = []
     for path, text in sorted(facts["status"].items()):
@@ -901,7 +925,8 @@ class TokenFile:
     """Keeps an identity-token file fresh for an SDK that reads its token from a file (re-mints after max_age)."""
 
     def __init__(self, path, audience, mint=mint_oidc, clock=time.time, max_age=240):
-        self.path, self.audience, self.mint, self.clock, self.max_age, self.at = path, audience, mint, clock, max_age, None
+        self.path, self.audience, self.mint, self.clock, self.max_age = path, audience, mint, clock, max_age
+        self.at = None
 
     def fresh(self):
         if self.at is None or self.clock() - self.at > self.max_age:
@@ -938,7 +963,7 @@ class SeatCapError(Exception):
 
 
 class SeatCap:
-    """The probe's request cap (retries disabled; Codex #155 phase-2 r2). Both pinned SDKs re-send once after a 401
+    """The probe's request cap (retries disabled). Both pinned SDKs re-send once after a 401
     OUTSIDE max_retries (a federated token refresh), so max_retries=0 alone still allowed a second model request and
     hid the first failure. These HTTP hooks allow ONE model-endpoint request per seat, and turn a 401 from it into a
     named failure before the SDK can re-send. Token exchanges are not model requests and are not counted."""
@@ -1042,10 +1067,13 @@ def make_seats(mode, env=os.environ, a=seat_a, b=seat_b, retries=None):
 
 # ------------------------------------------------------------------------------------------------ commands
 
-# The required content of the panel's two persistent inputs (rc-5b fix 13; cache#701 ruling, row 5), read through the shared reader: a PRESENT file without it is a stop, never a fresh start
-# or zero profiles. They live here, not in auditorlib/reviewed.py, because the CVE auditor's library never names the panel's state (REQ-SCAN-014-AC3).
+# The required content of the panel's two persistent inputs read through the
+# shared reader: a PRESENT file without it is a stop, never a fresh start
+# or zero profiles. They live here, not in auditorlib/reviewed.py, because the CVE auditor's library never names the
+# panel's state (REQ-SCAN-014-AC3).
 SPECS = {
-    "panel-state.json": (("version", ("int", 1)), ("false", "objects"), ("real", "objects"), ("debates", "objects"), ("scores", ("ints", ("A", "B"))), ("seat", ("choice", ("A", "B")))),
+    "panel-state.json": (("version", ("int", 1)), ("false", "objects"), ("real", "objects"), ("debates", "objects"),
+                         ("scores", ("ints", ("A", "B"))), ("seat", ("choice", ("A", "B")))),
     "scanner-profiles.json": (("entries", "objects"),),
 }
 STATE = ".auditor/panel-state.json"
@@ -1053,14 +1081,16 @@ PROFILES = ".github/policy/scanner-profiles.json"
 VEX = ".vex/fosterstack-cache.openvex.json"
 ISSUE_TITLE = "Daily scanner panel: findings on main"           # shared with the rescan's two-or-more issue
 OWNER_TITLE = policy.subject("needs a decision: scanner panel")   # one standing issue, updated, never duplicated
-OLD_OWNER_TITLE = policy.subject("owner-decision: scanner panel")   # OLD_OWNER_TITLE only finds an issue opened before this change; nothing is created with it
+# OLD_OWNER_TITLE only finds an issue opened before this change; nothing is created with it
+OLD_OWNER_TITLE = policy.subject("owner-decision: scanner panel")
 
 
 def automerge_allowed(changed, env=os.environ):
     """REQ-AUD-17 AC3/AC4, as the auditor applies it: only when the owner turned auto-merge on, and never for a day
     that proposes a scanner-profile entry (rule 7: profile entries are reviewed like any other change)."""
     on = (env.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
-    # only the panel's own records may auto-merge: its state and its VEX statements. A profile entry, a prompt, a workflow or any other path waits for the owner.
+    # only the panel's own records may auto-merge: its state and its VEX statements. A profile entry, a prompt, a
+    # workflow or any other path waits for the owner.
     return on and bool(changed) and all(c in (STATE, VEX) for c in changed)   # an empty change set arms nothing
 
 
@@ -1072,6 +1102,7 @@ def _load_json(path, default=None):
         return default
 
 
+# SHA1 matches "0000000000000000000000000000000000000000"; DIGEST matches "sha256:" + 64 hex digits
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -1098,7 +1129,7 @@ def rescan_binding(path, oci_dir):
                 idx = json.loads(t.extractfile("index.json").read())
                 ds = [m["digest"] for m in idx.get("manifests") or [] if DIGEST.match(str(m.get("digest", "")))]
                 # every manifest the index names must itself be readable — a syntactically valid digest over a blob
-                # that is missing or truncated is not usable evidence (Codex #177 r1, B2)
+                # that is missing or truncated is not usable evidence
                 for d in ds:
                     t.getmember("blobs/" + d.replace(":", "/"))
         except (OSError, ValueError, KeyError, AttributeError, tarfile.TarError):
@@ -1113,13 +1144,17 @@ def rescan_binding(path, oci_dir):
 
 def cmd_judge(a, seats=None, bundles=None, advisory=None):
     try:
-        verdict = parsers.load_panel_verdict(a.verdict)       # strict JSON: a repeated key is refused, not silently overridden
-        parsers.validate_panel_verdict(verdict)       # the one strict shape every reader shares (cache#466): fail closed
+        # strict JSON: a repeated key is refused, not silently overridden
+        verdict = parsers.load_panel_verdict(a.verdict)
+        # the one strict shape every reader shares: fail closed
+        parsers.validate_panel_verdict(verdict)
     except (parsers.ParseError, ValueError, OSError) as e:
-        sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was judged\n" % (a.verdict, e))
+        sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was "
+                         "judged\n" % (a.verdict, e))
         return 2
     try:
-        state = reviewed.read(a.state, spec=SPECS["panel-state.json"])      # absent = the first run; a PRESENT state without its content is a stop, never a fresh start
+        # absent = the first run; a PRESENT state without its content is a stop, never a fresh start
+        state = reviewed.read(a.state, spec=SPECS["panel-state.json"])
         state = _checked_state(state, a.state) if state is not None else new_state()
         profiles = _read_profiles(a.profiles)
     except reviewed.ReviewedInputInvalid as e:
@@ -1134,7 +1169,7 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     if why:
         sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % why)
         return 2
-    # every image the verdict judges must have its own READABLE evidence (Codex #177 r1/r2, B2) — a missing archive,
+    # every image the verdict judges must have its own READABLE evidence — a missing archive,
     # or one whose manifest/layers do not actually read, must never fall through to "no evidence, false by default"
     # as if that image had simply cleared. A present-but-unreadable blob (getmember alone proves nothing: truncated
     # JSON, a missing nested manifest or layer, the wrong architecture) is read the same way Bundles() will read it.
@@ -1162,7 +1197,8 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
         out["owner"].append("Scanner panel: main has moved past the scanned head %s (main is at %s); this judgment "
                             "names the scanned bytes only." % (rescan["head"], rescan["main_head"]))
     if rescan["conclusion"] != "success":
-        out["owner"].append("Scanner panel: the rescan run %s finished %s; the panel judged its evidence (quorum, rule 3, "
+        out["owner"].append("Scanner panel: the rescan run %s finished %s; the panel judged its evidence (quorum, "
+                            "rule 3, "
                             "decides per image)." % (rescan["run_id"], rescan["conclusion"]))
     out["rescan"] = rescan
     st, out = scrub(st), scrub(out)      # everything written below is public (artifact, state file, PR)
@@ -1194,17 +1230,20 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
         print("::warning::scanner panel: main has moved past the scanned head %s (main is at %s)"
               % (rescan["head"], rescan["main_head"]))
     if budget.stopped:
-        print("::warning::scanner panel: the run's token budget (%d) is spent; remaining audits were not asked" % budget.cap)
+        print("::warning::scanner panel: the run's token budget (%d) is spent; remaining audits were not asked"
+              % budget.cap)
     print(public("\n".join(summary)))
     return 0
 
 
+# matches "pkg:generic/zlib@1.3"; not "pkg:apk/wolfi/zlib@1.3" or "pkg:generic/zlib"
 _GENERIC_PURL = re.compile(r"pkg:generic/([^/@?#]+)@([^?#]+)")
 
 
 def _purl_identity(purl):
-    """(name, version) of a pkg:generic package URL, percent-DECODED (the release generators decode them), or None for anything else. A distro purl (deb, rpm, apk,
-    alpm) is refused: absence proven in one ecosystem must not be rewritten into a generic purl, which claims "not affected" for every ecosystem. Also None for a
+    """(name, version) of a pkg:generic package URL, percent-DECODED (the release generators decode them), or None for
+    anything else. A distro purl (deb, rpm, apk, alpm) is refused: absence proven in one ecosystem must not be rewritten
+    into a generic purl, which claims "not affected" for every ecosystem. Also None for a
     missing version, a subpath or a nested name."""
     if not isinstance(purl, str):
         return None
@@ -1216,17 +1255,21 @@ def _purl_identity(purl):
 
 
 def vex_package(purl):
-    """The one package-URL form the release generators (bin/vex-forms.py: Inspector rules and CSAF) accept for a VEX subcomponent: pkg:generic/<name>@<version>
-    with the DECODED name and version encoded again, or None when the purl is not already a generic one (see _purl_identity). chain-v030 review S3."""
+    """The one package-URL form the release generators (bin/vex-forms.py: Inspector rules and CSAF) accept for a VEX
+    subcomponent: pkg:generic/<name>@<version> with the DECODED name and version encoded again, or None when the purl is
+    not already a generic one (see _purl_identity)."""
     ident = _purl_identity(purl)
-    return "pkg:generic/%s@%s" % (urllib.parse.quote(ident[0], safe=""), urllib.parse.quote(ident[1], safe="")) if ident else None
+    return "pkg:generic/%s@%s" % (urllib.parse.quote(ident[0], safe=""),
+                                  urllib.parse.quote(ident[1], safe="")) if ident else None
 
 
 def vex_subcomponents(purls, package=None, version=None):
-    """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None when there is none or any purl cannot be written that way: a statement with no
-    subcomponents would cover the whole image, so an empty set is never proposed. With package and version (the finding's own, which the audits judged), every
-    purl's DECODED name and version must equal them: the generators decode the written purl, so a purl naming another package (libstdc%2B%2B6 against a finding
-    for libstdc%2B%2B6 that the bundle never matched) would suppress a package the evidence did not cover."""
+    """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None when there is none or any purl cannot
+    be written that way: a statement with no subcomponents would cover the whole image, so an empty set is never
+    proposed. With package and version (the finding's own, which the audits judged), every
+    purl's DECODED name and version must equal them: the generators decode the written purl, so a purl naming another
+    package (libstdc%2B%2B6 against a finding for libstdc%2B%2B6 that the bundle never matched) would suppress a package
+    the evidence did not cover."""
     idents = [_purl_identity(p) for p in purls or []]
     if not idents or None in idents:
         return None
@@ -1237,12 +1280,14 @@ def vex_subcomponents(purls, package=None, version=None):
 
 def statement_id(v):
     """The statement's scope: the repository's product (every image — written only when every image's evidence shows
-    the package absent at that version) narrowed to the exact package purls (REQ-AUD-13 scope ids), as the VEX writes them."""
+    the package absent at that version) narrowed to the exact package purls (REQ-AUD-13 scope ids), as the VEX writes
+    them."""
     return policy.scope_id(v["id"], policy.VEX_PRODUCT, vex_subcomponents(v.get("purls")) or v.get("purls") or [])
 
 
 def validate_vex(doc):
-    """The fields of a published VEX the delivery reads and rewrites (statement @id, version, timestamp): checked before any write (cache#707, B4). Returns the errors."""
+    """The fields of a published VEX the delivery reads and rewrites (statement @id, version, timestamp): checked before
+    any write. Returns the errors."""
     errs = []
     if "version" in doc and not (type(doc["version"]) is int):
         errs.append("'version' is not an integer")
@@ -1257,13 +1302,15 @@ def validate_vex(doc):
 
 
 def validate_day(day):
-    """The run-written day.json the delivery consumes (the issue text, the VEX proposals, the profile proposals, the owner items): checked before anything is fetched or written."""
+    """The run-written day.json the delivery consumes (the issue text, the VEX proposals, the profile proposals, the
+    owner items): checked before anything is fetched or written."""
     if not isinstance(day, dict):
         return ["day: is not a JSON object"]
     errs = []
     if not isinstance(day.get("issue"), str):
         errs.append("day: 'issue' is missing or is not text")
-    for k in ("vex", "profiles", "owner"):                       # what the delivery consumes (misses and log are the report's)
+    # what the delivery consumes (misses and log are the report's)
+    for k in ("vex", "profiles", "owner"):
         if not isinstance(day.get(k), list):
             errs.append("day: %r is missing or is not a list" % k)
     for k in ("misses", "log"):
@@ -1282,12 +1329,14 @@ def validate_day(day):
             errs.append("day vex %d: 'status' is neither not_affected nor affected" % i)
         if "purls" in v and not (isinstance(v["purls"], list) and all(isinstance(x, str) for x in v["purls"])):
             errs.append("day vex %d: 'purls' is not a list of text" % i)
-    errs += ["day profiles: " + e for e in validate_profiles({"entries": day["profiles"]})] if isinstance(day.get("profiles"), list) else []
+    errs += ["day profiles: " + e
+             for e in validate_profiles({"entries": day["profiles"]})] if isinstance(day.get("profiles"), list) else []
     return errs
 
 
 def _checked_state(doc, label):
-    """The panel's own member checks on a state document that passed the shared rules; returns it, or raises ReviewedInputInvalid."""
+    """The panel's own member checks on a state document that passed the shared rules; returns it, or raises
+    ReviewedInputInvalid."""
     bad = validate_state(doc)
     if bad:
         raise reviewed.ReviewedInputInvalid("%s: %s" % (label, "; ".join(bad)))
@@ -1298,14 +1347,18 @@ def _read_profiles(path):
     """The scanner profiles file; absent is a stop (checked-in policy), as is an invalid one."""
     prof = reviewed.read(path, spec=SPECS["scanner-profiles.json"])
     if prof is None:
-        raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an absent file means the tree is wrong" % path)
+        raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an "
+                                            "absent file means the tree is wrong" % path)
     return prof
 
 
 def check_delivery_inputs(root, day, st=None):
-    """The checkout's state, VEX and profiles, validated with the shared rules before anything is fetched, checked out, written or published (cache#707, B2). An absent state is the
-    first delivery; absent profiles are a stop (checked-in policy); an absent VEX is a stop when the day proposes VEX statements. Raises ReviewedInputInvalid."""
-    if st is not None:                                                # the judgment's own outputs of this run (out/state.json, out/day.json) are checked like any other input
+    """The checkout's state, VEX and profiles, validated with the shared rules before anything is fetched, checked out,
+    written or published. An absent state is the
+    first delivery; absent profiles are a stop (checked-in policy); an absent VEX is a stop when the day proposes VEX
+    statements. Raises ReviewedInputInvalid."""
+    # the judgment's own outputs of this run (out/state.json, out/day.json) are checked like any other input
+    if st is not None:
         if not isinstance(st, dict):
             raise reviewed.ReviewedInputInvalid("state.json of this run is not a JSON object")
         reviewed.check(st, "state.json of this run", spec=SPECS["panel-state.json"])
@@ -1319,7 +1372,8 @@ def check_delivery_inputs(root, day, st=None):
         raise reviewed.ReviewedInputInvalid("%s: %s" % (PROFILES, "; ".join(errs)))
     vdoc = reviewed.read(os.path.join(root, VEX))
     if vdoc is None and day.get("vex"):
-        raise reviewed.ReviewedInputInvalid("%s does not exist but the day proposes VEX statements" % os.path.join(root, VEX))
+        raise reviewed.ReviewedInputInvalid("%s does not exist but the day proposes VEX statements"
+                                            % os.path.join(root, VEX))
     if vdoc is not None and validate_vex(vdoc):
         raise reviewed.ReviewedInputInvalid("%s: %s" % (VEX, "; ".join(validate_vex(vdoc))))
 
@@ -1343,7 +1397,8 @@ def apply_files(root, st, day, today):
             if v["status"] == "not_affected":
                 names = vex_subcomponents(v.get("purls"), v.get("package"), v.get("version"))
                 if names is None:
-                    continue                        # not a form the release generators accept: never written (apply_day does not propose it)
+                    # not a form the release generators accept: never written (apply_day does not propose it)
+                    continue
                 subs = [{"@id": p} for p in names]
                 if any(stmt.get("@id") == sid for stmt in doc["statements"]):
                     continue                        # the same scope is stated once
@@ -1359,7 +1414,8 @@ def apply_files(root, st, day, today):
                                     action_statement="Under investigation: " + v["impact_statement"])
                         stmt.pop("justification", None)
                         stmt.pop("impact_statement", None)
-        doc["timestamp"], doc["version"] = _later(doc.get("timestamp"), ts), int(doc.get("version", 1)) + 1   # monotonic: a newer timestamp already in the file stays
+        # monotonic: a newer timestamp already in the file stays
+        doc["timestamp"], doc["version"] = _later(doc.get("timestamp"), ts), int(doc.get("version", 1)) + 1
         with open(vpath, "w") as fh:
             json.dump(doc, fh, indent=2)
             fh.write("\n")
@@ -1390,8 +1446,8 @@ def _sh(cmd, plan, real, run=subprocess.run, check=True, **kw):
 
 def _issue_rows(out, real):
     """The rows of a `gh issue list --json number,title` answer. With real delivery the answer must be a JSON array of
-    objects that each carry a number and a title: an empty or unreadable answer stops the delivery here, so it can never read
-    as "no issue found" and lead to a create. Plan mode runs nothing, so its empty answer is no rows."""
+    objects that each carry a number and a title: an empty or unreadable answer stops the delivery here, so it can never
+    read as "no issue found" and lead to a create. Plan mode runs nothing, so its empty answer is no rows."""
     if not real:
         return []
     try:
@@ -1401,7 +1457,8 @@ def _issue_rows(out, real):
     if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get("number"), int)
                                                      and not isinstance(r["number"], bool) and r["number"] > 0
                                                      and isinstance(r.get("title"), str) for r in rows):
-        raise RuntimeError("gh issue list answered something that is not a list of positive-integer number and title objects: %r" % public(str(out))[:200])
+        raise RuntimeError("gh issue list answered something that is not a list of positive-integer number and title "
+                           "objects: %r" % public(str(out))[:200])
     return rows
 
 
@@ -1409,25 +1466,31 @@ GUARD_CHECK = "only-the-app-pushes-auditor-lane"
 
 
 def _require_app_tip(repo, tip, plan, real, run):
-    """Only what the App itself pushed may be read or carried: the reserved-branch guard (a check on every push to auditor/*) must have PASSED on this commit."""
-    # read with the JOB token (checks: read), never the delivery App's: the App must not hold Checks (it publishes the review gate's verdict elsewhere)
+    """Only what the App itself pushed may be read or carried: the reserved-branch guard (a check on every push to
+    auditor/*) must have PASSED on this commit."""
+    # read with the JOB token (checks: read), never the delivery App's: the App must not hold Checks (it publishes the
+    # review gate's verdict elsewhere)
     token = os.environ.get("AUDITOR_CHECKS_TOKEN") or os.environ.get("GH_TOKEN") or ""
     verdict = _sh(["gh", "api", "repos/{owner}/{repo}/commits/%s/check-runs?check_name=%s" % (tip, GUARD_CHECK), "--jq",
-                   '.check_runs | map(.conclusion) | join(",")'], plan, real, run, env=dict(os.environ, GH_TOKEN=token)).strip()
+                   '.check_runs | map(.conclusion) | join(",")'], plan, real, run,
+                  env=dict(os.environ, GH_TOKEN=token)).strip()
     if verdict != "success":
-        raise RuntimeError("auditor-panel: the open PR's branch tip %s has no passing reserved-branch guard (%r): it may hold a push that was not the App's; refusing to use it"
+        raise RuntimeError("auditor-panel: the open PR's branch tip %s has no passing reserved-branch guard (%r): it "
+                           "may hold a push that was not the App's; refusing to use it"
                            % (tip[:12], verdict))
 
 
 def _checked_state_text(text, where):
-    """A state document read as text (git show): it must be a JSON object that passes the panel's rules; returns the text."""
+    """A state document read as text (git show): it must be a JSON object that passes the panel's rules; returns the
+    text."""
     doc = reviewed.parse(text, "%s of %s" % (STATE, where), spec=SPECS["panel-state.json"])
     _checked_state(doc, "%s of %s" % (STATE, where))
     return text
 
 
 def _main_state_text(repo):
-    """main's state file as text, or None on the first day. The reader owns existence (lstat): a dangling link or an unreachable file is a stop."""
+    """main's state file as text, or None on the first day. The reader owns existence (lstat): a dangling link or an
+    unreachable file is a stop."""
     path = os.path.join(repo, STATE)
     text = _text_of(path)
     if text is not None:
@@ -1436,7 +1499,8 @@ def _main_state_text(repo):
 
 
 def _stops_on_damaged_input(fn):
-    """The panel's commands answer a damaged reviewed or persistent input with a named ::error:: and exit 3, before anything is written or published."""
+    """The panel's commands answer a damaged reviewed or persistent input with a named ::error:: and exit 3, before
+    anything is written or published."""
     def run(*a, **k):
         try:
             return fn(*a, **k)
@@ -1450,25 +1514,33 @@ def _stops_on_damaged_input(fn):
 
 @_stops_on_damaged_input
 def cmd_state_source(a, run=subprocess.run):
-    """Yesterday's judgments for the judge: the open panel PR's branch if there is one (same repository, and its tip PASSED the reserved-branch guard), else main's
-    file. The exact commit read is recorded, and the delivery refuses to carry anything from a different tip (a human push between judgment and delivery)."""
+    """Yesterday's judgments for the judge: the open panel PR's branch if there is one (same repository, and its tip
+    PASSED the reserved-branch guard), else main's file. The exact commit read is recorded, and the delivery refuses to
+    carry anything from a different tip (a human push between judgment and delivery)."""
     plan, branch = [], "auditor/panel"
-    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository,baseRefName", "--jq",
-                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, True, run).strip().split("\n")[0].strip()
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json",
+                    "number,isCrossRepository,baseRefName", "--jq",
+                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, True,
+                   run).strip().split("\n")[0].strip()
     text, tip = None, ""
     if existing:
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", branch], plan, True, run)
         tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, True, run).strip()
         _require_app_tip(a.repo, tip, plan, True, run)
         if _sh(["git", "-C", a.repo, "ls-tree", "FETCH_HEAD", "--", STATE], plan, True, run).strip():
-            text = _checked_state_text(_sh(["git", "-C", a.repo, "show", "FETCH_HEAD:" + STATE], plan, True, run), "the open PR's branch")
-        # main's own state must not have moved since the PR's base (someone merged a newer state): continuing from the PR's older one would publish a regression
+            text = _checked_state_text(_sh(["git", "-C", a.repo, "show", "FETCH_HEAD:" + STATE], plan, True, run),
+                                       "the open PR's branch")
+        # main's own state must not have moved since the PR's base (someone merged a newer state): continuing from the
+        # PR's older one would publish a regression
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, True, run, check=False)
         mb = _sh(["git", "-C", a.repo, "merge-base", tip, "HEAD"], plan, True, run).strip()
         main_text = _main_state_text(a.repo) or ""
-        base_text = _sh(["git", "-C", a.repo, "show", "%s:%s" % (mb, STATE)], plan, True, run) if mb and _sh(["git", "-C", a.repo, "ls-tree", mb, "--", STATE], plan, True, run).strip() else ""
+        base_text = _sh(["git", "-C", a.repo, "show", "%s:%s" % (mb, STATE)], plan, True,
+                        run) if mb and _sh(["git", "-C", a.repo, "ls-tree", mb, "--", STATE], plan, True,
+                                           run).strip() else ""
         if mb and main_text != base_text and main_text != (text or ""):
-            raise RuntimeError("auditor-panel: main's panel state changed since the open PR's base, and the PR's older state would overwrite it; close the PR so the next run starts from main")
+            raise RuntimeError("auditor-panel: main's panel state changed since the open PR's base, and the PR's "
+                               "older state would overwrite it; close the PR so the next run starts from main")
     where = "the open panel PR #%s" % existing
     if text is None:
         text = _main_state_text(a.repo)
@@ -1496,7 +1568,8 @@ def _instant(ts):
 
 
 def _later(a, b):
-    """The later of two timestamps by INSTANT (main's 09:00-04:00 is 13:00Z); on a string that is no instant, the first."""
+    """The later of two timestamps by INSTANT (main's 09:00-04:00 is 13:00Z); on a string that is no instant, the
+    first."""
     ia, ib = _instant(a), _instant(b)
     if ia is None or ib is None:
         return a if ia is not None or ib is None else b
@@ -1504,11 +1577,13 @@ def _later(a, b):
 
 
 def _conflict(path, why):
-    return RuntimeError("auditor-panel: %s: the open PR and main both changed %s since the PR's base (conflict); refusing to pick a winner" % (path, why))
+    return RuntimeError("auditor-panel: %s: the open PR and main both changed %s since the PR's base (conflict); "
+                        "refusing to pick a winner" % (path, why))
 
 
 def _text_of(path):
-    """The text of a file, None when it is absent (reviewed.present: a dangling link is present); a file that is there but cannot be read is a stop."""
+    """The text of a file, None when it is absent (reviewed.present: a dangling link is present); a file that is there
+    but cannot be read is a stop."""
     if not reviewed.present(path):
         return None
     try:
@@ -1519,8 +1594,10 @@ def _text_of(path):
 
 
 def _checked_doc(text, path, where, rel):
-    """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of its file (cache#707, B2); the parsed document."""
-    doc = reviewed.parse(text, "%s of %s" % (path, where), as_name=VEX, spec=SPECS["scanner-profiles.json"] if rel == PROFILES else None)
+    """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of its file; the parsed
+    document."""
+    doc = reviewed.parse(text, "%s of %s" % (path, where), as_name=VEX, spec=SPECS["scanner-profiles.json"]
+                         if rel == PROFILES else None)
     bad = validate_profiles(doc) if rel == PROFILES else validate_vex(doc)
     if bad:
         raise reviewed.ReviewedInputInvalid("%s of %s: %s" % (path, where, "; ".join(bad)))
@@ -1528,8 +1605,9 @@ def _checked_doc(text, path, where, rel):
 
 
 def check_carried_documents(repo, ref, base_ref, pr_files, plan, real, run):
-    """The documents carry_forward will merge, validated BEFORE the checkout moves anything: the open PR's branch, the PR's base and main's working copy (VEX and profiles). A document that is
-    present but empty is invalid (absent is not): the distinction is made by the tree, not by the text (cache#707 round 2). Raises ReviewedInputInvalid."""
+    """The documents carry_forward will merge, validated BEFORE the checkout moves anything: the open PR's branch, the
+    PR's base and main's working copy (VEX and profiles). A document that is present but empty is invalid (absent
+    is not): the distinction is made by the tree, not by the text. Raises ReviewedInputInvalid."""
     if not real:
         return
     def in_tree(r, path):
@@ -1539,7 +1617,8 @@ def check_carried_documents(repo, ref, base_ref, pr_files, plan, real, run):
             continue
         pr_here, base_here = in_tree(ref, path), bool(base_ref) and in_tree(base_ref, path)
         if not pr_here:
-            continue                                       # the PR does not hold it (a deletion is carry_forward's conflict, loud there)
+            # the PR does not hold it (a deletion is carry_forward's conflict, loud there)
+            continue
         pr_txt = _sh(["git", "-C", repo, "show", "%s:%s" % (ref, path)], plan, real, run)
         base_txt = _sh(["git", "-C", repo, "show", "%s:%s" % (base_ref, path)], plan, real, run) if base_here else None
         cur = os.path.join(repo, path)
@@ -1555,11 +1634,13 @@ def check_carried_documents(repo, ref, base_ref, pr_files, plan, real, run):
 
 
 def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
-    """Carry the open PR's OWN additions onto the freshly checked-out main: a three-way merge by content, not a copy of the PR's files (a copy would
-    silently revert whatever main merged since). The state file is not carried: it is rewritten from the day's judgment. Returns the paths changed."""
+    """Carry the open PR's OWN additions onto the freshly checked-out main: a three-way merge by content, not a copy of
+    the PR's files (a copy would silently revert whatever main merged since). The state file is not carried: it is
+    rewritten from the day's judgment. Returns the paths changed."""
     def show(r, path):
         if real and not _sh(["git", "-C", repo, "ls-tree", r, "--", path], plan, real, run).strip():
-            return ""                                   # PROVEN absent (the tree was read and does not list it); any read failure raised
+            # PROVEN absent (the tree was read and does not list it); any read failure raised
+            return ""
         return _sh(["git", "-C", repo, "show", "%s:%s" % (r, path)], plan, real, run)
 
     def read(path):
@@ -1572,9 +1653,11 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
         with open(full, "w") as fh:
             fh.write(text)
 
-    for path in sorted(set(pr_files)):   # EVERY path first: a deletion or an identical copy of a foreign file is as foreign as an edit
+    # EVERY path first: a deletion or an identical copy of a foreign file is as foreign as an edit
+    for path in sorted(set(pr_files)):
         if path not in (STATE, VEX, PROFILES):
-            raise RuntimeError("auditor-panel: the open PR's branch holds %s, which the panel never writes; refusing to carry it (a human pushed to the App's branch?)" % path)
+            raise RuntimeError("auditor-panel: the open PR's branch holds %s, which the panel never writes; refusing "
+                               "to carry it (a human pushed to the App's branch?)" % path)
     carried = []
     for path in sorted(set(pr_files)):
         if path == STATE:
@@ -1588,10 +1671,12 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
         if cur_txt == pr_txt:
             continue                                   # main already has exactly this
         if path == VEX:
-            pr_doc, base_doc, cur_doc = (_checked_doc(pr_txt, path, "the open PR's branch", VEX), _checked_doc(base_txt or '{"statements": []}', path, "the PR's base", VEX),
+            pr_doc, base_doc, cur_doc = (_checked_doc(pr_txt, path, "the open PR's branch", VEX),
+                                         _checked_doc(base_txt or '{"statements": []}', path, "the PR's base", VEX),
                                          _checked_doc(cur_txt, path, "main", VEX))
-            # a statement is known by its @id; the hand-written ones in the real file have none, so they are known by their whole content
-            # (never all collapsed onto one key: that once overwrote a published statement with another CVE's)
+            # a statement is known by its @id; the hand-written ones in the real file have none, so they are known by
+            # their whole content (never all collapsed onto one key: that once overwrote a published statement with
+            # another CVE's)
             ident = lambda x: x.get("@id") or json.dumps(x, sort_keys=True)
             base_by = {ident(x): x for x in base_doc.get("statements", [])}
             cur_by = {ident(x): x for x in cur_doc.get("statements", [])}
@@ -1605,7 +1690,8 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
                         touched = True
                     elif cur_by[sid] != stmt:
                         raise _conflict(path, sid[:80])
-                elif stmt != base_by[sid]:             # a statement the PR CHANGED (it has an @id: a content-keyed statement cannot "change")
+                # a statement the PR CHANGED (it has an @id: a content-keyed statement cannot "change")
+                elif stmt != base_by[sid]:
                     if cur_by.get(sid) == base_by[sid]:
                         cur_doc["statements"][[ident(x) for x in cur_doc["statements"]].index(sid)] = stmt
                         cur_by[sid] = stmt
@@ -1613,18 +1699,21 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
                     elif cur_by.get(sid) != stmt:
                         raise _conflict(path, sid[:80])
             if touched:
-                cur_doc["timestamp"] = _later(cur_doc.get("timestamp"), pr_doc.get("timestamp"))   # never regress main's (by instant, not spelling)
+                # never regress main's (by instant, not spelling)
+                cur_doc["timestamp"] = _later(cur_doc.get("timestamp"), pr_doc.get("timestamp"))
                 cur_doc["version"] = int(cur_doc.get("version", 1)) + 1
                 write(path, json.dumps(cur_doc, indent=2) + "\n")
                 carried.append(path)
         elif path == PROFILES:
-            pr_doc, base_doc, cur_doc = (_checked_doc(pr_txt, path, "the open PR's branch", PROFILES), _checked_doc(base_txt or '{"entries": []}', path, "the PR's base", PROFILES),
+            pr_doc, base_doc, cur_doc = (_checked_doc(pr_txt, path, "the open PR's branch", PROFILES),
+                                         _checked_doc(base_txt or '{"entries": []}', path, "the PR's base", PROFILES),
                                          _checked_doc(cur_txt, path, "main", PROFILES))
             key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
             for doc_ in (pr_doc, base_doc, cur_doc):
                 ks = [key(e) for e in doc_["entries"]]
                 if len(ks) != len(set(ks)):
-                    raise _conflict(path, "entries that share a scanner/kind/package (ambiguous: refusing to guess which one changed)")
+                    raise _conflict(path, "entries that share a scanner/kind/package (ambiguous: refusing to guess "
+                                          "which one changed)")
             cur_by = {key(e): e for e in cur_doc["entries"]}
             base_by = {key(e): e for e in base_doc["entries"]}
             touched = False
@@ -1634,10 +1723,13 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
                     if k not in cur_by:
                         cur_doc["entries"].append(e); cur_by[k] = e; touched = True
                     elif cur_by[k] != e:
-                        raise _conflict(path, "the entry for %s" % (k,))      # main holds a DIFFERENT entry for the same scanner/kind/package
+                        # main holds a DIFFERENT entry for the same scanner/kind/package
+                        raise _conflict(path, "the entry for %s" % (k,))
                 elif e != base_by[k]:                  # an entry the PR CHANGED
                     if cur_by.get(k) == base_by[k]:
-                        cur_doc["entries"][[key(x) for x in cur_doc["entries"]].index(k)] = e; cur_by[k] = e; touched = True
+                        cur_doc["entries"][[key(x) for x in cur_doc["entries"]].index(k)] = e
+                        cur_by[k] = e
+                        touched = True
                     elif cur_by.get(k) != e:
                         raise _conflict(path, "the entry for %s" % (k,))
             for k in base_by:                          # an entry the PR REMOVED: not silently dropped either
@@ -1659,68 +1751,88 @@ def cmd_deliver(a, run=subprocess.run):
     if st is None or day is None:
         sys.stderr.write("::error::auditor-panel: nothing to deliver (no judgment in %s)\n" % a.out)
         return 2
-    check_delivery_inputs(a.repo, day, st)     # BEFORE the tip check, the disarm and the checkout: a damaged state, VEX or profiles file stops the delivery here
+    # BEFORE the tip check, the disarm and the checkout: a damaged state, VEX or profiles file stops the delivery here
+    check_delivery_inputs(a.repo, day, st)
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
     plan, branch, notes = [], "auditor/panel", []
-    # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
-    # opened, falls further behind, and can never merge under strict up-to-date checks. The open PR's branch is only READ: its files carry forward.
+    # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip
+    # stays on the day it was first opened, falls further behind, and can never merge under strict up-to-date checks.
+    # The open PR's branch is only READ: its files carry forward.
     base = os.environ.get("GITHUB_SHA") or "HEAD"
-    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository,baseRefName", "--jq",
-                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, real, run).strip().split("\n")[0].strip()   # a fork's PR from a branch of this name is not ours
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json",
+                    "number,isCrossRepository,baseRefName", "--jq",
+                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, real,
+                   run).strip().split("\n")[0].strip()   # a fork's PR from a branch of this name is not ours
     pr_files, merge_base = [], ""
     if existing:
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, real, run, check=False)
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", branch], plan, real, run)
-        # no shared history within the fetched depth fails the command (and so the run): never a rebuild without knowing what the PR itself added
+        # no shared history within the fetched depth fails the command (and so the run): never a rebuild without knowing
+        # what the PR itself added
         merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
         if merge_base:  # the PR's own files come from git itself, not from what a listing says
-            pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"], plan, real, run).split("\0") if x]
+            pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"],
+                                       plan, real, run).split("\0") if x]
     if real:
-        # the judgment read ONE tip of the open PR's branch (or none): state-source records it, and the delivery must find exactly that, PR or no PR
+        # the judgment read ONE tip of the open PR's branch (or none): state-source records it, and the delivery must
+        # find exactly that, PR or no PR
         if not getattr(a, "state_source", None) or not os.path.exists(a.state_source):
-            raise RuntimeError("auditor-panel: a real delivery needs --state-source (what the judgment read); refusing to publish a judgment about an unknown state")
+            raise RuntimeError("auditor-panel: a real delivery needs --state-source (what the judgment read); "
+                               "refusing to publish a judgment about an unknown state")
         recorded = open(a.state_source).read().strip()
         tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, real, run).strip() if existing else ""
         if recorded != tip:
-            raise RuntimeError("auditor-panel: the open PR's branch is %s now but the judgment read %s (it moved, was closed or appeared): refusing to publish a judgment about a different state"
+            raise RuntimeError("auditor-panel: the open PR's branch is %s now but the judgment read %s (it moved, was "
+                               "closed or appeared): refusing to publish a judgment about a different state"
                                % (tip[:12] or "absent", recorded[:12] or "absent"))
     if existing and real:
         if pr_files:
             _require_app_tip(a.repo, tip, plan, real, run)
-        check_carried_documents(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run)       # BEFORE the checkout below moves anything
+        # BEFORE the checkout below moves anything
+        check_carried_documents(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run)
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
-    carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run) if existing and merge_base else []
+    carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real,
+                            run) if existing and merge_base else []
     changed = list(carried)
     for path in apply_files(a.repo, st, day, a.today):
         if path not in changed:
             changed.append(path)
-    if changed and existing:   # disarm BEFORE the head is replaced: an armed PR must never carry new content that auto-merge was not armed for
-        armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"], plan, real, run).strip()
+    # disarm BEFORE the head is replaced: an armed PR must never carry new content that auto-merge was not armed for
+    if changed and existing:
+        armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"],
+                    plan, real, run).strip()
         if armed == "true":
             _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)
     if changed:
-        # the commit is made THROUGH THE API with the App's token so GitHub signs it (main requires signed commits; a `git commit` here is unsigned
-        # and left the PR BLOCKED). No `git commit`, no `git push`: the branch is created or force-reset onto `base`, then ONE commit is made on it.
+        # the commit is made THROUGH THE API with the App's token so GitHub signs it (main requires signed commits; a
+        # `git commit` here is unsigned and left the PR BLOCKED). No `git commit`, no `git push`: the branch is created
+        # or force-reset onto `base`, then ONE commit is made on it.
         message = "Scanner panel audits, %s" % a.today
         if real:
             if not os.environ.get("GITHUB_REPOSITORY"):
-                raise RuntimeError("auditor-panel: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit")
-            def recorded(cmd, **kw):                    # the plan records each API call (never the file contents sent on stdin)
+                raise RuntimeError("auditor-panel: GITHUB_REPOSITORY is not set; cannot make the signed delivery "
+                                   "commit")
+            # the plan records each API call (never the file contents sent on stdin)
+            def recorded(cmd, **kw):
                 plan.append(cmd)
                 return run(cmd, **kw)
             try:
                 pushed = signed_commit.commit_via_api(os.environ["GITHUB_REPOSITORY"], branch, base, message,
-                                                      signed_commit.read_changes(a.repo, changed), run=recorded, notes=notes)
-                for n in notes:                         # a temporary ref that could not be deleted: not fatal, never silent
+                                                      signed_commit.read_changes(a.repo, changed), run=recorded,
+                                                      notes=notes)
+                # a temporary ref that could not be deleted: not fatal, never silent
+                for n in notes:
                     print("warning: auditor-panel: " + public(n))
             except signed_commit.CommitError as e:
                 raise RuntimeError("auditor-panel: %s" % public(e))
         else:
-            plan.extend(signed_commit.planned_commands(os.environ.get("GITHUB_REPOSITORY") or "OWNER/REPO", branch, base))
+            plan.extend(signed_commit.planned_commands(os.environ.get("GITHUB_REPOSITORY") or "OWNER/REPO", branch,
+                                                       base))
         body = public("The daily scanner panel's audits of the rescan's unique findings (%s).\n\n%s" % (
             a.today, "\n".join("- " + c for c in changed)))
         if existing:
-            _sh(["gh", "pr", "edit", existing, "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
+            _sh(["gh", "pr", "edit", existing, "--title", policy.subject("scanner panel audits"), "--body", body], plan,
+                real, run)
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
                  "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
@@ -1730,17 +1842,24 @@ def cmd_deliver(a, run=subprocess.run):
             pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
         allowed = automerge_allowed(sorted(pr_paths))
         if allowed and not changed:
-            pass                # nothing was delivered today: nothing is armed or disarmed on the strength of old content
+            # nothing was delivered today: nothing is armed or disarmed on the strength of old content
+            pass
         elif allowed:           # only content THIS run delivered is armed
             target = existing or branch
-            if changed and real:   # arm only the head THIS run made and GitHub verified, on a new PR as on an existing one: another run's later push must never inherit this run's arming
-                now_head = _sh(["gh", "pr", "view", target, "--json", "headRefOid", "--jq", ".headRefOid"], plan, real, run).strip()
+            # arm only the head THIS run made and GitHub verified, on a new PR as on an existing one: another run's
+            # later push must never inherit this run's arming
+            if changed and real:
+                now_head = _sh(["gh", "pr", "view", target, "--json", "headRefOid", "--jq", ".headRefOid"], plan, real,
+                               run).strip()
                 if now_head != pushed:
-                    raise RuntimeError("auditor-panel: the PR's head is %s, not the verified %s (head changed since it was verified, or it could not be read): not arming auto-merge" % (now_head[:12], pushed[:12]))
+                    raise RuntimeError("auditor-panel: the PR's head is %s, not the verified %s (head changed since "
+                                       "it was verified, or it could not be read): not arming auto-merge"
+                                       % (now_head[:12], pushed[:12]))
             _sh(["gh", "pr", "ready", target], plan, real, run)
             _sh(["gh", "pr", "merge", "--auto", "--squash", target], plan, real, run)
         elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it if armed
-            armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"],
+            armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq",
+                         ".autoMergeRequest != null"],
                         plan, real, run).strip()
             if armed == "true" or not real:
                 _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)    # a failure stops delivery
@@ -1753,15 +1872,19 @@ def cmd_deliver(a, run=subprocess.run):
         if hit:                 # the rescan's tracking issue, when it is open
             _sh(["gh", "issue", "comment", str(hit[0]), "--body", day["issue"]], plan, real, run, env=ienv)
         else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1)
-            for lab in ("daily-rescan", "security"):    # a missing label would lose the issue: create it first (not forced)
+            # a missing label would lose the issue: create it first (not forced)
+            for lab in ("daily-rescan", "security"):
                 _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
             _sh(["gh", "issue", "create", "--title", policy.subject(ISSUE_TITLE), "--label", "daily-rescan",
                  "--label", "security", "--body", day["issue"]], plan, real, run, env=ienv)
     if day["owner"]:
         body = public("Scanner panel, %s:\n\n%s" % (a.today, "\n\n".join(day["owner"])))
         n = ""
-        for t in (OWNER_TITLE, OLD_OWNER_TITLE):    # one search per title, new then old; the label is also on the per-finding issues, so the title must match exactly
-            rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", t,
+        # one search per title, new then old; the label is also on the per-finding issues, so the title must match
+        # exactly
+        for t in (OWNER_TITLE, OLD_OWNER_TITLE):
+            rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search",
+                                    t,
                                     "--limit", "100", "--json", "number,title"], plan, real, run, env=ienv), real)
             hit = [r["number"] for r in rows if r.get("title") == t]
             if hit:
@@ -1773,8 +1896,10 @@ def cmd_deliver(a, run=subprocess.run):
             _sh(["gh", "issue", "create", "--title", OWNER_TITLE, "--label", policy.OWNER_LABEL,
                  "--assignee", policy.OWNER_LOGIN, "--body", body], plan, real, run, env=ienv)
     with open(os.path.join(a.out, "plan.json"), "w") as fh:
-        json.dump(scrub({"real": real, "changed": changed, "commands": plan, "notes": [public(n) for n in notes]}), fh, indent=1)
-    print("auditor-panel: delivered (%s): %d path(s), %d command(s)" % ("real" if real else "plan only", len(changed), len(plan)))
+        json.dump(scrub({"real": real, "changed": changed, "commands": plan, "notes": [public(n) for n in notes]}), fh,
+                  indent=1)
+    print("auditor-panel: delivered (%s): %d path(s), %d command(s)" % ("real" if real else "plan only", len(changed),
+                                                                        len(plan)))
     return 0
 
 
@@ -1830,7 +1955,9 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe, state
     ss.add_argument("--state", required=True)
     ss.add_argument("--sha-out", required=True)
     d = sub.add_parser("deliver")
-    d.add_argument("--state-source", help="the file state-source wrote: the PR tip the judgment read; the delivery refuses a different tip")
+    d.add_argument("--state-source",
+                   help="the file state-source wrote: the PR tip the judgment read; the delivery refuses a different "
+                        "tip")
     d.add_argument("--out", required=True)
     d.add_argument("--repo", default=".")
     d.add_argument("--dry-run", action="store_true")
