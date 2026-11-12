@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-GRADLE-001-AC1
 # The cold build of bin/acceptance-gradle.sh (step_06) must fail the step when gradle fails: the `|| true` belongs to the grep that
 # filters the output, not to the build. The step is read from the committed script, never copied here; gradlew is a mock.
 set -uo pipefail

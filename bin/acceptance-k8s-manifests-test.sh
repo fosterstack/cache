@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-DEPLOY-003-AC1
 # bin/acceptance-k8s-manifests.py substitutes the candidate image into the documented manifests and refuses unless each of its
 # two image placeholders occurs exactly once (else the suite would test the published image, not the candidate). The docs are fixtures.
 set -uo pipefail
