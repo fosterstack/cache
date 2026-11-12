@@ -1,6 +1,6 @@
 # Verify a FosterStack Cache release (v0.3.0 and later) <!-- pinned: historical -->
 
-Status: draft. The commands marked "Not run before release" have not been run against a real release.
+Status: draft. A command marked "Not run before release" needs a registry image or a release file that Check does not hold, so the release runs it right after it publishes; a TO-VERIFY mark means we have not yet run the command against a real release.
 For v0.2.x releases, use [Verify our images](verify-images.md).
 Every image and file of a v0.3.0 and later release is signed with the release key; each step below checks it with the release public key and a Rekor entry, not with a workflow identity. <!-- pinned: historical -->
 
