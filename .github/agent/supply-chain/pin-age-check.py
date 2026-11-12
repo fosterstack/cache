@@ -1092,7 +1092,7 @@ def _head_file(root, rev, f):
 def _function_text(raw, name):
     """The text of the one top-level `def name(` in raw (the def line to the line before the next unindented line,
     trailing blank lines cut); None unless it is held exactly once."""
-    lines = raw.decode("utf-8", "replace").split("\n")
+    lines = raw.decode("utf-8", "surrogateescape").split("\n")
     starts = [i for i, ln in enumerate(lines) if ln.startswith(f"def {name}(")]
     if len(starts) != 1:
         return None
@@ -1129,7 +1129,7 @@ def _hash_locked_line_ok(root, head, f, flat, ver):
         return False
     raw = _head_file(root, head, f)
     text = _function_text(raw, ver[1]) if ver and ver[0] == HL_FILE else None
-    if text is None or hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest() != ver[2]:
+    if text is None or hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest() != ver[2]:
         return False
     lock = _head_file(root, head, HL_LOCK)
     return lock is not None and b"\r" not in lock
