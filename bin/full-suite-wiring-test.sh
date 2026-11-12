@@ -138,6 +138,8 @@ ALLOW_CHECK = "git ls-files | ./bin/check-file-allowlist.sh"
 AGENT = ".github/" + "agent/"
 PINS = "python3 " + AGENT + "bin/check-action-pins.py --verify-tags ."
 TESTSH = re.compile(r"[\w./-]*-tests?\.sh\b")
+GUARD = "bash bin/scan-no-workflow-call-test.sh"
+GUARD_NAME = "scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)"
 def sel_steps(job): return [s for s, r in runs(job) if "select-tests.sh" in r]
 def allowlist_static(job):
     bad = []
@@ -146,8 +148,13 @@ def allowlist_static(job):
     if PINS not in text: bad.append("the action-pin check is gone: " + PINS)
     ss = sel_steps(job)
     if len(ss) != 1: bad.append("the selected suites are not run in exactly one step (%d steps name bin/select-tests.sh)" % len(ss))
+    guards = [s for s, r in runs(job) if r.strip() == GUARD]
+    if len(guards) != 1: bad.append("the allowlist job does not have exactly one scanner guard step running %s (%d)" % (GUARD, len(guards)))
+    for g in guards:
+        if g.get("name") != GUARD_NAME: bad.append("the scanner guard step is not named %r" % GUARD_NAME)
+        if any(k in g for k in ("if", "continue-on-error", "shell", "env")): bad.append("the scanner guard step is conditional or weakened: " + ", ".join(k for k in ("if", "continue-on-error", "shell", "env") if k in g))
     for s, r in runs(job):
-        if s not in ss and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
+        if s not in ss and s not in guards and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
     return bad
 def run_step(step, extra_env, ctx, cwd, job=None):
     """run a step's script the way the runner does: bash -e (bash --noprofile --norc -eo pipefail when it sets shell: bash), expressions resolved"""
@@ -241,6 +248,11 @@ mutants("ci.yml", ci_problems, ci, [
     ("two selection steps", lambda d: add_step(d, "allowlist", {"name": "again", "run": "bash bin/select-tests.sh origin/main HEAD"})),
     ("a suite run directly in the allowlist job", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash bin/branch-sweep-test.sh"})),
     ("an auditor suite run directly", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash " + AGENT + "tests/auditor-matrix-test.sh"})),
+    ("the scanner guard step gone", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if (s.get("run") or "").strip() != GUARD])),
+    ("the scanner guard step conditional", lambda d: [s.__setitem__("if", "github.actor != 'x'") for s in d["jobs"]["allowlist"]["steps"] if (s.get("run") or "").strip() == GUARD]),
+    ("the scanner guard step allowed to fail", lambda d: [s.__setitem__("continue-on-error", True) for s in d["jobs"]["allowlist"]["steps"] if (s.get("run") or "").strip() == GUARD]),
+    ("the scanner guard step renamed", lambda d: [s.__setitem__("name", "guard") for s in d["jobs"]["allowlist"]["steps"] if (s.get("run") or "").strip() == GUARD]),
+    ("the scanner guard step twice", lambda d: add_step(d, "allowlist", {"name": GUARD_NAME, "run": GUARD})),
     ("the allowlist check of tracked files gone", lambda d: [s.__setitem__("run", s["run"].replace("./bin/check-file-allowlist.sh", "true")) for s in d["jobs"]["allowlist"]["steps"] if s.get("run")]),
     ("the pin check gone", lambda d: [s.__setitem__("run", s["run"].replace("--verify-tags", "")) for s in d["jobs"]["allowlist"]["steps"] if s.get("run")]),
     ("the selection discarded", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "bash bin/select-tests.sh origin/${{ github.base_ref }} HEAD >/dev/null"))),
