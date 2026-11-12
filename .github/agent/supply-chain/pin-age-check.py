@@ -1156,8 +1156,9 @@ def _no_constant(name):
 
 
 def load_ruled_text(path, required=False):
-    """{(file, form, 64-hex segment hash, 64-hex whole-line hash): (ruling, count, (first line, last line, sha256) or None)} from the file's unmeasured_text list. A missing default file is no rulings; anything
-    malformed
+    """{(file, form, 64-hex segment hash, 64-hex whole-line hash):
+    (ruling, count, (first line, last line, sha256) or None)} from the file's unmeasured_text list. A missing default
+    file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
@@ -1175,7 +1176,8 @@ def load_ruled_text(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", *_BODY_FIELDS} or not set(_RULED_FIELDS) <= set(r):
+        if (not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", *_BODY_FIELDS}
+                or not set(_RULED_FIELDS) <= set(r)):
             raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, "
                 "and body-first, body-last and body-sha256 together)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
