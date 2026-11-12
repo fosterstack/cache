@@ -110,7 +110,7 @@ def _cdx_packages(doc):
     return [c for c in doc.get("components") or [] if isinstance(c, dict) and _is_package_url(c.get("purl"))]
 
 
-def _purl_name_version(purl):
+def purl_name_version(purl):
     """(name, version) from a package URL, as the other scanners name it: a distro package without its distro
     namespace (pkg:deb/debian/libc-bin -> libc-bin), a Go module by its full path; the version un-escaped."""
     name, ver = _gate.name_version(purl)
@@ -189,7 +189,7 @@ def _cdx_findings(doc, comps, inspector=False):
             c = by_ref.get(a.get("ref"))
             if c is None:   # a finding that names no component of the report cannot be attributed: incomplete, never a nameless "?" finding
                 raise ValueError("vulnerability %s affects %r, which is not a component of the report: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
-            name, ver = _purl_name_version(c.get("purl") or "")
+            name, ver = purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
             if name == "?":   # the component has neither a package URL nor a name: still a finding nobody can attribute
@@ -237,7 +237,7 @@ def read_scout(d):
         purl = None
         if name.startswith("pkg:"):   # Scout's GitLab report puts the package URL in name (scout-selfcheck.py:124): name it as the other scanners do
             purl = name
-            name, pver = _purl_name_version(purl)
+            name, pver = purl_name_version(purl)
             ver = ver or pver
         purl = purl or next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
         out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
