@@ -26,8 +26,6 @@
 # The judge is proven on a known-good fixture tree and mutated copies, then applied to the real repository.
 # Needs python3 (no PyYAML: the scan is by text, comments stripped).
 set -euo pipefail
-# the red cases of this suite are the ones listed in test-evidence/known-red.json (KR-RECORDS-1: the cache scripts Release's steps run that are not listed rows
-# yet): the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
   _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
   printf '%s\n' "$_out"
