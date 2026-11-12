@@ -189,38 +189,40 @@ def git(root, *args):
 _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version once, not once per commit
 
 
-def _wanted(n):
+def _wanted(n, agent=True):
     return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS)
         or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$",
         n)
-            or n.endswith(".sh") or n.rsplit("/", 1)[-1] in VERSION_FILES
+            or (n.endswith(".sh") and (agent or not n.startswith(".github/agent/")))
+            or n.rsplit("/", 1)[-1] in VERSION_FILES
             or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
             or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
 
 
-_LISTINGS = {}  # (root, full sha) -> [(path, blob)] of the files the inventory reads: the one ls-tree a revision costs
+# (root, full sha, agent) -> [(path, blob)] of the files the inventory reads: the one ls-tree a revision costs
+_LISTINGS = {}
 
 
-def _listing(root, rev):
-    if (root, rev) in _LISTINGS:
-        return _LISTINGS[(root, rev)]
+def _listing(root, rev, agent=True):
+    if (root, rev, agent) in _LISTINGS:
+        return _LISTINGS[(root, rev, agent)]
     pairs = []
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
-        if n and _wanted(n):
+        if n and _wanted(n, agent):
             if n == KERNEL_LOCK and meta.split()[0] == "120000":
                 raise RuntimeError(
                     f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
             pairs.append((n, meta.split()[2]))
     if re.fullmatch(r"[0-9a-f]{40}", rev):    # a name like HEAD can move: only a full sha is remembered
-        _LISTINGS[(root, rev)] = pairs
+        _LISTINGS[(root, rev, agent)] = pairs
     return pairs
 
 
-def tree_key(root, rev):
+def tree_key(root, rev, agent=True):
     """The identity of what tree_files would read at a revision: the (path, blob) pairs of the files it reads, without
     reading them. Two revisions with the same key give the same inventory."""
-    return tuple(_listing(root, rev))
+    return tuple(_listing(root, rev, agent))
 
 
 def _working_text(root, n):
@@ -236,13 +238,13 @@ def _working_text(root, n):
     return text
 
 
-def tree_files(root, rev):
-    """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
-    wanted = _wanted
+def tree_files(root, rev, agent=True):
+    """{path: text} for every file the inventory reads, at a revision (rev None: the working tree). agent=False leaves
+    out the shell scripts under .github/agent/."""
     out = {}
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
-            if n and wanted(n):
+            if n and _wanted(n, agent):
                 if n == KERNEL_LOCK and os.path.islink(f"{root}/{n}"):
                     raise RuntimeError(
                         f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
@@ -259,7 +261,7 @@ def tree_files(root, rev):
                 if text is not None:
                     out[n] = text
         return out
-    for n, blob in _listing(root, rev):
+    for n, blob in _listing(root, rev, agent):
         # the lock is read strictly: a byte that is not UTF-8 is an error, never a replacement character
         if n == KERNEL_LOCK:
             try:
@@ -1293,8 +1295,8 @@ def _on_key(on):
     return out
 
 
-def load_at(root, rev):
-    return inventory(tree_files(root, rev))
+def load_at(root, rev, agent=True):
+    return inventory(tree_files(root, rev, agent))
 
 
 def main():
