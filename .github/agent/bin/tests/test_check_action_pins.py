@@ -882,11 +882,110 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 # main's gate workflow (the passed-audit record judge)
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"
-# the gate workflow with the merge queue judge (cache#542)
-GATE_B = "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc"
+# the gate workflow with the merge queue judge (cache#542) and one step per check in the judge job
+GATE_B = "52413fd1b4d4a99a5c889641e69ab54eda8bd9117ce0379de0bd035486060cdc"
 # the edits from main's gate workflow to the change's (old text, new text); the repository carries the change's copy,
 # so main's copy is made by undoing them
 QUEUE_HUNKS = (
+    (
+        (r'''      - name: run the default branch's review gate and pin check over the PR head
+        id: gate
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
+          # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
+          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -uo pipefail
+          # judged by the checked-out default branch's copies (HEAD), never the PR's
+          verdict=success
+          # row 78: every action reference in the head is a commit digest (git objects only)
+          python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
+          # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list
+          # and main's pin-wiring judge reads the head's ci.yml, both as git objects (nothing of the PR runs)
+          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
+          mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
+          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure
+          # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
+          # of the PR's own CI that overwrites the guard on disk changes nothing
+          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
+          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
+          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure
+          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+          [ "$verdict" = success ]
+
+'''),
+        (r'''      # Each check is its own step, judged by the checked-out default branch's copies (HEAD), never the PR's; a failed one does not stop the others,
+      # and the last step turns the five outcomes into the verdict.
+      # row 78: every action reference in the head is a commit digest (git objects only)
+      - name: the pin check over the PR head
+        id: pins
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
+        run: python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA"
+
+      # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list as git objects (nothing of the PR runs)
+      - name: the allowlist guard over the PR head's files
+        id: allowlist
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # the PR's identity, for main's copy of the allowlist guard
+          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -o pipefail
+          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh
+
+      - name: the yaml reader the two judges below load
+        run: mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
+
+      # main's pin-wiring judge reads the head's ci.yml as a git object
+      - name: the pin-wiring judge over the PR head's ci.yml
+        id: wiring
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh
+
+      # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
+      # of the PR's own CI that overwrites the guard on disk changes nothing
+      - name: the scanner guard over the PR head's workflows
+        id: scan
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh
+
+      # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+      # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
+      - name: the passed-audit record for the PR head
+        id: record
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF"
+
+      - name: the verdict
+        id: gate
+        env:
+          OUTCOMES: ${{ steps.pins.outcome }} ${{ steps.allowlist.outcome }} ${{ steps.wiring.outcome }} ${{ steps.scan.outcome }} ${{ steps.record.outcome }}
+        run: |
+          verdict=failure
+          [ "$OUTCOMES" = "success success success success success" ] && verdict=success
+          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+          [ "$verdict" = success ]
+
+'''),
+    ),
     (
         (r'''#   The sweep holds the App token while reading PR data — still as git objects only, never
 #   executed; it runs only the default branch's gate script.

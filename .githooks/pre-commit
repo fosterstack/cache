@@ -14,7 +14,7 @@
 # Enable once per clone:
 #   git config core.hooksPath .githooks
 #
-# CI (.github/workflows/ci.yml) runs the same check as a backstop
+# The review gate (.github/workflows/agent-review-gate.yml) runs the same check as a backstop
 # for commits made without this hook enabled.
 
 set -euo pipefail

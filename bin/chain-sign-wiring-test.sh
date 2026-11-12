@@ -3187,7 +3187,7 @@ case "$bout" in *TIMEOUT*) failn=$((failn + 1)); echo "FAIL an alias bomb hung t
   rc=1*"merge key"*) pass=$((pass + 1)); echo "ok   an alias bomb with a merge key at its base is walked once per node, finishes, and is refused";;
   *) failn=$((failn + 1)); echo "FAIL an alias bomb was not refused: ${bout:0:200}";; esac
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
-probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
+probe unparsed  "supply-chain.yml" "supply-chain.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/supply-chain.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
 # (the shadowed module must be one bin/chain-verify.py imports: it was fractions until the certificate and timestamp code went, and a control that shadows an unimported module proves nothing)
 # the isolation really works: with a bin/shutil.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the

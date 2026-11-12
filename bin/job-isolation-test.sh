@@ -25,7 +25,9 @@ COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\
 CREDENTIAL_CALLEES = ("stage-sign.yml", "stage-promote.yml")   # the only reusable workflows a credential-holding job may call (Sign and Release)
 BUILD_SIDE_FILES = ("stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml")   # the release chain's Build, Rebuild and Check workflows (owner Oct 21 separate jobs, Oct 22 Witness)
 EXCLUDED_AC1 = {}
-EXCLUDED_AC2 = {}
+# ci.yml test: the one required Go test job builds twice, without a credential, to /dev/null and to /tmp (neither is shipped): the static build and the -fips variant build, which had
+# their own jobs until the test, coverage, vendor and fips140-only jobs became one (audit row C-F7). Neither build is a release artifact.
+EXCLUDED_AC2 = {("ci.yml", "test"): "two throwaway builds in the one job without a credential"}
 # govulncheck is a Go module built from source by the installer arm `install-scanner.sh govulncheck`: a build the workflow text does not show. The tool argument is read after the
 # line continuations are joined and the quote and backslash characters are dropped from the word. A word that begins with a variable is resolved only through a literal
 # `for VAR in WORDS; do` in the same step (a govulncheck among the words is the build); any other leading-variable word is unresolved and refused in a credential job unless it is a
@@ -310,8 +312,8 @@ mutate "make added to the Check job given id-token: write back" '
 edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: make all\n", s, count=1, flags=re.S))'
 mutate "docker build added to a job that reads a secret (release.yml patch-notes)" '
 edit("release.yml", lambda s: re.sub(r"(  patch-notes:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
-mutate "id-token: write granted to a job that builds (ci.yml gosec)" '
-edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+mutate "id-token: write granted to a job that builds (ci.yml lint)" '
+edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
 # the build-side jobs of the release chain hold no identity token and sign with the throwaway key only (owner Oct 21 separate jobs; Oct 22 Witness: only Sign signs keyless; cache-2a, handoff 0671).
 # The judge finds a build-side job by the word witnessed-local.sh in its step text; a job that stops naming it (a reusable-workflow call, the script through a variable) escapes THIS rule. The fail-closed backstop for the
 # identity token is bin/chain-sign-wiring-test.sh, which refuses any job with id-token: write that is not in .github/policy/id-token-jobs.json (only the Sign and release jobs are).
@@ -375,8 +377,8 @@ mutate "release.yml sign calls a local workflow other than Sign's or Release's w
 edit("release.yml", lambda s: s.replace("    uses: ./.github/workflows/stage-sign.yml\n", "    uses: ./.github/workflows/stage-verify.yml\n", 1))'
 want_msg=""
 # AC2: a second build in one job
-mutate "a second build step in one job (ci.yml gosec)" '
-edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant one\n        run: go build ./a\n      - name: mutant two\n        run: go build ./b\n", s, count=1, flags=re.S))'
+mutate "a second build step in one job (ci.yml lint)" '
+edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant one\n        run: go build ./a\n      - name: mutant two\n        run: go build ./b\n", s, count=1, flags=re.S))'
 # the govulncheck hand-over
 mutate "audit job builds govulncheck itself again" '
 edit("auditor.yml", lambda s: s.replace("      - name: Install syft and govulncheck and build the validated run manifest\n", "      - name: mutant\n        run: GOBIN=x go install golang.org/x/vuln/cmd/govulncheck@v1.1.4\n      - name: Install syft and govulncheck and build the validated run manifest\n", 1))'
@@ -390,14 +392,14 @@ mutate "govulncheck-build gets a secret" '
 edit("auditor.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n        run: echo x\n", s, count=1, flags=re.S))'
 mutate "govulncheck-build gets an environment" '
 edit("auditor.yml", lambda s: re.sub(r"(  govulncheck-build:\n)", lambda m: m.group(1) + "    environment: agent\n", s, count=1))'
-mutate "write-all on a job that builds (ci.yml gosec)" '
-edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?)    permissions:\n", lambda m: m.group(1) + "    permissions: write-all\n    xperm:\n", s, count=1, flags=re.S))'
+mutate "write-all on a job that builds (ci.yml lint)" '
+edit("ci.yml", lambda s: re.sub(r"(  lint:.*?)    permissions:\n", lambda m: m.group(1) + "    permissions: write-all\n    xperm:\n", s, count=1, flags=re.S))'
 mutate "a workflow-level secret next to the govulncheck build" '
 edit("auditor.yml", lambda s: re.sub(r"(\njobs:\n)", lambda m: "\nenv:\n  K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" + m.group(1), s, count=1))'
 mutate "an ungated copy of the install after the gate" '
 edit("auditor.yml", lambda s: s.replace("          # syft: a pinned, checksum-verified", "          install -m 0755 \"${RUNNER_TEMP}/govulncheck-dl/govulncheck\" \"${RUNNER_TEMP}/gobin/govulncheck\"\n          # syft: a pinned, checksum-verified", 1))'
-mutate "a go build loop in one job (ci.yml gosec)" '
-edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant loop\n        run: |\n          for t in ./a ./b; do go build \"$t\"; done\n", s, count=1, flags=re.S))'
+mutate "a go build loop in one job (ci.yml lint)" '
+edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant loop\n        run: |\n          for t in ./a ./b; do go build \"$t\"; done\n", s, count=1, flags=re.S))'
 mutate "a bracket-form secret in the govulncheck build" '
 edit("auditor.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets[\x27AUDITOR_APP_PRIVATE_KEY\x27] }}\n        run: echo x\n", s, count=1, flags=re.S))'
 mutate "an ungated install appended to the download line" '

@@ -89,7 +89,7 @@ mappings:
       - { type: go-test, ref: "internal/server:TestLoggableErrWithoutCauseNamesOnlyTheOperation" }
   - ac: REQ-FIPS-003-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job test, FIPS step: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
   - ac: REQ-REL-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/release.yml: cosign sign per digest, attest-build-provenance, and gh attestation verify gate - executed on the v0.1.0 release" }
@@ -284,22 +284,22 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestNegativeMessageWording" }
   - ac: REQ-GRADLE-001-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
   - ac: REQ-GRADLE-001-AC2
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) steps 'assert the cold build populated the cache' + 'assert the warm build hit the server' (exact-count /metrics assertions)" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) steps 'assert the cold build populated the cache' + 'assert the warm build hit the server' (exact-count /metrics assertions)" }
   - ac: REQ-GRADLE-001-AC3
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) sha256 comparison of build/classes trees across cold and restored builds" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) sha256 comparison of build/classes trees across cold and restored builds" }
   - ac: REQ-GRADLE-001-AC4
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert no remote-cache errors were silently ignored'" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) step 'assert no remote-cache errors were silently ignored'" }
   - ac: REQ-MAVEN-001-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) scenarios 1-6: cold uploads (exact counts), local wiped, remote restore of both modules, byte-identical jars, server-side metrics, settings.xml auth - counts measured empirically 2026-09-11" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) scenarios 1-6: cold uploads (exact counts), local wiped, remote restore of both modules, byte-identical jars, server-side metrics, settings.xml auth - counts measured empirically 2026-09-11" }
   - ac: REQ-MAVEN-001-AC2
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) scenario 7: wrong + missing credentials complete with logged errors, server 401s, zero stored entries" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) scenario 7: wrong + missing credentials complete with logged errors, server 401s, zero stored entries" }
   - ac: REQ-PROTO-002-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestNestedKeyRoundTripOverHTTP" }
@@ -361,11 +361,11 @@ mappings:
       - { type: go-test, ref: "internal/server:TestBodyLimitRejectionCarriesNoRejectHeader" }
   - ac: REQ-EVICT-002-AC3
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) capped scenario: real per-task cache keys via --info; oversized module-a key absent (HEAD 404), pre-error :core key present (HEAD 200), post-error task keys absent; warm restore set asserted; recovery build hits the remote cache; direct 413+X-FSCache-Reject probe as the mechanism check" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) capped scenario: real per-task cache keys via --info; oversized module-a key absent (HEAD 404), pre-error :core key present (HEAD 200), post-error task keys absent; warm restore set asserted; recovery build hits the remote cache; direct 413+X-FSCache-Reject probe as the mechanism check" }
   - ac: REQ-EVICT-002-AC4
     evidence:
       - { type: shell-test, ref: "bin/acceptance-maven-413-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) capped scenario (both extension versions): single shared oversized resource (identical app key across workspaces), app key rejected 413 in the INFO log, remote absence via extension cache dir + server HEAD 404, small library remote restore with sha256-identical bytes" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance) capped scenario (both extension versions): single shared oversized resource (identical app key across workspaces), app key rejected 413 in the INFO log, remote absence via extension cache dir + server HEAD 404, small library remote restore with sha256-identical bytes" }
   - ac: REQ-AUTH-004-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestCredentialsIgnoredByNoAuthServer" }
@@ -449,7 +449,7 @@ mappings:
       - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119); ci.yml:suites — the pin-check wiring test (triggers unfiltered; steps unconditional, in the default shell, with no environment, PATH or checkout redirection); the checker itself over the tree runs in agent-review-gate.yml from main's copy" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
       - { type: shell-test, ref: ".github/agent/tests/k8s-harness-fence-test.sh" }
@@ -457,7 +457,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the pm-* cases for the literal-label runner matrix" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class LiteralRunnerMatrix) and the fixture cases, and requires every line of the checker covered" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class LiteralRunnerMatrix) and the fixture cases, and requires every line of the checker covered" }
   - ac: REQ-REL-005-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
@@ -473,38 +473,38 @@ mappings:
   - ac: REQ-REL-012-AC1
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
   - ac: REQ-REL-012-AC2
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
   - ac: REQ-REL-012-AC3
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
   - ac: REQ-REL-012-AC4
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with all five checks" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with all five checks" }
   - ac: REQ-REL-012-AC5
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix (the record job's pinned shape and mutants) and the signed-commit unit tests (the audit/ lane guard)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix (the record job's pinned shape and mutants) and the signed-commit unit tests (the audit/ lane guard)" }
   - ac: REQ-REL-012-AC6
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix, whose record case runs the sweep step with an old failure, with and without a record branch" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — runs the auditor matrix, whose record case runs the sweep step with an old failure, with and without a record branch" }
   - ac: REQ-REL-012-AC7
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the audit-approval check's pinned shape in bin/build-admit.py with mutants, the writer's release mode)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the audit-approval check's pinned shape in bin/build-admit.py with mutants, the writer's release mode)" }
   - ac: REQ-REL-012-AC8
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -595,14 +595,12 @@ mappings:
   - ac: REQ-DEP-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
-      - { type: shell-test, ref: "bin/check-file-allowlist-test.sh" }
   - ac: REQ-DEP-005-AC2
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
   - ac: REQ-DEP-005-AC3
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/queue-gate-judge-test.sh" }
   - ac: REQ-DEP-003-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -743,7 +741,7 @@ mappings:
   - ac: REQ-SCAN-015-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's pin-wiring judge over every PR head's ci.yml requires the scanner guard step, unweakened, in the allowlist job (required check auditor-review-gate)" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's pin-wiring judge and scanner guard over every PR head's workflows (required check auditor-review-gate)" }
   - ac: REQ-SCAN-015-AC3
     evidence:
       - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
@@ -948,7 +946,7 @@ mappings:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-SUP-001-AC29
     evidence:
-      - { type: inspection, ref: ".github/workflows/acceptance.yml: workflow_call has no inputs, and no step in either job runs a container image; reviewers read it (no coded check)" }
+      - { type: inspection, ref: ".github/workflows/acceptance.yml: the workflow is not callable, and no step of its one job runs a container image; reviewers read it (no coded check)" }
   - ac: REQ-SUP-001-AC31
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
@@ -1120,8 +1118,8 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/coverage-shard-test.sh" }
-      - { type: inspection, ref: ".github/agent/tests/coverage-gate.sh (the gate script itself, run by the ci.yml coverage job; it carries the AC2 proves header but is not test-named, so the matrix cases req18-ac2-python-100pct-coverage-gate and req18-ac2-identity-claims-logging-stubbed are the shell-test evidence) (re-verified 2026-10-09)" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml job coverage: step auditor Python coverage, zero uncovered. KNOWN GAP (owner question pending): the gate honours the exclusion list in .github/agent/coverage-exclusions.txt, which the AC text does not mention, and it measures only the auditor bin directory (code to widen in a follow-up)" }
+      - { type: inspection, ref: ".github/agent/tests/coverage-gate.sh (the gate script itself, run by the ci.yml test job; it carries the AC2 proves header but is not test-named, so the matrix cases req18-ac2-python-100pct-coverage-gate and req18-ac2-identity-claims-logging-stubbed are the shell-test evidence) (re-verified 2026-10-09)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job test: step auditor Python coverage, zero uncovered. KNOWN GAP (owner question pending): the gate honours the exclusion list in .github/agent/coverage-exclusions.txt, which the AC text does not mention, and it measures only the auditor bin directory (code to widen in a follow-up)" }
   # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC3 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
   # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
   #   Every change under `.github/agent/` clears the **independent second review's stop rule** before merge.
@@ -1916,46 +1914,46 @@ mappings:
   - ac: REQ-REL-013-AC1
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC2
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC3
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC4
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC5
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC6
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC7
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC8
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-test.sh" }
   - ac: REQ-REL-013-AC9
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-job-test.sh over the workflow file and the publish script with stand-ins for cosign and gh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh over the workflow file and the publish script with stand-ins for cosign and gh" }
   - ac: REQ-REL-013-AC10
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-job-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh" }
   - ac: REQ-REL-013-AC11
     evidence:
       - { type: shell-test, ref: "bin/evidence-letter-job-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-chain-4 — runs bin/evidence-letter-job-test.sh over the presence script with stand-ins for cosign and gh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:suites — runs bin/evidence-letter-job-test.sh over the presence script with stand-ins for cosign and gh" }

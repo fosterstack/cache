@@ -19,7 +19,7 @@ CANON = {}   # job -> the exact normalised run text of its check step (filled be
 root = os.environ["SC_ROOT"]
 WF = os.path.join(root, ".github/workflows/supply-chain.yml")
 DB = os.path.join(root, ".github/dependabot.yml")
-CI = os.path.join(root, ".github/workflows/ci.yml")
+SUITES = os.path.join(root, ".github/policy/ci-suites.json")
 ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout", "actions/upload-artifact")
@@ -420,10 +420,10 @@ def judge_rest():
     m = re.search(r"PIPELINE_ONLY = frozenset\(\[(.*?)\]\)", src, re.S)
     if not m or "REQ-SUP-001" not in m.group(1):
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
-    ci = open(CI).read()
+    suites = open(SUITES).read()
     for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if f"bash .github/agent/tests/{t}" not in ci and f"suite-floors.json {t} .github/agent/tests/{t}" not in ci:     # plain, or the counting step of REQ-CI-005
-            bad.append(f"ci.yml does not run .github/agent/tests/{t}")
+        if f'"suite": "{t}"' not in suites:
+            bad.append(f"the CI suite list does not run .github/agent/tests/{t}")
     return bad
 
 real_wf, real_db = None, None
@@ -450,7 +450,7 @@ result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b el
 b = judge_db(real_db)
 result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on the root gomod entry, the tools/requirements and govulncheck tool entries weekly with their own 7-day cooldown, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
-result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "REQ-SUP-001 is pipeline-only and the CI suite list runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
 def mut_wf(name, expect, fn):
     if real_wf is None:

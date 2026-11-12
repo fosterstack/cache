@@ -25,7 +25,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         list also holds scanners, acceptance and runtime (advisor ruling Q2, a step-5 revisit). At the merge with PR 2 its judge's
                         STEPS takes the same three names and this copy is deleted in favour of it.
   cluster FILE          REQ-CHAIN-006-AC14: bin/acceptance-k8s.sh creates its cluster with exactly CLUSTER (the node image by digest) and no action.
-  suites FILE           REQ-CHAIN-006-AC5: acceptance.yml's gradle and maven jobs run the shared suite scripts (one copy of each suite).
+  suites FILE           REQ-CHAIN-006-AC5: acceptance.yml's job runs the shared suite scripts (one copy of each suite).
   phase FILE STEP       REQ-CHAIN-006-AC1/AC3: bin/check-phase-STEP.sh is the one line `bash bin/check-stage.sh STEP`.
   script FILE           REQ-CHAIN-006-AC3: bin/check-stage.sh is `set -euo pipefail`, the two verify commands, then ONE fixed `case "$1"` with
                         exactly the phases of PHASES (each with exactly its commands, in order) and nothing else.
@@ -175,9 +175,8 @@ SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase
 # (kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)
 NODE_IMAGE = "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
 CLUSTER = "kind create cluster --name fscache-accept --image " + NODE_IMAGE
-SUITE_STEPS = {  # acceptance.yml: each job runs the shared suite scripts, the capped one as the results step
-    "acceptance-gradle": ["bash bin/acceptance-gradle.sh", "bash bin/acceptance-gradle-capped.sh"],
-    "acceptance-maven": ["bash bin/acceptance-maven.sh", "bash bin/acceptance-maven-capped.sh"],
+SUITE_STEPS = {  # acceptance.yml: the one job runs the shared suite scripts, in this order
+    "acceptance": ["bash bin/acceptance-gradle.sh", "bash bin/acceptance-gradle-capped.sh", "bash bin/acceptance-maven.sh", "bash bin/acceptance-maven-capped.sh"],
 }
 SIGNING = re.compile(r"cosign|witness|gitsign|sigstore|slsa|attest|in-toto|docker\s+login|ghcr\.io|secret|ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|GITHUB_TOKEN|GH_TOKEN|SNYK", re.I)
 OLD = ["stage-acceptance-artifacts.yml", "stage-acceptance-egress.yml", "stage-acceptance-k8s.yml", "stage-acceptance-predicate.yml", "stage-authorize.yml"]
@@ -428,18 +427,15 @@ def cluster(path):
 
 
 def suites(path):
-    """REQ-CHAIN-006-AC5: acceptance.yml's gradle and maven jobs run the shared suite scripts, the capped one as the results step."""
+    """REQ-CHAIN-006-AC5: acceptance.yml's one job runs the shared suite scripts."""
     d, bad = load(path), []
     jobs = d.get("jobs") or {}
     for job, want in SUITE_STEPS.items():
         steps = (jobs.get(job) or {}).get("steps") or []
-        runs = [(s.get("run") or "").strip() for s in steps if "run" in s]
-        got = [r for r in runs if r.startswith("bash bin/acceptance-")]
+        lines = [l.strip() for s in steps for l in (s.get("run") or "").split("\n")]
+        got = [l for l in lines if l.startswith("bash bin/acceptance-")]
         if got != want:
             bad.append("%s must run %s in that order, found %s" % (job, want, got))
-        res = [s for s in steps if s.get("id") == "results"]
-        if len(res) != 1 or (res[0].get("run") or "").strip() != want[-1]:
-            bad.append("%s: the results step must be the one that runs %s" % (job, want[-1]))
     return bad
 
 

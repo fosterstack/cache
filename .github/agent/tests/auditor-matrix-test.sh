@@ -3306,13 +3306,13 @@ HH
 )"
 eq "$hy" "OK" && ok || no "layout check + suites, unconditional, in the required allowlist job" "$hy"
 
-begin "req18-ac2-python-100pct-coverage-gate" "the required 'coverage' job runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
+begin "req18-ac2-python-100pct-coverage-gate" "the required 'test' job runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
 cg="$(python3 - <<'CC'
 import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
-j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["coverage"]
+j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["test"]
 g=[x for x in j["steps"] if ".github/agent/tests/coverage-gate.sh" in x.get("run","")]
-ok=(j.get("name")=="coverage" and len(g)==1 and "--require-hashes" in g[0]["run"]
+ok=(j.get("name")=="test" and len(g)==1 and "--require-hashes" in g[0]["run"]
     and ".github/agent/coverage-requirements.txt" in g[0]["run"]
     and "if" not in g[0] and "continue-on-error" not in g[0])
 print("OK" if ok else "BAD")
@@ -3442,11 +3442,19 @@ d = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
 def step(job, key):
     r = [x for x in d["jobs"][job]["steps"] if key in x.get("name", "")]
     return r[0]["run"] if len(r) == 1 else None
-judge_run = step("judge", "review gate and pin check")
+# the judge job runs each check as its own step (continue-on-error), then the verdict step turns the five outcomes into the verdict
+jsteps = {x["id"]: x["run"] for x in d["jobs"]["judge"]["steps"] if x.get("id") in ("pins", "allowlist", "wiring", "scan", "record", "gate")}
+shim = [x["run"] for x in d["jobs"]["judge"]["steps"] if "yaml reader" in x.get("name", "")]
+judge_run = "judge" if len(jsteps) == 6 and len(shim) == 1 and all(x.get("continue-on-error") for x in d["jobs"]["judge"]["steps"] if x.get("id") in ("pins", "allowlist", "wiring", "scan", "record")) else None
 sweep_run = step("sweep", "judge and publish every open PR")
 if not judge_run or not sweep_run:
     print("BAD missing step"); sys.exit()
 def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
+def run_judge(fx, env):
+    subprocess.run(["bash", "-eo", "pipefail", "-c", shim[0]], cwd=fx, env=env, capture_output=True, text=True)
+    outcomes = ["success" if subprocess.run(["bash", "-eo", "pipefail", "-c", jsteps[k]], cwd=fx, env=env, capture_output=True, text=True).returncode == 0 else "failure"
+                for k in ("pins", "allowlist", "wiring", "scan", "record")]
+    return subprocess.run(["bash", "-eo", "pipefail", "-c", jsteps["gate"]], cwd=fx, env=dict(env, OUTCOMES=" ".join(outcomes)), capture_output=True, text=True)
 gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
               GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
 root = tempfile.mkdtemp(prefix="verdict-")
@@ -3493,7 +3501,7 @@ try:
                        GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
                        STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan), STUB_AUDIT=str(audit),
                        PATH=stubbin + ":" + os.environ["PATH"])
-            r = subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
+            r = run_judge(fx, env) if which == "judge" else subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
             c = open(calls).read().split()
             tag = "%s pins=%d allow=%d wiring=%d scan=%d audit=%d" % (which, pins, allow, wiring, scan, audit)
             if which == "judge":

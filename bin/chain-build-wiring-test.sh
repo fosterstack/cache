@@ -3364,7 +3364,7 @@ cat > "$work/vi-named.py" <<'PY'
 import glob, hashlib, os, re, yaml
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
-        "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
+        "bin/check-file-allowlist.sh", ".github/policy/ci-suites.json"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); the CI suite list names its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
 PINWIRE = (".github", "tests", "pin-wiring-test.sh")      # the pin-wiring judge is recognised by the SHAPE of its path, .github/<one directory>/tests/pin-wiring-test.sh, so this file never names the auditor directory (REQ-AUD-18 AC1: nothing outside it refers to it); the judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521/#540) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
 PIN_LINES = frozenset((
@@ -3472,9 +3472,8 @@ exec(open(os.path.join(work, "vi-named.py")).read())
 allowed = BASE
 stray_files = stray(root)
 assert not stray_files, "named outside Build's and Rebuild's assemble scripts: %s" % stray_files       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
-ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
-WRAPPED = "run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-index-test.sh bin/vex-index-test.sh </dev/null"      # REQ-CI-005: the test runs as a counting step, exactly this line
-assert all(row.startswith("run: bash bin/vex-index-test.sh") or row == WRAPPED or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
+ci = [row.strip() for row in open(root + "/.github/policy/ci-suites.json") if "vex-index" in row]
+assert ci == ['{"suite": "vex-index-test.sh"},'], ci      # CI runs the tool's TEST and nothing else of it (one entry of the suite list)
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 assert runners(rows) == sorted(p for p in allowed if p.startswith("bin/build-stage-")), runners(rows)      # a row may carry no runs list (bin/loopback-get.sh): it runs nothing
 PY

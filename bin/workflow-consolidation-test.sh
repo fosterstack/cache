@@ -93,12 +93,11 @@ case_ full-path-go-by-tag     bad "s=[x for x in $J['mutation']['steps'] if 'go 
 case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if']; $J['mutation']['if'], $J['check']['if'] = b, a"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
+# PR 2 of 4: ci.yml absorbs hygiene.yml and requirements.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review runs only on pull requests (the
-# only scope it is required on); every required check in .github/policy/required-checks.json is still produced by a
-# top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
-# (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every required check in
+# .github/policy/required-checks.json is still produced by a top-level job of a workflow on its scope's event.
+# dependabot-auto-merge.yml does NOT move: its events (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
 import glob, json, os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
@@ -106,12 +105,7 @@ root = sys.argv[2]
 bad = []
 MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
     "allowlist": ("allowlist", None, None, None, None),
-    "required-check-guard": ("required-check guard", {"contents": "read"}, None, None, None),
-    "drift-issue": ("open the required-check drift issue", {"contents": "read", "issues": "write"}, None, None,
-                    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read"}, None, None,
-                          "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
@@ -123,13 +117,11 @@ for jid, (name, perms, env, needs, cond) in MOVED.items():
         bad.append("job %s changed: %s" % (jid, got))
     if "uses" in j:
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
-if d.get("permissions") != {"contents": "read", "pull-requests": "read"}:
+if d.get("permissions") != {"contents": "read"}:
     bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
-# the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (REQ-SCAN-012)
-LIVE = {"group": "vex-live-test", "cancel-in-progress": "false"}
-if any(j.get("concurrency") and not (jid == "live-test" and j.get("concurrency") == LIVE) for jid, j in jobs.items()):
+if any(j.get("concurrency") for j in jobs.values()):
     bad.append("ci.yml gained a job-level concurrency setting")   # the one top-level block is judged by judge_conc
-if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": "", "merge_group": ""}:
+if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": ""}:
     bad.append("ci.yml's events changed: %s" % d.get("on"))
 for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
@@ -175,13 +167,11 @@ PY
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
-case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
-case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci top-level-pr-write       bad "d['permissions']['pull-requests'] = 'write'"
 case_ci allowlist-regains-block  bad "d['jobs']['allowlist']['permissions'] = {'contents': 'read'}"
 case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
-case_ci live-test-cancels        bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
+case_ci merge-group-back         bad "d['on']['merge_group'] = ''"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
 
@@ -267,31 +257,27 @@ case_rescan shape-digest-loose    bad "s=[x for x in d['jobs']['manifests']['ste
 case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'] if x.get('name') == 'enumerate platform children'][0]; s['run'] = s['run'] + '\necho \${{ matrix.target.digest }}'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# PR 4 of 4: acceptance-gradle.yml + acceptance-maven.yml -> acceptance.yml (REQ-REL-008-AC2). Same events; both jobs
-# keep their check names (acceptance-gradle; acceptance-maven (1.2.0) / (1.2.3) from the matrix), permissions and
-# results outputs; maven's scenario environment moves onto its job unchanged (release.yml called the one file then;
-# it no longer does, see REQ-CHAIN-006-AC10 below).
+# PR 4 of 4: acceptance-gradle.yml + acceptance-maven.yml -> acceptance.yml (REQ-REL-008-AC2), later one job `acceptance` that runs
+# the Gradle suite, then the Maven suite once per extension version (1.2.0, 1.2.3); maven's scenario environment sits on the step that
+# runs it. The workflow is not callable (release.yml does not call it, see REQ-CHAIN-006-AC10 below) and has no outputs.
 judge_acc() { python3 - "$1" "$root" <<'PY'
 import os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" not in on:
+if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" in on:
     bad.append("acceptance.yml's events changed: %s" % list(on))
-outs = (on.get("workflow_call") or {}).get("outputs") or {}
-if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.acceptance-gradle.outputs.results }}",
-                                                   "maven-results": "${{ jobs.acceptance-maven.outputs.results }}"}:
-    bad.append("the workflow_call outputs are not both suites' results: %s" % outs)
 jobs = d.get("jobs") or {}
-g, m = jobs.get("acceptance-gradle") or {}, jobs.get("acceptance-maven") or {}
-if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read"}:
-    bad.append("acceptance-gradle changed: %s" % {k: g.get(k) for k in ("name", "permissions")})
-if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read"} or \
-        (m.get("strategy") or {}).get("matrix", {}).get("extension-version") != ["1.2.0", "1.2.3"]:
-    bad.append("acceptance-maven changed: %s" % {k: m.get(k) for k in ("name", "permissions", "strategy")})
-if m.get("env") != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):
-    bad.append("maven's scenario environment did not move onto its job unchanged")
+a = jobs.get("acceptance") or {}
+if list(jobs) != ["acceptance"] or a.get("name") != "acceptance" or a.get("permissions") != {"contents": "read"} or "strategy" in a or "outputs" in a:
+    bad.append("acceptance is not the one job named acceptance with contents: read, no matrix and no outputs: %s" % list(jobs))
+steps = a.get("steps") or []
+maven = [s for s in steps if "bin/acceptance-maven.sh" in (s.get("run") or "")]
+if len(maven) != 1 or "for v in 1.2.0 1.2.3; do" not in maven[0]["run"] or (maven[0].get("env") or {}) != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):
+    bad.append("the Maven suite is not one step over both extension versions with its scenario environment")
+if any("id" in s or "docker " in (s.get("run") or "") for s in steps):
+    bad.append("acceptance has a results id or a docker command (it starts no container)")
 if d.get("permissions") != {"contents": "read"}:
     bad.append("top-level permissions changed")
 for gone in ("acceptance-gradle.yml", "acceptance-maven.yml"):
@@ -322,10 +308,12 @@ PY
   else failn=$((failn+1)); echo "FAIL acc:$1 → $got, want $2 ($out)"; fi
 }
 case_acc real                  ok  ""
-case_acc gradle-renamed        bad "d['jobs']['acceptance-gradle']['name'] = 'gradle'"
-case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['matrix']['extension-version'] = ['1.2.3']"
-case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
-case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
+case_acc renamed               bad "d['jobs']['acceptance']['name'] = 'gradle'"
+case_acc maven-version-cut     bad "[s.__setitem__('run', s['run'].replace('1.2.0 1.2.3', '1.2.3')) for s in d['jobs']['acceptance']['steps'] if 'bin/acceptance-maven.sh' in (s.get('run') or '')]"
+case_acc env-at-top            bad "d['env'] = {'COLD_LOOKUPS': '2'}"
+case_acc workflow-call-back    bad "d['on']['workflow_call'] = ''"
+case_acc results-id-back       bad "d['jobs']['acceptance']['steps'][-2]['id'] = 'results'"
+case_acc job-split-again       bad "d['jobs']['acceptance-gradle'] = d['jobs']['acceptance']"
 case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -458,11 +446,11 @@ case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 
 
 # ---------------------------------------------------------------------------------------------------------------------
 # REQ-REL-008-AC1 (owner RATIFIED Oct 2): the workflow directory holds exactly the ratified files and nothing else, so
-# no workflow sprawls. Today's 21 are the consolidation's "keep" rows, the attestation-signer stages and
+# no workflow sprawls. Today's 20 are the consolidation's "keep" rows, the attestation-signer stages and
 # dependabot-auto-merge.yml. Three files are admitted beyond them: stage-sign.yml (v0.3.0 rule 52, owner Oct 9), customer-words-edited.yml (decision 98, Oct 3) and
 # evidence-letter.yml (a new file under the owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md).
 # The history of the count (24, 25, 26, 24, 19) is in the git log of this file.
-ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
+ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 evidence-letter.yml stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
 stage-sign.yml supply-chain.yml customer-words-edited.yml"
@@ -470,8 +458,8 @@ judge_set() {  # $1: the directory's entries as a JSON list (every entry, not on
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 21:
-    print("the ratified list is not 21 files (rule 52 and the owner's Oct 3 amendment admit the three new files)")
+if len(want) != 20:
+    print("the ratified list is not 20 files (rule 52 and the owner's Oct 3 amendment admit the three new files)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
@@ -501,17 +489,18 @@ case_set letter-missing bad "$(edit_set 's.remove("evidence-letter.yml")')"
 case_cites a-third-new-file "$(edit_set 's.append("stage-extra.yml")')"
 case_cites letter-missing "$(edit_set 's.remove("evidence-letter.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
-case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
-case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"
+case_set one-missing   bad "$(edit_set 's.remove("go-freshness.yml")')"
+case_set newline-name  bad "$(edit_set 's.remove("go-freshness.yml"); s.remove("scorecard.yml"); s.append("go-freshness.yml\nscorecard.yml")')"
+case_set codeql-back   bad "$(edit_set 's.append("codeql.yml")')"
 case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# PR concurrency (advisor, Oct 22: superseded pull-request runs starved the merge train). ci, scan, supply-chain, acceptance and codeql each carry ONE
+# PR concurrency (advisor, Oct 22: superseded pull-request runs starved the merge train). ci, scan, supply-chain and acceptance each carry ONE
 # top-level concurrency block: a pull request's FIRST run attempt of a workflow shares a group with that pull request's other first attempts, so a newer push cancels its older
 # run; NOTHING ELSE is ever cancelled or replaced: every other run (a re-run of any head, a push to main, a tag, a schedule, a manual dispatch, a workflow_call, a merge_group)
 # gets a group of its own per run and attempt. The prefix is a literal per workflow (not github.workflow), so no workflow name can collide with another's group. Supply-chain's
 # daily-audit job keeps its own job-level group; no other job has one. A duplicate YAML key anywhere is refused (GitHub rejects it, so a required check would never run).
-judge_conc() {  # $1: a workflow file, $2: its key (ci scan supply-chain acceptance codeql)
+judge_conc() {  # $1: a workflow file, $2: its key (ci scan supply-chain acceptance)
   python3 - "$1" "$2" <<'PY'
 import sys, yaml
 text = open(sys.argv[1]).read()
@@ -545,9 +534,6 @@ for jid, j in jobs.items():
     if key == "supply-chain" and jid == "daily-audit":
         if c != {"group": "supply-chain-daily", "cancel-in-progress": "false"}:
             bad.append("supply-chain daily-audit's own group changed: %s" % c)
-    elif key == "ci" and jid == "live-test":      # the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (REQ-SCAN-012)
-        if c != {"group": "vex-live-test", "cancel-in-progress": "false"}:
-            bad.append("ci's live-test group changed: %s" % c)
     elif c:
         bad.append("job %s carries a concurrency setting: %s" % (jid, c))
 if key == "supply-chain" and "daily-audit" not in jobs:
@@ -585,7 +571,7 @@ PY
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS conc:$1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL conc:$1 → $got, want $2 ($out)"; fi
 }
-for k in ci scan supply-chain acceptance codeql; do
+for k in ci scan supply-chain acceptance; do
   case_conc "$k-real"                 ok  "$k" ""
   case_conc "$k-missing"              bad "$k" "d.pop('concurrency', None)"
   case_conc "$k-cancels-every-event"  bad "$k" "d['concurrency']['cancel-in-progress'] = 'true'"
@@ -601,9 +587,7 @@ for k in ci scan supply-chain acceptance codeql; do
 done
 case_conc supply-chain-daily-group-dropped bad supply-chain "d['jobs']['daily-audit'].pop('concurrency')"
 case_conc supply-chain-daily-cancels bad supply-chain "d['jobs']['daily-audit']['concurrency']['cancel-in-progress'] = 'true'"
-case_conc ci-live-test-cancels bad ci "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
-case_conc ci-live-test-group-changed bad ci "d['jobs']['live-test']['concurrency']['group'] = 'other'"
-case_conc ci-live-test-group-dropped bad ci "d['jobs']['live-test'].pop('concurrency')"
+case_conc ci-live-test-group-back bad ci "d['jobs']['test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
 
 # The fixer is retired (row 76): no job in ci.yml dispatches it.
 if grep -q "drift-fixer-dispatch" "$root/.github/workflows/ci.yml"; then

@@ -4,7 +4,7 @@
 # guide's command blocks byte for byte (only its settings blocks take test values); the test copy of the Inspector file
 # differs from the generator's output only in the live-test tag and the test name prefix (plus exactly the fixture's
 # own filters); the fixture CVE is one every service reports; at most 50 pushes; the release under test; the wiring
-# (rc tags after promotion and main pushes that change the guide or the VEX files — never a schedule, never a PR — in
+# (rc tags after promotion and final releases — never a schedule, never a PR — in
 # the live-test environment, federated, literal regions, pinned actions, cleanup always).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -283,9 +283,8 @@ check("the 51st push fails the run", out.returncode == 0, (out.returncode, out.s
 
 # --- AC1/AC3/AC4: the wiring
 wf = lambda n: yaml.load(open(os.path.join(root, ".github/workflows", n)), Loader=yaml.BaseLoader)
-rel, ci = wf("release.yml"), wf("ci.yml")
-for name, d, job in (("release.yml rc job", rel, rel["jobs"].get("live-test") or {}), ("release.yml post-publish job", rel, rel["jobs"].get("live-test-release") or {}),
-                     ("ci.yml", ci, ci["jobs"].get("live-test") or {})):
+rel = wf("release.yml")
+for name, d, job in (("release.yml rc job", rel, rel["jobs"].get("live-test") or {}), ("release.yml post-publish job", rel, rel["jobs"].get("live-test-release") or {})):
     steps = job.get("steps") or []
     text = json.dumps(steps)
     check("%s: a live-test job in the live-test environment" % name, job.get("environment") == "live-test", job.get("environment"))
@@ -316,20 +315,6 @@ check("release.yml: the rc job downloads the candidate's digests, items and imag
 check("release.yml: the post-publish job runs after Release, on final tags only, in release mode, never in the dry run",
       PJ.get("needs") in ("release", ["release"]) and PJ.get("if") == "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
       and '"MODE": "release"' in json.dumps(PJ.get("steps")), (PJ.get("needs"), PJ.get("if")))
-cj = ci["jobs"]["live-test"]
-check("ci.yml: on push to main only, after the change gate", cj.get("if") == "github.event_name == 'push' && needs.live-test-gate.outputs.changed == 'true'"
-      and cj.get("needs") == "live-test-gate", (cj.get("if"), cj.get("needs")))
-gate = "\n".join(st.get("run", "") for st in (ci["jobs"].get("live-test-gate") or {}).get("steps", []))
-pat = re.search(r"grep -qE '([^']+)'", gate)
-def gated(path):
-    return bool(pat) and subprocess.run(["grep", "-qE", pat.group(1)], input=path + "\n", text=True).returncode == 0
-check("ci.yml: the gate watches the guide, the VEX file and the live test's own code",
-      all(gated(x) for x in ("docs/using-our-vex.md", "docs/using-our-vex.live-blocks.json", "docs/using-our-vex.cannot-run.json", ".vex/fosterstack-cache.openvex.json", "bin/vex-forms.py",
-                             "bin/vex-live-run.sh", "bin/vex-live-test.py")), pat and pat.group(1))
-check("ci.yml: the gate ignores unrelated changes",
-      not any(gated(x) for x in ("README.md", "docs/verify-images.md", "bin/panel.py", "docs/using-our-vex.md.bak/x")))
-check("ci.yml: no usable base runs the test rather than missing a change", 'echo "changed=true"' in gate.split("exit 0")[0])
-check("ci.yml: never on a schedule", "schedule" not in ci["on"], ci["on"])
 # release.yml has a daily schedule for its decide job (REQ-REL-009); the live-test jobs must still never run on it: both need a v tag ref, which a scheduled run never has
 check("release.yml: the live-test jobs never run on the schedule (both require a v tag ref)", all("startsWith(github.ref, 'refs/tags/v')" in j.get("if", "") for j in (RJ, PJ)))
 # --- Codex #169 r1
@@ -711,23 +696,9 @@ rc, out = sh('export PUSHED_LOG="$RUNNER_TEMP/p"; copy_candidate "$RUNNER_TEMP/l
              {"crane": 'case "$1" in push) exit 1 ;; esac'})
 check("SEC-170-01 a candidate push is journaled before it starts, so a failed push is still swept", out.strip().endswith("dst/cache:x"), out)
 # SEC-169-07: one live test at a time, across both workflows, never cancelled midway
-for name, job in (("release.yml rc", RJ), ("release.yml post-publish", PJ), ("ci.yml", ci["jobs"]["live-test"])):
+for name, job in (("release.yml rc", RJ), ("release.yml post-publish", PJ)):
     check("SEC-169-07 %s: the live-test job is serialized with every other live test" % name,
           job.get("concurrency") == {"group": "vex-live-test", "cancel-in-progress": "false"}, job.get("concurrency"))
-# SEC-169-10: the gate reads a completed diff (no early-closed pipe under pipefail)
-gstep = [st for st in ci["jobs"]["live-test-gate"]["steps"] if "run" in st][0]["run"]
-with tempfile.TemporaryDirectory() as t:
-    os.makedirs(os.path.join(t, "stub"))
-    with open(os.path.join(t, "stub", "git"), "w") as fh:
-        fh.write('#!/usr/bin/env bash\ncase "$1" in cat-file) exit 0 ;; diff) echo .vex/fosterstack-cache.openvex.json; '
-                 'for i in $(seq 1 200000); do echo "src/file-$i.go"; done ;; esac\n')
-    os.chmod(os.path.join(t, "stub", "git"), 0o755)
-    outp = os.path.join(t, "out")
-    r = subprocess.run(["bash", "-eo", "pipefail", "-c", gstep], cwd=t, capture_output=True, text=True,
-                       env=dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], BEFORE="a",
-                                GITHUB_SHA="b", GITHUB_OUTPUT=outp, RUNNER_TEMP=t))
-    got = open(outp).read() if os.path.exists(outp) else ""
-check("SEC-169-10 a long diff with a VEX change still runs the live test", "changed=true" in got, (r.returncode, got))
 # --- the fixture carries, by construction, a CVE active in two package names (advisor Oct 17: the run must not discover on its first try that the fixture lacks one):
 # docs/using-our-vex.live-fixture.json pins the image and the two packages (libc6 and libc-bin, both built from glibc 2.36-9, so every glibc CVE is reported on both);
 # the manifest must name exactly the digest the runner copies, and the runner checks the real image's package list against it before it pushes anything
@@ -789,9 +760,6 @@ with tempfile.TemporaryDirectory() as _t:
         ti = tarfile.TarInfo("var/lib/dpkg/status"); ti.type = tarfile.SYMTYPE; ti.linkname = "/etc/passwd"; tf.addfile(ti)
     rc, err = cli("--image-tar", link)
     check("OWNER-3 a package list that is a link in the image is refused", rc == 1 and "::error::" in err, (rc, err))
-    # the main-push gate runs the live test when only the fixture manifest changed
-    gate_re = re.search(r"grep -qE '([^']+)'", gstep).group(1)
-    check("OWNER-3 the change gate matches the fixture manifest", re.search(gate_re, "docs/using-our-vex.live-fixture.json") is not None, gate_re)
 # the runner does this check on the real image, before any push (static: the order of the lines)
 i_chk, i_push = run_text.find("fixture-check"), run_text.find('push_copy "$FIXTURE_SRC"')
 check("the runner exports the fixture and runs fixture-check on its package list before it pushes the fixture", 0 < i_chk < i_push and "--image-tar" in run_text, (i_chk, i_push))
@@ -979,7 +947,7 @@ with tempfile.TemporaryDirectory() as t:
 SCOUT_RUN_ENV = {"DH_REPO": "${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}", "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}",
                  "DOCKERHUB_TEST_USERNAME": "${{ secrets.DOCKERHUB_TEST_USERNAME }}", "DOCKERHUB_TEST_PUSH_TOKEN": "${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}", "DOCKERHUB_SCOUT_TOKEN": "${{ secrets.DOCKERHUB_SCOUT_TOKEN }}"}
 SCOUT_CLEAN_ENV = {k: SCOUT_RUN_ENV[k] for k in ("DH_REPO", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")}
-for name, job in (("release.yml rc job", RJ), ("release.yml post-publish job", PJ), ("ci.yml", cj)):
+for name, job in (("release.yml rc job", RJ), ("release.yml post-publish job", PJ)):
     steps = job.get("steps") or []
     run_step = [s for s in steps if "bin/vex-live-run.sh run" in (s.get("run") or "")]
     clean_step = [s for s in steps if "bin/vex-live-run.sh cleanup" in (s.get("run") or "")]

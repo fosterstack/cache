@@ -179,19 +179,17 @@ open(w + "/acceptance.yml", "w").write("""name: Acceptance
 on:
   pull_request:
 jobs:
-  acceptance-gradle:
+  acceptance:
     runs-on: ubuntu-latest
     steps:
       - run: echo start
       - run: bash bin/acceptance-gradle.sh
-      - id: results
-        run: bash bin/acceptance-gradle-capped.sh
-  acceptance-maven:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash bin/acceptance-maven.sh
-      - id: results
-        run: bash bin/acceptance-maven-capped.sh
+      - run: bash bin/acceptance-gradle-capped.sh
+      - run: |
+          for v in 1.2.0 1.2.3; do
+            bash bin/acceptance-maven.sh
+            bash bin/acceptance-maven-capped.sh
+          done
 """)
 os.makedirs(w + "/plain", exist_ok=True)
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
@@ -409,8 +407,8 @@ cm c8_noimg  ' --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd56
 cm c8_two    'create_cluster\n$'                               'create_cluster\nkind create cluster --name second\n'    'exactly once'       "AC14 a second cluster"
 cm c8_act    'set -eo pipefail\n'                              'set -eo pipefail\n# uses: helm/kind-action\n'            'kind action'        "AC14 a kind action named in the suite"
 um() { if mutate "$work/acceptance.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" suites "$work/$1.yml"; fi; }
-um u_inline  '      - run: bash bin/acceptance-gradle.sh\n'   '      - run: ./gradlew build\n'                          'acceptance-gradle'  "AC5 the gradle suite inline instead of the shared script"
-um u_res     '      - id: results\n        run: bash bin/acceptance-maven-capped.sh' '      - run: bash bin/acceptance-maven-capped.sh\n      - id: results\n        run: echo results' 'results step' "AC5 the maven results step is not the suite"
+um u_inline  '      - run: bash bin/acceptance-gradle.sh\n'   '      - run: ./gradlew build\n'                          'acceptance'  "AC5 the gradle suite inline instead of the shared script"
+um u_order   '            bash bin/acceptance-maven.sh\n            bash bin/acceptance-maven-capped.sh\n' '            bash bin/acceptance-maven-capped.sh\n            bash bin/acceptance-maven.sh\n' 'in that order' "AC5 the maven suites in the wrong order"
 # ---- AC3: the order of bin/check-stage.sh --------------------------------------------------------------------------------
 sm() { if mutate "$work/script.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" script "$work/$1.sh"; fi; }
 sm c_nofirst 'python3 -I -B bin/chain-verify.py stage-start[^\n]*\n'   ''                                                 'not the pinned form' "AC3 the verify step dropped"
