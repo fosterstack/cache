@@ -1173,6 +1173,15 @@ class AuditRows(unittest.TestCase):
                 self.refused(G._hook, "sqlite3.connect", (name,))
                 with mock.patch.object(G._busy, "uri", True, create=True):
                     self.refused(G._hook, "sqlite3.connect", (name,))
+            class Convert:                                                  # sqlite calls __index__ while it parses the outer call, with the grant set
+                def __index__(self):
+                    sqlite3.Connection(uri, uri=False).close()
+                    return 0
+            for key in ("detect_types", "cached_statements"):
+                self.refused(sqlite3.connect, ":memory:", uri=True, **{key: Convert()})
+            with mock.patch.object(G._busy, "uri", True, create=True):      # one grant, one event
+                G._hook("sqlite3.connect", (uri,))
+                self.refused(G._hook, "sqlite3.connect", (uri,))
             self.assertEqual(sorted(os.listdir(T.t1)), [".coverage.link", "f", "sub"])
         with tempfile.TemporaryDirectory() as d:                                # what coverage does: a real database file in a temp dir
             c = sqlite3.connect(os.path.join(d, ".coverage.1"))

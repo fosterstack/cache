@@ -466,13 +466,14 @@ def _hook(event, args):
     if event == "sqlite3.connect" and args:
         # coverage keeps its data file in sqlite, so a plain path is judged like any other write. Refused (fail closed): a `file:` URI in
         # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "",
-        # except one exact str, coverage's own data-file URI, in a call the wrapper saw made with uri=True and the default factory: it is
+        # except one exact str, coverage's own data-file URI, in a call the wrapper saw made with uri=True, the default factory and plain arguments, for that one event: it is
         # judged as the path it names. Anywhere else sqlite opens that text as a relative file name, so it is refused like any other
         # `file:` name. Only an exact str, bytes or pathlib path is read at all: a subclass can answer startswith or __fspath__ differently
         # from what sqlite then opens. The connection itself denies ATTACH and VACUUM INTO (no audit event exists for them), so a database
         # can write nowhere else.
         arg = args[0]
-        if type(arg) is str and getattr(_busy, "uri", False):
+        granted, _busy.uri = getattr(_busy, "uri", False), False        # a grant is for this one event: spent here, whatever the name
+        if type(arg) is str and granted:
             path = _coverage_uri_path(arg) if arg.startswith("file:") else None
             if path:
                 check(path, event, write=True)
@@ -596,10 +597,12 @@ def _wrap_sqlite():
 
     def uri_call(orig, a, k):
         """orig(*a, **k) with _busy.uri telling the audit hook that this call is made with uri=True and the default factory (the event
-        carries neither). A custom factory may open the name with another flag, so it never gets the grant."""
+        carries neither). A custom factory may open the name with another flag, and an argument of another type runs its own code while
+        sqlite converts it (a nested connect(uri=False) would inherit the grant), so neither gets it."""
         prev = getattr(_busy, "uri", False)
         factory = k["factory"] if "factory" in k else a[5] if len(a) > 5 else Connection
-        _busy.uri = k.get("uri", a[7] if len(a) > 7 else False) is True and (factory is Connection or factory is base)
+        plain = all(type(v) in (str, bytes, int, float, bool, type(None)) for v in [*a[:5], *a[6:], *(v for n, v in k.items() if n != "factory")])
+        _busy.uri = k.get("uri", a[7] if len(a) > 7 else False) is True and (factory is Connection or factory is base) and plain
         try:
             return orig(*a, **k)
         finally:
