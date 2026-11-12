@@ -1401,7 +1401,10 @@ def _line_id(tainted, line):
 # the test builds a vendor/ fixture to prove it.
 # bin/build-apk-helper.py holds the "$src/vendor is missing" refusal that moved out of bin/build-apk.sh;
 # bin/chain-test-shape.py holds, as exact text, the build-apk.sh line that names $src/vendor/modules.txt.
+# .github/agent/bin/auditor-classify.py and auditor-panel.py use "vendor" for the company behind an audit seat.
 _VENDOR_NAMING_FILES = frozenset("""
+.github/agent/bin/auditor-classify.py
+.github/agent/bin/auditor-panel.py
 .github/workflows/ci.yml
 .github/workflows/release.yml
 bin/assemble-image-test.sh
