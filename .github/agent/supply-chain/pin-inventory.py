@@ -142,8 +142,19 @@ class Item:
         return self.key
 
 
+GIT_TIMEOUT = 120
+
+
+def _git_run(cmd, **kw):
+    """subprocess.run for the git calls here: a git that hangs stops the run, it is never an empty answer."""
+    try:
+        return subprocess.run(cmd, timeout=GIT_TIMEOUT, **kw)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{' '.join(cmd[:4])} did not answer in {GIT_TIMEOUT}s")
+
+
 def git(root, *args):
-    r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, errors="replace")  # a non-UTF-8 blob must never crash the readers
+    r = _git_run(["git", "-C", root, *args], capture_output=True, text=True, errors="replace")  # a non-UTF-8 blob must never crash the readers
     if r.returncode:
         raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout
@@ -181,6 +192,18 @@ def tree_key(root, rev):
     return tuple(_listing(root, rev))
 
 
+def _working_text(root, n):
+    """The text of a tracked file in the working tree, or None for a link (it could point outside the tree). At most MAX_FILE+1 characters are read."""
+    path = f"{root}/{n}"
+    if os.path.islink(path):
+        return None
+    with open(path) as f:
+        text = f.read(MAX_FILE + 1)
+    if len(text) > MAX_FILE:
+        raise RuntimeError(f"{n} is too large to read safely")
+    return text
+
+
 def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     wanted = _wanted
@@ -191,20 +214,20 @@ def tree_files(root, rev):
                 if n == KERNEL_LOCK and os.path.islink(f"{root}/{n}"):
                     raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
                 try:
-                    out[n] = open(f"{root}/{n}").read()
+                    text = _working_text(root, n)
                 except OSError as e:
                     if n == PERSONA_TOOLS:
                         raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its images would go unchecked")
                     if n == KERNEL_LOCK:
                         raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its rows would go unaged")
                     continue
-                if len(out[n]) > MAX_FILE:
-                    raise RuntimeError(f"{n} is too large to read safely")
+                if text is not None:
+                    out[n] = text
         return out
     for n, blob in _listing(root, rev):
         if n == KERNEL_LOCK:    # the lock is read strictly: a byte that is not UTF-8 is an error, never a replacement character
             try:
-                out[n] = subprocess.run(["git", "-C", root, "cat-file", "blob", blob], capture_output=True, check=True).stdout.decode("utf-8")
+                out[n] = _git_run(["git", "-C", root, "cat-file", "blob", blob], capture_output=True, check=True).stdout.decode("utf-8")
             except (subprocess.CalledProcessError, UnicodeDecodeError) as e:
                 raise RuntimeError(f"{n} cannot be read as UTF-8 text: its rows would go unaged ({e})")
         elif blob not in _BLOBS:
@@ -1066,11 +1089,11 @@ def tree_scripts(root, rev):
         names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith((".github/agent/", "vendor/"))]
         for n in names:
             try:
-                out[n] = open(f"{root}/{n}").read()
+                text = _working_text(root, n)
             except OSError:
                 continue
-            if len(out[n]) > MAX_FILE:
-                raise RuntimeError(f"{n} is too large to read safely")
+            if text is not None:
+                out[n] = text
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
@@ -1175,9 +1198,11 @@ def tree_surfaces(root, rev):
         names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n and _SURFACE.search(n)]
         for n in names:
             try:
-                out[n] = open(f"{root}/{n}").read()
+                text = _working_text(root, n)
             except (OSError, UnicodeDecodeError):
                 continue
+            if text is not None:
+                out[n] = text
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
