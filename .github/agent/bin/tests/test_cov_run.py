@@ -878,6 +878,24 @@ class ResolveCarried(unittest.TestCase):
         return {"vulnerability": {"name": "CVE-2099-7"},
                 "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": "pkg:deb/debian/libfoo@1.0?arch=%s&distro=debian-12.0" % arch}]}]}
 
+    def test_names_that_differ_only_by_percent_encoding_or_case_are_the_same_package(self):
+        """the carried entry says libfoo / 1.0+b1; the statement spells the purl LibFoo@1.0%2Bb1: one package, so the statement is re-judged this run"""
+        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0+b1"})
+        groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
+        stmt = {"vulnerability": {"name": "CVE-2099-7"},
+                "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": "pkg:deb/debian/LibFoo@1.0%2Bb1?arch=amd64"}]}]}
+        R._resolve_carried(groups, [stmt])
+        self.assertEqual([x["purl"] for x in groups["CVE-2099-7"]["findings"]], ["pkg:deb/debian/LibFoo@1.0%2Bb1?arch=amd64"])
+
+    def test_aliases_of_one_statement_add_no_duplicate_finding(self):
+        """the group is known by its id and an alias and the statement names both: the finding is resolved once (one scanner, finding_id and purl)"""
+        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
+        groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": ["GHSA-aaaa-bbbb-cccc"], "findings": [f], "lineages": {"inspector"}}}
+        stmt = self._stmt("amd64")
+        stmt["vulnerability"]["aliases"] = ["GHSA-aaaa-bbbb-cccc"]
+        R._resolve_carried(groups, [stmt])
+        self.assertEqual(len(groups["CVE-2099-7"]["findings"]), 1)
+
     def test_a_change_only_in_the_carried_resolution_never_reuses_a_verdict_for_a_different_question(self):
         """the no-change hash is taken over the groups BEFORE the carried statements are resolved, so two runs can share it while the statements resolve differently. That
         cannot produce a wrong reuse: a reused verdict, pullability record or narrative is looked up by the key of the exact context the model is given (nochange.call_key),
@@ -1578,6 +1596,16 @@ class FixPR(Base):
             with mock.patch.object(R.subprocess, "run", FakeRun(rules)):
                 got, err = R._open_dependabot_prs(self.d("ws"))
             self.assertIsNone(got); self.assertIn("gh pr list", err)
+
+    def test_an_empty_or_wrongly_shaped_answer_is_a_failed_lookup_not_no_prs(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        for out in ("", "   \n", "{}", "null", '"x"', "7", '{"number": 5}'):
+            with mock.patch.object(R.subprocess, "run", FakeRun({("gh", "pr", "list"): (0, out, "")})):
+                got, err = R._open_dependabot_prs(self.d("ws"))
+            self.assertIsNone(got, msg=repr(out)); self.assertIn("gh pr list", err or "", msg=repr(out))
+        with mock.patch.object(R.subprocess, "run", FakeRun({("gh", "pr", "list"): (0, "[]", "")})):
+            self.assertEqual(R._open_dependabot_prs(self.d("ws")), ([], None))         # a real empty list is still "no open PRs"
 
     def test_a_real_run_defers_to_an_open_dependabot_pr_and_survives_a_failed_lookup(self):
         dep = {("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, json.dumps([{"number": 5,
