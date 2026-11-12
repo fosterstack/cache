@@ -42,9 +42,10 @@ def put(root, files):
             fh.write(data)
 
 
-def commit(login, verified=True):
+def commit(login, verified=True, committer="web-flow"):
     """one entry of the compare endpoint's commit list"""
-    return {"sha": "3" * 40, "author": {"login": login}, "commit": {"verification": {"verified": verified}}}
+    return {"sha": "3" * 40, "author": {"login": login}, "committer": {"login": committer},
+            "commit": {"verification": {"verified": verified}}}
 
 
 class Api:
@@ -350,6 +351,16 @@ class Sweep(unittest.TestCase):
             self.assertTrue(status.startswith("skipped: "), status)
             self.assertIn("verified", status)
 
+    def test_a_bot_authored_commit_signed_by_a_contributor_makes_the_branch_skipped(self):
+        for commits in ([commit(APP, committer="contributor")], [commit("dependabot[bot]", committer="contributor")],
+                        [commit("dependabot[bot]"), commit(APP, committer=None)]):
+            status = self.untrusted(commits=commits)
+            self.assertTrue(status.startswith("skipped: "), status)
+
+    def test_a_commit_committed_by_the_app_itself_is_trusted(self):
+        status, api = self.sweep(api=Api(BR, self.head(), commits=[commit(APP, committer=APP)]))
+        self.assertEqual(status, "committed " + OID)
+
     def test_a_dependabot_look_alike_or_a_commit_without_a_linked_author_is_a_stranger(self):
         for author in ("dependabot", "dependabot[bot]x", "xdependabot[bot]", "Dependabot[bot]", "app", "", None):
             doc = commit("x"); doc["author"] = {"login": author} if author is not None else None
@@ -477,11 +488,8 @@ class Sweep(unittest.TestCase):
         status, api = self.sweep(branch="main", api=Api("main", OID))
         self.assertEqual(status, "skipped: not a dependency-bump branch")
 
-    def test_the_subject_names_the_last_part_of_the_branch(self):
-        self.assertEqual(V.subject("dependabot/go_modules/github.com/prometheus/client_golang-1.25.0"),
-            "Vendor records for the client_golang-1.25.0 bump")
-        self.assertEqual(V.subject("auditor/bump-example.com-m-1.1.0"),
-            "Vendor records for the bump-example.com-m-1.1.0 bump")
+    def test_the_records_message_has_no_second_name_in_this_module(self):
+        self.assertFalse(hasattr(V, "subject"))
 
 
 class Licences(unittest.TestCase):
