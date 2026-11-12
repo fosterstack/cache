@@ -35,9 +35,12 @@ def main(argv=None, run=None, regenerate=None):
             print("could not list the branches: %s" % (r.stderr or "").strip()[-300:], file=sys.stderr)
             return 1
         branches = [b for b in r.stdout.split("\n") if signed_commit._BUMP_BRANCH.match(b)]
+    slug = os.environ.get("AUDITOR_APP_SLUG")        # the App's login is its slug plus [bot]
+    app_login = slug + "[bot]" if slug else None
     failed = 0
     for branch in branches:
-        line = vendor_records.process_branch(a.repo, branch, a.workspace, run, regenerate, dry_run=a.dry_run)
+        line = vendor_records.process_branch(a.repo, branch, a.workspace, run, regenerate, dry_run=a.dry_run,
+                                            app_login=app_login)
         print("%s: %s" % (branch, " ".join(line.split())))
         failed += line.startswith("failed")
     return 1 if failed else 0
