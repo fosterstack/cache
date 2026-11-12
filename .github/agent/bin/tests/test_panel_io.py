@@ -403,7 +403,7 @@ def verdict_file(d, findings):
 
 UNIQUE = {"image": "fips-arm64", "id": "CVE-2099-0002", "package": "tzdata", "version": "2026c-0+deb13u1",
           "seen_by": ["scout"], "of": 3, "unique": True, "status": "unique",
-          "purls": ["pkg:deb/debian/tzdata@2026c-0%2Bdeb13u1"]}
+          "purls": ["pkg:generic/tzdata@2026c-0%2Bdeb13u1"]}
 BUNDLE = ("image fips-arm64 (tzdata 2026c-0+deb13u1)\n" + P.EVIDENCE_MARK +
           "\nPackage: tzdata\nVersion: 2026c-0+deb13u1\n/usr/share/zoneinfo/tzdata.zi (version 2026a)\n")
 
@@ -723,6 +723,42 @@ class StateMembers(Tmp):
             P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX], [], True, holds)
         self.assertIn("does not exist in the checkout", str(e.exception))
 
+    def test_a_dangling_link_where_the_carried_document_is_expected_is_a_clean_stop(self):      # row 20
+        repo = os.path.join(self.d, "repo3"); os.makedirs(os.path.join(repo, os.path.dirname(P.VEX)))
+        os.symlink(os.path.join(self.d, "nowhere"), os.path.join(repo, P.VEX))
+        good = json.dumps({"statements": [], "version": 1, "timestamp": "t"})
+
+        def holds(cmd, **kw):
+            if cmd[3:4] == ["ls-tree"]:
+                return types.SimpleNamespace(returncode=0, stdout="100644 blob x\t" + P.VEX, stderr="")
+            return types.SimpleNamespace(returncode=0, stdout=good if cmd[-1].startswith("FETCH_HEAD") else good.replace("1", "2"), stderr="")
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid):
+            P.check_carried_documents(repo, "FETCH_HEAD", "base", [P.VEX], [], True, holds)
+
+    def test_a_day_that_is_not_a_json_object_is_refused_with_a_message_not_a_traceback(self):      # row 20
+        for bad in ([], "x", None, 3):
+            self.assertEqual(P.validate_day(bad), ["day: is not a JSON object"], bad)
+
+    def test_a_state_with_several_faults_is_one_joined_error_line_and_is_read_once(self):      # row 26
+        p = os.path.join(self.d, "state.json")
+        json.dump(self.state(false=[{}], real=[{}], debates=[{}]), open(p, "w"))
+        reads = []
+        real_open = open
+
+        def spy(path, *args, **kw):
+            if os.fspath(path) == p:
+                reads.append(1)
+            return real_open(path, *args, **kw)
+        with mock.patch("builtins.open", spy), mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = P.cmd_judge(self.a(state=p), bundles=lambda f: BUNDLE)
+        self.assertEqual(rc, 3)
+        lines = [l for l in err.getvalue().splitlines() if l.startswith("::error::")]
+        self.assertEqual(len(lines), 1, err.getvalue())
+        self.assertIn("nothing was judged", lines[0])
+        for part in ("false 0:", "real 0:", "debates 0:"):                        # every fault is on that one line
+            self.assertIn(part, lines[0])
+        self.assertLessEqual(len(reads), 1)                                        # the state document is read once
+
     def test_a_malformed_member_stops_the_judge_before_any_seat_is_asked(self):
         calls = []
         seat = lambda *a, **k: calls.append(1) or {}
@@ -798,7 +834,7 @@ class Deliver(Tmp):
                 rc = P.cmd_deliver(self.a(), run=run)
             return rc, calls, err.getvalue()
         proposal = [{"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1", "status": "not_affected",
-                     "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}]
+                     "purls": ["pkg:generic/tzdata@1"], "impact_statement": "x"}]
         entry = [{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b", "finding": "f", "evidence": "e"}]
         good_vex = {"@id": "https://x/vex", "version": 3, "timestamp": "t", "statements": []}
         for label, files, kw in (("state {}", {P.STATE: {}}, {}), ("state keyless", {P.STATE: {"version": 1}}, {}), ("state []", {P.STATE: []}, {}),
@@ -838,6 +874,18 @@ class Deliver(Tmp):
             self.assertEqual((rc, calls), (3, []), label)
             self.assertIn("::error::", err.getvalue(), label)
 
+    def test_a_day_file_that_is_not_a_json_object_stops_delivery_cleanly(self):      # row 20
+        self.day()
+        for bad in ([], [1], "x", 3):
+            json.dump(bad, open(os.path.join(self.out, "day.json"), "w"))
+            calls, run = self.fake()
+            with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}), mock.patch("sys.stdout", new=io.StringIO()), \
+                    mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_deliver(self.a(), run=run)
+            self.assertEqual((rc, calls), (3, []), bad)
+            self.assertIn("::error::", err.getvalue())
+            self.assertIn("not a JSON object", err.getvalue())
+
     def test_nothing_to_deliver(self):
         with mock.patch("sys.stderr", new=io.StringIO()):
             self.assertEqual(P.cmd_deliver(self.a()), 2)
@@ -858,7 +906,7 @@ class Deliver(Tmp):
     def test_changes_go_through_a_pull_request_and_issues(self):           # REQ-SCAN-009-AC1, AC5, 013-AC4, 014-AC2
         self.day(issue="CVE-2099-0002 confirmed", owner=["the primary seat moves from vendor A to vendor B"],
                  vex=[{"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
-                       "status": "not_affected", "purls": ["pkg:deb/debian/tzdata@1"],
+                       "status": "not_affected", "purls": ["pkg:generic/tzdata@1"],
                        "impact_statement": "Audited from the image: Version: 2"}],
                  profiles=[{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"},
                             "behavior": "unexplained", "finding": "f", "evidence": "e", "unexplained": True}])
@@ -922,7 +970,7 @@ class Deliver(Tmp):
 
     def test_one_statement_per_scope_and_auto_merge_only_when_on_and_no_profile_change(self):
         prop = {"image": "fips-arm64", "id": "CVE-2099-0004", "package": "tzdata", "version": "1",
-                "status": "not_affected", "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}
+                "status": "not_affected", "purls": ["pkg:generic/tzdata@1"], "impact_statement": "x"}
         self.day(vex=[prop, dict(prop)])
         calls, run = self.fake()
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": "on"}
@@ -938,7 +986,7 @@ class Deliver(Tmp):
     def test_existing_pr_and_issue_are_updated_and_affected_turns(self):
         vpath = os.path.join(self.repo, P.VEX)
         mine = {"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
-                "purls": ["pkg:deb/debian/tzdata@1"]}
+                "purls": ["pkg:generic/tzdata@1"]}
         other_image = dict(mine, package="busybox", purls=["pkg:generic/busybox@1"])   # same CVE, another package
         json.dump({"@id": "https://x/vex", "statements": [
             {"@id": P.statement_id(mine), "vulnerability": {"name": "CVE-2099-0003"},
@@ -1357,7 +1405,7 @@ class RebuildReal(Tmp):
 
     def test_the_open_prs_files_survive_and_mains_newer_changes_are_kept(self):
         self.deliver(vex=[{"image": "fips-arm64", "id": "CVE-3-TODAY", "package": "tzdata", "version": "1", "status": "not_affected",
-                           "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}])
+                           "purls": ["pkg:generic/tzdata@1"], "impact_statement": "x"}])
         self.git("fetch", "-q", "origin")
         ids = {s["vulnerability"]["name"] for s in self.pushed(P.VEX)["statements"]}
         self.assertEqual(ids, {"CVE-0-BASE", "CVE-1-PANEL", "CVE-2-MAIN", "CVE-3-TODAY"})              # yesterday's proposal kept, main's newer statement not clobbered
@@ -1429,7 +1477,7 @@ class RebuildReal(Tmp):
         self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "later ts"); self.git("push", "-q", "origin", "main")
         self.m1 = self.git("rev-parse", "HEAD")
         self.deliver(vex=[{"image": "fips-arm64", "id": "CVE-3-TODAY", "package": "tzdata", "version": "1", "status": "not_affected",
-                           "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}])
+                           "purls": ["pkg:generic/tzdata@1"], "impact_statement": "x"}])
         self.git("fetch", "-q", "origin")
         self.assertEqual(self.pushed(P.VEX)["timestamp"], "2026-10-06T18:00:00Z")           # today's midnight must not replace main's later instant
 
@@ -1840,27 +1888,28 @@ class VexRepresentable(unittest.TestCase):   # REQ-SCAN-009-AC1, REQ-SCAN-010-AC
         P.apply_files(root, {"version": 1}, {"vex": vex, "profiles": []}, "2026-10-22")
         return json.load(open(os.path.join(root, P.VEX)))
 
-    def test_vex_package_turns_a_distro_purl_into_its_generic_name_and_version(self):
+    def test_vex_package_accepts_a_generic_purl_and_never_rewrites_an_ecosystem_purl(self):     # row 29: a rewrite would claim "not affected" for every ecosystem
         f = P.vex_package
-        self.assertEqual(f("pkg:apk/wolfi/example@1.2.3?arch=amd64"), "pkg:generic/example@1.2.3")
-        self.assertEqual(f("pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12&arch=all"), "pkg:generic/tzdata@2026c-0%2Bdeb12u1")
-        self.assertEqual(f("pkg:rpm/redhat/openssl@3.0.7"), "pkg:generic/openssl@3.0.7")
         self.assertEqual(f("pkg:generic/busybox@1.37.0"), "pkg:generic/busybox@1.37.0")
+        self.assertEqual(f("pkg:generic/libstdc%2B%2B6@1"), "pkg:generic/libstdc%2B%2B6@1")
+        for eco in ("pkg:apk/wolfi/example@1.2.3?arch=amd64", "pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12&arch=all",
+                    "pkg:rpm/redhat/openssl@3.0.7", "pkg:alpm/arch/zlib@1.3", "pkg:deb/debian/tzdata@1"):
+            self.assertIsNone(f(eco), eco)
 
     def test_vex_package_refuses_what_the_forms_cannot_represent(self):
         for bad in ("pkg:golang/github.com/acme/busybox@v1.0.0", "pkg:npm/foo@1.0.0", "pkg:apk/wolfi/example", "pkg:apk/wolfi/example@",
-                    "pkg:apk/wolfi/a/b@1", "pkg:generic/ns/x@1", "pkg:apk/wolfi/example@1#sub", "not a purl", "", None, "pkg:apk//x@1"):
+                    "pkg:apk/wolfi/a/b@1", "pkg:generic/ns/x@1", "pkg:generic/x@1#sub", "pkg:generic/x@1?arch=all", "pkg:apk/wolfi/example@1#sub", "not a purl", "", None, "pkg:apk//x@1"):
             self.assertIsNone(P.vex_package(bad), bad)
 
-    def test_a_proposal_with_qualified_distro_purls_passes_the_release_generators(self):
-        doc = self.write([["pkg:apk/wolfi/example@1.2.3?arch=amd64"], ["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12"],
-                          ["pkg:apk/wolfi/example@1.2.3?arch=amd64", "pkg:apk/wolfi/example@1.2.3?arch=arm64"]],
-                         [("example", "1.2.3"), ("tzdata", "2026c-0+deb12u1"), ("example", "1.2.3")])
+    def test_a_proposal_with_generic_purls_passes_the_release_generators_and_ecosystem_purls_are_not_proposed(self):
+        doc = self.write([["pkg:generic/example@1.2.3"], ["pkg:apk/wolfi/example@1.2.3?arch=amd64"], ["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1"],
+                          ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"]],
+                         [("example", "1.2.3"), ("example", "1.2.3"), ("tzdata", "2026c-0+deb12u1"), ("tzdata", "2026c-0+deb12u1")])
         V = self.forms()
         subs = [[x["@id"] for x in st["products"][0]["subcomponents"]] for st in doc["statements"]]
-        self.assertEqual(subs, [["pkg:generic/example@1.2.3"], ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"], ["pkg:generic/example@1.2.3"]])
-        out = V.inspector(doc, self.images(), "0.3.0")        # raises ValueError "cannot be represented" before the fix
-        self.assertEqual(len(out["filters"]), 3)
+        self.assertEqual(subs, [["pkg:generic/example@1.2.3"], ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"]])      # no not_affected for the ecosystem ones
+        out = V.inspector(doc, self.images(), "0.3.0")
+        self.assertEqual(len(out["filters"]), 2)
         V.csaf(doc, self.images(), "0.3.0")
 
     def test_a_package_the_forms_cannot_represent_is_not_proposed_and_the_owner_hears_of_it(self):
@@ -1869,28 +1918,27 @@ class VexRepresentable(unittest.TestCase):   # REQ-SCAN-009-AC1, REQ-SCAN-010-AC
              "purls": ["pkg:golang/github.com/acme/jwt@v1.0.0"]}
         self.assertEqual(P.vex_package(f["purls"][0]), None)
         self.assertEqual(P.vex_subcomponents(f["purls"]), None)
-        self.assertEqual(P.vex_subcomponents(["pkg:apk/wolfi/example@1.2.3", "pkg:npm/foo@1"]), None)    # one unrepresentable purl refuses the set
+        self.assertEqual(P.vex_subcomponents(["pkg:generic/example@1.2.3", "pkg:npm/foo@1"]), None)    # one unrepresentable purl refuses the set
         self.assertEqual(P.vex_subcomponents([]), None)                                                  # never a blanket statement
 
     def test_the_decoded_name_and_version_must_be_the_findings_own(self):    # S3 ruling (1): the generators decode what is written
         v = P.vex_subcomponents
-        self.assertEqual(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc++6", "1"), ["pkg:generic/libstdc%2B%2B6@1"])
-        self.assertIsNone(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc%2B%2B6", "1"))      # the finding's name left encoded: it never matched the bundle
-        self.assertIsNone(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc", "1"))
-        self.assertEqual(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"), ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"])
-        self.assertIsNone(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb13u1"))
-        self.assertIsNone(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1", "pkg:deb/debian/other@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"))
-        self.assertEqual(P.vex_package("pkg:deb/debian/libstdc%2B%2B6@1"), "pkg:generic/libstdc%2B%2B6@1")
-        doc = self.write([["pkg:deb/debian/libstdc%2B%2B6@1"]], [("libstdc%2B%2B6", "1")])      # an encoded finding name is not proposed at all
+        self.assertEqual(v(["pkg:generic/libstdc%2B%2B6@1"], "libstdc++6", "1"), ["pkg:generic/libstdc%2B%2B6@1"])
+        self.assertIsNone(v(["pkg:generic/libstdc%2B%2B6@1"], "libstdc%2B%2B6", "1"))      # the finding's name left encoded: it never matched the bundle
+        self.assertIsNone(v(["pkg:generic/libstdc%2B%2B6@1"], "libstdc", "1"))
+        self.assertEqual(v(["pkg:generic/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"), ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"])
+        self.assertIsNone(v(["pkg:generic/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb13u1"))
+        self.assertIsNone(v(["pkg:generic/tzdata@2026c-0%2Bdeb12u1", "pkg:generic/other@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"))
+        doc = self.write([["pkg:generic/libstdc%2B%2B6@1"]], [("libstdc%2B%2B6", "1")])      # an encoded finding name is not proposed at all
         self.assertEqual(doc["statements"], [])
-        doc = self.write([["pkg:deb/debian/libstdc%2B%2B6@1"]], [("libstdc++6", "1")])
+        doc = self.write([["pkg:generic/libstdc%2B%2B6@1"]], [("libstdc++6", "1")])
         self.assertEqual(doc["statements"][0]["products"][0]["subcomponents"], [{"@id": "pkg:generic/libstdc%2B%2B6@1"}])
         self.forms().inspector(doc, self.images(), "0.3.0")
 
-    def test_the_statement_id_is_stable_across_qualifier_variants_of_one_package(self):
-        a = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.3?arch=amd64"]})
-        b = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.3?arch=arm64"]})
-        c = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.4?arch=amd64"]})
+    def test_the_statement_id_follows_the_exact_generic_package(self):
+        a = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:generic/example@1.2.3"]})
+        b = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:generic/example@1.2.3"]})
+        c = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:generic/example@1.2.4"]})
         self.assertEqual(a, b)
         self.assertNotEqual(a, c)
 
