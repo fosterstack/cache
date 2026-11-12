@@ -632,10 +632,11 @@ check("G the CSAF names the standard library component inside each of the six im
       isinstance(grels, list) and len(grels) == 6 and all(r["product_reference"] == "component-stdlib@go1.27.2" for r in grels)
       and sorted(r["relates_to_product_reference"] for r in grels) == GIDS, grels)
 for sub_ in ("pkg:golang/stdlib", "pkg:golang/stdlib@", "pkg:golang/stdlibx@1", "pkg:golang/std@1", "pkg:golang/%73tdlib@1.27.2",
-             STD + "?goos=linux", STD + "%3Fgoos=linux", STD + "%2Fx", "pkg:golang/stdlib/sub@1.27.2"):
+             STD + "?goos=linux", STD + "%3Fgoos=linux", STD + "%2Fx", "pkg:golang/stdlib/sub@1.27.2",
+             "pkg:golang/stdlib@go1.27.2", "pkg:golang/stdlib@v1.27.2", STD + "@x", STD + "%40x"):
     check("G a standard library name outside the one allowed form stops generation: " + sub_,
           refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
-# pkg:golang/stdlib@1.27.2 is (stdlib, go1.27.2) and pkg:generic/stdlib@1.27.2 is (stdlib, 1.27.2): two packages, so two Inspector rules and two CSAF components
+# pkg:golang/stdlib@1.27.2 is (stdlib, go1.27.2) and pkg:generic/stdlib@1.27.2 is (stdlib, 1.27.2): two packages (_scopes checked here)
 check("G pkg:generic/stdlib@1.27.2 stays a plain generic package, apart from pkg:golang/stdlib@1.27.2",
       V._scopes(scoped("CVE-G14", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/stdlib@1.27.2"}]}]),
                 [D("1")])

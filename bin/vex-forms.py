@@ -219,8 +219,8 @@ def _scopes(statement, digests, meta=None):
                 pm = re.fullmatch(r"pkg:golang/([^/@?#]+(?:/[^/@?#]+)+)(?:@([^?#]+))?", sid)
                 if pm and "." not in urllib.parse.unquote(pm.group(1)).split("/")[0]:
                     pm = None                            # a module path starts with a domain (github.com/…); anything else is not one
-            if not pm:                                   # the Go standard library only: exactly pkg:golang/stdlib@<version>, no other golang name
-                pm = re.fullmatch(r"pkg:golang/(stdlib)@([^/?#]+)", sid)
+            if not pm:                                   # the Go standard library only: exactly pkg:golang/stdlib@<version> (a plain version: no go or v prefix, no @ or escape), no other golang name
+                pm = re.fullmatch(r"pkg:golang/(stdlib)@(?!go|v)([^/@?#%]+)", sid)
             if not pm:                                   # a namespace on a generic package, a qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
             name_, ver_ = urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or "")
