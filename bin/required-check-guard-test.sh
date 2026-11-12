@@ -26,7 +26,7 @@ check() { # name want_rc regex rules_file list_file
 jq '[{"type":"deletion"},
      {"type":"required_status_checks","parameters":{"required_status_checks":
        [.required_checks[] | {context, integration_id}]}}]' "$list" > "$w/match.json"
-jq '(.[1].parameters.required_status_checks) |= map(select(.context != "scan"))' "$w/match.json" > "$w/missing.json"
+jq '(.[1].parameters.required_status_checks) |= map(select(.context != "vendor"))' "$w/match.json" > "$w/missing.json"
 jq '(.[1].parameters.required_status_checks) += [{"context":"surprise","integration_id":15368}]' "$w/match.json" > "$w/extra.json"
 jq '(.[1].parameters.required_status_checks) |= map(if .context=="auditor-review-gate" then .integration_id=0 else . end)' "$w/match.json" > "$w/wrongid.json"
 echo '[{"type":"deletion"}]' > "$w/none.json"
@@ -35,7 +35,7 @@ jq '.required_checks |= map(if .context=="auditor-review-gate" then .integration
 echo '{"comment":["no array"]}' > "$w/nolist.json"
 
 check "ruleset == list passes"                    0 "match \([0-9]+ checks"                   "$w/match.json"   "$list"
-check "check removed from the ruleset is drift"   1 '^\+ .*"context":"scan"'                  "$w/missing.json" "$list"
+check "check removed from the ruleset is drift"   1 '^\+ .*"context":"vendor"'                  "$w/missing.json" "$list"
 check "extra ruleset check is drift"              1 '^- .*"context":"surprise"'                "$w/extra.json"   "$list"
 check "wrong integration ID is drift"             1 '"auditor-review-gate","integration_id":0' "$w/wrongid.json" "$list"
 check "stale list (the #133 case) is drift"       1 '^\+ .*"auditor-review-gate","integration_id":0' "$w/match.json" "$w/stale-list.json"
