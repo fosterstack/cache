@@ -18,7 +18,7 @@ record of. Scan the exact digest you pull and read the result against
 ## Package-DB asymmetry — expect this, it isn't a bug
 
 Our images have no package manager and only a handful of packages in the
-package database (base layout, CA certificates, time zone data and `fscache`). That has an
+package database (base layout, time zone data and `fscache`). That has an
 asymmetric effect on checks:
 
 - **"Is forbidden package X present?"** checks — pass, as long as X is not one
