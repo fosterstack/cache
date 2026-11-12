@@ -24,7 +24,7 @@ before them and tie their work to the digest list Build made; Sign checks
 the building jobs' records (Build's against the artifacts it receives, Rebuild's
 against Build's digest list) and signs them. Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
-rebuilds. Release is the only job that holds a registry credential or
+rebuilds. Of the jobs above, Release is the only one that holds a registry credential or
 `packages: write`.
 
 - **Build** (`stage-build.yml`): admits the tagged commit (tag signature,
@@ -89,7 +89,7 @@ release, once the key exists, a person commits its public half as
 `build/keys/release.rsa.pub`, replacing the placeholder there (the output of
 `cosign public-key --key awskms:///alias/fosterstack-release-signing`).
 
-The key replacement lands together with the APK signing change (the release APKs are signed with the same key); until then the placeholder stays and the APK signing step cannot use a KMS key.
+The release APKs are signed with the same key. Until the public half is committed, the placeholder stays and the APK signing step refuses every release.
 
 ```sh
 git tag -s -m "..." vX.Y.Z
