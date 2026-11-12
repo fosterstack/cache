@@ -847,7 +847,7 @@ func TestRenderApprovedBaselineWithEvidenceAndGroups(t *testing.T) {
 	out := render(f, m)
 
 	for _, want := range []string{
-		"approved by the owner on 2026-09-11.",
+		"approved on 2026-09-11.",
 		"## Cache protocol",
 		"## ZZZQ",
 		"## Release evidence",
