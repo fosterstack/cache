@@ -306,6 +306,13 @@ ok, why = rel()
 check("release: an owner-signed v0.3.0 whose message approves the record of the tagged commit -> passes",
     ok and why == "", (ok, why))
 ok, why = rel(tag="v0.3.0-rc.1"); check("release: a release candidate tag is held to the same rule", ok, (ok, why))
+ok, why = rel(tag="v0.3.0-rc1"); check("release: the chain's release candidate form -rcN is held to the same rule", ok, (ok, why))
+ok, why = rel(tag="v0.3.0-rc1", obj=tagobj(["Release v0.3.0-rc1"]))
+check("release refused: a -rcN tag without the approval line", not ok and bool(why), (ok, why))
+ok, why = rel(tag="v0.3.0-rc1", ref=None, commit=None)
+check("release refused: a -rcN tag without a record", not ok and bool(why), (ok, why))
+check("release: a -rcN tag is not a patch tag (v0.3.1-rc1 and v0.3.1-rc.1 need the record too)",
+    not A.is_patch_tag("v0.3.1-rc1") and not A.is_patch_tag("v0.3.1-rc.1"), None)
 ok, why = rel(obj=tagobj(["-----BEGIN EXAMPLE SIGNATURE-----", "Release v0.3.0", "-----END EXAMPLE SIGNATURE-----",
     "Audit-approved: " + REC]))
 check("release: an example block before the approval line is message text, not the signature: still passes", ok, (ok,
@@ -336,8 +343,10 @@ for name, kw in (
     ("a record by someone else", dict(commit=mut(COMMIT, ["author", "login"], "someone"))),
     ("a record whose commit is not the approved one", dict(obj=tagobj(["Audit-approved: " + "e" * 40]))),
     ("a missing policy", dict(policy=None)),
-    ("a tag that is not a release version", dict(tag="v0.3")), ("a tag with a suffix that is not rc.N",
-        dict(tag="v0.3.0-beta")), ("an empty tag", dict(tag="")),
+    ("a tag that is not a release version", dict(tag="v0.3")), ("a tag with a suffix that is not rc.N or rcN",
+        dict(tag="v0.3.0-beta")), ("an empty tag", dict(tag="")), ("-rc with no number", dict(tag="v0.3.0-rc")),
+    ("-rc. with no number", dict(tag="v0.3.0-rc.")), ("-rc1 twice", dict(tag="v0.3.0-rc1-rc1")),
+    ("a newline after the tag", dict(tag="v0.3.0-rc1\n")),
 ):
     ok, why = rel(**kw); check("release refused: " + name, (not ok) and bool(why), (ok, why))
 # the command line and the wrapper in release mode
@@ -390,6 +399,12 @@ check("wrapper --release: a tag without the approval line exits 1", r.returncode
     r.stderr))
 r, c = wrap_rel(tag="v0.3.2", ref=None)
 check("wrapper --release: a patch tag exits 0 and calls nothing", r.returncode == 0 and c == "", (r.returncode, c))
+r, c = wrap_rel(tag="v0.3.0-rc1")
+check("wrapper --release: a -rcN tag reads the record (not a patch tag) and passes on a good approval",
+    r.returncode == 0 and c.count("gh api") == 2, (r.returncode, r.stdout, r.stderr, c))
+r, c = wrap_rel(tag="v0.3.0\nv0.3.2", ref=None)
+check("wrapper --release: a tag with a second line that looks like a patch tag is not a patch tag (exits 1)",
+    r.returncode == 1, (r.returncode, r.stdout, r.stderr, c))
 
 # the writer's release mode: the commit to be tagged must be on main (the whole release is the commit main holds),
 # the same dispatcher rule
@@ -456,52 +471,58 @@ r, c, f = run_rel("bin/audit-record-request.sh", ["release", HEAD], status="dive
 check("request release: a commit not on main -> nothing requested, exit 1",
     r.returncode == 1 and "workflow run" not in c, (r.returncode, r.stderr, c))
 
-# the admission step: after the tag's signature and the on-main check, main's copies only,
-# the job's own read token, nothing swallowed
-def adm_problems(w):
-    steps = w["jobs"]["admit"]["steps"]
-    names = [x.get("name", "") for x in steps]
-    idx = [i for i, n in enumerate(names) if n.startswith("a passed whole-release audit")]
-    if len(idx) != 1: return ["the whole-release audit step is not there exactly once"]
-    i = idx[0]; bad = []
-    if not any("verify the annotated tag signature" in n for n in names[:i]):
-        bad.append("it must come after the tag signature check")
-    if not any(n == "the tagged commit must be on main" for n in names[:i]):
-        bad.append("it must come after the on-main check")
-    st = steps[i]
-    if st.get("env") != {"GH_TOKEN": "${{ github.token }}"} or set(st) - {"name", "env",
-        "run"}: bad.append("env or keys")
-    run = re.sub(r" \\\n\s*", " ", st.get("run", ""))     # a line wrapped with a backslash reads as one line
-    for need in ("set -euo pipefail", "git show origin/main:bin/audit-record.py",
-        "git show origin/main:bin/audit-record-judge.sh", "git show origin/main:.github/policy/audit-writers.json",
-                 'bash /tmp/audit-root/bin/audit-record-judge.sh "${GITHUB_SHA}" main '
-                 '--release "${GITHUB_REF_NAME}" /tmp/tag-object'):
-        if need not in run: bad.append("lacks: " + need)
-    if re.search(r"\|\|\s*(true|:)|continue-on-error",
-        run) or "${{" in run: bad.append("swallows a failure or interpolates an expression")
+# the admission check (gate 7): bin/build-admit.py's audit-approval check is the reviewed one. It comes after the tag signature and the
+# on-main check and before the required checks, reads main's copies only (never the tagged commit's), runs the judge in release mode on the
+# tagged sha, the tag and the tag object the signature check wrote, and swallows nothing.
+import ast
+def adm_problems(src):
+    tree = ast.parse(src); fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}; bad = []
+    admit = fns.get("admit"); fn = fns.get("check_audit_approval")
+    if admit is None or fn is None: return ["admit or check_audit_approval is missing"]
+    order = [x for x in sorted(((c.lineno, c.func.id) for c in ast.walk(admit) if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Name) and c.func.id.startswith("check_")))]
+    names = [x[1] for x in order]
+    if names.count("check_audit_approval") != 1: return ["the check is not called exactly once"]
+    i = names.index("check_audit_approval")
+    for before in ("check_tag_signature", "check_ancestor_of_main"):
+        if before not in names[:i]: bad.append("it must come after " + before)
+    if "check_required_checks" not in names[i + 1:]: bad.append("it must come before check_required_checks")
+    seg = ast.get_source_segment(src, fn)
+    for need in ('"origin/main:" + path', '"--release"', "ctx.tag_object", "ctx.sha", "ctx.tag", '"bash"',
+        'raise Refusal("audit-approval"', "rc != 0"):
+        if need not in seg: bad.append("lacks: " + need)
+    if "ctx.sha + " in seg or "git_show(ctx" in seg: bad.append("reads the tagged commit's own copy")
+    if any(isinstance(n, (ast.Try, ast.ExceptHandler)) for n in ast.walk(fn)): bad.append("catches an error")
+    assigns = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "rc"
+        for t in n.targets)]
+    if assigns or any(isinstance(n, ast.Return) for n in ast.walk(fn)): bad.append("rc is assigned or the check returns early")
+    consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "AUDIT_FILES"
+        for t in n.targets)]
+    if not consts or ast.literal_eval(consts[0].value) != ("bin/audit-record-judge.sh", "bin/audit-record.py",
+        ".github/policy/audit-writers.json"): bad.append("AUDIT_FILES is not the judge, its helper and the writers policy")
     return bad
-root_repo = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
-adm = yaml.load(open(root_repo + "/.github/workflows/stage-admission.yml"), Loader=yaml.BaseLoader)
-check("stage-admission.yml: the whole-release audit step is the reviewed one", adm_problems(adm) == [],
-    adm_problems(adm))
-def adm_mut(fn):
-    m = copy.deepcopy(adm); fn(m["jobs"]["admit"]["steps"]); return m
-for name, fn, frag in (
-    ("the step removed", lambda st: st.pop([i for i, x in enumerate(st) if x.get("name",
-        "").startswith("a passed whole-release audit")][0]), "exactly once"),
-    ("a swallowed failure", lambda st: [x.update({"run": x["run"] + "\n|| true"}) for x in st if x.get("name",
-        "").startswith("a passed whole-release audit")], "swallows"),
-    ("a continue-on-error", lambda st: [x.update({"continue-on-error": "true"}) for x in st if x.get("name",
-        "").startswith("a passed whole-release audit")], "env or keys"),
-    ("the tagged commit's own judge",
-        lambda st: [x.update({"run": x["run"].replace("git show origin/main:bin/audit-record.py",
-        "cp bin/audit-record.py")}) for x in st if x.get("name", "").startswith("a passed whole-release audit")],
-        "lacks"),
-    ("a non-release mode", lambda st: [x.update({"run": x["run"].replace(" --release ",
-        " --verify ")}) for x in st if x.get("name", "").startswith("a passed whole-release audit")], "lacks"),
+admit_src = open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "build-admit.py")).read()
+check("build-admit.py: the audit-approval check is the reviewed one", adm_problems(admit_src) == [], adm_problems(admit_src))
+for name, old, new, frag in (
+    ("the check not called", "        check_audit_approval(ctx)\n", "", "exactly once"),
+    ("the check moved after the required checks", "        check_audit_approval(ctx)\n        check_required_checks(ctx)",
+        "        check_required_checks(ctx)\n        check_audit_approval(ctx)", "before check_required_checks"),
+    ("the check before the on-main check", "        check_ancestor_of_main(ctx)\n        check_audit_approval(ctx)",
+        "        check_audit_approval(ctx)\n        check_ancestor_of_main(ctx)", "after check_ancestor_of_main"),
+    ("the tagged commit's own judge", '        data = git_show("origin/main:" + path)\n        if data is None:\n            raise Refusal("audit-approval"',
+        '        data = git_show(ctx.sha + ":" + path)\n        if data is None:\n            raise Refusal("audit-approval"', "lacks"),
+    ("a non-release mode", '"--release"', '"--verify"', "lacks"),
+    ("a swallowed result", "    why = one_line(text(out) or text(err), 300)\n",
+        "    why = one_line(text(out) or text(err), 300)\n    rc = 0\n", "rc is assigned"),
+    ("an early return", "    judge = os.path.join(root, AUDIT_FILES[0])\n",
+        "    return\n    judge = os.path.join(root, AUDIT_FILES[0])\n", "early"),
+    ("a caught error", "    rc, out, err = outcome(lambda: subprocess.run([\"bash\", judge,",
+        "    try:\n        pass\n    except Exception:\n        pass\n    rc, out, err = outcome(lambda: subprocess.run([\"bash\", judge,",
+        "catches"),
 ):
-    probs = adm_problems(adm_mut(fn))
-    check("stage-admission.yml: a copy with %s is refused" % name, any(frag in x for x in probs), probs)
+    if admit_src.count(old) != 1: check("build-admit.py: a copy with %s is refused" % name, False, "anchor not found"); continue
+    probs = adm_problems(admit_src.replace(old, new)); check("build-admit.py: a copy with %s is refused" % name,
+        any(frag in x for x in probs), probs)
 
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

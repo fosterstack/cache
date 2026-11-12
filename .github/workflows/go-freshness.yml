@@ -33,7 +33,7 @@ jobs:
     name: open the go.mod bump PR when a newer patch exists
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *' }}
     runs-on: ubuntu-latest
-    # The bump PR is opened with the auditor App's token (owner, Oct 2: the repository setting that would let Actions'
+    # The bump PR is opened with the auditor App's token (the repository setting that would let Actions'
     # own token open PRs stays off). The App's secrets live in the main-only `agent` environment; this job's own token
     # stays read-only, and only the bump step receives the App token.
     environment: agent
@@ -97,11 +97,11 @@ jobs:
           gh auth setup-git
           ./bin/go-bump-open-pr.sh "$CURRENT" "$LATEST"
 
-  # Mutation testing (advisory), merged from mutation.yml (workflow consolidation, owner RATIFIED Oct 2): weekly on
+  # Mutation testing (advisory), merged from mutation.yml (workflow consolidation): weekly on
   # its own schedule, never on the daily freshness schedule. test-strategy.md §6: coverage says the tests ran the
   # code; the mutation score says the tests would NOTICE the code being wrong. gremlins mutates the product and re-runs
   # the suite per mutant; a mutant the suite still passes ("lived") is a gap in assertion strength. ADVISORY - the
-  # score is published, never gated, until the owner sets a baseline in .gremlins.yaml.
+  # score is published, never gated, until a baseline is set in .gremlins.yaml.
   mutation:
     name: mutation
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '43 6 * * 1' }}
@@ -127,7 +127,7 @@ jobs:
         id: run
         run: |
           set -uo pipefail
-          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # gremlins named literally (pin checker: advisor 0084)
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # gremlins named literally
           fail=0
           run_module() { # label, out.json, log, workdir, extra-args...
             local label="$1" out="$2" log="$3" wd="$4"; shift 4
@@ -177,7 +177,7 @@ jobs:
             /tmp/mutation-req.log
           retention-days: 90
 
-  # Persona UAT, weekly (owner ratified Oct 3 and Oct 4; REQ-UAT-001): on the Monday cron only, the five personas follow the docs AS
+  # Persona UAT, weekly (REQ-UAT-001): on the Monday cron only, the five personas follow the docs AS
   # PUBLISHED with the latest release (checked out under release-docs) against that release's public image, resolved to its digest.
   # The harness is the root checkout (today's main, bin/), so a persona never edits the code that judges it; the released docs sit under release-docs/. Results stay
   # private exactly as in the release chain: pass/fail lines only, one encrypted artifact per persona, no issue; a blocking persona
@@ -220,8 +220,8 @@ jobs:
           ref: ${{ steps.resolve.outputs.tag }}
           persist-credentials: false
 
-      - name: install the pinned kind binary
-        run: ./bin/install-scanner.sh kind
+      - name: kind from the runner image
+        run: kind version || { echo "::error::PIPELINE, no kind"; exit 1; }
 
       - name: pin pip (hash-checked)
         run: |
@@ -295,7 +295,7 @@ jobs:
         if: ${{ always() }}
         run: python3 bin/persona-uat.py --remove-identity "${RUNNER_TEMP}/anthropic-identity-token" || rm -f "${RUNNER_TEMP}/anthropic-identity-token" "${RUNNER_TEMP}/anthropic-identity-token.tmp"
 
-  # The daily refresh of the build inputs (REQ-REFRESH-001-AC24 to AC31; owner's rules 4 to 9 of Oct 14). One job in this workflow, main only,
+  # The daily refresh of the build inputs (REQ-REFRESH-001-AC24 to AC31). One job in this workflow, main only,
   # on the daily schedule or by hand, never on a pull request. It looks for a newer version of every base package and build tool, adds what it
   # finds to the package archive (verified by signature and checksum), opens a pull request on its own refresh/ branch that moves the build to the
   # new versions, and stores the archive back in our own registry only if something changed. It never merges, never pushes to main.
@@ -318,15 +318,10 @@ jobs:
         with:
           persist-credentials: false   # the App token, via gh, is the only push credential
 
-      # Rule 6: the very first thing is the key. Before any tool is installed, any registry is touched, any archive is pulled or any token is minted,
+      # The very first thing is the key. Before any tool is installed, any registry is touched, any archive is pulled or any token is minted,
       # the live Wolfi signing key must be the one pinned in build/locks/archive-keys.sha256 (a difference, a missing or repeated line: exit 3, a human looks).
       - name: check the live Wolfi key against the pinned one
         run: ./bin/refresh-inputs.sh key-check --repo-dir "$GITHUB_WORKSPACE"
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
 
       - name: install apko and crane at their fixed locations
         run: |
@@ -336,6 +331,13 @@ jobs:
           # crane is the installer's checksum-pinned release binary: nothing is compiled in this job, which holds the auditor App's key
           # (REQ-REL-011-AC1)
           ./bin/install-scanner.sh crane
+
+      # The FIPS module version check asks whether OUR toolchain ships a newer FIPS module version, so it reads the checksum-pinned toolchain the recipes build
+      # with (install-scanner.sh go: the version go.mod names, only when it is the pinned one), not whatever the newest 1.27.x on the runner is.
+      - name: install the pinned Go toolchain
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh go
 
       - name: log in to our registry with the job's own token
         env:
@@ -384,15 +386,15 @@ jobs:
           set -euo pipefail
           ./bin/refresh-inputs.sh refresh --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
 
-      - name: check for a newer certified crypto module
+      - name: check for a newer FIPS module version
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          ./bin/refresh-inputs.sh fips-module --go-root "$(go env GOROOT)" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
+          ./bin/refresh-inputs.sh fips-module --go-root /usr/local/bin/fscache-go --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
 
-      # Stored first (rule 6, last step), so the pull request that moves the build to the new versions can carry the new pointer (rule 7).
+      # Stored first (last step), so the pull request that moves the build to the new versions can carry the new pointer.
       # Only when something changed; an archive that no pull request points to is harmless.
       - name: store the archive when something changed
         id: store

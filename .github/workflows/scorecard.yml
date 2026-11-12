@@ -25,7 +25,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Row 78 (owner, Sep 30); amended Oct 3 (0117/0140): the composite action's own action.yaml ran a mutable
+      # Row 78 (Sep 30); amended Oct 3 (0117/0140): the composite action's own action.yaml ran a mutable
       # tag (docker://...:v2.4.4) — a commit pin on the wrapper does not fix that. Invoked directly by digest
       # instead. A bare `docker://` step carries NO action.yaml schema, so GitHub maps only the `with:` keys given
       # here to INPUT_<NAME> — it does NOT apply the composite wrapper's declared input DEFAULTS (Sonnet #164 r2/r3:

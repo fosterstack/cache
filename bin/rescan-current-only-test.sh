@@ -146,7 +146,7 @@ d = yaml.safe_load(open(sys.argv[1])); j = d["jobs"]
 print("\n".join(str(v) for k, v in j.items() if k not in ("manifests", "rescan")))
 PY
 )
-if ! grep -q 'gh release' <<<"$panel" && grep -q 'six images' "$wf"; then ok "the panel/tally jobs are independent of the release enumeration (six images of main's candidate)"
+if ! grep -q 'gh release' <<<"$panel" && grep -q 'four images' "$wf"; then ok "the panel/tally jobs are independent of the release enumeration (four images of main's candidate)"
 else bad "panel independence" "panel jobs read the release list"; fi
 
 # 12. B1 fail-open: a CURRENT release that yields no targets is an error, never a quiet day

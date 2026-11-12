@@ -11,7 +11,7 @@ produces itself: the candidate's SBOM carriers and base OS (syft), govulncheck o
 the endoflife.date lookups, and the candidate digest, all taken off a CONTAINER ARCHIVE
 converted once with skopeo (no daemon).
 """
-import json, os, re, subprocess, sys, glob
+import hashlib, json, os, re, subprocess, sys, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
 from auditorlib import parsers as P
@@ -21,13 +21,13 @@ TAG = "ghcr.io/fosterstack/cache:cand-production"
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
-def _run(cmd, out_path=None, timeout=1500):
+def _run(cmd, out_path=None, timeout=1500, cwd=None, env=None):
     try:
         if out_path:
             with open(out_path, "w") as fh:
-                r = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=timeout)
+                r = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=timeout, cwd=cwd, env=env)
             return r.returncode, (r.stderr.decode() if r.stderr else "")
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
         return r.returncode, r.stdout
     except Exception as e:
         return 255, str(e)
@@ -278,12 +278,25 @@ def _archives(rescan_dir, test_image, oci, tar):
         ok1 = _skopeo(ref, "oci-archive:%s:%s" % (oci, TAG))
         ok2 = _skopeo(ref, "docker-archive:%s:%s" % (tar, TAG))
         return (("test_image=%s" % test_image, None) if (ok1 or ok2) else (None, "skopeo could not pull %s" % ref))
-    named = glob.glob(os.path.join(rescan_dir, "**", "production.oci"), recursive=True)
+    # Build's images artifact: one OCI layout DIRECTORY per variant (images/production/ with oci-layout, index.json, blobs/): the digest is the one Build
+    # recorded. An archive file or a docker-save shape is not a candidate.
+    named = [p for p in glob.glob(os.path.join(rescan_dir, "**", "production"), recursive=True)
+             if os.path.isdir(p) and not os.path.islink(p) and os.path.isfile(os.path.join(p, "oci-layout"))]
     if not named:
-        return None, "no production.oci in the rescan artifacts"
-    # production.oci is a multi-arch index; select amd64 into a single-arch OCI archive that
+        return None, "no production OCI layout directory (images/production) in the rescan artifacts"
+    # every blob of the layout is re-hashed against its file name before skopeo reads it (fail closed): the candidate's identity is the digest Build recorded
+    blobs = os.path.join(named[0], "blobs", "sha256")
+    try:
+        for n in os.listdir(blobs):
+            p = os.path.join(blobs, n)
+            with open(p, "rb") as fh:
+                if os.path.islink(p) or hashlib.sha256(fh.read()).hexdigest() != n:
+                    return None, "blob %s of the production layout does not hash to its name" % n[:12]
+    except OSError as e:
+        return None, "the production layout's blobs cannot be read (%s)" % type(e).__name__
+    # production is a multi-arch index; select amd64 into a single-arch OCI archive that
     # syft can catalogue, and a docker-save tar for the digest lookup.
-    src = "oci-archive:%s" % named[0]
+    src = "oci:%s" % named[0]
     ok1 = _skopeo(src, "oci-archive:%s:%s" % (oci, TAG))
     ok2 = _skopeo(src, "docker-archive:%s:%s" % (tar, TAG))
     return (os.path.basename(named[0]), None) if (ok1 or ok2) else (None, "skopeo convert failed")
@@ -291,8 +304,10 @@ def _archives(rescan_dir, test_image, oci, tar):
 
 def main():
     rescan = cli.opt("--rescan-dir"); reports = cli.opt("--reports")
-    source = cli.opt("--source-dir", os.getcwd()); out = cli.opt("--out")
-    commit = cli.opt("--commit", os.environ.get("GITHUB_SHA", "unknown"))
+    source = cli.opt("--source-dir"); out = cli.opt("--out")
+    commit = cli.opt("--commit", "unknown")          # never the run's own sha: the field says which head the scanned image was built from; absent = "unknown"
+    if cli.flag("--commit") and not re.fullmatch(r"[0-9a-f]{40}", commit or ""):   # a supplied value is 40-hex, whatever it is ("unknown" included)
+        sys.exit("auditor-manifest: --commit must be a 40-hex commit id (the head the scanned image was built from) or absent, got %r" % (commit,))
     test_image = cli.opt("--test-image") or os.environ.get("AUDITOR_TEST_IMAGE") or ""
     kdl = cli.opt("--known-defect-log", ".github/agent/known-defect-log.json")
     os.makedirs(reports, exist_ok=True)
@@ -320,12 +335,23 @@ def main():
         print("syft did not run (rc %d); the carriers and base OS stay unknown" % rc)
 
     # govulncheck -json over the checked-out tree, bound to module + commit.
-    module = _module(source); gvc = None
+    # The tree is the selected rescan's head (auditor.yml checks it out; it is DATA, never built or run by us beyond govulncheck's own
+    # package loading): no toolchain download and no module fetch (GOTOOLCHAIN=local, -mod=vendor); with no such tree the scan is
+    # recorded 'did not run', never run on the auditor's own checkout (rc-5b fix 4, ruling A2).
+    has_tree = bool(source) and os.path.isdir(source) and commit != "unknown"   # a tree with no head to stamp it with is not bound to anything: not scanned
+    module = _module(source) if has_tree else None; gvc = None
     gvc_path = os.path.join(reports, "govulncheck.json")
-    have_gvc = bool(_version("govulncheck", ("-version",)) or _version("govulncheck"))
-    rc, _ = _run(["govulncheck", "-json", "./..."], out_path=gvc_path, timeout=1500) if have_gvc else (255, "")
+    have_gvc = has_tree and bool(_version("govulncheck", ("-version",)) or _version("govulncheck"))
+    if not has_tree:
+        print("govulncheck did not run: no source tree (or no head to bind it to) of the scanned image was given")
+    genv = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="-mod=vendor", GOPROXY="off", CGO_ENABLED="0", GOENV="off")
+    rc, gerr = _run(["govulncheck", "-json", "./..."], out_path=gvc_path, timeout=1500, cwd=source, env=genv) if have_gvc else (255, "")
+    if has_tree and not have_gvc:
+        print("govulncheck did not run: the tool is not installed")
     if os.path.exists(gvc_path) and os.path.getsize(gvc_path) > 0 and rc in (0, 3):
         gvc = {"path": gvc_path, "module": module, "commit": commit, "complete": True, "scan_level": "symbol"}
+    elif have_gvc:
+        print("govulncheck did not complete (rc %d) on %s: %s" % (rc, commit, " ".join(str(gerr).split())[-600:]))
 
     digest = ""
     for transport in (("docker-archive:" + tar) if have_tar else None, ("oci-archive:" + oci) if have_oci else None):

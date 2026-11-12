@@ -1383,7 +1383,7 @@ class Wiring(unittest.TestCase):  # AC18-AC20
     def test_ac20_ci_allowlist_job_runs_the_suite(self):
         d, _ = wf(CI)
         steps = d["jobs"]["allowlist"]["steps"]
-        hit = [s for s in steps if re.search(r"\bbash bin/branch-sweep-test\.sh\b", s.get("run") or "")]
+        hit = [s for s in steps if re.search(r"\b(?:bash bin/|suite-guard-run\.py run test-evidence/suite-floors\.json branch-sweep-test\.sh bin/)branch-sweep-test\.sh\b", s.get("run") or "")]
         self.assertEqual(len(hit), 1)
         self.assertNotIn("if", hit[0])
         self.assertNotEqual(str(hit[0].get("continue-on-error", "false")).lower(), "true")

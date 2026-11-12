@@ -1,5 +1,8 @@
 # Security policy
 
+This page is the policy. The full list of what we do is in
+[Everything we do for security](docs/everything-we-do-for-security.md).
+
 ## Reporting a vulnerability
 
 Please use [GitHub's private vulnerability reporting](https://github.com/fosterstack/cache/security/advisories/new)
@@ -47,36 +50,45 @@ exactly.
 Independent scanners with deliberately different vulnerability databases run
 in the release workflow, each blocking at every severity including UNKNOWN.
 The scanner set is [one list in the repo](.github/policy/scanners.json);
-nothing hard-codes a count or a name.
+the check script runs exactly the scanners it knows how to run (today Grype and
+OSV-Scanner), and a scanner on the list that it cannot run fails the run.
 
 What the release workflow does today, stated exactly: there is one build.
-Its images go to a private candidates package by digest; every scanner in
-the list scans those exact digests; the acceptance suites run against
-them; an authorization stage verifies the signed evidence for all of it;
-and promotion copies the same digests — asserted byte-identical after the
-copy — to the public registries. The scan verdict attaches to the
-published digests because they are the scanned digests. Each scanner's
-verdict is a signed, digest-bound statement (see
-[docs/verify-images.md](docs/verify-images.md)), and the daily rescan
+Its images are assembled as OCI layouts and handed to the later stages as
+workflow artifacts; every scanner in the list scans those exact images, and
+the acceptance suites run against them; the Release stage first verifies the signed
+record of every earlier stage, and only the steps after that one read the
+registry and signing secrets; they push the same image bytes by digest to the
+public registries and read each registry back, and the release stops if a digest read back differs
+from the attested one. The scan verdict attaches to the published digests because they are the
+scanned digests. From v0.3.0 the release's signed Check records bind the scan results file (`scan-results.json`, one file for <!-- pinned: historical -->
+all scanners), by hash, to the image digests (see
+[the signed evidence files](docs/verify-images.md#the-signed-evidence-files)); the results file
+itself is not attached to the release. The daily rescan
 re-checks the current release's published digests against newly disclosed CVEs.
 
 The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
-artifacts. Its partner is chosen for a database that disagrees with Grype's —
-different sources, low overlap, and a lead of roughly a week over public
-feeds — because two scanners that agree with each other only tell you what
-one of them already knew. Anti-correlation is the point.
+artifacts. Its partner is chosen for a different database and matcher
+(OSV.dev's), built on upstream advisory sources that partly overlap with
+Grype's (it imports the GitHub Advisory and Go Vulnerability databases, which
+Grype also consumes), so the two are different databases, not different
+sources. A disagreement between
+them is a signal to investigate, never proof of a false positive.
 
-Exceptions are OpenVEX documents in [`.vex/`](.vex/), read by Grype in the
-release gate and published as a release asset. The OSV-Scanner scans in the
-release gate run without it, so an OSV finding blocks a release even when a
-statement covers it. VEX is the single source of truth: any
-tool-specific ignore must cite the statement that governs it and may never
-stand alone. No statement, no exception, no push.
+Exceptions are OpenVEX documents in [`.vex/`](.vex/), published as a release
+asset. Grype reads the document itself; OSV-Scanner cannot, so the release gate
+holds OSV-Scanner's findings to the same document with `bin/check-osv-vex.py`.
+VEX is the single source of truth: any tool-specific ignore must cite the
+statement that governs it and may never stand alone. No statement, no exception, no push.
 
 The current release's images are also rescanned daily at every severity the
 scanners report (critical through low, and unknown), so a CVE disclosed against
 bytes we already shipped raises a tracked issue (or a new comment on the open
 one for that image and scanner) rather than waiting for someone to look.
+
+## FIPS 140-3
+
+The fscache-fips build uses the Go Cryptographic Module, validated to FIPS 140-3 under CMVP certificate #5247, with FIPS mode on by default. The certificate's vendor-affirmed operating environments include Linux on x86-64 and ARM64, where our images run, so the module keeps its validation inside our images. That gives you a FIPS-validated cryptographic module for control SC-13 in the NIST SP 800-53B low, moderate and high baselines (FedRAMP Low, Moderate and High), where FedRAMP accepts FIPS-validated modules. How to check it, and the certificate links, are in [`docs/fips.md`](docs/fips.md).
 
 ## Approved-only cryptography
 
@@ -84,25 +96,30 @@ Enforcement is delegated to the validated module rather than to a list.
 
 CI runs the full test suite under `GODEBUG=fips140=only` against the FIPS
 build, where Go's FIPS 140-3 validated module (CMVP certificate #5247)
-refuses any non-approved algorithm at runtime. Any reach for non-approved
-cryptography — ours or a dependency's — fails that commit's `fips140-only`
-check.
+makes non-approved algorithms fail at runtime, as a best-effort test aid.
+When the mode catches a reach for non-approved cryptography — ours or a
+dependency's — that commit's `fips140-only` check fails.
 
 Two limits of that claim, stated so it cannot be over-read: the check proves
-the paths the test suite executes, built in FIPS mode. The released
-`fscache-fips` binary is separately run by the release's artifact acceptance,
-which reads its `/statusz` and requires the validated-module line; the release
-also starts each published image by digest (amd64, and arm64 under emulation)
-and serves traffic from it, but no test yet reads the `/statusz` posture of
-those running images; and its status as a merge-blocking check is set by the repository ruleset,
-which is listed in [.github/policy/required-checks.json](.github/policy/required-checks.json).
+the paths the test suite executes, built in FIPS mode; and its status as a
+merge-blocking check is set by the repository ruleset, which is listed in
+[.github/policy/required-checks.json](.github/policy/required-checks.json).
+
+Separately, before anything is published, the release's Check stage binds each
+built candidate image to Build's recorded digest. On amd64 it starts the
+production and `-fips` images and reads their `/statusz`: the standard image must
+report the validated module off and the `-fips` image must report the
+validated-module line. The artifact checks start both images and serve cache
+traffic on amd64 and on a hosted arm64 runner; on arm64 the `/statusz` posture
+is read from the binaries, not from the running images. This tests the images as
+built, before publication.
 
 A `golangci-lint` `depguard` allowlist covers the static side: only
 in-boundary crypto imports are permitted, and third-party cryptographic
 implementations are denied outright, because `GOFIPS140` does not govern
 code outside the module.
 
-**What each half proves, stated plainly.** `fips140=only` proves the paths
+**What each half proves, stated plainly.** `fips140=only` checks the paths
 the tests execute; it says nothing about a path no test reaches. The
 allowlist is a static check: it sees imports, not behaviour. Together they
 cover more than either does alone, and neither is a proof of total coverage.
@@ -111,7 +128,7 @@ The `-fips` build announces itself at startup, so the property is
 observable at runtime rather than taken on trust:
 
 ```
-"fips140":"active (Go validated module, CMVP cert #5247)"
+"fips140":"active (Go validated module ..., CMVP cert #5247)"
 ```
 
 Standard builds report `"fips140":"off"`.
@@ -147,6 +164,17 @@ There is no request access log. The only per-request logging is on failure — a
 store error or a short write to the client — and those lines carry the HTTP
 method and the cache key, never the request body, never credentials, and never a
 client address.
+
+## The apk release key
+
+The apks of a release are signed with one release key; its public half will be committed at
+[`build/keys/release.rsa.pub`](build/keys/release.rsa.pub) once the key is set
+(the file there today is a placeholder, not a key).
+
+- The key is rotated every year.
+- A suspected leak is not waited out: the key is rotated at once.
+- A retired key's public half stays published, so the apks it signed stay verifiable.
+- A leak is disclosed when the key is rotated, in the security advisory for the affected releases.
 
 ## Supported versions
 

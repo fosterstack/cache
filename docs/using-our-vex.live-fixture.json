@@ -1,0 +1,19 @@
+{
+ "image": "docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
+ "platform": "linux/amd64",
+ "packages": [
+  {
+   "name": "libc6",
+   "version": "2.36-9",
+   "source": "glibc",
+   "source_version": "2.36-9"
+  },
+  {
+   "name": "libc-bin",
+   "version": "2.36-9",
+   "source": "glibc",
+   "source_version": "2.36-9"
+  }
+ ],
+ "why": "The live test shows a rule for one package leaving the same CVE visible in another, which needs a CVE that a scanner reports on two package names. Both packages are built from glibc 2.36-9, and the digest is immutable, so the package list holds by construction. On 2026-10-17 Grype 0.120.0 reported 43 CVEs on both libc6 and libc-bin for this digest; that is an observation, not a guarantee, and the live run's own check stays fail-closed if a service reports none. bin/vex-live-run.sh checks the real image's package list against this file before it pushes anything."
+}

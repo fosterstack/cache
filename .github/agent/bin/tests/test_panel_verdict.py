@@ -171,8 +171,14 @@ class Loader(unittest.TestCase):
     def test_a_valid_file_loads_and_parse_panel_returns_a_scanners_findings(self):
         path = self.write(json.dumps(good()))
         self.assertEqual(P.load_panel_verdict(path)["exit"], 1)
-        self.assertEqual([f["finding_id"] for f in P.parse_panel(path, "inspector")], ["CVE-2099-0001", "CVE-2099-0002"])
+        insp = P.parse_panel(path, "inspector")
+        self.assertEqual([f["finding_id"] for f in insp if not f["extra"].get("carried")], ["CVE-2099-0001", "CVE-2099-0002"])
+        # the tally's vex_covered entry for Inspector rides along flagged carried (rc-5b fix 5), with a generic package URL and the image it was hidden on
+        carried = [f for f in insp if f["extra"].get("carried")]
+        self.assertEqual([(f["finding_id"], f["package"], f["purl"], f["extra"]["images"]) for f in carried],
+                         [("CVE-2099-0009", "busybox", "pkg:generic/busybox@1.36", ["production-amd64"])])
         self.assertEqual([f["finding_id"] for f in P.parse_panel(path, "google")], [])
+        self.assertFalse([f for f in P.parse_panel(path, "grype") if f["extra"].get("carried")])      # a scanner the VEX is not filtered for carries nothing
 
     def test_parse_panel_carries_a_scanners_own_severity_fix_aliases_and_exploitation(self):
         d = good()

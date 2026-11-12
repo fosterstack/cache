@@ -5,7 +5,6 @@
 # garbage, unparseable destination). No Docker, no network - pure parser.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CHK=bin/analyze-egress-trace.py
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 OWN=10.88.0.7   # a plausible netns self-IPv4 for the fixtures
 pass=0; fail=0
@@ -13,7 +12,7 @@ pass=0; fail=0
 run() { # description, expected-exit, file, [expected-substring-in-stdout]
   local desc="$1" want="$2" file="$3" needle="${4:-}"
   set +e
-  out=$(python3 "$CHK" "$file" "$OWN" 2>"$TMP/err"); got=$?
+  out=$(python3 bin/analyze-egress-trace.py "$file" "$OWN" 2>"$TMP/err"); got=$?
   set -e
   local ok=1
   [ "$got" = "$want" ] || ok=0

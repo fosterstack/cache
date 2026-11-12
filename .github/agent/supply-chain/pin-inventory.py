@@ -7,6 +7,7 @@ One item is "<kind>:<name>@<version>":
   gotool   module/path@version          `go install path@version` in a run step
   package  pypi/name@version            the hash-pinned requirements files
   image    name@sha256:digest           container:/services: images and docker:// actions (name:tag@sha256:digest is the SAME item: Docker ignores the tag)
+  apk      name@version                 a row of build/locks/vm-kernel.lock; the row's sha256 is the item's sum (a new apk under one version is a new item)
 NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go modules and the Go toolchain.
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
@@ -122,11 +123,20 @@ class Item:
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
         self.raw = None  # a file item's repository path, exactly as git names it (name goes through _hide(); REQ-SUP-001-AC21 compares this)
         self.src = None  # (script path, line id) of the script line that made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to that line
+        self.sums = []   # the checksum(s) the repo pins for this tool or package (an install-scanner.sh SUM, a requirements --hash), from every occurrence: part of the item's identity (rc-5b item 6) but not of its key
 
     @property
     def key(self):
         sub = f"/{self.path}" if self.path else ""
         return f"{self.kind}:{self.name}{sub}@{self.version}" + (f"#{self.step}" if self.step else "")
+
+    @property
+    def sum(self):
+        return _sumid(self.sums)
+
+    @property
+    def ident(self):
+        return self.key + (f"#sum:{self.sum}" if self.sum else "")
 
     def __repr__(self):
         return self.key
@@ -143,7 +153,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 
 
 def _wanted(n):
-    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or re.search(r"(^|/)action\.ya?ml$", n)
+    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$", n)
             or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
             or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
 
@@ -158,6 +168,8 @@ def _listing(root, rev):
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if n and _wanted(n):
+            if n == KERNEL_LOCK and meta.split()[0] == "120000":
+                raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
             pairs.append((n, meta.split()[2]))
     if re.fullmatch(r"[0-9a-f]{40}", rev):    # a name like HEAD can move: only a full sha is remembered
         _LISTINGS[(root, rev)] = pairs
@@ -176,21 +188,31 @@ def tree_files(root, rev):
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
             if n and wanted(n):
+                if n == KERNEL_LOCK and os.path.islink(f"{root}/{n}"):
+                    raise RuntimeError(f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
                 try:
                     out[n] = open(f"{root}/{n}").read()
                 except OSError as e:
                     if n == PERSONA_TOOLS:
                         raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its images would go unchecked")
+                    if n == KERNEL_LOCK:
+                        raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its rows would go unaged")
                     continue
                 if len(out[n]) > MAX_FILE:
                     raise RuntimeError(f"{n} is too large to read safely")
         return out
     for n, blob in _listing(root, rev):
-        if blob not in _BLOBS:
+        if n == KERNEL_LOCK:    # the lock is read strictly: a byte that is not UTF-8 is an error, never a replacement character
+            try:
+                out[n] = subprocess.run(["git", "-C", root, "cat-file", "blob", blob], capture_output=True, check=True).stdout.decode("utf-8")
+            except (subprocess.CalledProcessError, UnicodeDecodeError) as e:
+                raise RuntimeError(f"{n} cannot be read as UTF-8 text: its rows would go unaged ({e})")
+        elif blob not in _BLOBS:
             _BLOBS[blob] = git(root, "cat-file", "blob", blob)
-        if len(_BLOBS[blob]) > MAX_FILE:
+        if n != KERNEL_LOCK:
+            out[n] = _BLOBS[blob]
+        if len(out[n]) > MAX_FILE:
             raise RuntimeError(f"{n} is too large to read safely")
-        out[n] = _BLOBS[blob]
     return out
 
 
@@ -202,6 +224,45 @@ def _strip_tag(name):
 
 PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]+/)*[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")      # [registry[:port]/]path/name[:tag]@sha256:<digest>
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
+KERNEL_LOCK = "build/locks/vm-kernel.lock"
+KERNEL_ROWS_MAX = 500
+
+
+_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*[a-wyz]?(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
+
+
+def is_pin(version):
+    """An exact version: a commit, a digest, or dotted numbers (an optional suffix such as -rc.1). Never a name (main, nightly, lts/*), a wildcard (1.*, 3.x), a range or an expression."""
+    return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
+_KERNEL_ROW = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._+\-]*(?:/[A-Za-z0-9][A-Za-z0-9._+\-]*)?)=([A-Za-z0-9][A-Za-z0-9._+\-]*)[ \t]+sha256:([0-9a-f]{64})$")
+
+
+def _kernel_lock_items(path, text):
+    """The rows of the kernel lock file, one `apk` item each: `<name>=<version> sha256:<64 hex>`, the name may carry an `<arch>/` prefix; blank lines
+    and lines starting with # are ignored. The row's sha256 is the item's sum, so the same version with a different apk is a NEW item (its clock starts
+    again). No registry dates these rows: the pull request's own first run does. A row of any other shape is an error, never skipped: a row we cannot read
+    would go unaged."""
+    out, seen = [], set()
+    for n, raw in enumerate(text.split("\n"), 1):
+        row = raw.strip()
+        if not row or row.startswith("#"):
+            continue
+        m = _KERNEL_ROW.match(row)
+        if not m:
+            raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+        if not is_pin(m.group(2)):
+            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its age cannot be judged")
+        if (m.group(1), m.group(2)) in seen:
+            raise RuntimeError(f"{path}:{n}: the row {m.group(1)}={m.group(2)} appears twice: a duplicate row is an error")
+        seen.add((m.group(1), m.group(2)))
+        if len(seen) > KERNEL_ROWS_MAX:
+            raise RuntimeError(f"{path}:{n}: more than {KERNEL_ROWS_MAX} rows: refused")
+        it = Item("apk", m.group(1), m.group(2))
+        it.sums = [m.group(3)]
+        out.append(it)
+    if not out:
+        raise RuntimeError(f"{path}: the lock file holds no row: the control cannot cover nothing")
+    return out
 
 
 def _persona_tool_items(path, text):
@@ -601,6 +662,13 @@ def _step(node, out, labels):
                 it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
+def _item_copy(it):
+    """A copy that shares nothing with the stored item (sums is a list): a change to what a caller gets back never reaches the memo."""
+    c = copy.copy(it)
+    c.sums = list(it.sums)
+    return c
+
+
 _STEP_MEMO = {}     # (the step as a script line, the context it reads) -> the items _step made for it
 
 
@@ -615,11 +683,11 @@ def _step_line(node, out):
     if made is None:
         n0 = len(out)
         _step(node, out, {})
-        _STEP_MEMO[key] = [copy.copy(it) for it in out[n0:]]
+        _STEP_MEMO[key] = [_item_copy(it) for it in out[n0:]]
         return
     if len(made) > MAX_ITEMS_PER_STEP:
         raise _too_many_items()
-    out.extend(copy.copy(it) for it in made)
+    out.extend(_item_copy(it) for it in made)
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
@@ -682,8 +750,10 @@ def _step_items(node, out, labels):
                 if re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*(\[[\w,.-]*\])?", tok) and not tok.startswith("-"):
                     out.append(Item("package", f"pypi/{tok.split('[')[0].lower().replace('_', '-')}", "(unpinned)"))  # no version at all: it cannot be proven, so adding one fails closed
         if re.search(r"\bpip[0-9.]*\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
+            rsums = _req_sums(run)
             for p in _REQ_PIN.finditer(run):
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
+                out[-1].sums = rsums.get((p.group(1).lower().replace("_", "-"), p.group(2)), [])
 
 
 def _walk(node, out, labels, path="", in_step=False):
@@ -714,7 +784,9 @@ def _walk(node, out, labels, path="", in_step=False):
                         else:
                             out.append(_image_item(svc["image"]))
             if k == "jobs" and isinstance(v, dict):
-                top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(node.get("on"), sort_keys=True, default=str)   # a called workflow's input defaults count
+                # the triggers count (rule 1), except the paths filters
+                top_env = (json.dumps(node.get("env"), sort_keys=True, default=str)
+                           + json.dumps(_on_key(node.get("on")), sort_keys=True, default=str))
                 try:
                     for job in v.values():
                         _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
@@ -753,6 +825,54 @@ def _read_of(name):
     return (name, name in _TREE[0], hashlib.sha256(text.encode("utf-8", "replace")).hexdigest() if text is not None else "")
 
 
+def _sumid(sums):
+    return hashlib.sha256(" ".join(sorted(set(sums))).encode()).hexdigest()[:24] if sums else ""
+
+
+_CASE_SUM = re.compile(r"^[ \t]*([\w.\-]+):[^)\n]*\)[ \t]*SUM=['\"]?([0-9a-fA-F]{64})['\"]?", re.M)
+
+
+def _scanner_sums(text, name, version):
+    """The sha256 values install-scanner.sh pins for a tool: the `<tool>:<arch>) SUM=<hex>` rows whose tool label is the item's name (docker-scout for scout, osv-scanner for osv ...).
+    A label that carries a version (docker-scout-1.25.0) belongs to that version only; a label without one belongs to the item the *_VER variable names."""
+    exact, plain = [], []
+    for lab, hx in _CASE_SUM.findall(text):
+        lab = lab.lower()
+        m = re.fullmatch(r"(.+?)-(\d+(?:\.\d+)+)", lab)
+        if m and (m.group(1) == name or m.group(1).endswith("-" + name)):
+            if m.group(2) == version:
+                exact.append(hx.lower())
+        elif lab == name or lab.endswith("-" + name) or lab.startswith(name + "-"):
+            plain.append(hx.lower())
+    return exact or plain
+
+
+def _arm_of(text, rawln):
+    """The tool label of the installer arm (`  <tool>)`) a script line sits in, or None.
+    The LAST marker before the line decides: any `  <label>)` (a label with `|` or `*` included), a `  ;;` or an `esac` line. Only a plain single-label arm is an arm; a multi-label arm,
+    a glob arm, or a line after a terminator is in no single tool's arm (None: the whole-script identity applies, so no foreign sums attach)."""
+    at = text.find(rawln) if rawln else -1
+    if at < 0 or text.count(rawln) > 1:      # a line that occurs twice cannot be placed by its text: no arm (the whole-script identity applies)
+        return None
+    marks = re.findall(r"^(?:  ([^\s;()#][^()\n]*)\)[ \t]*(?:#.*)?|(  ;;.*|esac\b.*))$", text[:at], re.M)
+    if not marks or marks[-1][1]:
+        return None
+    return marks[-1][0] if re.fullmatch(r"[\w.\-]+", marks[-1][0]) else None
+
+
+_REQ_HASH = re.compile(r"--hash=([A-Za-z0-9]+:[0-9A-Fa-f]+)")
+
+
+def _req_sums(text):
+    """{(name, version): [hash, ...]} of the requirement lines (continuations joined) that carry --hash options."""
+    out = {}
+    for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
+        m = _REQ_PIN.match(ln)
+        if m:
+            out.setdefault((m.group(1).lower().replace("_", "-"), m.group(2)), []).extend(h.lower() for h in _REQ_HASH.findall(ln))
+    return out
+
+
 def _file_found(path, text):
     """The items one file yields (before the tree-wide de-duplication of inventory()). A function of the path and the text, and of the local
     workflows the walk reads (_exempt_local_call records them in _READS): inventory() memoises it on exactly that."""
@@ -764,6 +884,9 @@ def _file_found(path, text):
         found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
         found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
         found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
+        for it in found:
+            if it.kind == "tool" and not it.name.startswith("source:"):
+                it.sums = _scanner_sums(text, it.name, it.version)
         sjoined, sraw = _script_lines(text)
         sctx = _assign_context(sjoined, sraw)
         for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
@@ -771,8 +894,16 @@ def _file_found(path, text):
             _step_line({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found)
             for it in found[before:]:
                 it.src = (path, lid)
+                if it.kind == "tool" and not it.sums and not it.name.startswith("source:"):
+                    arm = _arm_of(text, rawln)
+                    if arm:
+                        it.sums = _scanner_sums(text, arm, "")      # a literal release download inside the installer's `<tool>)` arm carries that tool's pinned sums
+                    if not it.sums and it.path and _CASE_SUM.search(text):      # a sum-pinned installer: a download with none found is not trusted
+                        it.step = "file:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # no sums found for a literal download (an arm label the text scan could not trust): fail closed, any edit of the script moves the item
     elif path == PERSONA_TOOLS:
         found = _persona_tool_items(path, text)
+    elif path == KERNEL_LOCK:
+        found = _kernel_lock_items(path, text)
     elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
         found = [Item("tool", "file:" + path, "(file)")]
         found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
@@ -804,6 +935,9 @@ def _file_found(path, text):
                 raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
     elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
         found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
+        rsums = _req_sums(text)
+        for it in found:
+            it.sums = rsums.get((it.name[5:], it.version), [])
         for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
             body = ln.split("#", 1)[0].strip()
             if not body or body.startswith("--hash="):
@@ -859,11 +993,11 @@ def inventory(files):
         # the reads the walk made are re-asked of THIS tree: the same answers, the same items
         hit = next((m for m in known if all(_read_of(r[0]) == r for r in m[1])), None)
         if hit is not None:
-            found = [copy.copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
+            found = [_item_copy(it) for it in hit[0]]      # the de-duplication below renames steps: it must never touch the remembered items
         else:
             found = _file_found(path, text)
             if mk is not None:                              # a raise left nothing here: only a completed file is remembered; each different set of reads is kept
-                _FILE_MEMO.setdefault(mk, []).append(([copy.copy(it) for it in found], tuple(_READS)))
+                _FILE_MEMO.setdefault(mk, []).append(([_item_copy(it) for it in found], tuple(_READS)))
         for it in found:
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
@@ -872,13 +1006,35 @@ def inventory(files):
                     if it.key not in items:
                         break
                     n += 1
-            items.setdefault(it.key, it)
+            if it.key in items:
+                items[it.key].sums = items[it.key].sums + it.sums     # every occurrence's checksums count: a change in a second file is not hidden by the first
+            else:
+                items[it.key] = it
     return items
 
 
 def moved(base_items, head_items):
     """Items in the head that the base did not have: a new pin, or a changed version, counts as moved."""
-    return [head_items[k] for k in sorted(head_items) if k not in base_items]
+    return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]   # the pinned checksum is part of the identity: the same version with a new sum is a moved item
+
+
+def _on_key(on):
+    """What of a workflow's `on:` is part of a step's identity: all of it except the `paths` and `paths-ignore`
+    filters under each event.
+    Owner rule 1 (Oct 5): no NEW version of what a workflow downloads until it has been public 7 days. A trigger
+    can change what a step downloads (the event name, the ref, a schedule and the event payload all reach steps;
+    a called workflow's inputs and outputs select what is fetched), so triggers stay in the key. A changed set of
+    changed-file paths only chooses WHETHER a run happens, never what it fetches. A scalar or list `on`
+    (`on: push`, `[push, merge_group]`) is unchanged."""
+    if not isinstance(on, dict):
+        return on
+    out = {}
+    for ev, body in on.items():
+        if isinstance(body, dict):
+            # the loader reads a bare event as "": an event with only a paths filter is the bare event
+            body = {k: v for k, v in body.items() if k not in ("paths", "paths-ignore")} or ""
+        out[str(ev)] = body
+    return out
 
 
 def load_at(root, rev):
@@ -966,6 +1122,10 @@ def _line_id(tainted, line):
 # FILE-LEVEL rule, not by reading commands: a non-comment line of a scanned file outside vendor/ that names the vendored folder (a path under vendor/, a bare vendor
 # word; `go mod vendor` and -mod=vendor are the tool's own words) is an unmeasured occurrence unless the file is one of these exact paths. A new workflow or script that
 # names vendor/ is therefore refused until a security-tier change lists it here: a human gate on every new consumer, with no shell syntax to spell around.
+# bin/check-no-outbound.py and its test are listed because they are ours: the check skips vendor/ by name and
+# the test builds a vendor/ fixture to prove it.
+# bin/build-apk-helper.py holds the "$src/vendor is missing" refusal that moved out of bin/build-apk.sh;
+# bin/chain-test-shape.py holds, as exact text, the build-apk.sh line that names $src/vendor/modules.txt.
 _VENDOR_NAMING_FILES = frozenset("""
 .github/workflows/ci.yml
 .github/workflows/release.yml
@@ -993,8 +1153,12 @@ bin/chain-check-scripts-test.sh
 bin/chain-install-witness-test.sh
 bin/chain-release-scripts-test.sh
 bin/check-govulncheck.py
+bin/check-no-outbound-test.sh
+bin/check-no-outbound.py
 bin/install-scanner.sh
 bin/release-metadata.py
+bin/build-apk-helper.py
+bin/chain-test-shape.py
 """.split())
 _VENDOR_LETTER = lambda c: r"(?:" + c + r"|\[[^\]]*" + c + r"[^\]]*\]|\?|\*)"
 _VENDOR_SPELLING = r"(?:[\"'\\]|\*)*".join(_VENDOR_LETTER(c) for c in "vendor")       # ven""dor, ven\dor, vendo[r], v*ndor, vend?r

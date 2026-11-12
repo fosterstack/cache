@@ -13,9 +13,9 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 args=()
 patch=""
 # a patch tag needs no record: nothing is read. It matches v1.2.3 and v0.9.10;
-# it refuses v1.2.0, v1.2.3-rc1, v01.2.3 and v1.2
+# it refuses v1.2.0, v1.2.3-rc1, v01.2.3, v1.2 and a tag with a newline in it (bash matches the whole string, grep a line)
 patch_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$'
-if [ "$mode" = --release ] && printf '%s' "$rtag" | grep -Eq "$patch_tag"; then patch=1; fi
+if [ "$mode" = --release ] && [[ "$rtag" =~ $patch_tag ]]; then patch=1; fi
 if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then
   repo=${GITHUB_REPOSITORY:-}
   [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "audit-record: GITHUB_REPOSITORY is not owner/name" >&2; exit 1; }
@@ -24,7 +24,8 @@ if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; the
     if gh api "$2" > "$tmp/$1.json" 2> "$tmp/err"; then return 0; fi
     rm -f "$tmp/$1.json"
     if grep -q -E 'HTTP 404|Not Found' "$tmp/err"; then return 3; fi
-    echo "audit-record: could not read the record (GitHub API error on $2): $(tail -c 200 "$tmp/err" | tr '\n' ' ')" >&2
+    why=$(tail -c 200 "$tmp/err" | tr '\n' ' ')
+    echo "audit-record: could not read the record (GitHub API error on $2): $why" >&2
     return 4
   }
   read_api ref "repos/${repo}/git/ref/heads/audit/${head}"; rc=$?
@@ -41,7 +42,9 @@ if [ "$base" = main ] && [ -z "$patch" ] && [[ "$head" =~ ^[0-9a-f]{40}$ ]]; the
 fi
 if [ "$mode" = --release ]; then
   [ "$base" = main ] || { echo "audit-record: a release is judged against main" >&2; exit 1; }
-  cd "$here" && exec python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" \
+  cd "$here" && python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" \
     --tagged-sha "$head" --base-root . "${args[@]+"${args[@]}"}"
+  exit $?
 fi
-cd "$here" && exec python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . "${args[@]+"${args[@]}"}"
+cd "$here" && python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . "${args[@]+"${args[@]}"}"
+exit $?

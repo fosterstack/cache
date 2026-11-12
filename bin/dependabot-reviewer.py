@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Dependabot major-bump reviewer (register row 75).
+"""Dependabot major-bump and flagged-update reviewer (register row 75).
 
 Three dependency lanes: the auditor opens CVE bumps (cron), Dependabot opens "latest" bumps,
-and THIS reviewer judges Dependabot MAJORS so no human has to. It runs hourly from main
+and THIS reviewer judges Dependabot MAJORS (and any update whose release notes say breaking or deprecated: FLAGGED) so no human has to. It runs hourly from main
 (dependabot-reviewer.yml), never on a PR event: Dependabot-triggered runs hold no repository
 secrets, so the federation identity is only reachable from a scheduled run on main.
 
@@ -382,7 +382,7 @@ USAGE_UNAVAILABLE = "(usage UNAVAILABLE for %s: the repository search failed (rc
 
 
 def our_usage(name):
-    """Every line of ours that names the dependency (workflows, go.mod, Dockerfiles, scripts);
+    """Every line of ours that names the dependency (workflows, go.mod, scripts);
     a workflow hit comes with its whole step, inputs included."""
     short = name.split("/")
     out, rc = _run(["git", "grep", "-n", "-I", "--", name])
