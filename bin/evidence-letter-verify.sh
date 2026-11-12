@@ -10,6 +10,9 @@ policy=${1:?the policy file is the first argument}
 file=${2:?the file to verify is the second argument}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 jq -er .release_key.public_key "$policy" > "$tmp/release-key.pub" 2> /dev/null || die "$policy holds no release key"
+# a certificate in the bundle means a signature without the release key, which a letter never has
+jq -e '.verificationMaterial | (has("certificate") or has("x509CertificateChain")) | not' "$file.bundle" > /dev/null ||
+  die "$file.bundle holds a certificate: only the release key signs a letter"
 jq -e '(.verificationMaterial.tlogEntries // []) | length > 0' "$file.bundle" > /dev/null ||
   die "$file.bundle has no Rekor entry"
 cosign verify-blob --key "$tmp/release-key.pub" --trusted-root .github/policy/rekor-trusted-root.json \
