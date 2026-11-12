@@ -2198,7 +2198,7 @@ requirements:
       - id: REQ-CI-001-AC4
         given: "the test job of ci.yml on a pull request"
         when: "it runs"
-        then: "it runs go vet, the static build (CGO_ENABLED=0) and go test over only the packages of the changed Go files (every package when go.mod, go.sum or vendor/ changed), without -race and without the fips settings; the allowlist job runs the suites bin/select-tests.sh selects for the changed files as steps that run only when selected, plus the allowlist check of every tracked file and the action-pin checks (docs/ratify/2026-11-11-no-release-age-hold.md:15)"
+        then: "it runs go vet, the static build (CGO_ENABLED=0) and go test over only the packages of the changed Go files (every package when go.mod, go.sum or vendor/ changed), without -race and without the fips settings; the allowlist job runs, in one step, the suite commands bin/select-tests.sh selects for the changed files, plus the allowlist check of every tracked file and the action-pin checks (docs/ratify/2026-11-11-no-release-age-hold.md:15)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC5
