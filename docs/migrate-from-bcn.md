@@ -139,7 +139,7 @@ For what the paid tiers add, and what stays free, see the
 [README](../README.md#status).
 
 The security evidence itself is public and free: SBOMs, SLSA provenance,
-signatures, scan results, VEX statements, and the FIPS 140-3 module
+signatures, VEX statements, and the FIPS 140-3 module
 certificate number ship with every release and are verifiable by anyone, with
 no account and no purchase.
 
