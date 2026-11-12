@@ -9,30 +9,30 @@
   },
   {
     "command": "cosign verify-blob-attestation --key release.rsa.pub --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false",
-    "reason": "this file only exists once the release is published, so it is not run before release; the release runs it right after it publishes"
+    "reason": "the pre-release checks do not hold this file, so it is not run before release; the release runs it right after it publishes"
   },
   {
     "command": "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == \"https://slsa.dev/provenance/v1\" and any(.subject[]; .name == \"image-production\" and (.digest.sha256 as $d | $ref | endswith(\"@sha256:\" + $d)))' provenance.bundle.json",
-    "reason": "this file only exists once the release is published, so it is not run before release; the release runs it right after it publishes"
+    "reason": "the pre-release checks do not hold this file, so it is not run before release; the release runs it right after it publishes"
   },
   {
     "command": "jq -r '.dsseEnvelope.payload | @base64d | fromjson | (.subject[], .predicate.runDetails.byproducts[]) | .name + \" sha256:\" + .digest.sha256' provenance.bundle.json",
-    "reason": "this file only exists once the release is published, so it is not run before release; the release runs it right after it publishes"
+    "reason": "the pre-release checks do not hold this file, so it is not run before release; the release runs it right after it publishes"
   },
   {
     "command": "cosign verify-blob --key release.rsa.pub --bundle production.sbom.json.bundle production.sbom.json",
-    "reason": "this file only exists once the release is published, so it is not run before release; the release runs it right after it publishes"
+    "reason": "the pre-release checks do not hold this file, so it is not run before release; the release runs it right after it publishes"
   },
   {
     "command": "cosign verify-blob --key release.rsa.pub --bundle fips.sbom.json.bundle fips.sbom.json",
-    "reason": "this file only exists once the release is published, so it is not run before release; the release runs it right after it publishes"
+    "reason": "the pre-release checks do not hold this file, so it is not run before release; the release runs it right after it publishes"
   },
   {
     "command": "cosign verify-blob --key release.rsa.pub --bundle production.full.lock.json.bundle production.full.lock.json",
-    "reason": "this file only exists once the release is published, so it is not run before release; the release runs it right after it publishes"
+    "reason": "the pre-release checks do not hold this file, so it is not run before release; the release runs it right after it publishes"
   },
   {
     "command": "cosign verify-blob --key release.rsa.pub --bundle fips.full.lock.json.bundle fips.full.lock.json",
-    "reason": "this file only exists once the release is published, so it is not run before release; the release runs it right after it publishes"
+    "reason": "the pre-release checks do not hold this file, so it is not run before release; the release runs it right after it publishes"
   }
 ]
