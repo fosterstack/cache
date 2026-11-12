@@ -156,7 +156,7 @@
       "version": "3.37.8"
     }
   ],
-  "_format_unmeasured_text": "REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 64-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. Read from the base branch only: rows a pull request brings do nothing until merged. REQ-SUP-001-AC20 (advisor ruling, Oct 14): the same rows rule a script line (a *.sh file outside the auditor's own tree) that names an unpinned package in a pip install, with form \"an unpinned package install\" and key equal to line (the hash of the whole flattened line); a line joined from a continuation can never be ruled. A row is only ever written for a line that is HARMLESS IN ANY SHELL CONTEXT (read as a command it runs no download: a comment, an echo or printf, a cat into a file, Python source or a package list bash cannot parse), because moving a line out of a heredoc keeps its identity; the reviewer refuses any other row. A line with whitespace other than space or tab, or joined from a backslash-newline continuation, is never ruled. Editing only a row's ruling prose does not void it. Allowed row forms (advisor, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t \"RULE\" \"TITLE\" bash -c 'BODY' _ followed by at most nine path arguments \"$NAME\" or \"$NAME/path\" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (Codex, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole \"$1\"..\"$9\"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN [\"$N\"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only \"$N\" (Codex and Sonnet, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- \"$N\"; test and [ only the file tests -f -s -e -d -r on a positional \"$N\" (never a literal path or a substitution: Codex, pull request 289 round 6), = and !=, and count comparisons between digits and \"$(grep -c ...)\" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions \"$(grep -c OPTION... -- PATTERN \"$N\")\" and \"$(cat -- \"$N\")\" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (Sonnet, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (Codex and Sonnet, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (coordinator, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. REQ-SUP-001-AC19 (orchestrator ruling, Oct 14): the same rows rule a local reusable-workflow call that keeps a with: block, with form \"a local reusable workflow call\", file the workflow that holds the call, and key equal to line (the 64-hex hash of the item's whole identity, its called file and the hash of its with: block), so an edited block is another item.",
+  "_format_unmeasured_text": "REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 64-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. A row for a line inside a quoted here-document or a string may add body-first, body-last and body-sha256 together: the text of the first and last line of the span the line was reviewed in, and the sha256 of the span (those lines, first and last included, joined by newlines). The row rules the line only when exactly one span in the head file has that hash and every copy of the line sits inside it; a row for a line that sits in no span is a plain per-line row. Read from the base branch only: rows a pull request brings do nothing until merged. REQ-SUP-001-AC20 (advisor ruling, Oct 14): the same rows rule a script line (a *.sh file outside the auditor's own tree) that names an unpinned package in a pip install, with form \"an unpinned package install\" and key equal to line (the hash of the whole flattened line); a line joined from a continuation can never be ruled. A row is only ever written for a line that is HARMLESS IN ANY SHELL CONTEXT (read as a command it runs no download: a comment, an echo or printf, a cat into a file, Python source or a package list bash cannot parse), because moving a line out of a heredoc keeps its identity; the reviewer refuses any other row. A line with whitespace other than space or tab, or joined from a backslash-newline continuation, is never ruled. Editing only a row's ruling prose does not void it. Allowed row forms (advisor, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t \"RULE\" \"TITLE\" bash -c 'BODY' _ followed by at most nine path arguments \"$NAME\" or \"$NAME/path\" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (Codex, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole \"$1\"..\"$9\"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN [\"$N\"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only \"$N\" (Codex and Sonnet, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- \"$N\"; test and [ only the file tests -f -s -e -d -r on a positional \"$N\" (never a literal path or a substitution: Codex, pull request 289 round 6), = and !=, and count comparisons between digits and \"$(grep -c ...)\" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions \"$(grep -c OPTION... -- PATTERN \"$N\")\" and \"$(cat -- \"$N\")\" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (Sonnet, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (Codex and Sonnet, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (coordinator, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. REQ-SUP-001-AC19 (orchestrator ruling, Oct 14): the same rows rule a local reusable-workflow call that keeps a with: block, with form \"a local reusable workflow call\", file the workflow that holds the call, and key equal to line (the 64-hex hash of the item's whole identity, its called file and the hash of its with: block), so an edited block is another item.",
   "unmeasured_text": [
     {
       "file": "bin/build-helpers-test.sh",
@@ -170,21 +170,30 @@
       "form": "a download",
       "key": "1314309c3220e61914631f086c3994102c0cbca29603c9e177a888747643d67e",
       "line": "1314309c3220e61914631f086c3994102c0cbca29603c9e177a888747643d67e",
-      "ruling": "text, not a command: the first line of the curl STUB's body (written as data by a quoted heredoc); it echoes the word curl and its arguments into the call log, it downloads nothing"
+      "ruling": "text, not a command: the first line of the curl STUB's body (written as data by a quoted heredoc); it echoes the word curl and its arguments into the call log, it downloads nothing",
+      "body-first": "cat >\"$stubs/curl\" <<'EOF'",
+      "body-last": "EOF",
+      "body-sha256": "fe87c46f6f212238213e104b031556b348c3e13d85c543ebe7e18865d5aa2328"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "22312bde0463f438dcaf03137157a7b17959af299e9e30867c442547056c3ecf",
       "line": "22312bde0463f438dcaf03137157a7b17959af299e9e30867c442547056c3ecf",
-      "ruling": "text, not a command: Python inside the test library heredoc; the string 'curl ' is one of the forbidden fragments the mel-env check asserts is ABSENT from the melange recipe's text"
+      "ruling": "text, not a command: Python inside the test library heredoc; the string 'curl ' is one of the forbidden fragments the mel-env check asserts is ABSENT from the melange recipe's text",
+      "body-first": "cat >\"$work/chk.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "f3fa2ca6f19564e2a78eb74d2dbcb772cec2ef462e920512b74af13f5c7e7bbc"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "5839155d14e99a00fc2d9e031c95573d67aeb3904a33c4d969c74bc4bc6b7541",
       "line": "5839155d14e99a00fc2d9e031c95573d67aeb3904a33c4d969c74bc4bc6b7541",
-      "ruling": "text, not a command: Python inside the test library heredoc; asserts the package name wget is listed in the recipe's environment (an assertion message, nothing is fetched)"
+      "ruling": "text, not a command: Python inside the test library heredoc; asserts the package name wget is listed in the recipe's environment (an assertion message, nothing is fetched)",
+      "body-first": "cat >\"$work/chk.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "f3fa2ca6f19564e2a78eb74d2dbcb772cec2ef462e920512b74af13f5c7e7bbc"
     },
     {
       "file": "bin/melange-apko-lib.sh",
@@ -198,7 +207,10 @@
       "form": "a download",
       "key": "64612fb9a9fe82bebee266d20bfd151d4aab8c5a1d02f1a3dfadde2b97938277",
       "line": "ddbd6b256451601130eba3c0ddea455186ed7fc00869ae26c95a3f856ca9ad77",
-      "ruling": "text, not a command: the curl STUB's error branch (written as data by a quoted heredoc); echoes 'stub curl: 22 <url>' to stderr and exits 22, it downloads nothing"
+      "ruling": "text, not a command: the curl STUB's error branch (written as data by a quoted heredoc); echoes 'stub curl: 22 <url>' to stderr and exits 22, it downloads nothing",
+      "body-first": "cat >\"$stubs/curl\" <<'EOF'",
+      "body-last": "EOF",
+      "body-sha256": "fe87c46f6f212238213e104b031556b348c3e13d85c543ebe7e18865d5aa2328"
     },
     {
       "file": "bin/melange-apko-lib.sh",
@@ -212,21 +224,30 @@
       "form": "a download",
       "key": "77bc505e9228dc4a97d322a7e255a51b972f5087ffc3bf67f167b74b155311d5",
       "line": "77bc505e9228dc4a97d322a7e255a51b972f5087ffc3bf67f167b74b155311d5",
-      "ruling": "text, not a command: Python inside the test library heredoc; the ENVPK fixture list of apk package names and versions (busybox, git, wget, ca-certificates-bundle)"
+      "ruling": "text, not a command: Python inside the test library heredoc; the ENVPK fixture list of apk package names and versions (busybox, git, wget, ca-certificates-bundle)",
+      "body-first": "cat >\"$work/lib.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ab219be0d4d5d6b77351a7a1d17b3715a8e7e899768c9168eb2cfe81486b22d4"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "80510e8b8f509a47ab7454a6f43e99a36191fe86249cd876a41a0e7dd9829ac2",
       "line": "80510e8b8f509a47ab7454a6f43e99a36191fe86249cd876a41a0e7dd9829ac2",
-      "ruling": "text, not a command: Python inside the test library heredoc; asserts the package names git, busybox, ca-certificates-bundle and wget are in the recipe's environment"
+      "ruling": "text, not a command: Python inside the test library heredoc; asserts the package names git, busybox, ca-certificates-bundle and wget are in the recipe's environment",
+      "body-first": "cat >\"$work/chk.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "f3fa2ca6f19564e2a78eb74d2dbcb772cec2ef462e920512b74af13f5c7e7bbc"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "9f54b594e70eb20f0d0a70ff9277164bd82cc360e18f5b20a78e04f3f13bbf27",
       "line": "9f54b594e70eb20f0d0a70ff9277164bd82cc360e18f5b20a78e04f3f13bbf27",
-      "ruling": "text, not a command: opens the quoted heredoc that writes the curl STUB (a file named curl in the stubs directory) as data; the stub records its argv and serves local fixture files"
+      "ruling": "text, not a command: opens the quoted heredoc that writes the curl STUB (a file named curl in the stubs directory) as data; the stub records its argv and serves local fixture files",
+      "body-first": "cat >\"$stubs/curl\" <<'EOF'",
+      "body-last": "EOF",
+      "body-sha256": "fe87c46f6f212238213e104b031556b348c3e13d85c543ebe7e18865d5aa2328"
     },
     {
       "file": ".github/workflows/release.yml",
@@ -245,22 +266,8 @@
     {
       "file": ".github/workflows/release.yml",
       "form": "a local reusable workflow call",
-      "key": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
-      "line": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
-      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
-    },
-    {
-      "file": ".github/workflows/release.yml",
-      "form": "a local reusable workflow call",
       "key": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
       "line": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
-      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
-    },
-    {
-      "file": ".github/workflows/release.yml",
-      "form": "a local reusable workflow call",
-      "key": "b49f5db9ac9502afd613edb1041a3dd3754fff06283962ccd3e42c992f42a060",
-      "line": "b49f5db9ac9502afd613edb1041a3dd3754fff06283962ccd3e42c992f42a060",
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
     },
     {
@@ -304,7 +311,10 @@
       "form": "a download",
       "key": "e55e3a52414e0c1f018689d3d20186503da10177844018a5e1a9164ac0f8707a",
       "line": "e55e3a52414e0c1f018689d3d20186503da10177844018a5e1a9164ac0f8707a",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat >\"$work/jkill/plan.json\" <<'JSON'",
+      "body-last": "JSON",
+      "body-sha256": "88df1beef3c53778a5871e61800266e5d796d57d5b0b6c5e72f5b86711fad6cf"
     },
     {
       "file": "bin/persona-uat-agent-test.sh",
@@ -312,7 +322,9 @@
       "key": "ee827d544e752abb80ab6ced9371f1a08bfef4b9b6fd9c10e5b3346bd9eae00c",
       "line": "ee827d544e752abb80ab6ced9371f1a08bfef4b9b6fd9c10e5b3346bd9eae00c",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "75b45a1f4f74b9d5181cb8b68c192c46f7e8eb2b95f4992c6e4dd5c53216fbec"
+      "body-first": "check python3 - \"$work/jkill/j.log\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "90da9b569fa157db5cc6f9b3e81fb026255b99297716dcbec1a633ea3d24996a"
     },
     {
       "file": "bin/persona-uat-agent-test.sh",
@@ -354,98 +366,140 @@
       "form": "a download",
       "key": "e2fb6df0dfab494e393c0c49f133522840e206e6720b9e5d742e895e751f4503",
       "line": "e2fb6df0dfab494e393c0c49f133522840e206e6720b9e5d742e895e751f4503",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "a2db3ff5964d60c1803defe5ef6d907372f4e55b03e8cae3f13d8a784e94c5f5",
       "line": "7b92a4da2b4d628ac68cdacdddfc45868196f4c67cf2402c124bf25fab75272e",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "cc20aa407d21c877da507b13145daaf144bba3efd504b252ee03bd47f91ab2b1",
       "line": "cc20aa407d21c877da507b13145daaf144bba3efd504b252ee03bd47f91ab2b1",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "6e0813d47432f028c18e2ec7f53e562683c1493867d6721f9a9047dcb1bb12ac",
       "line": "6e0813d47432f028c18e2ec7f53e562683c1493867d6721f9a9047dcb1bb12ac",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "27d2b5048eda8f59862327440ddae02e75bb0ba778071a316af5c65dc6b4992a",
       "line": "27d2b5048eda8f59862327440ddae02e75bb0ba778071a316af5c65dc6b4992a",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "47b30d6ceaa8fb6e11dc1b918f687d6e07301f26616e70cf77cac52dbc71bae6",
       "line": "47b30d6ceaa8fb6e11dc1b918f687d6e07301f26616e70cf77cac52dbc71bae6",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "97e100729618de8fa899a523129dcdde14246d765c96daad1d4093bce146d837",
       "line": "97e100729618de8fa899a523129dcdde14246d765c96daad1d4093bce146d837",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "dab7acbd926028a5307a8afafb057a9d54de680effefd56212d884aa7b10ee6f",
       "line": "dab7acbd926028a5307a8afafb057a9d54de680effefd56212d884aa7b10ee6f",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "ecdf63b68fd94a5324fd7198f2fd7980e14bb8ca49822cbf7359c138d04d5a03",
       "line": "ecdf63b68fd94a5324fd7198f2fd7980e14bb8ca49822cbf7359c138d04d5a03",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "4c8d5002e8734ca864431015021f4f8ab646155fa71919bf540396ba6bfcd132",
       "line": "4c8d5002e8734ca864431015021f4f8ab646155fa71919bf540396ba6bfcd132",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "5089f101162116cef3191f694976bbefcdd8ece9fbb4cfabe905c768e8e06a5f",
       "line": "5089f101162116cef3191f694976bbefcdd8ece9fbb4cfabe905c768e8e06a5f",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "7b821f8f65c0d7ecac18cb61e7f7224e310ed328c0aaa237fa33127cf5f69c93",
       "line": "7b821f8f65c0d7ecac18cb61e7f7224e310ed328c0aaa237fa33127cf5f69c93",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "12f1cb361c9571b5f3e64f4ca533c49eb2fe870f7536e804449c68b5231c3f9d",
       "line": "12f1cb361c9571b5f3e64f4ca533c49eb2fe870f7536e804449c68b5231c3f9d",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "f5f37664efebe98e7941a9a6d7c4459d546c4cc2f08a0c8ba1f905a23f4d9794",
       "line": "f5f37664efebe98e7941a9a6d7c4459d546c4cc2f08a0c8ba1f905a23f4d9794",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5d9103eb84709e70acaec351bbeac6595ed7a544343c3ae5f8e2fa2af18cd6ed"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -459,49 +513,70 @@
       "form": "a download",
       "key": "a42ca85023a534b56e085d7a6ae78a62756f609636a110f0770ea18174962e9c",
       "line": "a42ca85023a534b56e085d7a6ae78a62756f609636a110f0770ea18174962e9c",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan2.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "23b27a3c748a204779c4905784dc68839ef3ae2fa839338edb8010e01a12bf41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "edaf73c2b771b91b005d8bcedb58562d3caad1280738cf08acde2ea5085f4189",
       "line": "edaf73c2b771b91b005d8bcedb58562d3caad1280738cf08acde2ea5085f4189",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan2.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "23b27a3c748a204779c4905784dc68839ef3ae2fa839338edb8010e01a12bf41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "d7f610e53aa6a7a23fc608b8468caaf5620b9d409f8e66466bae47a4702934e2",
       "line": "d7f610e53aa6a7a23fc608b8468caaf5620b9d409f8e66466bae47a4702934e2",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - \"$V1\" \"$V2\" >\"$work/hostsplan3.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "940ef163dc3419b741c9765c9e4d590d3908bc43cf60d16e7efc7692ccb4a647"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "09f9cf24e60fe6c0b64f3f62fac116bbb8c360f2f1143eeb0b10f10382dc7743",
       "line": "09f9cf24e60fe6c0b64f3f62fac116bbb8c360f2f1143eeb0b10f10382dc7743",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - \"$V1\" \"$V2\" >\"$work/hostsplan3.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "940ef163dc3419b741c9765c9e4d590d3908bc43cf60d16e7efc7692ccb4a647"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "376efd916365367a58faf7f95be358ba82480e5e7f09ebedb0261b1724b178c4",
       "line": "376efd916365367a58faf7f95be358ba82480e5e7f09ebedb0261b1724b178c4",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - \"$V1\" \"$V2\" >\"$work/hostsplan3.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "940ef163dc3419b741c9765c9e4d590d3908bc43cf60d16e7efc7692ccb4a647"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "647eae6f95c486d11d9678210ca60d3e7b9afd1ce324a43a1dc50fea48a56212",
       "line": "647eae6f95c486d11d9678210ca60d3e7b9afd1ce324a43a1dc50fea48a56212",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - \"$V1\" >\"$work/hostsplan4.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6f3b5ba39a99177645dd434e355719efb4a7b5d65ef9047aee01de22a60072b6"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "3a501f3ccb25e2de26678eb5987e8cb60da5088340396e6e795aecc2a9b6087d",
       "line": "3a501f3ccb25e2de26678eb5987e8cb60da5088340396e6e795aecc2a9b6087d",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat >\"$work/hostsreg.plan.json\" <<'JSON'",
+      "body-last": "JSON",
+      "body-sha256": "2b00beddabf3475fba388ccaa3d1243fa7ae4c2bfa778699ff053cf1c3827c1b"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -515,7 +590,10 @@
       "form": "a download",
       "key": "194724ec661b0faf90582c09ce9a9bd00b74292de9344a7990f885259f238100",
       "line": "194724ec661b0faf90582c09ce9a9bd00b74292de9344a7990f885259f238100",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/leakplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7270c4371d6f975cc5430c12de38b1f113fc8e1b1cbbf53321c175c0358d54e4"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -529,42 +607,60 @@
       "form": "a git clone or remote fetch",
       "key": "ac6cd3d5addfccbede75542a4d6951c625b91d3fdfb95fa13e8e67ea6b41f8ec",
       "line": "ac6cd3d5addfccbede75542a4d6951c625b91d3fdfb95fa13e8e67ea6b41f8ec",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan5.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "007ef169b663083ab4f29450e5c6b4a1c4678060e5e169da5e6047345523714c"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a git clone or remote fetch",
       "key": "ad747ff8169259f51c7ceb796343d371f262ab9eda1e6b408bebf36002ea6cf4",
       "line": "ad747ff8169259f51c7ceb796343d371f262ab9eda1e6b408bebf36002ea6cf4",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan5.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "007ef169b663083ab4f29450e5c6b4a1c4678060e5e169da5e6047345523714c"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "014f17bcde84a3915d3648a9a6a1b2f8b6138641f3704ade64748a147da01d86",
       "line": "014f17bcde84a3915d3648a9a6a1b2f8b6138641f3704ade64748a147da01d86",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan5.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "007ef169b663083ab4f29450e5c6b4a1c4678060e5e169da5e6047345523714c"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "768c61fea5c30d9747c31cfa32b5ae0f21f481b07b78d2ff727d13406eb656e9",
       "line": "768c61fea5c30d9747c31cfa32b5ae0f21f481b07b78d2ff727d13406eb656e9",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan5.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "007ef169b663083ab4f29450e5c6b4a1c4678060e5e169da5e6047345523714c"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
       "line": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan5.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "007ef169b663083ab4f29450e5c6b4a1c4678060e5e169da5e6047345523714c"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a git clone or remote fetch",
       "key": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
       "line": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan5.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "007ef169b663083ab4f29450e5c6b4a1c4678060e5e169da5e6047345523714c"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -585,35 +681,50 @@
       "form": "a download",
       "key": "e1f1de7367898a77594469015e6327a757c3261cfc0c7a795b83a26b310ac9e4",
       "line": "e1f1de7367898a77594469015e6327a757c3261cfc0c7a795b83a26b310ac9e4",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan6.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "3df3b57ac227181c0dfbff6826ddb38968d40cb5b6f92de937b862d57757ef70"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "b43c29004fc5ef86e97602251cf9f3c69ef598ea47bd0054605d0a0c1f200c9e",
       "line": "b43c29004fc5ef86e97602251cf9f3c69ef598ea47bd0054605d0a0c1f200c9e",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan6.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "3df3b57ac227181c0dfbff6826ddb38968d40cb5b6f92de937b862d57757ef70"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "c1599f19956cee42fccaab38afbf62fb046a2abdefcad65d5f0f97e61895c524",
       "line": "c1599f19956cee42fccaab38afbf62fb046a2abdefcad65d5f0f97e61895c524",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan6.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "3df3b57ac227181c0dfbff6826ddb38968d40cb5b6f92de937b862d57757ef70"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "2a79a4ef86c54f32a419dbd2306a56691ea7a1f95161565f9cf1fd94d1b4a758",
       "line": "2a79a4ef86c54f32a419dbd2306a56691ea7a1f95161565f9cf1fd94d1b4a758",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan6.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "3df3b57ac227181c0dfbff6826ddb38968d40cb5b6f92de937b862d57757ef70"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "986bde1dce75c601f9435d7069325af67f06a86b598ff50feb8ebec474fb2ec9",
       "line": "986bde1dce75c601f9435d7069325af67f06a86b598ff50feb8ebec474fb2ec9",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan6.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "3df3b57ac227181c0dfbff6826ddb38968d40cb5b6f92de937b862d57757ef70"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -648,49 +759,70 @@
       "form": "a download",
       "key": "0953805676a7d315a288ab6b6d6ada0be9612387b327e43beb83b26235608934",
       "line": "0953805676a7d315a288ab6b6d6ada0be9612387b327e43beb83b26235608934",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan7.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b71a456c1db10bc5300dd95a8467669e403b24d1d6e1fee8cb76fef8f22a1095"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "ccb1102fd3a13e7c23ea2d15ad2701c118dce57cf350e85c9876ea3f577f68af",
       "line": "ccb1102fd3a13e7c23ea2d15ad2701c118dce57cf350e85c9876ea3f577f68af",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan7.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b71a456c1db10bc5300dd95a8467669e403b24d1d6e1fee8cb76fef8f22a1095"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "a4a1be75ce014f4336956b8028f94e7bcf339b0bc18d9b69e3920f5e68dba2b2",
       "line": "a4a1be75ce014f4336956b8028f94e7bcf339b0bc18d9b69e3920f5e68dba2b2",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan7.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b71a456c1db10bc5300dd95a8467669e403b24d1d6e1fee8cb76fef8f22a1095"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "4599051161fdfb9e4117ccc822ef975abbf4990c115a3e9d5ef0ce05d9b9af3c",
       "line": "4599051161fdfb9e4117ccc822ef975abbf4990c115a3e9d5ef0ce05d9b9af3c",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan7.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b71a456c1db10bc5300dd95a8467669e403b24d1d6e1fee8cb76fef8f22a1095"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "8af15de0d8cee941b3271bbfc014b79b516f722575e15a60452bf93efe78411b",
       "line": "8af15de0d8cee941b3271bbfc014b79b516f722575e15a60452bf93efe78411b",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan7.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b71a456c1db10bc5300dd95a8467669e403b24d1d6e1fee8cb76fef8f22a1095"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "47b349fa8d9eaf1817429462c9b445bf541c9041e81696a4e08dca03abcaadad",
       "line": "47b349fa8d9eaf1817429462c9b445bf541c9041e81696a4e08dca03abcaadad",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan7.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b71a456c1db10bc5300dd95a8467669e403b24d1d6e1fee8cb76fef8f22a1095"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "7d34a19354d42f199582c4f0a374ab3f639e2a3aa8c5e7b353b4d89f76a73d09",
       "line": "7d34a19354d42f199582c4f0a374ab3f639e2a3aa8c5e7b353b4d89f76a73d09",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan7.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b71a456c1db10bc5300dd95a8467669e403b24d1d6e1fee8cb76fef8f22a1095"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -732,70 +864,100 @@
       "form": "a download",
       "key": "4a0851c6e7b5b39d3e4f248c562ad1d503f256f791928b0e909fdac1a999760d",
       "line": "4a0851c6e7b5b39d3e4f248c562ad1d503f256f791928b0e909fdac1a999760d",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "33b6c6f122edcf4ed27c2b0780365139af4c73c305ce5a0e5a1f49ec654ca402",
       "line": "33b6c6f122edcf4ed27c2b0780365139af4c73c305ce5a0e5a1f49ec654ca402",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "7be1504bffcdc411df104fcb114ae437b3e5d613a4883a72a15b730e2d837d45",
       "line": "1b7108b0f391e8bf99dda565f2e596f22b5e9f0fd0cb2a6bb96d49476a47c5ab",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "d7bda452a1c50231ba05ceaba24034d5a013acee77345abeb40702c301d92605",
       "line": "1b7108b0f391e8bf99dda565f2e596f22b5e9f0fd0cb2a6bb96d49476a47c5ab",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "958a561b42ff38769edbbc879c6278279e92cd2a3b655a5853be7ed240a75406",
       "line": "1b7108b0f391e8bf99dda565f2e596f22b5e9f0fd0cb2a6bb96d49476a47c5ab",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "54cd532dc4cadd110da69c97938977055bae625cba944ad4d837f307032f112a",
       "line": "54cd532dc4cadd110da69c97938977055bae625cba944ad4d837f307032f112a",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a git clone or remote fetch",
       "key": "b364dfaa13980758f49cd7252e551c40f44b829fbb3ac24a269768559cead43b",
       "line": "b364dfaa13980758f49cd7252e551c40f44b829fbb3ac24a269768559cead43b",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a git clone or remote fetch",
       "key": "fb3380992641c53246fb5494dea288bc8f9d6cfd4c7d2b000b762a54a5a30462",
       "line": "fb3380992641c53246fb5494dea288bc8f9d6cfd4c7d2b000b762a54a5a30462",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "341a25ee432d6af908301a8483a284aba0568e89a6c632c10f213340bb3f6e93",
       "line": "341a25ee432d6af908301a8483a284aba0568e89a6c632c10f213340bb3f6e93",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "27f44fa49c9b0a9b0fd52eab818752dd3707d51f0ef132cb7bbb3ea9756b4d35",
       "line": "27f44fa49c9b0a9b0fd52eab818752dd3707d51f0ef132cb7bbb3ea9756b4d35",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan8.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a440032a5a6bd77ddce4086f5c8b5ab25fc8301f2966ae1b2e75d0d1315e6bef"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -816,126 +978,180 @@
       "form": "a download",
       "key": "98b957796bfdfe5821bb1e7b388cc53e58c565ca3685693c4f65de69b649b003",
       "line": "07c214f28334cd5f1e328dd45c50087e1e67a2953802c447f43c54db419178a4",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "252bea1f445e56b9964b9156d1a47f5bfc1e7ead1746cf9e1d7673a69f3a814b",
       "line": "07c214f28334cd5f1e328dd45c50087e1e67a2953802c447f43c54db419178a4",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "d94d27fc6b1a16e1a8b0434500f4cb0aa3258b52b26028fd49663cc6f74e834b",
       "line": "d94d27fc6b1a16e1a8b0434500f4cb0aa3258b52b26028fd49663cc6f74e834b",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "f45734f9851d44d4a858c78c49bca7cc44b950758d8d4a724499ec0018ffae51",
       "line": "17575dcbe89feca2b2f27070bb6ba40e09be380b81e2dcacfa08de036cb97d93",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "832ba82a43dcbd176db9ff05ca43c8e058226e0ebcc27ef953cbe4903164a01b",
       "line": "17575dcbe89feca2b2f27070bb6ba40e09be380b81e2dcacfa08de036cb97d93",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "e28579c8ca5077379e428a954ba20b8e581c69b618858d52626c1e2fd56602ed",
       "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "56b6152555e0f4cffd289bccd7e7eb323fc64c4f454b3043b26c31275cd66e24",
       "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "f930f5ac8ccadf7e283e51807c60d51a25bb3633780cd3c52a46452056b7799d",
       "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "18cf75fdaebcc32051d3edb4f48d1088a71483c5ad9a060b161992b0e21a70b3",
       "line": "18cf75fdaebcc32051d3edb4f48d1088a71483c5ad9a060b161992b0e21a70b3",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "5365c06fa2b097fc7692214fae0fecc41a8a5cdc12b496cb5246b22ae3c0fb2d",
       "line": "5365c06fa2b097fc7692214fae0fecc41a8a5cdc12b496cb5246b22ae3c0fb2d",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan9.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "6a4a51d94fd5440f57cadc1e1cdddf76d8ffdc8fdbce7e5ca470784974c3894f"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "7df972a7d29678272b56e74930ceb4f8e410192b46237c82ecef29ea80a93de2",
       "line": "c692f6037cff40fe2f12bcf0b3bc9c616d9a5b0941d2a1c35b9e93962ad6047d",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
       "line": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a git clone or remote fetch",
       "key": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
       "line": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "f6ed8d4eb58ad839e70221e41ebf511554140650b04e6f2fd561d71e93777f41",
       "line": "a593a50d8edcafa6992c01cf0f3e2b00d754441d50eba398283acbc8cec83b1a",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "019b8d1c475210246192f06b701a5ebab9537cbf17d49468f3c16e6a30879fd6",
       "line": "28f2a5559e6c79fd0a713e334b96eb9e612d97a5b64614221d4185ed6baa5459",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "e75bf888b9f4d667a68e5684de03eba1e2eb46a6842e7ce9833421df4f441fe8",
       "line": "e75bf888b9f4d667a68e5684de03eba1e2eb46a6842e7ce9833421df4f441fe8",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "9e222d760846a29d48bed2f94d8612459da9857d23d4fa91218c5565b656985f",
       "line": "9e222d760846a29d48bed2f94d8612459da9857d23d4fa91218c5565b656985f",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "6e496ca944729b433e583e22bef97de8669fd7a11bfc40fce30b4dcb63f11371",
       "line": "6e496ca944729b433e583e22bef97de8669fd7a11bfc40fce30b4dcb63f11371",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/hostsplan10.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1c393da2ac1c3b9326b5bf25da0862f4c178bb7028a43fc265ff0d2a12685f41"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -943,7 +1159,9 @@
       "key": "faca0c713d0452c17d9a6a39dc2e933441527818a81e115be2ced8b28509534c",
       "line": "92b3d892532a9e863b6c1988c8f2b1b5b35fe198ebe4d8f818bc30000730b55f",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "bddc8b095ddae743f3ff07046fabb2fb61cd07bf045fb27e83955f1ccf43703a"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "cfe32c437c17f3db4803218c0d92309b331717cf13575de2eddc339c2faaa9fc"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -951,7 +1169,9 @@
       "key": "31485b14f69c16638bae8731237f435f124e7fcbc0b1bd82abd975fcc08d5f04",
       "line": "18711709e6b76954b124c9dbd5ddc067538473e72a4a1c93117fd7c66f86bee4",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "bddc8b095ddae743f3ff07046fabb2fb61cd07bf045fb27e83955f1ccf43703a"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "cfe32c437c17f3db4803218c0d92309b331717cf13575de2eddc339c2faaa9fc"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -959,7 +1179,9 @@
       "key": "a96c5ff35307cd4a4b282bdc8c5eea2cd6b3f0442904498d97f8cb842c9e84d6",
       "line": "a96c5ff35307cd4a4b282bdc8c5eea2cd6b3f0442904498d97f8cb842c9e84d6",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -967,7 +1189,9 @@
       "key": "515beffe02156ddf272783bb7a17abe5483b75b5bfae1844d20a8212de0c8724",
       "line": "515beffe02156ddf272783bb7a17abe5483b75b5bfae1844d20a8212de0c8724",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -975,7 +1199,9 @@
       "key": "c153c628c6570d29e39659842cb380a6c1704d9be5d8e85646eddfb6dcd88aab",
       "line": "c153c628c6570d29e39659842cb380a6c1704d9be5d8e85646eddfb6dcd88aab",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -983,7 +1209,9 @@
       "key": "117cc9a79a56bf8268e8b0b65e82170d8eee8b443821cd8d6dda39f7a1fc47d3",
       "line": "e455215b483eab06e992e85a5efe618e9ae9dc3333bc26e810a789723827a4cb",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -991,7 +1219,9 @@
       "key": "0305b63d764b809200af9db5c94f3b868739cd341f6cde9f0dd3df27824780e0",
       "line": "0305b63d764b809200af9db5c94f3b868739cd341f6cde9f0dd3df27824780e0",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -999,7 +1229,9 @@
       "key": "f953ed8b7742f52a1894b7bf45b16d89d0f4002427129ea80df9b117fea39bd3",
       "line": "f953ed8b7742f52a1894b7bf45b16d89d0f4002427129ea80df9b117fea39bd3",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1007,7 +1239,9 @@
       "key": "fbf8f8066087f0f982bb9920ecdafed8a38381558d53ddffc0075ab6371a9c9b",
       "line": "fbf8f8066087f0f982bb9920ecdafed8a38381558d53ddffc0075ab6371a9c9b",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1015,7 +1249,9 @@
       "key": "b8205456b4cac997f5575462725512da78575978f14f97556844299c5f3a4f8e",
       "line": "b8205456b4cac997f5575462725512da78575978f14f97556844299c5f3a4f8e",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1023,7 +1259,9 @@
       "key": "b0a91c17c3503d007fb68d387f8740870f8e13e1c960535a71b2a3fbe66623a2",
       "line": "b0a91c17c3503d007fb68d387f8740870f8e13e1c960535a71b2a3fbe66623a2",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1031,7 +1269,9 @@
       "key": "6a2c4cb2423aa31b7cf6ad448a7dbda130170bf69ea4ba4d391b8abff24d4567",
       "line": "6a2c4cb2423aa31b7cf6ad448a7dbda130170bf69ea4ba4d391b8abff24d4567",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "31a790693bc21d9e31dc0b87821821113f440f258d68e7817297c49269a80ee4"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c51bcc84abc6bd7c9f46c8e4a1c7a949908b9b05e60a46344249d2ac970ee96d"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1039,7 +1279,9 @@
       "key": "2d3eb5a3004dbd32651ec7d7df02f1d70ade841a86e608900bb526ea1f5da16e",
       "line": "2d3eb5a3004dbd32651ec7d7df02f1d70ade841a86e608900bb526ea1f5da16e",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "388e9a5b86b0b2599a07ce852e26f4a88ab5a1ddaba16bdfa7d01f392ede353a"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "831c68acf8cced2401a5ee570d33325e81407bfd37f0b7cbb9d026d796a2d7e4"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1047,7 +1289,9 @@
       "key": "e846dd625b180ea2b59d253dc344266b388a082e29ec7fdbfdd199c2e16dac12",
       "line": "e846dd625b180ea2b59d253dc344266b388a082e29ec7fdbfdd199c2e16dac12",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "388e9a5b86b0b2599a07ce852e26f4a88ab5a1ddaba16bdfa7d01f392ede353a"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "831c68acf8cced2401a5ee570d33325e81407bfd37f0b7cbb9d026d796a2d7e4"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1055,7 +1299,9 @@
       "key": "7a37073dea7a068c528706c26d9324e145640c1759872c30704fc935b6c91baf",
       "line": "7a37073dea7a068c528706c26d9324e145640c1759872c30704fc935b6c91baf",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "388e9a5b86b0b2599a07ce852e26f4a88ab5a1ddaba16bdfa7d01f392ede353a"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "831c68acf8cced2401a5ee570d33325e81407bfd37f0b7cbb9d026d796a2d7e4"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1063,7 +1309,9 @@
       "key": "08dabb20ad108ae9462f84efca6aeb8f575260309340a11ae1d98b7603f04bac",
       "line": "08dabb20ad108ae9462f84efca6aeb8f575260309340a11ae1d98b7603f04bac",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "f28a71e1f442425c68329ce0afdf91afed9ed84c5736ac84ee0f5fcd6ff07613"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "9f61851b3767a27f4985e5ad97a6cef2e42b5b2cb81a95895a99db69a75b0352"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1071,7 +1319,9 @@
       "key": "e2424876c0c9f998befcfc0face135fbebe5c40b5f5c803204dc9349b6b5367d",
       "line": "e2424876c0c9f998befcfc0face135fbebe5c40b5f5c803204dc9349b6b5367d",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "f28a71e1f442425c68329ce0afdf91afed9ed84c5736ac84ee0f5fcd6ff07613"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "9f61851b3767a27f4985e5ad97a6cef2e42b5b2cb81a95895a99db69a75b0352"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1079,7 +1329,9 @@
       "key": "11ccc89a001709efaeb40855b73d385fe2e4c644c0fc8659b08c193f98ee2857",
       "line": "11ccc89a001709efaeb40855b73d385fe2e4c644c0fc8659b08c193f98ee2857",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "f28a71e1f442425c68329ce0afdf91afed9ed84c5736ac84ee0f5fcd6ff07613"
+      "body-first": "python3 - \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "9f61851b3767a27f4985e5ad97a6cef2e42b5b2cb81a95895a99db69a75b0352"
     },
     {
       "file": "bin/persona-uat-test.sh",
@@ -1087,42 +1339,59 @@
       "key": "570311179b3b51aebaf8ade1d450e9f6dcfe362ee9e8d52666f05d9b5e48d694",
       "line": "570311179b3b51aebaf8ade1d450e9f6dcfe362ee9e8d52666f05d9b5e48d694",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "5b41a3f958ef6200319b2ec000ad95b855afb3170dec9e8996cf6e36b2060677"
+      "body-first": "check python3 - \"$driver\" \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c984f26b9504e667f361e795bc198fd05122712fa64d0aeda0869959b70c8329"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
       "line": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/fuzzplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7529a60b075b47af49deb07a713f1a7f3f972a7e770351d40e85d232524d9287"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a git clone or remote fetch",
       "key": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
       "line": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/fuzzplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7529a60b075b47af49deb07a713f1a7f3f972a7e770351d40e85d232524d9287"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "ac6d8b1825f3648e3b37353f5e5f858473018a979283c1f6208a9ef9661e7215",
       "line": "ac6d8b1825f3648e3b37353f5e5f858473018a979283c1f6208a9ef9661e7215",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/fuzzplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7529a60b075b47af49deb07a713f1a7f3f972a7e770351d40e85d232524d9287"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "a489db5ca99b6da8405b0383dadc1c2277ac7d78940e029f870ab24b78156899",
       "line": "a489db5ca99b6da8405b0383dadc1c2277ac7d78940e029f870ab24b78156899",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/fuzzplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7529a60b075b47af49deb07a713f1a7f3f972a7e770351d40e85d232524d9287"
     },
     {
       "file": "bin/persona-uat-test.sh",
       "form": "a download",
       "key": "85fef04f2f6df8c4f3d5259309d16e0653b0f0813dbf113069182685e9dda5cf",
       "line": "85fef04f2f6df8c4f3d5259309d16e0653b0f0813dbf113069182685e9dda5cf",
-      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it"
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "body-first": "python3 - >\"$work/fuzzplan.json\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7529a60b075b47af49deb07a713f1a7f3f972a7e770351d40e85d232524d9287"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1137,7 +1406,9 @@
       "key": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
       "line": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1145,7 +1416,9 @@
       "key": "b384147cc25a554c7e2faed47e532ddac6826626ffbe549d1ed91e670d8e61c4",
       "line": "b384147cc25a554c7e2faed47e532ddac6826626ffbe549d1ed91e670d8e61c4",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1153,7 +1426,9 @@
       "key": "407b501925dc2db9fdf475664f4cbd47b859923ba4eec9ae7afadf84696a9176",
       "line": "407b501925dc2db9fdf475664f4cbd47b859923ba4eec9ae7afadf84696a9176",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1161,7 +1436,9 @@
       "key": "f52b38b45ca4cad329b9f6baa2c5f0c7cb68c738c529a278a2a1666264d96f8d",
       "line": "f52b38b45ca4cad329b9f6baa2c5f0c7cb68c738c529a278a2a1666264d96f8d",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1169,7 +1446,9 @@
       "key": "e861939397a79c133a47cd989c0f473722c56e85b946a85292474e8771c08330",
       "line": "e861939397a79c133a47cd989c0f473722c56e85b946a85292474e8771c08330",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1177,7 +1456,9 @@
       "key": "17a20c759762a04cf9ea651f099d98e055c4785f2bd974a3efcd5f641d0c5dfe",
       "line": "8e005d16bf2f9da125241963e12c02ad22e56dc3a9d50c7aef89c81d567f2f1a",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1185,7 +1466,9 @@
       "key": "495f057e3d27a4a3a9cad466b838abd25cf41b8bd609dbff1d2024e238c5f5ac",
       "line": "8e005d16bf2f9da125241963e12c02ad22e56dc3a9d50c7aef89c81d567f2f1a",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1193,7 +1476,9 @@
       "key": "1f63cd4fd52708de16b3127cb237b068bcb1d021cc99bb0d6de3a0bdec61464c",
       "line": "5ef392226c97a9ec299ed76967b69860df565b516e10c3071d36ee7d03c1c831",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1201,7 +1486,9 @@
       "key": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
       "line": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1209,7 +1496,9 @@
       "key": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
       "line": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1217,7 +1506,9 @@
       "key": "af76b19e1983dd275d1fbd5bc3f7d062037e69b39beda0e74d4ed80a3649530c",
       "line": "af76b19e1983dd275d1fbd5bc3f7d062037e69b39beda0e74d4ed80a3649530c",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1225,7 +1516,9 @@
       "key": "fc14771248e90c36df2be8d6027c3c905f05659c54c2af8b6d2c902f9e970cfe",
       "line": "fc14771248e90c36df2be8d6027c3c905f05659c54c2af8b6d2c902f9e970cfe",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/persona-uat-wiring-test.sh",
@@ -1233,7 +1526,9 @@
       "key": "82e0da7d32c115f5efede1d9eac9d01acf90d25bf4d610e72e38e6ed9744f1ce",
       "line": "82e0da7d32c115f5efede1d9eac9d01acf90d25bf4d610e72e38e6ed9744f1ce",
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "9c6020ed547e0a817cf229657aba261698106a053ae3fec55f6ad41f75d9de66"
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "26a603e6385b66f7da5cb960bdc59cb409ae7d735b19e1e1cd8966318eac85c0"
     },
     {
       "file": "bin/refresh-inputs.sh",
@@ -1248,7 +1543,9 @@
       "key": "90a39ff8541a167a4092c81e297431bacb5be373245ccc2b2b21e948665370f5",
       "line": "7b2b9d80b7bf114493c993484905803e4f3d99bf4ee12204f3c695a9718601ce",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "8730d701b415bc9e1db8f231ff51b15213f21d7bc8ce97316a027777b7ea1f35"
+      "body-first": "python3 - \"$shape\" \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5851076ffab7fec2649a69ef346f3aebb524c23e189d825711989021ce86d177"
     },
     {
       "file": "bin/chain-build-wiring-test.sh",
@@ -1256,7 +1553,9 @@
       "key": "b7d49812771f13dc26b07b5abddc5e972500844f2cc3ffb8432ee22f243a2a41",
       "line": "dc3454e28258fedb5e9022feafbf85cb1c40a75ba9b1c1f6b121fc6f1db4cad5",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "8730d701b415bc9e1db8f231ff51b15213f21d7bc8ce97316a027777b7ea1f35"
+      "body-first": "python3 - \"$shape\" \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5851076ffab7fec2649a69ef346f3aebb524c23e189d825711989021ce86d177"
     },
     {
       "file": "bin/chain-build-wiring-test.sh",
@@ -1264,7 +1563,9 @@
       "key": "521c1d39df980c55321712ed60cce216aa70a0ac62aadbb6c93806e8c738e5e2",
       "line": "c231a4dc9ce568dad97a9eb8c4f485688801f8b1b6f1189d21b2be6dc6638ad4",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "76204f193c9a845e5d25e04cabb1aa97ae2c46488f17dff8b66c49682a49094d"
+      "body-first": "python3 - \"$shape\" \"$work\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "df6c01e70dc4e1e7559b846773afc53ae7a0b643be9703a02af6a7221b857a53"
     },
     {
       "file": "bin/chain-check-scripts-test.sh",
@@ -1314,7 +1615,9 @@
       "key": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
       "line": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "3814df5206cc5ecf4752ca163e9b48c665b2ce8861aa8bb09ab5a47e244ce92f"
+      "body-first": "python3 - \"$@\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "dc975e83c778fd1225ccf46c72362d3291b8728e08707d4314127658bac8197c"
     },
     {
       "file": "bin/chain-release-scripts-test.sh",
@@ -1322,7 +1625,9 @@
       "key": "79e7659c1a2056476a68c25b2f567b52580cee016ff7aff348f01a790978d8f5",
       "line": "8e9bce3842b02632d74b106efe79b2cba26d0804e9bdbbc394fef535f32415a1",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "3814df5206cc5ecf4752ca163e9b48c665b2ce8861aa8bb09ab5a47e244ce92f"
+      "body-first": "python3 - \"$@\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "dc975e83c778fd1225ccf46c72362d3291b8728e08707d4314127658bac8197c"
     },
     {
       "file": "bin/chain-verify-test.sh",
@@ -1337,7 +1642,9 @@
       "key": "5687bdfd5589d092abd20c55ef486914c67ae2bb36c17b565b7c5fbd93343770",
       "line": "5687bdfd5589d092abd20c55ef486914c67ae2bb36c17b565b7c5fbd93343770",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "132bc3cc27066981f45318caf322761fec042f46485158e96e4386b27e818b21"
+      "body-first": "python3 - \"$root\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "955b59346dd2f878d1a3e10d0056cb94c1ec6d2cd78943c499b37464cb53d324"
     },
     {
       "file": "bin/chain-install-crane-test.sh",
@@ -1743,21 +2050,30 @@
       "form": "a download",
       "key": "0e58ba1f988fbbabdc43db530eebc69edede349483e0f5867a0fdc7ecb54a4d0",
       "line": "0e58ba1f988fbbabdc43db530eebc69edede349483e0f5867a0fdc7ecb54a4d0",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_44\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "c16e8b9a675e572f07c5d0e82ffbb4aed9c54d282250bdc14e7354649b430b24"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "11f94bf81d300b553772ba8070fa39ffbc35a39230cd6c60a3e0563225c46ce6",
       "line": "11f94bf81d300b553772ba8070fa39ffbc35a39230cd6c60a3e0563225c46ce6",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_8\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "9f69020a6f66ecad74b4a4f634fb29e139ae923ccc1172b5f0b4132c1db1593d"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "2dd4a384782c8f8bd8f56fbfca19cd03b649b82a1264d59249081b39dc92eea4",
       "line": "2dd4a384782c8f8bd8f56fbfca19cd03b649b82a1264d59249081b39dc92eea4",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_43\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "d5b7fd146abeea472f022f778261b716131e03b39d6711fa2d1c42ea90b635ec"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
@@ -1780,273 +2096,390 @@
       "form": "a download",
       "key": "35ebd1190e372136b8ef03acd4bf9746a10d013e78bc0b3591459c6f116c73c0",
       "line": "35ebd1190e372136b8ef03acd4bf9746a10d013e78bc0b3591459c6f116c73c0",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_16\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "0c4b04de94cc18b24d2c861170d8452995f59e7cf30a14ba7ab69649eec8db03"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "402b7868bf939ec26c3bb3363b6ed178a12257e561bf8fb2ee3ca0119b344602",
       "line": "09134979163830b65139f8adef4f720b75e493985c34ac965b9122bfd350a757",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_13\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "e14034eade4b1e1640963320252cbe74b19a6b9b06ef0886b58bae5bed0fe298"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
       "line": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_17\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "cc3e39c24f0012c1b130bee4fbe4b8db4206ccd86f0b3dd115557402e3437df5"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
       "line": "6ae7200147a6ad88a54b7d5146daf2f056966fbd9480310021090e887a2b4676",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_36\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "b1295d93481c115b48910560a6edb14e1ea3f2926655b9b50c31681b82c18be3"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
       "line": "af39a783fe3282d34f928208b312db05f631f78e92bea1dc39018402256e5db2",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/sink_artifact_rx\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "71f0679442ae6d2a92520366b2956bb70af2d8640a8ffbf1a878c129b6a8842c"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "48880d89fa9f366d24efa2bd58dff3d2d3b31f5fa5422ad5ed3953e28a57b29b",
       "line": "48880d89fa9f366d24efa2bd58dff3d2d3b31f5fa5422ad5ed3953e28a57b29b",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_19\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "001ecbe410dbcfc6735b0f17b0909962a3c021097b04b63bde7e4f60caf4afe3"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "4b3fe363fc55a37e9c60cf1a4d98610eb66905e8940fd9f31e9c70e2b10283c0",
       "line": "4b3fe363fc55a37e9c60cf1a4d98610eb66905e8940fd9f31e9c70e2b10283c0",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_26\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "f04b43d1b57a8b317997bce78c0e9ecd253679c9062f9a2b5c5ba047e75fcfdc"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "53e888e1e298ccb6bb2eaaf525a62e3c2c82fc61e167a422cee5c383140cbdc9",
       "line": "53e888e1e298ccb6bb2eaaf525a62e3c2c82fc61e167a422cee5c383140cbdc9",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_40\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "969d28d0a09c02962a7944924bd788f663607d438fe400c13733d575eae668f2"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "577f99c7332a667cd69eae1d6388d8e04b3aa0ca5c0ac3227e7d6f0f4cffab2e",
       "line": "8a48392e58aa55f7fa2c49d8711a545d3b25fbb67f0cadc629f953df2f2c0ed8",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_45\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "56fc0b55bab617345889dc7c9d2990e8b10a746aedc15bad9ef18513c0b21f62"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "59db4d6bf78bcd6f40e2dfa9d1441b817c400b22f2758b402edbbeb45c1d15f8",
       "line": "59db4d6bf78bcd6f40e2dfa9d1441b817c400b22f2758b402edbbeb45c1d15f8",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_37\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "cd070dffe4b4d6800c2750ccf6ad6adbc778a90fd38cdb92cefa475c8b0b50ba"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "5bc6ffa35519944f6f2cd1c498585d2d23d086a722d08b28a0ef172d9e6dff16",
       "line": "5bc6ffa35519944f6f2cd1c498585d2d23d086a722d08b28a0ef172d9e6dff16",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "body-first": "cat > \"$FXDIR/FXD_2\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "b6de44eadd2cd259662d180ecb2ca36dac725407a0cf01f47ef54cae2c9ca54e"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "5d38ca92b31da1f28b3a9a0fbe51ac801da78ae05dd97e50bb3ea3d408c5c8f1",
       "line": "5d38ca92b31da1f28b3a9a0fbe51ac801da78ae05dd97e50bb3ea3d408c5c8f1",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_28\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "319e7076a37417a0d6d7950ec42ca7a23308cea459b6b69e9680b07aa7ec708d"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "651a1261cc7fa576211f58878bbe8fb41aa307c3189a504baac97843838bae08",
       "line": "55472c2665283729aff74241489b1f30a49b9e6aa6f36965b0c391a4f4cbd36e",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_46\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "8babc6d494ba9768b2c3a7c9200dfd24c1752cb3cb25ef5b923ddec1362f3156"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "66934a09af4ef6527329a5a1a1507ad4fd76e99b8cb762479dd8fcb9fe594418",
       "line": "66934a09af4ef6527329a5a1a1507ad4fd76e99b8cb762479dd8fcb9fe594418",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "body-first": "cat > \"$FXDIR/FXD_38\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "80595e4cc714b2539eb50b1492cf9faaf68c028635a912319770ed96b5eed746"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "70109bf8d2004e68682735d91b4736a5c56ba040fc2bad625f1156df4c1ad501",
       "line": "70109bf8d2004e68682735d91b4736a5c56ba040fc2bad625f1156df4c1ad501",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "body-first": "cat > \"$FXDIR/FXD_4\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "74315fb50b043153ed779de60c8ade295582e73d5c2fefb3b0993b3c33168515"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "7f8977d861c257c84546a4cc17ab7b16fe8111e2e7523f25c9b2403e2aa31bce",
       "line": "7f8977d861c257c84546a4cc17ab7b16fe8111e2e7523f25c9b2403e2aa31bce",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_29\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "716f36799fd57b2b152707ce73fc9a1765764967d9497c92657b2a7add9993b1"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "8736ab7d5fd4e3b0188623f965740f431cdbaad8ae56e7c193cea70dd390ccae",
       "line": "8736ab7d5fd4e3b0188623f965740f431cdbaad8ae56e7c193cea70dd390ccae",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_3\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "82cc0113f033328190f4b6b07b208c2a17e5474f3c529347210d436a1a19e4c8"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "875649fb6d2c861b8b8bfe900783dcdab56cb1db0b98ebaa4b4c9b75d965b8b1",
       "line": "875649fb6d2c861b8b8bfe900783dcdab56cb1db0b98ebaa4b4c9b75d965b8b1",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
+      "body-first": "cat > \"$FXDIR/FXD_1\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "0b3369f3bd28067c3218627a7f552a846203596475478b4d11dbde585f1224dc"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "8e3fa66660525034011df16fd74c34a768af7a526c86d7ef0c80426be765a1b0",
       "line": "1e563ea8ed8239c9d578f589b5ccf4b236e7dea0d87f24ed3fdc1be7a5c98a60",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_23\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "e8173b7b144b882066e228b93f963f69dd05df1f5ea6fbae7b88201e68b73d68"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "9776b647c1dcabe90ea38eace9e9b801b4532c36ac332e1e99a76c9d8796b73f",
       "line": "9776b647c1dcabe90ea38eace9e9b801b4532c36ac332e1e99a76c9d8796b73f",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_32\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "c3622fe3427130a24db344674f10a271441a5acb03b51bd410a8434ef1d556cd"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "9a3934249003f73eaddda6ea842ba4af44decd8ee37892b4681034cf1fc91cd5",
       "line": "c6769ca4f4fc6d5bd31a4a02feac90cf8786f820a149af3901923febd9a6a62b",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_27\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "3b0de28a180fa92980fef31df1c723e3add9ee18e6519f0fdb5e6002bb52ed57"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "9c442fde7de233072fd7d3005f2b47de225e6705fe65ac353164dba154c3cc16",
       "line": "9c442fde7de233072fd7d3005f2b47de225e6705fe65ac353164dba154c3cc16",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_15\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "4a0d4dfe109e56b1ae72277016c108868aa26c4273cada894a8c4e73d74b9689"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "a4c62da40826120ecf57177b059aea4cc3e13f0d6b566742e6c0429cc33a53ec",
       "line": "a4c62da40826120ecf57177b059aea4cc3e13f0d6b566742e6c0429cc33a53ec",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_34\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "ff0e7a02eb0773d4806a4524dd0a1f2c3cddca47351df5fe147e912b901dc676"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "a51647dd98b71375877110baeb5ae63c5641d258d3420ba19d2e841482b2551b",
       "line": "a51647dd98b71375877110baeb5ae63c5641d258d3420ba19d2e841482b2551b",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_14\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "d2a4f6d18fe25e514b48726ba9f1cef2ca0e24fd8a9f791a9cced8a482b053da"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "a762dabe90c4ff91b15104ffc07bf87c8a4549be6352fbd475e2deb232e270d1",
       "line": "5f53d24a76eb22d781556ab5e0f04ea1fd28d29542265a95b398fe804ea4313d",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_24\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "f9f36f8d46d1e3f2eef7ecf38dbea445240d69070935811dc674f3294de1a805"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "ad5a73a6c51c68aa4c4cae46d9798595ddfeff982dab2099dedfb556a0d3cdcf",
       "line": "ad5a73a6c51c68aa4c4cae46d9798595ddfeff982dab2099dedfb556a0d3cdcf",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_22\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "1ef75aed09d1e45a7d167b9504fc24706c1875e50606888df37a9ec068e5f57c"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "b41bca4ee6cc18254fb7f455602fa5b5ee70f2e5dadec3c5378f4e73aea3c703",
       "line": "57f5e5c4b37c9103e9373c2debcc99dbd77d58362364a2d1ce230e97a2ba648c",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_33\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "0a40f820dfc2439161915f9ac7ea42bab9e720b72e6524a65e7539db8a851097"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "bb046cd467b6f45db461759bfa9b79eeb14c2ad702b9237586232abfb2d8f7ec",
       "line": "bb046cd467b6f45db461759bfa9b79eeb14c2ad702b9237586232abfb2d8f7ec",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_30\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "613178579fd9b6871f2d9ef8a5b353ca9bb7d24e16df09a87659810deaf42d19"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "bb51e59592b9c82aea8853fdef84a7a4abe948230a7fb450976c16846428b4e9",
       "line": "bb51e59592b9c82aea8853fdef84a7a4abe948230a7fb450976c16846428b4e9",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_5\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "f6ca436848158285a11398fabe6a4b55ac2524ae43b7468121b640d2e6b11baf"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "bb71e1284ff87e0b06cb9cde559ae81dd4d34243d72db2a195b91f120fd81ad6",
       "line": "bb71e1284ff87e0b06cb9cde559ae81dd4d34243d72db2a195b91f120fd81ad6",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_7\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "ed9955e59441a57a9f4259726370809fcd21e8064b1f5a61d3e2e106a5d9cae4"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "bc35fd7dfe36c425c9af3135d4b5b61f20a0dbcd82576b8a73447c6c44ad78eb",
       "line": "bc35fd7dfe36c425c9af3135d4b5b61f20a0dbcd82576b8a73447c6c44ad78eb",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_31\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "ed2030b120db5d5981acab58abee24818a304903186d08cb519353a19676b721"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "c2600087c1f2866bad26fda0ca899bef95d97e4124f8603fe34aab305d94996f",
       "line": "c2600087c1f2866bad26fda0ca899bef95d97e4124f8603fe34aab305d94996f",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_10\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "509e9076b4cd694a8696652c594436dbc6d1d0bc36ac4bd24fd1cc732825eaf0"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "c669d9b9b1b5a2b7b8a31e1ad2e1783c6c1c7753dcf2bedb6f3fd1a48f83bac8",
       "line": "729bcd304566d3625f9ce608eea7d06cb0fbbf22b73b42dc612afc195850b826",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_42\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "676574e4e9f9f659910a22ec1fd23d07362ce00baecd3a0975ea46032586e327"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "d3a71013beacc738b94b336e67537a583b069a728d17ffeac358ec57d622571d",
       "line": "d3a71013beacc738b94b336e67537a583b069a728d17ffeac358ec57d622571d",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_9\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "d5efadb269e45e0b3f9a4e3f4e89d0574436e7f4cfc37e5f8be9cedbe03e24d9"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "d82449a5d1832804a9f571f9d98caf0fdfd4f966b3041a8002811430c3616efc",
       "line": "aee4f3aac2f0c4388754ce5c48e353d9732f044170e130dedbae11d299efe09d",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_47\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "fecd66f664de83ed76f4351b16c6c4ecfc9be9da330836433447bfc3f2def829"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "de7d4e2fcc55c7044724258049b97b2c0339db144f8aea0262b726baca2b86c0",
       "line": "de7d4e2fcc55c7044724258049b97b2c0339db144f8aea0262b726baca2b86c0",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_12\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "8f6550cf290df7976114116e00d7630de8006ea82bc46a6e32af181514ebc4dc"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "eafe218325a3f2f4bcffde18881183399936f3253771ba7b613a8aaf8cdc4ab6",
       "line": "44334fa11a231ec758cc0721449d83832565174bf691bb7fb4331b20adbb9565",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_35\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "d943d6278e725f1dba0d1dd0cbc7de221b2b68fd163d5730e652702b002c9a6d"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "f6ef66883011392bf893f24f60558e64277122fdb3598d732991ec0735f294f9",
       "line": "f6ef66883011392bf893f24f60558e64277122fdb3598d732991ec0735f294f9",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_20\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "7483327520629eb771234c4e509e752a5ab129e6f6ad5d9f96a8b40094a969ee"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
       "form": "a download",
       "key": "f7b1b3007f2a30bab241cf9c02740c20c33fca5a0541553f0063df24332e196f",
       "line": "f7b1b3007f2a30bab241cf9c02740c20c33fca5a0541553f0063df24332e196f",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_25\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "b50b056d98164130e66b7a42df98e3cc43f009f7e94a0c2a4f29e90ce9a95e4e"
     },
     {
       "file": "bin/chain-sign-wiring-test.sh",
@@ -2061,7 +2494,10 @@
       "form": "a download",
       "key": "50f6cee9d895f7fa6d49d0bfce0f35cd5efa03f331fd7b4363530d2d8f5caee5",
       "line": "4414446f1361f486b5628f3ee9685879aa289fe1ff9fa5529fe2ae8a54968000",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it"
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "body-first": "cat > \"$FXDIR/FXD_1\" <<'FXEOF'",
+      "body-last": "FXEOF",
+      "body-sha256": "03aa71b4dfccd352f81a308e20efe57b9e26ad2ac668355e2c4ccd66a83e902f"
     },
     {
       "file": "bin/go-bump-open-pr-test.sh",
@@ -2138,10 +2574,10 @@
   "file_pins": [
     {
       "file": ".github/policy/gradle-wrapper-jar-sha256.txt",
-        "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
-        "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256",
-        "version": "9.7.1",
-        "published": "2026-08-19T15:30:28Z"
+      "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+      "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256",
+      "version": "9.7.1",
+      "published": "2026-08-19T15:30:28Z"
     }
   ]
 }

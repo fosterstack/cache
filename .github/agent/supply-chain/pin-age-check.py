@@ -117,9 +117,13 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
     if item.kind == "image":
         host = _image_registry(item.name)
         if host not in ("ghcr.io", "docker.io"):
+            entry = _publisher_entry(item.name)
+            if entry is None:
+                return False, f"registry {host} is not in image-publishers.json, so nothing vouches for the image", None
+            if "unsigned" in entry:
+                return True, f"no age asked of an image on {host}: no signature published", None
             return True, f"no age asked of an image on {host}: its signature is checked by cosign-verify", None
-        else:
-            proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
+        proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
     if item.kind in ("tool", "package", "gotool") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer")
             for t, src in proofs):
         # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old
@@ -569,14 +573,22 @@ def live_proofs(item, root, base=None, head="HEAD"):
     return out
 
 
-def _image_registry(name):
-    """The registry of an image name: a first part with a dot, a colon or localhost is a host; else Docker Hub."""
+HUB_HOSTS = ("docker.io", "index.docker.io", "registry-1.docker.io")
+
+
+def _split_image(name):
+    """(registry, path) of an image name. A first part with a dot, a colon or localhost is the registry, lowercase,
+    without :443, Docker Hub's hosts as docker.io; else Docker Hub (a name of three parts without a host has no
+    registry we know, so its first part stands)."""
     first, _, rest = name.partition("/")
-    if first == "docker.io":
-        name = rest
-    elif rest and ("." in first or ":" in first or first == "localhost"):
-        return first
-    return "docker.io" if name.count("/") <= 1 else name.split("/")[0]
+    if rest and ("." in first or ":" in first or first == "localhost"):
+        host = first.lower().removesuffix(":443")
+        return ("docker.io" if host in HUB_HOSTS else host), rest
+    return ("docker.io" if name.count("/") <= 1 else first), name
+
+
+def _image_registry(name):
+    return _split_image(name)[0]
 
 
 DOCKER_SECONDS = 600
@@ -595,7 +607,7 @@ PUBLISHER_PINS_FILE = os.path.join(POLICY_DIR, "image-publishers.json")     # pi
 def _registry_push(item):
     host = _image_registry(item.name)
     if host == "ghcr.io":
-        owner, _, pkg = item.name[len("ghcr.io/"):].partition("/")
+        owner, _, pkg = _split_image(item.name)[1].partition("/")
         for scope in ("orgs", "users"):
             for page in (1, 2, 3):
                 vs = _gh_list(
@@ -609,7 +621,7 @@ def _registry_push(item):
                         return v.get("created_at")
         return None
     if host == "docker.io":
-        path = item.name.removeprefix("docker.io/").split("/")
+        path = _split_image(item.name)[1].split("/")
         ns, repo = ("library", path[0]) if len(path) == 1 else path
         url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
         for _ in range(5):
@@ -667,7 +679,7 @@ def check(moved_items, source, now, min_days):
     return rows
 
 
-PIN_FIELDS = ("key", "keyless", "source", "key_source")
+PIN_FIELDS = ("key", "keyless", "unsigned", "source", "key_source")
 
 
 def _is_identity(i):
@@ -682,9 +694,12 @@ def _checked_pins(pins):
     if not entries:
         raise ValueError("image-publishers.json pins no image")
     for name, pin in entries.items():
-        if not isinstance(pin, dict) or not ({"key", "keyless"} & set(pin)) or set(pin) - set(PIN_FIELDS):
-            raise ValueError(f"image-publishers.json: {name} has no key or keyless identity, or a field that "
-                             "is not known")
+        if not isinstance(pin, dict) or not ({"key", "keyless", "unsigned"} & set(pin)) or set(pin) - set(PIN_FIELDS):
+            raise ValueError(f"image-publishers.json: {name} has no key, keyless identity or unsigned reason, "
+                             "or a field that is not known")
+        if "unsigned" in pin and ({"key", "keyless"} & set(pin) or not (isinstance(pin["unsigned"], str)
+                                                                         and pin["unsigned"].strip())):
+            raise ValueError(f"image-publishers.json: {name} has an unsigned that is not text, or beside a key")
         if "key" in pin and not (isinstance(pin["key"], str) and pin["key"].strip()):
             raise ValueError(f"image-publishers.json: {name} has a key that is not text")
         for note in ("source", "key_source"):
@@ -697,18 +712,39 @@ def _checked_pins(pins):
     return entries
 
 
+def _publisher_entry(name, pins=None):
+    """The image-publishers.json entry for an image: its own name, else its registry; None when neither is enrolled."""
+    try:
+        pins = pins or _checked_pins(_json_file(PUBLISHER_PINS_FILE))
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"cannot read image-publishers.json: {e}")
+    host, path = _split_image(name)
+    return pins.get(f"{host}/{path}") or pins.get(host)
+
+
 def cosign_verify_images(root, rev, cosign_image, run):
-    """For each pinned image the tree at `rev` names by digest, run `cosign verify` once per pinned identity.
-    An image passes when any run succeeds. `run(cmd)` returns the exit code. Only `verify` is run, never a write."""
+    """For each image the tree at `rev` names by digest, run `cosign verify` once per pinned identity.
+    An image passes when any run succeeds. An image on a registry not in image-publishers.json fails, and one whose
+    entry says the publisher signs nothing is reported as "no signature published", never as verified. Images on
+    ghcr.io and Docker Hub are dated by their registry time and left to that check unless enrolled.
+    `run(cmd)` returns the exit code. Only `verify` is run, never a write."""
     pins = _checked_pins(_json_file(PUBLISHER_PINS_FILE))
     results, seen = [], set()
     with tempfile.TemporaryDirectory() as d:
         for it in inv.load_at(root, rev).values():
             by_digest = (it.version or "").startswith("sha256:")
-            if it.kind != "image" or it.name not in pins or not by_digest or (it.name, it.version) in seen:
+            if it.kind != "image" or not by_digest or (it.name, it.version) in seen:
                 continue
             seen.add((it.name, it.version))
-            pin, ref, cmds, docker_run = pins[it.name], f"{it.name}@{it.version}", [], ["docker", "run", "--rm"]
+            pin = _publisher_entry(it.name, pins)
+            if pin is None and _image_registry(it.name) in ("ghcr.io", "docker.io"):
+                continue
+            if pin is None or "unsigned" in pin:
+                reason = "no signature published" if pin else f"registry {_image_registry(it.name)} is not enrolled"
+                results.append({"name": it.name, "digest": it.version, "ok": pin is not None, "reason": reason,
+                                "verified": False})
+                continue
+            ref, cmds, docker_run = f"{it.name}@{it.version}", [], ["docker", "run", "--rm"]
             if "key" in pin:
                 key_file = os.path.join(d, f"key{len(seen)}.pub")
                 with open(key_file, "w") as f:
@@ -721,7 +757,7 @@ def cosign_verify_images(root, rev, cosign_image, run):
             codes = [run(c) for c in cmds]                      # every pinned identity is tried, so the log shows each
             ok = any(c == 0 for c in codes)
             reason = "" if ok else f"cosign verify found no pinned identity that signed it ({len(cmds)} tried)"
-            results.append({"name": it.name, "digest": it.version, "ok": ok, "reason": reason})
+            results.append({"name": it.name, "digest": it.version, "ok": ok, "reason": reason, "verified": ok})
     return results
 
 
@@ -769,8 +805,8 @@ def _cosign_verify_main(argv):
     if not results:
         print("pin-age: no pinned image in the tree, nothing to verify")
     for r in results:
-        status = "ok   " if r["ok"] else "FAIL "
-        print(f"{status}{r['name']}@{r['digest']}" + ("" if r["ok"] else f": {r['reason']}"))
+        status = "ok   " if r["verified"] else "none " if r["ok"] else "FAIL "
+        print(f"{status}{r['name']}@{r['digest']}" + ("" if r["verified"] else f": {r['reason']}"))
     return 0 if all(r["ok"] for r in results) else 1
 
 
@@ -862,6 +898,7 @@ def _added_unmeasured(root, base, head):
 # the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the
 # pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
+_BODY_FIELDS = ("body-first", "body-last", "body-sha256")
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
 # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
@@ -952,44 +989,25 @@ def _live_fetch_line_ok(flat, toolchain=False):
     return _LIVE_URL.fullmatch(operands[0]) is not None
 
 
-# REQ-SUP-001-AC16, the optional row field `body-sha256`: a row for a line inside a quoted here-document binds the
-# sha256 of that here-document's body (the lines between
-# the opener and its delimiter, joined by newlines). The row is a human review of the whole body; an edited body is
-# another body and the row rules nothing.
-def _body_hashes(text, line_hash):
-    """The sha256 of the body of every quoted here-document in `text` that holds the ruled line; empty when no
-    here-document does."""
-    lines = text.split("\n")
-    out, i = [], 0
-    while i < len(lines):
-        m = re.search(r"<<(-?)[ \t]*(?:'([^'\s]+)'|\"([^\"\s]+)\"|\\(\w+))", lines[i])
-        if m:
-            tabs, delim = m.group(1), m.group(2) or m.group(3) or m.group(4)
-            j = i + 1
-            while j < len(lines) and (lines[j].lstrip("\t") if tabs else lines[j]) != delim:
-                j += 1
-            if j < len(lines):
-                body = lines[i + 1:j]
-                if any(_line_hash(" ".join(l.split())) == line_hash for l in body):
-                    out.append(hashlib.sha256("\n".join(body).encode("utf-8", "replace")).hexdigest())
-                i = j
-        i += 1
-    return out
+# REQ-SUP-001-AC16, the optional row fields body-first, body-last and body-sha256: a row for a line inside a quoted
+# here-document or a string names the first and last line of the span it was reviewed in and binds the sha256 of that
+# span (its lines joined by newlines). An edited span is another span and the row rules nothing.
+def _span_hash(lines):
+    return hashlib.sha256("\n".join(lines).encode("utf-8", "replace")).hexdigest()
 
 
-
+def _body_spans(lines, first, last, sha):
+    """The (start, end) of every run from a line `first` to the next line `last` whose text hashes to `sha`."""
+    spans = []
+    for start, line in enumerate(lines):
+        end = next((j for j in range(start, len(lines)) if lines[j] == last), None) if line == first else None
+        if end is not None and _span_hash(lines[start:end + 1]) == sha:
+            spans.append((start, end))
+    return spans
 
 
 # the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
 PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "
-# the one Alpine kernel package line of bin/refresh-inputs.sh (REQ-SUP-001-AC35)
-HASH_LOCKED_RULING = "hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): "
-HL_FILE, HL_LOCK, HL_HOST, HL_PATH, HL_INDENT = (
-    "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f",
-    " " * 8)
-_HL_FLAGS = re.compile(re.escape('/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https '
-    '--tlsv1.2 -o "$tmp/dl/x86_64/$f" '))
-_HL_DIE = 'die "could not download the kernel package from the Alpine mirror" 1'
 # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must
 # hold each exactly once
 PINNED_FETCH = {
@@ -1089,60 +1107,18 @@ def _head_file(root, rev, f):
         return None
 
 
-def _function_text(raw, name):
-    """The text of the one top-level `def name(` in raw (the def line to the line before the next unindented line,
-    trailing blank lines cut); None unless it is held exactly once."""
-    lines = raw.decode("utf-8", "surrogateescape").split("\n")
-    starts = [i for i, ln in enumerate(lines) if ln.startswith(f"def {name}(")]
-    if len(starts) != 1:
-        return None
-    stop = next((j for j in range(starts[0] + 1, len(lines)) if lines[j] and lines[j][0] not in " \t"), len(lines))
-    return "\n".join(lines[starts[0]:stop]).rstrip("\n")
-
-
-def _hash_locked_line_ok(root, head, f, flat, ver):
-    """REQ-SUP-001-AC35: True only for the one kernel fetch line of bin/refresh-inputs.sh: the fixed curl flags in the
-    fixed order, one double-quoted operand
-    https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f compared as written, then `|| die "plain text" 1`; the
-    file holds that line once, as the whole raw line
-    (eight spaces of indent, single spaces, nothing after it; no whitespace twin, no carriage return);
-    and the head tree holds the kernel lock file as a regular file (the inventory refuses a malformed one first); the
-    row's verifier (file, function name) names the function of
-    that file that checks a download against the lock: the head file holds it once, and the sha256 of its whole text is
-    the row's verifier-sha256."""
-    if f != HL_FILE:
-        return False
-    left, _, right = flat.partition(" || ")
-    if right != _HL_DIE:
-        return False
-    start = _HL_FLAGS.match(left)
-    if not start or re.search(r"[;&|<>`]|\$\(", left):
-        return False
-    ops = re.findall(r'"[^"]*"|\S+', left[start.end():])
-    if len(ops) != 1 or not re.fullmatch(r'"[^"]*"', ops[0]):
-        return False
-    url = ops[0][1:-1]
-    host, _, rest = url[8:].partition("/")
-    if not url.startswith("https://") or host != HL_HOST or "/" + rest != HL_PATH:
-        return False
-    if not _held_once(root, head, f, HL_INDENT + flat):
-        return False
-    raw = _head_file(root, head, f)
-    text = _function_text(raw, ver[1]) if ver and ver[0] == HL_FILE else None
-    if text is None or hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest() != ver[2]:
-        return False
-    lock = _head_file(root, head, HL_LOCK)
-    return lock is not None and b"\r" not in lock
-
-
 def _body_proved(root, head, path, line_hash, row):
-    """A row without a body hash rules its line as it always did; a row with one rules it only when every
-    here-document body in the head file that holds the line has that hash."""
+    """A row without a span rules its line as it always did; a row with one rules it only when the head file holds
+    that span exactly once, with the row's hash, and every copy of the line sits inside it."""
     if row[2] is None:
         return True
     raw = _head_file(root, head, path)
-    hashes = _body_hashes(raw.decode("utf-8", "replace"), line_hash) if raw is not None else []
-    return bool(hashes) and all(h == row[2] for h in hashes)
+    if raw is None:
+        return False
+    lines = raw.decode("utf-8", "replace").split("\n")
+    spans = _body_spans(lines, *row[2])
+    held = [i for i, ln in enumerate(lines) if _line_hash(" ".join(ln.split())) == line_hash]
+    return len(spans) == 1 and bool(held) and all(spans[0][0] <= i <= spans[0][1] for i in held)
 
 
 def _body_regressions(root, head, rulings):
@@ -1174,8 +1150,7 @@ def _no_constant(name):
 
 
 def load_ruled_text(path, required=False):
-    """{(file, form, 64-hex segment hash, 64-hex whole-line hash): (ruling, count, body sha256 or None, verifier (file,
-    function, sha256) or None)} from the file's unmeasured_text list. A missing default file is no rulings; anything
+    """{(file, form, 64-hex segment hash, 64-hex whole-line hash): (ruling, count, (first line, last line, sha256) or None)} from the file's unmeasured_text list. A missing default file is no rulings; anything
     malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
@@ -1194,10 +1169,9 @@ def load_ruled_text(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "body-sha256", "verifier",
-                "verifier-sha256"} or not set(_RULED_FIELDS) <= set(r):
+        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", *_BODY_FIELDS} or not set(_RULED_FIELDS) <= set(r):
             raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, "
-                "body-sha256, and for a hash-locked fetch row verifier and verifier-sha256)")
+                "and body-first, body-last and body-sha256 together)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{64}", r["key"]):
@@ -1207,26 +1181,20 @@ def load_ruled_text(path, required=False):
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
-        if r["form"] == LOCAL_CALL_FORM and "body-sha256" in r:
-            raise bad("is a local-call row, which does not take a body-sha256")
-        if "body-sha256" in r and not (isinstance(r["body-sha256"], str)
-                and re.fullmatch(r"[0-9a-f]{64}", r["body-sha256"])):
-            raise bad("has a body-sha256 that is not 64 lowercase hex")
-        v = r.get("verifier")
-        if ("verifier" in r) != ("verifier-sha256" in r) or ("verifier" in r
-                and not r["ruling"].strip().startswith(HASH_LOCKED_RULING)):
-            raise bad("has a verifier without its verifier-sha256, or the reverse, or is not a hash-locked fetch row")
-        if "verifier" in r and (not isinstance(v, dict) or set(v) != {"file", "function"}
-                or not all(isinstance(x, str) and x.strip() for x in v.values())
-                                or not isinstance(r["verifier-sha256"], str)
-                                    or not re.fullmatch(r"[0-9a-f]{64}", r["verifier-sha256"])):
-            raise bad("has a verifier that is not {file, function} of non-empty text, or a verifier-sha256 that is not "
-                "64 lowercase hex")
+        body = None
+        if set(_BODY_FIELDS) & set(r):
+            if not set(_BODY_FIELDS) <= set(r) or r["form"] == LOCAL_CALL_FORM:
+                raise bad("has some of body-first, body-last, body-sha256 but not all, or is a local-call row")
+            first, last, sha = (r[f] for f in _BODY_FIELDS)
+            if not (isinstance(first, str) and isinstance(last, str) and first.strip() and last.strip()):
+                raise bad("has a body-first or body-last that is not text")
+            if not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+                raise bad("has a body-sha256 that is not 64 lowercase hex")
+            body = (first, last, sha)
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
-        out[k] = (r["ruling"].strip(), count, r.get("body-sha256"), (v["file"], v["function"], r["verifier-sha256"])
-            if v else None)
+        out[k] = (r["ruling"].strip(), count, body)
     return out
 
 
@@ -1526,10 +1494,9 @@ def _run(a, moved, fx, now):
         # a row whose body hash does not hold rules nothing
         rs = [r if r is None or _body_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]
         if k[1] == DOWNLOAD_FORM and any(r
-                and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, PINNED_FETCH_RULING, HASH_LOCKED_RULING))
+                and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, PINNED_FETCH_RULING))
                     for r in rs):
-            # a download row rules a line only with one of the five rulings named above (text, live, Go, pinned,
-            # hash-locked)
+            # a download row rules a line only with one of the four rulings named above (text, live, Go, pinned)
             rs = [None]
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING)
                 and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
@@ -1543,13 +1510,6 @@ def _run(a, moved, fx, now):
         if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r,
                 lh in zip(rs, lines[k])):
             # the pinned-fetch ruling on any line but one of the pinned lines of its own file rules nothing (AC26)
-            rs = [None]
-        # HL:gate
-        if any(r and r[0].startswith(HASH_LOCKED_RULING)
-               and not _hash_locked_line_ok(a.root, a.head, k[0], _LINE_TEXT.get(lh, ""), r[3])
-               for r, lh in zip(rs, lines[k])):
-            # the hash-locked ruling on any line but the kernel fetch line, with its lock at the head, rules nothing
-            # (AC35)
             rs = [None]
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
