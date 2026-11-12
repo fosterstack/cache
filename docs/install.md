@@ -110,7 +110,7 @@ curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/bui
 
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt 2>/dev/null | grep OK
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 The signature proves the checksums file was signed with our release key; the checksums then cover every archive transitively.

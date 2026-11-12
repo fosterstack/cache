@@ -171,7 +171,7 @@ ok(all(c in rel_cmds for c in cnr_cos), "%s: every cosign command of the cannot-
 # verify-key.md; no other such line; and the fenced text of each file is the text it had before the pointer (a hash), so no command changed.
 import hashlib
 POINTER = re.compile(r"\]\((?:\./|docs/)?verify-key\.md(#[^)]*)?\)")
-for var, steps, digest in (("INSTALL_DOC", 1, "b623026bc52bebda"), ("OFFLINE_DOC", 2, "fcc1055c6fc8f6c4"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
+for var, steps, digest in (("INSTALL_DOC", 1, "8693fd7ace7dc0be"), ("OFFLINE_DOC", 2, "fcc1055c6fc8f6c4"), ("VEX_DOC", 1, "78465f536ebd9e2d")):
     path = os.environ[var]
     text = open(path).read()
     lines = text.split("\n")
@@ -190,6 +190,14 @@ for var, steps, digest in (("INSTALL_DOC", 1, "b623026bc52bebda"), ("OFFLINE_DOC
         near = [i for i in ptrs if a - 6 <= i <= b + 6]
         ok(len(near) == 1, "%s: one pointer within 6 lines of the release key step at line %d (found %d)" % (path, a + 1, len(near)))
     ok(hashlib.sha256("\n".join(re.findall(r"^```.*?^```", text, re.S | re.M)).encode()).hexdigest()[:16] == digest, "%s: its fenced commands are unchanged" % path)
+# Archive checksum step must fail loudly: no fenced `sha256sum -c` line hides or filters its result, and each page
+# (install, offline-install, verify-images) holds the agreed grep -F + sha256sum -c - form.
+AGREED = re.compile(r'LINE=\$\(grep -F "[^"]*" checksums\.txt\) && echo "\$LINE" \| sha256sum -c -')
+for path in (os.environ["INSTALL_DOC"], os.environ["OFFLINE_DOC"], os.environ["VERIFY_ONE"]):
+    fenced = "\n".join(re.findall(r"^```.*?^```", open(path).read(), re.S | re.M)).split("\n")
+    checks = [l for l in fenced if "sha256sum -c" in l]
+    ok(not [l for l in checks if "2>/dev/null" in l or "grep OK" in l], "%s: no fenced sha256sum -c line hides its errors or filters for OK" % path)
+    ok(any(AGREED.search(l) for l in fenced), "%s: a fence holds the agreed grep -F checksums.txt && sha256sum -c - step" % path)
 sys.exit(fails)
 PY
 }
