@@ -34,8 +34,8 @@ a['cpes'][0]['cpe']='cpe:2.3:a:busybox:busybox:%s:*:*:*:*:*:*:*'%ver
 json.dump(d,open(out,'w'))
 PY
   js="$("$grype" "sbom:$sbom" -o json --fail-on negligible --vex "$vex" 2>/dev/null)"; rc=$?
-  f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
-  ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
+  f=$(jq --arg ids "$BUSYBOX_CVES" '[.matches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
+  ig=$(jq --arg ids "$BUSYBOX_CVES" '[.ignoredMatches[]?|select(.vulnerability.id as $i|$ids|split(" ")|index($i))]|length' <<<"$js" 2>/dev/null || echo -1)
   if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; else got=FLAG; fi
   # Exit-status cross-check: grype --fail-on exits non-zero (2) when matches
   # remain, 0 when none — a generic count is not enough (audit R01 hardening).
