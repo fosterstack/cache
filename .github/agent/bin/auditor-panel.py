@@ -123,9 +123,9 @@ def validate_profiles(doc):
 
 
 def validate_state(doc):
-    """The members of the panel state's lists, which the judge indexes and scores: checked before any seat is asked, so
-    a damaged entry is a named stop and not a crash after the
-    model spend. Extra metadata is allowed. Returns the errors."""
+    """The members of the panel state's lists, which the judge indexes and scores: checked before any seat is asked,
+    so a damaged entry is a named stop and not a crash after the model spend. Extra metadata is allowed. Returns the
+    errors."""
     errs = []
     def text(e, k, where, required=True, empty=False):
         v = e.get(k)
@@ -231,11 +231,10 @@ def _dbs_read(ev):
 
 
 def absence_is_complete(bundle, f):
-    """Absence is proof only where the evidence covers that kind of package: a distribution package (deb/apk)
-    with no record in a package database of its kind that was actually read AND no file path mentioning it, or a
-    Go module (not the standard library) in an image whose Go binaries carry build information. Anything else
-    (a static non-Go binary such as busybox, an unknown type) can never be shown absent by this evidence
-    """
+    """Absence is proof only where the evidence covers that kind of package: a distribution package (deb/apk) with
+    no record in a package database of its kind that was actually read AND no file path mentioning it, or a Go module
+    (not the standard library) in an image whose Go binaries carry build information. Anything else (a static non-Go
+    binary such as busybox, an unknown type) can never be shown absent by this evidence."""
     ev = str(bundle).split(EVIDENCE_MARK, 1)[1] if EVIDENCE_MARK in str(bundle) else ""
     pkg = str(f.get("package") or "").lower()
     short = pkg.rsplit("/", 1)[-1]
@@ -545,7 +544,7 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             if k in false_mem:      # a later audit reversed a remembered false judgment: that is an audit miss too
                 before = false_mem.pop(k)
                 out["misses"].append(dict(_ident(f), seen_by=sorted(seen), by="a later audit"))
-                if before.get("vex"):       # rule 9: a published statement turns "affected" (Sonnet r4 blocker)
+                if before.get("vex"):       # rule 9: a published statement turns "affected"
                     out["vex"].append(dict(_ident(f), status="affected", purls=list(before.get("purls") or []),
                                            impact_statement="a later audit found it present after the audits judged "
                                                             "it not affected (audit miss)"))
@@ -580,8 +579,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             if purls and vex_subcomponents(purls, f.get("package"), f.get("version")) is None:
                 false_mem[k]["vex"] = False
                 out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence, but its "
-                                    "package identity (%s) is not a form "
-                                    "the release's VEX forms can represent, so no VEX statement was written: %s" %
+                                    "package identity (%s) is not a form the release's "
+                                    "VEX forms can represent, so no VEX statement was written: %s" %
                                     (f["id"], f["image"], f["package"], f["version"], ", ".join(purls)[:200],
                                      "; ".join(quotes)[:300]))
             elif purls and images and not elsewhere:
@@ -635,8 +634,7 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
                                    impact_statement="an image now contains this package version; under investigation"))
             e["vex"] = False
             out["owner"].append("Scanner panel: %s (%s %s) was stated not affected, but %s now contain(s) that "
-                                "version; "
-                                "the statement is turned affected." % (e["id"], e["package"], e["version"],
+                                "version; the statement is turned affected." % (e["id"], e["package"], e["version"],
                                                                        ", ".join(present)))
     # (3) a fix shipped: the debated image HAD the debated version when debated, and today that same image is readable,
     # carries another version of the package, and no longer has the debated one
@@ -696,9 +694,9 @@ def _pick_manifest(idx, blob, arch):
 class _Layout:
     """An OCI image layout DIRECTORY (Build's images artifact: images/<variant>/ with oci-layout, index.json,
     blobs/sha256/<hex>), read with the small surface the readers use from a tar: extractfile(name).read() and
-    getmember(name). Only index.json and blobs/sha256/<64 hex> are readable; a symlink,
-    a directory without an oci-layout file (a docker-save shape) or any other name is refused. The old archive file is
-    not read: the digest would not be the one Build recorded."""
+    getmember(name). Only index.json and blobs/sha256/<64 hex> are readable; a symlink, a directory without an
+    oci-layout file (a docker-save shape) or any other name is refused. The old archive file is not read: the digest
+    would not be the one Build recorded."""
 
     def __init__(self, path):
         if os.path.islink(path) or not os.path.isdir(path):
@@ -963,10 +961,10 @@ class SeatCapError(Exception):
 
 
 class SeatCap:
-    """The probe's request cap (retries disabled). Both pinned SDKs re-send once after a 401
-    OUTSIDE max_retries (a federated token refresh), so max_retries=0 alone still allowed a second model request and
-    hid the first failure. These HTTP hooks allow ONE model-endpoint request per seat, and turn a 401 from it into a
-    named failure before the SDK can re-send. Token exchanges are not model requests and are not counted."""
+    """The probe's request cap (retries disabled). Both pinned SDKs re-send once after a 401 OUTSIDE max_retries (a
+    federated token refresh), so max_retries=0 alone still allowed a second model request and hid the first failure.
+    These HTTP hooks allow ONE model-endpoint request per seat, and turn a 401 from it into a named failure before the
+    SDK can re-send. Token exchanges are not model requests and are not counted."""
 
     def __init__(self):
         self.sent, self.failure = 0, None
@@ -1067,10 +1065,9 @@ def make_seats(mode, env=os.environ, a=seat_a, b=seat_b, retries=None):
 
 # ------------------------------------------------------------------------------------------------ commands
 
-# The required content of the panel's two persistent inputs read through the
-# shared reader: a PRESENT file without it is a stop, never a fresh start
-# or zero profiles. They live here, not in auditorlib/reviewed.py, because the CVE auditor's library never names the
-# panel's state (REQ-SCAN-014-AC3).
+# The required content of the panel's two persistent inputs read through the shared reader: a PRESENT file without it
+# is a stop, never a fresh start or zero profiles. They live here, not in auditorlib/reviewed.py, because the CVE
+# auditor's library never names the panel's state (REQ-SCAN-014-AC3).
 SPECS = {
     "panel-state.json": (("version", ("int", 1)), ("false", "objects"), ("real", "objects"), ("debates", "objects"),
                          ("scores", ("ints", ("A", "B"))), ("seat", ("choice", ("A", "B")))),
@@ -1094,14 +1091,6 @@ def automerge_allowed(changed, env=os.environ):
     return on and bool(changed) and all(c in (STATE, VEX) for c in changed)   # an empty change set arms nothing
 
 
-def _load_json(path, default=None):
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return default
-
-
 # SHA1 matches "0000000000000000000000000000000000000000"; DIGEST matches "sha256:" + 64 hex digits
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -1112,8 +1101,8 @@ def rescan_binding(path, oci_dir):
     advisor 0113/0136): its run, the head it scanned, main's head now, its conclusion (any: a red rescan is judged), and
     the image digests of the evidence it left — every archive must name one, else the evidence is not that run's."""
     try:
-        b = _load_json(path)
-    except ValueError:
+        b = reviewed.read(path)
+    except reviewed.ReviewedInputInvalid:
         b = None
     keys = ("run_id", "head", "main_head", "conclusion")
     if not isinstance(b, dict) or not all(isinstance(b.get(k), str) and b[k].strip() for k in keys) \
@@ -1169,10 +1158,10 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     if why:
         sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % why)
         return 2
-    # every image the verdict judges must have its own READABLE evidence — a missing archive,
-    # or one whose manifest/layers do not actually read, must never fall through to "no evidence, false by default"
-    # as if that image had simply cleared. A present-but-unreadable blob (getmember alone proves nothing: truncated
-    # JSON, a missing nested manifest or layer, the wrong architecture) is read the same way Bundles() will read it.
+    # every image the verdict judges must have its own READABLE evidence: a missing archive, or one whose
+    # manifest/layers do not actually read, must never fall through to "no evidence, false by default" as if that
+    # image had simply cleared. A present-but-unreadable blob (getmember alone proves nothing: truncated JSON, a
+    # missing nested manifest or layer, the wrong architecture) is read the same way Bundles() will read it.
     images = sorted({f.get("image", "") for f in verdict.get("findings") or [] if f.get("image")})
     unreadable = []
     for img in images:
@@ -1198,8 +1187,7 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
                             "names the scanned bytes only." % (rescan["head"], rescan["main_head"]))
     if rescan["conclusion"] != "success":
         out["owner"].append("Scanner panel: the rescan run %s finished %s; the panel judged its evidence (quorum, "
-                            "rule 3, "
-                            "decides per image)." % (rescan["run_id"], rescan["conclusion"]))
+                            "rule 3, decides per image)." % (rescan["run_id"], rescan["conclusion"]))
     out["rescan"] = rescan
     st, out = scrub(st), scrub(out)      # everything written below is public (artifact, state file, PR)
     os.makedirs(a.out, exist_ok=True)
@@ -1242,9 +1230,9 @@ _GENERIC_PURL = re.compile(r"pkg:generic/([^/@?#]+)@([^?#]+)")
 
 def _purl_identity(purl):
     """(name, version) of a pkg:generic package URL, percent-DECODED (the release generators decode them), or None for
-    anything else. A distro purl (deb, rpm, apk, alpm) is refused: absence proven in one ecosystem must not be rewritten
-    into a generic purl, which claims "not affected" for every ecosystem. Also None for a
-    missing version, a subpath or a nested name."""
+    anything else. A distro purl (deb, rpm, apk, alpm) is refused: absence proven in one ecosystem must not be
+    rewritten into a generic purl, which claims "not affected" for every ecosystem. Also None for a missing version, a
+    subpath or a nested name."""
     if not isinstance(purl, str):
         return None
     m = _GENERIC_PURL.fullmatch(purl)
@@ -1266,10 +1254,10 @@ def vex_package(purl):
 def vex_subcomponents(purls, package=None, version=None):
     """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None when there is none or any purl cannot
     be written that way: a statement with no subcomponents would cover the whole image, so an empty set is never
-    proposed. With package and version (the finding's own, which the audits judged), every
-    purl's DECODED name and version must equal them: the generators decode the written purl, so a purl naming another
-    package (libstdc%2B%2B6 against a finding for libstdc%2B%2B6 that the bundle never matched) would suppress a package
-    the evidence did not cover."""
+    proposed. With package and version (the finding's own, which the audits judged), every purl's DECODED name and
+    version must equal them: the generators decode the written purl, so a purl naming another package (libstdc%2B%2B6
+    against a finding for libstdc%2B%2B6 that the bundle never matched) would suppress a package the evidence did not
+    cover."""
     idents = [_purl_identity(p) for p in purls or []]
     if not idents or None in idents:
         return None
@@ -1354,9 +1342,8 @@ def _read_profiles(path):
 
 def check_delivery_inputs(root, day, st=None):
     """The checkout's state, VEX and profiles, validated with the shared rules before anything is fetched, checked out,
-    written or published. An absent state is the
-    first delivery; absent profiles are a stop (checked-in policy); an absent VEX is a stop when the day proposes VEX
-    statements. Raises ReviewedInputInvalid."""
+    written or published. An absent state is the first delivery; absent profiles are a stop (checked-in policy); an
+    absent VEX is a stop when the day proposes VEX statements. Raises ReviewedInputInvalid."""
     # the judgment's own outputs of this run (out/state.json, out/day.json) are checked like any other input
     if st is not None:
         if not isinstance(st, dict):
@@ -1408,12 +1395,17 @@ def apply_files(root, st, day, today):
                     "products": [{"@id": policy.VEX_PRODUCT, "subcomponents": subs}],
                     "justification": "component_not_present", "impact_statement": v["impact_statement"]})
             else:
-                for stmt in doc["statements"]:
-                    if stmt.get("@id") == sid:     # exactly the panel's statement for this CVE, image and package
-                        stmt.update(status="affected", last_updated=ts,
-                                    action_statement="Under investigation: " + v["impact_statement"])
-                        stmt.pop("justification", None)
-                        stmt.pop("impact_statement", None)
+                # exactly the panel's statement for this CVE, image and package
+                found = [stmt for stmt in doc["statements"] if stmt.get("@id") == sid]
+                for stmt in found:
+                    stmt.update(status="affected", last_updated=ts,
+                                action_statement="Under investigation: " + v["impact_statement"])
+                    stmt.pop("justification", None)
+                    stmt.pop("impact_statement", None)
+                if not found:       # a stale not_affected would stay published: the owner is told, not left unaware
+                    day["owner"].append("Scanner panel: %s (%s %s) is now judged affected, but no published VEX "
+                                        "statement of the panel matches it; a stale not_affected statement could "
+                                        "not be found to revoke." % (v["id"], v["package"], v["version"]))
         # monotonic: a newer timestamp already in the file stays
         doc["timestamp"], doc["version"] = _later(doc.get("timestamp"), ts), int(doc.get("version", 1)) + 1
         with open(vpath, "w") as fh:
@@ -1589,15 +1581,15 @@ def _text_of(path):
     try:
         with open(path) as fh:
             return fh.read()
-    except OSError as ex:
+    except (OSError, UnicodeError) as ex:
         raise reviewed.ReviewedInputInvalid("%s is present but cannot be read (%s)" % (path, type(ex).__name__))
 
 
 def _checked_doc(text, path, where, rel):
     """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of its file; the parsed
     document."""
-    doc = reviewed.parse(text, "%s of %s" % (path, where), as_name=VEX, spec=SPECS["scanner-profiles.json"]
-                         if rel == PROFILES else None)
+    doc = reviewed.parse(text, "%s of %s" % (path, where),
+                         spec=SPECS["scanner-profiles.json"] if rel == PROFILES else None)
     bad = validate_profiles(doc) if rel == PROFILES else validate_vex(doc)
     if bad:
         raise reviewed.ReviewedInputInvalid("%s of %s: %s" % (path, where, "; ".join(bad)))
@@ -1746,8 +1738,8 @@ def cmd_deliver(a, run=subprocess.run):
     """Rule 0: the day's changes reach main only through a pull request from the auditor lane's branch; the tracking
     issue (rule 5) and the owner report (rules 8, 9, 14) are issues. Real git/gh only with AUDITOR_ALLOW_REAL_GH=1
     and not dry; otherwise the plan is written."""
-    st = _load_json(os.path.join(a.out, "state.json"))
-    day = _load_json(os.path.join(a.out, "day.json"))
+    st = reviewed.read(os.path.join(a.out, "state.json"))
+    day = reviewed.read(os.path.join(a.out, "day.json"))
     if st is None or day is None:
         sys.stderr.write("::error::auditor-panel: nothing to deliver (no judgment in %s)\n" % a.out)
         return 2
@@ -1836,7 +1828,7 @@ def cmd_deliver(a, run=subprocess.run):
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
                  "--title", policy.subject("scanner panel audits"), "--body", body], plan, real, run)
-    if changed or existing:     # the switch is re-checked every day, so it regains control of an armed PR (Sonnet r4)
+    if changed or existing:     # the switch is re-checked every day, so it regains control of an armed PR
         pr_paths = set(changed)
         if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review
             pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
