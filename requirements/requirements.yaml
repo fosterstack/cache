@@ -4244,7 +4244,8 @@ requirements:
       not a dry run before the merge. CUTOVER RULE: the live chain on main is untouched until the one cutover pull
       request, which names the switch moment. A v* tag is the maintainers' signed tag; the first real run is the
       maintainers' signed rc tag. Release creates no tag. THE WITNESS WRAPPING is the one seam shared with the other
-      stages: every Witness step runs through the single helper bin/witnessed.sh STEP SCRIPT; the stage file never repeats Witness flags. Release has six such steps (release-verify, release-apks,
+      stages: every Witness step runs through the single helper bin/witnessed.sh STEP SCRIPT with timeout -k 20 540
+      inside it; the stage file never repeats Witness flags. Release has six such steps (release-verify, release-apks,
       release-publish, release-sign, release-assets, release-postverify) so that a credential reaches only the step
       that needs it. PROPOSED/UNVERIFIED: the script
       names and command lines of bin/release-*.sh; the tool that re-signs an apk with the release key (bin/release-sign-apks.sh; no apk key is stored;
