@@ -1,8 +1,8 @@
 # DRAFT release notes for the next release (not published)
 
-## Next release: Go 1.27.3<!-- pinned: upstream -->, optional HTTPS, and building and signing kept apart
+## Next release: Go 1.27.4<!-- pinned: upstream -->, optional HTTPS, and building and signing kept apart
 
-This release is rebuilt with **Go 1.27.3**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
+This release is rebuilt with **Go 1.27.4**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
 
 The CA certificate bundle is also updated, to Wolfi's `ca-certificates-bundle` 20260909-r3, which removes three eMudhra roots: emSign Root CA C1, emSign ECC Root CA C3 and emSign ECC Root CA G3. This ships in this release too.
 
@@ -29,7 +29,7 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 
 ### Dependency updates
 
-- Go 1.27.3<!-- pinned: upstream --> (above).
+- Go 1.27.4<!-- pinned: upstream --> (above).
 - `github.com/prometheus/client_golang` 1.24.1 to 1.25.0, with its supporting libraries (`prometheus/common` 0.72.0, `prometheus/procfs` 0.22.0, `golang.org/x/sys` 0.48.0). <!-- pinned: upstream -->
 - The CA certificate bundle in the images (above).
 
