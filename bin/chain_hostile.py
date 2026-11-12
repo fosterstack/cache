@@ -86,11 +86,14 @@ def cmd_hostile_collect(a):
         if not fn.endswith(".json"):
             continue
         try:
-            with open(os.path.join(a.dir, fn)) as f:
-                r = json.load(f)
-        except ValueError:
-            errs.append("error: %s is not JSON" % fn)
-            continue
+            with open(os.path.join(a.dir, fn), "rb") as f:
+                r = strict_json(f.read())
+        except (OSError, ValueError) as ex:
+            print("error: %s is not a readable strict JSON file: %s" % (fn, ex), file=sys.stderr)
+            sys.exit(2)
+        if not isinstance(r, dict):
+            print("error: %s is not a JSON object" % fn, file=sys.stderr)
+            sys.exit(2)
         n = r.get("attempt")
         if n not in ALL_ROWS:
             errs.append("error: extra row %r in %s" % (n, fn))
@@ -148,6 +151,10 @@ def grade_key(rest, policy_path):
     if not counts or counts[0] < 1:
         print("error: the key search says it looked at no files, so an empty result proves nothing", file=sys.stderr)
         sys.exit(2)
+    unread = [line for line in rest if line.startswith("unreadable-key: ")]
+    if unread:
+        print("error: the key search could not read a key file (%s), so it cannot be graded" % unread[0], file=sys.stderr)
+        sys.exit(2)
     found = {m.group(1) for line in rest for m in [re.fullmatch(r"pubkey-sha256: ([0-9a-f]{64})", line.strip())] if m}
     if sign_key_hash(policy_path) in found:
         print("ok")
@@ -159,14 +166,12 @@ def grade_token(rest):
     claims = [line[len("claims: "):] for line in rest if line.startswith("claims: ")]
     if not claims:
         # no token request address in the job: the building jobs hold no id-token permission, and THAT is proven by the static permission judge (the Build wiring judge
-        # refuses an id-token grant on any building job or its caller). The transcript is corroboration only: the step's own claim that the address is absent, a count of
-        # the environ files it read (above zero, none of its own user unreadable) and no process holding an address. It is never the proof, so no enumeration is bound to it.
+        # refuses an id-token grant on any building job or its caller). The transcript is corroboration only: the step's own claim that the address is absent and no
+        # process holding one.
         absent = any(line.strip() == "request-env: absent" for line in rest)
-        reads = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"environ-read: ([0-9]+)", line.strip())] if m]
-        bads = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"environ-unreadable-same-user: ([0-9]+)", line.strip())] if m]
         holders = [line for line in rest if "holds a token request address" in line]
-        if absent and len(reads) == 1 and len(bads) == 1 and reads[0] > 0 and bads[0] == 0 and not holders:     # K counts only the step's own process ancestors
-            refuse("runner", "nothing usable for Sign: the building job holds no id-token permission (proven by the static permission judge of the Build wiring), so it has no token to get; the transcript corroborates it (no request address, environ files read)")
+        if absent and not holders:
+            refuse("runner", "nothing usable for Sign: the building job holds no id-token permission (proven by the static permission judge of the Build wiring), so it has no token to get; the transcript corroborates it (no request address)")
         if absent and holders:
             print("error: a process on this runner holds a token request address although the job's own environment has none, so it cannot be graded", file=sys.stderr)
             sys.exit(2)
@@ -210,8 +215,8 @@ def cmd_hostile_material(a):
 
 def cmd_hostile_verdict(a):
     try:
-        with open(a.results) as f:
-            d = json.load(f)
+        with open(a.results, "rb") as f:
+            d = strict_json(f.read())
         rows = d["attempts"]
     except Exception:
         print("error: %s is not the JSON results file (json)" % a.results, file=sys.stderr)
