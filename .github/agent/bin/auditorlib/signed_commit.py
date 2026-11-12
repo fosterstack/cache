@@ -4,7 +4,7 @@ main's ruleset requires signed commits. A commit made by `git commit` in the run
 carried stayed BLOCKED forever. A commit made through the GraphQL `createCommitOnBranch` mutation with the App's
 installation token is created and signed by GitHub. The same App, the same permissions, no new token.
 
-commit_via_api(repo, branch, base_sha, message, changes): the LIVE branch is touched only AFTER a signed replacement commit exists.
+commit_via_api(repo, branch, base_sha, message, changes): on an ALLOWED_PREFIXES branch, the LIVE branch is touched only AFTER a signed replacement commit exists.
   1. read the live branch's head H1 (absent = none);
   2. create a TEMPORARY ref auditor/tmp-<id> at base_sha (REST);
   3. make ONE commit on the temporary branch (expectedHeadOid = base_sha) and confirm it is signed (the mutation's signature, else a
@@ -25,7 +25,8 @@ written (is_records_path). The sweep that regenerates a bump's vendored tree and
 then accepts a head whose one extra commit is that commit (GitHub-verified, by the App, its message exactly
 records_message(branch)), so the auditor's daily replace leaves it in place.
 
-Anything else (an API error, no oid, an unconfirmed signature, a file over 5 MB, a branch outside auditor/) is a CommitError: the delivery fails
+Anything else (an API error, no oid, an unconfirmed signature, a file over 5 MB, a branch outside the lanes of
+ALLOWED_PREFIXES, or of BUMP_PREFIXES for commit_on_branch) is a CommitError: the delivery fails
 closed and says so. A commit that is not provably signed is never reported delivered.
 
 KNOWN RESIDUAL: between step 4 and step 5 a concurrent writer to the live branch can still be overwritten (the refs API has no
@@ -39,13 +40,15 @@ MAX_FILE_BYTES = 5 * 1024 * 1024        # createCommitOnBranch is a request body
 BRANCH_PREFIX = "auditor/"              # the reserved lane: the only branches the App writes
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
-ALLOWED_PREFIXES = ("auditor/", "patch-notes/", "audit/")   # the only lanes the App may write: a caller names which of them it uses (audit/ = the passed-audit record, REQ-REL-012)
+# the lanes commit_via_api may write; a caller names which of them it uses (audit/ = the passed-audit record, REQ-REL-012)
+ALLOWED_PREFIXES = ("auditor/", "patch-notes/", "audit/")
 _BRANCH = re.compile(r"^(?:auditor|patch-notes|audit)/[A-Za-z0-9._/+-]+$")
 _AUDIT_BRANCH = re.compile(r"^audit/[0-9a-f]{40}$")
-# the two dependency-bump lanes: Dependabot's Go branches and the auditor's own bump branches.
+# the lanes commit_on_branch may write: Dependabot's Go branches and the auditor's own bump branches
+BUMP_PREFIXES = ("dependabot/go_modules/", "auditor/bump-")
 # matches dependabot/go_modules/github.com/prometheus/client_golang-1.25.0 and auditor/bump-example.com-m-1.1.0;
 # refuses dependabot/npm_and_yarn/x, auditor/panel, auditor/bump- (nothing after the dash) and main
-_BUMP_BRANCH = re.compile(r"^(?:dependabot/go_modules/|auditor/bump-)[A-Za-z0-9._/+-]+$")
+_BUMP_BRANCH = re.compile(r"^(?:%s)[A-Za-z0-9._/+-]+$" % "|".join(map(re.escape, BUMP_PREFIXES)))
 # the first words of the sweep's commit message
 RECORDS_HEADLINE = "Vendor records for the "
 # beside everything under vendor/, the places a records commit may write
@@ -318,6 +321,32 @@ def _is_records_commit(doc, branch):
     return isinstance(commit, dict) and commit.get("message") == records_message(branch)
 
 
+def _only_records_paths(files):
+    """Every file of a commit is a plain add, change or delete of a records path. GitHub lists at most 300 files of
+    a commit, so a list that long may be cut short and proves nothing."""
+    return (isinstance(files, list) and 0 < len(files) < 300
+            and all(isinstance(f, dict) and is_records_path(f.get("filename"))
+                    and f.get("status") in ("added", "modified", "removed") and "previous_filename" not in f
+                    for f in files))
+
+
+def commits_authored_by(run, repo, base_sha, head_sha, logins):
+    """True when every commit after base_sha up to head_sha is verified by GitHub and authored by one of `logins`
+    (e.g. 'dependabot[bot]'). A list GitHub may have cut short, or any failed lookup, is False."""
+    rc, out, _ = _api(run, ["gh", "api", "repos/%s/compare/%s...%s?per_page=100" % (repo, base_sha, head_sha)])
+    if rc != 0:
+        return False
+    try:
+        doc = _json(out, "the compare lookup")
+    except CommitError:
+        return False
+    commits = doc.get("commits")
+    if not isinstance(commits, list) or not commits or doc.get("total_commits") != len(commits):
+        return False
+    return all(isinstance(c, dict) and _verified(c) and isinstance(c.get("author"), dict)
+               and c["author"].get("login") in logins for c in commits)
+
+
 def branch_reusable(repo, branch, base_sha, want, run=None, app_login=None):
     """The head oid of `branch` when it may be left as it is, else None (the caller rebuilds through commit_via_api, which is fail-closed). Reuse means ONE
     reviewed commit: GitHub verifies the head as signed, it has EXACTLY ONE parent and that is base_sha (today's main), it changes only files named in
@@ -338,8 +367,10 @@ def branch_reusable(repo, branch, base_sha, want, run=None, app_login=None):
         doc = _commit_doc(run, repo, head)
         if not (_verified(doc) and _by_app(doc, app_login)):
             return None
-        # the sweep's commit: judge the commit under it by the ordinary rules
+        # the sweep's commit: it writes records paths only; judge the commit under it by the ordinary rules
         if _is_records_commit(doc, branch):
+            if not _only_records_paths(doc.get("files")):
+                return None
             parents = doc.get("parents")
             if not (isinstance(parents, list) and len(parents) == 1 and isinstance(parents[0], dict)):
                 return None
