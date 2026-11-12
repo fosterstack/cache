@@ -313,12 +313,15 @@ def main():
     out = cli.opt("--out"); adjudicator = cli.opt("--adjudicator")
     finding = cli.opt("--finding"); manifest = cli.opt("--manifest"); gvc = cli.opt("--govulncheck")
     today = cli.opt("--today"); ts = (today + "T00:00:00Z") if today else TS
-    if finding and gvc:
-        do_single(finding, manifest, gvc, out)
-    elif manifest:
-        do_manifest(manifest, adjudicator, out, ts)
-    else:
+    if not ((finding and gvc) or manifest):
         sys.exit("classify: need --manifest or --finding+--govulncheck")
+    try:
+        if finding and gvc:
+            do_single(finding, manifest, gvc, out)
+        else:
+            do_manifest(manifest, adjudicator, out, ts)
+    except reviewed.ReviewedInputInvalid as e:
+        sys.exit("classify: %s" % e)
 
 
 if __name__ == "__main__":
