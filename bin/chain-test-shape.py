@@ -1030,7 +1030,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"wait for it or remove the lock if no run is active" >&2; exit 2; }',
         '"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"',
         'tmp=$(mktemp -d)',
-        'made=',
+        'made=()',
         'trap \'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true\' EXIT',
         'rdir=$("$PY3" -I -B bin/oci-digest.py prepare-render "$render" "$tmp")',
         'rendered=$rdir/$(basename "$config")',
@@ -1044,21 +1044,22 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"$SUDO" mkdir -p "$workdir" || { echo "assemble-image.sh: cannot create $workdir" >&2; exit 2; }',
         '"$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" "(could not take '
         '$lock)" >&2; exit 2; }',
-        'trap \'{ "$SUDO" rm -f $made; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } '
-        '|| true\' EXIT',
+        'trap \'{ "$SUDO" rm -f "${made[@]}"; "$SUDO" rmdir "$lock";',
+        'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true\' EXIT',
         '"$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link '
         '$workdir/archive" "(it exists: another assembly?); stopping" >&2; exit 2; }',
-        'made="$made $workdir/archive"',
+        'made+=("$workdir/archive")',
         '"$SUDO" ln -sT "$melrepo" "$workdir/melange-repo" || { echo "assemble-image.sh: cannot make the link" '
         '"$workdir/melange-repo (it exists: another assembly?); stopping" >&2; exit 2; }',
-        'made="$made $workdir/melange-repo"',
+        'made+=("$workdir/melange-repo")',
         '"$SUDO" ln -sT "$keydir" "$workdir/keyring" || { echo "assemble-image.sh: cannot make the link '
         '$workdir/keyring" "(it exists: another assembly?); stopping" >&2; exit 2; }',
-        'made="$made $workdir/keyring"',
+        'made+=("$workdir/keyring")',
         'mkdir -p "$tmp/apko-cache"',
+        'mapfile -d \'\' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env build/sealed-env.json)',
         'full=$tmp/$variant.full.lock.json',
         'cd "$rdir"',
-        '"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" lock "$(basename '
+        '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$APKO" lock "$(basename '
         '"$rendered")" --cache-dir "$tmp/apko-cache" --output "$full" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?',
         'cd "$root"',
         'cat "$tmp/apko.err" >&2',
@@ -1078,7 +1079,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'cp "$full" "$out/$variant.full.lock.json"',
         'mkdir -p "$tmp/sbom"   # apko renames its SBOMs into --sbom-path and does not create it (real-run finding)',
         'cd "$rdir"',
-        '"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" build "$(basename '
+        '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$APKO" build "$(basename '
         '"$rendered")" "$pkg:$version" "$tmp/$variant.tar" --offline --cache-dir "$tmp/apko-cache" --lockfile "$full" '
         '--vcs=false --sbom-path "$tmp/sbom" --build-date "$build_date" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?',
         'cd "$root"',
