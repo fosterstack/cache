@@ -67,7 +67,7 @@ t "0710" "build-baselayout-apk.sh exists and is executable" test -x "$BB"
 t "0710" "the script is straight-line text: no case, for, while, until, function or subshell line" \
   bash -c "! grep -Eq '^[[:space:]]*(case|for|while|until|function)[[:space:]]|^[[:alnum:]_]+\\(\\)[[:space:]]*\\{' '$BB'"
 t "0710" "build-baselayout-apk.sh has no signing option and never names the release key" \
-  bash -c "! grep -Eq 'APK_RELEASE_SIGNING_KEY=|release\\.rsa( |\$|\")' '$BB'"
+  bash -c "! grep -Eq 'RELEASE_KMS_KEY_REF=|release\\.rsa( |\$|\")' '$BB'"
 sd "0710" "x86_64 build on an x86_64 host runs melange build of the base-layout recipe" '^melange build melange-baselayout\.yaml ' "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
 sd "0710" "the call is sealed: bubblewrap runner, namespace fosterstack, the assembly key, the local repository" \
   '^melange build .*--runner bubblewrap .*--namespace fosterstack .*--signing-key [^ ]*build/keys/assembly\.rsa ' "${bbe[@]}" "$BBT" "${bb_args[@]}" --out "$(mo)"
@@ -75,7 +75,7 @@ ordered "0710" "sysctl comes before melange" '^sysctl ' '^melange build '
 sd "0710" "aarch64 build on an aarch64 host" '^melange build .*--arch aarch64' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=aarch64 "$BBT" "${bb_args[@]}" --arch aarch64 --out "$(mo)"
 sr "0710" "refuses an arch other than the host's" 'host|native' "${bbe[@]}" "$BBT" "${bb_args[@]}" --arch aarch64 --out "$(mo)"
 sr "0710" "refuses without SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env FAKE_UNAME=x86_64 "$BBT" "${bb_args[@]}" --out "$(mo)"
-sr "0710" "refuses the release key in the environment" 'release|must not' "${bbe[@]}" APK_RELEASE_SIGNING_KEY=canary "$BBT" "${bb_args[@]}" --out "$(mo)"
+sr "0710" "refuses the release key in the environment" 'release|must not' "${bbe[@]}" RELEASE_KMS_KEY_REF=canary "$BBT" "${bb_args[@]}" --out "$(mo)"
 sr "0710" "refuses GOPROXY set to a live proxy" GOPROXY "${bbe[@]}" GOPROXY=https://proxy.golang.org "$BBT" "${bb_args[@]}" --out "$(mo)"
 sr "0710" "refuses a proxy in the environment" proxy "${bbe[@]}" HTTPS_PROXY=http://127.0.0.1:3128 "$BBT" "${bb_args[@]}" --out "$(mo)"
 sr "0710" "refuses --signing-key (the apk is signed with the committed assembly key only)" 'signing' "${bbe[@]}" "$BBT" "${bb_args[@]}" --signing-key "$kr" --out "$(mo)"

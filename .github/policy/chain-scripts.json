@@ -2371,7 +2371,7 @@
       ],
       "signs": false,
       "reason": "0710: the fscache-baselayout apk built with melange in the same sealed call as the fscache apk (a file-only recipe, signed with the committed assembly key; assembled into the images only, not released)",
-      "sha256": "5c355ac5326d8bbd37de7cbd92a93e4488e6821f0bc98687c1c58b17929fc923",
+      "sha256": "986c676d474f24f28da2e5e3b4524ffb48e175b0ee3e7c527178b50e6956bdf2",
       "exceptions": [
         {
           "rule": "script-name",
