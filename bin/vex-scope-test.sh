@@ -88,8 +88,8 @@ d['artifacts']=[{'id':'stdlib-fixture','name':'stdlib','version':'go'+ver,'type'
 json.dump(d,open(out,'w'))
 PY
   js="$("$grype" "sbom:$sbom" -o json --vex "$vex" 2>/dev/null)"; rc=$?
-  f=$(jq '.matches|length' <<<"$js" 2>/dev/null || echo -1)
-  ig=$(jq '.ignoredMatches|length' <<<"$js" 2>/dev/null || echo -1)
+  f=$(jq '[.matches[]?|select(.vulnerability.id=="GO-2026-6809")]|length' <<<"$js" 2>/dev/null || echo -1)
+  ig=$(jq '[.ignoredMatches[]?|select(.vulnerability.id=="GO-2026-6809")]|length' <<<"$js" 2>/dev/null || echo -1)
   if [ "$ig" -gt 0 ] && [ "$f" -eq 0 ]; then got=SUPPRESS; elif [ "$f" -gt 0 ]; then got=FLAG; else got=NONE; fi   # no match at all (a stub, a failed parse) is neither bucket
   if [ "$rc" -ne 0 ]; then rc_ok=0; fi   # no --fail-on (see check()): exit 0 is the only completed scan
   if [ "$got" = SUPPRESS ]; then
