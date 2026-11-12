@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Auditor entrypoint (REQ-AUD-12; called by .github/workflows/auditor.yml).
 
-Round 13: the report must let the owner know what happened, and §3 is never a resting place.
+The report must let the owner know what happened, and §3 is never a resting place.
 Routing is DETERMINISTIC from scanner data before any model call:
   * a trusted known-defect-log row -> closed not_affected (§5), no model call;
   * a Go module (we build) that govulncheck proves imported-but-not-called -> not_affected
