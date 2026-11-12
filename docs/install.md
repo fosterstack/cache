@@ -85,8 +85,8 @@ sudo install -m 0755 "${BIN}" "/usr/local/bin/${BIN}"
 curl -fsS localhost:8080/healthz             # -> ok
 ```
 
-`BIN` carries through the commands above. The systemd unit below names its
-binary itself, so for the FIPS build you edit its `ExecStart` as described there.
+`BIN` carries through every shell command on this page; only the systemd unit names
+its binary itself, so for the FIPS build you edit its `ExecStart` as described there.
 
 The FIPS build keeps `-fips` in its filename, its install path, and its process
 name on purpose: which build is running stays visible in `ps`, in the unit file,
