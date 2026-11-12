@@ -455,7 +455,7 @@ def _judged_path(event, args, i):
 
 
 def _coverage_uri_path(name):
-    """The path of coverage's own data-file URI, `file:///abs/.coverage.<x>?mode=ro`, or None for any other name."""
+    """The path of coverage's data-file URI `file:///abs/.coverage.<x>?mode=ro`, else None."""
     path, sep, query = name[5:].partition("?")
     path = path[2:] if path.startswith("///") else path             # coverage writes `file:///abs`: an empty host, then the path
     if sep and query == "mode=ro" and path.startswith("/") and not path.startswith("//") and not set(path) & set("%#"):
@@ -465,12 +465,15 @@ def _coverage_uri_path(name):
 def _hook(event, args):
     if event == "sqlite3.connect" and args:
         # coverage keeps its data file in sqlite, so a plain path is judged like any other write. Refused (fail closed): a `file:` URI in
-        # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "". The
-        # connection itself denies ATTACH and VACUUM INTO (no audit event exists for them), so a database can write nowhere else.
-        # The one URI let through is coverage's hot-journal check; any other would let a test touch a real system path.
-        if isinstance(args[0], str) and args[0].startswith("file:") and _coverage_uri_path(args[0]):
-            check(_coverage_uri_path(args[0]), event, write=True)
-            return
+        # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "",
+        # except one exact str, coverage's own data-file URI, in a call made with uri=True: it is judged as the path it names. Without
+        # uri=True sqlite opens that text as a relative file name, so it is refused like any other `file:` name. The connection itself
+        # denies ATTACH and VACUUM INTO (no audit event exists for them), so a database can write nowhere else.
+        if type(args[0]) is str and getattr(_busy, "uri", False):
+            path = _coverage_uri_path(args[0]) if args[0].startswith("file:") else None
+            if path:
+                check(path, event, write=True)
+                return
         name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else None
         if name is None or name == "" or name.startswith("file:"):
             raise SystemPathAccess("test touched a real system path (sqlite3.connect): a file: URI or empty name is refused: %r" % (args[:1],))
@@ -588,11 +591,20 @@ def _wrap_sqlite():
     except ImportError:
         return
 
+    def uri_call(orig, a, k):
+        """orig(*a, **k) with _busy.uri telling the audit hook whether this call is made with uri=True (the event does not carry it)."""
+        prev = getattr(_busy, "uri", False)
+        _busy.uri = k.get("uri", a[7] if len(a) > 7 else False) is True
+        try:
+            return orig(*a, **k)
+        finally:
+            _busy.uri = prev
+
     def make_connect(orig):
         def connect(*a, **k):
             if "factory" not in k and len(a) < 6:
                 k["factory"] = Connection                  # so connect() still returns an instance of sqlite3.Connection
-            c = orig(*a, **k)
+            c = uri_call(orig, a, k)
             c.set_authorizer(_deny_attach)
             return c
         connect.__name__ = "connect"; connect.__wrapped__ = orig
@@ -601,7 +613,7 @@ def _wrap_sqlite():
 
     class Connection(base):
         def __init__(self, *a, **k):
-            super().__init__(*a, **k)
+            uri_call(super().__init__, a, k)
             self.set_authorizer(_deny_attach)
     Connection.__name__ = Connection.__qualname__ = "Connection"
     for mod in (sqlite3, sqlite3.dbapi2, _sqlite3):
