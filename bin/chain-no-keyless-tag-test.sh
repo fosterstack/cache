@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC6
 # Handoff 0713 P8 (orchestrator ruling R6, owner's Oct 28 rule 2 "no keyless signing anywhere"): the keyless tag
 # signers of the automatic patch release are out. The words below name them: gitsign, smimesign, and the git settings
 # that make git sign with an X.509 certificate (gpg.format=x509, gpg.x509.program). No tracked file that is code, a
