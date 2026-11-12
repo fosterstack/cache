@@ -34,7 +34,7 @@ def main(argv=None, run=None, regenerate=None):
         if r.returncode != 0:
             print("could not list the branches: %s" % (r.stderr or "").strip()[-300:], file=sys.stderr)
             return 1
-        branches = [b for b in r.stdout.split("\n") if signed_commit._BUMP_BRANCH.match(b)]
+        branches = [b for b in r.stdout.split("\n") if signed_commit.is_bump_branch(b)]
     slug = os.environ.get("AUDITOR_APP_SLUG")        # the App's login is its slug plus [bot]
     app_login = slug + "[bot]" if slug else None
     failed = 0
