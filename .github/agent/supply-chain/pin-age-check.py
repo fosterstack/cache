@@ -59,6 +59,8 @@ def parse_time(s, clock=False):
     if tz and tz != "Z":
         sign = 1 if tz[0] == "+" else -1
         hh, mm = int(tz[1:3]), int(tz[-2:])
+        if hh > 23 or mm > 59:
+            return None
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
     d = d.replace(tzinfo=dt.timezone.utc)
     if frac and not clock:
@@ -70,6 +72,7 @@ _PIN = inv._PIN          # the one predicate lives in pin-inventory.py (its kern
 is_pin = inv.is_pin
 
 
+INSTALLER_TOOLS = {tool for inputs in inv.INSTALLER_INPUTS.values() for _, tool in inputs if tool}
 FILE_PIN_SOURCE = "file-pin-ruling"
 
 
@@ -88,7 +91,7 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
     if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or ""))):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
-    if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
+    if item.kind == "tool" and item.name in INSTALLER_TOOLS and len(item.version.lstrip("v").split(".")) < 3:
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
     bad = next((src[len("bad-label:"):] for _, src in proofs if str(src).startswith("bad-label:")), None)
     if bad is not None:
@@ -104,7 +107,7 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
                 return False, f"age not provable: {host} {what}{reason}", None
         else:
             proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
-    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
+    if item.kind in ("tool", "package", "gotool") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
         proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
     best, seen = None, []
     for t, src in proofs:
@@ -144,8 +147,9 @@ def _gh_run(cmd, **kw):
 
 
 def _gh_failed(r):
-    """True for a plain miss (404 and friends); raises when the failure is the service's, not the answer's."""
-    if not re.search(r"\b(404|410|422)\b", r.stderr + r.stdout):  # only "not there" is an answer; a 401/403, a rate limit or an outage means we could not look
+    """True for a plain miss; raises when the failure is the service's, not the answer's. gh ends its message with the exact token "(HTTP 404)"."""
+    text = r.stderr + r.stdout
+    if not any(f"(HTTP {code})" in text for code in (404, 410, 422)):
         raise CouldNotLook(f"GitHub API: {(r.stderr or r.stdout).strip()[:120]}")
     return True
 
@@ -161,8 +165,8 @@ def _shaped(value, need, what):
         raise CouldNotLook(f"{what} is not a JSON object")
     for key, typ in need:
         types = typ if isinstance(typ, tuple) else (typ,)
-        got = value.get(key, _FAILED)
-        if got is _FAILED or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
+        got = value.get(key)
+        if key not in value or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
             raise CouldNotLook(f"{what} lacks {key!r} of the expected type")
     return value
 
@@ -215,41 +219,30 @@ def _gh_list(path, rows):
     return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-_FAILED = object()      # the server could not be asked (lenient mode)
-_GONE = object()        # strict mode: the server said 404 or 410, the one answer that means "not there"
+_GONE = object()        # the server said 404 or 410, the one answer that means "not there"
 
 
-def _fetch_json(url, timeout=30, strict=False):
-    """The raw decoded answer. PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller).
-    Lenient: _FAILED when the server could not be asked or its body is not JSON. strict: only a 404/410 is an answer (_GONE); a network error, a timeout, a 5xx
-    or a body that is not JSON means we could not look (CouldNotLook)."""
+def _fetch_json(url, timeout=30):
+    """The raw decoded answer, or _GONE for a 404/410. A network error, a timeout, a 5xx or a body that is not JSON means we could not look (CouldNotLook).
+    PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller)."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
-        if not strict:
-            return _FAILED
         if e.code in (404, 410):
             return _GONE
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
     except (OSError, ValueError, http.client.HTTPException) as e:
-        if not strict:
-            return _FAILED
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
 
 
-def _http_dict(url, need, timeout=30, strict=False):
-    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked
-    (strict: when it said 404/410); valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
-    d = _fetch_json(url, timeout, strict)
-    if d is _FAILED or d is _GONE:
+def _http_dict(url, need, timeout=30):
+    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server said 404/410;
+    valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
+    d = _fetch_json(url, timeout)
+    if d is _GONE:
         return None
     return _shaped(d, need, urllib.parse.urlsplit(url).netloc + " answer")
-
-
-def _http_json_strict(url, need, timeout=30):
-    """_http_dict where only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
-    return _http_dict(url, need, timeout, strict=True)
 
 
 TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
@@ -328,14 +321,14 @@ def _go_escape(path):
 _MODINFO = (("Version", str),)      # a module info answer holds its version
 
 
-def _go_module(path, version, strict=False):
+def _go_module(path, version):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
         url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
-        info = _http_json_strict(url, _MODINFO) if strict else _http_dict(url, _MODINFO)
+        info = _http_dict(url, _MODINFO)
         if info is None:
-            continue      # not there (strict) or the proxy could not be asked (lenient): try the shorter module path
+            continue      # not there: try the shorter module path
         if not info["Version"]:
             raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found", in either mode
         return mod, info
@@ -350,8 +343,8 @@ def _go_index_time(mod, version, vcs_time):
         try:
             with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
                 lines = [ln for ln in r.read().decode().splitlines() if ln.strip()]
-        except (OSError, ValueError, http.client.HTTPException):
-            return None
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            raise CouldNotLook(f"index.golang.org could not be asked ({type(e).__name__})")
         rows = []
         for ln in lines:
             try:
@@ -2038,7 +2031,6 @@ def load_ruled_text(path, required=False):
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
-_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?")   # a time with a real zone or none (UTC, as parse_time reads it); nothing parse_time would bend (a +99:99 offset)
 
 
 def load_file_pins(path, required=False):
@@ -2068,7 +2060,7 @@ def load_file_pins(path, required=False):
             seen.add((f_, c_))
         fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
         if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) or not r["upstream"].startswith("https://") \
-                or not _STRICT_TIME.fullmatch(r["published"]) or parse_time(r["published"]) is None:
+                or parse_time(r["published"]) is None:
             continue
         out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
     return out
