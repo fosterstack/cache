@@ -1,8 +1,9 @@
 # Releasing
 
-**Releases build only in CI.** No binary, image, or tag that ships to a user
-is ever produced on a developer machine — including the maintainers'. This
-is a hard rule, not a preference: it's what makes the SLSA provenance and
+**Releases build only in CI.** No binary or image that ships to a user is
+ever produced on a developer machine, including the maintainers'. A maintainer
+makes only the signed release tag; CI builds everything else and signs it with
+the release signing key. This is a hard rule, not a preference: it's what makes the SLSA provenance and
 signatures on every release mean something (an attacker with a
 laptop cannot forge a release that GitHub's own runners never built).
 
@@ -95,8 +96,8 @@ git tag -s -m "..." vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag must be signed (`tag.gpgSign = true` is already set inside
-`~/fosterstack/`). Pushing it is the only trigger — there is no manual
+The tag must be signed with the maintainer's own key: set git's
+`user.signingkey` first, or `git tag -s` cannot sign it. Pushing it is the only trigger — there is no manual
 release path.
 
 ## What a release contains
@@ -147,9 +148,7 @@ release signing key, and it lands with the APK signing change:
 
 Releases built by the earlier eight-stage chain shipped a `-debug` variant on
 the unmodified `gcr.io/distroless/static:debug-nonroot` base (shell at
-`/busybox/sh`, no `/bin/sh`; a `/bin/sh` symlink layer was considered and
-rejected on 2026-09-02 because "the upstream distroless base, pinned by digest,
-with one Go binary added" must hold for every variant). Those releases are
+`/busybox/sh`, no `/bin/sh`). Those releases are
 verified as their own documentation says; see
 [docs/verify-images.md](docs/verify-images.md).
 
