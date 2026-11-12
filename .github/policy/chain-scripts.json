@@ -2722,6 +2722,29 @@
         "AWS_REGION",
         "RELEASE_KMS_KEY_REF"
       ]
+    },
+    {
+      "tools": [
+        "bash",
+        "git",
+        "jq",
+        "python3",
+        "sha256sum",
+        "trap"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/release-metadata.py",
+        "bin/vendor-provenance.py",
+        "bin/vex-forms.py",
+        "bin/apk-tool.py",
+        "bin/with-aws-token.sh"
+      ],
+      "signs": "other",
+      "reason": "Sign job, release signatures: the detached KMS signatures of the release (bin/chain-verify.py kms-sign through bin/with-aws-token.sh, one Rekor entry each, made here and shipped to Release) over the image payloads, the release manifest attestations, the SBOMs, lock files, policy, vendor evidence, dependency list, checksums, release-files.sha256 and the apks control streams (REQ-CHAIN-007-AC8); it makes the blobs it signs from Build verified outputs; the Release job holds no key. `bash` is the command that starts with-aws-token.sh",
+      "reads_env": [],
+      "path": "bin/release-signatures.sh",
+      "sha256": "6a9acc44bd1788495e16921198e2572f981d747440580abf4d59e46aa307cb47"
     }
   ],
   "ambient_env": [
