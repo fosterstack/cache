@@ -166,6 +166,12 @@ jobs:
       - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
         run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+      # REQ-SCAN-015 (advisor-accepted Oct 9; serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
+      # main-candidate-rescan.yml by file, so neither may be callable as a reusable workflow. Runs here, in the required
+      # `allowlist` job, so a violation blocks the merge; it reads the checked-out workflow files with the PyYAML installed above.
+      - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
+        run: bash bin/scan-no-workflow-call-test.sh
+
       - name: every GitHub Action is pinned to a commit digest (row 78)
         env:
           GH_TOKEN: ${{ github.token }}
