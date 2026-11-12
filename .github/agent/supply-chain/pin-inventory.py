@@ -165,7 +165,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 
 def _wanted(n):
     return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$", n)
-            or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
+            or n.endswith(".sh") or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
             or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
 
 
@@ -1086,7 +1086,7 @@ def tree_scripts(root, rev):
     """{path: text} for every shell script at a revision (rev None: the working tree): where a download or install can hide outside the workflows."""
     out = {}
     if rev is None:
-        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith((".github/agent/", "vendor/"))]
+        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith("vendor/")]
         for n in names:
             try:
                 text = _working_text(root, n)
@@ -1097,7 +1097,7 @@ def tree_scripts(root, rev):
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
-        if n.endswith(".sh") and not n.startswith((".github/agent/", "vendor/")):
+        if n.endswith(".sh") and not n.startswith("vendor/"):
             blob = meta.split()[2]
             if blob not in _BLOBS:
                 _BLOBS[blob] = git(root, "cat-file", "blob", blob)
@@ -1188,6 +1188,7 @@ _VENDOR_SPELLING = r"(?:[\"'\\]|\*)*".join(_VENDOR_LETTER(c) for c in "vendor") 
 _VENDOR_NAMED = re.compile(r"(?:^|[^\w.-])(?:\./)?(?:vendor|" + _VENDOR_SPELLING + r")(?:/|(?![\w-]))")
 _VENDOR_TOOLWORD = re.compile(r"(?<![\w-])go\s+mod\s+vendor(?![\w/.-])|(?<![\w-])-mod=vendor(?![\w/.-])")
 _ESCAPE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2}))")
+_DOWNLOADER = re.compile(r"\b(?:curl|wget|urlopen|urlretrieve|urllib\.request|requests\.(?:get|post|put|head|request|Session))\b")   # a shell downloader, or Python's urllib or requests
 _SURFACE = re.compile(r"(?:\.py|\.mk|(?:^|/)(?:GNU)?[Mm]akefile|(?:^|/)Dockerfile[\w.-]*|\.dockerfile)$")
 
 
@@ -1229,7 +1230,7 @@ def _names_vendor(line):
 def vendor_list_extras(root, files):
     """Sorted listed paths that EXIST under root but do not name the vendored folder. A listed path with no file is not reported: listing a path is the reviewed
     gate, so an absent entry pre-authorizes only that one exact path (a file that arrives later and names the folder)."""
-    naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/")) and any(_names_vendor(ln) for ln in t.split("\n"))}
+    naming = {p for p, t in files.items() if not p.startswith("vendor/") and any(_names_vendor(ln) for ln in t.split("\n"))}
     return sorted(p for p in _VENDOR_NAMING_FILES - naming if os.path.lexists(os.path.join(root, p)))
 
 
@@ -1238,8 +1239,8 @@ def unmeasured_occurrences(files):
     line, not to the one downloader segment the key hashes. bashlike is False when the line holds whitespace other than a space or a tab, or was joined from
     a backslash-newline continuation: bash reads such a line differently from this flattening, so no row may ever match it."""
     for path, text in sorted(files.items()):
-        if path.startswith((".github/agent/", "vendor/")):
-            continue  # .github/agent/ is covered by the independent second review (and its tests quote such commands as fixtures)
+        if path.startswith("vendor/") or (path.startswith(".github/agent/") and not path.endswith((".sh", ".py"))):
+            continue    # the agent folder's code is scanned; its data files (requirement lists, fixtures) run nothing
         scan_all = path.startswith(".github/") or path.endswith(".sh")
         if not scan_all and not _SURFACE.search(path):
             continue
@@ -1264,7 +1265,7 @@ def unmeasured_occurrences(files):
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
-                if re.search(r"\b(?:curl|wget)\b", seg) and not plain:
+                if _DOWNLOADER.search(seg) and not plain:
                     yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":" + _hide(seg)[:100]), flat, bashlike
             if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line
                 probe = []
