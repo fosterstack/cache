@@ -2103,10 +2103,10 @@ requirements:
       record no longer applies. The verdict is part of the
       existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
       cannot edit or skip it, and a retarget re-runs it.
-      A pull request Dependabot opened is the one exception (owner RATIFIED Nov 11 2026,
-      ops/docs/ratify/2026-11-11-dependabot-reviewer-only.md, rules 1, 2 and 4): it gets no record, the Dependabot
-      reviewer is its only review, and the same judge passes its head on the reviewer's pass and nothing else (AC9, AC10).
-    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json, bin/dependabot-reviewer.py]
+      For a pull request Dependabot opened the Dependabot reviewer is the review (owner RATIFIED Nov 11 2026,
+      ops/docs/ratify/2026-11-11-dependabot-reviewer-only.md, rules 1, 2 and 4): no record is written for it, and
+      the same judge passes its head on the reviewer's success (AC9, AC10).
+    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
     tier: community
     introduced: v0.3.0
     origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2; the Dependabot exception, owner Nov 11 2026
@@ -2117,9 +2117,10 @@ requirements:
       exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
       owner's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
       something.
-      The Dependabot exception (AC9, AC10) changes the judge and the writer's plan only: the gate workflow, its check
+      The Dependabot rule (AC9, AC10) changes the judge and the writer's plan only: the gate workflow, its check
       name and the required-check list are as they were, and the verdict for a Dependabot pull request is still published
-      by the gate's own two jobs, on every new head.
+      by the gate's own two jobs, on every new head. A head the reviewer has not read does not pass, so a bump waits
+      for the reviewer whatever its size.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
         given: "a pull request whose base is main and that Dependabot did not open (AC9 has those), and the head sha it has now"
@@ -2172,13 +2173,13 @@ requirements:
       - id: REQ-REL-012-AC9
         given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
         when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check nothing out)"
-        then: "it passes without a record on the Dependabot reviewer's pass and nothing else. From the head back through every head it only merges main into (two parents, the second a commit of the checked-out main, its tree the one git makes of merging the two; at most 50 back), the newest dependabot-reviewer check run that an audit writer's App put there must be success or absent, and the first success passes. With none on any of them, the commit they stand on must need no reader: GitHub shows it as Dependabot's own (authored by dependabot[bot], id 49699333, a bot; committed by GitHub's web-flow; verified and valid) with its one parent on main; its signed message names only patch, minor or typeless (digest) updates; the updates the reviewer's own rule (bin/dependabot-reviewer.py updates) reads in the pull request's title and body are the ones it reads in that message (the same names and versions, at least one), none a major and none flagged breaking or deprecated; and GitHub's edit history of the body names no editor but Dependabot. Everything else is refused, saying why: a failed, neutral, unfinished or unreadable verdict on the head or on a head it only updates, whatever the title and body say now; a commit that is not Dependabot's own, which needs the reviewer's success on that very head; a major by the commit; a title and body that no longer name the commit's updates; a title, body, update list, check entry or edit history that is null, empty, cut or malformed; a completed check run whose conclusion is not one GitHub documents; an edit history of 100 edits or more, which GitHub may have trimmed. A GitHub API error exits as one. The record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests is full (100) or holds an entry whose state or head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed, and then GitHub is not asked whose head it is; the release mode of the judge (gate 7) never asks"
+        then: "it passes without a record on the Dependabot reviewer's success and nothing else: the newest dependabot-reviewer check run that an audit writer's App put on the head (all runs read, not only GitHub's latest) is completed with the conclusion success; or the head has no such check run and is main merged into its first parent and nothing more (two parents, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back. Everything else is refused, saying why: no verdict on the head or on any head it only updates, on a patch as on a major; a newest verdict that is a failure, neutral, any other conclusion, or unfinished; a verdict that cannot be read (a check entry with a missing or empty name or App slug, a conclusion GitHub does not document, a cut list); a head that carries a commit or a change of its own after the passed head. A GitHub API error exits as one. The record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests is full (100) or holds an entry whose state or head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed, and then GitHub is not asked whose head it is; the release mode of the judge (gate 7) never asks"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC10
         given: "a dispatch of the record job for a pull request Dependabot opened"
         when: "the writer's prepare script runs"
-        then: "it refuses and writes nothing, whatever the reviewer says of the head: a Dependabot pull request gets no passed-audit record, so nothing stands in for the Dependabot reviewer; the same pull request opened by anyone else is recorded as before"
+        then: "it refuses and writes nothing, whatever the reviewer says of the head: no record is written for a pull request Dependabot opened; the same pull request opened by anyone else is recorded as before. A passed-audit record on the exact head also passes the gate; the merger still refuses a head the reviewer failed"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
