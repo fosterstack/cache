@@ -1,111 +1,17 @@
 # shellcheck shell=bash
-# rules covered (ratified 2026-10-09): rule 11-24 (Building the package), rule 25-38 (Building the image), rule 38a 38b 39-43 (Sealed-off
-# build), rule 44-49 (Keeping inputs fresh), and the parts of rule 72 and 73 that touch our build, of the RATIFIED v0.3.0 rules
-# v2 (ops/docs/ratify/2026-10-09-v030-rules.md, owner "ratify all", Oct 9 2026). The requirements are in requirements/requirements.yaml
-# and each per-PR test file carries its own "proves:" header. Each assertion is tagged with the rule number it serves ("rule N").
+# The harness the build and image tests share. bin/build-apk-test.sh, build-baselayout-apk-test.sh, build-helpers-test.sh,
+# assemble-image-test.sh and refresh-inputs-test.sh source this file and then run their own cases; each case names the
+# requirement it proves.
 #
-# STATUS: the harness of the per-PR test files bin/*-test.sh (each sources this file); the files named below exist. The suite is offline: no network, no
-# docker, no real melange or apko, no sudo. Where the real tool would run, the tools (melange, apko, sudo, unshare, sysctl,
-# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the
-# order of the calls. Static rules are asserted on the file they live in (recipe, apko config, lock file, driver script,
-# workflow job, doc). Cases that need the real tools on a real runner are listed at the bottom (NOT TESTABLE HERE).
+# The suites run offline: no network, no docker, no sudo, no real melange or apko. The tools the scripts call (uname, sudo,
+# unshare, sysctl, melange, apko, curl, go) are stubs first on PATH that write their arguments to $CALLS, so a case can
+# assert the flags and the order of the calls. Static cases read the file a rule lives in (recipe, config, lock, script).
 #
-# ALLOWLIST (bin/check-file-allowlist.sh lists bin files one by one and has no build/ pattern; the allowlist change is its own PR):
-#   build/melange.yaml  build/melange-fips.yaml  build/apko.yaml  build/apko-fips.yaml
-#   build/locks/apko.base.lock.json  build/locks/apko-fips.base.lock.json  build/locks/melange.lock
-#   build/keys/assembly.rsa  build/keys/assembly.rsa.pub  build/keys/release.rsa.pub
-#   bin/build-apk.sh  bin/assemble-image.sh  bin/apko-lock.sh  bin/apk-tool.py  bin/gen-recipes.py  bin/go-module-sbom.py  bin/oci-digest.py  bin/net-probe.py
-#   bin/install-build-tools.sh  bin/release-sign-apks.sh  bin/sealed-proof.sh  bin/lock-proof.sh  bin/refresh-inputs.sh
-#   bin/melange-apko-test.sh
-# EDITED, not created: .github/workflows/go-freshness.yml (two new JOBS, no new workflow file: standing rule "no workflow
-# sprawl"). bin/go-freshness-wiring-test.sh pins the set of jobs that may touch the agent environment: if the refresh job uses
-# the auditor App token, that test's ALLOWED list needs ("go-freshness.yml", "refresh") added in the same PR.
-#
-# ARCHIVE layout the suite assumes (the "archive", rule 12/15/29):
-#   ARCHIVE/<arch>/<name>-<ver>.apk + ARCHIVE/<arch>/APKINDEX.tar.gz   (arch: x86_64 aarch64)
-#   ARCHIVE/keys/wolfi-signing.rsa.pub     ARCHIVE/go/go<ver>.linux-<amd64|arm64>.tar.gz
-# apko config paths (fixed, so the lock names the same literal paths in Build and Rebuild, rule 31):
-#   repositories ["/work/archive", "/work/melange-repo"]; keyring ["/work/keyring/wolfi-signing.rsa.pub",
-#   "/work/keyring/assembly.rsa.pub"]. The driver makes /work/* visible only through `sudo` calls (stubbed here).
-#
-# INTERFACES (the names below are the ones the scripts implement). Exit 0 ok; exit 2 = refusal naming the reason on stderr;
-# a repeated flag: the LAST one wins.
-#  I1 build/melange.yaml (package fscache) and build/melange-fips.yaml (package fscache-fips); package.version "@VERSION@",
-#     epoch 0. Build environment: only name=version pins, no go package, no repositories/keyring of its own (the driver passes
-#     --repository-append and --keyring-append). Go comes from `uses: fetch` steps (one per arch, go.dev uri,
-#     expected-sha256), found offline in the cache dir. The build writes `go version -m /usr/bin/fscache` to
-#     usr/share/fscache/buildinfo.txt inside the apk.
-#  I2 build/apko.yaml (fscache) and build/apko-fips.yaml (fscache-fips); the fscache line is "fscache=@FSCACHE_VERSION@-r0".
-#  I3 bin/build-apk.sh --variant standard|fips --arch x86_64|aarch64 --version X.Y.Z --source-dir DIR --repo DIR --keyring FILE
-#        --go-archive DIR --melange-lock FILE --out DIR [--recipe FILE] [--render-dir DIR] [--apk-cache-dir DIR]
-#     and  --print-source-date-epoch --source-dir DIR.  Env required: SOURCE_DATE_EPOCH (digits). Refused: --signing-key,
-#     RELEASE_KMS_KEY_REF in the environment, GOPROXY other than off, HTTP(S)_PROXY. It runs, in this order,
-#       sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-#       sudo [env SOURCE_DATE_EPOCH=..] unshare -n melange build ... (the only network cut; melange called directly on the VM)
-#     signs with the committed assembly key build/keys/assembly.rsa, then writes OUT/<arch>/*.apk, OUT/fscache-modules.spdx.json
-#     and OUT/inputs-manifest.json.
-#  I4 bin/assemble-image.sh --variant production|fips --version X.Y.Z --archive DIR --melange-repo DIR --keyring-dir DIR
-#        --out DIR [--apko-config FILE] [--base-lock FILE] [--render-dir DIR]. Env: SOURCE_DATE_EPOCH. Order: verify the base
-#     lock against the archive -> sudo unshare -n apko lock (full lock) -> compare base vs full -> verify full -> sudo unshare -n
-#     apko build --offline --lockfile FULL --sbom-path DIR. OUT gets <variant>.full.lock.json, <variant>/ (the image as an OCI layout
-#     DIRECTORY: oci-layout, index.json, blobs/sha256/<hex>; no tarball, advisor 0393), <variant>.digest (ONE line sha256:<hex>: the OCI
-#     INDEX digest), <variant>.manifests (one line `<arch> sha256:<hex>` per per-arch manifest: amd64, arm64) and <variant>-sbom/sbom.json.
-#     --version is X.Y.Z, X.Y.Z-rcN or 0.0.0-rc.1; it runs from the repository root only (exit 2 elsewhere).
-#  I4b CHANGED/NEW (advisor): bin/oci-digest.py TAR  reads the OCI layout tarball: oci-layout, index.json -> index blob, per-arch
-#     manifest blobs under blobs/sha256/; every blob must hash to its name. Prints `index sha256:<hex>` then `<arch> sha256:<hex>`
-#     lines; exit 1 naming the file/blob on a missing index.json or a blob whose hash differs.
-#  I3b NEW (advisor reading, rule 40): exit codes of build-apk.sh and assemble-image.sh: 0 ok, 2 named refusal, 4 = "a network
-#     attempt was made inside the sealed call". Detection: the sealed tool exited non-zero AND its stderr shows ENETUNREACH / network
-#     is unreachable / dial tcp / no such host AND a probe run in the same setup, `sudo unshare -n python3 bin/net-probe.py`, exits
-#     101 (ENETUNREACH: the namespace has no route, so the attempt was real). bin/net-probe.py connects to 192.0.2.1:9 and exits
-#     with the connect errno (0 = connected). Probe not 101 -> the namespace is not sealed: non-zero, not 4. Other failures: 1.
-#     Also new: bin/oci-digest.py and bin/net-probe.py (allowlist).
-#  I5 bin/apko-lock.sh   compare BASE FULL --apk NAME[,NAME...]   arch-check LOCK
-#                        verify-archive --lock L --archive DIR [--melange-repo DIR]   evidence --lock L --archive DIR --out DIR
-#                        (evidence writes OUT/archive-checksums.txt in sha256sum format, relative to ARCHIVE, plus OUT/*.lock.json)
-#  I6 bin/apk-tool.py    digest APK | same A B | signer APK | cat APK MEMBER | binary-check APK FILE
-#                        | inputs-manifest --apk APK --melange-lock FILE --out FILE
-#  I7 bin/gen-recipes.py --template T --regular A --fips B --check|--write   bin/go-module-sbom.py --modules vendor/modules.txt --provenance dependency-provenance.json --buildinfo F --out F
-#     (SBOM = the modules the binary embeds; every embedded path@version must be in BOTH vendor/modules.txt and
-#     dependency-provenance.json {"modules":[{"path":..,"version":..}]}: SUBSET, not equality; vendored-but-unbuilt modules are in the
-#     dependency list, not the SBOM)
-#     bin/install-build-tools.sh melange|apko [DEST]   bin/release-sign-apks.sh --build-dir A --key K
-#  I8 bin/sealed-proof.sh and bin/lock-proof.sh (the real-run proofs of rules 36, 39-42; see the groups below)
-#  I9 bin/refresh-inputs.sh refresh --repo-dir D --archive D   |   fips-module --go-root D --repo-dir D
-#     and two jobs in .github/workflows/go-freshness.yml: `refresh` (daily) and `fips-module` (weekly). refresh makes three locks
-#     with `apko lock --output ...` (the melange-environment config and its output file are named *melange*, the fips ones *fips*);
-#     it writes build/locks/*, archives new packages by digest into ARCHIVE/<arch>/ (curl), verifies them, rewrites lock urls to
-#     /work/archive/..., then git checkout -b refresh/..., commit, push that branch, gh pr create. Exit 3 = Wolfi key changed.
-# ---------------------------------------------------------------------------------------------------------------
-# RULE -> ASSERTION GROUP (the rules are the ratified v0.3.0 rules; the groups below say where each is asserted)
-#  11  recipes build fscache from source (the recipes are the only build input), native arch only (driver refuses a foreign arch)
-#  12  Go from go.dev: fetch steps with checksums, no Wolfi go apk, GOTOOLCHAIN=local, go.mod go line <= archived Go, tarball
-#      pre-seeded from the archive into the cache dir, tamper/missing refused
-#  13  FIPS recipe: GOFIPS140 set to the version of the id build/locks/fips-module.txt names, and a proof that the binary records that id; standard recipe has no GOFIPS140
-#  14  binary in the archive == binary in the apk (apk-tool binary-check)
-#  15  inputs manifest = our melange lock + the .melange.yaml environment read back from the apk; recipe pinned == lock
-#  16  melange/apko installer: checksum pin per tool and arch, verified before extraction, no container digest
-#  17  build-apk.sh takes no --signing-key and refuses a release key in the environment; only the assembly key is passed
-#  18  SECURITY.md "The apk release key" (yearly rotation, rotation at once on a leak, public key) and the committed
-#      keys; rule 18's "disclose holding it only after the first chain release" is when that section ships (rule 85)
-#  19  no --ignore-signatures / --allow-untrusted anywhere; keys appended on every tool call
-#  20  apk SBOM by melange, image SBOM by apko --sbom-path, Go module list by go-module-sbom.py; no scanner in the path
-#  21  gen-recipes.py: both recipes are generated from one template; they differ only in name, description and the FIPS lines
-#  22  assembly-key signing; apk-tool digest/same/signer; release-sign-apks.sh compares then signs with the release key
-#  23  Build holds no key: no secret in the melange environment; a release key in the environment is refused
-#  24  version stamp recipe steps (the draft's four fixes), post-build buildinfo check refuses (devel)/dirty
-#  25-27 apko configs, pre-flight on the base lock, missing package / missing index refuse with no fallback
-#  28  tampered archived package refused at the lock checksum; the build always passes --lockfile
-#  29  evidence: lock + checksum list of every archived package, the indexes, the Wolfi key (and the Go tarballs)
-#  30  rebuild from the archive alone: apko build --offline --lockfile under unshare -n, digest file
-#  31  SOURCE_DATE_EPOCH in both tools, --build-date, same inputs -> same full lock and digest
-#  32  refresh job compares the live Wolfi key (see 46)
-#  33  one apko build per variant for both archs; arch-check fails when per-arch versions differ
-#  34  -fips image has no shell      36  lock-proof.sh (four failing-first cases)      37  two lock files and their compare
-#  38  user 65532 and its home      38a melange hermetic       38b apko hermetic       39-42 sealed-proof.sh
-#  43  NOT TESTABLE HERE (a report, no gate)
-#  44-49 refresh job and bin/refresh-inputs.sh (re-lock, dependabot silent, key change stops, gone version noted, no 7-day wait,
-#      PR only)       72  build-side FIPS checks (buildinfo of the -fips apk)       73  weekly certified-module check
+# What it sets up: a work folder removed on exit, the fixture archive and repositories under $fx, the python library
+# $work/lib.py (fixtures, stub back-ends, mutations) and the checker $work/chk.py.
+# The case helpers: t (a command must succeed), sr (refused with exit 2 and a reason, no tool ran), sf (failed with a
+# reason), sd/sn (a call was or was not made), so (output matches), ordered (one call before another), fails, yesgrep,
+# nogrep. ok and bad count the results; the test file prints the totals.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
