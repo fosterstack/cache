@@ -1588,7 +1588,7 @@ def _text_of(path):
 def _checked_doc(text, path, where, rel):
     """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of its file; the parsed
     document."""
-    doc = reviewed.parse(text, "%s of %s" % (path, where),
+    doc = reviewed.parse(text, "%s of %s" % (path, where), as_name=path,
                          spec=SPECS["scanner-profiles.json"] if rel == PROFILES else None)
     bad = validate_profiles(doc) if rel == PROFILES else validate_vex(doc)
     if bad:
