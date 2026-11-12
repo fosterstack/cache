@@ -76,6 +76,11 @@ cd "\$air" && exec "$(command -v bash)" bin/assemble-image.sh "\${args[@]}"
 WRAP
 chmod +x "$work/ai.sh"; AI="$work/ai.sh"
 export ImageOS=ubuntu24 ImageVersion=20261004.327.1   # sealed-proof refuses to run without the runner image (rule 42); tests that need it unset say so
+# the real build-apk.sh always cross-checks buildinfo.txt against `go version -m` of the packaged binary (no Go toolchain: refused): the go stub answers with
+# the file that matches the build, as bin/build-apk-test.sh does (the revision line is the fixture source's HEAD, which the sealed copies keep)
+{ cat "$fx/sbom/ok.txt"; printf '\tbuild\tvcs.revision=%s\n' "$(git -C "$src" rev-parse HEAD)"; } >"$work/buildinfo-ok.txt"
+{ printf '%s\n' "/some/path/usr/bin/fscache: go1.27.2"; tail -n +2 "$work/buildinfo-ok.txt"; } >"$work/govm-ok.txt"
+export STUB_BUILDINFO="$work/buildinfo-ok.txt" STUB_GOVM_FILE="$work/govm-ok.txt"   # exported: every sealed-proof run (spe, inline env, the wrappers) carries them in its sealed environment
 # ---- the proofs: copies of lock-proof.sh and sealed-proof.sh (TEST-SUBST lines only) and of build-apk.sh (as bin/build-apk-test.sh does), run by a
 # wrapper that builds a per-call fixture repository root: the options the proofs no longer have (--apko-config, --assemble-script, --build-script, the
 # forwarded --base-lock/--index-record/--key-record, --recipe) become files and substituted variables of that root. $LP and $SP are the wrappers;
@@ -91,9 +96,25 @@ python3 "$work/mkcopy.py" "$LP_PROD" "$air/bin/lock-proof.sh" 'HOST_OS=${TEST_HO
 python3 "$work/mkcopy.py" "$SP_PROD" "$air/bin/sealed-proof.sh" 'HOST_OS=${TEST_HOST_OS:-linux-gnu}' 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'BASHBIN='"$(command -v bash)" || { echo "FIXTURE SETUP FAILED: sealed-proof copy"; exit 1; }
 printf '#!/bin/sh\nif command -v sha256sum >/dev/null 2>&1; then exec sha256sum "$@"; else exec shasum -a 256 "$@"; fi\n' >"$work/sha256sum"; chmod +x "$work/sha256sum"
+# The helper judges the sealed call against the fixed env, unshare and melange paths. The build-apk copy runs the helper through this PY3 shim, which runs a copy
+# of the helper whose one constants line names the stubs (TEST_UNSHARE and TEST_MELANGE still win); the other helper lines are untouched.
+python3 - "$root/bin/build-apk-helper.py" "$work/helper-copy.py" "$(command -v env)" "$stubs" <<'PY'
+import sys
+src, out, envbin, stubs = sys.argv[1:5]
+swap = ('ENV_PATH, UNSHARE_PATH, MELANGE_PATH = "%s", os.environ.get("TEST_UNSHARE", "%s/unshare"), '
+        'os.environ.get("TEST_MELANGE", "%s/melange")') % (envbin, stubs, stubs)
+lines = open(src).read().split("\n")
+hit = [i for i, ln in enumerate(lines) if ln.startswith("ENV_PATH, UNSHARE_PATH, MELANGE_PATH = ")]
+assert len(hit) == 1, hit
+lines[hit[0]] = swap
+open(out, "w").write("\n".join(lines))
+PY
+printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
+  "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)" >"$work/py3-shim"
+chmod +x "$work/py3-shim"
 rm -f "$air/bin/build-apk.sh"
 python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$air/bin/build-apk.sh" \
-  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
+  'PY3=${TEST_PY3:-'"$work"'/py3-shim}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
   'GO_TOOL=${TEST_GO:-'"$stubs"'/go}' 'SHA256SUM=${TEST_SHA256SUM:-'"$work"'/sha256sum}' 'ENVBIN='"$(command -v env)" \
   'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' \
@@ -322,8 +343,9 @@ rp_proof() { # <lp|sp> <fixture root> <search path> <out dir>: the proof's wrapp
   # the fixture records and config the assembler reads are the real build/ copy's: put the fixture's in (as the old --apko-config/--*-record options did)
   env -i PATH="$p" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" \
     FAKE_UNAME=x86_64 STUB_REQUIRE_REPO=1 ImageOS=ubuntu24 ImageVersion=20261004.327.1 FSCACHE_ROOT="$root" \
+    STUB_BUILDINFO="$STUB_BUILDINFO" STUB_GOVM_FILE="$STUB_GOVM_FILE" \
     TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_APKO="$rpw/apko" TEST_MELANGE="$rpw/melange" TEST_GO="$rpw/go" TEST_SHA256SUM="$rpw/sha256sum" \
-    TEST_PY3="$py_abs" TEST_GIT="$git_abs" PW_AIR="$a" PW_ROOT="$root" PW_WORK="$work" PW_BASH="$bash_abs" PW_FIXTURE=1 PW_BL="$BL" PW_IDX="$idxrec" PW_KEY="$keyrec" PW_CFG="$fx/apko.yaml" \
+    TEST_PY3="$work/py3-shim" TEST_GIT="$git_abs" PW_AIR="$a" PW_ROOT="$root" PW_WORK="$work" PW_BASH="$bash_abs" PW_FIXTURE=1 PW_BL="$BL" PW_IDX="$idxrec" PW_KEY="$keyrec" PW_CFG="$fx/apko.yaml" \
     "$py_abs" "$work/proofwrap.py" "$k" --out "$o" "${args[@]}" >"$work/rp.log" 2>&1 </dev/null; echo $? >"$work/rp.rc"; }
 bash_abs=$(command -v bash)
 for k_ in lp sp; do
@@ -1601,6 +1623,8 @@ rm -rf "$air/build"; cp -RP "$root/build" "$air/build"; cp "$fx/apko.yaml" "$air
 cp "$idxrec" "$air/build/locks/archive-index.sha256"; cp "$keyrec" "$air/build/locks/archive-keys.sha256"
 rm -rf "$air/rel"; mkdir -p "$air/rel"; cp -R "$fx/archive" "$air/rel/archive"; cp -R "$fx/melrepo" "$air/rel/melrepo"; cp -R "$fx/keyring" "$air/rel/keyring"
 lpr_out="$air/rel/out"
+# the proof runs the assembler directly (not through $AI), so the stubs get CALLS and STUB_LIB through this fixture root's sealed-env.json, as $AI does
+CALLS="$CALLS" STUB_LIB="$work/lib.py" STUB_LOCK="$FL" python3 "$work/sealedtest.py" "$air/build/sealed-env.json"
 run_s "${aie[@]}" bash -c 'cd "$0" && exec "$@"' "$air" "$air/bin/lock-proof.sh" --out rel/out --archive rel/archive -- --variant production --version 0.3.0 --melange-repo rel/melrepo --keyring-dir rel/keyring
 t "AC12" "lock-proof.sh with RELATIVE --archive, --out, --melange-repo and --keyring-dir: the positive control and the four cases pass and the record is written where --out says" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -s '$lpr_out/lock-proof.json'"
 rm -rf "$air/build" "$air/rel"
@@ -1810,7 +1834,7 @@ python3 "$OD" unpack "$oc/good.tar" "$work/unp-side/out3" "$work/unp-side/out3/i
 t "BT-002-AC3" "unpack refuses a DIGEST that is a link, a DIGEST and MANIFESTS that are one file, and a result file inside the layout directory; nothing was written through the link" bash -c "test $s1 != 0 && test $s2 != 0 && test $s3 != 0 && test ! -e '$work/unp-side/target' && test ! -e '$work/unp-side/out1'"
 # the remaining claims of the round-2 brief that had no test: probe status 126, a digest that cannot be computed, a linked --digests-out; and dup2's own assertion
 sf "rule 40" "sealed-proof: a probe that exits 126 inside the namespace is inconclusive" 'inconclusive' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}" || exit 126' "${sp_common[@]}"
-printf '#!/bin/bash\ncase "$*" in *apk-tool.py*digest*) echo "apk-tool: cannot read the apk" >&2; exit 1;; esac\nexec %s "$@"\n' "$(command -v python3)" >"$work/pyfail.sh"; chmod +x "$work/pyfail.sh"
+printf '#!/bin/bash\ncase "$*" in *apk-tool.py*digest*) echo "apk-tool: cannot read the apk" >&2; exit 1;; esac\nexec %s "$@"\n' "$work/py3-shim" >"$work/pyfail.sh"; chmod +x "$work/pyfail.sh"
 sf "rule 42" "sealed-proof: an apk digest that cannot be computed fails the proof (it is not recorded as empty)" 'digest' env TEST_PY3="$work/pyfail.sh" "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
 rm -f "$work/dgo-target" "$work/dgo-link"; ln -s "$work/dgo-target" "$work/dgo-link"
 sr2 "rule 42" "sealed-proof: a --digests-out that is a link is refused (exit 2) and nothing is written through it" 'link' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$work/dgo-link" "${sp_common[@]}"
@@ -1834,10 +1858,10 @@ def assigned_in(ln):
     out |= set(re.findall(r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b", ln))
     out |= set(re.findall(r"\(\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", ln))
     for v in re.findall(r"\blocal\s+([A-Za-z_][A-Za-z0-9_ ]*)", ln): out.update(x for x in v.split() if re.fullmatch(r"[A-Za-z_]\w*", x))
-    for m in re.finditer(r"\bread\s+([^;|&<)]*)", ln):
+    for m in re.finditer(r"\b(?:read|mapfile|readarray)\s+([^;|&<)]*)", ln):   # read NAME..., read -a NAME, mapfile [-d D] [-t] NAME: the names after the options are assigned
         toks = m.group(1).split(); k = 0
         while k < len(toks):
-            if toks[k] in ("-d", "-n", "-N", "-p", "-t", "-u", "-a", "-i"): k += 2; continue
+            if toks[k] in ("-d", "-n", "-N", "-p", "-u", "-i", "-O", "-s", "-C", "-c"): k += 2; continue
             if re.fullmatch(r"[A-Za-z_]\w*", toks[k]): out.add(toks[k])
             k += 1
     return out
@@ -1922,6 +1946,7 @@ if __name__ == "__main__":
                        ("an arithmetic read of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzn=$((CALLER_COUNT + 1))\n", 1)),
                        ("a test -v introspection", base.replace("set -euo pipefail\n", "set -euo pipefail\nif test -v AUDIT_SKIP_BUILD; then exit 0; fi\n", 1)),
                        ("a read of OPTARG", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"${OPTARG:-}\"\n", 1)),
+                       ("a read of an array that no assignment, read -a or mapfile fills", base.replace("set -euo pipefail\n", "set -euo pipefail\necho \"${zzarr[@]}\"\n", 1)),
                        ("an embedded python environment read", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"$(os.environ.get('CALLER_X'))\"\n", 1))):
         if not leaks(mut):
             print("the check does not see %s" % label); rc = 1
