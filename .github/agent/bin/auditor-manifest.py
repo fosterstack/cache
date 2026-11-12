@@ -272,7 +272,6 @@ def _archives(rescan_dir, test_image, oci, tar):
     (source_desc, err)."""
     if test_image:
         # the input says ref@digest; it is held to it — a tag-only reference could fetch any bytes the tag points at
-        # (Codex #164 adversarial r2, N02: the non-shell boundary's own review question)
         if "@sha256:" not in test_image:
             return None, "test image %s is not pinned by digest (ref@sha256:…); refused" % test_image
         ref = "docker://" + _norm_ref(test_image)
