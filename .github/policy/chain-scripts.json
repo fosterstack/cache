@@ -2255,16 +2255,15 @@
         "env",
         "find",
         "make",
-        "at",
-        "aws"
+        "at"
       ],
       "runs": [
         "bin/apk-tool.py",
         "bin/chain-verify.py"
       ],
-      "signs": "other",
-      "reason": "cache P11's release signing: re-signs the apks of Build with the release KMS key (RELEASE_KMS_KEY_REF) by chain-verify.py kms-sign (KMS Sign through the aws CLI, RSASSA_PKCS1_V1_5_SHA_256 named on every call) on each apk's control section, posts one Rekor entry, and checks the signature as RSA PKCS#1 v1.5 SHA-256 and the Rekor entry of its bundle (chain-verify.py bundle-check) (REQ-CHAIN-007-AC6); refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself (REQ-CHAIN-007-AC15); refuses, with exit 2 and before any tool, a RELEASE_KMS_KEY_REF that is not the verifier's own key reference, byte for byte (chain-verify.py key-ref-check); run by bin/release-apks.sh",
-      "sha256": "62d7ede89743eca860013455a51fefa39707f9877ac5a8dc48c900adbfd321bb",
+      "signs": false,
+      "reason": "Release, apk signatures: holds no key. Puts the release signatures Sign made (release-signed/apks, each apk's raw kms.sig and its bundle with the one Rekor entry) on the apks of Build: checks the entry (chain-verify.py bundle-check), that the bundle's signature is kms.sig, and kms.sig as RSA PKCS#1 v1.5 SHA-256 under build/keys/release.rsa.pub (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
+      "sha256": "4e8ccb1d76b27f631555ee02c12aeb4790ed63a49c6a78e51b6d9a4cc33dfd36",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2296,20 +2295,6 @@
           "line_sha256": "e885510f1c90cd2fb50b02a992fc1ecdf9d3ad937379e5f916c4d21de84985ce",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver re-bound in cache#758 after a line split (first reviewed as one batch in PR 452), every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ -n \"${RELEASE_KMS_KEY_REF:-}\" ] || die \"RELEASE_KMS_KEY_REF is unset\"",
-          "line_sha256": "3e23d106068d1d4d456cf029404aa906be4c5f81b2a11d4c4910d189d566142a",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ -s \"$w/kms.sig\" ] && [ -s \"$w/sig.bundle\" ] || die \"kms-sign left no signature or no bundle for ${rel#./}; $kept\" 1",
-          "line_sha256": "fd2c1a6447bdf06b155ebe14a3058ff0cf8808f7303127136a2572bdab629fc5",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; line-bound waiver for the P11 signer, every waived line is a real test)"
         },
         {
           "rule": "deny",
