@@ -134,6 +134,8 @@ for line in sys.stdin:
     fid = req["finding_id"]
     if fid == "ERR":
         ans = {"error": "client error: boom"}
+    elif fid == "ERRTOK":
+        ans = {"error": "client error: bad reply", "token_usage": 42}
     elif fid.startswith("NOT-"):
         ans = {"same_defect": False}
     else:
@@ -377,6 +379,20 @@ class Policy(unittest.TestCase):
         self.assertEqual(policy.threshold_reason("high", False, True), "known-exploited")
         self.assertEqual(policy.threshold_reason(None, False, False), "below")
 
+    def test_a_finding_id_is_one_plain_token_of_at_most_200_characters(self):
+        for fid in ("CVE-2024-1234", "GHSA-xxxx-yyyy-zzzz", "GO-2020-0015", "A" * 200):
+            self.assertTrue(policy.FINDING_ID.fullmatch(fid), fid)
+        for fid in ("", "-CVE-1", "CVE 1", "CVE-1\n", "CVE-1/../x", "A" * 201):
+            self.assertFalse(policy.FINDING_ID.fullmatch(fid), repr(fid))
+
+    def test_the_iteration_cap_is_gone_the_token_budget_is_the_stop(self):
+        self.assertFalse(hasattr(policy, "MAX_ITERATIONS"))
+        self.assertGreater(policy.TOKEN_BUDGET, 0)
+
+    def test_the_scripts_that_only_the_removed_cases_ran_are_gone(self):
+        for name in ("auditor-loop-guard.py", "auditor-release-authz.py"):
+            self.assertFalse(os.path.exists(os.path.join(BIN, name)), name)
+
 
 class Recheck(Tmp):
     def test_not_pullable_keeps_vex(self):
@@ -507,6 +523,18 @@ class CliAdjudicator(WithAdjudicator):
         self.assertEqual(self.adj_requests(), [
             {"finding_id": "ERR", "attempt": "primary", "model": "primary", "package": "zlib"},
             {"finding_id": "CVE-5", "attempt": "primary", "model": "primary"}])
+
+
+    def test_client_error_answer_carries_the_tokens_the_bad_reply_cost(self):
+        with self.assertRaises(RuntimeError) as cm:
+            cli.ask_model(self.adj, "ERRTOK")
+        self.assertEqual(str(cm.exception), "client error: bad reply")
+        self.assertEqual(cm.exception.token_usage, 42)
+
+    def test_client_error_answer_without_usage_carries_an_integer(self):
+        with self.assertRaises(RuntimeError) as cm:
+            cli.ask_model(self.adj, "ERR")
+        self.assertIsInstance(cm.exception.token_usage, int)
 
 
 class CliGh(Tmp):
