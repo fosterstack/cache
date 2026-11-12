@@ -56,7 +56,7 @@ _SWEEP_FILE = ("a file of the records sweep (auditor-vendor-records.py): made an
 for _n in ("dependency-provenance.json", "licenses.json", "origins.json", "provenance.json", "sumdb.json"):
     EXEMPT[_n] = _SWEEP_FILE
 EXEMPT["openvex-schema.json"] = "the JSON schema the VEX documents are validated against: a checked-in constant, not an input of a run"
-EXEMPT["auditor-state.json"] = "the no-change-day state kept between runs: read by auditorlib/nochange.py with its own strict loader (regular file, size cap, strict JSON, schema fosterstack/auditor-state/v1 checked by _valid); anything unusable is None, i.e. the model is asked again, never a skipped decision"
+EXEMPT["auditor-state.json"] = "the no-change-day state kept between runs: read by auditorlib/nochange.py through its one strict reader (regular file, size cap, strict JSON, schema fosterstack/auditor-state/v1 checked by _valid); anything unusable is None, i.e. the model is asked again, never a skipped decision"
 
 # every json.load( / json.loads( in the agent programs outside auditorlib/reviewed.py: the file and how many, with the reason it is not a reviewed input read through the reader
 _SITES = {
@@ -75,12 +75,12 @@ _SITES = {
                           "and the open Dependabot PR list (gh reply and its test shim)"),
     "auditor-poam.py": (2, "the package and the finding files written earlier in the same run"),
     "auditor-votes.py": (1, "the run's manifest"),
-    "auditor-panel.py": (10, "registry and scanner-database replies, the answers of gh issue list (the standing issue lookup, by exact title), image blobs, the PR files (parsed by _checked_doc / _checked_state_text and then checked with the shared rules) and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
+    "auditor-panel.py": (8, "registry and scanner-database replies, the answers of gh issue list (the standing issue lookup, by exact title), image blobs, the PR files (parsed by _checked_doc / _checked_state_text and then checked with the shared rules) and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
     "auditor-release-authz.py": (1, "the owner-issues list the run fetched with gh"),
     "auditor-report.py": (1, "run-state.json written earlier in the same run"),
     "auditor-suppress.py": (1, "the disposition file written earlier in the same run"),
     "auditor-vex-scope-check.py": (1, "a candidate VEX document: an empty one fails closed (no products, all_scoped false, nothing re-emitted)"),
-    "auditorlib/nochange.py": (2, "the no-change-day state, read twice: load (verdict reuse) and load_unsettled (the unsettled-run counts), each its own strict loader; an unusable file is no state, a right-schema file with untrustworthy counts stops the run (see EXEMPT auditor-state.json)"),
+    "auditorlib/nochange.py": (1, "the no-change-day state, read through one strict reader (load for verdict reuse, load_unsettled for the unsettled-run counts both take their state from it); an unusable file is no state, a right-schema file with untrustworthy counts stops the run (see EXEMPT auditor-state.json)"),
     "auditorlib/parsers.py": (2, "the scanners' own reports"),
     "auditorlib/vex.py": (1, "the checked-in VEX schema"),
     "auditorlib/cli.py": (1, "the model client's reply"),
@@ -119,6 +119,29 @@ class TheTable(unittest.TestCase):
                 fh.write("{not json")
             with self.assertRaises(reviewed.ReviewedInputInvalid):
                 rd(p, name)
+
+    def test_a_file_where_a_folder_should_be_is_a_stop_not_an_absence(self):      # row 19
+        blocker = os.path.join(self.d, "blocker")
+        with open(blocker, "w") as fh:
+            fh.write("x")
+        under = os.path.join(blocker, "panel-state.json")             # lstat raises NotADirectoryError
+        with self.assertRaises(reviewed.ReviewedInputInvalid):
+            reviewed.present(under)
+        with self.assertRaises(reviewed.ReviewedInputInvalid):
+            rd(under, "panel-state.json")
+        self.assertFalse(reviewed.present(os.path.join(self.d, "absent", "panel-state.json")))
+        self.assertTrue(reviewed.present(blocker))
+        dangling = os.path.join(self.d, "dangling.json")
+        os.symlink(os.path.join(self.d, "nowhere"), dangling)
+        self.assertTrue(reviewed.present(dangling))                   # present, not absent
+
+    def test_parse_checks_a_document_in_hand_against_the_spec_it_is_given(self):      # row 26
+        spec = PANEL.SPECS["panel-state.json"]
+        good = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        self.assertEqual(reviewed.parse(json.dumps(good), "x", spec=spec), good)
+        for bad in ("[]", "{not json", json.dumps({"version": 1})):
+            with self.assertRaises(reviewed.ReviewedInputInvalid, msg=bad):
+                reviewed.parse(bad, "x", spec=spec)
 
     def test_the_table_names_exactly_the_reviewed_files_and_their_required_keys(self):
         for name, keys, *_ in FILES:
