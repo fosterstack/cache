@@ -40,9 +40,6 @@ class Skip(Exception):
     """The branch is left alone; the message is the reason that goes in the log."""
 
 
-subject = signed_commit.records_message
-
-
 def modules_of(text):
     """[(path, version)] of a vendor/modules.txt: its '# path version' lines. A replaced module, a malformed line or no
     module is a Skip."""
@@ -178,7 +175,7 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False, app_login=N
     """One branch (app_login: the App's login, e.g. 'name[bot]'; without it only Dependabot's commits are trusted);
     returns the line the sweep logs: 'committed <oid>', 'up to date', 'dry run: ...', 'gone',
     'skipped: <reason>' or 'failed: <reason>'."""
-    if not signed_commit._BUMP_BRANCH.match(branch):
+    if not signed_commit.is_bump_branch(branch):
         return "skipped: not a dependency-bump branch"
     try:
         head = signed_commit._head(run, repo, branch)
@@ -190,8 +187,9 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False, app_login=N
             return "skipped: the branch moved while it was fetched"
         base = _git(ws, "merge-base", "origin/main", head).decode().strip()
         logins = {"dependabot[bot]", app_login}
-        if not signed_commit.commits_authored_by(run, repo, base, head, logins):
-            return "skipped: a commit on the branch is not verified and by dependabot[bot] or the App"
+        notes = []
+        if not signed_commit.commits_authored_by(run, repo, base, head, logins, notes):
+            return "skipped: " + "; ".join(notes)
         names = [n for n in _git(ws, "diff", "--name-only", "-z", "--no-renames", base, head).decode().split("\0") if n]
         why = _skip_reason(names, _show(ws, base, "go.mod") or b"", _show(ws, head, "go.mod") or b"")
         if why:
@@ -211,12 +209,13 @@ def process_branch(repo, branch, ws, run, regenerate, dry_run=False, app_login=N
             shutil.rmtree(tmp, ignore_errors=True)
         if not changes:
             return "up to date"
-        if _git(ws, "log", "-1", "--format=%B", head).decode().strip() == subject(branch):
+        if _git(ws, "log", "-1", "--format=%B", head).decode().strip() == signed_commit.records_message(branch):
             return ("skipped: the records commit on the head does not match what is regenerated (%d files differ)"
                     % len(changes))
         if dry_run:
             return "dry run: would commit %d files" % len(changes)
-        return "committed " + signed_commit.commit_on_branch(repo, branch, head, subject(branch), changes, run=run)
+        message = signed_commit.records_message(branch)
+        return "committed " + signed_commit.commit_on_branch(repo, branch, head, message, changes, run=run)
     except Skip as e:
         return "skipped: %s" % e
     except UnicodeDecodeError:
