@@ -19,7 +19,7 @@ python3 - <<'PY'
 import atexit, hashlib, json, os, shutil, subprocess, sys, tempfile
 BIN = os.environ["METADATA_BIN"]
 SCRATCH = tempfile.mkdtemp()
-tempfile.tempdir = SCRATCH      # every tree below is made inside SCRATCH
+tempfile.tempdir = SCRATCH      # a failing or aborted run leaves nothing in TMPDIR
 atexit.register(shutil.rmtree, SCRATCH, ignore_errors=True)
 passn = failn = 0
 def ok(l): global passn; passn += 1; print("ok   " + l)
