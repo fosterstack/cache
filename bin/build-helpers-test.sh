@@ -800,7 +800,7 @@ P
 r8="$work/r8"
 fails "rule 22" "apk-tool: a PAX record with another key and a 40-hex value is refused by the PAX rule (not only by the value shape)" 'PAX key' python3 "$AT" digest "$r8/pax-key40.apk"
 fails "rule 22" "apk-tool: the right PAX key with a value that is not 40 lowercase hex digits is refused" 'PAX key' python3 "$AT" digest "$r8/pax-val.apk"
-fails "rule 22" "apk-tool: a base-256 size field is refused by name" 'base-256' python3 "$AT" digest "$r8/base256.apk"
+fails "rule 22" "apk-tool: a base-256 size field is refused: the numeric field is not plain octal" 'not plain octal' python3 "$AT" digest "$r8/base256.apk"
 fails "rule 22" "apk-tool: a section ending inside a header block is refused (by the section parser; the walker's own short-block check is defence in depth behind it)" 'malformed tar section' python3 "$AT" digest "$r8/short.apk"
 
 # ---- snapshot-8 round 8 (Sonnet P2): every numeric field is plain octal, the header checksum is verified, links are refused (Go and Python read the rest alike) ----
@@ -837,7 +837,7 @@ P
 r9="$work/r9"
 t "rule 14" "apk-tool: a plain, well-formed data section is still accepted after the field checks" python3 "$AT" digest "$r9/plain-ok.apk"
 for n in mode uid gid mtime devmajor devminor size chk; do
-  fails "rule 22" "apk-tool: a high-bit first byte in the $n field (Go reads base-256, Python ends the archive) is refused (by the walker, or by the section parser where Python rejects it first)" 'numeric field|base-256|malformed|checksum' python3 "$AT" digest "$r9/hi-$n.apk"
+  fails "rule 22" "apk-tool: a high-bit first byte in the $n field (Go reads base-256, Python ends the archive) is refused (by the walker, or by the section parser where Python rejects it first)" 'numeric field|malformed|checksum' python3 "$AT" digest "$r9/hi-$n.apk"
 done
 for n in mode uid gid mtime devmajor devminor; do
   fails "rule 22" "apk-tool: a sign character in the $n field is refused (plain octal only)" 'numeric field' python3 "$AT" digest "$r9/sign-$n.apk"
