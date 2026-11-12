@@ -2088,75 +2088,73 @@ requirements:
         status: approved
 
   - id: REQ-REL-012
-    title: A pull request into the release carries a passed-audit record for its exact head
+    title: A release tag carries a passed-audit record of the whole release; a pull request's record is its cleared row
     statement: >
-      A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release
-      process decision 6, maintainers approved Oct 23 2026:
-      "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
-      audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
-      .github/policy/audit-writers.json of the base checkout, adding only the file audit-record, which is the record
-      itself. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier
-      record no longer applies. The verdict is part of the
-      existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
-      cannot edit or skip it, and a retarget re-runs it.
-    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
+      A pull request into the release (main) carries a passed-audit record for its exact head, or it cannot merge
+      (release process rule 6, maintainers approved Oct 23 2026). That record is the clearing row for the exact head
+      that the merge automation reads outside this repository; this repository holds no copy of it and no check of it,
+      so the review gate (agent-review-gate.yml) judges four things only: action pins, the allowlist guard, the
+      pin-wiring judge and the scanner guard. A release tag that is not a patch tag needs a passed audit of the whole
+      release and the owner's approval of it (rule 7); that stays checked here, at source admission. The tag-time record
+      is the branch audit/<tagged commit sha>: one commit whose only parent is that commit, verified by GitHub,
+      authored by a writer named in .github/policy/audit-writers.json of the base checkout, adding only the file
+      audit-record, which is the record itself. Nothing is stored in the tagged commit's own files.
+    source: [.github/workflows/agent-review-gate.yml, .github/workflows/stage-admission.yml, bin/audit-record-judge.sh, bin/audit-record.py, bin/audit-record-prepare.sh, bin/audit-record-request.sh, .github/policy/audit-writers.json]
     tier: community
     introduced: v0.3.0
-    origin: release process decision 6 (Oct 23 2026)
+    origin: release process decisions 6 and 7 (Oct 23 2026); the per-pull-request record removed Nov 12 2026 (the cleared row is the record, rule 6)
     confidence: implementation-only
     notes: >
-      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
-      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
-      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
-      release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
-      something.
+      The record commit adds one file, audit-record, because the API can only make a commit that changes something.
+      The record job of agent-review-gate.yml stays as the writer of the tag-time record, dispatched with the word
+      release and a commit sha; no other word or pull request number is accepted.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
-        given: "a pull request whose base is main, and the head sha it has now"
-        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        given: "a commit sha and, for a release tag, main's copy of bin/audit-record-judge.sh, bin/audit-record.py and .github/policy/audit-writers.json"
+        when: "the judge reads the record of that commit"
+        then: "it passes only if the branch audit/<sha> exists and holds one commit whose only parent is that sha, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise it fails"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC2
-        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
+        given: "a record that is missing, for another commit, stale (a parent that is not the commit, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a sha that is not 40 lower-case hex"
         when: "the judge decides"
         then: "it fails closed and says why (an API error says it is one); no doubt passes"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC3
-        given: "a pull request whose base is not main"
-        when: "the judge runs"
-        then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
+        given: "agent-review-gate.yml, its verdict job and its scheduled sweep"
+        when: "the files and the workflow are read"
+        then: "neither runs bin/audit-record-judge.sh or reads a branch audit/<sha>; the pull request path of the writer is gone (bin/audit-record.py has no pull request plan, bin/audit-record-prepare.sh and bin/audit-record-request.sh accept only the word release); and the check's summary texts name no record"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC4
         given: "the verdict job and the sweep of agent-review-gate.yml"
         when: "the auditor matrix runs them as written with stand-ins for the checks"
-        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
+        then: "each publishes success only when the four checks (action pins, allowlist guard, pin-wiring judge, scanner guard) all exit 0, and runs main's copy of them over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC5
-        given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (which the automation runs once the pull request's review has cleared: it checks the pull request is open into main at exactly that head and requests nothing otherwise; the ops runner's --cleared step may call it)"
+        given: "a workflow dispatch of agent-review-gate.yml with audit_pr set to the word release and a commit sha, sent by bin/audit-record-request.sh (which checks that main contains the commit and requests nothing otherwise)"
         when: "the record job runs"
-        then: "it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
+        then: "it takes nothing else from the dispatch, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for an audit), leaves a record that already passes alone, and otherwise makes ONE signed commit on audit/<sha> parented on that sha, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the judge of AC1; the signed-commit guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC6
-        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
-        when: "the scheduled sweep runs"
-        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
+        given: "a pull request into main whose last auditor-review-gate verdict from the App is a failure older than six hours"
+        when: "the scheduled sweep runs (once an hour for such a head)"
+        then: "it judges the head again with the four checks and publishes only a verdict that changed: a head that still fails is not posted again, so no open pull request waits for a push or a hand re-run; the sweep's existing bound applies (the 200 open pull requests into main that gh lists first)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC7
         given: "a release tag that reaches source admission and is not a patch tag (a vX.Y.0 tag or a release candidate), whose signature the earlier admission step verified"
         when: "the whole-release audit step of stage-admission.yml runs main's copy of the judge and of the writers policy over it"
-        then: "admission continues only if the tagged commit has the same passed-audit record as a pull request into main (the branch audit/<tagged sha>) AND the release manager's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither"
+        then: "admission continues only if the tagged commit has a passed-audit record as AC1 defines it (the branch audit/<tagged sha>) AND the release manager's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither; a pull request into main is not judged here, its record being the cleared row"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC8
         given: "a dispatch of the record job with the word release as the pull request and a commit sha"
         when: "the writer's prepare script runs"
-        then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the signed commit on audit/<sha> of AC5; bin/audit-record-request.sh makes the request after the same check"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
