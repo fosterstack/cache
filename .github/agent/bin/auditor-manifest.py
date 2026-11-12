@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the run manifest the scheduled workflow consumes (REQ-AUD-1).
+"""Build the run manifest the scheduled workflow consumes.
 
 ONE schema, written here and validated by the driver on load. Every key the driver reads
 is produced, or set explicitly to null with a recorded reason in `scanner_status`.
@@ -96,9 +96,9 @@ def panel_block(panel_dir):
 
 
 def _base_os(path):
-    """The base OS release from syft's `distro` block (e.g. 'debian 12.0') — REQ-AUD-14 AC7 needs
-    the PINNED release, not a hardcoded 'debian', so the endoflife.date lookup matches the right
-    cycle. None if syft did not report a distro."""
+    """The base OS release from syft's `distro` block (e.g. 'debian 12.0') — REQ-AUD-14 AC7
+    of .github/agent/docs/cve-auditor-matrix.md needs the PINNED release, not a hardcoded 'debian', so the
+    endoflife.date lookup matches the right cycle. None if syft did not report a distro."""
     try:
         dist = (json.load(open(path)).get("distro") or {})
         did = (dist.get("id") or "").strip().lower()
@@ -114,8 +114,8 @@ _CARRY_RELS = {"contains": "bundled"}
 
 
 def _carriers(path):
-    """Candidate carrier relationships from the syft SBOM (REQ-AUD-14 AC2): a vulnerable-capable
-    component (a package with a purl) that is CARRIED inside another artifact — the parent artifact
+    """Candidate carrier relationships from the syft SBOM (REQ-AUD-14 AC2 of
+    .github/agent/docs/cve-auditor-matrix.md): a vulnerable-capable component (a package with a purl) that is CARRIED inside another artifact — the parent artifact
     `contains` (bundles) the child. This is a SAFE over-approximation: it only decides which findings
     get a pullability model call — a wrong candidate returns pullable and falls through to normal
     routing, so a false carrier costs one call, never a wrong disposition. The model does the
@@ -149,7 +149,8 @@ def _carriers(path):
     return out
 
 
-# endoflife.date product ids for the carriers/base we recognize (REQ-AUD-14 AC6/AC7).
+# endoflife.date product ids for the carriers/base we recognize (REQ-AUD-14 AC6/AC7 of
+# .github/agent/docs/cve-auditor-matrix.md).
 _EOL_PRODUCT = {"debian": "debian", "ubuntu": "ubuntu", "alpine": "alpine",
                 "nodejs": "nodejs", "node": "nodejs", "python": "python",
                 "openssl": "openssl", "postgresql": "postgresql", "postgres": "postgresql",
@@ -207,8 +208,8 @@ def _match_cycle(data, ver):
 
 def _lifecycle(base_os, carriers, fetch, today):
     """The `eol` maintenance-flag list and the `base` pin-lag block for the manifest header
-    (REQ-AUD-14 AC6/AC7), from endoflife.date via `fetch`. Pure given `fetch` and `today`, so the
-    suite injects canned endoflife data and never hits the network."""
+    (REQ-AUD-14 AC6/AC7 of .github/agent/docs/cve-auditor-matrix.md), from endoflife.date via `fetch`.
+    Pure given `fetch` and `today`, so the suite injects canned endoflife data and never hits the network."""
     eol = []; base = {}; seen = set()
 
     def _add(product, cyc):
@@ -267,7 +268,7 @@ def _norm_ref(ref):
 
 def _archives(rescan_dir, test_image, oci, tar):
     """Produce BOTH an oci-archive and a docker-save tar (no daemon). grype reads the
-    oci-archive directly (R12 item 2); the docker-save tar is the digest source. Returns
+    oci-archive directly; the docker-save tar is the digest source. Returns
     (source_desc, err)."""
     if test_image:
         # the input says ref@digest; it is held to it — a tag-only reference could fetch any bytes the tag points at
@@ -277,17 +278,20 @@ def _archives(rescan_dir, test_image, oci, tar):
         ref = "docker://" + _norm_ref(test_image)
         ok1 = _skopeo(ref, "oci-archive:%s:%s" % (oci, TAG))
         ok2 = _skopeo(ref, "docker-archive:%s:%s" % (tar, TAG))
-        return (("test_image=%s" % test_image, None) if (ok1 or ok2) else (None, "skopeo could not pull %s" % ref))
-    # Build's images artifact: one OCI layout DIRECTORY per variant (images/production/ with oci-layout, index.json, blobs/). An archive file or a docker-save shape is
-    # not a candidate.
+        if ok1 or ok2:
+            return "test_image=%s" % test_image, None
+        return None, "skopeo could not pull %s" % ref
+    # Build's images artifact: one OCI layout DIRECTORY per variant (images/production/ with oci-layout,
+    # index.json, blobs/). An archive file or a docker-save shape is not a candidate.
     named = [p for p in glob.glob(os.path.join(rescan_dir, "**", "production"), recursive=True)
              if os.path.isdir(p) and not os.path.islink(p) and os.path.isfile(os.path.join(p, "oci-layout"))]
     if not named:
         return None, "no production OCI layout directory (images/production) in the rescan artifacts"
     if len(named) > 1:
         return None, "%d production OCI layout directories in the rescan artifacts, expected one" % len(named)
-    # every blob of the layout is re-hashed against its file name before skopeo reads it (fail closed). The digest taken
-    # later is that of the single-arch archive skopeo writes, so it is not Build's index digest and is not compared to it.
+    # every blob of the layout is re-hashed against its file name before skopeo reads it (fail closed).
+    # The digest taken later is that of the single-arch archive skopeo writes, so it is not Build's
+    # index digest and is not compared to it.
     blobs = os.path.join(named[0], "blobs", "sha256")
     try:
         for n in os.listdir(blobs):
@@ -310,9 +314,12 @@ def _archives(rescan_dir, test_image, oci, tar):
 def main():
     rescan = cli.opt("--rescan-dir"); reports = cli.opt("--reports")
     source = cli.opt("--source-dir"); out = cli.opt("--out")
-    commit = cli.opt("--commit", "unknown")          # never the run's own sha: the field says which head the scanned image was built from; absent = "unknown"
-    if cli.flag("--commit") and not re.fullmatch(r"[0-9a-f]{40}", commit or ""):   # a supplied value is 40-hex, whatever it is ("unknown" included)
-        sys.exit("auditor-manifest: --commit must be a 40-hex commit id (the head the scanned image was built from) or absent, got %r" % (commit,))
+    # never the run's own sha: the field says which head the scanned image was built from; absent = "unknown"
+    commit = cli.opt("--commit", "unknown")
+    # a supplied value is 40-hex, whatever it is ("unknown" included)
+    if cli.flag("--commit") and not re.fullmatch(r"[0-9a-f]{40}", commit or ""):
+        sys.exit("auditor-manifest: --commit must be a 40-hex commit id (the head the scanned image was built "
+                 "from) or absent, got %r" % (commit,))
     test_image = cli.opt("--test-image") or os.environ.get("AUDITOR_TEST_IMAGE") or ""
     kdl = cli.opt("--known-defect-log", ".github/agent/known-defect-log.json")
     os.makedirs(reports, exist_ok=True)
@@ -326,7 +333,7 @@ def main():
     print("archives: oci=%s tar=%s" % (have_oci, have_tar))
 
     panel_dir = cli.opt("--panel-dir")
-    pblock = panel_block(panel_dir)           # 0600 option A: the auditor READS the panel's four scanners and runs none of its own
+    pblock = panel_block(panel_dir)           # the auditor READS the panel's four scanners and runs none of its own
     scanner_reports = dict(pblock["scanner_reports"]); status = dict(pblock["scanner_status"])
 
     syft_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
@@ -334,23 +341,27 @@ def main():
     carriers = []; base_os = "debian"
     rc, _ = _run(["syft", syft_src, "-o", "syft-json"], out_path=syft_path)
     if rc == 0 and os.path.exists(syft_path) and os.path.getsize(syft_path) > 0:
-        carriers = _carriers(syft_path)   # REQ-AUD-14: SBOM carrier relationships (syft supplies the carriers and the base OS only)
+        carriers = _carriers(syft_path)   # SBOM carrier relationships (syft supplies the carriers and the base OS only)
         base_os = _base_os(syft_path) or base_os
     else:
         print("syft did not run (rc %d); the carriers and base OS stay unknown" % rc)
 
     # govulncheck -json over the checked-out tree, bound to module + commit.
-    # The tree is the selected rescan's head (auditor.yml checks it out; it is DATA, never built or run by us beyond govulncheck's own
-    # package loading): no toolchain download and no module fetch (GOTOOLCHAIN=local, -mod=vendor); with no such tree the scan is
-    # recorded 'did not run', never run on the auditor's own checkout (rc-5b fix 4, ruling A2).
-    has_tree = bool(source) and os.path.isdir(source) and commit != "unknown"   # a tree with no head to stamp it with is not bound to anything: not scanned
+    # The tree is the selected rescan's head (auditor.yml checks it out; it is DATA, never built or run by
+    # us beyond govulncheck's own package loading): no toolchain download and no module fetch
+    # (GOTOOLCHAIN=local, -mod=vendor); with no such tree the scan is recorded 'did not run', never run on
+    # the auditor's own checkout.
+    # a tree with no head to stamp it with is not bound to anything: not scanned
+    has_tree = bool(source) and os.path.isdir(source) and commit != "unknown"
     module = _module(source) if has_tree else None; gvc = None
     gvc_path = os.path.join(reports, "govulncheck.json")
     have_gvc = has_tree and bool(_version("govulncheck", ("-version",)) or _version("govulncheck"))
     if not has_tree:
         print("govulncheck did not run: no source tree (or no head to bind it to) of the scanned image was given")
     genv = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="-mod=vendor", GOPROXY="off", CGO_ENABLED="0", GOENV="off")
-    rc, gerr = _run(["govulncheck", "-json", "./..."], out_path=gvc_path, timeout=1500, cwd=source, env=genv) if have_gvc else (255, "")
+    rc, gerr = (255, "")
+    if have_gvc:
+        rc, gerr = _run(["govulncheck", "-json", "./..."], out_path=gvc_path, timeout=1500, cwd=source, env=genv)
     if has_tree and not have_gvc:
         print("govulncheck did not run: the tool is not installed")
     if os.path.exists(gvc_path) and os.path.getsize(gvc_path) > 0 and rc in (0, 3):
@@ -368,8 +379,8 @@ def main():
     if not digest:
         digest = test_image.split("@")[-1] if "@" in test_image else "sha256:unknown"
 
-    # REQ-AUD-14 AC6/AC7: endoflife.date maintenance flags for the base + carriers, and the base
-    # pin-lag block (best-effort; empty when endoflife.date is unreachable).
+    # REQ-AUD-14 AC6/AC7 of .github/agent/docs/cve-auditor-matrix.md: endoflife.date maintenance flags for
+    # the base + carriers, and the base pin-lag block (best-effort; empty when endoflife.date is unreachable).
     from datetime import date
     try:
         _today_iso = os.environ.get("AUDITOR_TODAY") or date.today().isoformat()
@@ -386,7 +397,7 @@ def main():
         "scanner_reports": scanner_reports, "scanner_status": status,
         "govulncheck": gvc, "known_defect_log": kdl if os.path.exists(kdl) else None,
         "kev_catalog": cli.opt("--kev"),
-        # REQ-AUD-14: SBOM carrier relationships (candidate not-pullable carriers) + the
+        # SBOM carrier relationships (candidate not-pullable carriers) + the
         # endoflife.date maintenance flags (carriers/base on LTS/EOL lines) and the base pin-lag
         # block. `eol`/`base` are best-effort (empty when endoflife.date is unreachable).
         "carriers": carriers, "eol": _eol_list, "base": _base_block,
