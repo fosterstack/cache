@@ -224,11 +224,11 @@ The individual statements, all verifiable with the same command shape
 | `https://fosterstack.com/attestations/scan-trivy/v1` (also `-grype`, `-snyk`) | the verification stage | this digest was scanned clean by that scanner, with its version and database state |
 | `https://fosterstack.com/attestations/acceptance/v1` | the acceptance stage | the per-AC acceptance results for this digest |
 | `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
-| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results ([REQ-REL-001](quality/traceability.md#req-rel-001--signed-attested-releases), [REQ-REL-002](quality/traceability.md#req-rel-002--anonymous-availability)): the anonymous verification and every-tag anonymous pull passed for this digest |
+| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results: the anonymous verification and every-tag anonymous pull passed for this digest |
 
 **Resolving the deferred release ACs.** Because the release manifest is
 attached BEFORE publication, its `ac_results` shows the two publication
-ACs (`REQ-REL-001-AC1` in [REQ-REL-001](quality/traceability.md#req-rel-001--signed-attested-releases) and `REQ-REL-002-AC1` in [REQ-REL-002](quality/traceability.md#req-rel-002--anonymous-availability)) as
+ACs (the release is signed and attested; it is available anonymously) as
 `deferred-to-publication`, and its `publication_evidence` field points
 here. Their **pass** outcome lives in the separate publication attestation
 above — verify it (needs a token), pinned to the promotion workflow and
