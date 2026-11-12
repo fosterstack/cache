@@ -238,7 +238,8 @@ for f in need:
 # a file that carries the literal and is neither named nor a fixture, a generated file, a test of something else or a record is a file the body would have to name
 exempt = ('build/', 'docs/quality/', 'requirements/', 'test-evidence/', 'audits/')
 exempt_files = {'bin/build-apk.sh', 'bin/melange-apko-lib.sh', 'bin/check-version-literals.sh', 'bin/build-apk-test.sh', 'bin/build-helpers-test.sh', 'bin/chain-check-scripts-test.sh',
-                'bin/chain-check-wiring-test.sh', 'bin/refresh-inputs-test.sh', 'internal/server/tls_test.go'}
+                'bin/chain-check-wiring-test.sh', 'bin/refresh-inputs-test.sh', 'internal/server/tls_test.go',
+                '.vex/fosterstack-cache.openvex.json'}
 for f in subprocess.run(['git', '-C', root, 'ls-files'], capture_output=True, text=True).stdout.split():
     if f in need or f in exempt_files or f.startswith(exempt):
         continue

@@ -3635,10 +3635,10 @@ PY
 # exactly those ten paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json freeze/;
 # Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the
 # recipe check and build-apk.sh stay strict.
-TREE=$(mktemp -d)/tree.sh
+TREE=$(mktemp -d -p "$work")/tree.sh
 { echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'
   sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
-tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
+tree_repo() { local d; d=$(mktemp -d -p "$work"); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
   mkdir archive host-tools out witness-apk freeze && for f in archive host-tools out witness-apk freeze; do echo x > \
     "$f/f"; done; echo '{}' > admission.json; echo x > freeze/freeze.txt ); echo "$d"; }
 d=$(tree_repo)
@@ -3651,18 +3651,18 @@ if [ -f "$TREE" ]; then bash "$TREE" "$d" > /dev/null 2>&1; fi
 echo s > "$d/stray.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a stray untracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a stray file is hidden"
 rm "$d/stray.go"; mkdir -p "$d/pkg/archive" && echo s > "$d/pkg/archive/x.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a nested archive/ below the root still makes the tree dirty (the exclusions are anchored)" || bad "REQ-BUILDAPK-001-AC4 tree: a nested archive/ is hidden"
 rm -r "$d/pkg"; echo b >> "$d/tracked"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a modified tracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a modified tracked file is hidden"
-n=$(mktemp -d); nrc=0; if [ -f "$TREE" ]; then bash "$TREE" "$n" > /dev/null 2>&1 || nrc=$?; fi
+n=$(mktemp -d -p "$work"); nrc=0; if [ -f "$TREE" ]; then bash "$TREE" "$n" > /dev/null 2>&1 || nrc=$?; fi
 [ "$nrc" = 1 ] && [ -z "$(ls -A "$n")" ] && ok "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block refuses (exit 1) and writes nothing" || bad "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block did not refuse with exit 1 and write nothing (exit $nrc)"
-r=$(mktemp -d); ( cd "$r" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
+r=$(mktemp -d -p "$work"); ( cd "$r" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
   mkdir build-in witness-build witness-rapk && for f in build-in witness-build witness-rapk; do echo x > "$f/f"; done; echo '{}' > policy.json; mkdir archive out witness-apk host-tools; echo x > archive/f; echo x > out/f; echo x > witness-apk/f; echo x > host-tools/f; echo '{}' > admission.json )
 [ -n "$(git -C "$r" status --porcelain)" ] && bash "$TREE" "$r" > /dev/null 2>&1 && [ -z "$(git -C "$r" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout (build-in/, witness-build/, witness-rapk/, policy.json beside the Build paths) is clean after the block" || bad "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout is still dirty after the block: $(git -C "$r" status --porcelain | tr '\n' ' ')"
-f=$(mktemp -d); ( cd "$f" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && printf '# local excludes' > .git/info/exclude )
+f=$(mktemp -d -p "$work"); ( cd "$f" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && printf '# local excludes' > .git/info/exclude )
 bash "$TREE" "$f" > /dev/null 2>&1; [ -z "$(git -C "$f" status --porcelain)" ] && [ "$(head -1 "$f/.git/info/exclude")" = "# local excludes" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline keeps its last line and still takes the patterns" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline swallowed a pattern: $(head -3 "$f/.git/info/exclude" | tr '\n' '|')"
-g=$(mktemp -d); ( cd "$g" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir out && echo x > out/f && printf ' /out/\n' > .git/info/exclude )
+g=$(mktemp -d -p "$work"); ( cd "$g" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir out && echo x > out/f && printf ' /out/\n' > .git/info/exclude )
 bash "$TREE" "$g" > /dev/null 2>&1; [ -z "$(git -C "$g" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' (a different pattern to git) is not taken for /out/, and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' left the tree dirty: $(git -C "$g" status --porcelain | tr '\n' ' ')"
-m=$(mktemp -d); ( cd "$m" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && rm -rf .git/info )
+m=$(mktemp -d -p "$work"); ( cd "$m" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && rm -rf .git/info )
 bash "$TREE" "$m" > /dev/null 2>&1; [ -z "$(git -C "$m" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the block makes it and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the tree is dirty or the block failed: $(git -C "$m" status --porcelain | tr '\n' ' ')"
-n=$(mktemp -d); ( cd "$n" && git init -q && rm -rf .git/info && echo x > .git/info )
+n=$(mktemp -d -p "$work"); ( cd "$n" && git init -q && rm -rf .git/info && echo x > .git/info )
 nrc=0; nerr=$(bash "$TREE" "$n" 2>&1 >/dev/null) || nrc=$?
 [ "$nrc" = 1 ] && case "$nerr" in *"the exclude file"*) true ;; *) false ;; esac && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block exits 1 and names the exclude file" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block did not exit 1 naming the exclude file (rc=$nrc: $nerr)"
 python3 - << 'PY' && ok "REQ-BUILDAPK-001-AC4 tree: build-apk.sh holds the exclusion block once, before the sealed melange call" || bad "REQ-BUILDAPK-001-AC4 tree: the exclusion block is missing, repeated or after the sealed melange call"
