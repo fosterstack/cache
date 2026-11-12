@@ -62,9 +62,10 @@ def name_version(purl_or_id):
 
 def same_pkg(a, b):
     """Names match exactly, or — when one side carries no namespace (busybox
-    vs the busybox of another namespace) — by last path segment. Versions must be equal."""
+    vs the busybox of another namespace) — by last path segment. Versions must be equal, except that a
+    subcomponent (b) naming no version stands for every version of the package."""
     (an, av), (bn, bv) = a, b
-    if bv and av != bv:                 # a subcomponent that names no version stands for every version of that package (as the generated Inspector rule reads it)
+    if bv and av != bv:                 # as the generated Inspector rule reads it
         return False
     if an == bn:
         return True
