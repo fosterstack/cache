@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-CI-001-AC1, REQ-CI-001-AC2
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -64,7 +64,7 @@ PY
 case_() {
   local f="$work/$1.yml"
   cp "$root/.github/workflows/go-freshness.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -110,9 +110,10 @@ MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as i
     "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
                              "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
 }
 jobs = d.get("jobs") or {}
+if "dependency-review" in jobs:
+    bad.append("the dependency-review job is back in ci.yml (REQ-CI-001-AC1: deleted)")
 for jid, (name, perms, env, needs, cond) in MOVED.items():
     j = jobs.get(jid)
     if j is None:
@@ -157,7 +158,7 @@ PY
 case_ci() {
   local f="$work/ci-$1.yml"
   cp "$root/.github/workflows/ci.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -174,7 +175,7 @@ case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file all
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
 case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
 case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
-case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
+case_ci dependency-review-back   bad "d['jobs']['dependency-review'] = {'name': 'dependency-review', 'runs-on': 'ubuntu-latest', 'steps': []}"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
@@ -238,7 +239,7 @@ PY
 case_rescan() {
   local f="$work/mcr-$1.yml"
   cp "$root/.github/workflows/main-candidate-rescan.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -271,8 +272,8 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" not in on:
-    bad.append("acceptance.yml's events changed: %s" % list(on))
+if sorted(on) != ["workflow_call"]:
+    bad.append("acceptance.yml's events are not workflow_call alone (REQ-CI-001-AC2): %s" % list(on))
 outs = (on.get("workflow_call") or {}).get("outputs") or {}
 if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.acceptance-gradle.outputs.results }}",
                                                    "maven-results": "${{ jobs.acceptance-maven.outputs.results }}"}:
@@ -306,7 +307,7 @@ PY
 case_acc() {
   local f="$work/acc-$1.yml"
   cp "$root/.github/workflows/acceptance.yml" "$f" 2>/dev/null || : > "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -323,7 +324,9 @@ case_acc gradle-renamed        bad "d['jobs']['acceptance-gradle']['name'] = 'gr
 case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['matrix']['extension-version'] = ['1.2.3']"
 case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
 case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
-case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
+case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
+case_acc dispatch-added        bad "d['on']['workflow_dispatch'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -336,9 +339,11 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-# exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
-if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
-    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
+# exactly: a schedule (the nightly run), workflow_dispatch and tags v* (REQ-CI-001-AC2): no pull_request, no push to a branch, no workflow_call
+# (REQ-SCAN-015 keeps it uncallable)
+if sorted(on) != ["push", "schedule", "workflow_dispatch"] or on["push"] != {"tags": ["v*"]} or on["workflow_dispatch"] != "" \
+        or len(on["schedule"]) != 1 or not str(on["schedule"][0].get("cron", "")).strip():
+    bad.append("scan.yml's events are not exactly one schedule, workflow_dispatch and tags v*: %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
 if builds != ["build"]:
@@ -426,7 +431,7 @@ PY
 case_scan() {
   local f="$work/scan-$1.yml"
   cp "$root/.github/workflows/scan.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -440,7 +445,13 @@ PY
 }
 case_scan real                   ok  ""
 case_scan tags-dropped           bad "d['on']['push'].pop('tags')"
-case_scan event-added            bad "d['on']['workflow_dispatch'] = ''"
+case_scan call-added             bad "d['on']['workflow_call'] = ''"
+case_scan merge-group-added      bad "d['on']['merge_group'] = ''"
+case_scan push-main-added        bad "d['on']['push']['branches'] = ['main']"
+case_scan schedule-dropped       bad "d['on'].pop('schedule')"
+case_scan dispatch-dropped       bad "d['on'].pop('workflow_dispatch')"
+case_scan second-schedule        bad "d['on']['schedule'].append({'cron': '5 5 * * *'})"
+case_scan pr-added               bad "d['on']['pull_request'] = ''"
 case_scan second-build           bad "d['jobs']['build-b'] = dict(d['jobs']['build'])"
 case_scan b-uploads-oci          bad "d['jobs']['assemble-b']['with']['upload-oci'] = 'true'"
 case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
@@ -479,7 +490,7 @@ case_scan compare-no-guard       bad "import re; s = d['jobs']['reproducibility'
 # the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
 # stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
-go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
+full-suite.yml go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
 stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
 supply-chain.yml"
@@ -487,8 +498,8 @@ judge_set() {  # $1: the directory's entries as a JSON list (every entry, not on
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 25:
-    print("the ratified list is not 25 files"); sys.exit(1)
+if len(want) != 26:
+    print("the ratified list is not 26 files"); sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 if odd or extra or missing or len(got) != len(set(got)):
@@ -509,7 +520,76 @@ case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"
+case_set full-suite-gone   bad "$(edit_set 's.remove("full-suite.yml")')"
 case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# REQ-CI-001-AC1, AC2 (owner Nov 10 2026: the full suite runs at promotion, not on pull requests): none of the removed contexts is made by a job of
+# a workflow that runs on pull_request; ci.yml triggers only push to main and pull_request; acceptance.yml only workflow_call; codeql.yml has no
+# pull_request; scan.yml only schedule, workflow_dispatch and tags v*, and cannot be called; no workflow has merge_group.
+judge_events() {  # $1: a directory of the workflow files
+  python3 - "$1" <<'PY'
+import os, sys, yaml
+d = sys.argv[1]
+W = {n: yaml.load(open(os.path.join(d, n)), Loader=yaml.BaseLoader) for n in sorted(os.listdir(d)) if n.endswith(".yml")}
+GONE = {"gosec", "analyze", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor", "dependency-review", "fips140-only", "acceptance-gradle",
+        "acceptance-maven", "reproducibility", "coverage", "scan"}
+bad = []
+def events(w):
+    on = w.get("on") or {}
+    return list(on) if isinstance(on, dict) else ([on] if isinstance(on, str) else list(on))
+for n, w in W.items():
+    ev = events(w)
+    if "merge_group" in ev: bad.append("%s has a merge_group trigger" % n)
+    if "pull_request" in ev:
+        for jid, j in (w.get("jobs") or {}).items():
+            nm = (j.get("name") or jid).split(" (")[0]
+            if nm in GONE or jid in GONE: bad.append("%s runs %s on pull_request" % (n, jid))
+            if str(j.get("uses", "")).endswith(("acceptance.yml", "scan.yml")): bad.append("%s calls %s on pull_request" % (n, j["uses"]))
+def on_of(n): return (W.get(n) or {}).get("on")
+if on_of("ci.yml") != {"push": {"branches": ["main"]}, "pull_request": ""}: bad.append("ci.yml's events are not push to main and pull_request: %s" % on_of("ci.yml"))
+if list(on_of("acceptance.yml") or []) != ["workflow_call"]: bad.append("acceptance.yml's events are not workflow_call alone: %s" % list(on_of("acceptance.yml") or []))
+c = on_of("codeql.yml") or {}
+if "pull_request" in c or "schedule" not in c: bad.append("codeql.yml has a pull_request trigger or lost its schedule: %s" % list(c))
+sc = on_of("scan.yml") or {}
+if sorted(sc) != ["push", "schedule", "workflow_dispatch"] or sc.get("push") != {"tags": ["v*"]}: bad.append("scan.yml's events are not schedule, workflow_dispatch and tags v*: %s" % sc)
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_events() {  # name want python-edit-of-(W: file name -> parsed workflow)
+  local dir="$work/ev-$1"; rm -rf "$dir"; mkdir -p "$dir"; cp "$root"/.github/workflows/*.yml "$dir/"
+  if [ -n "$3" ]; then python3 - "$dir" "$3" <<'PY' || :
+import os, sys, yaml
+d, edit = sys.argv[1], sys.argv[2]
+W = {n: yaml.load(open(os.path.join(d, n)), Loader=yaml.BaseLoader) for n in os.listdir(d) if n.endswith(".yml")}
+exec(edit)
+for n, w in W.items(): yaml.safe_dump(w, open(os.path.join(d, n), "w"), sort_keys=False)
+PY
+  fi
+  if out=$(judge_events "$dir" 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS ev:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL ev:$1 → $got, want $2 ($out)"; fi
+}
+case_events real                 ok  ""
+case_events gosec-in-ci          bad "W['ci.yml']['jobs']['gosec'] = {'name': 'gosec', 'runs-on': 'x', 'steps': []}"
+case_events coverage-in-ci       bad "W['ci.yml']['jobs']['coverage'] = {'name': 'coverage', 'runs-on': 'x', 'steps': []}"
+case_events depreview-in-ci      bad "W['ci.yml']['jobs']['dependency-review'] = {'runs-on': 'x', 'steps': []}"
+case_events scan-in-supply-chain bad "W['supply-chain.yml']['jobs']['scan'] = {'runs-on': 'x', 'steps': []}"
+case_events analyze-in-supply    bad "W['supply-chain.yml']['jobs']['analyze'] = {'name': 'analyze (go)', 'runs-on': 'x', 'steps': []}"
+case_events repro-in-dependabot  bad "W['dependabot-auto-merge.yml']['jobs']['reproducibility'] = {'runs-on': 'x', 'steps': []}"
+case_events acceptance-called-on-pr bad "W['ci.yml']['jobs']['acc'] = {'uses': './.github/workflows/acceptance.yml'}"
+case_events ci-merge-group       bad "W['ci.yml']['on']['merge_group'] = ''"
+case_events gate-merge-group     bad "W['agent-review-gate.yml']['on']['merge_group'] = ''"
+case_events ci-dispatch          bad "W['ci.yml']['on']['workflow_dispatch'] = ''"
+case_events ci-no-pr             bad "W['ci.yml']['on'].pop('pull_request')"
+case_events acceptance-pr        bad "W['acceptance.yml']['on']['pull_request'] = ''"
+case_events acceptance-push      bad "W['acceptance.yml']['on']['push'] = {'branches': ['main']}"
+case_events codeql-pr            bad "W['codeql.yml']['on']['pull_request'] = ''"
+case_events codeql-no-schedule   bad "W['codeql.yml']['on'].pop('schedule')"
+case_events scan-pr              bad "W['scan.yml']['on']['pull_request'] = ''"
+case_events scan-push-main       bad "W['scan.yml']['on']['push']['branches'] = ['main']"
+case_events scan-callable        bad "W['scan.yml']['on']['workflow_call'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR concurrency (advisor, Oct 22: superseded pull-request runs starved the merge train). ci, scan, supply-chain, acceptance and codeql each carry ONE
