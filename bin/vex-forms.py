@@ -219,6 +219,7 @@ def _scopes(statement, digests, meta=None):
                 pm = re.fullmatch(r"pkg:golang/([^/@?#]+(?:/[^/@?#]+)+)(?:@([^?#]+))?", sid)
                 if pm and "." not in urllib.parse.unquote(pm.group(1)).split("/")[0]:
                     pm = None                            # a module path starts with a domain (github.com/…); anything else is not one
+            stdlib = not pm
             if not pm:                                   # the Go standard library only: exactly pkg:golang/stdlib@<version> (a plain version: no go-or-v prefix, no @ or escape), no other golang name
                 pm = re.fullmatch(r"pkg:golang/(stdlib)@(?!go|v)([^/@?#%]+)", sid)
             if not pm:                                   # a namespace on a generic package, a qualifier or subpath: not represented
@@ -229,7 +230,10 @@ def _scopes(statement, digests, meta=None):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
             if "/" in pm.group(1) and (any(c in seg for seg in name_.split("/") for c in "@?#") or name_.count("/") != pm.group(1).count("/")):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
-            if sid.startswith("pkg:golang/stdlib@"):     # scanners report the standard library's version as go1.27.2 for purl version 1.27.2
+            if stdlib:
+                # Scanners write the standard library's version go1.27.2 for purl version 1.27.2: Google's package list does; Inspector's
+                # spelling is a guess. go1.27.2 cannot be another package's version: the stdlib pattern refuses a go or v prefix, and a
+                # generic package keeps its version as written.
                 ver_ = "go%s" % ver_
             out.append((ds, (name_, ver_)))
     return out
@@ -261,7 +265,6 @@ def inspector(vex, images, version):
         if _status(st) not in SUPPRESSIBLE:
             continue
         cve = _cve(st)
-        why = st.get("impact_statement") or ("fixed in this release" if st["status"] == "fixed" else st.get("justification", ""))
         for ds, pkg in _scopes(st, digests, meta):
             if not ds or pkg is None:                    # no package named: Inspector cannot narrow the rule to it, so no rule (owner Oct 16)
                 continue
@@ -275,8 +278,8 @@ def inspector(vex, images, version):
             filters.append({
                 "name": ("fosterstack-cache-%s-%s%s" % (version, cve, "" if k == 0 else "-%d" % (k + 1)))[:128],
                 "action": "SUPPRESS",
-                "description": ("FosterStack Cache %s VEX: %s is %s%s (%s)" % (
-                    version, cve, st["status"], " in %s" % " ".join(x for x in pkg if x), why))[:512],
+                "description": "FosterStack Cache %s VEX: %s is %s in %s. The full statement, with its scope, is in the CSAF file." % (
+                    version, cve, st["status"], " ".join(x for x in pkg if x)),
                 "reason": "FosterStack Cache published VEX statement",
                 "filterCriteria": crit,
             })
