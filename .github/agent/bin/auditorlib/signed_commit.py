@@ -41,7 +41,7 @@ _AUDIT_BRANCH = re.compile(r"^audit/[0-9a-f]{40}$")
 BUMP_PREFIXES = ("dependabot/go_modules/", "auditor/bump-")
 # matches dependabot/go_modules/github.com/prometheus/client_golang-1.25.0 and auditor/bump-example.com-m-1.1.0;
 # refuses dependabot/npm_and_yarn/x, auditor/panel, auditor/bump- (nothing after the dash) and main
-_BUMP_BRANCH = re.compile(r"^(?:%s)[A-Za-z0-9._/+-]+$" % "|".join(map(re.escape, BUMP_PREFIXES)))
+_BUMP_BRANCH = re.compile(r"^(?:%s)[A-Za-z0-9._/+-]+\Z" % "|".join(map(re.escape, BUMP_PREFIXES)))
 # the first words of the sweep's commit message
 RECORDS_HEADLINE = "Vendor records for the "
 # beside everything under vendor/, the places a records commit may write
