@@ -94,6 +94,22 @@ class Load(unittest.TestCase):
         self.assertIsNone(N.load(self.write(None, raw=b"\xff\xfe".decode("latin-1"))))
         self.assertIsNone(N.load(self.write(None, raw=json.dumps(good()) + " " * N.MAX_BYTES)))     # over the size bound
 
+    def test_the_narrative_date_must_be_on_the_calendar(self):      # row 25
+        for bad in ("2026-02-30", "2026-13-01", "2026-00-10"):
+            d = good(); d["narrative"]["date"] = bad
+            self.assertIsNone(N.load(self.write(d)), bad)
+        d = good(); d["narrative"]["date"] = "2024-02-29"
+        self.assertEqual(N.load(self.write(d)), d)
+
+    def test_a_json_constant_anywhere_in_the_state_makes_it_unusable_through_both_readers(self):      # row 25: one reader, refuse_constant
+        for const in ("NaN", "Infinity", "-Infinity"):
+            raw = json.dumps(good()).replace('"Nothing changed."', const)
+            self.assertIsNone(N.load(self.write(None, raw=raw)), const)
+            self.assertEqual(N.load_unsettled(self.write(None, raw=raw), "2026-10-23"), ("missing", {}), const)
+            raw = json.dumps(good()).replace('"unsettled": {}', '"unsettled": {"CVE-1": {"runs": %s, "last": "2026-10-22"}}' % const)
+            self.assertIsNone(N.load(self.write(None, raw=raw)), const)
+            self.assertEqual(N.load_unsettled(self.write(None, raw=raw), "2026-10-23"), ("missing", {}), const)
+
     def test_every_malformed_field_is_refused(self):
         def bad(mut):
             d = good(); mut(d); return N.load(self.write(d))
