@@ -220,9 +220,6 @@ class FixtureNet:
     def observed(self):
         return self.fx.get("observed")
 
-    def modified(self, advisory_id):
-        return None
-
 
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
             "osv": "github.com/google/osv-scanner/v2", "golangci-lint": "github.com/golangci/golangci-lint/v2",
@@ -848,17 +845,6 @@ class LiveNet:
                     out[f"{i.name}@{tag}"] = i.version
         return out
 
-    def modified(self, advisory_id):
-        if advisory_id.startswith("GHSA-"):
-            adv = self._gh_json(f"advisories/{advisory_id}", need=(("updated_at", (str, type(None))),))
-            if adv:
-                return adv["updated_at"]
-        try:
-            with urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(advisory_id)}", timeout=30) as r:
-                return age._shaped(json.load(r), (("modified", (str, type(None))),), "the OSV record")["modified"]
-        except (OSError, ValueError):
-            return None
-
 
 def _is_text_list(x):
     return isinstance(x, list) and bool(x) and all(isinstance(i, str) for i in x)
@@ -1098,7 +1084,8 @@ def rollback(item, net, now):
         if any_affected(lists):
             continue
         cand = v.get("_item")
-        if cand is not None and net.proofs(cand) is not None and not age.judge_item(cand, net.proofs(cand), now)[0]:
+        proofs = net.proofs(cand) if cand is not None else None
+        if proofs is not None and not age.judge_item(cand, proofs, now)[0]:
             continue  # the candidate commit must itself be provably old enough (a tag moved under an old release is not an old version)
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
             # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
