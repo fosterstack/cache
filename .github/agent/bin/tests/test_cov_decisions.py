@@ -218,6 +218,16 @@ class ClassifyDoManifest(TmpCase):
             "scanner_set": "panel", "panel": {"verdict": verdict},
             "scanner_reports": {k: verdict for k in PL.PANEL_SCANNERS}, "scanner_status": {}})
 
+    def test_a_damaged_known_defect_log_is_a_classify_exit_not_a_traceback(self):
+        """a present log without its "defects" list is a stop (ReviewedInputInvalid): main() leaves with a "classify: ..." message, no traceback"""
+        manifest = self._manifest("c-damaged-log")
+        self.put("log.json", {})
+        with mock.patch.object(cli, "ask_model", return_value={"category": "false_positive"}):
+            code = self.main_exit(classify, ["--manifest", manifest, "--adjudicator", "ADJ", "--out", self.p("out-damaged")])
+        self.assertIsInstance(code, str)
+        self.assertTrue(code.startswith("classify: "), code)
+        self.assertIn("defects", code)
+
     def _run(self, commit):
         out = self.p("out-" + commit)
         calls = []
