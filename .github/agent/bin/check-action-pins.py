@@ -242,7 +242,7 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
-    "5efa7fbe8f684dd468871aecda6bcd803e460c062123c91538bf00fbe6c977d4",   # the gate workflow whose header says what the run logs show of the runs Dependabot triggers
+    "e6d6eaf0e9dbf9f1734ad1af6048eb658bba1d050a8fc5560886ecfefa18f88f",   # the same file after the change in flight
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2701,8 +2701,64 @@ def _unsafe_downloads(text):
 
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
-_TOKEN_URL_CONDITION = ("(this exclusion holds only while the step has no `shell:`, its own or a default, and the file names ACTIONS_ID_TOKEN_REQUEST_URL "
-                        "nowhere but in the excluded steps' run text)")
+_TOKEN_URL_CONDITION = (
+    "(this exclusion holds only while the step has no `shell:`, its own or a default; the parsed file names "
+    "ACTIONS_ID_TOKEN_REQUEST_URL nowhere but in the excluded steps' run text; no env key is a bash startup hook "
+    "or PATH; "
+    "nothing names GITHUB_PATH; and no text that names GITHUB_ENV assigns such a name. "
+    "Not seen: a name built at run time, or written by a committed script)")
+# the names pin-wiring-test.sh refuses in the env of the allowlist job: a startup file, a search path, an interpreter's
+# or the runner's own variables. Kept the same as that list; it lives in a test's inline program and cannot be imported.
+_RISKY_ENV = frozenset({"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "SHELLOPTS", "BASHOPTS",
+                        "PS4", "IFS", "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"})
+_RISKY_ENV_PREFIX = re.compile(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)")
+_ASSIGNED = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*(?:%%)?)(?:=|<<)")
+
+
+def _risky_env(name):
+    return name in _RISKY_ENV or _RISKY_ENV_PREFIX.match(name) is not None
+
+
+def _token_url_breach(text, name, inside):
+    """Why a workflow file breaks the condition of the entries excluded for `name`, or None. `inside` is how often the
+    excluded steps' run texts hold the name. The file is read as GitHub reads it, parsed: a key or a value spelled with
+    YAML escapes or quotes counts as what it decodes to."""
+    try:
+        todo = [d for d in yaml.compose_all(text, Loader=StrLoader) if d is not None]
+    except yaml.YAMLError:
+        return "the file does not parse"
+    scalars, env_keys, seen = [], [], set()
+    while todo:
+        node = todo.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.ScalarNode):
+            scalars.append(node.value)
+        elif isinstance(node, yaml.SequenceNode):
+            todo.extend(node.value)
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                todo += [key, value]
+                if isinstance(key, yaml.ScalarNode) and key.value == "env":
+                    if not isinstance(value, yaml.MappingNode):
+                        return "an env that is not a mapping: its keys cannot be read"
+                    env_keys += [k.value if isinstance(k, yaml.ScalarNode) else "" for k, _ in value.value]
+    if sum(v.count(name) for v in scalars) != inside:
+        return f"{name} is named outside the excluded steps' run text"
+    for key in env_keys:
+        if not key or _risky_env(key):
+            return f"an env sets {key or 'a key that is not a plain name'}"
+    for v in scalars:
+        if "GITHUB_PATH" in v:
+            return "GITHUB_PATH is named"
+        if "GITHUB_ENV" in v:
+            for written in _ASSIGNED.findall(v):
+                if _risky_env(written):
+                    return f"a text that names GITHUB_ENV assigns {written}"
+    return None
+
+
 DOWNLOAD_EXCLUSIONS = {
     (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
@@ -2726,6 +2782,16 @@ def _exclusion_key(item):
     """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts: (workflow file, job, step index, sha256 of its run text), or None."""
     m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
     return (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
+
+
+def _excluded_run_texts(scripts, name):
+    """The run texts of this job's steps that an entry excludes on the condition about `name` (no shell on the step)."""
+    texts = []
+    for item in scripts:
+        entry = DOWNLOAD_EXCLUSIONS.get(_exclusion_key(item))
+        if entry and item[2] is None and entry[1] == name and entry[2] is None:
+            texts.append(item[1])
+    return texts
 
 
 def check_runs(where_job, scripts, bad, tree=None):
@@ -2775,10 +2841,8 @@ def check_runs(where_job, scripts, bad, tree=None):
                 except Exception:
                     ftext = None                                 # a file that cannot be read keeps the finding
                 if ftext is not None and excl[2] is None:
-                    # the name stands in the file only inside the excluded steps' own run text: an env key in any YAML form, a line for GITHUB_ENV or any other mention keeps the finding
-                    inside = sum(other[1].count(excl[1]) for other in scripts
-                                 if other[2] is None and DOWNLOAD_EXCLUSIONS.get(_exclusion_key(other), ("", "", ""))[1:] == (excl[1], None))
-                    if ftext.count(excl[1]) == inside:
+                    inside = sum(text.count(excl[1]) for text in _excluded_run_texts(scripts, excl[1]))
+                    if _token_url_breach(ftext, excl[1], inside) is None:
                         continue
                 elif ftext is not None and ftext.count(excl[2]) == 1 and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1:
                     continue

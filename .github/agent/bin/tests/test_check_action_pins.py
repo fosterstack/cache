@@ -872,17 +872,27 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"   # main's gate workflow
-GATE_B = "5efa7fbe8f684dd468871aecda6bcd803e460c062123c91538bf00fbe6c977d4"   # the gate workflow whose header says what the run logs show of the runs Dependabot triggers
-# the edit that makes the second accepted digest (old text, new text): the gate workflow with it applied is the second variant;
-# either variant is derived from whichever one the repository carries
+GATE_B = "e6d6eaf0e9dbf9f1734ad1af6048eb658bba1d050a8fc5560886ecfefa18f88f"   # the same file after this change
+# this change's edits to the gate workflow (old text, new text): its header, its notice and its sweep summary no
+# longer say that a run Dependabot triggered has no App credentials; either variant is derived from the other
 GATE_HUNKS = (
-    ("# - Dependabot-triggered runs get no environment secrets, so a Dependabot PR's publish finds no\n#   App credentials. The scheduled SWEEP (not Dependabot-triggered) judges every open PR into the\n#   default branch whose head has no auditor-review-gate check from the App yet, and publishes.\n",
-     '# - A PR run that holds no App credentials publishes nothing and says so in a notice. The runs\n#   Dependabot triggered did hold them when their logs were read (Nov 12 2026: first attempts and\n#   re-runs alike), so this is a fallback, not the usual path of a Dependabot PR. The scheduled SWEEP\n#   judges every open PR into the default branch whose head has no auditor-review-gate check from\n#   the App yet, and publishes.\n'),
+    ("# - Dependabot-triggered runs get no environment secrets, so a Dependabot PR's publish finds no\n"
+     '#   App credentials. The scheduled SWEEP (not Dependabot-triggered) judges every open PR into the\n'
+     '#   default branch whose head has no auditor-review-gate check from the App yet, and publishes.\n',
+     '# - A PR run that holds no App credentials publishes nothing and says so in a notice. The scheduled\n'
+     '#   SWEEP judges every open PR into the default branch whose head has no auditor-review-gate check\n'
+     '#   from the App yet, or a failed one it still judges again, and publishes.\n'),
+    ('echo "::notice::no App credentials in this run (a Dependabot-triggered run gets none) — '
+     'the scheduled sweep publishes this PR\'s check"',
+     'echo "::notice::no App credentials in this run — the scheduled sweep publishes this PR\'s check"'),
+    ('-f "output[summary]=Judged by the scheduled sweep (the PR\'s own run had no App '
+     'credentials)." >/dev/null || fail=1',
+     '-f "output[summary]=Judged by the scheduled sweep." >/dev/null || fail=1'),
 )
 
 
 def gate_variants():
-    """(main's gate workflow, the gate workflow with the corrected header), from the repository's copy."""
+    """(main's gate workflow, the gate workflow after this change), from the repository's copy."""
     with open(GATE) as fh:
         cur = fh.read()
     if all(cur.count(old) == 1 for old, _ in GATE_HUNKS):
@@ -931,14 +941,14 @@ class GateWorkflowDigestSet(unittest.TestCase):
         self.assertEqual(M.gate_digest(b), GATE_B)
 
     def test_a_tree_with_either_accepted_gate_workflow_passes(self):
-        for name, text in zip(("main", "corrected-header"), gate_variants()):
+        for name, text in zip(("main", "changed"), gate_variants()):
             with self.subTest(gate=name):
                 code, out = run([gate_tree(text)])
                 self.assertEqual(code, 0, out)
                 self.assertIn(", 0 finding(s)", out)
 
     def test_a_dependabot_pin_bump_in_either_still_matches(self):
-        for name, text in zip(("main", "corrected-header"), gate_variants()):
+        for name, text in zip(("main", "changed"), gate_variants()):
             with self.subTest(gate=name):
                 bumped = bump_first_pin(text)
                 self.assertNotEqual(bumped, text)
