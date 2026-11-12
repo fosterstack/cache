@@ -99,16 +99,9 @@ environment uses (this product has no opinion on that part).
 
 Do this on the connected machine, so verification happens against the real
 Sigstore/Rekor infrastructure rather than something you'd need connectivity
-for on the disconnected side too:
-
-```sh
-curl -fsSLO "https://raw.githubusercontent.com/fosterstack/cache/v${VERSION}/build/keys/release.rsa.pub"
-cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
-
-LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -   # confirms the archive(s) you're about to move
-```
-
-To check that this key is the one the release names, follow [Check the release key](verify-key.md).
+for on the disconnected side too: run the two verify steps of
+[Copy-paste: the whole set](#copy-paste-the-whole-set-on-the-connected-machine),
+the release key check and the checksum check, before you transfer anything.
 
 A release before v0.3.0 carries a short-lived certificate instead of a key: verify it as shown in [Install FosterStack Cache](install.md). <!-- pinned: historical -->
 
