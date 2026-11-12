@@ -60,7 +60,7 @@ need("release-key-manifest.json" in flat and "release-key-manifest.sig" in flat,
 sents = [x.strip() for x in re.split(r"(?<=[.;])\s+", flat) if x.strip()]
 def sentence(*pats):
     return any(all(re.search(p, x, re.I) for p in pats) for x in sents)
-need(sentence(r"\bsecond\b", r"only if", r"\bfirst\b", r"Verified OK"), "no plain line says to run the second command only if the first prints Verified OK")
+need(sentence(r"\bsecond\b.*\bonly if\b.*\bfirst\b.*Verified OK"), "no plain line says to run the second command only if the first prints Verified OK")
 need(sentence(r"--insecure-ignore-tlog", r"offline", r"no (transparency )?log entry|no entry"), "no sentence says why the first command has --insecure-ignore-tlog (root key offline, no log entry)")
 need(sentence(r"\bcheck\b", r"current time", r"valid_from", r"valid_to"), "no sentence tells the reader to check valid_from and valid_to against the current time")
 need(sentence(r"\bstop\b", r"current time", r"at or after valid_to", r"before valid_from"), "no sentence tells the reader to stop when the current time is at or after valid_to or before valid_from")
@@ -70,8 +70,10 @@ need(sentence(r"newest manifest", r"signature", r"release assets", r"key_id"), "
 need(sentence(r"verif", r"same way"), "no sentence says to verify the newest manifest the same way")
 need(sentence(r"\bstop\b", r"revoked_at", r"at or before the current time"), "no sentence says to stop if revoked_at is at or before the current time")
 for x in sents:
-    if re.search(r"publish date", x) and re.search(r"valid_to|valid_from", x) and not re.search(r"whatever", x):
+    if re.search(r"publish date", re.sub(r"whatever the release.s publish date", "", x)) and re.search(r"valid_to|valid_from", x):
         err("a sentence compares the publish date with valid_to or valid_from: " + x)
+    if re.search(r"\b(stop|verify|run)\b", x, re.I) and re.search(r"\b(not|never)\b|n't", x, re.I):
+        err("a sentence negates an instruction: " + x)
     if re.search(r"valid_to|valid_from|revoked_at", x) and re.search(r"accept|allowed|still valid|carry on|continue|ignore", x, re.I):
         err("a sentence accepts a key the rules refuse: " + x)
 for i, l in enumerate(lines):
@@ -161,6 +163,12 @@ mutant "validity: whatever the publish date dropped" "whatever the release" 's.r
 mutant "validity: publish date compared instead" "compares the publish date" 's.replace("Stop if the current time is at or after `valid_to` (`valid_to` is optional) or before `valid_from`, whatever the release'"'"'s publish date.", "Compare the release'"'"'s publish date with `valid_to` in the manifest.")'
 mutant "validity: publish date comparison added" "compares the publish date" 's + "\nCompare the release'"'"'s publish date with `valid_to`.\n"'
 mutant "validity: expired key accepted" "to stop when the current time" 's.replace("Stop if the current time is at or after `valid_to`", "Accept the key even if the current time is at or after `valid_to`")'
+mutant "reversed: first command only if the second prints Verified OK" "only if the first prints Verified OK" 's.replace("Run the second command only if the first prints", "Run the first command only if the second prints")'
+mutant "reversed: do not verify them the same way" "negates an instruction" 's.replace("Verify them the same way", "Do not verify them the same way")'
+mutant "reversed: do not stop, validity" "negates an instruction" 's.replace("Stop if the current time is", "Do not stop if the current time is")'
+mutant "reversed: do not stop, revocation" "negates an instruction" 's.replace("Stop if the manifest has", "Do not stop if the manifest has")'
+mutant "validity: publish date compared, whatever kept in the sentence" "compares the publish date" 's + "\nCompare the publish date with `valid_to`, whatever you find.\n"'
+mutant "validity: publish date compared after the exact words" "compares the publish date" 's.replace("publish date.", "publish date, and compare the publish date with `valid_to`.")'
 mutant "no newest manifest sentence, key_id kept"   "newest manifest and its signature" 's.replace("The newest manifest and its signature for the same `key_id` are among the release assets.", "A key has a `key_id`.")'
 mutant "newest manifest not among the release assets" "newest manifest and its signature" 's.replace("are among the release assets", "are on the website")'
 mutant "newest manifest not verified the same way"  "the same way"  's.replace("Verify them the same way as the first. ", "")'
