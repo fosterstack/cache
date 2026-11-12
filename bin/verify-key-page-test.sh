@@ -36,8 +36,8 @@ for l in lines:
             fence = s[3:].strip()
         else:
             prose.append(l)
-            if re.search(r"<[A-Za-z/!]", re.sub(r"`[^`]*`", "", l)): err("raw HTML outside code: " + s)   # it can hide a sentence from a reader
-            if "![" in re.sub(r"`[^`]*`", "", l): err("image syntax outside code: " + s)   # it shows its text as alt text, not as a sentence
+            if re.search(r"<[A-Za-z/!]", l): err("raw HTML outside code: " + s)   # it can hide a sentence from a reader
+            if "![" in l: err("image syntax outside code: " + s)   # it shows its text as alt text, not as a sentence
             if re.match(r"^(\$ +)?(cosign|jq)\s", s): err("a command outside a fence: " + s)
         continue
     if s == "```":
@@ -160,6 +160,7 @@ mutant "validity and revocation paragraphs inside an HTML comment" "raw HTML out
 mutant "an unclosed HTML comment before the validity paragraph" "raw HTML outside code" 's.replace("Check `valid_from`", "<!-- Check `valid_from`")'
 mutant "validity paragraph inside a hidden div" "raw HTML outside code" 's.replace("Check `valid_from`", "<div hidden>Check `valid_from`").replace("publish date.", "publish date.</div>")'
 mutant "validity paragraph as a Markdown image" "image syntax outside code" 's.replace("Check `valid_from`", "![Check `valid_from`").replace("publish date.", "publish date.](x.png)")'
+mutant "an unmatched backtick before the image syntax" "image syntax outside code" 's.replace("Check `valid_from`", "`![Check `valid_from`").replace("publish date.", "publish date.](x.png)")'
 mutant "no sentence on why the log is skipped"      "why the first command has"  's.replace("The first command has `--insecure-ignore-tlog` because the root key is kept offline, so its signature has no log entry.\n\n", "")'
 mutant "the flag named, no reason given"            "why the first command has"  's.replace("because the root key is kept offline, so its signature has no log entry", "in this page")'
 mutant "validity: check sentence without the current time" "the check sentence" 's.replace(" in the manifest against the current time.", " in the manifest.")'
