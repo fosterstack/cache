@@ -524,6 +524,11 @@ SOURCE_IN_TEXT = re.compile(r"(?<![A-Za-z])source\s*:", re.I)
 SOURCE_LINE = re.compile(r"  Source: (#[0-9]+|https://github\.com/fosterstack/cache/(?:pull|issues)/[0-9]+)")
 
 
+def _rendered(s):
+    """the text as Markdown shows it: a link as its text, emphasis and code marks gone"""
+    return re.sub(r"[*_`~]", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s))
+
+
 def _block_end(lines, i):
     """the index after the bullet at lines[i] and its indented continuation lines (an entry ends at a blank or an
     unindented line)"""
@@ -545,9 +550,6 @@ def _entries(text, name="next-release-notes"):
                 raise ValueError("%s:%d: a Source line outside an entry, or not the exact form '  Source: #<number>'" % (name, i + 1))
             i += 1
             continue
-        if SOURCE_IN_TEXT.search(lines[i]):
-            raise ValueError("%s:%d: the entry's own text holds a Source-like part; only the indented '  Source: <ref>' line "
-                             "carries a source" % (name, i + 1))
         j, parts, srcs = _block_end(lines, i), [lines[i][2:].strip()], []
         for n in range(i + 1, j):
             if not SOURCE_LOOKS.match(lines[n]):
@@ -559,7 +561,11 @@ def _entries(text, name="next-release-notes"):
                                  "PR or issue URL)" % (name, n + 1))
         if len(srcs) > 1:
             raise ValueError("%s:%d: the entry has more than one Source line" % (name, i + 1))
-        out.append([" ".join(parts), i + 1, "".join(srcs)])
+        text = " ".join(parts)
+        if SOURCE_IN_TEXT.search(text) or SOURCE_IN_TEXT.search(_rendered(text)):
+            raise ValueError("%s:%d: the entry's own text holds a Source-like part; only the indented '  Source: <ref>' line "
+                             "carries a source" % (name, i + 1))
+        out.append([text, i + 1, "".join(srcs)])
         i = j
     return out
 
@@ -599,7 +605,7 @@ def behavior_entries(text, name="docs/next-release-notes.md", located=False):
 def _check_entry(e):
     """An entry holds no shop talk (customers read it), and no vendor or model name hides in it split by a space or the
     line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
-    if SHOP.search(e) or SHOP.search(re.sub(r"[*_`~]", "", e)):      # also as it renders: "ow**ner**"
+    if SHOP.search(e) or SHOP.search(_rendered(e)):      # also as it renders: "ow**ner**", "ow[ner](https://x)"
         raise ValueError("next-release-notes entry holds shop talk: %r" % e)
     # any run of up to ten adjacent words that spells a name (the longest has nine letters): "Goo gle", "G o o g l e"
     # (Sonnet #158 r2b); a run starting with a word that is already a name is _clean's, which redacts it
