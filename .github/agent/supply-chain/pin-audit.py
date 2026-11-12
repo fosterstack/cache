@@ -1028,7 +1028,7 @@ def body_of(f, rb, owner, ran, today):
                      "nobody has looked for a clean one, so the owner decides.")
     elif rb:
         lines.append(f"Rollback: pin the newest clean version: {_safe(rb['version'])}"
-                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + f", published {_safe(rb['published'])}.")
+                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + (f", published {_safe(rb['published'])}" if rb.get("published") else "") + ".")
     else:
         lines.append("No clean version exists: drop it (remove its use) until one does.")
     if ran:

@@ -475,6 +475,19 @@ import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 assert any(c[:3] == ["issue", "reopen", "50"] for c in calls) and any(c[:3] == ["issue", "edit", "50"] for c in calls), calls
 PY
+CASE="a rollback candidate must itself be an exact pin: a candidate whose _item is a tag-form action is skipped, the next older clean one is chosen"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+class N:
+    def versions(self, item):
+        return [{"version": "v3", "sha": None, "published": "2026-09-01T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "v3", "v3")},
+                {"version": "v2", "sha": "2" * 40, "published": "2026-08-01T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")}]
+    def lists(self, item): return [], []
+r = pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N())
+assert r["version"] == "v2" and r["sha"] == "2" * 40, r
+PY
+
 GH_LIST='[{"number": 60, "state": "OPEN", "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run alias "$(python3 - "$HIT_GH" <<'PY'
 import json, sys
 d = json.loads(sys.argv[1]); d["lists"]["action:actions/checkout@" + "1" * 40]["osv"] = [{"id": "GO-2026-0001", "incident": "INC-1", "affected": True, "modified": "2026-01-01T00:00:00Z"}]
@@ -528,6 +541,15 @@ title = pa.title_of(f)[1]; body = pa.body_of(f, None, True, False, "2026-10-05")
 for text in (title, body):
     assert "evil.example" not in text and "[click]" not in text and "@owner" not in text, text
 assert "(unparseable)" in title
+PY
+CASE="the rollback line names the publish time only when it is known (never 'published None')"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+f = pa.Finding(pa.inv.Item("action", "o/r", "a" * 40, "v4"), "advisory", ["GHSA-x"], "an advisory covers this version")
+line = lambda rb: [l for l in pa.body_of(f, rb, True, False, "2026-10-05").splitlines() if l.startswith("Rollback:")][0]
+assert line({"version": "v2", "sha": "2" * 40, "published": None}) == "Rollback: pin the newest clean version: v2 (commit " + "2" * 40 + ").", line({"version": "v2", "sha": "2" * 40, "published": None})
+assert line({"version": "v2", "sha": None, "published": "2026-08-01T00:00:00Z"}).endswith("v2, published 2026-08-01T00:00:00Z."), "x"
 PY
 CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges can never pass the age check; commits, digests and dotted numbers can"
 check python3 - "$here/../supply-chain/pin-age-check.py" <<'PY'
