@@ -289,7 +289,7 @@ if the matrix drifts from its sources.
 
 ## Security
 
-- Static binary, zero CGO, no shell and no package manager in the image, and a small OS package surface (base layout, CA certificates,
+- Static binary, zero CGO, no shell and no package manager in the image, and a small OS package surface (base layout,
   time zone data), patched by a new image, not on a running one.
 - CI runs the full test suite under `GODEBUG=fips140=only`, where Go's FIPS 140-3
   module makes non-approved algorithms fail. That mode is a best-effort test
