@@ -32,7 +32,7 @@ ALLOW_PATTERNS=(
   # Build, lint, scan and release configuration.
   '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
 
-  # Image-assembly Dockerfiles (release chain stage 3): COPY-only, FROM
+  # Image-assembly Dockerfiles (release chain stage 3), kept while main still has them: COPY-only, FROM
   # pinned image:tag@sha256, watched by Dependabot's docker ecosystem.
   '^build/docker/Dockerfile\.[a-z]+$'
 
@@ -62,8 +62,9 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
-  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites, its test, and the committed floors.
+  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites (a committed Python file run with -I), its test, and the committed floors.
   '^bin/suite-guard(-run|-test)?\.sh$'
+  '^bin/suite-guard-run\.py$'
   '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
@@ -75,6 +76,10 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-file-allowlist-test\.sh$'
+  # The customer-word check: it fails a pull request that adds shop words to a file a customer can read.
+  '^bin/check-customer-words\.py$'
+  '^bin/check-customer-words-test\.sh$'
+  '^\.github/policy/customer-words-allow\.txt$'
   # The audit record (REQ-REL-012): the writer, its request/prepare/judge steps and their test.
   '^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$'
   '^bin/vex-forms\.py$'
@@ -135,15 +140,78 @@ ALLOW_PATTERNS=(
   '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
+  '^bin/inspector-reuse\.py$'
+  '^bin/inspector-reuse-test\.sh$'
+  '^bin/vex-guide-test\.sh$'
+  '^bin/vex-live-test\.py$'
+  '^bin/vex-live-run\.sh$'
+  '^bin/vex-live-test-test\.sh$'
   '^bin/grype-scan\.sh$'
   '^bin/vex-both-scanners-test\.sh$'
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
   '^bin/go-bump-open-pr-test\.sh$'
+  # The v0.3.0 release chain, Sign boundary (PR 1): the verifier, its tests, the hostile dry-run step and the signer table the
+  # tests share; the Sigstore PUBLIC trust material the release policy pins (exact names: a private key never matches); results/
+  # holds the dry run's per-attempt rows (.gitkeep only, the rows come from the run)
+  '^bin/chain-verify\.py$'
+  '^bin/chain_(common|hostile)\.py$'
+  '^bin/chain-hostile-step\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring|manifest|rekor-key|trust-files|no-keyless-tag)-test\.sh$'
+  '^bin/chain-test-signers\.(py|json)$'
+  '^\.github/policy/cosign-signing-config\.json$'
+  '^\.github/policy/rekor\.pub$'
+  '^\.github/policy/fulcio-chain\.pem$'
+  '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
+  '^results/\.gitkeep$'
+  # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
+  # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
+  # suites with their two test helpers
+  '^bin/witnessed\.sh$'
+  '^bin/witnessed-local\.sh$'
+  '^bin/witness-sign-staged\.sh$'
+  '^bin/witness-kms-test\.sh$'
+  '^bin/rebuild-records-digests\.sh$'
+  '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
+  '^bin/build-(admit|archives|version-check)\.py$'
+  '^bin/chain_items\.py$'
+  '^bin/chain-admission-old-steps\.txt$'
+  '^bin/chain-(sign-wiring|check-scripts)-fixtures\.txt$'
+  '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
+  '^bin/chain-(test-(harness|shape)|known-red)\.py$'
+  '^test-evidence/known-red\.json$'
+  # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
+  # suite), and the Check suites with their shape judge
+  '^bin/loopback-get\.sh$'
+  '^bin/loopback-get-test\.sh$'
+  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
+  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/(un)?pack-govulncheck\.sh$'
+  '^bin/check-records-digests\.sh$'
+  '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
+  '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
+  '^bin/acceptance-k8s-(manifests|smoke)\.py$'
+  '^bin/chain-check-(scripts|wiring)-test\.sh$'
+  '^bin/chain-check-shape\.py$'
+  # Check's source scan of the product module (ruling G, Oct 12): the script, and the committed tool module whose go.sum pins govulncheck (tools/govulncheck).
+  '^bin/check-govulncheck\.py$'
+  '^tools/govulncheck/go\.(mod|sum)$'
+  # The rc-proof marker helper (REQ-CHAIN-001-AC6): the one definition of the chain-file set.
+  '^bin/chain-bytes-sha\.py$'
+  # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
+  '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
+  # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
+  '^bin/release-(verify|apks|compare|publish|sign|assets|postverify)\.sh$'
+  '^bin/release-(postverify|metadata|layout|compare)\.py$'
+  '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
+  '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/check-action-pins\.py$'
+  # The review gate in the merge queue (REQ-DEP-005-AC3): the judge of a queue's temporary branch
+  # (its test is under tests/).
+  '^\.github/agent/bin/queue-gate-judge\.sh$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   # the published OpenVEX schema the writer validates against (production data, beside its code)
   '^\.github/agent/bin/auditorlib/openvex-schema\.json$'
@@ -151,6 +219,8 @@ ALLOW_PATTERNS=(
   # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
   # materializer) and its requirements matrix live under .github/agent/ with the code.
   '^\.github/agent/tests/[A-Za-z0-9._-]+\.(sh|py)$'
+  # REQ-SUP-001: recorded publisher signatures (public Sigstore data: certificates, signatures, log entries) for the pin-age tests; JSON files in this one folder.
+  '^\.github/agent/tests/fixtures/image-publishers/[A-Za-z0-9._-]+\.json$'
   # REQ-AUD-18 AC2: the hash-pinned coverage tool and the reasoned exclusion ranges.
   '^\.github/agent/coverage-requirements\.txt$'
   # the report lint's hash-pinned, test-only renderer (GitHub's cmark-gfm)
@@ -213,15 +283,31 @@ ALLOW_PATTERNS=(
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
+  # the base-layout package (0710): its recipe, its test and the files its recipe copies into our own base-layout apk
+  '^build/melange-baselayout\.yaml$'
+  '^build/melange-baselayout\.yaml\.tmpl$'
+  '^build/baselayout/members\.txt$'
+  '^build/baselayout/etc/(group|hosts|nsswitch\.conf|os-release|passwd|protocols|services)$'
+  '^bin/baselayout-test\.sh$'
+  '^bin/build-baselayout-apk\.sh$'
+  '^bin/build-baselayout-apk-test\.sh$'
   # The one template both melange recipes are generated from (bin/gen-recipes.py).
   '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
+  # The outbound check (0710 item 4): the module's source and its linked binary have no HTTP client and dial nothing.
+  '^bin/check-no-outbound\.py$'
+  '^bin/check-no-outbound-test\.sh$'
   # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'
   # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
   '^build/host-tools\.yaml$'
   '^build/locks/host-tools\.lock$'
+  # The VM build inputs (REQ-REFRESH-001-AC39 to AC41): the two package lists, their locks,
+  # the kernel lock and the kernel package key.
+  '^build/vm-(host|guest)\.yaml$'
+  '^build/locks/vm-(host|guest|kernel)\.lock$'
+  '^build/vm-keys/kernel-key-6165ee59\.rsa\.pub$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
@@ -236,12 +322,19 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
-  '^bin/(apk-tool|gen-recipes|go-module-sbom)\.py$'
+  '^bin/build-freeze\.sh$'
+  # The wrapper that hands the release role and its token file to a release step as AWS variables.
+  '^bin/with-aws-token\.sh$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
+  # The sandbox wall probe of the dry run (sandboxed-build rules 3, 5, 6): the probe, its offline test and its six test-only recipe templates.
+  '^bin/chain-sandbox-probe\.sh$'
+  '^bin/build-sandbox-hostile-test\.sh$'
+  '^build/probe/(control|read-record|write-record|read-keydir|read-token|network)\.yaml\.tmpl$'
   # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
   # of bin/build-apk.sh, and the closed rule-23 variable list as data.
   '^bin/build-apk-helper\.py$'
@@ -264,6 +357,14 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.md$'
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
+  # The release key page (docs/verify-key.md) is judged by bin/verify-key-page-test.sh, REQ-CHAIN-008.
+  '^bin/verify-key-page-test\.sh$'
+  '^bin/layout-archive(-test)?\.sh$'
+  # The monthly evidence letter (REQ-REL-013): the letter script, the fetch, publish, verify and presence scripts, the
+  # two tests and the signatory text.
+  '^bin/evidence-letter\.py$'
+  '^bin/evidence-letter(-fetch|-publish|-verify|-present|-test|-job-test)\.sh$'
+  '^docs/evidence-letter-signatory\.txt$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
@@ -273,6 +374,11 @@ ALLOW_PATTERNS=(
 
   # The real Maven project the Maven acceptance workflow builds.
   '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
+
+  # A retired release key's public half, under the day it was retired, kept so the apks it signed stay verifiable
+  # (SECURITY.md); never deleted. Matches build/keys/retired/2027-11-01/release.rsa.pub; refuses
+  # build/keys/retired/x/release.rsa.pub.
+  '^build/keys/retired/[0-9]{4}-[0-9]{2}-[0-9]{2}/release\.rsa\.pub$'
 )
 
 # Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore
