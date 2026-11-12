@@ -77,7 +77,7 @@ class Cli(unittest.TestCase):
         self.assertEqual((rc, out), (0, OID + "\n"))                                 # repeatable: either lane is allowed
 
     def test_only_the_two_prefixes_are_accepted(self):
-        for bad in ("main/", "release/", "", "auditor", "refs/heads/", "patch-notes"):
+        for bad in ("main/", "release/", "", "auditor", "refs/heads/", "patch-notes", "dependabot/go_modules/", "auditor/bump-"):
             with self.assertRaises(SystemExit) as cm, mock.patch("sys.stderr", io.StringIO()):
                 C.main(argv(**{"--prefix": bad}) + ["--path", "docs/a.md"], run=Fake(), root=self.dir.name)
             self.assertEqual(cm.exception.code, 2, bad)
