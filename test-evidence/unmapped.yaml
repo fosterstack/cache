@@ -1,23 +1,23 @@
-# Acceptance criteria with no test mapping (REQ-REL-007-AC1, register row 79). Each is a residual for
-# the owner's decision — write the test, or accept the gap — never a silent exemption. `check` fails for
+# Acceptance criteria with no test mapping (REQ-REL-007-AC1). Each is a residual for
+# the release manager's decision — write the test, or accept the gap — never a silent exemption. `check` fails for
 # any acceptance criterion that is neither mapped in mappings.yaml nor listed here with a reason.
 unmapped:
   - ac: REQ-PROTO-003-AC2
-    reason: no http-integration test for PUT / returning 400 has been mapped since the baseline (Sep 11); the owner decides
+    reason: no http-integration test for PUT / returning 400 has been mapped since the baseline (Sep 11); the release manager decides
   # Note: AC8 of REQ-TLS-001 reads "first log line" as the startup record when an earlier warning applies
-  # (advisor reading, Oct 11); wording alignment of this AC is the owner's call.
+  # (reviewer reading, Oct 11); wording alignment of this AC is the release manager's call.
   - ac: REQ-OBS-004-AC1
-    reason: no component test asserts the startup line's six fields; none mapped since the baseline (Sep 11); the owner decides
+    reason: no component test asserts the startup line's six fields; none mapped since the baseline (Sep 11); the release manager decides
   - ac: REQ-PLAT-004-AC1
-    reason: no acceptance-container run asserts uid 65532 and the data path; none mapped since the baseline (Sep 11); the owner decides
+    reason: no acceptance-container run asserts uid 65532 and the data path; none mapped since the baseline (Sep 11); the release manager decides
   - ac: REQ-DEPLOY-001-AC1
-    reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides
+    reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the release manager decides
   - ac: REQ-SCAN-011-AC1
     reason: "docs/using-our-vex.md exists and ships with the rule-10 files; that it is never in a release before them is read at each release cut (inspection); no test names it"
   - ac: REQ-REL-009-AC7
     reason: "proven by the first real patch release (the full chain and identical GHCR/Docker Hub digests)"
   - ac: REQ-REL-009-AC9
-    reason: "proven by the first real patch release; the customer suppression files depend on scanner-panel rule 10, a later PR"
+    reason: "proven by the first real patch release; the customer suppression files depend on REQ-SCAN-010, a later PR"
   - ac: REQ-REL-009-AC12
     reason: "the lane's process rule (both step-8 records say no behavior change before it applies patch-fix): CI cannot tell the owner's label from the lane's, since both act through the owner's account; each application is recorded in the lane's report with both reviewers' findings"
   - ac: REQ-REL-010-AC6
