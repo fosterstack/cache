@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
+      "sha256": "6ea032f9e8e5d0fed3539447bc2b007c28ba6b2cafb59ad7abc2c4676aeeef56",
       "tools": [
         "make",
         "at",
@@ -149,7 +149,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "32f6b1d24b0c6e0a4c0bd9d3dd50072b7435b2f415a707a245c47e899737b555",
+      "sha256": "63dda38b5d99a1d1c1dcd5f7cc273fd9bfbe75604e1038cc24f796c50da05a36",
       "tools": [
         "at",
         "bash",
@@ -1636,7 +1636,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "715bc0916333d48dd53b5293531d1992a83645e3f90bfca5a309663e3d7d1a44",
+      "sha256": "e995f192774ffc01eda3570ffccaaea880f0b6752a90482242c59b08bf4bc0d4",
       "exceptions": [
         {
           "rule": "deny",
@@ -1929,7 +1929,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "ae05f401491feb8f3c863a4a4227d02599d7a99c4853cc03cfb0529e467c3885"
+      "sha256": "f480866ccf3c82c080ef3b848d149167ab1f88b7a127f08120263e6848c34a0e"
     },
     {
       "path": "bin/vex-forms.py",
@@ -2613,7 +2613,7 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "6c6dda7484adf8a4b4534d4cc1d07d2f0b4ee2728365f20ba309796f93e33252",
+      "sha256": "77f20e35802a4f048f895fa69f54ccbe094f618848f7a4c7704b9223a5686da6",
       "tools": [
         "make"
       ],
