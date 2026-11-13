@@ -138,6 +138,7 @@ open(w + "/o/.github/workflows/stage-promote.yml", "w").write(stage)
 open(w + "/o/.github/workflows/release.yml", "w").write(open(w + "/release.yml").read())
 # bin/release-verify.sh: tag, policy, four stage-starts
 V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }',
+     'for f in release-key-manifest.json release-key-manifest.sig release-key-root.pub; do [ -f ".github/policy/$f" ] || { echo "refused at key manifest: .github/policy/$f is missing" >&2; exit 1; }; done',
      'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json',
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
      "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/items.json",
@@ -160,16 +161,16 @@ BODY = {
  "release-postverify": 'set -euo pipefail\npython3 bin/release-postverify.py\n',
  "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
 }
-ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
+ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/apk-tool.py", "bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
         "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "sha256sum", "trap"], "other", ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
-        "release-assets": (["gh", "git", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
+        "release-assets": (["gh", "python3"], False, ["bin/release-metadata.py", "bin/release-postverify.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
 rows = []
 for n, b in BODY.items():
     open(f"{w}/s/bin/{n}.sh", "w").write("#!/usr/bin/env bash\n" + b)
     t, s, r = ROWS[n]
     rows.append({"path": f"bin/{n}.sh", "sha256": hashlib.sha256(open(f"{w}/s/bin/{n}.sh", "rb").read()).hexdigest(), "tools": t, "signs": s, "runs": r, "reason": "fixture"})
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
-rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py"], "reason": "fixture"})
+rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "command", "cosign", "exec", "gh", "jq", "just"], "signs": False, "runs": ["bin/chain-verify.py", "bin/guide_plan_judge.py"], "reason": "fixture"})
 open(w + "/s/bin/release-compare.py", "w").write("import sys\n")
 rows.append({"path": "bin/release-compare.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-compare.py", "rb").read()).hexdigest(), "tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"], "reason": "fixture"})
 open(w + "/s/bin/release-layout.py", "w").write("import sys\n")
