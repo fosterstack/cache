@@ -129,10 +129,12 @@ check "crane on an unsupported architecture is a labeled pipeline failure" 1 "un
 check "INSTALL_SCANNER_ARCH in the environment has no effect" 1 "download failed.*PIPELINE failure" \
   env INSTALL_SCANNER_ARCH=mips bash "$(sutc x86_64)" trivy "$work/bin"
 for v in TRIVY_BASE_URL TRIVY_BASE; do
-  check "$v in the environment has no effect (the bogus tarball it names is never fetched)" 1 "download failed.*PIPELINE failure" \
+  check "$v in the environment has no effect (the bogus tarball it names is never fetched)" \
+    1 "download failed.*PIPELINE failure" \
     env "$v=file://$work/rel" bash "$(sutc x86_64)" trivy "$work/bin"
 done
-if ! grep -qE 'INSTALL_SCANNER_ARCH|_BASE_URL' "$sut"; then echo "ok: the installer names no environment hook"; pass=$((pass+1))
+if ! grep -qE 'INSTALL_SCANNER_ARCH|_BASE_URL' "$sut"; then
+  echo "ok: the installer names no environment hook"; pass=$((pass+1))
 else echo "FAIL: the installer still names INSTALL_SCANNER_ARCH or a _BASE_URL"; fail=$((fail+1)); fi
 # 4i. The usage line names every subcommand the installer accepts (the docker-scout-<version> forms as one).
 usage=$(sed -n 's/^# Usage: install-scanner\.sh <\(.*\)> \[dest-dir\]$/\1/p' "$sut")
