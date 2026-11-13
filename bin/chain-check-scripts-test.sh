@@ -920,7 +920,7 @@ fake2="$work/fake2"; mkdir -p "$fake2"
 cat > "$fake2/go" <<'GOEOF'
 #!/usr/bin/env bash
 # fake `go version -m BINARY`: the build info a binary carries
-echo "go $*" >> "$FAKE_LOG"; echo "go-path $PATH" >> "$FAKE_LOG"
+echo "go $*" >> "$FAKE_LOG"
 [ "$1 $2" = "version -m" ] || exit 2
 echo "$3: go1.26.0"; echo "	build	CGO_ENABLED=0"
 case "$(basename "$3")" in
@@ -961,6 +961,8 @@ arun() { # arun [VAR=val ...] -- SCRIPT ARGS : the artifact check in its own tre
   local envs=(FAKE_NONE=1); while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
   rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"; cp "$fa/server.py" "$work/fakedir/server.py"; : > "$work/log"; rc=0
   cp "$root"/bin/check-artifacts.sh "$root"/bin/check-image-platforms.py "$root"/bin/check-bind.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/loopback-get.sh "$fa/bin/" 2> /dev/null || true
+  # the copy of check-artifacts.sh differs from the real one on its TEST-SUBST GO_TOOL line only: that line names the fake go
+  awk -v g="$fake2/go" '/^GO_TOOL=.*#[ \t]*TEST-SUBST/{print "GO_TOOL=" g "   # TEST-SUBST"; next} 1' "$root/bin/check-artifacts.sh" > "$fa/bin/check-artifacts.sh"
   out=$( (cd "$fa" && env "${envs[@]}" PATH="$fake2:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$work/fakedir" bash "bin/$1" "${@:2}") 2>&1) || rc=$?
 }
 aok() { local l=$1; shift; arun "$@"; if [ "$rc" = 0 ]; then ok "$l"; else bad "$l -> rc=$rc: ${out:0:200}"; fi; }
@@ -1058,7 +1060,7 @@ aok "FIPS-001-AC1 the id the tree pins (fips-module.txt) is the one the binary m
 afail "FIPS-001-AC1 a binary embedding another id than fips-module.txt names fails" GOFIPS140 -- "${ART[@]}"
 printf 'v1.0.0-c2097c7c\n' > "$fa/build/locks/fips-module.txt"
 arun -- "${ART[@]}"
-if [ "$rc" = 0 ] && awk '/^go-path /{n++; if (index($2, "/usr/local/bin/fscache-go/bin:") != 1) bad=1} END{exit !(n > 0 && !bad)}' "$work/log"; then ok "FIPS-001-AC1 go runs with the pinned Go first on the search path"; else bad "FIPS-001-AC1 go was not run from the pinned directory: $(grep '^go-path' "$work/log" | head -2)"; fi
+if [ "$rc" = 0 ] && grep -Eq '^go version -m .*/fscache-fips$' "$work/log" && grep -Eq '^go version -m .*/fscache$' "$work/log" && [ "$(diff "$root/bin/check-artifacts.sh" "$fa/bin/check-artifacts.sh" | grep -c '^>')" = 1 ] && grep -Eq '^GO_TOOL=/usr/local/bin/fscache-go/bin/go +# TEST-SUBST' "$root/bin/check-artifacts.sh" && ! grep -Eq '(^|[^A-Za-z_])PATH=|export +PATH|(^|[^A-Za-z_./"$])go +version' "$root/bin/check-artifacts.sh"; then ok "FIPS-001-AC1 the build info of both binaries is read by GO_TOOL (the pinned Go at its absolute path), the script sets no PATH and runs no bare go"; else bad "FIPS-001-AC1 build-info reads did not run through GO_TOOL, or the script sets PATH or runs a bare go: $(grep '^go ' "$work/log" | head -2)"; fi
 afail "FIPS-001-AC1 the fips binary embedding the version alone (v1.0.0) fails" GOFIPS140 FAKE_GOFIPS_FIPS=v1.0.0 -- "${ART[@]}"
 afail "FIPS-001-AC1 the fips binary embedding a longer id (v1.0.0-c2097c7c9) fails" GOFIPS140 FAKE_GOFIPS_FIPS=v1.0.0-c2097c7c9 -- "${ART[@]}"
 afail "FIPS-001-AC1 another module version than v1.0.0 fails" v1.0.0 FAKE_GOFIPS_FIPS=v1.26.0 -- "${ART[@]}"
