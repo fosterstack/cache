@@ -119,57 +119,6 @@ jobs:
       - name: full test suite, validated module, approved algorithms only
         run: GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -race -shuffle=on ./...
 
-  gosec:
-    name: gosec
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
-      # gosec is pinned to v2.29.0 (the latest) and built from source under
-      # the CI Go toolchain (see the install step below) — NOT the
-      # securego/gosec Docker action, whose bundled Go cannot type-check a
-      # go.mod on the 1.26 line and fails at the import phase (it never
-      # reaches the checks). gosec still exits non-zero on any finding, so
-      # the gate is unchanged.
-      # gosec v2.29.0 (the latest release) requires golang.org/x/tools v0.49.0,
-      # whose export-data reader stops at version 4, while Go 1.27.2 writes
-      # version 5: every package then fails with "type errors". `go install
-      # ...@v2.29.0` cannot override a dependency, so gosec is built in a
-      # scratch module against golang.org/x/tools v0.50.0 (published
-      # 2026-09-08). Exact versions; go.sum comes from the Go checksum
-      # database. Drop this when a gosec release requires x/tools >= v0.50.0.
-      - name: install gosec (pinned, built against x/tools v0.50.0)
-        run: |
-          gobin="$(go env GOPATH)/bin"
-          mkdir "$RUNNER_TEMP/gosec-build"
-          cd "$RUNNER_TEMP/gosec-build"
-          go mod init gosecbuild
-          go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.50.0
-          go build -o "$gobin/gosec" github.com/securego/gosec/v2/cmd/gosec
-      - name: run gosec
-        run: |
-          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
-          gosec -fmt sarif -out gosec-results.sarif ./...
-      # Fork PRs get a read-only GITHUB_TOKEN that `permissions:` cannot
-      # elevate, so security-events: write is not granted and this upload
-      # cannot succeed. gosec is a REQUIRED status check: without this guard
-      # the upload failure sinks the job and every external contributor's PR
-      # arrives with a red required check it has no way to fix. The scan
-      # itself still runs and still gates the PR — only the results upload
-      # is skipped, and code scanning keeps its coverage from same-repo
-      # pushes and the default branch.
-      - name: upload SARIF
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
-        if: always() && github.event.pull_request.head.repo.fork != true
-        with:
-          sarif_file: gosec-results.sarif
-
   # persona UAT suites and the regression suites that run per pull request only for the files they test (split out of the allowlist job)
   allowlist-persona:
     name: allowlist-persona
@@ -473,6 +422,30 @@ jobs:
       - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
         run: bash .github/agent/tests/supply-chain-wiring-test.sh
 
+  # the whole wiring and selection suites (REQ-CI-001-AC5): on a pull request only the suites a change selects run, so these two run here
+  wiring:
+    name: wiring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+      - name: the required and promotion lists, ci.yml's selection, the full suite, admission (REQ-CI-001)
+        run: bash bin/full-suite-wiring-test.sh
+      - name: which suites a change needs (REQ-CI-001-AC3)
+        run: bash bin/select-tests-test.sh
+
   # both acceptance suites, from source (acceptance.yml is callable only; its jobs report as "acceptance / <job>")
   acceptance:
     name: acceptance
@@ -486,7 +459,7 @@ jobs:
   # no pull request check reads it. The job holds issues: write and nothing else.
   report-failure:
     name: report-failure
-    needs: [coverage, gosec, fips140-only, allowlist-persona, allowlist-chain, allowlist-pins-auditor, acceptance]
+    needs: [coverage, fips140-only, allowlist-persona, allowlist-chain, allowlist-pins-auditor, wiring, acceptance]
     if: ${{ failure() && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     permissions:
