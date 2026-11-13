@@ -115,13 +115,15 @@ def scan(rel, text, raw=False):
         elif e.get("pseudo"): add(e["pseudo"])
         else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
     # KA-2: a LISTED script (bin/release-signatures.sh) signs only through `bash bin/with-aws-token.sh kms-sign`: --digest
-    # signs a payload or blob (the cosign signature), --dsse-statement an in-toto statement whose predicateType the script
-    # writes literally in a jq string
+    # signs a payload or blob (the cosign signature), --dsse-statement an in-toto statement; its type is the literal
+    # predicateType of the jq line that writes the file this call names
     if raw:
-        for m in re.finditer(r"with-aws-token\.sh[ \t]+kms-sign\b([^\n]*)", text):
+        joined = re.sub(r"\\\n[ \t]*", " ", text)
+        for m in re.finditer(r"with-aws-token\.sh[ \t]+kms-sign\b([^\n]*)", joined):
             if "--digest" in m.group(1): add("urn:cosign:signature")
             elif "--dsse-statement" in m.group(1):
-                tys = re.findall(r"\bpredicateType:[ \t]*\"(https?://[^\s\"'$`\\]+)\"", text)
+                f = re.search(r"--dsse-statement (\"[^\"]*\"|\S+)", m.group(1)).group(1)
+                tys = re.findall(r"\bpredicateType:[ \t]*\"(https?://[^\s\"'$`\\]+)\"[^\n]*> " + re.escape(f), joined)
                 if len(tys) == 1: add(tys[0])
                 else: bad.append("%s: kms-sign --dsse-statement with an unresolved type (fail closed)" % rel)
             else: bad.append("%s: kms-sign with neither --digest nor --dsse-statement (fail closed)" % rel)
@@ -408,6 +410,12 @@ d=$(mk kmstwo); kmssign "$d" sign attest "$REL_MANIFEST" https://example.com/oth
 expect_named "KA-2 mutant: a second predicateType literal in the script is unresolved and fails closed" "$d" "kms-sign --dsse-statement with an unresolved type"
 d=$(mk kmsshape); kmssign "$d" sign; printf '%s --bundle "$b"\n' "$KMS" >> "$d/bin/ks.sh"; rm "$d/.github/policy/chain-scripts.json"; listed "$d" bin/ks.sh jq; addrow "$d" "${SIGROW[@]}"
 expect_named "KA-2 mutant: a kms-sign with neither --digest nor --dsse-statement fails closed" "$d" "kms-sign with neither --digest nor --dsse-statement"
+# the type of a --dsse-statement call is that call's own predicateType, not any literal elsewhere in the script
+d=$(mk kmsstray); kmssign "$d" "" attest '$t'; printf 'jq -cn %s > "$x"\n' "'{predicateType: \"https://example.com/other/v1\"}'" >> "$d/bin/ks.sh"; rm "$d/.github/policy/chain-scripts.json"; listed "$d" bin/ks.sh jq; addrow "$d" "https://example.com/other/v1" "an unrelated type" customer
+expect_named "KA-2 mutant: a stray literal type next to a variable-typed kms-sign --dsse-statement is not produced by it" "$d" "kms-sign --dsse-statement with an unresolved type"
+# a call split over lines with a trailing backslash is one call (joined before it is matched)
+d=$(mk kmscont); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\njq -cn %s > "$st"\nbash bin/with-aws-token.sh \\\n  kms-sign --aws "$aws" --key-ref "$ref" --signing-config "$cfg" --public-key "$pub" --dsse-statement "$st" --bundle "$b"\n' "'{predicateType: \"$REL_MANIFEST\"}'" > "$d/bin/ks.sh"; listed "$d" bin/ks.sh jq; addrow "$d" "$REL_MANIFEST" "the release manifest" customer
+expect ok "KA-2 a backslash-continued kms-sign --dsse-statement call is joined, so the release manifest row has its producer" "$d"
 d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
 SH40=$(printf 'a%.0s' $(seq 40))
@@ -468,7 +476,7 @@ d=$(realmut realnoatt '/with-aws-token\.sh kms-sign.*--dsse-statement/d')
 expect_named "mutant on the real release-signatures.sh: the kms-sign --dsse-statement line dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
 d=$(realmut realnosig '/with-aws-token\.sh kms-sign.*--digest/d')
 expect_named "mutant on the real release-signatures.sh: the kms-sign --digest lines dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
-EXPECT=126
+EXPECT=128
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
