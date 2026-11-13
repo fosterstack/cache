@@ -93,7 +93,7 @@ case $variant in
   fips) bl=$here/../build/locks/apko-fips.base.lock.json;;
 esac
 [ -f "$bl" ] || die "the base lock for the negative case cannot be found (the variant is production or fips)"
-# the victim is a package the image uses: the first package of the BASE LOCK by (name, architecture), the same choice lock-proof makes
+# the victim is a package the image uses: the first of the base lock by (name, architecture), as lock-proof chooses
 victim=$("$PY3" -I -B bin/oci-digest.py base-lock-victim "$bl" sealed-proof.sh) || exit 2
 for l_ in sealed-record.json apk image; do
   [ ! -e "$out/$l_" ] && [ ! -L "$out/$l_" ] ||
