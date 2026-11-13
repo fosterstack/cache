@@ -11,7 +11,7 @@ keeps reporting what does.
 | `fosterstack-cache-v<version>.inspector-filters.json` | Amazon Inspector suppression rules | Amazon Inspector (ECR) |
 | `fosterstack-cache-v<version>.csaf.json` | CSAF 2.0 VEX | Google Artifact Analysis |
 
-The OpenVEX and CSAF files carry every statement. The Inspector file carries only the *not affected*
+The OpenVEX file keeps every statement. The CSAF file may omit a statement about a Go standard library version the release is not built with. The Inspector file carries only the *not affected*
 statements that name a package, as suppression rules: Inspector reports what affects you on its own. Each file lives on the release page of its
 version, `https://github.com/fosterstack/cache/releases/tag/v<version>`, next to `release-manifest.json`.
 
