@@ -44,8 +44,8 @@ WITNESS_VER=0.12.0
 AWSCLI_VER=2.39.3
 # The Go toolchain the freeze job's verify-freeze and the apk build need (Codex A r3 F4; advisor):
 # the exact go<ver>.linux-<arch>.tar.gz, pinned by sha256 per architecture, values
-# equal to go.dev's published checksums (https://go.dev/dl/?mode=json), checked Oct 21 2026 for go1.27.3 (main's Go bump, cache#464). GO_VER must equal the version go.mod names.
-GO_VER=1.27.3
+# equal to go.dev's published checksums (https://go.dev/dl/?mode=json), checked Nov 11 2026 for go1.27.4 (main's Go bump, cache#882). GO_VER must equal the version go.mod names.
+GO_VER=1.27.4
 # crane copies the exact image bytes by digest in the Release stage (rules 16 and 64 of the release rules: the copy tool is pinned by checksum, no build step) and reads the digest of the
 # latest release's image in the weekly persona job (rule 61: no image builder). The two sums are the sha256 of the Linux release tarballs of google/go-containerregistry v0.22.1, equal to the
 # release's checksums.txt and to the downloaded files (Oct 11 2026). The version is written only in the two literal release URLs of the crane arm below (no version variable): the pin-age scan measures those URLs.
@@ -110,8 +110,8 @@ case "${TOOL}:${arch}" in
   crane:x86_64|crane:amd64) SUM=0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 ;;
   crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;
   aws-cli:x86_64|aws-cli:amd64) SUM=14cb35809ad7547dd3c69fa9899a3975fbd850b6a6791f3fe264856490cd9a63 ;;
-  go:x86_64|go:amd64) SUM=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;;
-  go:aarch64|go:arm64) SUM=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;;
+  go:x86_64|go:amd64) SUM=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840 ;;
+  go:aarch64|go:arm64) SUM=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92 ;;
   govulncheck:*) SUM="" ;;   # a module: pinned by go.sum (tools/govulncheck), not by the sum of a download
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac

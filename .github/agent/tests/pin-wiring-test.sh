@@ -320,6 +320,21 @@ if len(sg) != 1:
     bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
+
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by check-action-pins --verify-tags, pin-age and the daily audit (a
+    Dependabot bump moves it). The action name and the exact shape of the ref (40 lower-case hex) stay compared; the
+    stand-in is a tuple, which no YAML scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str):
+        name, _, ref = u.partition("@")
+        # matches "0123456789abcdef0123456789abcdef01234567"; refuses "v7"
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            return dict(st, uses=(name, "@40-hex"))
+    return st
+
+
 # The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped,
 # or whose step is skipped, disabled through its environment, or whose failure is ignored, passes while the suites never ran). Each is exactly
 # name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
@@ -337,6 +352,16 @@ def _by_shape(st):
         if re.fullmatch(r"[0-9a-f]{40}", ref):
             return dict(st, uses=(name, "@40-hex"))
     return st
+
+
+# each job's actions are judged on their own, so one job cannot borrow another's
+ALLOWLIST_ACTIONS = [_by_shape(st) for st in (
+    {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"fetch-depth": "0"}},
+    {"name": "set up Python for the workflow-permission check", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+     "with": {"python-version": "3.12"}})]
+for _i, st in enumerate(steps_):
+    if "uses" in st and _by_shape(st) not in ALLOWLIST_ACTIONS:
+        bad.append(f"the allowlist step {_i + 1} ({st.get('name') or st['uses']}) is not a judged action step")
 
 
 SPLIT_STEPS = json.loads(r'''{
@@ -1332,6 +1357,15 @@ case_ uses-short-digest        bad "${BUMP//%s/actions/setup-python@abababababab
 case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB}"
 case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
 case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
+# each job's actions are judged on their own, so one job cannot borrow another's
+case_ allowlist-uses-bumped-digest-ok ok "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@abababababababababababababababababababab'"
+case_msg allowlist-uses-setup-python-tag "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@v7'" "the allowlist step 8 (set up Python for the workflow-permission check) is not a judged action step"
+case_msg allowlist-uses-setup-python-39-hex "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@0123456789abcdef0123456789abcdef0123456'" "the allowlist step 8 (set up Python for the workflow-permission check) is not a judged action step"
+case_msg allowlist-uses-setup-python-upper-hex "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@0123456789ABCDEF0123456789ABCDEF01234567'" "the allowlist step 8 (set up Python for the workflow-permission check) is not a judged action step"
+case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'][7]['uses'] = 'evil/setup-python@0123456789abcdef0123456789abcdef01234567'" "the allowlist step 8 (set up Python for the workflow-permission check) is not a judged action step"
+case_msg allowlist-uses-setup-python-commit-placeholder "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@<commit>'" "the allowlist step 8 (set up Python for the workflow-permission check) is not a judged action step"
+case_msg allowlist-uses-extra-action-step "d['jobs']['allowlist']['steps'].insert(3, {'name': 'x', 'uses': 'actions/cache@0123456789abcdef0123456789abcdef01234567'})" "the allowlist step 4 (x) is not a judged action step"
+case_msg allowlist-uses-checkout-tag "s = d['jobs']['allowlist']['steps'][0]; s.pop('name', None); s['uses'] = 'actions/checkout@v4'" "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
 RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
 case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
 case_msg run-changed-names-key  "$RUNX" "differs in: run"

@@ -37,7 +37,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 # sha256 of build/melange.yaml.tmpl: a change to the template must update this line in the same reviewed change
-TEMPLATE_SHA256 = "046f3ee631006982d941ebd8f44036a1eb5e7d8813a3f6f30ae5e89a39cdfc66"   # TEST-SUBST
+TEMPLATE_SHA256 = "21da9c81084e7c00b98a8bca567a4a99c0216f554189d4d9027262cfe14599bd"   # TEST-SUBST
 # sha256 of build/melange-baselayout.yaml.tmpl: the same rule as the pin above
 BASELAYOUT_TEMPLATE_SHA256 = "d509dfde7cb3d3b017b6c76251acbb3ce0b7c95698b4cec508e8ef5ceb9bd9e9"   # TEST-SUBST
 ALLOWED_SUBST = ("${{targets.destdir}}", "${{build.arch}}")
