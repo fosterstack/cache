@@ -113,8 +113,8 @@ def threshold_reason(severity=None, kev=False, known_exploited=False):
 
 
 def owner_issue_title(finding_id, package, reason):
-    """The owner's mail filter keys on this exact prefix/shape (R14); the auditor family prefix
-    leads it (REQ-AUD-17 AC1), the "owner-decision:" sub-prefix is retained."""
+    """The owner's mail filter keys on this exact prefix and shape; the auditor family prefix
+    leads it (REQ-AUD-17 AC1) and the "owner-decision:" sub-prefix is retained."""
     return subject("owner-decision: %s — %s — %s" % (finding_id, package or "unknown-package", reason))
 
 
