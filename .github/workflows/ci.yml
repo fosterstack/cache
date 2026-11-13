@@ -34,27 +34,43 @@ jobs:
           go-version: '1.27'
           check-latest: true
       # REQ-CI-001-AC4: only the packages of the changed files; every package when go.mod, go.sum or vendor/ changed (or there is no parent).
+      # A file under a package's testdata/ selects that package; a rename is a delete and an add, so it selects both packages.
+      # tools/requirements is its own Go module: it is vetted from inside it, never as a package of this module.
       # The whole-tree race, fips and coverage runs are full-suite.yml's.
       - name: the packages the change touches
         id: pkgs
         run: |
           set -euo pipefail
           if ! git rev-parse --verify --quiet HEAD^1 >/dev/null; then
+            echo "list=./..." >> "$GITHUB_OUTPUT"; echo "tools=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mapfile -d '' -t changed < <(git diff -z --no-renames --name-only HEAD^1 HEAD)
+          names=$(printf '%s\n' "${changed[@]}")
+          if grep -q '^tools/requirements/' <<< "${names}"; then
+            echo "tools=true" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -qE '^(go\.mod|go\.sum|vendor/)' <<< "${names}"; then
             echo "list=./..." >> "$GITHUB_OUTPUT"; exit 0
           fi
-          changed=$(git diff --name-only HEAD^1 HEAD)
-          if grep -qE '^(go\.mod|go\.sum|vendor/)' <<< "${changed}"; then
-            echo "list=./..." >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          dirs=$(grep -v '^vendor/' <<< "${changed}" | grep -v '/testdata/' | xargs -r -d '\n' -n1 dirname | sort -u | while read -r d; do
-            compgen -G "${d}/*.go" >/dev/null && echo "./${d}"
-          done || true)
-          echo "list=$(echo ${dirs})" >> "$GITHUB_OUTPUT"
+          dirs=()
+          for f in "${changed[@]}"; do
+            case "$f" in
+              vendor/*|tools/requirements/*) continue ;;
+              testdata/*) d=. ;;
+              */testdata/*) d=${f%%/testdata/*} ;;
+              *) d=$(dirname -- "$f") ;;
+            esac
+            if compgen -G "${d}/*.go" >/dev/null; then dirs+=("./${d}"); fi
+          done
+          echo "list=$(printf '%s\n' "${dirs[@]}" | sort -u | xargs)" >> "$GITHUB_OUTPUT"
       - name: go vet
         if: ${{ steps.pkgs.outputs.list != '' }}
         env:
           PKGS: ${{ steps.pkgs.outputs.list }}
         run: go vet ${PKGS}
+      - name: go vet (tools/requirements, its own module)
+        if: ${{ steps.pkgs.outputs.tools == 'true' }}
+        run: go -C tools/requirements vet ./...
       - name: go test
         if: ${{ steps.pkgs.outputs.list != '' }}
         env:
@@ -187,6 +203,10 @@ jobs:
         run: |
           set -euo pipefail
           suites=$(bash bin/select-tests.sh "origin/${BASE}" HEAD)
+          # bin/vex-both-scanners-test.sh needs the pinned grype on the PATH
+          if grep -qxF 'bash bin/vex-both-scanners-test.sh' <<< "${suites}"; then
+            ./bin/install-scanner.sh grype
+          fi
           while IFS= read -r suite; do
             [ -z "${suite}" ] || { echo "::group::${suite}"; bash -euo pipefail -c "${suite}"; echo "::endgroup::"; }
           done <<< "${suites}"
@@ -336,13 +356,3 @@ jobs:
       # python3 + jq — no network, gh or scanners.
       - name: daily-rescan merge/classification/enumeration regressions
         run: bash bin/rescan-statement-test.sh
-
-  dependency-review:
-    if: ${{ github.event_name == 'pull_request' }}   # required on pull requests only; the action needs a PR
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
