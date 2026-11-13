@@ -27,16 +27,13 @@ md="evidence-letter-$month.md"
 jq -c --arg md "$md" '.[] | select([.assets[].name] | (index($md) != null and index($md + ".bundle") != null))' \
   "$work/releases.json" > "$work/copies.jsonl"
 [ -s "$work/copies.jsonl" ] || die "$md and its bundle are on no published release: no letter for $month"
-refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
-  --ref refs/heads/main --out "$work/policy.json" 2>&1 > /dev/null) ||
-  die "$month: the key manifest is not accepted ($(head -n 1 <<< "$refusal"))"
 # The policy of a copy that carries the root-signed key manifest: the key it lists for the letter's month, not
-# today's. Prints the policy path; prints nothing when the release carries no manifest; else one line and exit 1.
+# today's. Prints the policy path; else one line and exit 1.
 key_policy() {
   local release=$1 dir=$2 name id
   for name in release-key-manifest.json release-key-manifest.sig; do
     id=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id' <<< "$release")
-    [ -n "$id" ] || return 0
+    [ -n "$id" ] || { echo "the release carries no $name"; return 1; }
     gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$dir/$name"
   done
   base64 -d "$dir/release-key-manifest.sig" > "$dir/manifest.sig" 2> /dev/null ||
@@ -60,6 +57,6 @@ while read -r release; do
   done
   tag=$(jq -r .tag_name <<< "$release")
   policy=$(key_policy "$release" "$work/copy$n") || die "$month, $tag: $policy"
-  refusal=$(bash bin/evidence-letter-verify.sh "${policy:-$work/policy.json}" "$work/copy$n/$md" 2>&1) ||
+  refusal=$(bash bin/evidence-letter-verify.sh "$policy" "$work/copy$n/$md" 2>&1) ||
     die "$month, $tag: ${refusal#evidence-letter-verify: }"
 done < "$work/copies.jsonl"
