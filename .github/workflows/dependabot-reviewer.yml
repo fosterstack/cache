@@ -121,9 +121,9 @@ jobs:
           ONLY_PR: ${{ inputs.pr }}
           FORCE: ${{ inputs.force }}
         # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is
-        # read this hour. A success counts only with this program's version as its external_id (the sha256 of
-        # bin/dependabot-reviewer.py): an older reviewer may have read less than the whole diff, and its success is
-        # no verdict, so the head is read as a head with none is.
+        # read this hour. A success counts only with this reviewer's version as its external_id (the sha256 of its
+        # program, its prompt and this workflow): an older reviewer may have read less than the whole diff, and its
+        # success is no verdict, so the head is read as a head with none is.
         # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same
         # change was read.
         # A plain patch/minor keeps the auto-merge workflow's arm through the review (the gate holds the merge); any
@@ -133,8 +133,8 @@ jobs:
         run: |
           set +e -uo pipefail
           mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
-          version=$(sha256sum bin/dependabot-reviewer.py | cut -d' ' -f1) && [ -n "$version" ] \
-            || { echo "::error::cannot read the reviewer's version — no verdict is read"; exit 1; }
+          version=$(cat bin/dependabot-reviewer.py .github/policy/dependabot-reviewer-prompt.txt .github/workflows/dependabot-reviewer.yml | sha256sum | cut -d' ' -f1) && [ -n "$version" ] \
+            || { echo "::error::cannot compute the reviewer's version — no verdict is published"; exit 1; }
           # <sha>: the App's latest reviewer check on that commit: its conclusion, or none (also for a success of another version)
           verdict_of() {
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer" \
@@ -246,8 +246,8 @@ jobs:
               fi
               continue
             elif [ "$prior" = none ] || [ "$prior" = neutral ]; then
-              if [ "$prior" = neutral ] && ! gate_stands "$n" "$sha" neutral; then
-                echo "::error::PR #$n ${sha:0:7}: could not confirm the review gate's check is not success over the neutral verdict — skipped this hour"; lookup_failed=1; continue
+              if ! gate_stands "$n" "$sha" "$prior"; then
+                echo "::error::PR #$n ${sha:0:7}: could not confirm the review gate's check is not success over the $prior verdict — skipped this hour"; lookup_failed=1; continue
               fi
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
                 echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
@@ -364,7 +364,8 @@ jobs:
           # one PR's failure never abandons the rest of the hour or skips the outputs below.
           set +e -uo pipefail
           W="$RUNNER_TEMP/work"; fail=0; merged=0; held=0; errored=0; moved=0
-          version=$(sha256sum bin/dependabot-reviewer.py | cut -d' ' -f1) || exit 1
+          version=$(cat bin/dependabot-reviewer.py .github/policy/dependabot-reviewer-prompt.txt .github/workflows/dependabot-reviewer.yml | sha256sum | cut -d' ' -f1) && [ -n "$version" ] \
+            || { echo "::error::cannot compute the reviewer's version — no verdict is published"; exit 1; }
           # A FRESH identity token for every reader call. Each `read` is its own process and its
           # own SDK exchange; exchanging one token twice fails (jti_reused — the auditor hit it),
           # and a token lives about five minutes. The runner endpoint is available to every step
@@ -534,12 +535,14 @@ jobs:
           set +e -uo pipefail
           f="$RUNNER_TEMP/work/armed-unpublished.txt"
           [ -s "$f" ] || { echo "nothing armed without a check"; exit 0; }
-          version=$(sha256sum bin/dependabot-reviewer.py | cut -d' ' -f1) || version=unknown
+          version=$(cat bin/dependabot-reviewer.py .github/policy/dependabot-reviewer-prompt.txt .github/workflows/dependabot-reviewer.yml | sha256sum | cut -d' ' -f1) && [ -n "$version" ] \
+            || { echo "::error::cannot compute the reviewer's version — no verdict is published"; exit 1; }
           while read -r n sha; do
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
             latest=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
                        --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
-                       | if . != null and .conclusion == \"success\" and .external_id != \"${version}\" then \"none\" else .conclusion // \"none\" end") || latest=unknown
+                       | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
+                         else .conclusion // \"none\" end") || latest=unknown
             if [ "$latest" = success ]; then echo "PR #$n: success check is on the head — the arm is recorded, left as is"; continue; fi
             if [ "$latest" = unknown ]; then
               # the gate's check first, as with every verdict that is not success; without it the neutral is not published
@@ -572,10 +575,14 @@ jobs:
         run: |
           set +e -uo pipefail
           W="$RUNNER_TEMP/work"; bad=0; guard=unknown
+          version=$(cat bin/dependabot-reviewer.py .github/policy/dependabot-reviewer-prompt.txt .github/workflows/dependabot-reviewer.yml | sha256sum | cut -d' ' -f1) && [ -n "$version" ] \
+            || { echo "::error::cannot compute the reviewer's version — no arm is settled"; exit 1; }
           while read -r n sha _; do
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
             if ! latest=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
-                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || [ -z "$latest" ]; then
+                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+                             | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
+                               else .conclusion // \"none\" end") || [ -z "$latest" ]; then
               echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — its arm is not settled"; bad=1; continue
             fi
             if ! armed=$(gh pr view "$n" --json state,headRefOid,autoMergeRequest \
