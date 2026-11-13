@@ -13,7 +13,7 @@ linux/amd64 and linux/arm64 children. No registry read, no network, no cloud cal
     feature; loading is proven by rule 12's live test).
 "The same statements" (advisor's words), less one thing: a stdlib subcomponent at a Go version the build does not ship is left out of
 both files, and the OpenVEX file keeps it. The CSAF file carries every other statement; the Inspector file carries one
-rule per suppressible, package-named statement (not_affected, fixed) and none for affected or under_investigation.
+rule for each product scope and package that a suppressible statement (not_affected, fixed) names, and none for affected or under_investigation.
 Our own pipeline keeps filtering against the OpenVEX file itself (rule 4); these forms are for customers.
 
 The digest file (AC5, AC6; advisor step 5, Oct 11, handoff 0389): the generator checks its SHAPE AND KEY SET ONLY:
