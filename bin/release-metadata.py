@@ -5,8 +5,10 @@
         the image input of vex-forms, {variant: {index, children}}, made ONLY from Build's verified digest list and Build's
         images/<variant>.digest and images/<variant>.manifests; never from a registry
   release-metadata.py manifest --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR
-        --baseline-version V --repo-root DIR --version V --commit SHA --ci-url U --workflow W --out F
-        release-manifest.json, deterministic (no clock): the images (`.images[].variant`, `.images[].digest` and both registry references,
+        --baseline-version V --repo-root DIR --version V --commit SHA --ci-url U --workflow W
+        --published-at T --reason R --out F
+        release-manifest.json, deterministic (no clock: T, a UTC YYYY-MM-DDTHH:MM:SSZ, and R, whose first line is not blank, are the caller's;
+        the evidence letter reads both from the signed file): the images (`.images[].variant`, `.images[].digest` and both registry references,
         the shape the daily rescan reads), the archives and the apks as Build attested them,
         and the two Go module SBOMs by Build's digest
   release-metadata.py list     --version V --dir DIR --out F
@@ -214,6 +216,10 @@ def cmd_manifest(a):
         refuse("version %r is not vX.Y.Z (a release candidate has no release manifest)" % a.version)
     if not re.fullmatch(r"[0-9a-f]{40}", a.commit or ""):
         refuse("commit %r is not 40 lower-case hex" % a.commit)
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", a.published_at or ""):
+        refuse("published-at %r is not a UTC YYYY-MM-DDTHH:MM:SSZ time" % a.published_at)
+    if not (a.reason or "").strip() or not a.reason.splitlines()[0].strip():
+        refuse("the reason is empty: its first line is the one the evidence letter quotes")
     d = digests_of(a.digests)
     apks = sorted(k for k in d if k.startswith("apk-"))
     want = sorted("apk-%s-%s" % (v, ar) for v in ("standard", "fips") for ar in ARCHES)
@@ -240,7 +246,7 @@ def cmd_manifest(a):
             refuse("%s is missing: the VEX forms are made before the manifest" % name)
         vex.append({"file": name, "form": form, "sha256": sha256_file(p)})
     doc = {
-        "version": a.version, "commit": a.commit,
+        "version": a.version, "commit": a.commit, "published_at": a.published_at, "reason": a.reason,
         "run": {"url": a.ci_url, "workflow": a.workflow},
         "images": [{"variant": v, "digest": img[v]["index"], "children": img[v]["children"],
                     "refs": ["%s@%s" % (REPO_GHCR, img[v]["index"]), "%s@%s" % (REPO_HUB, img[v]["index"])]} for v in VARIANTS],
@@ -436,7 +442,7 @@ def main(argv):
     i = sub.add_parser("images"); i.add_argument("--digests", required=True); i.add_argument("--images-dir", required=True); i.add_argument("--items", required=True); i.add_argument("--out", required=True)
     m = sub.add_parser("manifest")
     for k in ("digests", "images-dir", "items", "modules-dir", "vex-dir", "baseline-version", "repo-root", "version",
-              "commit", "ci-url", "workflow", "out"):
+              "commit", "ci-url", "workflow", "published-at", "reason", "out"):
         m.add_argument("--" + k, required=True)
     b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
