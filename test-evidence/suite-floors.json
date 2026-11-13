@@ -39,7 +39,6 @@
  "dependabot-reviewer-test.sh": 106,
  "dependency-lanes-test.sh": 68,
  "docs-snippets-test.sh": 50,
- "evidence-letter-test.sh": 51,
  "go-bump-open-pr-test.sh": 96,
  "go-freshness-wiring-test.sh": 76,
  "govulncheck-fixtures-test.sh": 4,
