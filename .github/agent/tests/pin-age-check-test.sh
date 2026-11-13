@@ -624,9 +624,10 @@ check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/x.py' "$work/binpy.ou
 agentfile binpyplain bin/y.py $'import json\nprint(json.dumps({}))\n'
 CASE="a bin/y.py with no download word moves nothing (exit 0)"
 check test "$rc" -eq 0
-for w in 'import urllib.request' 'from urllib.request import urlopen' 'data = urlopen(u).read()' \
-  'urlretrieve(u, "f")' 'requests.get(u)' 'requests.post(u)' 'requests.put(u)' 'requests.head(u)' \
-  'requests.request("GET", u)' 'requests.Session()'; do
+words=('import urllib.request' 'from urllib.request import urlopen' 'data = urlopen(u).read()'
+  'urlretrieve(u, "f")' 'requests.get(u)' 'requests.post(u)' 'requests.put(u)' 'requests.head(u)'
+  'requests.request("GET", u)' 'requests.Session()')
+for w in "${words[@]}"; do
   agentfile pyword .github/agent/sub/dir/w.py "$w"$'\n'
   CASE="a .py file under .github/agent/sub/dir/ holding '$w' counts as a download: exit 1, unmeasured"
   check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/sub/dir/w.py' "$work/pyword.out"
