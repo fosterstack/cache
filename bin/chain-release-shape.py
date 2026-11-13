@@ -46,15 +46,15 @@ REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": set(), "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
        "release-postverify": set()}
 CREDS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
-# W1 (#822 round 1): every witnessed step of the release job signs its record through the one signing function (bin/chain-verify.py sign-record), so it carries the three non-secret
-# federation entries as step env, literals: the AWS role of the release Sign identity (ops/terraform/aws-apply/main.tf), its region, and the release key's reference, which must be
+# W1 (#822 round 1): every witnessed step of the release job signs its record through the one signing function (bin/chain-verify.py sign-record), so the release job carries the three
+# non-secret federation entries as its own job env, literals, and no step repeats them: the AWS role of the release Sign identity (ops/terraform/aws-apply/main.tf), its region, and the release key's reference, which must be
 # the verifier's own RELEASE_KEY_REF. They are not credentials: the identity token the role is assumed with is fetched by the helper just before each signing call.
 FED_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"
 FED_REGION = "us-east-1"
 
 
 def fed_env():
-    """The exact step env of a witnessed step: the key reference is read from bin/chain-verify.py next to this file (a literal in the workflow that differs from it is refused)."""
+    """The exact job env of the release job: the key reference is read from bin/chain-verify.py next to this file (a literal in the workflow that differs from it is refused)."""
     try:
         m = re.search(r'^RELEASE_KEY_REF = "([^"]+)"$', open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-verify.py")).read(), re.M)
     except OSError:
@@ -271,7 +271,7 @@ def stage(path):
         bad.append("the release job must need exactly the compare and the verify job (needs: [compare, verify]), got %r" % nd)
     if j.get("if") != RC_IF:
         bad.append("the release job must carry exactly the job-level if %s (a release candidate never enters the release environment), got %r" % (RC_IF, j.get("if")))
-    if set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes", "needs", "if"}:
+    if set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes", "needs", "if", "env"}:
         bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes", "needs", "if"}))
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("release must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
@@ -369,15 +369,17 @@ def credentials(path):
     elif j_names_credential(cj) or has_expression(cj.get("steps")) or (cj.get("permissions") or {}).get("id-token"):
         bad.append("compare job: it must hold no credential, no environment and no identity token (the comparison of Rebuild's apks runs without a key)")
     j = jobs.get("release") or {}
+    if j.get("env") != fed_env():
+        bad.append("the release job must carry exactly the job env %s as literals (no credential, no expression, no variable lookup), found %s" % (fed_env(), j.get("env")))
     for s in j.get("steps") or []:
         r, env = run_of(s), s.get("env")
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
-            if name == "release-verify":      # the release job's own re-run: no credential, only the three federation entries (it signs its record)
+            if name == "release-verify":      # the release job's own re-run: no credential, and no env of its own (the job env holds the federation entries)
                 seen_verify = True
-                if env != fed_env() or CRED_RE.search(blob) or has_expression(s):
-                    bad.append("release-verify must carry exactly the step env %s as literals (no credential, no expression, no variable lookup), found %s" % (fed_env(), env))
+                if env is not None or CRED_RE.search(blob) or has_expression(s):
+                    bad.append("release-verify must carry no step env, no credential and no expression, found %s" % env)
                 continue
             if env is not None or CRED_RE.search(blob) or has_expression(s):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
@@ -387,15 +389,10 @@ def credentials(path):
                 bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
             continue
         want = WHO.get(name, set())
-        fed = fed_env()
         got = set((env or {}).keys())
-        if got != want | set(fed):
-            bad.append("%s must get exactly the credentials %s and the federation entries %s, got %s" % (name, sorted(want), sorted(fed), sorted(got)))
+        if got != want:
+            bad.append("%s must get exactly the credentials %s as step env (the federation entries are the job's), got %s" % (name, sorted(want), sorted(got)))
         for k, v in (env or {}).items():
-            if k in fed:
-                if v != fed[k]:
-                    bad.append("%s in %s must be the literal %r, got %r" % (k, name, fed[k], v))
-                continue
             ok = v == ("${{ github.token }}" if k == "GH_TOKEN" else "${{ secrets.%s }}" % k)
             if k in CREDS and not ok:
                 bad.append("%s in %s must be one whole read of its own secret, got %r" % (k, name, v))
