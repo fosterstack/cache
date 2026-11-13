@@ -92,7 +92,8 @@ jobs:
             echo "server on $1 never became healthy" >&2; return 1
           }
           for v in 1.2.0 1.2.3; do
-            rm -rf /tmp/fscache-mvn-data /tmp/fscache-mvn-capped /tmp/mvn-* /tmp/m2-* /tmp/m-cold* /tmp/m-warm* bench/maven-sample/target bench/maven-sample/lib/target bench/maven-sample/app/target
+            rm -rf /tmp/fscache-mvn-data /tmp/fscache-mvn-capped /tmp/mvn-* /tmp/m2-* /tmp/m-cold* /tmp/m-warm* \
+              bench/maven-sample/target bench/maven-sample/lib/target bench/maven-sample/app/target
             sed -i "s|<version>[0-9.]*</version>|<version>$v</version>|" bench/maven-sample/.mvn/extensions.xml
             grep version bench/maven-sample/.mvn/extensions.xml
             FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
@@ -106,6 +107,8 @@ jobs:
             wait_healthy 18099
             bash bin/acceptance-maven-capped.sh
             kill "$(cat /tmp/fscache-mvn.pid)" "$(cat /tmp/fscache-mvn-capped.pid)"
+            # the next round binds the same ports: wait until both servers have exited (a killed job's status is 143)
+            wait "$(cat /tmp/fscache-mvn.pid)" "$(cat /tmp/fscache-mvn-capped.pid)" || true
           done
 
       - name: stop the servers
