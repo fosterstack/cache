@@ -2088,7 +2088,7 @@ requirements:
         status: approved
 
   - id: REQ-REL-012
-    title: A release tag carries a passed-audit record of the whole release; a pull request's record is its cleared row
+    title: A release tag carries a passed-audit record; a pull request's record is its cleared row
     statement: >
       A pull request into the release (main) carries a passed-audit record for its exact head, or it cannot merge
       (release process rule 6, maintainers approved Oct 23 2026). That record is the clearing row for the exact head
@@ -2193,7 +2193,7 @@ requirements:
         given: "bin/select-tests.sh run with a base and a head commit, and the committed map .github/policy/test-paths.json of path globs to suite commands"
         when: "it reads the changed files from git diff --name-only BASE...HEAD"
         then: "it prints, one per line, in the map's order and without repeats, the suite commands of every map entry that a changed file matches; a changed file that matches no entry fails it (exit 1, the path named) so a new directory forces a map entry; an entry may list its paths as covered by no suite (docs), which selects nothing; a base or head that is not a commit fails it"
-        verification: { method: shell-test, release_blocking: false }
+        verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC4
         given: "the test job of ci.yml on a pull request"
