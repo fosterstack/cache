@@ -462,6 +462,10 @@ case_msg uses-literal-marker-allowlist    "$(bump allowlist "$BAD_MARKER")" "$wa
 case_msg uses-checkout-tag-ref-allowlist  "d['jobs']['allowlist']['steps'][0]['uses'] = 'actions/checkout@v4'" \
   "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+# a promotion context (the full suite's, read by stage-admission) comes from one workflow file:
+# a second job with its name is refused
+SECOND="{'name': 'coverage', 'runs-on': 'x', 'steps': [{'run': 'true'}]}"
+case_ promotion-context-second-job bad "d['jobs']['second'] = $SECOND"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
 case_ job-name-expr-spaced    ok  "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
 case_ job-matrix-other        ok  "d['jobs']['lint']['strategy'] = {'matrix': {'x': ['1']}}"
