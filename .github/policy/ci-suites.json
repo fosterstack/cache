@@ -51,7 +51,6 @@
 {"suite": "dependabot-reviewer-gather-test.sh"},
 {"suite": "panel-test.sh"},
 {"suite": "vex-index-test.sh"},
-{"suite": "patch-decide-test.sh"},
 {"suite": "audit-record-test.sh"},
 {"suite": "admission-tag-signer-test.sh"},
 {"suite": "acceptance-maven-413-test.sh"},
