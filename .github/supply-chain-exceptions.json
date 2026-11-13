@@ -189,13 +189,6 @@
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
-      "key": "59026aa06d9188a1b90b3ccd57dd0fc2c05bdf90654072b8740477e87155080f",
-      "line": "ae6bd1d131a9b936d04293423176cb708db160c96d54f70da43617a3a04c781e",
-      "ruling": "text, not a command: a shell comment explaining that tools such as curl are replaced by STUBS on PATH that record their argv in a call log"
-    },
-    {
-      "file": "bin/melange-apko-lib.sh",
-      "form": "a download",
       "key": "64612fb9a9fe82bebee266d20bfd151d4aab8c5a1d02f1a3dfadde2b97938277",
       "line": "ddbd6b256451601130eba3c0ddea455186ed7fc00869ae26c95a3f856ca9ad77",
       "ruling": "text, not a command: the curl STUB's error branch (written as data by a quoted heredoc); echoes 'stub curl: 22 <url>' to stderr and exits 22, it downloads nothing"
