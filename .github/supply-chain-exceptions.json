@@ -2970,27 +2970,6 @@
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/system_path_allowlist.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
-      "file": ".github/agent/bin/tests/test_cov_manifest.py",
-      "form": "a download",
-      "key": "cf30a58a6443e26c1c94fc0220d9b0ed63270b0be44bb03e829f824b7c5294cf",
-      "line": "cf30a58a6443e26c1c94fc0220d9b0ed63270b0be44bb03e829f824b7c5294cf",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_cov_manifest.py",
-      "form": "a download",
-      "key": "9f003c1c402d519648a3161e8bc67748935cbdf15f6b8b62de192e6f2ecd6e16",
-      "line": "9f003c1c402d519648a3161e8bc67748935cbdf15f6b8b62de192e6f2ecd6e16",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_cov_manifest.py",
-      "form": "a download",
-      "key": "ed2a2da9cda86449872c4bed16d1df517df30ae78f1bb4e26132db84bbebb77f",
-      "line": "ed2a2da9cda86449872c4bed16d1df517df30ae78f1bb4e26132db84bbebb77f",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
       "file": ".github/agent/bin/tests/test_fs_guard.py",
       "form": "a system package install",
       "key": "2547a8117f4156a8973f37d60538a02d183e90099a5bbfdc4f09d0a42ce41dba",
@@ -5877,6 +5856,34 @@
       "key": "c7cc0b3a9d7993c8a4fb5879430c9694fd3fd452bd3daacfe454685e3acad008",
       "line": "c7cc0b3a9d7993c8a4fb5879430c9694fd3fd452bd3daacfe454685e3acad008",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_cov_manifest.py",
+      "form": "a download",
+      "key": "cf30a58a6443e26c1c94fc0220d9b0ed63270b0be44bb03e829f824b7c5294cf",
+      "line": "cf30a58a6443e26c1c94fc0220d9b0ed63270b0be44bb03e829f824b7c5294cf",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_cov_manifest.py",
+      "form": "a download",
+      "key": "9f003c1c402d519648a3161e8bc67748935cbdf15f6b8b62de192e6f2ecd6e16",
+      "line": "9f003c1c402d519648a3161e8bc67748935cbdf15f6b8b62de192e6f2ecd6e16",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_cov_manifest.py",
+      "form": "a download",
+      "key": "ed2a2da9cda86449872c4bed16d1df517df30ae78f1bb4e26132db84bbebb77f",
+      "line": "ed2a2da9cda86449872c4bed16d1df517df30ae78f1bb4e26132db84bbebb77f",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_cov_manifest.py",
+      "form": "a download",
+      "key": "947d6890bbf1d822cc85a9d958af71c4f0eb1b53052b6a04cb08eb2b326bfb28",
+      "line": "947d6890bbf1d822cc85a9d958af71c4f0eb1b53052b6a04cb08eb2b326bfb28",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
