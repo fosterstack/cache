@@ -8674,6 +8674,20 @@
       "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
       "body-last": "PY",
       "body-sha256": "ba02bd1e1e7ff484a63da02dbf2d2b15ee2910a65f19436c3d60d9393833cc4f"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-gh-404-test.sh",
+      "form": "a download",
+      "key": "36e5574615fb3d4097d148b82d90b8d7fb527a83fcf9022cb8f2b58d78d9e44d",
+      "line": "2b3cba027a2d7a337df8baa09d53eafeb54c8b9a9374c8f5c8f2ea4e1a546d68",
+      "ruling": "text, not a command: a line of .github/agent/tests/s2-p2-gh-404-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-gh-404-test.sh",
+      "form": "a download",
+      "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "ruling": "text, not a command: a line of .github/agent/tests/s2-p2-gh-404-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
