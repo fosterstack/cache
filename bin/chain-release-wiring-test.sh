@@ -613,13 +613,13 @@ import sys, yaml
 t = next(a for q in yaml.safe_load(open(sys.argv[1]))["requirements"] if q["id"] == "REQ-CHAIN-007" for a in q["acceptance_criteria"] if a["id"] == "REQ-CHAIN-007-AC1")["then"]
 assert "before any credential exists" not in t and "no explicit credential binding" in t and "needs: verify" in t, t[:200]
 PY
-python3 - "$root/.github/workflows/stage-promote.yml" "$root/bin/release-verify.sh" <<'PY' && ok "text: the stage-promote.yml header and release-verify.sh do not say that no credential exists before release-verify" || bad "text: a header comment overstates credential absence"
+python3 - "$root/.github/workflows/release.yml" "$root/bin/release-verify.sh" <<'PY' && ok "text: the release.yml header and release-verify.sh do not say that no credential exists before release-verify" || bad "text: a header comment overstates credential absence"
 import sys
 for f in sys.argv[1:]:
     t = open(f).read()
     assert "no credential exists yet" not in t and "No credential exists in this step" not in t, f
 PY
-python3 - "$root/requirements/requirements.yaml" "$root/.github/policy/chain-scripts.json" "$root/.github/workflows/stage-promote.yml" <<'PY' && ok "text: the REQ-CHAIN-007 statement, the release-verify row reason and the stage header make no blanket claim that no credential exists" || bad "text: a statement, reason or header still overstates credential absence"
+python3 - "$root/requirements/requirements.yaml" "$root/.github/policy/chain-scripts.json" "$root/.github/workflows/release.yml" <<'PY' && ok "text: the REQ-CHAIN-007 statement, the release-verify row reason and the release.yml header make no blanket claim that no credential exists" || bad "text: a statement, reason or header still overstates credential absence"
 import json, sys, yaml
 q = next(q for q in yaml.safe_load(open(sys.argv[1]))["requirements"] if q["id"] == "REQ-CHAIN-007")
 assert "before any credential exists" not in q["statement"], "statement"
@@ -703,7 +703,7 @@ bare_aws() { grep -rIn --include='*.sh' --include='*.py' --include='*.yml' -e '/
 if [ -z "$(bare_aws "$root/bin" "$root/.github/workflows")" ]; then ok "KA-2 p4 group 4 no script or workflow of the repository names /usr/local/bin/aws"; else bad "KA-2 p4 group 4 a bare aws path is left: $(bare_aws "$root/bin" "$root/.github/workflows" | head -3 | tr '\n' ' ')"; fi
 mkdir -p "$work/bareaws"; printf '#!/usr/bin/env bash\npython3 bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref x\n' > "$work/bareaws/m.sh"
 if [ -n "$(bare_aws "$work/bareaws")" ]; then ok "KA-2 p4 group 4 mutant: a script that names /usr/local/bin/aws is found by the scan"; else bad "KA-2 p4 group 4 mutant: the bare-path scan missed a script that names /usr/local/bin/aws"; fi
-# KA-2 p4 group 4 (ruling 09:17:40Z 1f): every job of stage-sign.yml that reaches KMS (its steps run bin/witness-sign-staged.sh or bin/with-aws-token.sh) installs the pinned aws CLI
+# KA-2 p4 group 4 (ruling 09:17:40Z 1f; the four sign jobs of release.yml, REQ-CHAIN-001-AC9): every job of release.yml that reaches KMS (its steps run bin/witness-sign-staged.sh or bin/with-aws-token.sh) installs the pinned aws CLI
 # (bin/install-scanner.sh aws-cli, which checks aws-cli/<pinned version>) in a step BEFORE the first of those steps; the judge is proven on a mutant that loses the install step.
 ssjudge() { python3 - "$1" <<'SSPY'
 import sys, yaml
@@ -717,13 +717,13 @@ for job, j in d["jobs"].items():
     print("%s %s" % (job, "ok" if inst is not None and inst < first else "MISSING"))
 SSPY
 }
-for jb in sign sign-rebuild sign-check; do
-  ssout=$(ssjudge "$root/.github/workflows/stage-sign.yml")
-  if [[ $'\n'"$ssout"$'\n' == *$'\n'"$jb ok"$'\n'* ]]; then ok "KA-2 p4 group 4 stage-sign.yml job $jb installs the pinned aws CLI before its first KMS-reaching step"; else bad "KA-2 p4 group 4 stage-sign.yml job $jb has no pinned aws CLI install before its first KMS-reaching step"; fi
+for jb in sign sign-rebuild sign-check sign-release; do
+  ssout=$(ssjudge "$root/.github/workflows/release.yml")
+  if [[ $'\n'"$ssout"$'\n' == *$'\n'"$jb ok"$'\n'* ]]; then ok "KA-2 p4 group 4 release.yml job $jb installs the pinned aws CLI before its first KMS-reaching step"; else bad "KA-2 p4 group 4 release.yml job $jb has no pinned aws CLI install before its first KMS-reaching step"; fi
 done
-grep -v 'install-scanner.sh aws-cli' "$root/.github/workflows/stage-sign.yml" > "$work/ss_noaws.yml"
+grep -v 'install-scanner.sh aws-cli' "$root/.github/workflows/release.yml" > "$work/ss_noaws.yml"
 ssout=$(ssjudge "$work/ss_noaws.yml")
-if [[ "$ssout" == *MISSING* ]]; then ok "KA-2 p4 group 4 mutant: a stage-sign.yml without the aws CLI install is found by the judge"; else bad "KA-2 p4 group 4 mutant: the stage-sign aws CLI judge missed a file without the install"; fi
+if [[ "$ssout" == *MISSING* ]]; then ok "KA-2 p4 group 4 mutant: a release.yml without the aws CLI install is found by the judge"; else bad "KA-2 p4 group 4 mutant: the aws CLI judge missed a file without the install"; fi
 # KA-2 p4 r2 (C1, round 1 ruling): no signer script leaves the aws CLI to be found by name. Every direct call of bin/chain-verify.py key-ref-check, kms-sign, sign or sign-record, and every call of bin/with-aws-token.sh kms-sign
 # (the wrapper appends --aws only for sign and sign-record), carries the literal --aws "$RUNNER_TEMP/aws-cli/aws" in its (continued) line. The scan reads every non-test script of bin/.
 awscalls() { python3 - "$@" <<'AWSPY'
@@ -780,7 +780,7 @@ out = re.sub(r"(chain-verify\.py key-ref-check[^\n]*?) --aws \"\$RUNNER_TEMP/aws
 open(sys.argv[2], "w").write(out)
 DROPPY
 if [ -n "$(awscalls "$work/awscalls/m_release_sign.sh")" ]; then ok "KA-2 p4 r2 C1 mutant: the real release-sign.sh with --aws dropped from its key-ref-check line is found by the scan"; else bad "KA-2 p4 r2 C1 mutant: the aws scan missed release-sign.sh without --aws on key-ref-check"; fi
-# KA-2 p4 r2 (1b', round 1 ruling): the pinned aws CLI is installed only where KMS is reached: `bash bin/install-scanner.sh aws-cli` runs in no job of .github/workflows/*.yml except stage-sign sign, sign-rebuild and sign-check, evidence-letter sign and stage-promote release
+# KA-2 p4 r2 (1b', round 1 ruling): the pinned aws CLI is installed only where KMS is reached: `bash bin/install-scanner.sh aws-cli` runs in no job of .github/workflows/*.yml except the four sign jobs of release.yml (sign, sign-rebuild, sign-check, sign-release); the release job holds no KMS role
 awsfiles() { local r=$1; shopt -s globstar nullglob; printf '%s\n' "$r"/.github/workflows/*.y*ml "$r"/.github/actions/**/action.y*ml; }      # KA-2 p4 r2 C4: .yml and .yaml, workflows and composite actions
 awsjobs() { python3 - "$@" <<'JOBSPY'
 import os, re, sys, yaml
@@ -795,18 +795,18 @@ for pth in sys.argv[1:]:
             print("%s:%s" % (os.path.basename(pth), job))
 JOBSPY
 }
-ALLOWED_AWS_JOBS=$'stage-promote.yml:release\nstage-sign.yml:sign\nstage-sign.yml:sign-check\nstage-sign.yml:sign-rebuild'
+ALLOWED_AWS_JOBS=$'release.yml:sign\nrelease.yml:sign-check\nrelease.yml:sign-rebuild\nrelease.yml:sign-release'
 mapfile -t aw_files < <(awsfiles "$root"); aj=$(awsjobs "${aw_files[@]}" | sort)
-if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' the aws CLI is installed in exactly the four signing jobs (stage-sign sign, sign-rebuild, sign-check; stage-promote release) and in no other job of any workflow"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
-mkdir -p "$work/awsjobs"; python3 - "$root/.github/workflows/stage-build.yml" "$work/awsjobs/stage-build.yml" <<'JOBMUT'
+if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' the aws CLI is installed in exactly the four sign jobs of release.yml (sign, sign-rebuild, sign-check, sign-release) and in no other job of any workflow, the release job included"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
+mkdir -p "$work/awsjobs"; python3 - "$root/.github/workflows/release.yml" "$work/awsjobs/release.yml" <<'JOBMUT'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 job = next(iter(d["jobs"]))
 d["jobs"][job].setdefault("steps", []).insert(0, {"name": "install the aws CLI", "run": "bash bin/install-scanner.sh aws-cli"})
 yaml.safe_dump(d, open(sys.argv[2], "w"))
 JOBMUT
-mj=$(awsjobs "$work/awsjobs/stage-build.yml")
-if [ -n "$mj" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 1b' mutant: an aws CLI install step in a job of stage-build.yml ($mj) is outside the allowed signing jobs, so the tree-level check is red"; else bad "KA-2 p4 r2 1b' mutant: the aws CLI install in a stage-build.yml job was not found outside the allowed jobs ($mj)"; fi
+mj=$(awsjobs "$work/awsjobs/release.yml")
+if [ -n "$mj" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 1b' mutant: an aws CLI install step in the first job of release.yml ($mj) is outside the allowed signing jobs, so the tree-level check is red"; else bad "KA-2 p4 r2 1b' mutant: the aws CLI install in a release.yml build job was not found outside the allowed jobs ($mj)"; fi
 # KA-2 p4 r2 C4: the file set is .y*ml in workflows and action.y*ml under .github/actions (a .yaml workflow, a composite action), and `aws-cli` is matched quoted as well as bare
 mkdir -p "$work/awstree/.github/workflows" "$work/awstree/.github/actions/x/y"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh aws-cli\n' > "$work/awstree/.github/workflows/w.yaml"
@@ -816,7 +816,7 @@ rm -f "$work/awstree/.github/workflows/w.yaml"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh "aws-cli"\n' > "$work/awstree/.github/workflows/q.yml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
 if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
-EXPECT=380
+EXPECT=381
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
