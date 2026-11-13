@@ -192,13 +192,17 @@ scan = (text_of("docs/scanning.md") or "").replace("\n", " ")
 check("R4 docs/scanning.md says the CSAF file leaves out Go standard library versions the release is not built with",
       re.search(r"CSAF file[^.]*(omit|leave out|leaves out|without|not (carry|include|contain))[^.]*Go standard library",
                 scan, re.I) is not None, scan[:200])
-# R8: the release notes draft names the ca-certificates-bundle version build/melange.yaml pins, and no other
-mel = open(os.path.join(root, "build/melange.yaml")).read()
-pins = re.findall(r"(?m)^\s*- ca-certificates-bundle=(\S+)\s*$", mel)
-check("R8 build/melange.yaml pins ca-certificates-bundle once", len(pins) == 1, pins)
-notes = text_of("docs/release-notes-draft.md") or ""
-named = set(re.findall(r"ca-certificates-bundle`?\s+(\d[\w.+~-]*\d)", notes))
-check("R8 the release notes draft names the pinned ca-certificates-bundle version and no other", bool(pins) and named == {pins[0]}, (pins, sorted(named)))
+# R8: the release notes draft names no CA bundle as part of the image (the images carry none)
+CA_BUNDLE = re.compile(r"\bca[-\s]+(certificates?[-\s]+)?bundle|\bca-certificates?\b", re.I)
+def names_ca_bundle(text):
+    return CA_BUNDLE.search(text.replace("\n", " ")) is not None
+notes = text_of("docs/release-notes-draft.md")
+check("R8 docs/release-notes-draft.md exists", notes is not None)
+check("R8 the release notes draft names no CA bundle as part of the image", notes is not None and not names_ca_bundle(notes))
+check("R8 mutant: a sentence naming a CA bundle appended to the notes is caught",
+      all(names_ca_bundle((notes or "") + "\nThe image includes %s 20261020-r0.\n" % n)
+          for n in ("ca-certificates-bundle", "ca-certificates", "CA bundle", "CA certificate bundle",
+                    "CA certificates bundle", "ca-bundle", "CA-Certificates-Bundle")))
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
