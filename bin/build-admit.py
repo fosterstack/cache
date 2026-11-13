@@ -201,8 +201,8 @@ def route_tag(ctx):
 
 
 def verify_ssh(ctx, verb, ref):
-    """git verify-tag or verify-commit against main's allowed signers. Returns (principal, fingerprint) of the Good "git"
-    line, or None. GNUPGHOME is empty, so an OpenPGP signature in the runner's own keyring never counts."""
+    """git verify-tag or verify-commit against main's allowed signers. Returns (principal, fingerprint) of the
+    Good "git" line, or None. GNUPGHOME is empty, so an OpenPGP signature in the runner's own keyring never counts."""
     home = tempfile.mkdtemp(prefix="gnupg-", dir=ctx.tmp)
     rc, out, err = run([GIT, "-c", "gpg.format=ssh", "-c", "gpg.ssh.program=" + SSH_KEYGEN, "-c", "gpg.program=" + GPG,
         "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, verb, ref],
