@@ -3359,19 +3359,6 @@ BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "b
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/policy/ci-suites.json"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); the CI suite list names its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
-PINWIRE = (".github", "tests", "pin-wiring-test.sh")      # the pin-wiring judge is recognised by the SHAPE of its path, .github/<one directory>/tests/pin-wiring-test.sh, so this file never names the auditor directory (REQ-AUD-18 AC1: nothing outside it refers to it); the judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521/#540) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
-PIN_LINES = frozenset((
-    "da7e0d333bef74e866268a6724b75adb51173fc2428c94d79f687e941c5ecc60",
-    "dfc8b28ba0489c3e91555f19b62d1c2bc0a8623a3896a35711a66f467a35720a",
-    "3237e803c9ef9113386f75a589beb5ff29439494fc950e36c74a681cdf9f5dc0",
-    "4953659b48a4026c7420810bf06d5dd7f979f506ec2e0230e846e8db6108f375",
-    "76dd2d9e0ddeb935a8e2715fe26fe325cbb168b0c63656a16a0e0f9588029091",
-    "b7827728ad4015e730527cbbad9ff10f27f0e01b578d263b4aafac79b2638630",
-    "ed9b7baf50c1a06493904a32858062357734918badcf226bc41eb6ecf4033be8",
-    "5f4193699f8e6bedd7a747039a4fcbb14e010e653fbdd24c3640a83538e8008c",
-    "7461149042047fd8d64d6d06d7f4f374f16b54a7151a0ea456525e0d80176cb8",
-    "9ca61104b6e4518e5faca29e6733bfc150f90f2cdf5708258d192c44ee244f4f",
-))
 RESCAN = ".github/workflows/main-candidate-rescan.yml"      # the daily rescan (cache#489, handoff 0521) attaches our OpenVEX to its own SCRATCH copies of the candidates (never a published version; its vex-attach job pushes only candidate and fixture tags to the scratch package, judged by bin/panel-wiring-test.sh): in that one file a line naming vex-index must be, after strip(), one of these reviewed lines (sha256), the call lines of that job and the comment above them
 RESCAN_LINES = frozenset((
     "238f1cc11ed234ed6ed4396dac82934ef001e1193bd8891934c557fbf21b9ba4",
@@ -3406,11 +3393,6 @@ def stray(root):
             if not os.path.isfile(path):
                 continue
             text = open(path, errors="replace").read()
-            rel = os.path.relpath(path, root).split(os.sep)
-            if len(rel) == 4 and (rel[0], rel[2], rel[3]) == PINWIRE:
-                if any("vex-index" in ln and hashlib.sha256(ln.strip().encode()).hexdigest() not in PIN_LINES for ln in text.splitlines()):
-                    named.add(os.path.relpath(path, root))
-                continue
             pins = LINE_PINS.get(os.path.relpath(path, root))
             if pins is not None:
                 nl = [ln.strip() for ln in text.splitlines() if "vex-index" in ln]
@@ -3514,29 +3496,12 @@ vim k4 "REQ-REL-010-AC4 a Go file under tools/requirements (a skipped name below
 vim k5 "REQ-REL-010-AC4 a script under bin/docs (a skipped name below the top level) running the tool is refused" bin/docs/attach.sh '' $'python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
 vim k6 "REQ-REL-010-AC4 loading the tool in the live-test test file from the path the allowed subprocess line holds (r.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", r.args[1])\n'
 vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nsp = importlib.util.spec_from_file_location("z", os.path.join(root, "bin", NAME))\n'
-# the pin-wiring judge (the file tests/pin-wiring-test.sh in one directory under .github) quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool). In that ONE file a line naming
-# vex-index is admitted only if it is, after strip(), one of the reviewed lines (PIN_LINES, by sha256); anything else naming it, and the same line in any other file, is refused (advisor Oct 22:
-# only the exact quoted step string; both seats of round 2: erasing a substring admitted an executable use, so whole reviewed lines are pinned)
 vimok() { # vimok NAME LABEL FILE NEW   (the scope function must find NOTHING stray)
-  local d="$work/vimok-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy" "$d/.github/judge/tests"
+  local d="$work/vimok-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy"
   cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$d/bin/"
   printf '%s' "$4" > "$d/$3"
   if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); print(b, file=sys.stderr); sys.exit(0 if not b else 1)' "$work/vi-named.py" "$d" 2>/dev/null; then ok "$2"; else bad "$2"; fi
 }
-PW=.github/judge/tests/pin-wiring-test.sh
-L1=$'  "run": "bash bin/vex-index-test.sh </dev/null"\n'
-L2=$'        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}\n'
-vimok p1 "REQ-REL-010-AC4 the pin-wiring judge's reviewed lines quoting the exact step string bash bin/vex-index-test.sh </dev/null are admitted (they name the test script and run nothing)" $PW "$L1$L2"
-vimok p7 "REQ-REL-010-AC4 a reviewed line is admitted at any indentation (strip) and repeated, as the real judge repeats it" $PW "$L1"$'\t\t"run": "bash bin/vex-index-test.sh </dev/null"\n'"$L2"
-vim p2 "REQ-REL-010-AC4 the pin-wiring judge naming the tool itself (bin/vex-index.py) next to a reviewed line is refused" $PW '' "$L1"$'subprocess.run(["python3", "bin/vex-index.py", "layout"])\n'
-vim p3 "REQ-REL-010-AC4 the pin-wiring judge naming the test script in any form that is not a reviewed line is refused" $PW '' $'x = "bash bin/vex-index-test.sh"\n'
-vim p4 "REQ-REL-010-AC4 another test file holding a reviewed line is refused (the admission is for the pin-wiring judge only)" .github/judge/tests/other-test.sh '' "$L1"
-vim p5 "REQ-REL-010-AC4 the pin-wiring judge with more words after the step string inside the same quotes is refused" $PW '' $'x = "bash bin/vex-index-test.sh </dev/null; echo more"\n'
-vim p6 "REQ-REL-010-AC4 the pin-wiring judge naming the step string without its own quotes is refused" $PW '' $'x = bash bin/vex-index-test.sh </dev/null\n'
-vim p8 "REQ-REL-010-AC4 adjacent string literals around the quoted step string handed to os.system are refused (round 2, seat A)" $PW '' $'os.system("bash bin/vex-index-test.sh </dev/null" " ")\n'
-vim p9 "REQ-REL-010-AC4 the step string put in a variable that later lines rewrite to the tool and eval is refused (round 2, seat B)" $PW '' $'cmd="bash bin/vex-index-test.sh </dev/null"\ncmd=${cmd/#bash/python3}\ncmd=${cmd/-test.sh/.py}\neval "$cmd layout --layout /fixture"\n'
-vim p10 "REQ-REL-010-AC4 a reviewed line with anything appended (a comment, a call) is refused" $PW '' "${L1%$'\n'}  # x"$'\n'
-vim p11 "REQ-REL-010-AC4 a reviewed line with a call appended after it on the same line is refused" $PW '' "${L1%$'\n'}; os.system(x)"$'\n'
 # the daily rescan (main-candidate-rescan.yml, cache#489, handoff 0521) attaches our OpenVEX to its own scratch copies of the candidates (never a published version): in THAT file, and only there, a line naming
 # vex-index is admitted only if it is one of the reviewed lines (RESCAN_LINES, by sha256 of the stripped line)
 RS=.github/workflows/main-candidate-rescan.yml
@@ -3791,7 +3756,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1318
+EXPECT=1307
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
