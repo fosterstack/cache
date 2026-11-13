@@ -2704,14 +2704,15 @@ def _unsafe_downloads(text):
 # beside the entry's own name: the ways a step's environment or search path is set for later steps. Each may stand in
 # the parsed file only as often as in the excluded steps' run text.
 _HELD_WORDS = ("GITHUB_ENV", "GITHUB_PATH", "::set-env", "::add-path", "ACTIONS_ALLOW_UNSECURE_COMMANDS",
-               "exportVariable", "addPath")
+               "exportVariable", "addPath", "curlrc")
 _HELD_WORDS_ANY_CASE = ("github.env", "github.path")      # expression names: GitHub reads them in any letter case
 _TOKEN_URL_CONDITION = (
     "(this exclusion holds only while the step has no `shell:`, its own or a default; each of "
     "ACTIONS_ID_TOKEN_REQUEST_URL, " + ", ".join(_HELD_WORDS) + " and, in any letter case, "
     + " and ".join(_HELD_WORDS_ANY_CASE) + " stands in the parsed file only as often as in the excluded steps' run "
     "text; and every env is a mapping whose keys are plain ASCII identifiers, none a bash startup hook, PATH or "
-    "another name the allowlist job's judge refuses, none CURL_HOME. "
+    "another name the allowlist job's judge refuses, none CURL_HOME or another name curl or the runner reads for its "
+    "certificates, proxies, key log or token file, in any letter case. "
     "Not seen: a name or path built at run time, a committed script, an action's own code, or the job's container "
     "image.)")
 # the names pin-wiring-test.sh refuses in the env of the allowlist job: a startup file, a search path, an interpreter's
@@ -2720,6 +2721,9 @@ _RISKY_ENV = frozenset({"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP"
                         "PS4", "IFS", "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"})
 _RISKY_ENV_PREFIX = re.compile(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)")
 _RISKY_ENV_HERE = frozenset({"CURL_HOME"})     # not on that list: where curl looks first for a config file
+_CURL_READS = frozenset({"SSLKEYLOGFILE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "http_proxy", "https_proxy",
+                         "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "ANTHROPIC_IDENTITY_TOKEN_FILE"})   # what curl, or the runner, reads besides
+_RISKY_ENV_ANY_CASE = frozenset(name.lower() for name in _RISKY_ENV_HERE | _CURL_READS)
 
 
 def _risky_env(name):
@@ -2760,7 +2764,7 @@ def _token_url_breach(text, name, run_texts):
     for key in env_keys:
         if not (key.isascii() and key.isidentifier()):
             return "an env sets a key that is not a plain name"
-        if _risky_env(key) or key in _RISKY_ENV_HERE:
+        if _risky_env(key) or key.lower() in _RISKY_ENV_ANY_CASE:
             return f"an env sets {key}"
     return None
 
@@ -2770,11 +2774,11 @@ DOWNLOAD_EXCLUSIONS = {
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
-    (".github/workflows/dependabot-reviewer.yml", "review", 4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 4, "f5cd95a72e84a4ac7178afc40303cadfb2e2043f4c49d11de262bdac5c72a27f"): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 8, "69bc42e58433720251404d2f518c0989f76d6dde8547c2f449b954e4a4106ee1"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 8, "3a4c78d1bec09a935a3013ad310d876854dbab5eb5b126dc3b2023423131d124"): (
         "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }

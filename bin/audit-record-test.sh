@@ -12,7 +12,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 python3 -I - "$here/audit-record.py" "$here/audit-record-judge.sh" <<'PY'
-import copy, importlib.util, json, os, re, subprocess, sys, tempfile, yaml
+import copy, hashlib, importlib.util, json, os, re, subprocess, sys, tempfile, yaml
 spec = importlib.util.spec_from_file_location("ar", sys.argv[1]); A = importlib.util.module_from_spec(spec); spec.loader.exec_module(A)
 JUDGE_SH = sys.argv[2]
 passed = failed = 0
@@ -559,12 +559,20 @@ for name, pulls in (
 ):
     check("bump: the record rule stands when " + name, A.bump_pull(HEAD, pulls) is None, A.bump_pull(HEAD, pulls))
 
-def run(i, conclusion="success", slug="fosterstack-automation", name="dependabot-reviewer", status="completed"):
-    return {"id": i, "name": name, "status": status, "conclusion": conclusion, "app": {"id": 5054756, "slug": slug}}
+REVIEWER_PY = os.path.join(os.path.dirname(JUDGE_SH), "dependabot-reviewer.py")
+VER = hashlib.sha256(open(REVIEWER_PY, "rb").read()).hexdigest()
+OLDVER = "0" * 64
+NOVER = object()
+open(root + "/bin/dependabot-reviewer.py", "wb").write(open(REVIEWER_PY, "rb").read())
+def run(i, conclusion="success", slug="fosterstack-automation", name="dependabot-reviewer", status="completed", ext=VER):
+    r = {"id": i, "name": name, "status": status, "conclusion": conclusion, "app": {"id": 5054756, "slug": slug}}
+    if ext is not NOVER: r["external_id"] = ext
+    return r
 def runs(*rs):
     return {"total_count": len(rs), "check_runs": list(rs)}
 def verdict(answer):
-    return A.reviewer_verdict(answer, {"fosterstack-automation[bot]"})
+    try: return A.reviewer_verdict(answer, {"fosterstack-automation[bot]"}, VER)
+    except TypeError as e: return "TypeError: %s" % e
 for name, answer, want in (
     ("no check run", runs(), A.NO_RUN),
     ("the reviewer's success", runs(run(1)), "success"),
@@ -590,6 +598,28 @@ for name, answer, want in (
     ("an entry with no name next to the reviewer's success", runs(run(1), dict(run(2), name=None)), None),
     ("an entry without an id", runs(dict(run(1), id=None)), None),
     ("a malformed entry", runs("x"), None), ("a malformed answer", [], None), ("no answer", None, None),
+):
+    check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
+
+def no_pass(got): return got != "success" and got is not A.NO_RUN
+for name, answer in (
+    ("a success of another version", runs(run(1, ext=OLDVER))),
+    ("a success with no external_id (before the change)", runs(run(1, ext=NOVER))),
+    ("a success whose external_id is null", runs(run(1, ext=None))),
+    ("a success whose external_id is empty", runs(run(1, ext=""))),
+    ("a success whose external_id is the current version in upper case", runs(run(1, ext=VER.upper()))),
+    ("a success of another version finishing after the current one (the newest by id)", runs(run(1), run(2, ext=OLDVER))),
+    ("a success with no external_id finishing after the current one", runs(run(1), run(2, ext=NOVER))),
+):
+    check("bump: the reviewer's verdict: %s is a verdict that does not pass, and not NO_RUN" % name, no_pass(verdict(answer)), verdict(answer))
+for name, answer, want in (
+    ("a success of the current version after one of another version: the newest replaces it", runs(run(1, ext=OLDVER), run(2)), "success"),
+    ("another App's stale success after the reviewer's current one", runs(run(1), run(2, slug="github-actions", ext=OLDVER)), "success"),
+    ("a failure of another version", runs(run(1, "failure", ext=OLDVER)), "failure"),
+    ("a failure with no external_id", runs(run(1, "failure", ext=NOVER)), "failure"),
+    ("a neutral check of another version", runs(run(1, "neutral", ext=OLDVER)), "neutral"),
+    ("a neutral check with no external_id", runs(run(1, "neutral", ext=NOVER)), "neutral"),
+    ("a failure of another version after a current success", runs(run(1), run(2, "failure", ext=OLDVER)), "failure"),
 ):
     check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
 
@@ -635,6 +665,8 @@ G = os.path.join(d, "gate"); os.makedirs(G + "/bin"); os.makedirs(G + "/.github/
 BIN = os.path.dirname(JUDGE_SH)
 for name in ("audit-record.py", "audit-record-judge.sh", "audit-record-prepare.sh"):
     open(G + "/bin/" + name, "w").write(open(os.path.join(BIN, name)).read())
+GREVIEWER = G + "/bin/dependabot-reviewer.py"
+open(GREVIEWER, "wb").write(open(REVIEWER_PY, "rb").read())
 POLICY = G + "/.github/policy/audit-writers.json"
 open(POLICY, "w").write(json.dumps(WRITERS))
 genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t",
@@ -734,6 +766,47 @@ for name, head, verdicts in (
     check("gate refused: " + name, refused(r, "newest verdict on") and "not success" in r.stdout, said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, slug="github-actions")]})
 check("gate refused: a bump that only another App passed", refused(r, "it has no verdict"), said(r, c))
+
+# the reviewer's version is the sha256 of bin/dependabot-reviewer.py under the checked-out main: a success of any other version,
+# or with none, is a verdict that does not pass (it is not "no verdict", so no clean merge of main carries a pass over it)
+def stale_refused(r): return r.returncode == 1 and r.stdout.startswith("audit-record: Dependabot pull request #7: ") and "it has no verdict" not in r.stdout
+for name, head, verdicts, asks in (
+    ("a success of another version finishing after the current one (the newest by id)", D, {D: [run(1), run(2, ext=OLDVER)]}, 1),
+    ("a success from before the change, with no external_id", D, {D: [run(1, ext=NOVER)]}, 1),
+    ("a success whose external_id is null", D, {D: [run(1, ext=None)]}, 1),
+    ("a success whose external_id is empty", D, {D: [run(1, ext="")]}, 1),
+    ("a success of another version on the head, though the head before was passed with the current one", U1, {U1: [run(3, ext=OLDVER)], D: [run(1)]}, 1),
+    ("a success of another version on the head this one only merges main into", U1, {D: [run(1, ext=OLDVER)]}, 2),
+    ("a success with no external_id on the head this one only merges main into", U1, {D: [run(1, ext=NOVER)]}, 2),
+    ("a success of another version two merges of main back", U2, {D: [run(1, ext=OLDVER)]}, 3),
+):
+    r, c = gate(head, pulls=[dep(head)], verdicts=verdicts)
+    check("gate refused: " + name, stale_refused(r) and c.count("check-runs") == asks, said(r, c))
+r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=OLDVER), run(2)]})
+check("gate: a success of the current version replaces an older one of another version", r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+r, c = gate(U1, pulls=[dep(U1)], verdicts={D: [run(1, ext=OLDVER), run(2)]})
+check("gate: ... and is carried across a clean merge of main", r.returncode == 0, said(r, c))
+for name, head, verdicts in (
+    ("a failure of another version", D, {D: [run(1, "failure", ext=OLDVER)]}),
+    ("a failure with no external_id", D, {D: [run(1, "failure", ext=NOVER)]}),
+    ("a neutral check of another version", D, {D: [run(1, "neutral", ext=OLDVER)]}),
+    ("a failure of another version on the head this one only merges main into", U1, {D: [run(1, "failure", ext=OLDVER)]}),
+):
+    r, c = gate(head, pulls=[dep(head)], verdicts=verdicts)
+    check("gate refused: %s still counts as that verdict" % name, refused(r, "newest verdict on") and "not success" in r.stdout, said(r, c))
+GOLD = open(GREVIEWER, "rb").read()
+try:
+    open(GREVIEWER, "wb").write(GOLD + b"\n# another reviewer\n")
+    NEWVER = hashlib.sha256(open(GREVIEWER, "rb").read()).hexdigest()
+    r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
+    check("gate refused: the version is read from the checked-out main: a success of the version this main no longer has", stale_refused(r), said(r, c))
+    r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=NEWVER)]})
+    check("gate: ... and a success of the version this main has passes", r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+    os.remove(GREVIEWER)
+    r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
+    check("gate: a version that cannot be read (no program in main): the record rule stands, no verdict asked for", stands(r, c), said(r, c))
+finally:
+    open(GREVIEWER, "wb").write(GOLD)
 
 # any other commit on the bump needs the reviewer's success on a head that contains it, with only clean merges of main after it
 for name, head in (("carries a writer's commit on top of the passed head", MEND), ("carries a writer's commit and then main merged in", MENDUP),

@@ -396,22 +396,37 @@ case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions
 # And the arm step: it arms a patch whose head has no verdict, a neutral or a success, never one the reviewer failed, and nothing when
 # the verdict cannot be read.
 if python3 - "$root" "$work" <<'PY'
-import os, subprocess, sys, yaml
+import base64, hashlib, json, os, subprocess, sys, yaml
 root, work = sys.argv[1], sys.argv[2]
 d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
 steps = d["jobs"]["auto-merge"]["steps"]
+REVIEWER = open(os.path.join(root, "bin/dependabot-reviewer.py"), "rb").read()
+VER, OLDVER = hashlib.sha256(REVIEWER).hexdigest(), "0" * 64
 last = [s["run"] for s in steps if "gh pr merge --disable-auto" in (s.get("run") or "")][0]
 arm = [s["run"] for s in steps if "gh pr merge --auto --squash" in (s.get("run") or "")][0]
+def runs_of(verdict):
+    """the App's check runs, oldest first, as GitHub lists them: a conclusion alone is a run of the current version"""
+    if verdict == "none": verdict = []
+    if isinstance(verdict, str): verdict = [verdict]
+    out = []
+    for i, v in enumerate(verdict):
+        conclusion, ext = v if isinstance(v, tuple) else (v, VER)
+        out.append({"id": i, "conclusion": conclusion, "app": {"slug": "fosterstack-automation"}, **({} if ext is None else {"external_id": ext})})
+    return {"check_runs": out}
 def go(run, verdict, armed="true", waits="true", lookup_fails=False):
     bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
     log = os.path.join(bd, "log"); open(log, "w").close()
+    json.dump(runs_of(verdict), open(os.path.join(bd, "runs.json"), "w"))
+    open(os.path.join(bd, "main-reviewer.py"), "wb").write(REVIEWER)
     open(os.path.join(bd, "gh"), "w").write("""#!/usr/bin/env bash
 echo "gh $*" >> %s
+f=; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" = --jq ] && f="${a[i+1]}"; done
 case "$1 $2" in
   "pr view") case "$*" in *headRefOid*) echo HEAD1 ;; *autoMergeRequest*) echo %s ;; esac ;;
-  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") %s echo %s ;;
+  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") %s jq -r "$f" %s/runs.json ;;
+  "api repos/o/r/contents/bin/dependabot-reviewer.py?ref=main") jq -nr --rawfile c %s/main-reviewer.py '{content: ($c | @base64)}' | jq -r "${f:-.}" ;;
 esac
-""" % (log, armed, "exit 1;" if lookup_fails else "", verdict))
+""" % (log, armed, "exit 1;" if lookup_fails else "", bd, bd))
     os.chmod(os.path.join(bd, "gh"), 0o755)
     env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x", "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r",
            "WAITS_FOR_VERDICT": waits}
@@ -438,6 +453,25 @@ for waits in ("false", "true"):
     rc, log = go(last, "failure", armed="false", waits=waits)
     if rc != 0 or "--disable-auto" in log:
         bad.append("a failed head that is not armed (waits=%s): nothing to do (rc %s)\n%s" % (waits, rc, log))
+# REQ-DEP-001-AC14: a success counts only with the version of the reviewer on main now (main's copy, through the contents API, sha256 of its content)
+for what, runs in (("another version", [("success", OLDVER)]), ("no external_id", [("success", None)]), ("an empty external_id", [("success", "")]),
+                   ("another version after the current one (newest by id)", [("success", VER), ("success", OLDVER)]),
+                   ("the current version in upper case", [("success", VER.upper())])):
+    rc, log = go(last, runs, waits="true")
+    if rc != 0 or "pr merge --disable-auto" not in log:
+        bad.append("a success with %s on a major's head is no leave: it must disarm (rc %s)\n%s" % (what, rc, log))
+    rc, log = go(last, runs, waits="false")
+    if rc != 0 or "--disable-auto" in log:
+        bad.append("a success with %s on a patch's head is no verdict: the lane's arm stands (rc %s)\n%s" % (what, rc, log))
+for what, runs in (("the current version", [("success", VER)]), ("another version replaced by a newer one of the current version", [("success", OLDVER), ("success", VER)])):
+    rc, log = go(last, runs, waits="true")
+    if rc != 0 or "--disable-auto" in log or "contents/bin/dependabot-reviewer.py?ref=main" not in log:
+        bad.append("a success with %s on a major's head, read against main's copy of the reviewer: auto-merge stands (rc %s)\n%s" % (what, rc, log))
+for what, runs in (("another version", [("failure", OLDVER)]), ("no external_id", [("failure", None)])):
+    for waits in ("false", "true"):
+        rc, log = go(last, runs, waits=waits)
+        if rc != 0 or "pr merge --disable-auto" not in log:
+            bad.append("a failure with %s counts (waits=%s): it must disarm (rc %s)\n%s" % (what, waits, rc, log))
 rc, log = go(last, "none", waits="false", lookup_fails=True)
 if rc == 0 or "pr merge" in log:
     bad.append("the verdict cannot be read: the step must fail loudly and write nothing (rc %s)\n%s" % (rc, log))

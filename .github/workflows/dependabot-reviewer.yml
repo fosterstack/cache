@@ -121,8 +121,9 @@ jobs:
           ONLY_PR: ${{ inputs.pr }}
           FORCE: ${{ inputs.force }}
         # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is
-        # read this hour. A success from before this workflow last changed on main is not one: such a reviewer may
-        # have read less than the whole diff, so the head is read again as a forced run reads it.
+        # read this hour. A success counts only with this program's version as its external_id (the sha256 of
+        # bin/dependabot-reviewer.py): an older reviewer may have read less than the whole diff, and its success is
+        # no verdict, so the head is read as a head with none is.
         # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same
         # change was read.
         # A plain patch/minor keeps the auto-merge workflow's arm through the review (the gate holds the merge); any
@@ -132,20 +133,13 @@ jobs:
         run: |
           set +e -uo pipefail
           mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
-          # when this workflow last changed on main: the newest commit of main that touched this file. Without it no
-          # success can be told from an older reviewer's, so nothing is read or published this hour.
-          this=.github/workflows/dependabot-reviewer.yml
-          cutoff=$(gh api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${this}&per_page=1" \
-                     --jq '.[0].commit.committer.date') \
-            && [[ "$cutoff" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-            || { echo "::error::cannot read when this workflow last changed on main — no verdict is read"; exit 1; }
-          # <sha>: the App's latest reviewer check on that commit: its conclusion, none, or legacy (a success not
-          # after the cutoff)
+          version=$(sha256sum bin/dependabot-reviewer.py | cut -d' ' -f1) && [ -n "$version" ] \
+            || { echo "::error::cannot read the reviewer's version — no verdict is read"; exit 1; }
+          # <sha>: the App's latest reviewer check on that commit: its conclusion, or none (also for a success of another version)
           verdict_of() {
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer" \
               --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
-                    | if . == null then \"none\"
-                      elif .conclusion == \"success\" and ((.completed_at // \"\") <= \"${cutoff}\") then \"legacy\"
+                    | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
                       else .conclusion // \"none\" end"
           }
           gate_fail() { # <sha> <why>: the review gate's own check, as the gate publishes it (same name, same App), says failure on that commit
@@ -204,7 +198,7 @@ jobs:
               done
               if [ -n "$from" ] && python3 bin/dependabot-reviewer.py same-diff --repo "$GITHUB_REPOSITORY" --base main "$from" "$sha"; then
                 if ! GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
-                       -f head_sha="$sha" -f status=completed -f conclusion=success -f details_url="$RUN_URL" \
+                       -f head_sha="$sha" -f status=completed -f conclusion=success -f external_id="$version" -f details_url="$RUN_URL" \
                        -f "output[title]=dependabot reviewer: success" \
                        -f "output[summary]=Not read again: this head's diff against main is byte for byte the diff of ${from}, which two independent readers passed. The success is carried over from that head." >/dev/null; then
                   echo "::error::PR #$n ${sha:0:7}: could not publish the success carried over from ${from:0:7} — skipped this hour"; lookup_failed=1; continue
@@ -267,10 +261,8 @@ jobs:
                 fi
                 echo "PR #$n: armed with no current verdict — auto-merge turned off before review"
               fi
-            elif [ "$prior" = legacy ] \
-                 || { [ "$FORCE" = "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; }; then
+            elif [ "$FORCE" = "true" ]; then
               why=forced
-              if [ "$prior" = legacy ]; then why="its success is older than this workflow on main"; prior=success; fi
               if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null 2>&1 \
                    && [ "$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null')" != false ]; then
                 echo "::error::PR #$n: re-review ($why) could not turn auto-merge off — skipped, old verdict kept"
@@ -282,7 +274,7 @@ jobs:
                 lookup_failed=1; continue
               fi
               if ! GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
-                     -f head_sha="$sha" -f status=completed -f conclusion=neutral -f details_url="$RUN_URL" \
+                     -f head_sha="$sha" -f status=completed -f conclusion=neutral -f external_id="$version" -f details_url="$RUN_URL" \
                      -f "output[title]=dependabot reviewer: neutral" \
                      -f "output[summary]=The reviewer is $again Auto-merge is off." >/dev/null; then
                 echo "::error::PR #$n: re-review ($why) could not supersede its verdict — skipped (auto-merge is off)"
@@ -304,7 +296,7 @@ jobs:
         # Straight from the runner's OIDC endpoint: no third-party action holds the token.
         run: |
           set -euo pipefail
-          tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          tok=$(curl -q -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
                   "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value)
           [ -n "$tok" ] && [ "$tok" != "null" ] || { echo "::error::no identity token"; exit 1; }
           echo "::add-mask::$tok"
@@ -372,13 +364,14 @@ jobs:
           # one PR's failure never abandons the rest of the hour or skips the outputs below.
           set +e -uo pipefail
           W="$RUNNER_TEMP/work"; fail=0; merged=0; held=0; errored=0; moved=0
+          version=$(sha256sum bin/dependabot-reviewer.py | cut -d' ' -f1) || exit 1
           # A FRESH identity token for every reader call. Each `read` is its own process and its
           # own SDK exchange; exchanging one token twice fails (jti_reused — the auditor hit it),
           # and a token lives about five minutes. The runner endpoint is available to every step
           # of a job with id-token: write.
           mint() {
             local tok
-            tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            tok=$(curl -q -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
                     "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || return 1
             [ -n "$tok" ] && [ "$tok" != "null" ] || return 1
             echo "::add-mask::$tok"
@@ -393,7 +386,7 @@ jobs:
                 -f "output[summary]=The Dependabot reviewer's verdict on this head is $2: it is not passed." >/dev/null || return 1
             fi
             GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
-              -f head_sha="$1" -f status=completed -f conclusion="$2" -f details_url="$RUN_URL" \
+              -f head_sha="$1" -f status=completed -f conclusion="$2" -f external_id="$version" -f details_url="$RUN_URL" \
               -f "output[title]=dependabot reviewer: $2" -f "output[summary]=$3" >/dev/null
           }
           # One open issue per title, updated in place. Returns non-zero if it could not look up,
@@ -541,10 +534,12 @@ jobs:
           set +e -uo pipefail
           f="$RUNNER_TEMP/work/armed-unpublished.txt"
           [ -s "$f" ] || { echo "nothing armed without a check"; exit 0; }
+          version=$(sha256sum bin/dependabot-reviewer.py | cut -d' ' -f1) || version=unknown
           while read -r n sha; do
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
             latest=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
-                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || latest=unknown
+                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+                       | if . != null and .conclusion == \"success\" and .external_id != \"${version}\" then \"none\" else .conclusion // \"none\" end") || latest=unknown
             if [ "$latest" = success ]; then echo "PR #$n: success check is on the head — the arm is recorded, left as is"; continue; fi
             if [ "$latest" = unknown ]; then
               # the gate's check first, as with every verdict that is not success; without it the neutral is not published
@@ -554,7 +549,7 @@ jobs:
                 -f "output[summary]=The Dependabot reviewer's verdict on this head is neutral: it is not passed." >/dev/null \
               && \
               GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
-                -f head_sha="$sha" -f status=completed -f conclusion=neutral -f details_url="$RUN_URL" \
+                -f head_sha="$sha" -f status=completed -f conclusion=neutral -f external_id="$version" -f details_url="$RUN_URL" \
                 -f "output[title]=dependabot reviewer: neutral" \
                 -f "output[summary]=The run was cancelled before its verdict could be confirmed. Auto-merge is off; the next hourly run reviews again." >/dev/null \
                 || echo "::error::PR #$n: could not post the superseding neutral check; if a success landed this head needs a forced re-review"

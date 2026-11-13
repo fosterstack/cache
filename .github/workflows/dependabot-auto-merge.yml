@@ -239,9 +239,12 @@ jobs:
           # newer head the reviewer has already approved
           head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
           [ "$head" = "$HEAD_SHA" ] || echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
-          lookup() { gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
-                       --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"'; }
-          verdict=$(lookup)
+          # a success counts only with the version of the reviewer on main (the sha256 of bin/dependabot-reviewer.py)
+          version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer.py?ref=main" --jq .content | base64 -d | sha256sum | cut -d' ' -f1)
+          verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
+                      --jq "[.check_runs[] | select(.app.slug == \"fosterstack-automation\")] | sort_by(.id) | last
+                            | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
+                              else .conclusion // \"none\" end")
           armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
           if [ "$verdict" = success ]; then echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
           elif [ "$armed" != true ]; then echo "auto-merge is not armed; nothing to turn off"

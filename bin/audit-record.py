@@ -23,6 +23,7 @@ sha, so an old record then names a different sha and does not apply.
 Every doubt fails closed: a missing or malformed answer, a head that is not 40 lower-case hex, a missing policy file.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot, the user of a pull request it opened
 REVIEWER_CHECK = "dependabot-reviewer"       # the check run dependabot-reviewer.yml publishes as its verdict on a head
+OTHER_VERSION = "a success of another reviewer version"   # reviewer_verdict's answer for a success that does not carry the current version
 NO_RUN = object()                            # reviewer_verdict's answer for a commit the reviewer has not run on; no string a run can carry equals it
 MAX_UPDATES = 50                             # the merges of main followed back from a head
 
@@ -138,10 +140,11 @@ def bump_pull(head, pulls):
     return same[0] if len(same) == 1 and dependabot_pull(same[0]) else None
 
 
-def reviewer_verdict(checks, logins):
+def reviewer_verdict(checks, logins, version):
     """The conclusion of the newest dependabot-reviewer check run on a commit that one of the bot logins put there
     (the reviewer publishes as the App that writes the records, so its login is the App's slug plus [bot]):
-    NO_RUN when it put none, "unfinished" for one still running, None when the answer of
+    NO_RUN when it put none, "unfinished" for one still running, OTHER_VERSION for a success whose external_id is not
+    `version` (the sha256 of the reviewer program on main), None when the answer of
     `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&filter=all&per_page=100` is malformed or
     cut, or the completed run has no conclusion."""
     runs = checks.get("check_runs") if isinstance(checks, dict) else None
@@ -158,7 +161,11 @@ def reviewer_verdict(checks, logins):
     if not mine:
         return NO_RUN
     last = max(mine, key=lambda r: r["id"])
-    return last.get("conclusion") if last.get("status") == "completed" else "unfinished"
+    if last.get("status") != "completed":
+        return "unfinished"
+    if last.get("conclusion") == "success" and last.get("external_id") != version:
+        return OTHER_VERSION
+    return last.get("conclusion")
 
 
 def bump_passes(head, verdict_of, update_of):
@@ -316,6 +323,11 @@ def bump(head, repo, root):
     """(None, "") when the record rule stands (no exemption can be read for this head); else (passes, why).
     _ApiError when GitHub cannot be asked."""
     allowed = _writers(_load(os.path.join(root, WRITERS_PATH)))
+    try:
+        with open(os.path.join(root, "bin", "dependabot-reviewer.py"), "rb") as f:
+            version = hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None, ""
     if not (isinstance(head, str) and _SHA.fullmatch(head) and allowed is not None
             and isinstance(repo, str) and re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo)):
         return None, ""
@@ -326,7 +338,7 @@ def bump(head, repo, root):
 
     def verdict_of(commit):
         path = "repos/%s/commits/%s/check-runs?check_name=%s&filter=all&per_page=100" % (repo, commit, REVIEWER_CHECK)
-        return reviewer_verdict(_gh(path), logins)
+        return reviewer_verdict(_gh(path), logins, version)
     ok, why = bump_passes(head, verdict_of, lambda commit: _update_of(root, commit))
     if ok:
         return True, "Dependabot pull request #%s needs no passed-audit record: %s" % (pr.get("number"), why)

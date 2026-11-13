@@ -3115,8 +3115,8 @@ assert judge(F, "audit", 9, run + "\n# edited"), "an edited step is a finding"
 assert judge(F, "audit", 9, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
 assert judge(F, "audit", 9, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
 D = ".github/workflows/dependabot-reviewer.yml"
-TOKEN_STEP = "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"   # step 4: the identity-token request
-NEW_LOOP = "69bc42e58433720251404d2f518c0989f76d6dde8547c2f449b954e4a4106ee1"     # step 8, the decision loop of the reviewer that reads every bump
+TOKEN_STEP = "f5cd95a72e84a4ac7178afc40303cadfb2e2043f4c49d11de262bdac5c72a27f"   # step 4: the identity-token request
+NEW_LOOP = "3a4c78d1bec09a935a3013ad310d876854dbab5eb5b126dc3b2023423131d124"     # step 8, the decision loop of the reviewer that reads every bump
 URL = "ACTIONS_ID_TOKEN_REQUEST_URL"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
@@ -3234,6 +3234,24 @@ assert [k for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D and k[1] != "review"] == [
 assert {m.DOWNLOAD_EXCLUSIONS[k][1:] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D} == {(URL, None)}, "an entry of the reviewer with another condition than the URL variable's"
 assert sorted((k[2], k[3]) for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [(4, TOKEN_STEP), (8, NEW_LOOP)], "the reviewer's excluded steps are not exactly these two"
 assert loop_hash == NEW_LOOP, "the repository's decision loop is not the accepted text"
+missed = []
+# the word curlrc anywhere in the workflow outside the excluded steps' run text: curl reads $HOME/.curlrc before any option
+for what, text in (
+        ("a step 3 that writes $HOME/.curlrc", put(STEP3, '          printf \'silent\\n\' > "$HOME/.curlrc"\n')),
+        ("a step 3 that names curlrc in a variable", put(STEP3, '          rc=.curlrc\n')),
+        ("an env value that names curlrc", put(JOB, "    env:\n      X: ~/.curlrc\n")),
+        ("a step env value that names curlrc", put("        id: act\n        env:\n", "          X: ~/.curlrc\n"))):
+    missed.append("%s is a finding" % what) if whole(text) != [4, 8] else None
+# an env of the step, the job or the workflow that sets a name curl or the token's reader takes its files, proxies or key log from, in any letter case
+for env_name in ("CURL_HOME", "SSLKEYLOGFILE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "http_proxy", "https_proxy", "HTTPS_PROXY",
+                 "ALL_PROXY", "NO_PROXY", "ANTHROPIC_IDENTITY_TOKEN_FILE"):
+    for spelled, where, text in (
+            (env_name, "the job's env", put(JOB, "    env:\n      %s: /tmp/x\n" % env_name)),
+            (env_name, "the workflow's env", put("permissions: {}\n", "env:\n  %s: /tmp/x\n" % env_name)),
+            (env_name, "step 8's env", put("        id: act\n        env:\n", "          %s: /tmp/x\n" % env_name)),
+            (env_name.swapcase(), "the job's env", put(JOB, "    env:\n      %s: /tmp/x\n" % env_name.swapcase()))):
+        missed.append("%s in %s is a finding" % (spelled, where)) if whole(text) != [4, 8] else None
+assert not missed, missed
 PY
 fi
 
