@@ -976,6 +976,7 @@ bin/build-apk.sh
 bin/build-helpers-test.sh
 bin/dependabot-reviewer.py
 bin/full-suite-wiring-test.sh
+bin/required-check-guard-test.sh
 bin/go-module-sbom.py
 bin/patch-decide.py
 bin/vex-forms.py
