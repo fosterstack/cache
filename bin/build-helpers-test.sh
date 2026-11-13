@@ -88,8 +88,6 @@ fails "rule 22" "apk-tool same: an apk with different contents differs (exit non
 t "rule 22" "apk-tool same: an unsigned apk with the same contents is the same" python3 "$AT" same "$pr/a.apk" "$pr/unsigned.apk"
 t "rule 22" "apk-tool signer: assembly" bash -c "test \"\$(python3 '$AT' signer '$pr/a.apk')\" = assembly.rsa.pub"
 t "rule 22" "apk-tool signer: release" bash -c "test \"\$(python3 '$AT' signer '$pr/b.apk')\" = release.rsa.pub"
-t "rule 22" "apk-tool signer: a real melange apk signs as .SIGN.RSA256.<key>; the key is assembly.rsa.pub" \
-  bash -c "test \"\$(python3 '$AT' signer '$pr/a.apk')\" = assembly.rsa.pub"
 t "rule 22" "apk-tool signer: unsigned" bash -c "test \"\$(python3 '$AT' signer '$pr/unsigned.apk')\" = unsigned"
 t "rule 14" "apk-tool binary-check: the binary file equals usr/bin/fscache in the apk" python3 "$AT" binary-check "$pr/a.apk" "$pr/binA"
 fails "rule 14" "apk-tool binary-check: a different binary fails and prints the digests" '[0-9a-f]{64}' python3 "$AT" binary-check "$pr/a.apk" "$pr/binC"
