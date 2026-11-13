@@ -3269,14 +3269,14 @@
       "form": "a download",
       "key": "1602aea0937724e85f72ecc3fc42de559a13de9f89ba73fb27efb87b854275f7",
       "line": "1602aea0937724e85f72ecc3fc42de559a13de9f89ba73fb27efb87b854275f7",
-      "ruling": "text, not a command: a comment in .github/agent/supply-chain/pin-inventory.py that names the tool"
+      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "form": "a download",
       "key": "c92f8a26e48cd506140e97d59f19ffa6699df9b9460c04628882272b5627b162",
       "line": "6ef720614a8202c78b492515b9a9907e503650190bd6f80f15ce3ea59726ac9a",
-      "ruling": "text, not a command: a comment in .github/agent/supply-chain/pin-inventory.py that names the tool"
+      "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
@@ -3302,29 +3302,29 @@
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "form": "a download",
-      "key": "8688815eaf3fbae9f40806581ddcbc7243dc129ba2016f94b1d05d1f02f41c8a",
-      "line": "30c8c793ae1b09a6a6cc689c85f5ed0a8a2796bbb7d1fe268be2e957e10a774c",
+      "key": "13f48c9db0ab9c53b03a2cf3b599f07f95af08fd1d85a71a04cb65578e690746",
+      "line": "dfb4246c86e5511678bb43b9496d4bd2d943cb6bac0ba476300e70adde991516",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "form": "a download",
-      "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
-      "line": "30c8c793ae1b09a6a6cc689c85f5ed0a8a2796bbb7d1fe268be2e957e10a774c",
+      "key": "15910c3525a42fb714fe043a197ee839af3c6e920d3f74b75bbf63fc8bb09022",
+      "line": "dfb4246c86e5511678bb43b9496d4bd2d943cb6bac0ba476300e70adde991516",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "form": "a download",
-      "key": "e1a3c1da3559f47bd1b44f98a03ae583c860af90b5f3e9bc8ea6bdc0b5c60286",
-      "line": "30c8c793ae1b09a6a6cc689c85f5ed0a8a2796bbb7d1fe268be2e957e10a774c",
+      "key": "40ed26ec537a67837e4cd4838dc0c1551c08a17dc4fd76bb426d5c64ee4dfe67",
+      "line": "c2f38d8c864001b5eea6a97e4744068f01c263e098a0730913c11aea88724d51",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "form": "a download",
       "key": "2659c04cd54f078c7e0d2a03fe51273e139250baae1b1c1da00102b7302e806f",
-      "line": "30c8c793ae1b09a6a6cc689c85f5ed0a8a2796bbb7d1fe268be2e957e10a774c",
+      "line": "c2f38d8c864001b5eea6a97e4744068f01c263e098a0730913c11aea88724d51",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
@@ -7562,7 +7562,7 @@
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-age-check-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
       "body-first": "BHO=\"cat >stub <<'EOF'\"",
       "body-last": "EOF",
-      "body-sha256": "db5efcf60d0e041d3f6a862383dbdeb1ded88b1c30392c7f23f89732761760ef"
+      "body-sha256": "0e023f4ed0dce20615ef86616a329eebaf05cdd04b02c86da7f921ed46b623c0"
     },
     {
       "file": ".github/agent/tests/pin-age-check-test.sh",
@@ -8430,6 +8430,62 @@
       "form": "a download",
       "key": "c4127819c204919c61cf7da84f4757cc691064f05e6a449db9df928252e506e1",
       "line": "b42024f136fa591ee7f20faf7458b41e001667ee7da0db23b728e59800db0f62",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "2a36ee66943e44c9ece54cbd82bbf687f60cfb90629ab94d1ae9951b8a23593c",
+      "line": "71295d9347c72242a5e2af49ccee9b4db27adfb53c37c4d064c921a47bdee119",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "d87165d0818d607d2e3fb2b70c78c5d24a092b2123119653b84d35ff4f95c4a9",
+      "line": "54c4523c59bc95687c5e3b46fbc721f23c7b2b89cbfc57dae974a5ceb3bafaef",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "784b4b3e529ed731d770a791686032ed679b002dc6c386fc418f0cee9193c2ba",
+      "line": "4623d6b70064207ac3d7ff94471682b37fe104fb3efc8d5d18a08eb51449d6a1",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "4c239fa64729906069a099889f9cf56a29fbe37171bc1755d00699bc6c5ee355",
+      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "78652652791d344b4a978f2a970b23fd521ea3f0636549651313e855263b41a7",
+      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "a3230f84c05e7e7d132ec0a8ee8e0e335af5741415aeb20f8768f31743af2de9",
+      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "d0ce82caee48d4c57956b1632d1ba2e132be5183a4dc4d203134236778132762",
+      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "81058f914b63d90c535c9f0d4bac6134255be74ae2007cd57ee64032c8f50600",
+      "line": "5a2164dc963248cafa686cb452a08fb36ca5efde14e4094d5197066f25a74049",
       "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
     },
     {
