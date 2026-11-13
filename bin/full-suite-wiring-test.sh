@@ -23,7 +23,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 python3 -I - "$root" "$work" <<'PY'
-import copy, json, os, re, shlex, stat, subprocess, sys, yaml
+import copy, json, os, re, subprocess, sys, yaml
 root, work = sys.argv[1], sys.argv[2]
 passed = failed = 0
 def check(name, ok, got=""):
@@ -32,7 +32,7 @@ def check(name, ok, got=""):
     else: failed += 1; print("FAIL:", name, "->", got)
 def load(p): return yaml.load(open(os.path.join(root, p)), Loader=yaml.BaseLoader)
 WF = ".github/workflows/"
-ci, fs, acc = load(WF + "ci.yml"), None, load(WF + "acceptance.yml")
+ci = load(WF + "ci.yml")
 fs = load(WF + "full-suite.yml") if os.path.exists(os.path.join(root, WF + "full-suite.yml")) else None
 POLICY = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
 
@@ -49,7 +49,7 @@ GONE = PROMOTION + REMOVED + ["acceptance-gradle", "acceptance-maven"]
 def base(ctx): return ctx.split(" (")[0]
 def mutated(doc, fn):
     d = copy.deepcopy(doc); fn(d); return d
-def verdict(name, problems, want_ok, doc_name=""):
+def verdict(name, problems, want_ok):
     check(name, (problems == []) == want_ok, problems)
 def mutants(label, judge, doc, cases):
     """each case: (name, fn): the mutated copy must have at least one problem"""
