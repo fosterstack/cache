@@ -1823,7 +1823,7 @@ requirements:
       - id: REQ-DEP-003-AC2
         given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
         when: the auto-merge job runs
-        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the auto-merge workflow cannot tell (its metadata step or its screen failed), it arms nothing and turns off an auto-merge not backed by the reviewer's success on the current head (a success counts with the current version only: REQ-DEP-001-AC14)
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the auto-merge workflow cannot tell (its metadata step or its screen failed), it arms nothing and turns off an auto-merge not backed by the reviewer's success on the current head (a success counts with the current version only, REQ-DEP-001-AC14)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC3
