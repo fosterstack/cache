@@ -4,6 +4,7 @@ An ABSENT file stays the first run. The readers of the release gate and the cons
 
 No network; every file lives in a temp dir."""
 import contextlib, importlib.util, io, json, os, re, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
@@ -214,17 +215,32 @@ class TheReaders(unittest.TestCase):
 
     def test_deeply_nested_json_is_a_named_refusal_in_both_readers_never_a_recursion_error(self):
         """reviewed.parse (text) and reviewed.read (a file) both turn 20 KB of "[" into a ReviewedInputInvalid that names
-        the input and says it cannot be read as JSON; neither lets RecursionError out."""
+        the input and says it cannot be read as JSON; json really raises RecursionError for it, and it does not escape."""
+        real = json.loads, json.load
+        raised = []
+        def watch(fn):
+            def inner(*a, **k):
+                try:
+                    return fn(*a, **k)
+                except RecursionError:
+                    raised.append(1); raise
+            return inner
         for raw in ("[" * 20000, '{"statements": ' + "[" * 20000, '{"a":' * 20000):
-            for as_bytes in (False, True):
-                with self.assertRaisesRegex(reviewed.ReviewedInputInvalid, r"^the input .*cannot be read as JSON") as cm:
-                    reviewed.parse(raw.encode() if as_bytes else raw, "the input")
-                self.assertNotIsInstance(cm.exception, RecursionError)
             path = os.path.join(self.d, "deep.json")
             with open(path, "w") as fh:
                 fh.write(raw)
-            with self.assertRaisesRegex(reviewed.ReviewedInputInvalid, r"deep\.json is present but cannot be read as JSON"):
-                reviewed.read(path)
+            for as_bytes in (False, True):
+                del raised[:]
+                with mock.patch.object(json, "loads", watch(real[0])):
+                    with self.assertRaisesRegex(reviewed.ReviewedInputInvalid, r"^the input .*cannot be read as JSON"):
+                        reviewed.parse(raw.encode() if as_bytes else raw, "the input")
+                self.assertEqual(len(raised), 1, "json did not reach RecursionError in parse")
+            del raised[:]
+            with mock.patch.object(json, "load", watch(real[1])):
+                with self.assertRaisesRegex(reviewed.ReviewedInputInvalid,
+                                            r"deep\.json is present but cannot be read as JSON"):
+                    reviewed.read(path)
+            self.assertEqual(len(raised), 1, "json did not reach RecursionError in read")
 
     def test_the_consistency_check_exits_non_zero_on_an_empty_or_keyless_vex(self):
         man = self.w("manifest.json", {"panel": {}})
