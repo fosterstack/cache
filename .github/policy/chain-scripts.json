@@ -2508,7 +2508,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "9b44c25fdba9425fdb98da3cc5c1b8d45f1081bdb49e007eb334862ad98522a0",
+      "sha256": "edf49134b03391fad3a4620baea393eb9bba27920ca2779eaf0623e6ce48cbc6",
       "exceptions": [
         {
           "rule": "script-name",

@@ -134,7 +134,7 @@ view=$rdir/archive-view
 "$SUDO" mkdir -p "$workdir" || { echo "assemble-image.sh: cannot create $workdir" >&2; exit 2; }
 "$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" \
   "(could not take $lock)" >&2; exit 2; }
-# the cleanup removes the lock and the links this run made (and only those: made grows as each link is made)
+# made grows as each link is made
 cleanup() {
   "$SUDO" rm -f "${made[@]}"
   "$SUDO" rmdir "$lock"
