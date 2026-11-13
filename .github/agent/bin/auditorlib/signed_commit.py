@@ -4,8 +4,9 @@ main's ruleset requires signed commits, and a commit made by `git commit` in the
 through the GraphQL `createCommitOnBranch` mutation with the App's installation token is created and signed by GitHub.
 
 Each function says what it proves in its own docstring. commit_via_api builds the commit on a temporary auditor/tmp-*
-ref and only then points the live branch at it; if deleting that temporary ref fails, the ref stays behind, and the live
-branch, its open PR and the PR's pending additions are as they were.
+ref and only then points the live branch at it. Any failure before the live branch moves leaves it, its open PR and
+the PR's pending additions as they were; a temporary ref that cannot be deleted afterwards is reported in notes and
+stays behind.
 
 Anything that cannot be proved, such as an API error, a missing oid, an unconfirmed signature, a file over 5 MB or a
 branch outside the allowed prefixes, is a CommitError: the delivery fails closed, and a commit that is not provably
