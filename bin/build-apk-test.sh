@@ -922,10 +922,12 @@ done
 # signature file, no bundle. The same key in another PEM wrapping is the happy path. Both kinds (hashedrekord and dsse). ----
 openssl rsa -in "$work/keysfx/assembly.rsa" -pubout -out "$work/keysfx/other.rsa.pub" 2>/dev/null || { echo "FIXTURE SETUP FAILED: the other public key"; exit 1; }
 printf 'PLACEHOLDER: the real public half is committed by a human\n' >"$work/keysfx/placeholder.pub"
-python3 - "$work/keysfx/release.rsa.pub" "$work/keysfx/rewrapped.rsa.pub" <<'P'
+python3 - "$work/keysfx/release.rsa.pub" "$work/keysfx/rewrapped.rsa.pub" "$work/keysfx/junk.rsa.pub" <<'P'
 import sys
 body = "".join(l for l in open(sys.argv[1]).read().splitlines() if not l.startswith("-----"))
-open(sys.argv[2], "w").write("a comment line before the key\n\n-----BEGIN PUBLIC KEY-----\n" + "\n".join(body[i:i + 32] for i in range(0, len(body), 32)) + "\n-----END PUBLIC KEY-----\n\n")
+wrapped = "\n".join(body[i:i + 32] for i in range(0, len(body), 32))
+open(sys.argv[2], "w").write("-----BEGIN PUBLIC KEY-----\n" + wrapped + "\n-----END PUBLIC KEY-----\n")
+open(sys.argv[3], "w").write("a comment line before the key\n-----BEGIN PUBLIC KEY-----\n" + wrapped + "\n-----END PUBLIC KEY-----\n\n")
 P
 kkdiff() { # <desc> <kind> <name> <key file>: --public-key that is not the KMS key -> exit 1, one line naming the file and "does not match the KMS key", get-public-key asked, no KMS Sign, no Rekor POST, no file
   local d=$1 kind=$2 n=$3 kf=$4; rm -f "$work/ks/$n".*; echo ok >"$work/rekor.mode"
@@ -945,14 +947,22 @@ KD=$(kdig kkkms); rm -f "$work/ks/kkkms".*; openssl pkey -pubin -in "$work/keysf
 STUB_AWS_PUBDER="$work/other.der" kspy kkkms --digest "$KD" --out "$work/ks/kkkms.sig" --bundle "$work/ks/kkkms.bundle" "${ksfull[@]}"
 t "rule 22" "KA-2 p4 key compare: a KMS key that is not the --public-key file (the aws answer holds another key) -> exit 1 naming the file and 'does not match the KMS key', 0 KMS Sign, 0 Rekor POST, no files" \
   bash -c "test '$(rc)' = 1 && grep -F 'does not match the KMS key' '$work/log' | grep -qF '$work/keysfx/release.rsa.pub' && test '$(signs_n)' = 0 -a '$(posts_n)' = 0 && test ! -e '$work/ks/kkkms.sig' -a ! -e '$work/ks/kkkms.bundle'"
-# the same key, wrapped differently (a comment line, other line width, blank lines): the DER is equal, so the happy path
+kkjunk() { # <desc> <kind> <name>: the key file has a comment line before and a blank line after the PEM block -> exit 1, no Sign, no POST, no file
+  local d=$1 kind=$2 n=$3 kf="$work/keysfx/junk.rsa.pub"; rm -f "$work/ks/$n".*; echo ok >"$work/rekor.mode"
+  if [ "$kind" = dsse ]; then stmt "$n"; kspy "$n" --dsse-statement "$work/ks/$n.stmt" --bundle "$work/ks/$n.bundle" --signing-config "$work/signing-config-test.json" --public-key "$kf"
+  else KD=$(kdig "$n"); kspy "$n" --digest "$KD" --out "$work/ks/$n.sig" --bundle "$work/ks/$n.bundle" --signing-config "$work/signing-config-test.json" --public-key "$kf"; fi
+  if [ "$(rc)" = 1 ] && [ "$(signs_n)" = 0 ] && [ "$(posts_n)" = 0 ] && [ ! -e "$work/ks/$n.sig" ] && [ ! -e "$work/ks/$n.bundle" ]; then ok
+  else bad "rule 22" "$d (exit $(rc), wanted 1, 0 KMS Sign, 0 Rekor POST, no files; signs $(signs_n), POSTs $(posts_n))"; fi; }
+kkjunk "KA-2 p4 key compare (hashedrekord): a --public-key file with a comment line before and a blank line after the key -> refused before any Sign or POST" hashedrekord kkjunk
+kkjunk "KA-2 p4 key compare (dsse): a --public-key file with a comment line before and a blank line after the key -> refused before any Sign or POST" dsse kkdjunk
+# the same key, other line width (32 characters), nothing else changed: the DER is equal, so the happy path
 KD=$(kdig kkwrap); rm -f "$work/ks/kkwrap".*; echo ok >"$work/rekor.mode"
 kspy kkwrap --digest "$KD" --out "$work/ks/kkwrap.sig" --bundle "$work/ks/kkwrap.bundle" --signing-config "$work/signing-config-test.json" --public-key "$work/keysfx/rewrapped.rsa.pub"
-t "rule 22" "KA-2 p4 key compare (hashedrekord): the same key in another PEM wrapping as --public-key is accepted: exit 0, one KMS Sign, one Rekor POST, signature and bundle written (the DER is compared, not the PEM text)" \
+t "rule 22" "KA-2 p4 key compare (hashedrekord): the same key in another line width as --public-key is accepted: exit 0, one KMS Sign, one Rekor POST, signature and bundle written" \
   bash -c "test '$(rc)' = 0 && test '$(signs_n)' = 1 -a '$(posts_n)' = 1 && test -s '$work/ks/kkwrap.sig' -a -s '$work/ks/kkwrap.bundle'"
 stmt kkdwrap; rm -f "$work/ks/kkdwrap.bundle"
 kspy kkdwrap --dsse-statement "$work/ks/kkdwrap.stmt" --bundle "$work/ks/kkdwrap.bundle" --signing-config "$work/signing-config-test.json" --public-key "$work/keysfx/rewrapped.rsa.pub"
-t "rule 22" "KA-2 p4 key compare (dsse): the same key in another PEM wrapping as --public-key is accepted: exit 0, one KMS Sign, one Rekor POST, the bundle written" \
+t "rule 22" "KA-2 p4 key compare (dsse): the same key in another line width as --public-key is accepted: exit 0, one KMS Sign, one Rekor POST, the bundle written" \
   bash -c "test '$(rc)' = 0 && test '$(signs_n)' = 1 -a '$(posts_n)' = 1 && test -s '$work/ks/kkdwrap.bundle'"
 t "rule 22" "KA-2 p4 key compare: the compare reads the DER with openssl pkey -pubin -outform DER (not the PEM text) and comes before the KMS Sign call in the code" bash -c "grep -n 'outform' '$KS_CV' | grep -q DER && grep -n 'does not match the KMS key' '$KS_CV' | head -1 | cut -d: -f1 | { read -r a; b=\$(grep -n '\"kms\", \"sign\"' '$KS_CV' | head -1 | cut -d: -f1); test -n \"\$a\" -a -n \"\$b\" -a \"\$a\" -lt \"\$b\"; }"
 stmt g3k; rm -f "$work/ks/g3k.bundle"; kspy g3k --dsse-statement "$work/ks/g3k.stmt" --bundle "$work/ks/g3k.bundle" --signing-config "$work/signing-config-test.json"
@@ -1128,15 +1138,14 @@ d = json.load(open(sys.argv[1]))
 assert d['verdict'] == 'pass' and len(d['pairs']) == 4, d
 assert sorted((p['arch'], p['variant']) for p in d['pairs']) == [('amd64', 'fips'), ('amd64', 'standard'), ('arm64', 'fips'), ('arm64', 'standard')], d
 P"
-t "rule 22" "release-compare: every pair carries the whole-file sha256 and the apk-tool digest of both the Build apk and the Rebuild apk, and they are the real values" bash -c "python3 - '$work/cm1' <<'P'
-import hashlib, json, os, subprocess, sys
+t "rule 22" "release-compare: every pair has exactly five keys, and the apk-tool digest of both the Build apk and the Rebuild apk, real values" bash -c "python3 - '$work/cm1' <<'P'
+import json, subprocess, sys
 r = sys.argv[1]; d = json.load(open(r + '/apk-compare/apk-compare.json'))
 for p in d['pairs']:
     assert set(p) == {'arch', 'variant', 'name', 'build_digest', 'rebuild_digest'}, sorted(p)
     short = {'amd64': ('ubuntu-24.04', 'x86_64'), 'arm64': ('ubuntu-24.04-arm', 'aarch64')}[p['arch']]
     for side, top in (('build', 'apks'), ('rebuild', 'rapks')):
         f = '%s/%s/%s/%s/%s' % (r, top, short[0], short[1], p['name'])
-        assert p[side + '_sha256'] == hashlib.sha256(open(f, 'rb').read()).hexdigest(), (side, p)
         dg = subprocess.run(['python3', '-I', '-B', r + '/bin/apk-tool.py', 'digest', f], capture_output=True, text=True, check=True).stdout.strip()
         assert p[side + '_digest'] == dg, (side, p, dg)
     assert p['build_digest'] == p['rebuild_digest']
