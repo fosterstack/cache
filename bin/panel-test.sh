@@ -34,7 +34,8 @@ def scout(d, pkgs, vulns):     # `docker scout sbom --format json` + `docker sco
     W(d, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": c}],
       "location": {"dependency": {"package": {"name": n}, "version": v}}} for c, n, v in vulns]})
 def inspector(d, pkgs, vulns): # inspector-sbomgen CycloneDX + the ScanSbom answer (no VEX: our pipeline filters)
-    comps = [{"bom-ref": "c%d" % i, "name": n, "version": v, "purl": "pkg:generic/%s@%s" % (n, v)} for i, (n, v) in enumerate(pkgs)]
+    kind = lambda n: "golang" if n == "stdlib" else "generic"   # the Go standard library is a Go package
+    comps = [{"bom-ref": "c%d" % i, "name": n, "version": v, "purl": "pkg:%s/%s@%s" % (kind(n), n, v)} for i, (n, v) in enumerate(pkgs)]
     ref = {(c["name"], c["version"]): c["bom-ref"] for c in comps}
     W(d, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": comps})
     W(d, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": comps,
