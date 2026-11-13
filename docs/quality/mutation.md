@@ -20,7 +20,7 @@ configuration is in [`.gremlins.yaml`](../../.gremlins.yaml).
 
 ## Advisory, not gated
 
-Per `test-strategy.md` §6 the mutation score is **advisory**: it is
+The mutation score is **advisory**: it is
 published beside statement coverage, not enforced as a release gate,
 until the maintainers agree a baseline. The thresholds in `.gremlins.yaml` are
 therefore `0` (report, never fail). The
