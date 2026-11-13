@@ -505,8 +505,9 @@ VER, OLDVER = version(MAIN), "0" * 64
 def changed(path): return {**MAIN, path: MAIN[path] + b"\nchanged\n"}
 last = [s["run"] for s in steps if "gh pr merge --disable-auto" in (s.get("run") or "")][0]
 arm = [s["run"] for s in steps if "gh pr merge --auto --squash" in (s.get("run") or "")][0]
-def runs_of(verdict):
-    """the App's check runs, oldest first, as GitHub lists them: a conclusion alone is a run of the current version"""
+def runs_of(verdict, total=None):
+    """the App's check runs, oldest first, as GitHub lists them: a conclusion alone is a run of the current version;
+    total: the total_count GitHub reports (default: the runs given; larger: the answer is cut)"""
     if verdict == "none": verdict = []
     if isinstance(verdict, str): verdict = [verdict]
     out = []
@@ -514,14 +515,15 @@ def runs_of(verdict):
         conclusion, ext = v if isinstance(v, tuple) else (v, VER)
         out.append({"id": i, "conclusion": conclusion,
                 "app": {"slug": "fosterstack-automation"}, **({} if ext is None else {"external_id": ext})})
-    return {"check_runs": out}
+    return {"total_count": len(out) if total is None else total, "check_runs": out}
+LASTOUT = ""
 def go(run, verdict, armed="true", waits="true", lookup_fails=False, main=None, contents_fail=False, fail_paths=(),
-        view_fails=False):
-    """main: {path: its content on main}, where it is not the checked-in one; fail_paths: paths whose read through the
+        view_fails=False, total=None, partial=False):
+    """total: the check runs' total_count; partial: a failed read prints half a file before it fails; main: {path: its content on main}, where it is not the checked-in one; fail_paths: paths whose read through the
     contents API fails; view_fails: the one read of the pull request (head and arm state) fails"""
     bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
     log = os.path.join(bd, "log"); open(log, "w").close()
-    json.dump(runs_of(verdict), open(os.path.join(bd, "runs.json"), "w"))
+    json.dump(runs_of(verdict, total), open(os.path.join(bd, "runs.json"), "w"))
     json.dump({"headRefOid": "HEAD1", "autoMergeRequest": {"mergeMethod": "SQUASH"} if armed == "true" else None},
             open(os.path.join(bd, "view.json"), "w"))
     for path, text in {**MAIN, **(main or {})}.items():
@@ -532,24 +534,27 @@ echo "gh $*" >> %(log)s
 f=; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" = --jq ] && f="${a[i+1]}"; done
 case "$1 $2" in
   "pr view") %(view)s jq -r "${f:-.}" %(bd)s/view.json ;;
-  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") %(lookup)s jq -r "$f" %(bd)s/runs.json ;;
+  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer"*) %(lookup)s jq -r "$f" %(bd)s/runs.json ;;
   "api repos/o/r/contents/"*)
     case "$2" in *"?ref=main") ;; *) exit 1 ;; esac
     p=${2#*contents/}; p=${p%%%%"?ref=main"}
     %(cfail)s
-    case " %(fails)s " in *" $p "*) echo 'gh: HTTP 503' >&2; exit 1 ;; esac
+    case " %(fails)s " in *" $p "*) %(half)s echo 'gh: HTTP 503' >&2; exit 1 ;; esac
     [ -f %(bd)s/main/"$p" ] || exit 1
     jq -nr --rawfile c %(bd)s/main/"$p" '{content: ($c | @base64)}' | jq -r "${f:-.}" ;;
 esac
 """ % {"log": log, "bd": bd, "fails": " ".join(fail_paths),
        "view": "echo 'gh: HTTP 503' >&2; exit 1;" if view_fails else "",
        "lookup": "echo 'gh: HTTP 503' >&2; exit 1;" if lookup_fails else "",
+       "half": "printf cGFydA;" if partial else "",
        "cfail": "echo 'gh: HTTP 503' >&2; exit 1" if contents_fail else ""})
     os.chmod(os.path.join(bd, "gh"), 0o755)
     env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x",
            "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r",
            "WAITS_FOR_VERDICT": waits}
+    global LASTOUT
     p = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", run], env=env, capture_output=True, text=True)
+    LASTOUT = p.stdout
     return p.returncode, open(log).read()
 bad = []
 rc, log = go(last, "none")
@@ -641,9 +646,34 @@ if rc != 0 or "--disable-auto" in log or "contents/%s?ref=main" % SCRIPT not in 
 for path in (PATHS[0], PATHS[1], PATHS[-1], SCRIPT):
     for waits, disarmed in (("true", True), ("false", False)):
         rc, log = go(last, [("success", VER)], waits=waits, fail_paths=[path])
-        if rc != 0 or ("pr merge --disable-auto" in log) != disarmed:
+        if (rc == 0) == (waits == "true") or ("pr merge --disable-auto" in log) != disarmed:
             bad.append("the read of %s fails (waits=%s): no version, so the success is no verdict, the major's arm "
                     "comes off and the patch's stands (rc %s)\n%s" % (path, waits, rc, log))
+# a failed fetch of any of the five files (nothing printed, or half a file) ends the step nonzero with auto-merge off,
+# and the hash is never taken of what was read; an old version's success must not stand because of a short file
+for path in PATHS:
+    for what, partial in (("prints nothing", False), ("prints half a file", True)):
+        rc, log = go(last, [("success", OLDVER)], waits="true", armed="true", fail_paths=[path], partial=partial)
+        if rc == 0 or "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
+            bad.append("the read of %s %s before it fails, with an old version's success on an armed major: the step "
+                    "must turn auto-merge off and fail, never say it stands (rc %s)\n%s%s" % (path, what, rc, LASTOUT,
+                    log))
+# every reader of the reviewer's checks asks for 100 at a time and fails closed on a cut answer (total_count over
+# the runs read): a success among 30 of 31 runs is no verdict
+for step_name, step in (("last step", last), ("arm step", arm)):
+    rc, log = go(step, "none", armed="false" if step is arm else "true")
+    if not any("check-runs?check_name=dependabot-reviewer" in l and "per_page=100" in l for l in log.splitlines()):
+        bad.append("the %s does not ask for per_page=100\n%s" % (step_name, log))
+cut = [("neutral", VER)] * 29
+for what, newest in (("the current version", VER), ("an old version", OLDVER)):
+    rc, log = go(last, cut + [("success", newest)], total=31, waits="true", armed="true")
+    if "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
+        bad.append("30 of 31 check runs read, the newest a success of %s: the last step must not keep the arm (rc "
+                "%s)\n%s%s" % (what, rc, LASTOUT, log))
+    rc, log = go(arm, cut + [("success", newest)], total=31, armed="false")
+    if "pr merge --auto" in log:
+        bad.append("30 of 31 check runs read, the newest a success of %s: the arm step must arm nothing (rc %s)\n%s"
+                % (what, rc, log))
 # REQ-DEP-001-AC14, REQ-DEP-003-AC3: the head and the arm state are one read of the pull request; when it fails the arm
 # is turned off and the step fails
 for verdict in ("success", "failure"):
@@ -656,7 +686,7 @@ if log.count("gh pr view") != 1 or "--json headRefOid,autoMergeRequest" not in l
     bad.append("the head and the arm state are read in ONE gh pr view --json headRefOid,autoMergeRequest\n%s" % log)
 for waits, disarmed in (("true", True), ("false", False)):
     rc, log = go(last, "success", waits=waits, contents_fail=True)
-    if rc != 0 or ("pr merge --disable-auto" in log) != disarmed:
+    if (rc == 0) == (waits == "true") or ("pr merge --disable-auto" in log) != disarmed:
         bad.append("the version cannot be read for a success (waits=%s): it is no verdict, so the major's arm comes "
                 "off and the patch's stands (rc %s)\n%s" % (waits, rc, log))
 for verdict in ("none", "neutral", "success"):
