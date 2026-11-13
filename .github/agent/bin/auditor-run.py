@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Auditor entrypoint (REQ-AUD-12; called by .github/workflows/auditor.yml).
+"""Auditor entrypoint (REQ-AUD-12 in .github/agent/docs/cve-auditor-matrix.md; called by
+.github/workflows/auditor.yml).
 
 The report must let the owner know what happened, and §3 is never a resting place.
 Routing is DETERMINISTIC from scanner data before any model call:
@@ -79,12 +80,11 @@ def _sub_purl(sc):
 
 def _resolve_carried(groups, carried_stmts):
     """The panel's vex_covered entries arrive as findings flagged `carried` with a generic package URL
-    (parsers.parse_panel). Resolve each to the scope of the carried
-    statement that names the same CVE (or one of its aliases: the panel's coverage predicate indexes both) and the
-    same package and version, so the statement is re-judged this
-    run like any visible finding; a flagged entry no carried statement matches is dropped (nothing carries it).
-    Returns the CVE ids of the carried statements that NO scanner
-    (visible or hidden-by-our-VEX) reports this run, by any of the statement's ids."""
+    (parsers.parse_panel). Resolve each to the scope of the carried statement that names the same CVE (or one of
+    its aliases: the panel's coverage predicate indexes both) and the same package and version, so the statement
+    is re-judged this run like any visible finding. A flagged entry no carried statement matches is dropped
+    (nothing carries it). Returns the CVE ids of the carried statements that no scanner (visible or hidden by our
+    VEX) reports this run, by any of the statement's ids."""
     by_id, primaries = {}, []
     for s in carried_stmts:
         v = s.get("vulnerability") or {}
@@ -226,11 +226,11 @@ def _supp_target(supp, nstmt):
 
 
 def _emit_owner_issue(title, body, dry, would, cves=(), target=None):
-    """Open OR update the single owner-decision issue (REQ-AUD-9). Returns (ok, ref): ok is
-    False on a create/update FAILURE so the caller marks the run INCOMPLETE — never a false
-    'opened'; ref is the issue number/url when known
-    The body carries the evidence, the artifact, and the yes/no question (AC1). Uses the
-    JOB token (issues:write), never the App delivery token (Contents + PRs only)."""
+    """Open or update the single owner-decision issue (REQ-AUD-9 in .github/agent/docs/cve-auditor-matrix.md).
+    Returns (ok, ref): ok is False when the create or update failed, so the caller marks the run INCOMPLETE and
+    never reports a false 'opened'; ref is the issue number or url when known. The body carries the evidence, the
+    artifact, and the yes/no question (AC1). Uses the job token (issues:write), never the App delivery token
+    (Contents and PRs only)."""
     cmd = ("gh issue create --title %s --label %s --assignee %s"
            % (shlex.quote(title), policy.OWNER_LABEL, policy.OWNER_LOGIN))
     if dry:
@@ -350,8 +350,8 @@ def _close_superseded(branch, url, ws):
 
 def _signed_delivery(ws, branch, base_sha, title, paths):
     """ONE commit on `branch`, rebuilt on base_sha, made through the GitHub API with the App's token so GitHub signs
-    it (the live branch moves only
-    after the signed commit exists). Returns (oid, None) or (None, the failure text)."""
+    it (the live branch moves only after the signed commit exists). Returns (oid, None) or (None, the failure
+    text)."""
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo:
         return None, "signed commit: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit"
@@ -391,7 +391,7 @@ def _hold_as_draft(ws, pr):
     if err:
         return err
     v = subprocess.run(["gh", "pr", "view", pr, "--json", "isDraft", "--jq", ".isDraft"], cwd=ws, capture_output=True,
-        text=True)
+                       text=True)
     if v.returncode != 0:
         return "gh pr view (isDraft): " + (v.stderr or "").strip()
     if (v.stdout or "").strip() != "true":
@@ -446,10 +446,9 @@ def _fetch_base(ws):
 
 def _base_file(ws, sha, rel):
     """The reviewed file `rel` as the delivery base (commit `sha`) holds it, read as a git object so the workspace is
-    not touched: the parsed JSON object the reader requires, None when the
-    base does not hold it (the first run; a file git reports as existing on disk but not in the base is absent at the
-    base too: the workspace copy is never the base), or
-    ReviewedInputInvalid. git runs in the C locale because its messages are matched."""
+    not touched: the parsed JSON object the reader requires, None when the base does not hold it, or
+    ReviewedInputInvalid. A file git reports as existing on disk but not in the base is absent at the base too:
+    the workspace copy is never the base. git runs in the C locale because its messages are matched."""
     r = subprocess.run(["git", "show", sha + ":" + rel], cwd=ws, capture_output=True, env=dict(os.environ, LC_ALL="C"))
     if r.returncode != 0:
         err = r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes) else (r.stderr or "")
@@ -465,9 +464,9 @@ def _base_docs(ws, sha):
 
 
 def _preflight_delivery(out, supp):
-    """What _merge_suppressions reads of the files THIS run wrote (the consolidated VEX, the reopened-expired ledger,
-    the accepted-items inventory), validated before
-    `git checkout -B` touches the workspace: exit 3 never follows a mutating call."""
+    """What _merge_suppressions reads of the files this run wrote (the consolidated VEX, the reopened-expired
+    ledger, the accepted-items inventory), validated before `git checkout -B` touches the workspace: exit 3 never
+    follows a mutating call."""
     # absent is the staging error _merge_suppressions reports; present must be the VEX object
     _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
     _read_reopened(os.path.join(out, ".auditor", "reopened-expired.json"))
@@ -499,8 +498,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
     title = policy.subject("update suppressions (%d statements)" % nstmt)
     body = "Automated suppression update from the daily CVE auditor. Draft for review."
-    # REQ-AUD-16 AC4/AC3: carry model PROPOSALS and the generated knowledge doc in the same draft
-    # PR (proposals take effect only after the owner merges + a reviewer promotes them).
+    # Model proposals and the generated knowledge doc ride in the same draft PR (REQ-AUD-16 AC3, AC4 in
+    # .github/agent/docs/cve-auditor-matrix.md); proposals take effect only after merge and a reviewer's promotion.
     extra = [p for p in (".auditor/proposals/adjudicator-proposals.json", ".auditor/knowledge.md")
              if os.path.exists(os.path.join(out, p))]
     staged = [".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"] + extra
@@ -536,7 +535,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
-    # run() hands the validated sha down; a direct caller (neither given) acquires it here
+    # run() passes the validated sha; a direct caller passes none and fetches it here
     if base_sha is None:
         base_sha, base_err = _fetch_base(ws)
         if base_err:
@@ -548,11 +547,10 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if r.returncode != 0:
         return None, ("git checkout: " + (r.stderr or "").strip())
     try:
-        # MERGE into the existing reviewed suppressions, do NOT overwrite them
-        # a statement this run does not touch (e.g. a debug-variant suppression
-        # absent from a production scan) must survive, and the document version continues.
-        # _merge_suppressions merges the VEX AND the coupled .auditor/accepted-items.json (retained affected
-        # statements keep their inventory entry) — no wholesale copy of the run's inventory.
+        # Merge into the existing reviewed suppressions, never overwrite them: a statement this run does not touch
+        # (e.g. a debug-variant suppression absent from a production scan) must survive, and the document version
+        # continues. The coupled .auditor/accepted-items.json is merged too, so retained statements keep their
+        # inventory entry.
         _merge_suppressions(ws, supp, base=base_docs)
         # copy the run's proposals + generated knowledge into the checkout so they ride the PR.
         for p in extra:
@@ -573,8 +571,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     changed = [e[3:] for e in (r.stdout or "").split("\0") if len(e) > 3]
     if not changed:
         return None, "signed commit: nothing to commit (the run changed none of the suppression files)"
-    # idempotence: if a PR for this head already exists, reconcile with
-    # it (no duplicate, no false failure) instead of a second `gh pr create`.
+    # If a PR for this head already exists, reconcile with it instead of a second `gh pr create`.
     def _arm_head(u):
         err = _head_is(ws, u, oid)
         if err:
@@ -584,12 +581,12 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     ex, err = _find_pr(ws, branch)
     if err:
         return None, err                         # a discovery failure aborts BEFORE any ref write
-    # the existing PR is found and DISARMED first, then its branch is replaced
+    # An existing PR is disarmed before its branch is replaced.
     err = _disarm_before_replace(ws, ex)
     if err:
         return None, err
-    # the commit is made THROUGH THE API so GitHub signs it (main requires signed commits; a `git commit` is unsigned
-    # and left the PR BLOCKED) built on the validated sha, never on a ref that may have moved since
+    # Made through the API so GitHub signs it (main requires signed commits; a plain `git commit` is unsigned and
+    # left the PR blocked), on the validated sha, never on a ref that may have moved since.
     oid, err = _signed_delivery(ws, branch, base_sha, title, changed)
     if err:
         return None, err
@@ -736,8 +733,8 @@ def _dependabot_match(prs, module, tkey):
         m = _DEPENDABOT_TITLE.search(title)
         # a Dependabot PR for another directory says so ("... in /tools/govulncheck"): it bumps that module's go.mod,
         # never ours
-        if m and m.group(1) == module and m.group(2).lstrip("v").rstrip(".,;") == tkey and not re.search(r" in /\S",
-            title):
+        in_other_dir = re.search(r" in /\S", title)
+        if m and m.group(1) == module and m.group(2).lstrip("v").rstrip(".,;") == tkey and not in_other_dir:
             return pr.get("number"), pr.get("url") or ""
     return None
 
@@ -751,8 +748,7 @@ def _open_dependabot_prs(ws):
             return None, "simulated lookup failure"
         return json.loads(os.environ.get("AUDITOR_SHIM_DEPENDABOT_PRS") or "[]"), None
     r = subprocess.run(["gh", "pr", "list", "--state", "open", "--author", "app/dependabot", "--json",
-        "number,title,url", "--limit", "200"],
-                       cwd=ws, capture_output=True, text=True)
+                        "number,title,url", "--limit", "200"], cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
         return None, "gh pr list: " + (r.stderr or "").strip()
     try:
@@ -807,7 +803,7 @@ def _emit_held_issue(title, body, dry, would, cves=(), target=None):
         # one search per title: a search for the new words does not return an old-titled issue
         for t in _held_titles(title):
             r = subprocess.run(["gh", "issue", "list", "--search", t, "--state", "open", "--limit", "100", "--json",
-                "number,title"], capture_output=True, text=True, env=ienv)
+                                "number,title"], capture_output=True, text=True, env=ienv)
             if r.returncode != 0:
                 print("held-major issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
             try:
@@ -840,9 +836,8 @@ def _emit_held_issue(title, body, dry, would, cves=(), target=None):
 
 
 def _bump_target(fb):
-    """The delivery TARGET of a bump: (module, version) — one PR per target, never per CVE
-    (LR-32; owner, Sep 28: "one PR per bump, listing every CVE it fixes"). `0.22.0` and `v0.22.0`
-    are the same target; Go resolves the `v` form."""
+    """The delivery TARGET of a bump: (module, version), one PR per target and never per CVE, listing every CVE it
+    fixes. `0.22.0` and `v0.22.0` are the same target; Go resolves the `v` form."""
     to = str(fb.get("to") or "")
     return (fb.get("module"), to[1:] if to.startswith("v") else to)
 
@@ -853,12 +848,12 @@ def _branch_slug(s):
 
 
 def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
-    """Deliver every §1/§3 bump: ONE delivery per (module, version) target carrying all its CVEs
-    (LR-32), then set each row's honest action from its target's delivery status. A MAJOR transition
-    is delivered as the same draft and also opens one issue, a manual-change issue for a person; a target an
-    open Dependabot PR already covers is deferred to. Returns the delivery errors (each makes the run INCOMPLETE)."""
+    """Deliver every §1/§3 bump: one delivery per (module, version) target carrying all its CVEs, then set each
+    row's honest action from its target's delivery status. A MAJOR transition is delivered as the same draft and
+    also opens one issue, a manual-change issue for a person; a target an open Dependabot PR already covers is
+    deferred to. Returns the delivery errors (each makes the run INCOMPLETE)."""
     fix_errs = []
-    targets = {}                                   # LR-32: ONE delivery per (module, version) target
+    targets = {}                                   # one delivery per (module, version) target
     for r in rows:
         if r.get("fix_bump"):
             targets.setdefault(_bump_target(r["fix_bump"]), []).append(r)
@@ -927,12 +922,12 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
 
 
 def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
-    """Deliver ONE Go-module bump TARGET (module, version) as one PR carrying every CVE it fixes
-    (LR-32), on a stable branch named after the target — never after a CVE or a commit — so a
-    later run updates that PR (or leaves it alone when nothing changed) instead of opening a
-    duplicate or overwriting another target's branch. `go get <module>@<version>` + `go mod tidy`,
-    committing ONLY go.mod and go.sum. `rows` are the §1/§3 rows sharing the target (a single row
-    dict is accepted). Base rebuilds are NOT delivered here (REQ-AUD-2 AC3).
+    """Deliver ONE Go-module bump TARGET (module, version) as one PR carrying every CVE it fixes, on a stable
+    branch named after the target (never after a CVE or a commit), so a later run updates that PR (or leaves it
+    alone when nothing changed) instead of opening a duplicate or overwriting another target's branch.
+    Runs `go get <module>@<version>` and `go mod tidy`, committing ONLY go.mod and go.sum. `rows` are the §1/§3
+    rows sharing the target (a single row dict is accepted). Base rebuilds are NOT delivered here (REQ-AUD-2 AC3
+    in .github/agent/docs/cve-auditor-matrix.md).
 
     Returns (pr_url, err, status). status is one of: 'delivered' (PR opened, updated or already
     current), 'would' (dry run), 'unresolvable' (the version does not resolve, or the bump is a
@@ -1094,9 +1089,9 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
             _arm_automerge(u, ws)
         return None
     def _reuse(u):
-        # the open PR is updated to this run's CVE list; a failed edit is a failed delivery (never armed, never
-        # reported delivered) — whichever discovery path found the PR a held major stays a draft with auto-merge off,
-        # even a PR an earlier run armed
+        # The open PR is updated to this run's CVE list; a failed edit is a failed delivery (never armed, never
+        # reported delivered). Whichever discovery path found the PR, a held major stays a draft with auto-merge
+        # off, even if an earlier run armed it.
         if major:
             err = _hold_as_draft(ws, u)
             if err:
@@ -1125,9 +1120,9 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
 
 
 def _merge_suppressions(ws, supp, base=None):
-    """Merge this run's consolidated suppressions INTO the existing reviewed files in the
-    checkout, preserving statements/entries this run does not touch and continuing the VEX
-    document version. Statements are keyed by (vulnerability, scope): this run replaces a
+    """Merge this run's consolidated suppressions INTO the existing reviewed files in the checkout, preserving
+    statements and entries this run does not touch and continuing the VEX document version. Statements are keyed
+    by (vulnerability, scope) (REQ-AUD-13 in .github/agent/docs/cve-auditor-matrix.md): this run replaces a
     same-scope statement, adds new ones, keeps the rest."""
     import shutil
     vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
@@ -1137,8 +1132,6 @@ def _merge_suppressions(ws, supp, base=None):
         raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
     # the delivery hands down the base documents it validated at the sha: the tree is not read again
     existing = (base[BASE_VEX] if base is not None else _read_reviewed_json(vp)) or {}
-    # a statement is keyed by (vulnerability, scope): this run's replaces a carried one of the same scope, other
-    # scopes stay (REQ-AUD-13 in .github/agent/docs/cve-auditor-matrix.md)
     def _key(s):
         return ((s.get("vulnerability") or {}).get("name"), _scope_key(s))
     by_id = {}
@@ -1282,8 +1275,8 @@ def adjudicate(adjudicator, ctx, state):
     UNAVAILABLE). On an error, surface the REAL cause (exception class + HTTP status + message,
     secrets MASKED) ONCE per distinct error into state['adj_errors'] so the header, §4 and the
     status line can name it, and it is not repeated per finding."""
-    # REQ-AUD-3 AC3: the exact same context judged by yesterday's run (state valid, finding-set hash
-    # identical) is not asked again.
+    # The exact same context judged by yesterday's run (state valid, finding-set hash identical) is not asked again
+    # (REQ-AUD-3 AC3 in .github/agent/docs/cve-auditor-matrix.md).
     nc_key = nochange.call_key("adjudicate", ctx)
     reused = nochange.verdict(state.get("nc_prev"), nc_key)
     if reused is not None:
@@ -1369,12 +1362,13 @@ def _pullability(adjudicator, ctx, state):
     so the header can name it, exactly as adjudicate() does."""
     nc_key = nochange.call_key("pullability", ctx)
     reused = nochange.pullability(state.get("nc_prev"), nc_key)
-    if reused is not None:                                      # REQ-AUD-3 AC3: the same context, judged yesterday
+    if reused is not None:                                      # the same context, judged yesterday
         state.setdefault("nc_pull", {})[nc_key] = reused
         state["nc_reused"] = state.get("nc_reused", 0) + 1
         return reused
     if state["tokens"] >= policy.TOKEN_BUDGET:
-        # REQ-AUD-3 AC3: a stop leaves a call unanswered, so the run is incomplete
+        # A stop leaves a call unanswered, so the run is incomplete (REQ-AUD-3 AC3 in
+        # .github/agent/docs/cve-auditor-matrix.md).
         state["nc_incomplete"] = True
         return None
     state["calls"] = state.get("calls", 0) + 1
@@ -1523,15 +1517,15 @@ def _group_facts(c, grp):
     }
 
 
-# Markdown safety (owner's test, Sep 27): GitHub pairs stray `~` into strikethrough ACROSS lines,
-# and `*`/`_`/`<`/`|` can turn into emphasis, HTML or table cells. An identifier or path that can
-# carry such a character goes into a code span; free text is backslash-escaped.
+# Markdown safety: GitHub pairs stray `~` into strikethrough across lines, and `*`/`_`/`<`/`|` can turn into
+# emphasis, HTML or table cells. An identifier or path that can carry such a character goes into a code span;
+# free text is backslash-escaped.
 _MD_SPECIAL = re.compile(r"[~*_<>|`\\\[\]#]")
 
 
 def _one_line(s):
-    """A report line is ONE line: tool stderr (git/gh) spans several — join them (
-    a `#`-led stderr line rendered as a heading in the middle of the report)."""
+    """A report line is ONE line: tool stderr (git/gh) spans several, so join them (a `#`-led stderr line rendered
+    as a heading in the middle of the report)."""
     return re.sub(r"\s*[\r\n]+\s*", " ↵ ", "" if s is None else str(s)).strip()
 
 
@@ -1580,8 +1574,8 @@ def _row_line(r):
 
 
 def _unique(lines):
-    """A list section never repeats a line (owner's rule): identical lines collapse to one, marked
-    with how many rows it stands for — two indistinguishable rows are one thing to read."""
+    """A list section never repeats a line: identical lines collapse to one, marked with how many rows it stands
+    for, since two indistinguishable rows are one thing to read."""
     counts = {}
     for x in lines:
         counts[x] = counts.get(x, 0) + 1
@@ -1589,8 +1583,8 @@ def _unique(lines):
 
 
 def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None):
-    """'PRs and issues this run': one line per PR or issue opened or that would open — never one
-    per finding — each naming its kind, its target and the CVE IDs it carries (owner's rule)."""
+    """'PRs and issues this run': one line per PR or issue opened or that would open, never one per finding, each
+    naming its kind, its target and the CVE IDs it carries."""
     def cv(ids):
         ids = sorted({i for i in ids if i})
         return ("CVEs: " + ", ".join(_ident(i) for i in ids)) if ids else "no CVE"
@@ -1598,8 +1592,8 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
            for w in would]
     # closing the standing issue opens nothing — it is not a line in "PRs and issues opened"
     raw = [p for p in raw if not (p["kind"] == "standing issue" and "close if open" in p["target"])]
-    # ONE entry per delivery (its branch / its issue), however many rows fed it (
-    # several installed versions of one CVE share one bump branch)
+    # One entry per delivery (its branch or its issue), however many rows fed it: several installed versions of
+    # one CVE share one bump branch.
     plans, byk = [], {}
     for p in raw:
         k = str(p.get("key") or (p["kind"], p["target"]))
@@ -1684,21 +1678,21 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
 
 
 def _dispose_split(c, findings, aliases, env, would, base=None):
-    """Route a finding set, SPLIT BY ECOSYSTEM: Go findings and OS
-    (non-Go) findings for the same CVE are dispositioned separately with distinct VEX names,
-    so a Go reachability closure never closes an OS finding (and vice versa)."""
+    """Route a finding set, SPLIT BY ECOSYSTEM: Go findings and OS (non-Go) findings for the same CVE are
+    dispositioned separately with distinct VEX names, so a Go reachability closure never closes an OS finding
+    (and vice versa)."""
     import hashlib
     base = base or c
     ids = sorted(aliases) + [c]
-    # Route the NON-lineage findings, split by (ecosystem, package, INSTALLED VERSION): a fixed version and an unfixed
-    # version of the same package are distinct scopes and must not share a fix, and a lineage-only advisory record
-    # never forms its own disposition — it stays a quorum/lineage signal at the group level.
+    # Route the non-lineage findings, split by (ecosystem, package, installed version): a fixed and an unfixed
+    # version of the same package are distinct scopes and must not share a fix. A lineage-only advisory record
+    # never forms its own disposition; it stays a quorum/lineage signal at the group level.
     nonlineage = [f for f in findings if not f.get("_lineage_only")]
     lineage = [f for f in findings if f.get("_lineage_only")]
     if not nonlineage:
-        # a PURE lineage-only CVE: reported only through an advisory bundle, with no per-CVE
-        # scanner record establishing a package. Surface it for assessment; do NOT build a product-wide acceptance/VEX
-        # from the advisory's package metadata Its lineage stays an agreement signal, not a disposition.
+        # A purely lineage-only CVE is reported only through an advisory bundle, with no per-CVE scanner record
+        # establishing a package. Surface it for assessment, but do not build a product-wide acceptance or VEX from
+        # the advisory's package metadata: its lineage stays an agreement signal, not a disposition.
         gf = _group_facts(c, {"findings": findings, "aliases": aliases})
         row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": None,
                "severity": gf["severity"] or "Unknown", "section": 4,
@@ -1730,16 +1724,16 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
     subsets = [(tag, s) for tag, s in subsets if s]
     out_rows = []; mc = 0
     for tag, sub in subsets:
-        # collision-free VEX/ignore file name: base + tag + a hash of the subset's exact purls,
-        # so two distinct scopes never share a basename. The statement
-        # @id is scope-derived independently.
+        # A collision-free VEX/ignore file name: base, tag and a hash of the subset's exact purls, so two distinct
+        # scopes never share a basename. The statement @id is scope-derived independently.
         if len(subsets) == 1:
             nm = base
         else:
             h = hashlib.sha1("\n".join(sorted(f.get("purl") or "" for f in sub)).encode()).hexdigest()[:12]
             nm = "%s-%s-%s" % (base, tag, h)
-        # attach the group's lineage-only records so this subset's agreement/lineage vote is counted (excluded from
-        # evidence by _group_facts) — a real finding backed by an advisory is not mistaken for unique-lineage.
+        # Attach the group's lineage-only records so this subset's agreement/lineage vote is counted (they are
+        # excluded from evidence by _group_facts); a real finding backed by an advisory is not mistaken for
+        # unique lineage.
         row, mi = _dispose(c, sub + lineage, aliases, env, would, name=nm)
         row["sev_by_scanner"] = _sev_by_scanner(sub); row["seen_by_images"] = _seen_by_images(sub)
         out_rows.append(row); mc += mi
@@ -1756,14 +1750,13 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vn = name or c
     gf = _group_facts(c, {"findings": findings, "aliases": aliases})
     ids = sorted(aliases) + [c]
-    # A not_affected closure clears ONLY the packages its evidence names; scope
-    # every closure to this subset's exact PURLs so a Go unreachability never suppresses a
-    # sibling OS package product-wide.
+    # A not_affected closure clears only the packages its evidence names: scope every closure to this subset's
+    # exact PURLs so a Go unreachability never suppresses a sibling OS package product-wide.
     subs = sorted({f["purl"] for f in findings if f.get("purl") and not f.get("_lineage_only")}) or None
     row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": gf["fixed"],
            "severity": gf["severity"], "reachability": "n/a (OS package)", "section": None,
            "disposition": None, "action": None, "reason": None,
-           "aliases": sorted(set(ids)),               # every identifier this scope was grouped under
+           "aliases": sorted(set(ids)),
            "is_os": not gf["is_go"],                  # 3A (OS) vs 3B (SCA) split keys on ecosystem, not a delivery flag
            "scope_purls": sorted(set(subs or []))}   # this row's scope, for per-scope table mapping
     out = env["out"]; ts = env["ts"]; exp = env["exp"]; dry = env["dry"]
@@ -1880,12 +1873,11 @@ def _dispose(c, findings, aliases, env, would, name=None):
         base_hold = bool(env.get("base_policy_held"))
         pull = None
         # A carried structured trigger the SBOM's carrier version has not reached needs no model call (and no
-        # new verdict): the suppression is re-carried
+        # new verdict): the suppression is re-carried.
         carried_trig = _trigger_for(env.get("carried_lift_trigger", {}).get((c, this_scope)), gf["package"])
         # a base-held scope can also lift through a base release the carrier says nothing about
-        trig_unmet = ((c, this_scope) in env.get("carried_not_pullable",
-            set()) and carrier is not None and not base_hold
-                      and _trigger_state(carried_trig, carrier) == "unmet")
+        trig_unmet = ((c, this_scope) in env.get("carried_not_pullable", set()) and carrier is not None
+                      and not base_hold and _trigger_state(carried_trig, carrier) == "unmet")
         if (carrier or base_hold) and not gf["is_go"] and not trig_unmet:
             pctx = {"kind": "pullability", "finding_id": c, "component": gf["package"],
                     "installed_version": gf["installed"], "component_fixed": gf["fixed"],
@@ -1998,10 +1990,9 @@ def _dispose(c, findings, aliases, env, would, name=None):
                       % (hold, cause),
                       evidence=ev, target_date=this_exp3, lift_trigger=deferred_trigger,
                       vex_name=vn, subcomponents=subs)
-            # A deferred recheck NEVER downgrades the policy threshold: recompute it and preserve
-            # the owner-acceptance requirement, or the release gate silently drops a Critical/KEV
-            # finding's owner-decision hold when a later recheck merely could not confirm the fix
-            # The owner-issue dedup means re-asserting it updates the standing issue, it does not spam a new one.
+            # A deferred recheck never downgrades the policy threshold: recompute it so a Critical/KEV finding keeps
+            # its owner-decision hold when a later recheck merely could not confirm the fix. The owner-issue dedup
+            # means re-asserting it updates the standing issue instead of opening a new one.
             _in_kev = c in env["kev_ids"] or bool(set(aliases) & env["kev_ids"])
             _reason = policy.threshold_reason(gf["severity"], _in_kev, gf["known_exploited"])
             _at = _reason != "below"
@@ -2027,16 +2018,16 @@ def _dispose(c, findings, aliases, env, would, name=None):
         # lifted; otherwise a fresh fixable finding is §3.
         lifted = _carried or bool(env.get("carried_expiry", {}).get((c, this_scope)))
         lift_note = "; prior suppression lifted (VEX/ignore/inventory removed)" if lifted else ""
-        # REQ-AUD-14 AC4: when a NOT-PULLABLE carried scope lifts because the model reports the fix
-        # has become pullable, name the carrier/base release that reached the trigger — never drop it
+        # When a not-pullable carried scope lifts because the model reports the fix has become pullable, name the
+        # carrier/base release that reached the trigger (REQ-AUD-14 AC4 in .github/agent/docs/cve-auditor-matrix.md).
         # The bump itself follows the ecosystem path below.
         if lifted and pull and pull.get("pullable") and pull.get("candidate_release"):
             lift_note += "; lift trigger met: %s embeds the fix" % pull.get("candidate_release")
         if gf["is_go"]:
-            # A module WE BUILD: the auditor delivers the bump itself as a DRAFT PR through the
-            # App path (go get module@fixed + go mod tidy, go.mod/go.sum only) — the actual
-            # delivery + honest action text are set in run() after routing. Record
-            # the bump intent here; an unresolvable fixed version stays in §3, never a broken PR.
+            # A module WE BUILD: the auditor delivers the bump itself as a draft PR through the App path (go get
+            # module@fixed and go mod tidy, go.mod/go.sum only). The delivery and the honest action text are set in
+            # run() after routing; only the bump intent is recorded here. An unresolvable fixed version stays in
+            # §3, never a broken PR.
             row["fix_bump"] = {"cve": c, "module": gf["package"], "from": gf["installed"], "to": gf["fixed"]}
             row["lift_note"] = lift_note
             row.update(section=(1 if lifted else 3),
@@ -2044,11 +2035,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        action="bump pending delivery" + lift_note,
                        fixed=gf["fixed"], reason="pullable fix in a module we build")
         else:
-            # An OS PACKAGE fix comes with the base image: defer to Dependabot's docker PR
-            # (REQ-AUD-2 AC3). The base is digest-pinned on purpose and the auditor never edits
-            # a base digest or races Dependabot over the network — the Dependabot docker
-            # ecosystem runs daily (.github/dependabot.yml). POA&M shape: stays in §3 awaiting
-            # the base rebuild.
+            # An OS package fix comes with the base image: defer to Dependabot's docker PR (REQ-AUD-2 AC3 in
+            # .github/agent/docs/cve-auditor-matrix.md). The base is digest-pinned on purpose and the auditor never
+            # edits a base digest or races Dependabot; the Dependabot docker ecosystem runs daily
+            # (.github/dependabot.yml). The row stays in §3 awaiting the base rebuild.
             row.update(section=(1 if lifted else 3),
                        disposition=("lifted (fix now pullable)" if lifted else "real, fixable (base rebuild)"),
                        action=("awaiting base rebuild %s — defer to Dependabot's docker PR "
@@ -2131,16 +2121,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     logpath = m.get("known_defect_log"); ts = today + "T00:00:00Z"
     _klog = load_defect_log(logpath)
     idx = log_index(_klog)
-    # REQ-AUD-16 AC3: generate the knowledge document the model reads for pattern judgment from the structured records
-    # (the known-defect log), deterministically and with no model call, and carry it in the run output. Only TRUSTED
-    # rows contribute (a model-proposed row is excluded).
+    # The knowledge document the model reads for pattern judgment is generated from the known-defect log,
+    # deterministically and with no model call (REQ-AUD-16 AC3 in .github/agent/docs/cve-auditor-matrix.md). Only
+    # trusted rows contribute; a model-proposed row is excluded.
     knowledge_doc = K.generate(_klog)
     cli.writef(os.path.join(out, ".auditor", "knowledge.md"), knowledge_doc)
     adjudicator = adjudicator or cli.opt("--adjudicator", os.path.join(HERE, "auditor-adjudicator-client.py"))
-    # KEV availability is threshold EVIDENCE: an unavailable/malformed catalog is NOT the same
-    # as "checked, not a member". kev_ok=False fails threshold closed
-    # (a below-threshold no-fix finding is escalated to at_or_above) so risk is never silently
-    # downgraded when CISA is unreachable.
+    # KEV availability is threshold evidence: an unavailable or malformed catalog is not the same as "checked, not
+    # a member". kev_ok=False fails the threshold closed (a below-threshold no-fix finding is escalated to
+    # at_or_above), so risk is never silently downgraded when CISA is unreachable.
     kev_ids = set(); kev_ok = True
     if kevpath is not None:
         if os.path.exists(kevpath):
@@ -2171,15 +2160,14 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     state["unsettled_now"] = set()
     if state["counter_status"] == "missing":
         print("daily CVE auditor: counter state missing, counts restart")
-    # Carried acceptances from the checkout: when a time box has passed, the finding must
-    # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c).
-    # Read the delivered inventory the previous run left in the workspace.
+    # Carried acceptances from the checkout: when a time box has passed, the finding must reopen (§3) this run and
+    # its ignore be removed, never silently renewed (REQ-AUD-2 AC5c in .github/agent/docs/cve-auditor-matrix.md).
     carried_expiry = {}; carried_scopes = set(); carried_status = {}; carried_not_pullable = set()
     carried_lift_trigger = {}
     carried_stmts = []
     ws0 = _workspace()
     # A delivering run reads the carried files at origin/main's sha, the one the delivery branch is cut from, after
-    # ONE fetch before any gh call; a dry or test run reads the workspace copies.
+    # one fetch before any gh call; a dry or test run reads the workspace copies.
     base_sha = base_err = base_docs = None
     if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed():
         base_sha, base_err = _fetch_base(ws0)
@@ -2187,12 +2175,18 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             raise ReviewedInputInvalid("the delivery base cannot be fetched, the run stops before any owner issue "
                                        "(%s)" % base_err)
         base_docs = _base_docs(ws0, base_sha)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws0, capture_output=True, text=True)
-    # evidence is read at a commit
-    state.update(evidence_root=ws0, evidence_sha=base_sha or head.stdout.strip() or None)
+    evidence_sha = base_sha
+    if not evidence_sha:
+        try:
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws0, capture_output=True, text=True)
+        except OSError as ex:
+            raise ReviewedInputInvalid("the workspace commit cannot be read: %s (%s)" % (ws0, ex.strerror))
+        evidence_sha = head.stdout.strip() or None if head.returncode == 0 else None
+    state.update(evidence_root=ws0, evidence_sha=evidence_sha)
     if ws0:
-        # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a foreign/legacy @id is
-        # matched by the scope it addresses, not its literal id spelling Keyed by scope, per scope — never CVE-wide.
+        # Resolve each carried item to its statement's canonical scope (REQ-AUD-13 AC6 in
+        # .github/agent/docs/cve-auditor-matrix.md), so a foreign or legacy @id is matched by the scope it addresses,
+        # not its literal id spelling. Keyed per scope, never CVE-wide.
         prev_id_to_scope = {}
         pv = base_docs[BASE_VEX] if base_docs else _read_reviewed_json(os.path.join(ws0, BASE_VEX))
         try:
@@ -2202,14 +2196,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     prev_id_to_scope[s["@id"]] = _scope_key(s)
                 nm = (s.get("vulnerability") or {}).get("name")
                 if nm:
-                    # every carried (cve, scope) — including a reachability not_affected that has
-                    # NO time box — so a pullable fix can lift it (REQ-AUD-2 AC7; REQ-AUD-13 AC3)
+                    # Every carried (cve, scope), including a reachability not_affected that has no time box, so
+                    # a pullable fix can lift it (REQ-AUD-2 AC7, REQ-AUD-13 AC3).
                     carried_scopes.add((nm, _scope_key(s)))
-                    # the PUBLISHED status for this exact scope, so the "in force (main)" display
-                    # tag is only applied when THIS run writes the SAME disposition already on main:
-                    # a scope carried as `affected` but re-dispositioned `not_affected` this run
-                    # (e.g. new unreachability evidence) is NOT yet published as not_affected, so it
-                    # must render "proposed", not "in force (main)".
+                    # The published status for this exact scope: "in force (main)" applies only when this run
+                    # writes the same disposition already on main. A scope carried as `affected` but
+                    # re-dispositioned `not_affected` this run (e.g. new unreachability evidence) is not yet
+                    # published as not_affected, so it must render "proposed".
                     carried_status[(nm, _scope_key(s))] = s.get("status")
         except Exception as ex:
             raise ReviewedInputInvalid("the published VEX has a statement the run cannot read (%s): "
@@ -2426,13 +2419,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                  "not_pullable": r.get("not_pullable"),           # REQ-AUD-14: the §2B hold kind, if any
                  "lift_trigger": r.get("lift_trigger")}           # the machine-checkable lift condition
                 for r in sections[2]]
-    # write the acceptance inventory BEFORE delivery so the suppression PR can carry it — the release gate reads
-    # .auditor/accepted-items.json from the checkout.
+    # Written before delivery so the suppression PR carries it.
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
                {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
-    # REQ-AUD-16 AC4: model-proposed defect-log/knowledge entries are delivered in the draft PR as
-    # PROPOSALS only — never applied to the live known-defect log or knowledge doc this run. They take effect only
-    # after the owner merges the audit-lane PR that reviews them.
+    # Model-proposed defect-log/knowledge entries are delivered in the draft PR as proposals only, never applied
+    # to the live known-defect log or knowledge doc this run (REQ-AUD-16 AC4 in
+    # .github/agent/docs/cve-auditor-matrix.md). They take effect only after the owner merges the audit-lane PR
+    # that reviews them.
     if state.get("proposals"):
         cli.writej(os.path.join(out, ".auditor", "proposals", "adjudicator-proposals.json"),
                    {"proposals": state["proposals"], "run_date": today,
@@ -2458,37 +2451,37 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     st = m.get("scanner_status") or {}
     SCN = _scanners(m)
     pn = m.get("panel") or {}
-    # completion comes from the VERDICT, re-read and re-validated here, never from the manifest's copied
-    # summary lists: a manifest that says "nothing uncounted, no failures" with no (or a different)
-    # verdict must not make a complete day
+    # Completion comes from the verdict, re-read and re-validated here, never from the manifest's copied summary
+    # lists: a manifest that says "nothing uncounted, no failures" with no (or a different) verdict must not make a
+    # complete day.
     _vd = _panel_verdict(pn)
     unc = _vd["not_counted"] if _vd else None
     fails = _vd["scanner_failures"] if _vd else None
     ran_image = [s for s in SCN if (st.get(s) or {}).get("ran")]
     not_ran = [s for s in SCN if s not in ran_image]
-    # a scanner that did not run where it was expected is a pipeline failure even when every image keeps its
-    # quorum (rule 3, and the
-    # panel's own exit 2): the day is complete only with every image counted AND no scanner failure
+    # A scanner that did not run where it was expected is a pipeline failure even when every image keeps its
+    # quorum (the panel's own exit 2): the day is complete only with every image counted and no scanner failure.
     quorum = isinstance(unc, list) and not unc and isinstance(fails, list) and not fails
     quorum_info = {"agreed": ran_image, "not_ran": not_ran, "uncounted": unc, "scanner_failures": fails,
                    "os_counts": {s: (st.get(s) or {}).get("package_count") or 0 for s in SCN}}
-    # consolidate every per-CVE VEX into the canonical suppression files, run the consistency
-    # check over THAT layout, then DELIVER the suppressions as one draft PR via the App token
-    # A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
+    # Consolidate every per-CVE VEX into the canonical suppression files, run the consistency check over that
+    # layout, then deliver the suppressions as one draft PR via the App token. A push or PR failure is AUDIT
+    # INCOMPLETE with the git/gh stderr, never "opened".
     supp, nstmt = _consolidate(out, ts)
     consistency = _consistency(out, supp, manifest_path)
     cons_failed = any(p.get("type", "").startswith("consistency-check-")
                       for p in (consistency or {}).get("problems", []))
     pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test,
                                              base_sha=base_sha)
-    # The auditor DELIVERS its own Go-module bumps as draft PRs through the App path
-    # (go get + go mod tidy, go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one draft PR; an
-    # unresolvable fixed version stays in §3 (never a broken PR); a git/gh/tidy failure marks the run INCOMPLETE. Base
-    # rebuilds are NOT delivered here — they defer to Dependabot's daily docker PR (REQ-AUD-2 AC3). The honest action
-    # text is set from the delivery status, replacing the pre-delivery placeholder.
+    # The auditor delivers its own Go-module bumps as draft PRs through the App path (go get and go mod tidy,
+    # go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one draft PR; an unresolvable fixed version
+    # stays in §3 (never a broken PR); a git/gh/tidy failure marks the run INCOMPLETE. Base rebuilds are not
+    # delivered here: they defer to Dependabot's daily docker PR (REQ-AUD-2 AC3 in
+    # .github/agent/docs/cve-auditor-matrix.md). The honest action text is set from the delivery status, replacing
+    # the pre-delivery placeholder.
     fix_errs = _deliver_bumps(rows, today, m.get("commit"), dry, would, is_test=is_test)
-    # Now every §1/§3 row action is final: a §2/§3 row still lacking an action is a real gap. In
-    # a dry run that surfaced NO would-open work at all for its §3 rows, count them as unactioned.
+    # Every §1/§3 row action is final now: a §2/§3 row still lacking an action is a real gap. In a dry run that
+    # surfaced no would-open work at all for its §3 rows, count them as unactioned.
     findings_without_action = sum(1 for r in rows if r["section"] in (2, 3)
                                   and (not r["action"] or r["action"] == "none"))
     if dry and sections[3] and not would:
@@ -2601,17 +2594,12 @@ _PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
 _PROP_MAX = 2000
 
 
-def _words(text):
-    """The lowercase letter runs and digit runs of `text`, joined by single spaces and padded: "GPT - 5" and "gpt5" are
-    both " gpt 5 "."""
-    return " " + " ".join(re.findall("[a-z]+|[0-9]+", text.lower())) + " "
-
-
 def _scrubbed(text):
-    """True when `text` holds, as whole words in order, no vendor/model name and no model identifier this run is
-    configured with. Separators and attached digits do not matter ("gpt - 5", "claude3"); "libopus0" is not "opus"."""
+    """True when `text` names no vendor or model: not the words above, and not a model id this run is configured with.
+    A plain substring check on the lowered text, so "GeminiPro" and "acme-big-70" are refused too."""
     cfg = [v for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v.strip()]
-    return not any(_words(w) in _words(text) for w in FORBIDDEN_WORDS + tuple(cfg))
+    low = text.lower()
+    return not any(w.lower() in low for w in FORBIDDEN_WORDS + tuple(cfg))
 
 
 def _evidence_present(root, sha, rel):
@@ -2748,12 +2736,12 @@ def _scanner_tables(m, rows, out):
     from auditorlib import parsers as P
     st = m.get("scanner_status") or {}
     reports = m.get("scanner_reports") or {}
-    # map disposition by (identifier, package purl) — the ROUTED scope — not by CVE alone, so two versions of a
-    # package that landed in different sections are not both shown for each row Index by EVERY identifier the router
-    # grouped the scope under (canonical id + all aliases), so an advisory/alias record (e.g. a DSA co-reporting
-    # several CVEs) that the router placed in a section is mapped through the router's completed identity rather than
-    # an independent re-canonicalization that may pick a different representative Fall back to any-purl match on those
-    # identifiers if the exact (id, purl) is unmatched.
+    # Map disposition by (identifier, package purl), the routed scope, not by CVE alone, so two versions of a
+    # package that landed in different sections are not both shown for each row. Index by every identifier the
+    # router grouped the scope under (canonical id and all aliases), so an advisory or alias record (e.g. a DSA
+    # co-reporting several CVEs) that the router placed in a section is mapped through the router's completed
+    # identity rather than an independent re-canonicalization that may pick a different representative. Fall back
+    # to an any-purl match on those identifiers if the exact (id, purl) is unmatched.
     sec_by_scope = {}; sec_by_id = {}
     for r in rows:
         for rid in set([r["id"]] + list(r.get("aliases") or [])):
@@ -2989,8 +2977,9 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
                       % (_text(sc_), _text(info_.get("version") or "not recorded by %s" % sc_),
                          _text(info_.get("db_date") or "not recorded by %s" % sc_)))
     L.append("**Scanner versions:** " + "; ".join(vparts))
-    # the model's refusals and loop stops this run (REQ-AUD-8 AC3 "logging every refusal"): finding, attempt, role
-    # - no model identifier. Both lines print the FULL count; the list is capped at 60 entries and says so.
+    # The model's refusals and loop stops this run (REQ-AUD-8 AC3 in .github/agent/docs/cve-auditor-matrix.md):
+    # finding, attempt and role, never a model identifier. Both lines print the full count; the list is capped at
+    # 60 entries and says so.
     _refs = (state or {}).get("refusals") or []
     _stops = (state or {}).get("stopped") or []
     refused = "; ".join("%s (%s, %s)" % (_text(x["finding_id"]), x["attempt"], x["role"]) for x in _refs[:60])
@@ -3027,9 +3016,9 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L.append("**Reachability:** "
              + ("govulncheck symbol @ %s (complete=%s)" % (g.get("commit"), g.get("complete"))
                 if isinstance(g, dict) else "not run"))
-    # REQ-AUD-14 AC6/AC7: maintenance flags, INDEPENDENT of any CVE — a carrier on a maintenance-
-    # LTS or end-of-life line (endoflife.date, computed at manifest-build time), and a base pin more
-    # than N days behind its repository's fix. Stated in the header before the sections.
+    # Maintenance flags, independent of any CVE (REQ-AUD-14 AC6, AC7 in .github/agent/docs/cve-auditor-matrix.md):
+    # a carrier on a maintenance-LTS or end-of-life line (endoflife.date, computed at manifest-build time), and a
+    # base pin more than N days behind its repository's fix. Stated in the header before the sections.
     _flags = []
     for e in (m.get("eol") or []):
         stt = e.get("status"); nm = e.get("carrier") or "?"; cyc = e.get("cycle") or "?"
