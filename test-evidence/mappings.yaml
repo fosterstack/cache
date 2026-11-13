@@ -448,7 +448,7 @@ mappings:
       - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119); ci.yml:suites — the pin-check wiring test (triggers unfiltered; steps unconditional, in the default shell, with no environment, PATH or checkout redirection); the checker itself over the tree runs in agent-review-gate.yml from main's copy" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119); the checker itself over the tree runs in agent-review-gate.yml from main's copy" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
       - { type: shell-test, ref: ".github/agent/tests/k8s-harness-fence-test.sh" }
@@ -825,16 +825,11 @@ mappings:
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC3
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
   - ac: REQ-SUP-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC5
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
-  - ac: REQ-SUP-001-AC6
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC7
@@ -910,13 +905,6 @@ mappings:
   - ac: REQ-SUP-001-AC33
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-  - ac: REQ-SUP-001-AC34
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
-  - ac: REQ-SUP-001-AC35
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC36
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
@@ -1828,19 +1816,10 @@ mappings:
   - ac: REQ-SCAN-012-AC6
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
-  - ac: REQ-CI-005-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
-  - ac: REQ-CI-005-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
   - ac: REQ-CI-005-AC3
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
   - ac: REQ-CI-005-AC4
-    evidence:
-      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
-  - ac: REQ-CI-005-AC5
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
   - ac: REQ-CI-006-AC1
