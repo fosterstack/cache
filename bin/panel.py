@@ -83,7 +83,8 @@ def _unquoted_id(sub):
 def load_vex(path):
     """Per-image VEX indexes ({image: index}): each image is filtered only by the statements whose product covers it.
 
-    The whole purl is decoded (%2B is +) so a statement matches the version the scanner reports."""
+    The part of each purl before "?" is decoded once (%2B is +), so a statement matches the version the scanner
+    reports; the qualifiers stay as written."""
     doc = _gate.load(path)
     out = {}
     for img in sorted({i for imgs in EXPECTED.values() for i in imgs}):
