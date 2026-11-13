@@ -25,7 +25,7 @@ ALLOWED_ACTIONS = ("actions/checkout",)
 # BOUND + AUDIT_DEADLINE + SETUP must fit timeout-minutes, so a slow age check ends with a line, not a silent cancel.
 BOUND = 540
 _audit_src = open(os.path.join(root, ".github/agent/supply-chain/pin-audit.py")).read()
-_m = re.search(r"return (\d+) if \(a\.rerun_held or a\.base\) else \d+", _audit_src)
+_m = re.search(r"return (\d+) if a\.base else \d+", _audit_src)
 if not _m:
     sys.exit("supply-chain-wiring-test: deadline_for's --base number not found in pin-audit.py")
 AUDIT_DEADLINE = int(_m.group(1))
