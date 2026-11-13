@@ -598,8 +598,7 @@ SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}",
 # literals, allowed only where a step signs through bin/chain-verify.py sign-record or sign (stage-sign.yml's three jobs, Release's six witnessed steps), reaching only the scripts below,
 # and each must be exactly the value below; the key reference is the verifier's own RELEASE_KEY_REF, read from bin/chain-verify.py beside this file.
 _SS = ".github/workflows/stage-sign.yml"
-_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"},
-           (_SP, "release"): {_WIT, "bin/release-verify.sh", "bin/release-apks.sh", "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}}
+_FED_AT = {(_SS, "sign"): {"bin/witness-sign-staged.sh", "bin/with-aws-token.sh"}, (_SS, "sign-rebuild"): {"bin/witness-sign-staged.sh"}, (_SS, "sign-check"): {"bin/witness-sign-staged.sh"}}
 FED_ROWS = {"AWS_ROLE_ARN": _FED_AT, "AWS_REGION": _FED_AT, "RELEASE_KMS_KEY_REF": _FED_AT}
 
 
@@ -1192,8 +1191,10 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
     if extra: errs.append("%s: workflow keys %s are not allowed in a stage file (env, defaults, concurrency, run-name can reroute every step)" % (rel, sorted(extra)))
     for jn, j in ((d.get("jobs") or {}).items()):
         pre = "%s job %s" % (rel, jn)
-        extra = set(j) - STAGE_JOB_KEYS
+        extra = set(j) - STAGE_JOB_KEYS - ({"env"} if (full, jn) == (_SP, "release") else set())
         if extra: errs.append("%s: job keys %s are not allowed (container, services, defaults, env, uses, secrets, with run other code or reroute steps)" % (pre, sorted(extra)))
+        if (full, jn) == (_SP, "release") and j.get("env") != {k: fed_value(k) for k in FED_ROWS}:
+            errs.append("%s: the job env must be exactly the three federation literals %s, found %r" % (pre, {k: fed_value(k) for k in FED_ROWS}, j.get("env")))
         errs += _runner_errors(pre, j)
         if closed and (full, jn) in PLACE_PERMS and j.get("permissions") != PLACE_PERMS[(full, jn)]:
             errs.append("%s: job %s must hold exactly the permissions %s, found %s" % (full, jn, PLACE_PERMS[(full, jn)], j.get("permissions")))
@@ -1256,7 +1257,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                     used = set(r) | argp
                     scripts = FED_ROWS[k].get((full, jn))
                     if scripts is None or not used <= scripts:
-                        errs.append("%s: %s is allowed only on the signing steps of stage-sign.yml and the witnessed steps of stage-promote.yml job release: found in %s job %s, reaching %s" % (
+                        errs.append("%s: %s is allowed only on the signing steps of stage-sign.yml (stage-promote.yml job release holds them as its job env): found in %s job %s, reaching %s" % (
                             sp, k, full, jn, ", ".join(sorted(used - (scripts or set())) or ["no listed script"])))
                     elif v != fed_value(k):
                         errs.append("%s: %s must be exactly the literal %r, found %r" % (sp, k, fed_value(k), v))
