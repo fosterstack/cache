@@ -1,6 +1,6 @@
-# A test input for .github/agent/tests/auditor-matrix-mutants.sh: the harness installs it in place of the auditor
-# programs and runs it in the mode named by AUDIT_MUTANT. It is not auditor code.
-"""Audit-only counterexamples. Never installed into the repository under review."""
+# A test input for .github/agent/tests/auditor-matrix-mutants.sh: the harness copies it, in a temporary copy of the
+# repository, in place of the auditor programs and runs it in the mode named by AUDIT_MUTANT. It is not auditor code.
+"""Counterexamples for the mutation harness. Never installed into the repository under review."""
 import json, os, sys, subprocess, hashlib
 from pathlib import Path
 
