@@ -159,10 +159,10 @@ jobs:
           path: rec-apk/ubuntu-24.04-arm
       - name: build under Witness
         if: ${{ inputs.mode == 'release' }}
-        run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh
+        run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk "${GITHUB_REF_NAME#v}"
       - name: snapshot-build under Witness
         if: ${{ inputs.mode == 'snapshot' }}
-        run: bash bin/witnessed-local.sh snapshot-build bin/build-stage-snapshot-assemble.sh
+        run: bash bin/witnessed-local.sh snapshot-build bin/build-stage-assemble.sh snapshot-apk 0.0.0-rc.1
       - id: digests
         name: expose digests.json as the stage output
         run: echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"
