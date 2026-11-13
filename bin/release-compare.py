@@ -14,7 +14,6 @@ that is not a regular file, a signer other than assembly.rsa.pub, or a signature
 in their control or data section exit 1 and name the apk; the signature section is not compared, only checked against the committed key."""
 import hashlib, json, os, re, shutil, stat, subprocess, sys
 
-ROOT_MSG = "run the comparison from the repository root (the helpers are named by their repo-relative paths)"
 TOOL = [sys.executable, "-I", "-B", "bin/apk-tool.py"]
 CHAIN = [sys.executable, "-I", "-B", "bin/chain-verify.py"]
 # the four expected pairs, one fixed table (REQ-CHAIN-007-AC17): artifact (runner) -> apk architecture directory -> short name; variant -> file name pattern
@@ -84,8 +83,6 @@ def sha256(path):
 
 
 def main():
-    if not (os.path.isfile("bin/release-compare.py") and os.path.isfile("bin/apk-tool.py")):
-        die(ROOT_MSG)
     if not os.path.isfile("build/keys/assembly.rsa.pub"):
         die("build/keys/assembly.rsa.pub is missing")
     shutil.rmtree("apk-compare", ignore_errors=True)
