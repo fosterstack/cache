@@ -5,7 +5,8 @@
 # It reads the record branch audit/<HEAD_SHA> and its commit through the API (only when the base is main and the head is 40 lower-case hex, so nothing odd is ever put in
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
-# A head with no passing record is then put to bin/audit-record.py bump (that file's module docstring has the contract), which reads
+# A head with no passing record is then put to bin/audit-record.py bump (that file's module docstring has the
+# contract), which reads
 # the head's commits from this checkout. --release mode never reaches it. The writer's prepare script also calls this
 # judge without --release for a release commit, and that call does reach it.
 set -uo pipefail
