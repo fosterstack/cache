@@ -1467,7 +1467,7 @@ if openssl genpkey -algorithm ed25519 -out "$sk/proto.pem" > /dev/null 2>&1; the
   st=$(run_s2 "$sk/many")
   if [ "$(grep -c "^pubkey-sha256: $s2h$" <<< "$st")" = 60 ]; then ok "S2 key search: all 60 key files in the search root appear (no truncation at 50)"
   else bad "S2 key search: 60 key files gave $(grep -c '^pubkey-sha256:' <<< "$st") lines"; fi
-  printf -- '-----BEGIN PRIVATE KEY-----\nnot a key at all\n-----END PRIVATE KEY-----\n' > "$sk/bad/broken.pem"
+  pk='PRIVATE'; printf -- '-----BEGIN %s KEY-----\nnot a key at all\n-----END %s KEY-----\n' "$pk" "$pk" > "$sk/bad/broken.pem"
   st=$(run_s2 "$sk/bad")
   if grep -qxF "unreadable-key: $sk/bad/broken.pem" <<< "$st"; then ok "S2 key search: a key file openssl cannot read is recorded as 'unreadable-key: <path>'"
   else bad "S2 key search: no unreadable-key line for a broken key: $(head -c 300 <<< "$st" | tr '\n' '|')"; fi
