@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-DEP-002-AC3
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -178,6 +178,8 @@ case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
+case_ci release-only-check-gone  bad "d['jobs']['allowlist-persona']['name'] = 'persona'"
+case_ci release-only-coverage-gone bad "d['jobs']['coverage']['name'] = 'cover'"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 3 of 4: main-candidate-rescan.yml absorbs daily-rescan.yml under its ONE schedule (the auditor finds its run by this
