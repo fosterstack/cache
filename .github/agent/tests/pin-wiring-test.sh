@@ -932,6 +932,24 @@ case_ pa-nohold-if-false          bad "${PA}"'ps[ix(gone)]["if"] = "false"'
 case_ pa-pin-age-hold-name        bad "${PA}ps[ix('bash .github/agent/tests/pin-age-check-test.sh')]['name'] = 'the pin age check \\u2014 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)'"
 case_ pa-pin-audit-hold-name      bad "${PA}ps[ix('bash .github/agent/tests/pin-audit-test.sh')]['name'] = 'the daily supply-chain audit \\u2014 advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)'"
 case_ pa-supply-chain-hold-name   bad "${PA}ps[ix('bash .github/agent/tests/supply-chain-wiring-test.sh')]['name'] = 'where the supply-chain checks run \\u2014 Dependabot cooldown, the PR job\\x27s read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)'"
+# carried from cache#901 (its cases that are not the transition form), against main's list: a step dropped, moved, weakened or added anywhere is refused
+case_ pa-nohold-unnamed           bad "${PA}"'ps[ix(gone)].pop("name")'
+case_ pa-nohold-before-last       bad "${PA}"'ps.insert(len(ps) - 2, ps.pop(ix(gone)))'
+case_ pa-nohold-another-step-after  bad "${PA}"'ps.append({"name": "x", "run": "true"})'
+case_ pa-nohold-another-step-before bad "${PA}"'ps.insert(ix(gone), {"name": "x", "run": "true"})'
+case_ pa-pin-audit-run-or-true    bad "${PA}ps[ix('bash .github/agent/tests/pin-audit-test.sh')]['run'] += ' || true'"
+case_ pa-pin-age-run-other        bad "${PA}ps[ix('bash .github/agent/tests/pin-age-check-test.sh')]['run'] = 'true'"
+case_ pa-supply-chain-wiring-env  bad "${PA}ps[ix('bash .github/agent/tests/supply-chain-wiring-test.sh')]['env'] = {'X': '1'}"
+case_ pa-first-dropped            bad "${PA}del ps[0]"
+case_ pa-patch-decide-dropped     bad "${PA}del ps[ix('bash bin/patch-decide-test.sh')]"
+case_ pa-audit-record-dropped     bad "${PA}del ps[ix('bash bin/audit-record-test.sh')]"
+case_ pa-audit-record-popped      bad "${PA}ps.pop(ix('bash bin/audit-record-test.sh'))"
+case_ pa-patch-decide-audit-record-swapped bad "${PA}i = ix('bash bin/patch-decide-test.sh'); j = ix('bash bin/audit-record-test.sh'); ps[i], ps[j] = ps[j], ps[i]"
+case_ pa-pin-age-to-start         bad "${PA}ps.insert(0, ps.pop(ix('bash .github/agent/tests/pin-age-check-test.sh')))"
+case_ pa-first-two-swapped        bad "${PA}ps[0], ps[1] = ps[1], ps[0]"
+case_ pa-patch-decide-or-true     bad "${PA}ps[ix('bash bin/patch-decide-test.sh')]['run'] += ' || true'"
+case_ pa-audit-record-or-true     bad "${PA}ps[ix('bash bin/audit-record-test.sh')]['run'] += ' || true'"
+case_ pa-panel-test-or-true       bad "${PA}ps[ix('bash bin/panel-test.sh')]['run'] += ' || true'"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 bump() {
   echo "[s.__setitem__('uses', '$2') for s in d['jobs']['$1']['steps']" \
