@@ -7562,7 +7562,7 @@
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-age-check-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
       "body-first": "BHO=\"cat >stub <<'EOF'\"",
       "body-last": "EOF",
-      "body-sha256": "a1dd1a4f62c17094b46da9b0b97e11f34f1f290b329d68047b1b240d5876bd7c"
+      "body-sha256": "1a9d0deb4567c4fd5cd7cef7ed09d8eee705d1963ab1cc9ac702acb6c8e85cfb"
     },
     {
       "file": ".github/agent/tests/pin-age-check-test.sh",
