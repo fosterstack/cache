@@ -162,26 +162,37 @@ check("the page mentions no status our VEX does not use, emphasized or not", all
       [k for k in word if k not in used and re.search(word[k], doc, re.I)])
 check("…and the guard sees an unused status explained in plain text (Codex #381 r5)", re.search(word["fixed"], doc + "\nA fixed status means it was fixed.\n", re.I) is not None and "fixed" not in used)
 # R3: the OpenVEX file keeps every statement; the CSAF file may omit one (a Go standard library version the release is not built with)
-check("R3 the old sentence 'The OpenVEX and CSAF files carry every statement.' is gone", "The OpenVEX and CSAF files carry every statement." not in doc)
+OLD_SENT = "The OpenVEX and CSAF files carry every statement."
+def old_sentence_gone(text):
+    return OLD_SENT not in text
+check("R3 the old sentence 'The OpenVEX and CSAF files carry every statement.' is gone", old_sentence_gone(doc))
 check("R3 the guide says the OpenVEX file keeps every statement",
       re.search(r"OpenVEX file[^.]*(keeps|carries|holds)[^.]*every statement", doc, re.I | re.S) is not None)
 check("R3 the guide says the CSAF file may omit a statement, for example a Go standard library version the release is not built with",
       re.search(r"CSAF file[^.]*may (omit|leave out)[^.]*Go standard library", doc, re.I | re.S) is not None
       or re.search(r"CSAF file may (omit|leave out)", doc, re.I) is not None and "Go standard library" in doc)
 mut = doc.replace("CSAF file may omit", "CSAF file carries").replace("CSAF file may leave out", "CSAF file carries") + "\nThe OpenVEX and CSAF files carry every statement.\n"
-check("R3 mutant: the old sentence put back is caught by the sentence check", "The OpenVEX and CSAF files carry every statement." in mut)
+check("R3 mutant: the old sentence put back is caught by the sentence check",
+      old_sentence_gone(mut) is False and old_sentence_gone(doc) is True)
 # R4: no text still says the three forms carry exactly the same statements or that the CSAF file carries every OpenVEX statement
 def text_of(rel):
     q = os.path.join(root, rel)
     return open(q).read() if os.path.exists(q) else None
-for rel in (".vex/README.md", "bin/vex-forms.py", "docs/release-notes-draft.md", "requirements/requirements.yaml"):
+for rel in (".vex/README.md", "bin/vex-forms.py", "docs/release-notes-draft.md", "docs/scanning.md",
+            "requirements/requirements.yaml"):
     t = text_of(rel)
     check("R4 %s exists" % rel, t is not None)
     check("R4 %s does not claim 'exactly the same statements'" % rel, t is not None and "exactly the same statements" not in t.replace("\n", " "))
-for rel in (".vex/README.md", "bin/vex-forms.py", "docs/release-notes-draft.md"):
+for rel in (".vex/README.md", "bin/vex-forms.py", "docs/release-notes-draft.md",
+            "docs/scanning.md"):
     t = text_of(rel) or ""
     check("R4 %s does not say the CSAF file carries every OpenVEX statement" % rel,
           not re.search(r"CSAF file (carries|carrying|holds|has) every\s+OpenVEX\s+statement", t.replace("\n", " ")) and "carrying every OpenVEX statement" not in t.replace("\n", " "))
+# the scanning page owns up to the one omission: no CSAF statement for a Go stdlib version the release is not built with
+scan = (text_of("docs/scanning.md") or "").replace("\n", " ")
+check("R4 docs/scanning.md says the CSAF file leaves out Go standard library versions the release is not built with",
+      re.search(r"CSAF file[^.]*(omit|leave out|leaves out|without|not (carry|include|contain))[^.]*Go standard library",
+                scan, re.I) is not None, scan[:200])
 # R8: the release notes draft names the ca-certificates-bundle version build/melange.yaml pins, and no other
 mel = open(os.path.join(root, "build/melange.yaml")).read()
 pins = re.findall(r"(?m)^\s*- ca-certificates-bundle=(\S+)\s*$", mel)
