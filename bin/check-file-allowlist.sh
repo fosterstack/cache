@@ -30,7 +30,7 @@ ALLOW_PATTERNS=(
   '^docs/[A-Za-z0-9._-]+\.json$'
 
   # Build, lint, scan and release configuration.
-  '^\.(gitignore|golangci\.yml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
+  '^\.(gitignore|golangci\.yml|grype\.yaml|ko\.yaml)$'
 
   # CI/CD. Note these are ALSO gated in autoMode soft_deny — the allowlist
   # says a workflow file may live here, not that it may change freely.
@@ -105,14 +105,12 @@ ALLOW_PATTERNS=(
   '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-test\.sh$'
+  '^bin/dependabot-screen\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
   '^bin/scout-selfcheck\.py$'
-  '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
-  '^bin/scout-older-versions(\.sh|-test\.sh)$'
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
-  '^bin/release-patch-wiring-test\.sh$'
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'
@@ -201,9 +199,6 @@ ALLOW_PATTERNS=(
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/check-action-pins\.py$'
-  # The review gate in the merge queue (REQ-DEP-005-AC3): the judge of a queue's temporary branch
-  # (its test is under tests/).
-  '^\.github/agent/bin/queue-gate-judge\.sh$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   # the published OpenVEX schema the writer validates against (production data, beside its code)
   '^\.github/agent/bin/auditorlib/openvex-schema\.json$'
@@ -229,7 +224,7 @@ ALLOW_PATTERNS=(
   # with --require-hashes on real/schedule runs; bumped by the pip ecosystem in dependabot.yml.
   '^\.github/agent/adjudicator-requirements\.txt$'
   # pip itself, pinned and hash-checked for CI (REQ-SUP-001-AC13); one requirement, bumped by the pip
-  # ecosystem in dependabot.yml under the 7-day cooldown.
+  # ecosystem in dependabot.yml.
   '^\.github/agent/pip-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
@@ -373,9 +368,8 @@ ALLOW_PATTERNS=(
   '^build/keys/retired/[0-9]{4}-[0-9]{2}-[0-9]{2}/release\.rsa\.pub$'
 )
 
-# Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore
-# files the scanners read, and the .auditor/accepted-items.json inventory the
-# release-authorization gate reads (REQ-AUD-11). These are generated, never
+# Daily CVE auditor SUPPRESSION OUTPUTS — the .auditor/accepted-items.json inventory the
+# release-authorization gate reads (REQ-AUD-11), and the other .auditor files below. These are generated, never
 # hand-authored, and delivered ONLY through the auditor's own PR lane
 # (auditor/<date>-<sha> branches; see _deliver_suppression_pr in
 # .github/agent/bin/auditor-run.py). They must be allowed to LIVE on main so
@@ -385,10 +379,8 @@ ALLOW_PATTERNS=(
 # The scoping is enforced by the head branch of the change: a pull_request from
 # a non-auditor branch that touches these paths is blocked; the auditor lane and
 # the merged state on main are allowed. (VEX itself already lives in .vex/ above,
-# published for anyone auditing an artifact; these are its scanner-native forms.)
+# published for anyone auditing an artifact; it is the only suppression a scanner reads.)
 SUPPRESSION_PATTERNS=(
-  '^\.snyk$'
-  '^osv-scanner\.toml$'
   '^\.auditor/accepted-items\.json$'
   # REQ-AUD-16: the generated knowledge document (AC3) and the model's merge-gated proposals
   # (AC4), carried in the auditor's own suppression PR. Like the inventory, they are generated,
@@ -399,30 +391,6 @@ SUPPRESSION_PATTERNS=(
   # through the auditor lane's auditor/panel branch
   '^\.auditor/panel-state\.json$'
 )
-# The merge queue's commit has no pull request head branch (GITHUB_QUEUE_REF is set there, to the queue ref). The pull
-# request the ref names (gh-readonly-queue/main/pr-<N>-<sha>) is read through the API, one call, and its head branch and
-# repository stand in for GITHUB_HEAD_REF and GITHUB_HEAD_REPO, so the lane rule below is the same one. An unclear
-# or failed lookup stops the check: there is no fallback to the queue ref's name.
-if [ -n "${GITHUB_QUEUE_REF:-}" ]; then
-  _q="${GITHUB_QUEUE_REF#refs/heads/}"
-  # accepted: gh-readonly-queue/main/pr-12-<sha>; refused: gh-readonly-queue/main/pr--<sha>, feature/x
-  case "$_q" in
-    gh-readonly-queue/main/pr-[0-9]*-*) ;;
-    *) echo "blocked — not a merge queue ref: ${GITHUB_QUEUE_REF}" >&2; exit 1 ;;
-  esac
-  _n="${_q#gh-readonly-queue/main/pr-}"; _n="${_n%%-*}"
-  [[ "$_n" != *[!0-9]* ]] || { echo "blocked — no pull request number in the merge queue ref" >&2; exit 1; }
-  _answer="$(gh api "repos/${GITHUB_REPOSITORY:-}/pulls/${_n}" \
-    --jq '[.head.ref // "", .head.repo.full_name // ""] | @tsv')" \
-    || { echo "blocked — the head branch of pull request ${_n} could not be looked up" >&2; exit 1; }
-  _tab="$(printf '\t')"
-  case "$_answer" in *"$_tab"*) ;; *) _answer= ;; esac
-  GITHUB_HEAD_REF="${_answer%%"$_tab"*}"; GITHUB_HEAD_REPO="${_answer#*"$_tab"}"
-  if [ -z "$_answer" ] || [ -z "$GITHUB_HEAD_REF" ] || [ -z "$GITHUB_HEAD_REPO" ] \
-      || [ "$(printf '%s\n' "$_answer" | wc -l)" -ne 1 ]; then
-    echo "blocked — pull request ${_n} did not name one head branch and repository" >&2; exit 1
-  fi
-fi
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves
 # to a non-auditor branch, i.e. suppression paths stay blocked by default.
@@ -470,13 +438,6 @@ _resolve_merge_base() {
       _merge_base_err="ALLOWLIST_HEAD_REV is not a commit here"; return 1
     fi
     _head_rev="$_rev"
-  fi
-  if [ -n "${GITHUB_QUEUE_REF:-}" ]; then
-    # a queue entry is judged on its own merge: its first parent is the entry before it in the group, or main
-    if ! _merge_base="$(git rev-parse --verify --quiet "${_head_rev}^1^{commit}")" || [ -z "$_merge_base" ]; then
-      _merge_base=""; _merge_base_err="the queue head $_head_rev has no first parent"; return 1
-    fi
-    return 0
   fi
   if ! [[ "$_base_name" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || [[ "$_base_name" == *..* ]]; then
     _merge_base_err="base ref name '$_base_name' is not usable"; return 1

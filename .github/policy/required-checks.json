@@ -29,17 +29,7 @@
       "scope": "push"
     },
     {
-      "context": "gosec",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "govulncheck",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "analyze (go)",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -49,42 +39,12 @@
       "scope": "push"
     },
     {
-      "context": "allowlist-persona",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "allowlist-chain",
       "integration_id": 15368,
       "scope": "push"
     },
     {
-      "context": "allowlist-pins-auditor",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "dependency-review",
-      "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
-      "context": "fips140-only",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-gradle",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.0)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.3)",
+      "context": "acceptance",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -95,11 +55,6 @@
     },
     {
       "context": "reproducibility",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "coverage",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -116,16 +71,6 @@
     {
       "context": "auditor-review-gate",
       "integration_id": 5054756,
-      "scope": "pull_request"
-    },
-    {
-      "context": "vendor",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "marker-gate",
-      "integration_id": 15368,
       "scope": "pull_request"
     }
   ]

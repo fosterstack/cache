@@ -30,3 +30,28 @@ unmapped:
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
   - ac: REQ-DEP-004-AC2
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
+# The checks these criteria named were deleted by the release audit ruling of Nov 12 (cache#359 section 1); each criterion leaves requirements.yaml in the text change that follows, and this list entry goes with it.
+  - ac: REQ-DEP-005-AC1
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-DEP-005-AC2
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-DEP-005-AC3
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-009-AC5
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-009-AC10
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-CI-001-AC1
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-CI-001-AC2
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-CI-001-AC3
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-CI-001-AC4
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC9
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC10
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC11
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"

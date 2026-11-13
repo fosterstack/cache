@@ -87,11 +87,6 @@
    "reason": "Sign: the signer of the Check records (REQ-REL-011-AC1, cache#606): the Check jobs hold no identity token; Sign checks their records against the results and signs them with the release key"
   },
   {
-   "workflow": "ci.yml",
-   "job": "live-test",
-   "reason": "the rule-12 live test of our VEX files (REQ-SCAN-012): OIDC federation into the dedicated live-test AWS account and Google project only (environment live-test); signs and publishes nothing"
-  },
-  {
    "workflow": "release.yml",
    "job": "live-test",
    "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
@@ -100,11 +95,6 @@
    "workflow": "release.yml",
    "job": "live-test-release",
    "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
-  },
-  {
-   "workflow": "evidence-letter.yml",
-   "job": "sign",
-   "reason": "the monthly evidence letter's one signing job: the KMS release key by federation, its Rekor entry recorded (REQ-REL-013-AC9; owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md)"
   }
  ]
 }

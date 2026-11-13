@@ -3,7 +3,7 @@
  "files": [
   {
    "path": ".githooks/pre-commit",
-   "sha256": "e747eb18100bf2036826cd84b1595861a70967a278678f97d3e1340a5e614c2a",
+   "sha256": "21a6de031f08b86b8d11e90d16fce4cb58965836de94e0ea4e3c50ec64deb541",
    "reason": "a local developer hook (never run in CI)"
   },
   {
@@ -15,11 +15,6 @@
    "path": ".golangci.yml",
    "sha256": "0fbb62e3ae91c5b67cdd754be4d1afbf906e10c4dfd5363171d7443046a3cd01",
    "reason": "the Go linter configuration (lint job)"
-  },
-  {
-   "path": ".gremlins.yaml",
-   "sha256": "3df64cf8a28c95dc03fbe143cf3dcab82ed1ce199b3d8f284ae884acb0702919",
-   "reason": "the mutation-test configuration"
   },
   {
    "path": ".grype.yaml",

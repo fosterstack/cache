@@ -320,7 +320,7 @@ if (ps.get("permissions") or {}) != {"contents": "read", "packages": "read"}:
 st_text = text("panel-scout")
 if re.search(r"--vex-location|local://|docker-daemon:|skopeo", st_text):
     bad.append("panel-scout reads a local image or a local VEX file (Scout applies our statements only through the index's attestation)")
-sc, scan, diag = step("Scout applies our attestation to a fixture index"), step("Docker Scout every image"), step("attestation diagnostics")
+sc, scan = step("Scout applies our attestation to a fixture index"), step("Docker Scout every image")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
 else:
@@ -350,22 +350,6 @@ else:
         bad.append("Scout's scan does not run on our four attested candidates by exact digest with our author: %s" % scouts)
     if rc != 0:
         bad.append("the Scout scan step fails on a clean day")
-if not diag:
-    bad.append("no Scout attestation diagnostics (read-back 5a/5b)")
-else:
-    # unconditional means it runs after a failed self-check too: a step without an `if` is skipped once an earlier step failed, which hid the 5a/5b data on the Oct 23 runs
-    if str(diag.get("if", "")).strip() != "${{ !cancelled() }}" or diag.get("continue-on-error"):
-        bad.append("the Scout diagnostics must carry exactly `if: ${{ !cancelled() }}` (they run after a failed self-check, where a step with no if is skipped, but not when the run is cancelled) and be contained inside the step, not continue-on-error")
-    if str(diag.get("timeout-minutes", "")) != "10":
-        bad.append("the Scout diagnostics must carry timeout-minutes: 10 (five Scout scans of a scratch image; a hung one must not hold the run)")
-    if sc and scout_steps.index(diag) < scout_steps.index(sc):
-        bad.append("the Scout diagnostics come before the self-check")
-    for failing in ("docker", "skopeo", "sudo"):   # a diagnostic failure never fails the step
-        if run_block(diag.get("run", ""), "applies", failing)[0] != 0:
-            bad.append("the diagnostics step fails the job when %s fails" % failing)
-    for need in ("GITHUB_STEP_SUMMARY", "ours-amd64", "ours-arm64", "ours-noplatform", "ours-tag", "exit 0"):
-        if need not in diag.get("run", ""):
-            bad.append("the diagnostics lack %s" % need)
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
@@ -489,9 +473,8 @@ if "steps.judge.outputs.rc != '0'" not in str(last.get("if", "")) or "exit 1" no
     bad.append("the panel's last step does not fail the run when the judge's verdict is not clean")
 # one folder per scanner artifact (the Witness adversarial pass, cache#602): each scanner job uploads exactly one artifact panel-<scanner> from /tmp/panel/ and exposes its id; the
 # panel job downloads each of the four BY ARTIFACT ID (not by name or pattern, so one artifact can never stand for another) into its own fixed folder, only when the id is not empty
-# (an empty id would download every artifact), and each scanner job writes only its own scanner's folder under /tmp/panel/ (scout also its scout-diag)
+# (an empty id would download every artifact), and each scanner job writes only its own scanner's folder under /tmp/panel/
 PANEL_SC = ("grype", "scout", "inspector", "google")
-PANEL_EXTRA = {"scout": {"scout-diag"}}
 for sc in PANEL_SC:
     jb = jobs["panel-" + sc]
     ups = [st for st in jb.get("steps", []) if str(st.get("uses", "")).startswith("actions/upload-artifact@")]
@@ -500,8 +483,8 @@ for sc in PANEL_SC:
     if jb.get("outputs") != {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}:
         bad.append(f"panel-{sc} does not expose exactly the artifact-id of its upload: {jb.get('outputs')}")
     tops = set(re.findall(r"/tmp/panel/([A-Za-z0-9_-]+)", text("panel-" + sc)))
-    if tops - ({sc} | PANEL_EXTRA.get(sc, set())):
-        bad.append(f"panel-{sc} writes under /tmp/panel/ outside its own folder: {sorted(tops - ({sc} | PANEL_EXTRA.get(sc, set())))}")
+    if tops - {sc}:
+        bad.append(f"panel-{sc} writes under /tmp/panel/ outside its own folder: {sorted(tops - {sc})}")
 dls = [st for st in jobs["panel"].get("steps", []) if str(st.get("uses", "")).startswith("actions/download-artifact@")]
 want = {"panel-" + sc: sc for sc in PANEL_SC}
 seen = []
@@ -659,15 +642,6 @@ case_ scout-scan-no-author    bad "s = $(step_of panel-scout 'for v in'); s['run
 case_ scout-scan-wrong-digest bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('.[\$v]', '.production')"
 case_ scout-no-attach-need    bad "$J['panel-scout']['needs'] = ['build']"
 case_ scout-perms-write       bad "$J['panel-scout']['permissions']['packages'] = 'write'"
-case_ scout-diag-fails        bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 0', 'exit \$rc')"
-case_ scout-diag-always       bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ always() }}'"
-case_ scout-diag-always-and   bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ always() && success() }}'"
-case_ scout-diag-no-timeout   bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s.pop('timeout-minutes', None)"
-case_ scout-diag-no-always    bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s.pop('if', None)"
-case_ scout-diag-success-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ success() }}'"
-case_ scout-diag-failure-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ failure() }}'"
-case_ scout-diag-coe          bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['continue-on-error'] = True"
-case_ scout-diag-gone         bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'diagnostics' not in (s.get('name') or '')]"
 case_ attach-gone             bad "$J.pop('vex-attach')"
 case_ attach-perms-id-token   bad "$J['vex-attach']['permissions']['id-token'] = 'write'"
 case_ attach-perms-wide       bad "$J['vex-attach']['permissions']['contents'] = 'write'"

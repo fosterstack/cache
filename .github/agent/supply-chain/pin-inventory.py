@@ -1128,7 +1128,6 @@ def _line_id(tainted, line):
 # bin/chain-test-shape.py holds, as exact text, the build-apk.sh line that names $src/vendor/modules.txt.
 _VENDOR_NAMING_FILES = frozenset("""
 .github/workflows/ci.yml
-.github/workflows/release.yml
 bin/assemble-image-test.sh
 bin/build-apk-test.sh
 bin/build-apk.sh
