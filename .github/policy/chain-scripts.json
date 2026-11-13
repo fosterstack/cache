@@ -1958,7 +1958,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010; a stdlib version the build does not ship is left out); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "8c3901c3a0d7e74b69c6c4b15e5c61236b1790a973dfe0ec633818ecffa35d78",
+      "sha256": "58842be99671f5b294c90ed63f996ddb4617bb6c0467be20ef3ede31147d6821",
       "exceptions": [
         {
           "rule": "deny",
