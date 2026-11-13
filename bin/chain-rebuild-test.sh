@@ -28,7 +28,8 @@
 #     exit 2 (usage / unreadable file) is NOT a refusal and never a pass.
 # WHERE THE FILES ARE: the Build stage runs its command from the repo root (no witness -d), writes items.json at the
 # repo root, and Witness names a product subject relative to the working directory, so the real subject is file:items.json (and file:digests.json for
-# sign --check): exactly what this contract names. Rebuild's verdict is written to witness-rebuild/verdict.json, a product of Rebuild's record
+# sign --check): exactly what this contract names. Rebuild's verdict is written to witness-rebuild/verdict.json,
+# a product of Rebuild's record
 # (subject file:witness-rebuild/verdict.json) uploaded in the witness-rebuild artifact: that is how the verdict travels (it is the stage's only output).
 # THE ITEMS (32, the list REQUIRED below). What cache's tests fix:
 #   - the apk item is `apk-tool.py digest APK` by name, in its output form sha256:<hex> [F L748]. Which sections it covers is cache's to change
@@ -153,7 +154,8 @@ for i in apk-fips-aarch64 apk-baselayout-x86_64 inputs-manifest-baselayout image
 done
 refuse "005-AC3 an item missing on the Build side is a difference (and is named with its side)" missing "$(echo $REQUIRED | cut -d' ' -f4)" \
     rec-miss.json exp-miss.json act.json
-refuse "005-AC3 an item dropped from BOTH lists at once is still refused as missing" missing "$(echo $REQUIRED | cut -d' ' -f4)" \
+refuse "005-AC3 an item dropped from BOTH lists at once is still refused as missing" \
+    missing "$(echo $REQUIRED | cut -d' ' -f4)" \
     rec-miss.json exp-miss.json act-miss-both.json
 refuse "005-AC3 an item that is not on the committed list, on the Rebuild side, is refused" unexpected unlisted-item rec.json exp.json act-extra.json
 refuse "005-AC3 an item that is not on the committed list, on the Build side, is refused" unexpected unlisted-item rec-extra.json exp-extra.json act-extra.json
@@ -216,7 +218,8 @@ if [ "$RC" = 0 ] && jq -e '.verdict == "identical"' "$W/verdict.json" > /dev/nul
 else
   bad "005-AC7 --snapshot with a record naming 0.0.0 products -> exit $RC: $(head -c 160 "$W/err" | tr '\n' ' ')"
 fi
-# a MISSING or UNEXPECTED item: the item stays in items_differing, the verdict is differs, the exit is 1; a missing image digest is null
+# a MISSING or UNEXPECTED item: the item stays in items_differing, the verdict is differs, the exit is 1;
+# a missing image digest is null
 snap_run --snapshot rec-snap.json exp.json "act-miss-image-fips.json"
 if [ "$RC" = 1 ] && jq -e --arg ef "$(jq -r '."image-fips"' "$W/exp.json")" '.verdict == "differs" and .items_differing == ["image-fips"]
       and .images[1] == {"image": "fips", "build_digest": $ef, "rebuild_digest": null, "equal": false} and .images[0].equal == true' \
@@ -240,7 +243,8 @@ else
   bad "005-AC7 an item missing on the Build side -> exit $RC: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
 fi
 snap_run --snapshot rec-snap-miss.json exp-miss.json act-miss-both.json
-if [ "$RC" = 1 ] && jq -e --arg i "$(echo $REQUIRED | cut -d' ' -f4)" '.verdict == "differs" and .items_differing == [$i]' \
+if [ "$RC" = 1 ] && jq -e --arg i "$(echo $REQUIRED | cut -d' ' -f4)" \
+      '.verdict == "differs" and .items_differing == [$i]' \
       "$W/verdict.json" > /dev/null 2>&1; then
   ok "005-AC7 an item dropped from both lists at once: verdict differs, the item is in items_differing, exit 1"
 else
