@@ -156,8 +156,13 @@ PR_BODY=$'Lowered floors: suite-b\nLowered floors: suite-a' expect 1 "vs-base: o
 PR_BODY=$'Lowered floors: suite-a, suite-b' expect 1 "vs-base: a named suite whose floor is not lowered fails (name exactly what is lowered)" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 expect 1 "vs-base: --allow-lowered also fails a named suite whose floor is not lowered" "suite-b" -- floors-vs-base --allow-lowered suite-a,suite-b "$base" test-evidence/suite-floors.json
 printf '{"suite-a": 50}\n' > test-evidence/suite-floors.json
-PR_BODY=$'Lowered floors: suite-b' expect 1 "vs-base: a dropped suite fails even when the body names it" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
+# a dropped suite's test file still in the tree: naming it does not excuse it
+mkdir -p bin; : > bin/suite-b; git add bin/suite-b
+PR_BODY=$'Lowered floors: suite-b' expect 1 "vs-base: a dropped suite whose file is still in the tree fails even when the body names it" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
+git rm -qf bin/suite-b
 expect 1 "vs-base: a dropped suite fails" "suite-b" -- floors-vs-base "$base" test-evidence/suite-floors.json
+# file gone and named: counts as lowered to 0, and the ok line names it
+PR_BODY=$'Lowered floors: suite-b' expect 0 "vs-base: a dropped suite whose file is gone and that the body names passes" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 printf '{"suite-a": 40, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 0 "vs-base: an allowed lowering says so on the ok line, not 'did not fall' alone" "except the named: suite-a 50->40" -- floors-vs-base --allow-lowered suite-a "$base" test-evidence/suite-floors.json
 printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
@@ -273,7 +278,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=113
+EXPECT=114
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
