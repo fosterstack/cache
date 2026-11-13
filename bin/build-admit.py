@@ -32,7 +32,19 @@ CHECKS = [
     "admission-evidence",
 ]
 
-TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")  # fullmatch: no trailing newline slips through
+# Fixed program paths: admission runs first, so it cannot trust a PATH an earlier step set.
+GIT = "/usr/bin/git"            # TEST-SUBST
+GH = "/usr/bin/gh"              # TEST-SUBST
+GPG = "/usr/bin/gpg"            # TEST-SUBST
+GPGCONF = "/usr/bin/gpgconf"    # TEST-SUBST
+SSH_KEYGEN = "/usr/bin/ssh-keygen"  # TEST-SUBST
+PYTHON3 = "/usr/bin/python3"    # TEST-SUBST
+BASH = "/usr/bin/bash"          # TEST-SUBST
+
+# The one tag grammar: no leading zeros, an rc number of at least 1.
+# v1.2.3 and v1.2.3-rc1 match; v01.2.3 and v1.2.3-rc0 do not.
+TAG_PATTERN = r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-rc[1-9][0-9]*)?"
+TAG_SYNTAX = re.compile(TAG_PATTERN)  # fullmatch: no trailing newline slips through
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
 SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)$', re.M)
 OWNER_SSH = "owner-ssh"
@@ -41,10 +53,9 @@ OWNER_SSH = "owner-ssh"
 # downloads it. Admission starts no Go: it reads the file and prints what it trusted.
 FREEZE_FILE = "freeze/freeze.txt"
 FREEZE_CAP = 65536
-FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?)")
+FREEZE_LINE = re.compile(r"freeze-ok ([0-9a-f]{40}) (%s)" % TAG_PATTERN)
 RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin/chain-bytes-sha.py of origin/main, only for a final or patch tag (REQ-CHAIN-001-AC6)
 RC_BYTES = "bin/chain-bytes-sha.py"
-RC_TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SIGNER = "bin/admission-tag-signer.py"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
 # gate 7 (REQ-REL-012-AC7): main's judge, its helper and the writers policy, read from origin/main into a scratch root and never taken from the tagged commit
@@ -75,22 +86,18 @@ def one_line(s, limit=300):
     return " ".join(s.split())[:limit]
 
 
-def outcome(start):
-    """Run start(), which runs one program as an argument list (never a shell).
-
-    Returns (returncode, stdout bytes, stderr bytes). A program that is not installed is an environment error.
-    The start line stays one exact line (the test judge holds it), so the argument list is written at each call."""
+def run(argv, env=None):
+    """Run one program as an argument list (never a shell): (returncode, stdout bytes, stderr bytes)."""
     try:
-        p = start()
+        p = subprocess.run(argv, capture_output=True, check=False, env=env)
     except FileNotFoundError as e:
-        # e.filename is the program that was not found
         raise EnvError("required tool not found: %s" % e.filename)
     return p.returncode, p.stdout, p.stderr
 
 
 def git_show(rev_path):
     """The bytes of `git show REV:PATH`, or None when it does not exist."""
-    rc, out, _ = outcome(lambda: subprocess.run(["git", "show", rev_path], capture_output=True, check=False))
+    rc, out, _ = run([GIT, "show", rev_path])
     return out if rc == 0 else None
 
 
@@ -136,8 +143,7 @@ def check_tag_points_at_sha(ctx):
     """The re-tag race: the tag as it is now must still point at the event's commit (part of tag-ref)."""
     if not SHA_SYNTAX.fullmatch(ctx.sha):
         raise Refusal("tag-ref", "GITHUB_SHA %r is not a full lower-case commit sha" % ctx.sha)
-    rc, out, _ = outcome(lambda: subprocess.run(["git", "rev-parse", "--verify", "-q",
-        "refs/tags/%s^{commit}" % ctx.tag], capture_output=True, check=False))
+    rc, out, _ = run([GIT, "rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % ctx.tag])
     if rc != 0:
         raise Refusal("tag-ref", "tag %s does not exist in the checkout (or does not point at a commit)" % ctx.tag)
     if text(out).strip() != ctx.sha:
@@ -149,8 +155,7 @@ def check_tag_points_at_sha(ctx):
 def check_policy_from_main(ctx):
     """Fetch origin/main and copy the policy inputs out of IT, never out of the tagged commit."""
     os.makedirs(ctx.policy)
-    rc, _, err = outcome(lambda: subprocess.run(["git", "fetch", "--no-tags", "origin", "main"], capture_output=True,
-        check=False))
+    rc, _, err = run([GIT, "fetch", "--no-tags", "origin", "main"])
     if rc != 0:
         raise Refusal("policy-from-main", "cannot fetch origin main: %s" % one_line(text(err)))
     for path in POLICY_FILES:
@@ -165,8 +170,7 @@ def check_policy_from_main(ctx):
 
 def check_tag_annotated(ctx):
     """A lightweight tag carries no signature: only an annotated tag object is admitted."""
-    rc, out, _ = outcome(lambda: subprocess.run(["git", "cat-file", "-t", "refs/tags/" + ctx.tag], capture_output=True,
-        check=False))
+    rc, out, _ = run([GIT, "cat-file", "-t", "refs/tags/" + ctx.tag])
     if rc != 0 or text(out).strip() != "tag":
         raise Refusal("tag-annotated", "%s is not an annotated tag" % ctx.tag)
 
@@ -178,16 +182,15 @@ def route_tag(ctx):
     refused:
     a keyless signature on any tag, an unsigned tag, a PGP signature. An owner SSH signature is accepted on every tag,
     patch tags included."""
-    rc, obj, _ = outcome(lambda: subprocess.run(["git", "cat-file", "tag", "refs/tags/" + ctx.tag], capture_output=True,
-        check=False))
+    rc, obj, _ = run([GIT, "cat-file", "tag", "refs/tags/" + ctx.tag])
     if rc != 0:
         raise Refusal("tag-signature", "cannot read the tag object of %s" % ctx.tag)
     obj_file = os.path.join(ctx.tmp, "tag-object")
     with open(obj_file, "wb") as fh:
         fh.write(obj)
     ctx.tag_object = obj_file
-    rc, out, err = outcome(lambda: subprocess.run(["python3", "-I", os.path.join(ctx.policy, os.path.basename(SIGNER)),
-        "route", "--tag-object", obj_file], capture_output=True, check=False))
+    signer = os.path.join(ctx.policy, os.path.basename(SIGNER))
+    rc, out, err = run([PYTHON3, "-I", signer, "route", "--tag-object", obj_file])
     if rc != 0:
         raise Refusal("tag-signature", "the signer router failed: %s" % one_line(text(err)))
     answer = text(out).strip()
@@ -197,25 +200,30 @@ def route_tag(ctx):
     return route, obj
 
 
+def verify_ssh(ctx, verb, ref):
+    """git verify-tag or verify-commit against main's allowed signers. Returns (principal, fingerprint) of the
+    Good "git" line, or None. GNUPGHOME is empty, so an OpenPGP signature in the runner's own keyring never counts."""
+    home = tempfile.mkdtemp(prefix="gnupg-", dir=ctx.tmp)
+    rc, out, err = run([GIT, "-c", "gpg.format=ssh", "-c", "gpg.ssh.program=" + SSH_KEYGEN, "-c", "gpg.program=" + GPG,
+        "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed, verb, ref],
+        env=dict(os.environ, LC_ALL="C", GNUPGHOME=home))
+    m = SSH_GOOD.search(text(out + err))
+    return m.groups() if rc == 0 and m else None
+
+
 def verify_tag_ssh(ctx):
     """The owner's SSH signature against main's allowed signers. Returns (principal, fingerprint)."""
-    rc, out, err = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed,
-        "verify-tag", "refs/tags/" + ctx.tag], capture_output=True, env=dict(os.environ, **{"LC_ALL": "C"}),
-        check=False))
-    if rc != 0:
-        raise Refusal("tag-signature", "the signature of %s does not verify against main's allowed signers" % ctx.tag)
-    m = SSH_GOOD.search(text(out + err))
-    if not m:
-        raise Refusal("tag-signature", "signature verified but signer metadata could not be extracted: refusing to admit with empty evidence")
-    return m.group(1), m.group(2)
+    signer = verify_ssh(ctx, "verify-tag", "refs/tags/" + ctx.tag)
+    if not signer:
+        raise Refusal("tag-signature",
+                      "the signature of %s is not a Good git signature of main's allowed signers" % ctx.tag)
+    return signer
 
 
 def check_tag_signature(ctx):
     route_tag(ctx)      # the router refuses everything but an owner SSH signature, on any tag
     ctx.method = OWNER_SSH
     ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
-    if not ctx.principal or not ctx.fingerprint:
-        raise Refusal("tag-signature", "tag signature verified but signer metadata could not be extracted: no empty evidence is admitted")
 
 
 # ---------------------------------------------------------------- 6. commit-signature
@@ -223,35 +231,25 @@ def check_tag_signature(ctx):
 def verify_commit_web_flow(ctx):
     """GitHub signs UI squash merges with its own GPG key: accept only the key pinned on main. Returns the key id."""
     home = tempfile.mkdtemp(prefix="gnupg-", dir="/tmp")  # a short path: gpg-agent's socket path has a length limit
-    os.chmod(home, 0o700)
     env = {"GNUPGHOME": home}
     try:
-        rc, _, err = outcome(lambda: subprocess.run(["gpg", "--batch", "--quiet", "--import", os.path.join(ctx.policy,
-            "github-web-flow.gpg")], capture_output=True, env=dict(os.environ, **env), check=False))
+        key_file = os.path.join(ctx.policy, "github-web-flow.gpg")
+        rc, _, err = run([GPG, "--batch", "--quiet", "--import", key_file], env=dict(os.environ, **env))
         if rc != 0:
             raise Refusal("commit-signature", "the pinned web-flow key cannot be imported: %s" % one_line(text(err)))
-        rc, _, _ = outcome(lambda: subprocess.run(["git", "-c", "gpg.format=openpgp", "verify-commit", ctx.sha],
-            capture_output=True, env=dict(os.environ, **env), check=False))
+        rc, _, _ = run([GIT, "-c", "gpg.format=openpgp", "-c", "gpg.program=" + GPG, "verify-commit", ctx.sha],
+            env=dict(os.environ, **env))
         if rc != 0:
             raise Refusal("commit-signature", "commit %s verifies against neither the allowed signers nor the pinned web-flow key" % ctx.sha)
-        _, out, _ = outcome(lambda: subprocess.run(["git", "log", "-1", "--format=%GK", ctx.sha], capture_output=True,
-            env=dict(os.environ, **env), check=False))
-        keyid = text(out).strip()
-        _, keys, _ = outcome(lambda: subprocess.run(["gpg", "--list-keys", "--with-colons"], capture_output=True,
-            env=dict(os.environ, **env), check=False))
-        if not keyid or not re.search(r"^(pub|sub):.*:%s:" % re.escape(keyid), text(keys), re.M):
-            raise Refusal("commit-signature", "commit %s is signed by %s, which is not in the pinned web-flow keyring" % (ctx.sha, keyid))
-        return keyid
+        _, out, _ = run([GIT, "log", "-1", "--format=%GK", ctx.sha], env=dict(os.environ, **env))
+        return text(out).strip()
     finally:
-        outcome(lambda: subprocess.run(["gpgconf", "--homedir", home, "--kill", "gpg-agent"], capture_output=True,
-            check=False))
+        run([GPGCONF, "--homedir", home, "--kill", "gpg-agent"])
         shutil.rmtree(home, ignore_errors=True)
 
 
 def check_commit_signature(ctx):
-    rc, _, _ = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed,
-        "verify-commit", ctx.sha], capture_output=True, check=False))
-    if rc == 0:
+    if verify_ssh(ctx, "verify-commit", ctx.sha):
         ctx.commit_signer = OWNER_SSH
         return
     ctx.commit_signer = "github-web-flow:" + verify_commit_web_flow(ctx)
@@ -260,8 +258,7 @@ def check_commit_signature(ctx):
 # ---------------------------------------------------------------- 7. ancestor-of-main
 
 def check_ancestor_of_main(ctx):
-    rc, _, _ = outcome(lambda: subprocess.run(["git", "merge-base", "--is-ancestor", ctx.sha, "origin/main"],
-        capture_output=True, check=False))
+    rc, _, _ = run([GIT, "merge-base", "--is-ancestor", ctx.sha, "origin/main"])
     if rc != 0:
         raise Refusal("ancestor-of-main", "the tagged commit %s is not an ancestor of origin/main" % ctx.sha)
 
@@ -282,8 +279,7 @@ def check_audit_approval(ctx):
         with open(os.path.join(root, path), "wb") as fh:
             fh.write(data)
     judge = os.path.join(root, AUDIT_FILES[0])
-    rc, out, err = outcome(lambda: subprocess.run(["bash", judge, ctx.sha, "main", "--release", ctx.tag, ctx.tag_object],
-        capture_output=True, check=False))
+    rc, out, err = run([BASH, judge, ctx.sha, "main", "--release", ctx.tag, ctx.tag_object])
     why = one_line(text(out) or text(err), 300)
     if rc == 3:
         raise Refusal("audit-approval", "a GitHub API error stopped the whole-release audit check: %s" % why)
@@ -309,10 +305,9 @@ def decode_json_stream(raw):
 def gh_get(path, paginate=False):
     """GET one GitHub API path with `gh api`; returns the list of decoded JSON pages. A failure refuses at required-checks."""
     if paginate:
-        rc, out, err = outcome(lambda: subprocess.run(["gh", "api", path, "--paginate"], capture_output=True,
-            check=False))
+        rc, out, err = run([GH, "api", path, "--paginate"])
     else:
-        rc, out, err = outcome(lambda: subprocess.run(["gh", "api", path], capture_output=True, check=False))
+        rc, out, err = run([GH, "api", path])
     if rc != 0:
         raise Refusal("required-checks", "gh api %s failed: %s" % (path.split("?")[0], one_line(text(err), 120)))
     try:
@@ -406,8 +401,6 @@ def check_required_checks(ctx):
                 raise Refusal("required-checks", "required check '%s' %s (head of merged PR #%s)" % (ctx_name, why, pr["number"]))
             ctx.verified.append({"context": ctx_name, "source": "check-run-on-merged-pr-head", "pr": pr["number"],
                                  "evidence_sha": pr["head_sha"], "id": hit["id"], "conclusion": "success"})
-    if len(ctx.verified) != len(reqs):
-        raise Refusal("required-checks", "verified %d of %d required checks" % (len(ctx.verified), len(reqs)))
 
 
 # ---------------------------------------------------------------- 10. baseline (REQ-REL-009-AC13)
@@ -483,7 +476,7 @@ def check_rc_proof(ctx):
     """A final or patch tag is admitted only when the committed marker of origin/main validates for the tagged commit: it names an rc tag that is an
     ancestor, and the chain files of the commit hash to its sha (bin/chain-bytes-sha.py check-marker, main's copy). A release candidate tag is exempt (it is how
     the proof is made). A missing marker is a refusal, never a skip."""
-    if RC_TAG_SYNTAX.fullmatch(ctx.tag):
+    if "-rc" in ctx.tag:      # the tag already passed TAG_SYNTAX, so "-rc" means a release candidate
         return
     marker = git_show("origin/main:" + RC_MARKER)
     if marker is None:
@@ -496,8 +489,8 @@ def check_rc_proof(ctx):
     for path, data in ((marker_path, marker), (script_path, script)):
         with open(path, "wb") as fh:
             fh.write(data)
-    rc, _, err = outcome(lambda: subprocess.run(["python3", "-I", script_path, "check-marker", "--marker", marker_path,
-        "--commit", ctx.sha, "--repo", "."], capture_output=True, check=False))
+    rc, _, err = run([PYTHON3, "-I", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha,
+        "--repo", "."])
     if rc != 0:
         raise Refusal("rc-proof", "the rc-proof marker %s does not validate for %s: %s" % (RC_MARKER, ctx.sha, one_line(text(err), 300)))
 

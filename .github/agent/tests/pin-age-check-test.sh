@@ -2048,8 +2048,8 @@ EXPECTED = {
         "1714fe6f02ca5bb0e5e7caeb04be023d96f15dfbd67448f45b86683a82e3e08f",
     ],
     "bin/go-bump-open-pr.sh": [
-        "122789dd18ce1f7e0c9d9e34f02d10435f6ba715ccc666bd8a8409e44da163f4",
-        "33cb527c703c825a14170872548ce54e176df30ca86f7e86eac54a823e885320",
+        "7d12504f59f46f70f485dbe1d91ad4e2f3462dad855fa6d7abf9f089214e357b",
+        "9deac0d1003e47ede2bbb0c688862ad337321257308adfb4f41c232b3846c188",
     ],
 }
 assert {f: sorted(hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest() for l in ls) for f, ls in ac.PINNED_FETCH.items()} == EXPECTED
@@ -2087,7 +2087,7 @@ check python3 - "$root/.github/supply-chain-exceptions.json" "$root/bin/acceptan
 import hashlib, json, os, re, sys
 rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith("build-container install, advisor reading Oct 19: ")]
 assert len(rows) <= 1, rows
-line = "apk add --no-cache build-base linux-headers xz >/dev/null"
+line = "apk add --no-cache build-base=0.5-r3 linux-headers=6.6-r0 xz=5.8.3-r0 >/dev/null"
 h = hashlib.sha256(line.encode()).hexdigest()
 for r in rows:
     assert r["file"] == "bin/acceptance-egress.sh" and r["form"] == "a system package install" and r["key"] == r["line"] == h and "count" not in r and "context" not in r, r
@@ -4087,7 +4087,7 @@ for v in "ra-ok:bin/release-assets.sh:$RAL:0" "gm-ok:bin/acceptance-gradle.sh:$G
   pf_case "$nm" "$file" "$line" "$want"
 done
 GOL1='    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"'
-GOL2='  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1'
+GOL2='  curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1'
 for v in "go1-ok:bin/install-scanner.sh:$GOL1:0" "go2-ok:bin/go-bump-open-pr.sh:$GOL2:0" "go1-in-the-other-file:bin/go-bump-open-pr.sh:$GOL1:1" \
          "go1-edited:bin/install-scanner.sh:${GOL1/-fsSL/-fsSLk}:1" "go2-other-host:bin/go-bump-open-pr.sh:${GOL2//go.dev/go.dev.example}:1"; do
   nm=${v%%:*}; r1=${v#*:}; file=${r1%%:*}; r2=${r1#*:}; line=${r2%:*}; want=${r2##*:}

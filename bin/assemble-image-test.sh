@@ -18,7 +18,9 @@ subst = dict(a.split("=", 1) for a in sys.argv[3:])
 seen, res = set(), []
 for ln in open(src).read().split("\n"):
     m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=.*#\s*TEST-SUBST", ln)
-    if m:
+    if re.match(r"^render=\s+#", ln):
+        res.append("render=${TEST_RENDER_DIR:-}")   # the copy's own render directory
+    elif m:
         n = m.group(1)
         if n not in subst: sys.exit("no substitution given for %s" % n)
         seen.add(n); res.append("%s=%s   # TEST-SUBST" % (n, subst[n]))
@@ -27,12 +29,19 @@ for ln in open(src).read().split("\n"):
 if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
 open(out, "w").write("\n".join(res))
 PY
+cat >"$work/sealedtest.py" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+keep = ("PATH", "CALLS", "ImageOS", "ImageVersion")
+d["closed"].update({k: v for k, v in os.environ.items() if k.startswith(("STUB_", "FAKE_")) or k in keep})
+json.dump(d, open(sys.argv[1], "w"))
+PY
 AI_PROD="$AI"
 air="$work/air"; rm -rf "$air"; mkdir -p "$air/bin"
 for f in "$root"/bin/*; do [ "$(basename "$f")" = assemble-image.sh ] || ln -s "$f" "$air/bin/$(basename "$f")"; done
 python3 "$work/mkcopy.py" "$AI_PROD" "$air/bin/assemble-image.sh" \
   'HOST_OS=${TEST_HOST_OS:-linux-gnu}' 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' 'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' \
-  'APKO=${TEST_APKO:-'"$stubs"'/apko}' 'BASHBIN='"$(command -v bash)" 'ENVBIN='"$(command -v env)" 'WORKDIR=${TEST_WORKDIR:-/work}' 'RENDER_DIR=${TEST_RENDER_DIR:-}' \
+  'APKO=${TEST_APKO:-'"$stubs"'/apko}' 'BASHBIN='"$(command -v bash)" 'ENVBIN='"$(command -v env)" 'WORKDIR=${TEST_WORKDIR:-/work}' \
   || { echo "FIXTURE SETUP FAILED: assemble-image copy"; exit 1; }
 chmod +x "$air/bin/assemble-image.sh"
 cat >"$work/ai.sh" <<WRAP
@@ -57,6 +66,9 @@ done
 [ -z "\${ASSEMBLE_WORK_DIR:-}" ] || export TEST_WORKDIR="\$ASSEMBLE_WORK_DIR"
 [ -z "\${FAKE_OS:-}" ] || export TEST_HOST_OS="\$(printf %s "\$FAKE_OS" | tr A-Z a-z)"
 rm -rf "\$air/build"; cp -RP "\$root/build" "\$air/build"
+# the stubs find CALLS, STUB_* and the test's PATH in the sealed environment, as in the build-apk proofs' data file
+"$(command -v python3)" "$work/sealedtest.py" "\$air/build/sealed-env.json"
+[ -z "\${BREAK_SEALED:-}" ] || printf '{' >"\$air/build/sealed-env.json"   # a file the sealed-env helper cannot read
 put() { rm -f "\$2"; if [ -e "\$1" ] || [ -L "\$1" ]; then cp -P "\$1" "\$2"; fi; }
 case "\$variant" in fips) cf=apko-fips.yaml; lk=apko-fips.base.lock.json;; *) cf=apko.yaml; lk=apko.base.lock.json;; esac
 [ \$have_cfg = 1 ] && put "\$cfg" "\$air/build/\$cf"
@@ -67,6 +79,15 @@ cd "\$air" && exec "$(command -v bash)" bin/assemble-image.sh "\${args[@]}"
 WRAP
 chmod +x "$work/ai.sh"; AI="$work/ai.sh"
 export ImageOS=ubuntu24 ImageVersion=20261004.327.1   # sealed-proof refuses to run without the runner image (rule 42); tests that need it unset say so
+# the real build-apk.sh always cross-checks buildinfo.txt against `go version -m` of the packaged binary (no Go
+# toolchain: refused): the go stub answers with
+# the file that matches the build, as bin/build-apk-test.sh does (the revision line is the fixture source's HEAD, which
+# the sealed copies keep)
+{ cat "$fx/sbom/ok.txt"; printf '\tbuild\tvcs.revision=%s\n' "$(git -C "$src" rev-parse HEAD)"; } \
+  >"$work/buildinfo-ok.txt"
+{ printf '%s\n' "/some/path/usr/bin/fscache: go1.27.2"; tail -n +2 "$work/buildinfo-ok.txt"; } >"$work/govm-ok.txt"
+# exported: every sealed-proof run (spe, inline env, the wrappers) carries them in its sealed environment
+export STUB_BUILDINFO="$work/buildinfo-ok.txt" STUB_GOVM_FILE="$work/govm-ok.txt"
 # ---- the proofs: copies of lock-proof.sh and sealed-proof.sh (TEST-SUBST lines only) and of build-apk.sh (as bin/build-apk-test.sh does), run by a
 # wrapper that builds a per-call fixture repository root: the options the proofs no longer have (--apko-config, --assemble-script, --build-script, the
 # forwarded --base-lock/--index-record/--key-record, --recipe) become files and substituted variables of that root. $LP and $SP are the wrappers;
@@ -82,9 +103,27 @@ python3 "$work/mkcopy.py" "$LP_PROD" "$air/bin/lock-proof.sh" 'HOST_OS=${TEST_HO
 python3 "$work/mkcopy.py" "$SP_PROD" "$air/bin/sealed-proof.sh" 'HOST_OS=${TEST_HOST_OS:-linux-gnu}' 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'BASHBIN='"$(command -v bash)" || { echo "FIXTURE SETUP FAILED: sealed-proof copy"; exit 1; }
 printf '#!/bin/sh\nif command -v sha256sum >/dev/null 2>&1; then exec sha256sum "$@"; else exec shasum -a 256 "$@"; fi\n' >"$work/sha256sum"; chmod +x "$work/sha256sum"
+# The helper judges the sealed call against the fixed env, unshare and melange paths. The build-apk copy runs the helper
+# through this PY3 shim, which runs a copy
+# of the helper whose one constants line names the stubs (TEST_UNSHARE and TEST_MELANGE still win); the other helper
+# lines are untouched.
+python3 - "$root/bin/build-apk-helper.py" "$work/helper-copy.py" "$(command -v env)" "$stubs" <<'PY'
+import sys
+src, out, envbin, stubs = sys.argv[1:5]
+swap = ('ENV_PATH, UNSHARE_PATH, MELANGE_PATH = "%s", os.environ.get("TEST_UNSHARE", "%s/unshare"), '
+        'os.environ.get("TEST_MELANGE", "%s/melange")') % (envbin, stubs, stubs)
+lines = open(src).read().split("\n")
+hit = [i for i, ln in enumerate(lines) if ln.startswith("ENV_PATH, UNSHARE_PATH, MELANGE_PATH = ")]
+assert len(hit) == 1, hit
+lines[hit[0]] = swap
+open(out, "w").write("\n".join(lines))
+PY
+printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
+  "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)" >"$work/py3-shim"
+chmod +x "$work/py3-shim"
 rm -f "$air/bin/build-apk.sh"
 python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$air/bin/build-apk.sh" \
-  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
+  'PY3=${TEST_PY3:-'"$work"'/py3-shim}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
   'GO_TOOL=${TEST_GO:-'"$stubs"'/go}' 'SHA256SUM=${TEST_SHA256SUM:-'"$work"'/sha256sum}' 'ENVBIN='"$(command -v env)" \
   'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' \
@@ -168,6 +207,7 @@ for k, v in os.environ.items():
     if k.startswith(("STUB_", "FAKE_")) or k in ("CALLS", "ImageOS", "ImageVersion"): closed[k] = v
 json.dump({"closed": closed, "from_environment": ["SOURCE_DATE_EPOCH"]}, open(proot + "/sealed-test.json", "w"))
 os.environ["TEST_SEALED_ENV"] = proot + "/sealed-test.json"
+shutil.copy(proot + "/sealed-test.json", proot + "/build/sealed-env.json")   # the assemble copy reads this one
 if os.environ.get("PW_FIXTURE"):   # the fixture's own config, base lock and records (what --apko-config etc. meant), for the (always production) variant
     put(os.environ["PW_CFG"], proot + "/build/apko.yaml"); put(os.environ["PW_BL"], proot + "/build/locks/apko.base.lock.json")
     put(os.environ["PW_IDX"], proot + "/build/locks/archive-index.sha256"); put(os.environ["PW_KEY"], proot + "/build/locks/archive-keys.sha256")
@@ -312,8 +352,10 @@ rp_proof() { # <lp|sp> <fixture root> <search path> <out dir>: the proof's wrapp
   # the fixture records and config the assembler reads are the real build/ copy's: put the fixture's in (as the old --apko-config/--*-record options did)
   env -i PATH="$p" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" \
     FAKE_UNAME=x86_64 STUB_REQUIRE_REPO=1 ImageOS=ubuntu24 ImageVersion=20261004.327.1 FSCACHE_ROOT="$root" \
+    STUB_BUILDINFO="$STUB_BUILDINFO" STUB_GOVM_FILE="$STUB_GOVM_FILE" \
     TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_APKO="$rpw/apko" TEST_MELANGE="$rpw/melange" TEST_GO="$rpw/go" TEST_SHA256SUM="$rpw/sha256sum" \
-    TEST_PY3="$py_abs" TEST_GIT="$git_abs" PW_AIR="$a" PW_ROOT="$root" PW_WORK="$work" PW_BASH="$bash_abs" PW_FIXTURE=1 PW_BL="$BL" PW_IDX="$idxrec" PW_KEY="$keyrec" PW_CFG="$fx/apko.yaml" \
+    TEST_PY3="$work/py3-shim" TEST_GIT="$git_abs" PW_AIR="$a" PW_ROOT="$root" PW_WORK="$work" PW_BASH="$bash_abs" \
+  PW_FIXTURE=1 PW_BL="$BL" PW_IDX="$idxrec" PW_KEY="$keyrec" PW_CFG="$fx/apko.yaml" \
     "$py_abs" "$work/proofwrap.py" "$k" --out "$o" "${args[@]}" >"$work/rp.log" 2>&1 </dev/null; echo $? >"$work/rp.rc"; }
 bash_abs=$(command -v bash)
 for k_ in lp sp; do
@@ -356,7 +398,8 @@ for v in production fips; do
   sn "rule 20" "[$v] apko's SBOM is not disabled" '--sbom[ =]false|--sbom=false' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # build.go:130
   sn "rule 31" "[$v] the config is passed to apko lock and apko build as a bare file name (cwd = the render dir): lock.config.name is that path and must not be random" '^apko (lock|build) [^ ]*/[^ ]*\.yaml' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # real-run finding Oct 9
   sd "rule 31" "[$v] --build-date from SOURCE_DATE_EPOCH" "^apko build .*--build-date $ISO" "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # build.go:129
-  sd "rule 31" "[$v] apko sees SOURCE_DATE_EPOCH too (env wins, pkg/build/build.go:325)" "SOURCE_DATE_EPOCH=$SDE|-E |--preserve-env" "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  sd "rule 31" "[$v] apko sees SOURCE_DATE_EPOCH too (env wins, pkg/build/build.go:325)" \
+  "env -i .*SOURCE_DATE_EPOCH=$SDE .*apko build " "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
   sn "rule 26" "[$v] no --repository-append / -r / --build-repository-append: the config's two local repositories only" ' (--repository-append|-r|--build-repository-append|-b) ' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
   sn "rule 26" "[$v] no network address, proxy or ignore-signatures in any call" '://|[Pp][Rr][Oo][Xx][Yy]|ignore-signatures|allow-untrusted' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
   sn "rule 38b" "[$v] no docker, podman, --privileged or container image in any call" 'docker|podman|--privileged|cgr\.dev|@sha256' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
@@ -373,6 +416,20 @@ for v in production fips; do
   o3=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_SALT=other "$AI" "${a[@]}" --out "$o3"
   t "rule 31" "[$v] the digest follows the built image (a different image gives a different digest)" bash -c "test -s '$o/$v.digest' && test -s '$o3/$v.digest' && ! cmp -s '$o/$v.digest' '$o3/$v.digest'"
 done
+# an apko stub that records the names of its environment (the stubs/apko one does not)
+cat >"$work/apko-env" <<EOS
+#!/bin/bash
+names="^(STUB_|FAKE_|CALLS\$|ImageOS\$|ImageVersion\$|PWD\$|SHLVL\$|_\$|OLDPWD\$)"
+echo "APKO-ENV \$1: \$(env | cut -d= -f1 | grep -Ev "\$names" | sort | tr '\\n' ' ')" >>"\$CALLS"
+exec "$stubs/apko" "\$@"
+EOS
+chmod +x "$work/apko-env"
+run_s env AWS_ACCESS_KEY_ID=leak FOO=leak TEST_APKO="$work/apko-env" "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+if [ "$(rc)" = 0 ] && [ "$(grep -c '^APKO-ENV ' "$CALLS")" = 2 ] \
+  && [ "$(grep '^APKO-ENV ' "$CALLS" | cut -d: -f2 | sort -u)" = " HOME LC_ALL PATH SOURCE_DATE_EPOCH " ] \
+  && [ "$(grep -c "^ENV SDE=$SDE\$" "$CALLS")" = 2 ]; then ok
+else bad "rule 31" "apko lock and build see only PATH, HOME, LC_ALL, SOURCE_DATE_EPOCH (not an ambient \
+AWS_ACCESS_KEY_ID)"; fi
 sd "rule 33" "the -fips image is assembled from the -fips config" 'apko-fips\.yaml|fscache-fips' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
 # the names are in the script, or (straight-line form) in oci-digest.py variant-field
 t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" \
@@ -519,7 +576,7 @@ t "rule 38a" "the source tree is left untouched by the negative cases (vendor/ s
 #  rule 35  exactly two images and four Linux archives per release (release acceptance, pipeline lane)
 #  rule 43  Witness crypto/FIPS fit is a report, not a gate: nothing to assert on the cache
 #  rule 62  the VM-direct job and the sysctl step in the workflow (pipeline lane); the driver side is asserted above
-# UNVERIFIED tool claims used above: apk-tool's reading of real melange apks (the .melange.yaml control member, the .SIGN.RSA.*
+# UNVERIFIED tool claims used above: apk-tool's reading of real melange apks (the .melange.yaml control member, the .SIGN.RSA256.*
 # name) is modelled on package.go:222-231 and the apk format, not on a real apk; "melange build --runner bubblewrap" under
 # `sudo unshare -n` with a local repo was proven only for the bwrap leg (spike 2026-10-09-cache-bwrap-runner-spike.md).
 # ---- P4 review round 1 (R2): a name-resolution failure inside the sealed apko call is a network attempt too ------------------------------
@@ -593,13 +650,6 @@ rm -rf "$work/mel-t"; cp -R "$fx/melrepo" "$work/mel-t"; python3 "$work/lib.py" 
 fixed12 melange="$work/mel-t"; srb "rule 28" "a tampered fscache apk in the melange repo is caught by verifying the \
 full lock (refused after apko lock, before apko build, naming the apk)" 'fscache-0.3.0-r0\.apk' env \
 SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${w12[@]}"
-# M5 / R5 (test hook ASSEMBLE_WORK_DIR replaces /work for the pre-checks): an existing real directory, or any existing link or lock, is refused
-mkdir -p "$work/wd1/archive"
-sr "rule 26" "/work/archive exists and is a real directory -> refused, nothing replaced" 'not a symlink|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd1" "$AI" "${ai_args[@]}" --out "$(mo)"
-mkdir -p "$work/wd2" "$work/wd2-target"; ln -s "$work/wd2-target" "$work/wd2/keyring"
-sr "rule 26" "a /work link left by another run (a symlink to a different target) is refused: no two runs share /work" 'another|already|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd2" "$AI" "${ai_args[@]}" --out "$(mo)"
-mkdir -p "$work/wd3/.assemble.lock"
-sr "rule 26" "an assembly lock directory in /work means another run is in progress -> refused" 'another|lock|in progress' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd3" "$AI" "${ai_args[@]}" --out "$(mo)"
 # M13 (rule 40): only the exact errno 101 confirms a sealed namespace; any other probe result is a leak (exit 1, never 4)
 for rc_ in 0 1 111; do
   run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_PROBE_RC=$rc_ "$AI" "${ai_args[@]}" --out "$(mo)"
@@ -1472,7 +1522,7 @@ t "AC12" "every TEST-SUBST line of the five scripts is ONE plain assignment of a
 import re, sys
 root, air = sys.argv[1:3]
 ALLOWED = {
-    "assemble-image.sh": {"HOST_OS", "PY3", "SUDO", "UNSHARE", "BASHBIN", "APKO", "ENVBIN", "WORKDIR", "RENDER_DIR"},
+    "assemble-image.sh": {"HOST_OS", "PY3", "SUDO", "UNSHARE", "BASHBIN", "APKO", "ENVBIN", "WORKDIR"},
     "lock-proof.sh": {"HOST_OS", "PY3", "SUDO", "BASHBIN"},
     "sealed-proof.sh": {"HOST_OS", "PY3", "SUDO", "UNSHARE", "BASHBIN"},
     "apko-lock.sh": {"PY3"},
@@ -1481,7 +1531,7 @@ ALLOWED = {
 ABS = r"/[A-Za-z0-9_./+-]+"
 CLASS = {   # each variable has ITS OWN right-hand side: a tool is an absolute path, nothing else
     "PY3": ABS, "SUDO": ABS, "UNSHARE": ABS, "BASHBIN": ABS, "APKO": ABS, "ENVBIN": ABS, "GIT": ABS, "MELANGE": ABS, "GO_TOOL": ABS, "SHA256SUM": ABS,
-    "WORKDIR": ABS, "RENDER_DIR": r"", "HOST_OS": r"\$\{BASH_VERSINFO\[5\]\}",
+    "WORKDIR": ABS, "HOST_OS": r"\$\{BASH_VERSINFO\[5\]\}",
     "SEALED_ENV": r"build/[A-Za-z0-9_./+-]+", "RECIPE_STANDARD": r"\$PWD/build/[A-Za-z0-9_./+-]+", "RECIPE_FIPS": r"\$PWD/build/[A-Za-z0-9_./+-]+",
     "FIPS_MODULE": r"\$PWD/build/[A-Za-z0-9_./+-]+",
 }
@@ -1508,7 +1558,7 @@ for name, allowed in ALLOWED.items():
             marked += 1
             if not plain(a, allowed):
                 bad.append("%s:%d: %r is not a plain assignment of an allowed variable" % (name, i, a[:90]))
-        elif a != b:
+        elif a != b and not (a.startswith("render=") and b == "render=${TEST_RENDER_DIR:-}"):
             bad.append("%s:%d differs outside a TEST-SUBST line" % (name, i))
     if not marked:
         bad.append("%s has no TEST-SUBST line" % name)
@@ -1578,6 +1628,9 @@ rm -rf "$air/build"; cp -RP "$root/build" "$air/build"; cp "$fx/apko.yaml" "$air
 cp "$idxrec" "$air/build/locks/archive-index.sha256"; cp "$keyrec" "$air/build/locks/archive-keys.sha256"
 rm -rf "$air/rel"; mkdir -p "$air/rel"; cp -R "$fx/archive" "$air/rel/archive"; cp -R "$fx/melrepo" "$air/rel/melrepo"; cp -R "$fx/keyring" "$air/rel/keyring"
 lpr_out="$air/rel/out"
+# the proof runs the assembler directly (not through $AI), so the stubs get CALLS and STUB_LIB through this fixture
+# root's sealed-env.json, as $AI does
+CALLS="$CALLS" STUB_LIB="$work/lib.py" STUB_LOCK="$FL" python3 "$work/sealedtest.py" "$air/build/sealed-env.json"
 run_s "${aie[@]}" bash -c 'cd "$0" && exec "$@"' "$air" "$air/bin/lock-proof.sh" --out rel/out --archive rel/archive -- --variant production --version 0.3.0 --melange-repo rel/melrepo --keyring-dir rel/keyring
 t "AC12" "lock-proof.sh with RELATIVE --archive, --out, --melange-repo and --keyring-dir: the positive control and the four cases pass and the record is written where --out says" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -s '$lpr_out/lock-proof.json'"
 rm -rf "$air/build" "$air/rel"
@@ -1787,7 +1840,8 @@ python3 "$OD" unpack "$oc/good.tar" "$work/unp-side/out3" "$work/unp-side/out3/i
 t "BT-002-AC3" "unpack refuses a DIGEST that is a link, a DIGEST and MANIFESTS that are one file, and a result file inside the layout directory; nothing was written through the link" bash -c "test $s1 != 0 && test $s2 != 0 && test $s3 != 0 && test ! -e '$work/unp-side/target' && test ! -e '$work/unp-side/out1'"
 # the remaining claims of the round-2 brief that had no test: probe status 126, a digest that cannot be computed, a linked --digests-out; and dup2's own assertion
 sf "rule 40" "sealed-proof: a probe that exits 126 inside the namespace is inconclusive" 'inconclusive' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}" || exit 126' "${sp_common[@]}"
-printf '#!/bin/bash\ncase "$*" in *apk-tool.py*digest*) echo "apk-tool: cannot read the apk" >&2; exit 1;; esac\nexec %s "$@"\n' "$(command -v python3)" >"$work/pyfail.sh"; chmod +x "$work/pyfail.sh"
+printf '#!/bin/bash\ncase "$*" in *apk-tool.py*digest*) echo "apk-tool: cannot read the apk" >&2; exit 1;; esac\nexec %s "$@"\n' "$work/py3-shim" >"$work/pyfail.sh"
+chmod +x "$work/pyfail.sh"
 sf "rule 42" "sealed-proof: an apk digest that cannot be computed fails the proof (it is not recorded as empty)" 'digest' env TEST_PY3="$work/pyfail.sh" "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
 rm -f "$work/dgo-target" "$work/dgo-link"; ln -s "$work/dgo-target" "$work/dgo-link"
 sr2 "rule 42" "sealed-proof: a --digests-out that is a link is refused (exit 2) and nothing is written through it" 'link' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$work/dgo-link" "${sp_common[@]}"
@@ -1811,10 +1865,11 @@ def assigned_in(ln):
     out |= set(re.findall(r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b", ln))
     out |= set(re.findall(r"\(\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", ln))
     for v in re.findall(r"\blocal\s+([A-Za-z_][A-Za-z0-9_ ]*)", ln): out.update(x for x in v.split() if re.fullmatch(r"[A-Za-z_]\w*", x))
-    for m in re.finditer(r"\bread\s+([^;|&<)]*)", ln):
+    # read NAME..., read -a NAME, mapfile [-d D] [-t] NAME: the names after the options are assigned
+    for m in re.finditer(r"\b(?:read|mapfile|readarray)\s+([^;|&<)]*)", ln):
         toks = m.group(1).split(); k = 0
         while k < len(toks):
-            if toks[k] in ("-d", "-n", "-N", "-p", "-t", "-u", "-a", "-i"): k += 2; continue
+            if toks[k] in ("-d", "-n", "-N", "-p", "-u", "-i", "-O", "-s", "-C", "-c"): k += 2; continue
             if re.fullmatch(r"[A-Za-z_]\w*", toks[k]): out.add(toks[k])
             k += 1
     return out
@@ -1899,6 +1954,8 @@ if __name__ == "__main__":
                        ("an arithmetic read of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzn=$((CALLER_COUNT + 1))\n", 1)),
                        ("a test -v introspection", base.replace("set -euo pipefail\n", "set -euo pipefail\nif test -v AUDIT_SKIP_BUILD; then exit 0; fi\n", 1)),
                        ("a read of OPTARG", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"${OPTARG:-}\"\n", 1)),
+                       ("a read of an array that no assignment, read -a or mapfile fills",
+                        base.replace("set -euo pipefail\n", "set -euo pipefail\necho \"${zzarr[@]}\"\n", 1)),
                        ("an embedded python environment read", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"$(os.environ.get('CALLER_X'))\"\n", 1))):
         if not leaks(mut):
             print("the check does not see %s" % label); rc = 1
@@ -2052,12 +2109,12 @@ poison_out=$(mo)
 run_s "${aie[@]}" "${poison_env[@]}" "$AI" "${ai_args[@]}" --out "$poison_out"
 t "AC12" "every variable the assembler assigns, set to a hostile value in the environment ($(wc -w <"$work/poison.names") names), leaves the result unchanged: exit 0 and the same image digest as the control run" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(cat '$poison_out/production.digest')\" = '$ref_out'"
 # round 7 (seat B): the substituted production assignments have EXACTLY these values (a copy replaces them, so a wrong shipped value would otherwise vanish)
-t "AC12" "the TEST-SUBST lines of the five production scripts hold exactly the intended tool locations, /work, an empty render directory and the shell's own host fact (an exact table, so a changed constant is a changed test)" python3 - "$root" <<'P'
+t "AC12" "the TEST-SUBST lines of the five production scripts hold exactly the intended tool locations, /work and the shell's own host fact (an exact table, so a changed constant is a changed test)" python3 - "$root" <<'P'
 import re, sys
 root = sys.argv[1]
 EXPECT = {
     "assemble-image.sh": {"HOST_OS": "${BASH_VERSINFO[5]}", "PY3": "/usr/bin/python3", "SUDO": "/usr/bin/sudo", "UNSHARE": "/usr/bin/unshare", "BASHBIN": "/bin/bash",
-                          "APKO": "/usr/local/bin/apko", "ENVBIN": "/usr/bin/env", "WORKDIR": "/work", "RENDER_DIR": ""},
+                          "APKO": "/usr/local/bin/apko", "ENVBIN": "/usr/bin/env", "WORKDIR": "/work"},
     "lock-proof.sh": {"HOST_OS": "${BASH_VERSINFO[5]}", "PY3": "/usr/bin/python3", "SUDO": "/usr/bin/sudo", "BASHBIN": "/bin/bash"},
     "sealed-proof.sh": {"HOST_OS": "${BASH_VERSINFO[5]}", "PY3": "/usr/bin/python3", "SUDO": "/usr/bin/sudo", "UNSHARE": "/usr/bin/unshare", "BASHBIN": "/bin/bash"},
     "apko-lock.sh": {"PY3": "/usr/bin/python3"},
@@ -2516,5 +2573,9 @@ for bad in ("md5-AAAA", "sha512-AAAA", "SHA256-AAAA", "blake2b-AAAA", "-AAAA", "
 PY
 t "770" "oci-digest.py lock verify-archive: sha1 and sha256 sums are read, any other kind is refused as unreadable" \
   bash -c "! grep -q FAIL '$work/kinds.out' && [ \"\$(grep -c '^ok' '$work/kinds.out')\" = 9 ]"
+# the sealed-env helper exits non-zero on a malformed build/sealed-env.json: the build stops before apko is called
+run_s env BREAK_SEALED=1 SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
+if [ "$(rc)" != 0 ] && [ -s "$work/log" ] && ! grep -q 'apko' "$CALLS"; then ok
+else bad "rule 23" "assemble-image.sh: a malformed sealed-env.json stops the build with a message before any apko call (exit $(rc))"; fi
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
