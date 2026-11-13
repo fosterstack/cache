@@ -214,8 +214,9 @@ class TheReaders(unittest.TestCase):
         self.assertEqual(R._read_reopened(os.path.join(self.d, "none.json")), [])
 
     def test_deeply_nested_json_is_a_named_refusal_in_both_readers_never_a_recursion_error(self):
-        """reviewed.parse (text) and reviewed.read (a file) both turn 20 KB of "[" into a ReviewedInputInvalid that names
-        the input and says it cannot be read as JSON; json really raises RecursionError for it, and it does not escape."""
+        """reviewed.parse (text) and reviewed.read (a file) both turn 20 KB of "[" into a ReviewedInputInvalid that
+        names the input and says it cannot be read as JSON; json really raises RecursionError for it, and it does not
+        escape."""
         real = json.loads, json.load
         raised = []
         def watch(fn):
