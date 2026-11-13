@@ -3328,7 +3328,7 @@ requirements:
       - id: REQ-CHAIN-002-AC4
         given: "the Sign and Build signing steps"
         when: "the workflow files are read"
-        then: "nothing a step passes to the signing tool comes from a secret, a token or an environment secret; a signature made with the release key carries no certificate"
+        then: "nothing a step passes to the signing tool comes from a secret, a token or an environment secret, except one binding: the run's own token, read-only, as GH_TOKEN with the value ${{ github.token }}, which job apk's apk step passes through the Witness wrapper to bin/build-admit.py only; a signature made with the release key carries no certificate"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
