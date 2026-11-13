@@ -2211,7 +2211,7 @@ for v_ in data-last data-first toplevel sigsum; do
 done
 # ---- end verbatim sections ----
 
-# ===== cache#770: assemble-image.sh and apko-lock.sh are straight-line text; checks are oci-digest.py subcommands =====
+# ===== cache#770: the checks of assemble-image.sh and apko-lock.sh are oci-digest.py subcommands =====
 # The cases say what assemble-image.sh said and did before: the same message, the same exit status, the same order.
 # They call the subcommands directly; the whole script is run by every case above.
 cat >"$work/ocd-cases.py" <<'PY'

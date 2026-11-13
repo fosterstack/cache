@@ -5,8 +5,6 @@
 #                     --keyring-dir DIR --out DIR
 # The six options come in exactly this order: any other shape is refused (exit 2).
 #
-# This file is straight-line text: no case, loop, function or subshell. The checks are subcommands of bin/oci-digest.py,
-# which print the refusal themselves and choose the exit status.
 # It runs from the repository root only (exit 2 elsewhere):
 # every helper is named by its literal repo-root-relative path (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py).
 # The config, the base lock, the index record and the key record are the committed ones of the variant: there is no
