@@ -8456,34 +8456,6 @@
     {
       "file": ".github/agent/tests/pin-age-check-test.sh",
       "form": "a download",
-      "key": "4c239fa64729906069a099889f9cf56a29fbe37171bc1755d00699bc6c5ee355",
-      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
-      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
-    },
-    {
-      "file": ".github/agent/tests/pin-age-check-test.sh",
-      "form": "a download",
-      "key": "78652652791d344b4a978f2a970b23fd521ea3f0636549651313e855263b41a7",
-      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
-      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
-    },
-    {
-      "file": ".github/agent/tests/pin-age-check-test.sh",
-      "form": "a download",
-      "key": "a3230f84c05e7e7d132ec0a8ee8e0e335af5741415aeb20f8768f31743af2de9",
-      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
-      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
-    },
-    {
-      "file": ".github/agent/tests/pin-age-check-test.sh",
-      "form": "a download",
-      "key": "d0ce82caee48d4c57956b1632d1ba2e132be5183a4dc4d203134236778132762",
-      "line": "bd700607c744e0cfa2e06547ac1683559d11d48998e19933c6e7059cffa83fa1",
-      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
-    },
-    {
-      "file": ".github/agent/tests/pin-age-check-test.sh",
-      "form": "a download",
       "key": "81058f914b63d90c535c9f0d4bac6134255be74ae2007cd57ee64032c8f50600",
       "line": "5a2164dc963248cafa686cb452a08fb36ca5efde14e4094d5197066f25a74049",
       "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
