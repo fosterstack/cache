@@ -439,6 +439,19 @@ class NoChange(Base):
             self.assertNotEqual(R._adjudication_fingerprint(os.path.join(self.tmp, "missing.py")), base)
         self.assertNotIn("m-one", R._adjudication_fingerprint(adj))          # a digest, never the identifier itself
 
+    def test_the_fingerprint_ignores_whitespace_around_a_configured_id(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "m-one", "AUDITOR_MODEL_FALLBACK": ""}):
+            plain = R._adjudication_fingerprint(adj)
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-one\n"
+            self.assertEqual(plain, R._adjudication_fingerprint(adj))
+
+    def test_mask_hides_a_configured_id_that_has_a_trailing_newline_in_the_environment(self):
+        # an id set from a file or a shell line carries the newline; the report text has the id without it
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7\n", "AUDITOR_MODEL_FALLBACK": ""}):
+            out = R._mask("reviewed by acme-big-7\nthen acme-big-7 again")
+        self.assertNotIn("acme-big-7", out)
+
     def test_the_adjudication_fingerprint_follows_the_standing_prompt(self):
         adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
         bindir = self.d("fake", "bin"); self.d("fake", "prompts")
@@ -2415,6 +2428,11 @@ class ExitThreeBeforeMutation(unittest.TestCase):
             self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: not-a-sha"))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (1, "", "bad")})):
             self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: bad"))
+
+    def test_find_pr_with_gh_missing_is_a_refusal_that_names_gh(self):
+        gone = FileNotFoundError(2, "No such file or directory", "gh")
+        with mock.patch.object(R.subprocess, "run", FakeRun({("gh",): gone})):
+            self.assertEqual(R._find_pr(self.d, "audit/x"), ("", "gh is missing: No such file or directory"))
 
     def test_base_docs_reads_both_reviewed_files_from_the_sha(self):
         fr = FakeRun({("git", "show", self.SHA40 + ":" + self.VP): (0, json.dumps({"statements": []}).encode(), b"")})
