@@ -33,7 +33,7 @@ if [ -n "$bad_env" ]; then
   exit 2
 fi
 
-scanner=grype   # TEST-SUBST
+scanner=/usr/local/bin/grype   # TEST-SUBST
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$cfg"   # $cfg stays empty: it is the one config grype reads (grype needs the extension)
 
