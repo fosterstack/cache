@@ -4995,7 +4995,7 @@ probe gh_check "GH_TOKEN is allowed only" "the run's token in Check" \
 probe perm_apk "must hold exactly the permissions" "a write permission (packages) on Build's apk job" \
   "repl .github/workflows/stage-build.yml '      pull-requests: read\n' '      pull-requests: read\n      packages: write\n'"
 probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
-  "repl .github/workflows/stage-promote.yml '      packages: write\n      id-token: write\n    steps:' '      packages: write\n      id-token: write\n      attestations: write\n    steps:'"
+  "repl .github/workflows/stage-promote.yml '      packages: write\n      id-token: write\n    env:' '      packages: write\n      id-token: write\n      attestations: write\n    env:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
   "repl .github/workflows/stage-promote.yml '      - name: release-sign under Witness\n        env:\n' '      - name: release-sign under Witness\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
 probe apk_wrong_step "not in the closed secret list" "a secret that no row names on the publish step" \
@@ -5014,6 +5014,68 @@ probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secr
   "repl .github/workflows/stage-promote.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
   "repl .github/workflows/stage-promote.yml '      - name: release-assets under Witness\n' '      - name: release-assets under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
+
+# ---- the release job's federation env (REQ-CHAIN-001-AC1 job keys; REQ-CHAIN-007-AC18): in stage-promote.yml the job `release`, and no other job of any
+# stage file, carries a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of it repeats them; workflow-level env stays refused.
+okprobe() {  # okprobe NAME LABEL EDIT(shell, run in the copy): a copy of the real tree with ONE change the tree judge must pass
+  local d out rc=0; d=$(tracked_copy "okprobe-$1")
+  ( cd "$d" && eval "$3" ) || echo "okprobe $1: the edit did not apply"
+  out=$(judge tree "$d") || rc=$?
+  if [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   real-tree control: $2 passes"
+  else failn=$((failn + 1)); echo "FAIL real-tree control refused $2: rc=$rc ${out:0:300}"; fi; }
+# jobenv FILE JOB TEXT: puts TEXT (a job-level env block, \n for newlines) before the steps of job JOB in the copy
+jobenv() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?)(    steps:)",lambda m:m.group(1)+t.replace("\\n","\n")+m.group(2),s,count=1);assert n!=s,"jobenv: no change";open(p,"w").write(n)' "$@"; }
+# wfenv FILE TEXT: puts TEXT (a top-level block) before the top-level permissions: of FILE
+wfenv() { python3 -c 'import re,sys;p,t=sys.argv[1:3];s=open(p).read();n=re.sub(r"^permissions:",lambda m:t.replace("\\n","\n")+"permissions:",s,count=1,flags=re.M);assert n!=s,"wfenv: no change";open(p,"w").write(n)' "$@"; }
+PRM=.github/workflows/stage-promote.yml
+FED3='      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'
+ROLE_LINE='      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n'
+REGION_LINE='      AWS_REGION: us-east-1\n'
+KEY_LINE='      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'
+# 1. the release job carries that env: the real tree passes (the real-tree case above), and so does the same three keys in another order
+okprobe pje_order "the release job's three federation entries in another order" \
+  "repl $PRM '$ROLE_LINE$REGION_LINE$KEY_LINE' '$KEY_LINE$REGION_LINE$ROLE_LINE'"
+# 2. any job env on any other job of stage-promote.yml, or of another stage-*.yml, is refused (job key env not allowed there)
+probe pje_compare "job key" "a job env on the compare job of stage-promote.yml" "jobenv $PRM compare '    env:\n      X1: y\n'"
+probe pje_verify "job key" "a job env on the verify job of stage-promote.yml" "jobenv $PRM verify '    env:\n      X1: y\n'"
+probe pje_compare_fed "job key" "the three federation entries as the job env of the compare job of stage-promote.yml" "jobenv $PRM compare '    env:\n$FED3'"
+probe pje_verify_fed "job key" "the three federation entries as the job env of the verify job of stage-promote.yml" "jobenv $PRM verify '    env:\n$FED3'"
+probe pje_sign_fed "job key" "the three federation entries as a job env of the sign job of stage-sign.yml" "jobenv .github/workflows/stage-sign.yml sign '    env:\n$FED3'"
+for fj in stage-build:freeze stage-verify:govulncheck-build stage-reproducibility:rapk; do
+  probe "pje_${fj%%:*}" "job key" "a job env on a job of ${fj%%:*}.yml (the three federation entries)" "jobenv .github/workflows/${fj%%:*}.yml '${fj##*:}' '    env:\n$FED3'"
+done
+# 3. on the release job the env is exactly those three keys with exactly those literals
+probe pje_fourth "env" "a fourth key in the release job env" "repl $PRM '$KEY_LINE    steps:' '$KEY_LINE      GH_TOKEN: x\n    steps:'"
+probe pje_fourth_tok "env" "a fourth key in the release job env that takes the run's token" "repl $PRM '$KEY_LINE    steps:' '$KEY_LINE      GH_TOKEN: \${{ github.token }}\n    steps:'"
+probe pje_no_role "env" "a release job env without AWS_ROLE_ARN" "repl $PRM '$ROLE_LINE' ''"
+probe pje_no_region "env" "a release job env without AWS_REGION" "repl $PRM '$REGION_LINE' ''"
+probe pje_no_key "env" "a release job env without RELEASE_KMS_KEY_REF" "repl $PRM '$KEY_LINE' ''"
+probe pje_no_env "env" "a release job without the env (all three entries gone)" "repl $PRM '    env:\n$FED3' ''"
+probe pje_role_acct "env" "a release job env whose role is another account's" "repl $PRM 'arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'arn:aws:iam::111111111111:role/fosterstack-cache-release-signing'"
+probe pje_role_name "env" "a release job env whose role is another role's" "repl $PRM 'role/fosterstack-cache-release-signing' 'role/other'"
+probe pje_region "env" "a release job env whose region differs" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: eu-west-1'"
+probe pje_keyref "env" "a release job env whose key reference differs" "repl $PRM 'awskms:///alias/fosterstack-release-signing' 'awskms:///alias/other'"
+probe pje_expr_region "env" "a release job env whose region is an expression" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: \${{ inputs.region }}'"
+probe pje_expr_lit "env" "a release job env whose region is an expression that evaluates to the literal" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: \${{ \"us-east-1\" }}'"
+probe pje_secret_role "env" "a release job env whose role is a secret lookup" "repl $PRM 'AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'AWS_ROLE_ARN: \${{ secrets.AWS_ROLE_ARN }}'"
+probe pje_var_key "env" "a release job env whose key reference is a variable lookup" "repl $PRM 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing' 'RELEASE_KMS_KEY_REF: \${{ vars.RELEASE_KMS_KEY_REF }}'"
+probe pje_empty_val "env" "a release job env whose region is empty" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: \"\"'"
+# 4. no step of the release job repeats a federation entry as step env (other step env, DOCKERHUB_* and GH_TOKEN, stays as it is)
+probe pje_step_role "AWS_ROLE_ARN" "a release step that repeats AWS_ROLE_ARN as step env" \
+  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n'"
+probe pje_step_region "AWS_REGION" "a release step that repeats AWS_REGION as step env" \
+  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          AWS_REGION: us-east-1\n'"
+probe pje_step_key "RELEASE_KMS_KEY_REF" "a release step that repeats RELEASE_KMS_KEY_REF as step env" \
+  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'"
+probe pje_step_role_more "AWS_ROLE_ARN" "a release step that adds AWS_ROLE_ARN to the env it already has" \
+  "repl $PRM '      - name: release-assets under Witness\n        env:\n' '      - name: release-assets under Witness\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n'"
+probe pje_step_other_role "AWS_ROLE_ARN" "a release step that sets AWS_ROLE_ARN to another role" \
+  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::111111111111:role/other\n'"
+# 5. workflow-level env stays refused everywhere
+probe pje_wf_promote "env" "a workflow-level env in stage-promote.yml" "wfenv $PRM 'env:\n  X1: y\n'"
+probe pje_wf_promote_fed "env" "the three federation entries as a workflow-level env of stage-promote.yml" "wfenv $PRM 'env:\n  AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n  AWS_REGION: us-east-1\n  RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'"
+probe pje_wf_sign "env" "a workflow-level env in stage-sign.yml" "wfenv .github/workflows/stage-sign.yml 'env:\n  X1: y\n'"
+probe pje_wf_build "env" "a workflow-level env in stage-build.yml" "wfenv .github/workflows/stage-build.yml 'env:\n  X1: y\n'"
 
 # ---- Codex A r2 blocker 4 / r3 F4 (advisor): NO actions/setup-go anywhere; Go comes from the checksum-pinned `bash bin/install-scanner.sh go` line -------------
 # the stage grammar run on the REAL stage-build.yml (and on edited copies): the installer line is accepted, every use of setup-go is refused
@@ -5217,7 +5279,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2135
+EXPECT=2168
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
