@@ -1,22 +1,13 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21
-# RED until bin/release-metadata.py exists (REQ-CHAIN-007-AC13, advisor 0386 item 2; owner Oct 10: v0.3.0 matches CISA secure by design): step 4.
-#
-# The four release metadata files and their signed list. bin/release-metadata.py has four subcommands, all offline and deterministic (no clock, no network):
-#   images    --digests D --images-dir I --items ITEMS --out F   the image digests for bin/vex-forms.py, ONLY from Build's verified digests.json and images/<variant>.digest/.manifests
-#   manifest  --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR --version V --commit SHA
-#             --ci-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
-#             the shape the REQ-REL-004 rescan reads)
-#   list      --version V --dir DIR --out F        release-files.sha256: the sha256 of exactly the four files, in this order: release-manifest.json, the OpenVEX file,
-#             the CSAF file, the inspector-filters file (the form of cache's change under handoff 0362, PR #276)
-#   gate      --dir DIR                            every file of the release assets directory is covered: in checksums.txt, in release-files.sha256, a bundle of a covered
-#             or listed file, or a file with its own bundle; a listed file missing, an extra line, an altered hash or an uncovered asset is refused
-# Every refusal exits 1 with a message that names the file or the key. Runs on ubuntu-24.04 or macOS with bash and python3.
+# bin/release-metadata.py: the release metadata files and their signed list. It is offline and deterministic (no clock, no network).
+# Tested subcommands: images, manifest, list, gate, tag-notes, checksums. Every refusal exits 1 with a message that names the file or the key.
+# Runs on ubuntu-24.04 or macOS with bash and python3.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export METADATA_BIN="${METADATA_BIN:-$root/bin}"
 python3 - <<'PY'
-import hashlib, json, os, shutil, subprocess, sys, tempfile
+import hashlib, json, os, subprocess, sys, tempfile
 BIN = os.environ["METADATA_BIN"]
 passn = failn = 0
 def ok(l): global passn; passn += 1; print("ok   " + l)
@@ -59,7 +50,7 @@ def img(label, mutate, word):
     t, d = tree(); mutate(t, d); rc, so, se = run("images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", t + "/o.json")
     check(rc == 1 and word in se and not os.path.exists(t + "/o.json"), "images: " + label, "rc=%s %s" % (rc, se[:200]))
 img("a third variant key (image-debug) in the digest list is refused", lambda t, d: (d.update({"image-debug": sha(b"x")}), setd(t, d)), "image-debug")
-# round 1 (Codex A F7): the digest list is a closed table (image-*, apk-VARIANT-ARCH, archive-*linux-ARCH): a name outside it is refused
+# the digest list is a closed table (image-*, apk-VARIANT-ARCH, archive-*linux-ARCH): a name outside it is refused
 img("a digest name outside the table (outside-table) is refused", lambda t, d: (d.update({"outside-table": sha(b"x")}), setd(t, d)), "outside-table")
 img("an apk name for a variant or architecture not in the table is refused", lambda t, d: (d.update({"apk-debug-amd64": sha(b"x")}), setd(t, d)), "apk-debug-amd64")
 img("an archive name for an architecture not in the table is refused", lambda t, d: (d.update({"archive-linux-ppc64": sha(b"x")}), setd(t, d)), "archive-linux-ppc64")
@@ -182,7 +173,7 @@ def release_dir():
     open(a + "/checksums.txt.bundle", "w").write("{}")
     open(a + "/production.sbom.json", "w").write("{}"); open(a + "/production.sbom.json.bundle", "w").write("{}")
     open(a + "/policy.json", "w").write("{}"); open(a + "/release-policy.bundle", "w").write("{}")
-    open(a + "/build-collection.json", "w").write("{}"); open(a + "/build-collection.rekor.json", "w").write("{}")      # R1 (#822 round 1): the entries file Sign keeps beside the record
+    open(a + "/build-collection.json", "w").write("{}"); open(a + "/build-collection.rekor.json", "w").write("{}")      # the entries file Sign keeps beside the record
     for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"): open(os.path.join(a, n), "w").write("{}")      # Sign's three files (REQ-CHAIN-007-AC9, AC19)
     return a
 def gate(label, mutate, word=None):
@@ -192,7 +183,7 @@ def gate(label, mutate, word=None):
 gate("a complete release directory passes", lambda a: None)
 gate("a Witness record with no entries file beside it is refused, naming the missing file", lambda a: os.remove(a + "/build-collection.rekor.json"), "build-collection.rekor.json")
 gate("an entries file with no record beside it is refused, naming it", lambda a: open(a + "/other-collection.rekor.json", "w").write("{}"), "other-collection.rekor.json")
-# A3 (#822 round 2): the record/entries pairing is checked for EVERY name, also for a name that checksums.txt or release-files.sha256 already covers
+# the record/entries pairing is checked for EVERY name, also for a name that checksums.txt or release-files.sha256 already covers
 def _sum_add(a, n):
     open(a + "/checksums.txt", "a").write("%s  %s\n" % (hashlib.sha256(open(os.path.join(a, n), "rb").read()).hexdigest(), n))
 def _orphan_checksummed(a):
@@ -213,7 +204,7 @@ def with_module_sbom(a):
     open(a + "/fscache-modules.spdx.json.bundle", "w").write("{}")
 gate("a module SBOM with its bundle passes", with_module_sbom)
 gate("an extra line in release-files.sha256 is refused", lambda a: open(a + "/release-files.sha256", "a").write("%s  extra.json\n" % ("0" * 64)), "extra")
-# Codex 4b-2 r1 (A B3): the exact four-line format; a blank line anywhere (leading, between entries, or more than the one final newline) is an extra line
+# the exact four-line format; a blank line anywhere (leading, between entries, or more than the one final newline) is an extra line
 def _sums_edit(f):
     def w(a):
         t = open(a + "/release-files.sha256").read(); open(a + "/release-files.sha256", "w").write(f(t))
@@ -249,33 +240,32 @@ for what, raw, tag in cases:
     obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(raw)
     r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag, "--object", obj], capture_output=True, text=True)
     try: pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
-    except ValueError: pd = None          # since cache#300 patch-decide REFUSES a tag message with a refused form (two signature blocks): the release keeps its fixed text, as for "no notes"
+    except ValueError: pd = None          # patch-decide refuses a tag message with a refused form (two signature blocks): the release keeps its fixed text, as for "no notes"
     same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
     check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
-print("pass=%d fail=%d" % (passn, failn))
-# ---- the accepted AC text of advisor rulings B, C and E (Oct 12): requirements.yaml says what the code now does ----------------------------------------------------------
+# ---- requirements.yaml says what the code does ----------------------------------------------------------
 import yaml
 REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "requirements", "requirements.yaml")))["requirements"]}
 def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))
 t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
 t19 = ac("REQ-CHAIN-007", 19)["then"]
 check("the command wrapped in timeout -k 20 540 (a bound on a hung command, with a kill-after of 20 seconds)" in t4 and "wrapped in timeout 540," not in t4,
-      "text: REQ-CHAIN-004-AC2 says timeout -k 20 540 (E item A)")
+      "text: REQ-CHAIN-004-AC2 says timeout -k 20 540")
 n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
 check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in n4 and "with timeout -k 20 540 inside it" in n7 and "with timeout 540 inside it" not in n7
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
-      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps (E item B)")
+      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps")
 t1 = ac("REQ-CHAIN-007", 1)["then"]
 check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
-      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name (accepted Oct 13)")
+      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name")
 check("the release notes are posted here only from the notes carried in the generated patch tag's message (REQ-REL-009-AC8; the changelog is the patch-notes job's)" in t7 and "release notes are not posted here" not in t7,
-      "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 (the notes are posted by release-assets from the generated tag's message; Codex 4b-2 r1 B2)")
+      "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 (the notes are posted by release-assets from the generated tag's message)")
 check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
-      "text: REQ-CHAIN-007-AC9 attaches Sign's three provenance files (ruling C)")
+      "text: REQ-CHAIN-007-AC9 attaches Sign's three provenance files")
 check("Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature)" in t19
       and "Build's admission-baseline.json" in t19 and "never a version Release chooses itself" in t19 and "the baseline admission chose for a CI patch)" not in t19,
-      "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance and takes the baseline from Build's verified file (rulings B and C)")
-# ---- REQ-CHAIN-007-AC21 (advisor reading Oct 16, Astra R3): checksums writes dist/checksums.txt from the four archives Build recorded ----------------------------------
+      "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance and takes the baseline from Build's verified file")
+# ---- REQ-CHAIN-007-AC21: checksums writes dist/checksums.txt from the four archives Build recorded ----------------------------------
 ARCS = (("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz"),
         ("archive-linux-amd64", "fscache_0.3.0_linux_amd64.tar.gz"), ("archive-linux-arm64", "fscache_0.3.0_linux_arm64.tar.gz"))
 def ck_tree():
@@ -301,8 +291,8 @@ for label, mutate, word in (("a missing archive", lambda d: os.remove(d + "/" + 
 for bad_v in ("0.3.0-rc1", "v0.3.0", "0.3", ""):
     t = ck_tree(); r = ck_run(t, bad_v)
     check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 the version %r is refused: only X.Y.Z, and nothing is written" % bad_v, "rc=%s %s" % (r[0], r[2][:100]))
-# round 1 (Codex seat B, a reproduced blocker): the temporary file is never a path someone else can pre-place. A planted symlink checksums.txt.part must not make the
-# command write through it (it overwrote an archive after the archives were checked), and a stale regular .part is replaced, never extended or kept
+# the temporary file is never a path someone else can pre-place: a planted symlink checksums.txt.part must not be written through,
+# and a stale regular .part is replaced, never extended or kept
 t = ck_tree(); victim = t + "/dist/" + ARCS[0][1]; before = open(victim, "rb").read()
 os.symlink(victim, t + "/dist/checksums.txt.part"); r = ck_run(t)
 check(r[0] == 0 and open(victim, "rb").read() == before and not os.path.islink(t + "/dist/checksums.txt") and open(t + "/dist/checksums.txt").read() == WANT
@@ -316,7 +306,7 @@ check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 a direc
 t21 = ac("REQ-CHAIN-007", 21)["then"]
 check("bind-archives" not in t21 and "bin/release-metadata.py checksums" in t21 and "no test creates the file it signs" in t21,
       "text: REQ-CHAIN-007-AC21 names only the checksums command (it makes the archive check itself) and says no test creates the signed file")
-# rc-2 signing review R6 (wording stale since the Oct 21 rule): the texts, comments and the reason say what the scripts do
+# the texts, comments and the reason say what the scripts do
 t6, t10 = ac("REQ-CHAIN-007", 6)["then"], ac("REQ-CHAIN-007", 10)["then"]
 check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 and "release-sign-apks.sh --build-dir B --key K" in t6 and "release-compare.sh" in t6,
       "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and --key only; the comparison is release-compare.sh's")
