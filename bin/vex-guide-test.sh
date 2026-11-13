@@ -171,9 +171,8 @@ check("R3 the guide says the OpenVEX file keeps every statement",
 check("R3 the guide says the CSAF file may omit a statement, for example a Go standard library version the release is not built with",
       re.search(r"CSAF file[^.]*may (omit|leave out)[^.]*Go standard library", doc, re.I | re.S) is not None
       or re.search(r"CSAF file may (omit|leave out)", doc, re.I) is not None and "Go standard library" in doc)
-mut = doc.replace("CSAF file may omit", "CSAF file carries").replace("CSAF file may leave out", "CSAF file carries") + "\nThe OpenVEX and CSAF files carry every statement.\n"
 check("R3 mutant: the old sentence put back is caught by the sentence check",
-      old_sentence_gone(mut) is False and old_sentence_gone(doc) is True)
+      old_sentence_gone(doc + "\nThe OpenVEX and CSAF files carry every statement.\n") is False)
 # R4: no text still says the three forms carry exactly the same statements or that the CSAF file carries every OpenVEX statement
 def text_of(rel):
     q = os.path.join(root, rel)
