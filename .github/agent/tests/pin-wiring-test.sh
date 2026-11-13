@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
+# proves: REQ-SCAN-015-AC2, REQ-DEP-002-AC3 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases);
+# the release-only list holds exactly the seven contexts the owner took off the ruleset (the release-only cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -835,7 +836,7 @@ case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.s
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
 # does nothing else; exit 1 and the reasons when it fails
-gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
+gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty> [shell edit of the policy tree]
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/.github/policy"; cp "$here"/.github/policy/*-checks.json "$r/.github/policy/"
@@ -848,6 +849,7 @@ exec(edit)
 yaml.safe_dump(d, open(p, "w"), sort_keys=False)
 PY
   fi
+  [ -z "${4:-}" ] || ( cd "$r" && eval "$4" )
   ( cd "$r" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
   if out=$(cd "$r" && PIN_WIRING_JUDGE_GIT="$(cd "$r" && git rev-parse HEAD)" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS git:$1 → $got"
@@ -855,6 +857,14 @@ PY
 }
 gitcase the-real-ci-at-a-commit   ok  ""
 # the policy at the commit is read too: a missing split entry is refused (and so is a missing file, above)
+
+# main's own form needs release-only-checks.json: a head without it, or one that drops a protected entry, is refused
+RO=.github/policy/release-only-checks.json
+gitcase no-release-only-at-a-commit    bad "" "rm $RO"
+gitcase release-only-drops-chain-at-a-commit bad "" \
+  "jq '.required_checks |= map(select(.context != \"allowlist-chain\"))' $RO > ro.tmp && mv ro.tmp $RO"
+gitcase release-only-drops-coverage-at-a-commit bad "" \
+  "jq '.required_checks |= map(select(.context != \"coverage\"))' $RO > ro.tmp && mv ro.tmp $RO"
 
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
@@ -1112,8 +1122,22 @@ PY
   if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
 
-# a protected context counts once across the two lists: only in release-only passes, in neither or in both is refused
-for mut in "only-release-only ok" "in-neither bad" "in-both bad"; do
+# the release-only list holds exactly the seven contexts: dropping any one, or adding an eighth, is refused
+for mut in drop-coverage drop-acceptance drop-gate add-eighth; do
+  case $mut in
+    drop-coverage) f='map(select(.context != "coverage"))' ;;
+    drop-acceptance) f='map(select(.context != "acceptance-maven (1.2.0)"))' ;;
+    drop-gate) f='map(select(.context != "auditor-review-gate"))' ;;
+    add-eighth) f='. + [{"context": "extra-check", "integration_id": 15368, "scope": "push"}]' ;;
+  esac
+  jq ".required_checks |= $f" "$here/.github/policy/release-only-checks.json" > "$work/set-$mut.json"
+  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/set-$mut.json" judge "$here/.github/workflows/ci.yml")
+  then failn=$((failn+1)); echo "FAIL release-only-set-$mut accepted"
+  else pass=$((pass+1)); echo "PASS release-only-set-$mut → bad ($out)"; fi
+done
+
+# a protected context counts once across the two lists: in neither or in both is refused
+for mut in "in-neither bad" "in-both bad"; do
   python3 - "$here/.github/policy" "$work/pol-${mut% *}" "${mut% *}" <<'PY'
 import json, sys
 req = json.load(open(sys.argv[1] + "/required-checks.json")); rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
