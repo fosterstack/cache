@@ -61,18 +61,17 @@ ca_delete() {
 # The names of every VULNERABILITY_ASSESSMENT note on images under a prefix, all pages; every step is checked:
 # a failure anywhere fails the enumeration, never an empty answer (SEC-169-08).
 notes_of() {   # <uri prefix>
-  local project page parsed token="" names="" more
+  local project page parsed token="" more
   project=$(cut -d/ -f2 <<<"$GAR") || return 1
   [ -n "$project" ] || return 1
   while :; do
     page=$(ca_get "https://containeranalysis.googleapis.com/v1/projects/${project}/notes?filter=kind%3D%22VULNERABILITY_ASSESSMENT%22&pageSize=1000${token:+&pageToken=${token}}") || return 1
     parsed=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind notes --prefix "$1" <<<"$page") || return 1
     more=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" field names <<<"$parsed") || return 1
-    [ -z "$more" ] || names="${names}${more}"$'\n'
+    [ -z "$more" ] || printf '%s\n' "$more" || return 1
     token=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" field next <<<"$parsed") || return 1
     [ -n "$token" ] || break
   done
-  printf '%s' "$names" || return 1
 }
 
 # The sweep empties the dedicated test resources. Every resource family is cleaned on its own: a failing listing or delete in one family never stops the others, every
