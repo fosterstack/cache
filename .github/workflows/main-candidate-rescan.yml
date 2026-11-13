@@ -183,7 +183,6 @@ jobs:
       - name: Grype every image, given our VEX
         run: |
           set -uo pipefail
-          ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
           # Only the VEX file may hide a finding: grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
           # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
           bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
