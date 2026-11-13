@@ -46,7 +46,7 @@ jobs:
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/fscache
       - name: the cache's own code and the built binary have no HTTP client and no outbound dial (REQ-IMAGE-001-AC13)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json check-no-outbound-test.sh bin/check-no-outbound-test.sh
-      # test-strategy.md §6: the coverage RATCHET. Coverage says the tests ran the code, not that they would notice it being wrong;
+      # The coverage RATCHET. Coverage says the tests ran the code, not that they would notice it being wrong;
       # this gate is the floor, not the claim. Two Go modules, each measured and reported separately (an honest denominator - a root
       # `go test ./...` does not include the nested tools/requirements module). -coverpkg=./... on the root credits a
       # statement executed as a dependency of another package's test.
