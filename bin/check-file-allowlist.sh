@@ -100,7 +100,7 @@ ALLOW_PATTERNS=(
   '^bin/analyze-egress-trace\.py$'
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
-  '^bin/install-scanner-test(-lib)?\.sh$'
+  '^bin/install-scanner-test\.sh$'
   '^bin/required-check-guard\.sh$'
   '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
@@ -162,6 +162,7 @@ ALLOW_PATTERNS=(
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
   # suites with their two test helpers
   '^bin/witnessed\.sh$'
+  '^bin/install-scanner-test-lib\.sh$'
   '^bin/witnessed-local\.sh$'
   '^bin/witness-sign-staged\.sh$'
   '^bin/witness-kms-test\.sh$'
