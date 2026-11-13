@@ -821,7 +821,7 @@ mappings:
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
-      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
