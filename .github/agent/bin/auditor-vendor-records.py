@@ -6,11 +6,13 @@ tree and provenance records its go.mod and go.sum change calls for, as ONE signe
   auditor-vendor-records.py --repo OWNER/NAME --workspace DIR [--dry-run] [--branch B ...]
 
 --workspace: a full clone of main whose bin/ holds the provenance scripts; the bump branches are fetched into it as
-data and never run. --branch: only these branches (a manual run); default every dependabot/go_modules/* and
-auditor/bump-* branch. --dry-run: commit nothing.
-Prints one line per branch. Exit 0 = every branch committed, was up to date or was skipped (a skip is a normal
-answer and says why); 1 = a branch failed or the branches could not be listed. The App token is GH_TOKEN; stdlib
-only.
+data and never run.
+--branch: only these branches (a manual run); the default is every dependabot/go_modules/* and auditor/bump-*
+branch.
+--dry-run: commit nothing.
+Prints one line per branch. Exit 0 means every branch committed, was up to date or was skipped (a skip is a normal
+answer and says why); exit 1 means a branch failed or the branches could not be listed. The App token is GH_TOKEN;
+only the standard library is used.
 """
 import argparse, os, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
