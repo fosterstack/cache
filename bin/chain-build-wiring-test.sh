@@ -56,7 +56,8 @@
 #   finds melange and apko, Witness's linux arm64 pin. The CLI of bin/chain-verify.py that the scripts use is documented in bin/chain-bind-test.sh
 #   (bind, items-apk, items-merge, which are tested against the REAL subcommands there), bin/chain-rebuild-test.sh (rebuild-compare) and PR 1's tests.
 # KNOWN LIMIT (PROPOSED/UNVERIFIED; the dry run decides): Witness loads its Fulcio signer when the command starts and takes the timestamp when it ends,
-#   so a build longer than the 10-minute certificate may not verify (harness spike (d)); the job-level timeout bounds a hung command.
+#   so a build longer than the 10-minute certificate may not verify (harness spike (d));
+#   GitHub's default job time limit bounds a hung command.
 # INTEGRATION BRANCH (advisor 0341): PR 2 targets chain-v030; the real-tree cases are RED here and become green on chain-v030 after PR 1 and PR 2 merge.
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
