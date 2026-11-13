@@ -1545,7 +1545,7 @@ def unmeasured_occurrences(files):
                         + _hide(ln)[:100]), " ".join(ln.split()), False
                     break
         # marks where a continuation was joined; a file that already holds it is never bash-like
-        client = _PY_CLIENT.search(text)
+        client = path.endswith(".py") and _PY_CLIENT.search(text)
         mark = "\ue000"
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
