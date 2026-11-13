@@ -8688,6 +8688,16 @@
       "key": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
       "line": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
       "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/supply-chain-wiring-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "044a632f9d9b4ef138eabc446790d5948c4a3e201560cc817382da8ba77704d0",
+      "line": "044a632f9d9b4ef138eabc446790d5948c4a3e201560cc817382da8ba77704d0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/supply-chain-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "af0cd21d8d3e5d3e3ea22acce34a5427b4258c9770b258d2dbe90538ec15a54e"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
