@@ -78,7 +78,8 @@
 #       names stage-sign.yml means the attempt really obtained Sign's identity (exit 0, graded accepted); a token whose
 #       job_workflow_ref names any other file (Build's own token) is `refused at runner: nothing usable for Sign`; a JWT with no
 #       job_workflow_ref claim is an error (exit 2).
-#   Dry-run gating: every hostile-* job has `if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}` exactly; every other job that needs Sign
+#   Dry-run gating: every hostile-* job has `if: ${{ github.event_name == 'push' && startsWith(github.ref,
+#       'refs/tags/v') && contains(github.ref_name, '-rc') }}` exactly; every other job that needs Sign
 #       (transitively) has BOTH conjuncts `!inputs.dry-run` and `startsWith(github.ref, 'refs/tags/v')`; Release's policy step
 #       (stage-promote.yml) is `policy make --tag ...` and never `--ref` (the only `--ref` in the tree is hostile-verify's), and
 #       hostile-verify/hostile-verdict have no job `env`/`defaults`/`container`/`strategy`/`services`/`outputs`/`continue-on-error`,
@@ -152,7 +153,8 @@ m = copy.deepcopy(good); del m["attempts"][1]; save("missing", m)
 m = copy.deepcopy(good); m["attempts"].append(row("mint_sign_cert")); save("duplicate", m)
 m = copy.deepcopy(good); m["attempts"].append(row("alter_output")); save("extra", m)
 m = copy.deepcopy(good); m["attempts"][2]["attempt"] = "read_sign_token"; save("renamed", m)
-# (REQ-CHAIN-001-AC5) the case list is exactly five names; the sixth, call_sign_from_other_workflow, is not a runtime case
+# (REQ-CHAIN-001-AC5) the case list is exactly five names; the sixth, call_sign_from_other_workflow, is not a
+# runtime case
 m = copy.deepcopy(good); m["attempts"].insert(5, row("call_sign_from_other_workflow")); save("sixth_row", m)
 m = copy.deepcopy(good); del m["attempts"][4]; save("missing_forge", m)
 m = copy.deepcopy(good); del m["attempts"][3]; save("missing_hand", m)
@@ -341,7 +343,8 @@ fi
 mkdir -p "$work/stepsign" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepsign/fns.sh"
 printf 'attempt_mint_sign_cert\nattempt_forge_provenance\n' >> "$work/stepsign/fns.sh"
 (cd "$work/stepsign" && env -i PATH="$PATH" HOME="$work" bash fns.sh > /dev/null 2>&1)
-# the policy needs a key manifest: made here with a throwaway root key and release key, since the committed manifest is the owner's
+# the policy needs a key manifest: made here with a throwaway root key and release key, since the committed
+# manifest is the owner's
 mkdir -p "$work/keys"
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$work/keys/root.key" 2> /dev/null && openssl pkey -in "$work/keys/root.key" -pubout -out "$work/keys/release-key-root.pub" \
   && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$work/keys/rel.key" 2> /dev/null && openssl pkey -in "$work/keys/rel.key" -pubout -out "$work/keys/rel.pub" \
@@ -384,7 +387,8 @@ printf 'error: cannot read attempts/read_sign_token.txt\n' > "$work/e_err.txt"; 
 xexpect refuse "hostile-row: exit 2 with an 'error:' first line writes no row (an attempt that never ran is not isolation)" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_err.txt" --out "$work/rows/x9.json"
 xexpect refuse "hostile-row: exit 2 with a 'usage:' message (argparse) writes no row" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_usage.txt" --out "$work/rows/x10.json"
 [ ! -e "$work/rows/x9.json" ] && [ ! -e "$work/rows/x10.json" ] && ok "hostile-row: neither failed call left a row file behind" || bad "hostile-row: a row file exists for an error"
-# (REQ-CHAIN-001-AC5) a refusal because the material was missing or unreadable never counts: hostile-row exits non-zero and
+# (REQ-CHAIN-001-AC5) a refusal because the material was missing or unreadable never counts: hostile-row exits
+# non-zero and
 # writes NO row, by the same word list the verdict uses (chain_hostile.MISSING / UNREAD, one list)
 n=0
 for reason in "record missing or unreadable: nonexistent" "cannot read attempts/x.json" "no such file or directory: attempts/x.json" "unreadable record" "attempts/x.json does not exist" "the record was not found" "permission denied: attempts/x.json" "Record MISSING"; do
@@ -420,7 +424,8 @@ PIN = {
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
-# the hostile proof runs on a PUSH of a release-candidate tag only (REQ-CHAIN-001-AC5): never on a final tag, never on a branch
+# the hostile proof runs on a PUSH of a release-candidate tag only (REQ-CHAIN-001-AC5): never on a final tag,
+# never on a branch
 RC_IF = "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
 def conj(cond):
     """The && conjuncts of a `${{ ... }}` condition, whitespace-normalised, or None when it has a `||` (fail closed: an or-joined
@@ -428,8 +433,9 @@ def conj(cond):
     `startsWith(...) == false` are different conjuncts (Opus r5 SF-B)."""
     m = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", cond.strip(), re.S)
     if not m: return None
-    # whitespace is collapsed FIRST, then the text is split on && and every conjunct must be exactly an accepted item: the one grouped
-    # or-condition allowed is patch-failed's exact group, and only as a whole conjunct, so `! (group)`, `(group) == false`, `format(group)` and
+    # whitespace is collapsed FIRST, then the text is split on && and every conjunct must be exactly an
+    # accepted item: the one grouped or-condition allowed is patch-failed's exact group, and only as a whole
+    # conjunct, so `! (group)`, `(group) == false`, `format(group)` and
     # any other `||` or grouping make the whole condition refused
     GRP = "(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')"
     flat = re.sub(r"\s+", " ", m.group(1)).strip()
@@ -446,7 +452,8 @@ def conj(cond):
         # patch-failed must run after a failed stage; they are status checks, not groupings, so they cannot negate or hide a conjunct
         body = re.sub(r"(?<![\w.])failure\(\)", "FAILCALL", body)
         body = re.sub(r"(?<![\w.])always\(\)", "ALWAYSCALL", body)
-        # the exact rc-tag test is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')` conjunct keeps an rc tag out of the old publishing path
+        # the exact rc-tag test is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')`
+        # conjunct keeps an rc tag out of the old publishing path
         body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
         if "(" in body or ")" in body: return None
         out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')"))
@@ -565,7 +572,8 @@ else:
             m = re.search(r"--attempt (\w+)", run)
             if not m: continue
             a = m.group(1); seen[a] = seen.get(a, 0) + 1
-            # every part of the pinned lines is EXACT; the stderr file is /tmp/<attempt>.err, built from the attempt name
+            # every part of the pinned lines is EXACT; the stderr file is /tmp/<attempt>.err, built from the
+            # attempt name
             errf = "/tmp/%s.err" % a
             ok = (len(lines) == 3 and lines[0] == "rc=0"
                   and a in PIN and re.fullmatch(PIN[a] + re.escape(" 2> %s || rc=$?" % errf), lines[1])
@@ -1400,7 +1408,8 @@ then = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5
 given = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["given"]
 assert "a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)" in given, "AC5 given does not name the signed rc-tag run"
 when = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["when"]
-# five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every final or patch tag
+# five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every
+# final or patch tag
 for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls stage-sign.yml, is not a runtime case: no second workflow file exists; it is judged by Sign's caller check in the static judge and by the offline hostile test, which is a stated limit of this proof)"):
     assert words in when, "AC5 when lacks: " + words
 assert "six separate cases" not in when and "throwaway commit" not in when, "AC5 when still has the six-case wording"
@@ -1419,14 +1428,16 @@ for words in ("both refuse (naming the marker) unless the marker names an rc tag
 assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
-# the cutover merge first with only KR-CUTOVER left, then the owner's rc tag on main, then the marker pull request, which removes KR-CUTOVER
+# the cutover merge first with only KR-CUTOVER left, then the owner's rc tag on main, then the marker pull
+# request, which removes KR-CUTOVER
 for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the owner signs a release-candidate tag vX.Y.Z-rcN on main's merge commit",
               "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "admission and the patch decide job refuse every final and patch tag"):
     assert words in r["notes"], "REQ-CHAIN-001 notes lack the accepted checklist order: " + words
 assert "does not merge without a green rc-tag run of the same commit's chain files" not in r["notes"], "REQ-CHAIN-001 notes still say the cutover waits for an rc run (advisor 0383, superseded Oct 12)"
 assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
 PY
-# the key attempt is EXECUTED, not only read. The real function is cut out of the hostile step and run in a controlled home and runner
+# the key attempt is EXECUTED, not only read. The real function is cut out of the hostile step and run in a
+# controlled home and runner
 # temp directory holding one planted private key; its transcript must carry the number of files it searched and the public-key hash of that planted key,
 # and a body that prints a constant transcript (a search that never happens) must be told apart from it.
 kd="$work/keyprobe"; rm -rf "$kd"; mkdir -p "$kd/home" "$kd/rt" "$kd/run"
