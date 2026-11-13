@@ -1,27 +1,21 @@
 #!/usr/bin/env bash
-# The copy tool of the Release stage (crane) is pinned by checksum (v0.3.0 rules 16, 64: "the copy tool is pinned by checksum, no build command").
-# Suite for the crane entry of bin/install-scanner.sh, in the style of bin/install-scanner-test.sh: a tool that cannot be installed
-# or verified exits NON-ZERO and is LABELED a pipeline failure; the success path runs offline against a fixture tarball and a COPY of the script
-# whose pinned x86_64 sum is the fixture's sum (the real script is never changed).
-# The version (v0.22.1), the asset names go-containerregistry_Linux_x86_64.tar.gz and go-containerregistry_Linux_arm64.tar.gz and the release URL
-# are served by a stub curl on PATH from a local layout.
+# The crane entry of bin/install-scanner.sh: a tool that cannot be installed or verified exits NON-ZERO and is labeled a pipeline failure;
+# the success path runs offline against a fixture tarball and a COPY of the script whose pinned x86_64 sum is the fixture's sum.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/install-scanner.sh"
 pass=0; fail=0
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-# the download stand-in: the installers fetch from fixed https URLs now, so a curl on PATH serves the local release layout STUB_REL (the part of the URL after /download/ or /dl/), or fails like a refused download
+# the installer downloads from fixed https URLs: a curl on PATH serves the local layout STUB_REL (the URL after /download/ or /dl/), or fails like a refused download
 stubbin="$work/stubbin"; mkdir -p "$stubbin"
-FXD_2="$stubbin/curl"
-cat > "$FXD_2" <<'STUB'
+cat > "$stubbin/curl" <<'STUB'
 #!/usr/bin/env bash
 out=""; u=""
 while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
 rel="${u#*/download/}"; [ "$rel" != "$u" ] || rel="${u#*/dl/}"
 [ -n "$out" ] && [ -f "${STUB_REL:-/nonexistent}/$rel" ] && cp "${STUB_REL}/$rel" "$out" || exit 22
 STUB
-FXD_1="$stubbin/curl"
-chmod +x "$FXD_1"
+chmod +x "$stubbin/curl"
 check() { # name expected_rc regex -- run...
   local name="$1" want_rc="$2" re="$3"; shift 3
   local out rc; out="$("$@" 2>&1)"; rc=$?
@@ -53,7 +47,7 @@ check "crane install succeeds on x86_64" 0 "." \
   env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/ok-rel" bash "$sut_copy" crane "$work/ok-bin"
 if [ -x "$work/ok-bin/crane" ]; then echo "ok: crane is installed and executable"; pass=$((pass+1))
 else echo "FAIL: $work/ok-bin/crane is missing or not executable"; fail=$((fail+1)); fi
-if "$work/ok-bin/crane" version 2>&1 | grep -q "fake crane"; then echo "ok: the installed crane runs"; pass=$((pass+1))
+if [[ "$("$work/ok-bin/crane" version 2>&1)" == *"fake crane"* ]]; then echo "ok: the installed crane runs"; pass=$((pass+1))
 else echo "FAIL: the installed crane does not run"; fail=$((fail+1)); fi
 # the pin itself: one version, one 64-hex sha256 per architecture, in the crane entry (a placeholder or a missing sum is a failure)
 n=$(grep -ciE 'crane' "$sut" 2> /dev/null); n=${n:-0}
@@ -62,4 +56,6 @@ else echo "FAIL: crane is not pinned to a version with a 64-hex sha256 for both 
 if [ "$n" -eq 0 ]; then echo "FAIL: there is no crane entry in $sut to judge"; fail=$((fail+1))
 elif grep -qE 'go install|@latest' <(grep -i crane "$sut" 2> /dev/null); then echo "FAIL: crane is installed by go install or @latest, not by a checksummed download"; fail=$((fail+1)); else echo "ok: crane is not installed by go install or @latest"; pass=$((pass+1)); fi
 echo "pass=$pass fail=$fail"
+EXPECT=11
+if [ $((pass + fail)) != "$EXPECT" ]; then echo "FAIL case count $((pass + fail)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$fail" -eq 0 ]
