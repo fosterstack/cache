@@ -38,7 +38,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 cat > "$work/judge.py" <<'PY'
-import glob, json, os, re, shlex, sys
+import glob, json, os, re, sys
 base = sys.argv[1]
 import importlib.util
 _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
@@ -51,15 +51,33 @@ SHORT = {"slsaprovenance": "https://slsa.dev/provenance/v0.2", "slsaprovenance02
          "spdx": "https://spdx.dev/Document", "spdxjson": "https://spdx.dev/Document", "cyclonedx": "https://cyclonedx.org/bom",
          "vuln": "https://cosign.sigstore.dev/attestation/vuln/v1", "link": "https://in-toto.io/Link/v1"}
 def shell_commands(line):
-    """The commands of one logical line as lists of words, quotes removed: a command ends at an unquoted ; & or |.
-    `jq '{a: ({} | .)}' > "$st"; echo done` is [jq, {a: ({} | .)}, >, $st] and [echo, done]."""
-    lex = shlex.shlex(line, posix=True, punctuation_chars=True)
-    lex.wordchars += "$~-./*?={}"           # characters a shell word may hold unquoted
-    cmds, cmd = [], []
-    for word in lex:
-        if set(word) <= set(";&|"): cmds.append(cmd); cmd = []
-        else: cmd.append(word)
+    """The commands of one logical line as lists of words, quotes KEPT: a command ends at an unquoted ; & or |, a redirect
+    is an unquoted > word, and a quoted one is only text. `jq '{a: ({} | .)}' > "$st"; echo done` is
+    [jq, '{a: ({} | .)}', >, "$st"] and [echo, done]. A word ends only at unquoted whitespace or an operator, so a path
+    (a:b.json, out/x-1) stays one word; an unquoted # starts a comment."""
+    cmds, cmd, word, quote = [], [], "", ""
+    def end_word():
+        nonlocal word
+        if word: cmd.append(word)
+        word = ""
+    chars = iter(line)
+    for ch in chars:
+        if quote:
+            word += ch
+            if ch == "\\" and quote == '"': word += next(chars, "")
+            elif ch == quote: quote = ""
+        elif ch in "'\"": word += ch; quote = ch
+        elif ch == "\\": word += ch + next(chars, "")
+        elif ch == "#" and not word: break
+        elif ch in " \t": end_word()
+        elif ch in ";&|": end_word(); cmds.append(cmd); cmd = []
+        elif ch == ">": end_word(); cmd.append(ch)
+        else: word += ch
+    if quote: raise ValueError("unterminated quote")
+    end_word()
     return cmds + [cmd]
+def unquote(word):
+    return word[1:-1] if len(word) > 1 and word[0] == word[-1] and word[0] in "'\"" else word
 # matches `predicateType: "https://x/v1"`; refuses `predicateType: "$t"` (a variable is not a literal)
 PREDICATE_TYPE = r"\bpredicateType:[ \t]*\"(https?://[^\s\"'$`\\]+)\""
 bad, produced = [], {}
@@ -135,17 +153,22 @@ def scan(rel, text, raw=False):
             try: cmds += shell_commands(line)
             except ValueError:
                 if "kms-sign" in line: bad.append("%s: a kms-sign line that does not parse (fail closed)" % rel)
-        for cmd in cmds:
+        calls = 0
+        for raw_cmd in cmds:
+            cmd = [unquote(w) for w in raw_cmd]
             if not any(w.endswith("with-aws-token.sh") and nxt == "kms-sign" for w, nxt in zip(cmd, cmd[1:])): continue
+            calls += 1
             if "--digest" in cmd: add("urn:cosign:signature")
             elif any(w.startswith("--dsse-statement") for w in cmd):
-                at = cmd.index("--dsse-statement") + 1 if "--dsse-statement" in cmd else len(cmd)
-                f = cmd[at:at + 1]
-                writers = [c for c in cmds if c[:1] == ["jq"] and ">" in c and c[c.index(">") + 1:][:1] == f]
+                f = cmd[cmd.index("--dsse-statement") + 1:][:1] if "--dsse-statement" in cmd else []
+                writers = [c for c in cmds if c[:1] == ["jq"] and ">" in c and [unquote(w) for w in c[c.index(">") + 1:][:1]] == f]
                 tys = [t for c in writers for w in c for t in re.findall(PREDICATE_TYPE, w)]
                 if f and len(writers) == 1 and len(tys) == 1: add(tys[0])
                 else: bad.append("%s: kms-sign --dsse-statement with an unresolved type (fail closed)" % rel)
             else: bad.append("%s: kms-sign with neither --digest nor --dsse-statement (fail closed)" % rel)
+        # the parser skips what sits inside quotes, so the text is counted too: a kms-sign call in a comment, an `sh -c '...'` or a string is not seen above
+        if len(re.findall(r"with-aws-token\.sh\s+kms-sign", logical(text))) != calls:
+            bad.append("%s: a kms-sign call the scan did not read as a call of its own (fail closed)" % rel)
 BAD = bad
 texts = {os.path.relpath(f, base): open(f).read() for f in files}
 for rel, txt in texts.items(): scan(rel, txt)
@@ -584,6 +607,137 @@ $KJQ > "\$st;x"
 bash bin/with-aws-token.sh kms-sign $KTAIL --dsse-statement "\$st" --bundle "\$b"
 EOF
 expect_named "KA-2 a jq writing the one token \"\$st;x\" is not the writer of \"\$st\": unresolved" "$d" "$UNRES"
+# quote context: a quoted operator or empty word is only a word; the writer is found by an unquoted redirect
+KJA="jq -cn --arg sep '|' '{predicateType: \"$REL_MANIFEST\", predicate: \$sep}'"
+KCALL='bash bin/with-aws-token.sh kms-sign --digest d --out o'
+KEND='--dsse-statement "$st" --bundle "$b"'
+ksw kmsqa row <<EOF
+$KJA > "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect ok "KA-2 a jq with --arg sep '|' still resolves its typed program and writer" "$d"
+ksw kmsqan <<EOF
+$KJA > "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect_named "KA-2 the same jq with --arg sep '|' and no row is a produced type with no row" "$d" "$NOROW"
+KJE="jq -cn --arg x \"\" '{predicateType: \"$REL_MANIFEST\"}'"
+ksw kmsqb row <<EOF
+$KJE > "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect ok "KA-2 a jq with an empty-string argument still resolves" "$d"
+ksw kmsqbn <<EOF
+$KJE > "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect_named "KA-2 the same jq with an empty-string argument and no row has no row" "$d" "$NOROW"
+ksw kmsqc <<EOF
+$KJQ '>' "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect_named "KA-2 a quoted '>' before \"\$st\" is not a redirect: the jq is not the writer, unresolved" "$d" "$UNRES"
+ksw kmsqcp row <<EOF
+$KJA '>' > "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect ok "KA-2 a quoted '>' argument followed by a real redirect to \"\$st\" resolves" "$d"
+KJSEMI="jq -cn --arg sep ';' --arg a '&' '{predicateType: \"$REL_MANIFEST\"}'"
+ksw kmsqd row <<EOF
+$KJSEMI > "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect ok "KA-2 a quoted ';' word and a quoted '&' do not end the typed jq: resolves" "$d"
+ksw kmsqdn <<EOF
+$KJQ ; > "\$st"
+bash bin/with-aws-token.sh kms-sign $KTAIL $KEND
+EOF
+expect_named "KA-2 an unquoted ; does end the jq: the redirect after it is not the jq's, unresolved" "$d" "$UNRES"
+# words split only at unquoted whitespace and operators
+ksw kmsqe <<EOF
+$KJQ > statement
+bash bin/with-aws-token.sh kms-sign $KTAIL --dsse-statement statement:other.json --bundle "\$b"
+EOF
+expect_named "KA-2 --dsse-statement statement:other.json is not written by a jq writing statement: unresolved" "$d" "$UNRES"
+ksw kmsqep row <<EOF
+$KJQ > statement:other.json
+bash bin/with-aws-token.sh kms-sign $KTAIL --dsse-statement statement:other.json --bundle "\$b"
+EOF
+expect ok "KA-2 a jq writing statement:other.json is the writer of that same word: resolves" "$d"
+ksw kmsqf row <<EOF
+$KJQ > out/my-st_1.json
+bash bin/with-aws-token.sh kms-sign $KTAIL --dsse-statement out/my-st_1.json --bundle "\$b"
+EOF
+expect ok "KA-2 a path word with . / - _ stays one word: writer and call match, resolves" "$d"
+ksw kmsqfn <<EOF
+$KJQ > out/my-st_1.jsonx
+bash bin/with-aws-token.sh kms-sign $KTAIL --dsse-statement out/my-st_1.json --bundle "\$b"
+EOF
+expect_named "KA-2 a path word out/my-st_1.jsonx is not the writer of out/my-st_1.json: unresolved" "$d" "$UNRES"
+ksw kmsqfe row <<EOF
+$KJQ > out=st.json
+bash bin/with-aws-token.sh kms-sign $KTAIL --dsse-statement out=st.json --bundle "\$b"
+EOF
+expect ok "KA-2 a path word with = stays one word: writer and call match, resolves" "$d"
+ksw kmsqfen <<EOF
+$KJQ > out=st.json
+bash bin/with-aws-token.sh kms-sign $KTAIL --dsse-statement st.json --bundle "\$b"
+EOF
+expect_named "KA-2 a writer of out=st.json is not the writer of st.json: unresolved" "$d" "$UNRES"
+# the scan stays raw: every kms-sign call in the text must be a resolved call with its row
+ksw kmsqg1 <<EOF
+sh -c '$KCALL'
+EOF
+expect_named "KA-2 a kms-sign call inside sh -c '...' with no row fails, naming the script" "$d" "bin/ks.sh"
+ksw kmsqg1r <<EOF
+sh -c '$KCALL'
+EOF
+addrow "$d" "${SIGROW[@]}"
+expect_named "KA-2 a kms-sign call inside sh -c '...' is unresolved even with its row" "$d" "bin/ks.sh"
+ksw kmsqg2 <<EOF
+subprocess.run('$KCALL', shell=True)
+EOF
+expect_named "KA-2 a kms-sign call inside a Python string with no row fails, naming the script" "$d" "bin/ks.sh"
+ksw kmsqg2r <<EOF
+subprocess.run('$KCALL', shell=True)
+EOF
+addrow "$d" "${SIGROW[@]}"
+expect_named "KA-2 a kms-sign call inside a Python string is unresolved even with its row" "$d" "bin/ks.sh"
+ksw kmsqg3 <<EOF
+# $KCALL
+EOF
+expect_named "KA-2 a kms-sign call in a comment line with no row fails, naming the script" "$d" "bin/ks.sh"
+ksw kmsqg3r <<EOF
+# $KCALL
+EOF
+addrow "$d" "${SIGROW[@]}"
+expect_named "KA-2 a kms-sign call in a comment line is unresolved even with its row" "$d" "bin/ks.sh"
+ksw kmsqg4 <<EOF
+msg="$KCALL"
+EOF
+expect_named "KA-2 a kms-sign call inside a double-quoted string with no row fails, naming the script" "$d" "bin/ks.sh"
+ksw kmsqg4r <<EOF
+msg="$KCALL"
+EOF
+addrow "$d" "${SIGROW[@]}"
+expect_named "KA-2 a kms-sign call inside a double-quoted string is unresolved even with its row" "$d" "bin/ks.sh"
+ksw kmsqg5 <<EOF
+bash bin/with-aws-token.sh kms-sign $KTAIL --digest "\$dg" --out "\$f.sig"
+EOF
+addrow "$d" "${SIGROW[@]}"
+expect ok "KA-2 one real top-level kms-sign call and no other mention resolves" "$d"
+# the word kms-sign in prose is not a call
+ksw kmsqh <<EOF
+# chain-verify.py kms-sign asks the key; see docs/2026-10-28-kms-signing-key.md
+bash bin/with-aws-token.sh kms-sign $KTAIL --digest "\$dg" --out "\$f.sig"
+EOF
+addrow "$d" "${SIGROW[@]}"
+expect ok "KA-2 the prose word kms-sign and a kms-signing-key path in a comment are not calls" "$d"
+ksw kmsqhn <<EOF
+# chain-verify.py kms-sign asks the key; see docs/2026-10-28-kms-signing-key.md
+bash bin/with-aws-token.sh kms-sign $KTAIL --digest "\$dg" --out "\$f.sig"
+EOF
+expect_named "KA-2 the same script without its row still fails on the real call only" "$d" "produced type has no row: urn:cosign:signature"
 d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
 SH40=$(printf 'a%.0s' $(seq 40))
@@ -644,7 +798,7 @@ d=$(realmut realnoatt '/with-aws-token\.sh kms-sign.*--dsse-statement/d')
 expect_named "mutant on the real release-signatures.sh: the kms-sign --dsse-statement line dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
 d=$(realmut realnosig '/with-aws-token\.sh kms-sign.*--digest/d')
 expect_named "mutant on the real release-signatures.sh: the kms-sign --digest lines dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
-EXPECT=150
+EXPECT=175
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
