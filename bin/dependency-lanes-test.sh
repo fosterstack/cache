@@ -485,7 +485,7 @@ case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions
 # no verdict. Any bump: armed over the reviewer's failure -> disarmed. And the arm step: it arms a patch whose head has
 # no verdict, a neutral or a success, never one the reviewer failed, and nothing when the verdict cannot be read.
 if python3 - "$root" "$work" <<'PY'
-import base64, hashlib, json, os, subprocess, sys, yaml
+import base64, hashlib, json, os, re, shutil, subprocess, sys, yaml
 root, work = sys.argv[1], sys.argv[2]
 d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
 steps = d["jobs"]["auto-merge"]["steps"]
@@ -517,10 +517,14 @@ def runs_of(verdict, total=None):
                 "app": {"slug": "fosterstack-automation"}, **({} if ext is None else {"external_id": ext})})
     return {"total_count": len(out) if total is None else total, "check_runs": out}
 LASTOUT = ""
+CWD = TMP = ""
 def go(run, verdict, armed="true", waits="true", lookup_fails=False, main=None, contents_fail=False, fail_paths=(),
         view_fails=False, total=None, partial=False):
-    """total: the check runs' total_count; partial: a failed read prints half a file before it fails; main: {path: its content on main}, where it is not the checked-in one; fail_paths: paths whose read through the
-    contents API fails; view_fails: the one read of the pull request (head and arm state) fails"""
+    """total: the check runs' total_count; partial: a failed read prints half a file before it fails;
+    main: {path: its content on main}, where it is not the checked-in one;
+    fail_paths: paths whose read through the contents API fails;
+    view_fails: the one read of the pull request (head and arm state) fails.
+    The step runs in the empty folder CWD, with RUNNER_TEMP set to the empty folder TMP"""
     bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
     log = os.path.join(bd, "log"); open(log, "w").close()
     json.dump(runs_of(verdict, total), open(os.path.join(bd, "runs.json"), "w"))
@@ -549,11 +553,14 @@ esac
        "half": "printf cGFydA;" if partial else "",
        "cfail": "echo 'gh: HTTP 503' >&2; exit 1" if contents_fail else ""})
     os.chmod(os.path.join(bd, "gh"), 0o755)
+    global LASTOUT, CWD, TMP
+    CWD, TMP = os.path.join(bd, "cwd"), os.path.join(bd, "tmp")
+    for folder in (CWD, TMP):
+        shutil.rmtree(folder, ignore_errors=True); os.makedirs(folder)
     env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x",
            "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r",
-           "WAITS_FOR_VERDICT": waits}
-    global LASTOUT
-    p = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", run], env=env, capture_output=True, text=True)
+           "WAITS_FOR_VERDICT": waits, "RUNNER_TEMP": TMP}
+    p = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", run], env=env, cwd=CWD, capture_output=True, text=True)
     LASTOUT = p.stdout
     return p.returncode, open(log).read()
 bad = []
@@ -596,6 +603,20 @@ for what, runs in (("the current version", [("success", VER)]), ("another versio
     if rc != 0 or "--disable-auto" in log or any("contents/%s?ref=main" % p not in log for p in PATHS):
         bad.append("a success with %s on a major's head, read against main's copies of the program, the prompt and "
                 "the workflow: auto-merge stands (rc %s)\n%s" % (what, rc, log))
+# a plain patch or minor needs no verdict: its step reads no version, and says it needs none
+for what, runs in (("the current version", [("success", VER)]), ("another version", [("success", OLDVER)]),
+                   ("no external_id", [("success", None)])):
+    rc, log = go(last, runs, waits="false")
+    if rc != 0 or "--disable-auto" in log or "contents/" in log:
+        bad.append("a success of %s on a patch's head: nothing disarmed, no version read (rc %s)\n%s" % (what, rc,
+                log))
+    if "the reviewer approved the current head" in LASTOUT or "needs no verdict" not in LASTOUT:
+        bad.append("a success of %s on a patch's head: the step must say it needs no verdict, not that the reviewer "
+                "approved the head\n%s" % (what, LASTOUT))
+rc, log = go(last, [("success", VER)], waits="true")
+if "the reviewer approved the current head" not in LASTOUT or "auto-merge stands" not in LASTOUT:
+    bad.append("a success of the current version on a major's head: the step says the reviewer approved the head and "
+            "auto-merge stands\n%s" % LASTOUT)
 for what, runs in (("another version", [("failure", OLDVER)]), ("no external_id", [("failure", None)])):
     for waits in ("false", "true"):
         rc, log = go(last, runs, waits=waits)
@@ -641,6 +662,44 @@ rc, log = go(last, [("success", VER)], waits="true")
 if rc != 0 or "--disable-auto" in log or "contents/%s?ref=main" % SCRIPT not in log or log.index("contents/%s?ref=main"
         % SCRIPT) > log.index("contents/%s?ref=main" % PATHS[0]):
     bad.append("the script is read from main before the files it lists (rc %s)\n%s" % (rc, log))
+# the script is fetched by one literal gh api line into RUNNER_TEMP and run from there, with no cd
+# a command wrapped with a backslash-newline is one line, as the pin checker reads it
+code = [" ".join(l.split()) for l in last.replace("\\\n", " ").splitlines() if not l.strip().startswith("#")]
+fetches = [l for l in code if "contents/%s?ref=main" % SCRIPT in l]
+FETCH_INTO = '--jq .content | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh"'
+if len(fetches) != 1 or "gh api " not in fetches[0] or FETCH_INTO not in fetches[0]:
+    bad.append("the script is fetched by ONE literal gh api line with %s; got %s" % (FETCH_INTO, fetches))
+if any(re.search(r"\bcd\b", l) for l in code):
+    bad.append("the step must not cd anywhere: %s" % [l for l in code if re.search(r"\bcd\b", l)])
+# what the script is run with: the recorder prints the right answers, and notes its path, folder and arguments
+PATHLIST = " ".join(PATHS)
+FILES_LINE = "if [ \"${1:-}\" = --files ]; then printf '%s\\n' " + PATHLIST + "; exit 0; fi\n"
+RECORDER = ("#!/usr/bin/env bash\n"
+            'echo "$0|$PWD|$#|${1:-}" >> "$RUNNER_TEMP/seen"\n' + FILES_LINE +
+            "for p in " + PATHLIST + '; do [ -f "$1/$p" ] || echo "missing $p" >> "$RUNNER_TEMP/seen"; done\n'
+            "echo " + VER + "\n")
+rc, log = go(last, [("success", VER)], waits="true", main={SCRIPT: RECORDER.encode()})
+seen = open(os.path.join(TMP, "seen")).read().splitlines()
+script_path = os.path.join(TMP, "dependabot-reviewer-version.sh")
+calls = [l.split("|") for l in seen if "|" in l]
+if rc != 0 or "--disable-auto" in log or not os.path.exists(script_path) or open(script_path).read() != RECORDER:
+    bad.append("the script served by main must be saved as RUNNER_TEMP/dependabot-reviewer-version.sh and run there "
+            "(rc %s, saved: %s)\n%s" % (rc, os.path.exists(script_path), log))
+if len(calls) != 2 or any(c[0] != script_path or os.path.realpath(c[1]) != os.path.realpath(CWD) for c in calls):
+    bad.append("the script must be run twice as RUNNER_TEMP/dependabot-reviewer-version.sh, from the step's own "
+            "directory: %s" % seen)
+elif calls[0][2:] != ["1", "--files"] or calls[1][2] != "1" or not os.path.isdir(os.path.join(CWD, calls[1][3])):
+    bad.append("the script is run with --files, then with the folder of the files as its one argument: %s" % seen)
+if any(l.startswith("missing") for l in seen):
+    bad.append("every listed file must be in the folder given to the script: %s" % seen)
+# an empty file list, or an empty version, after a read that succeeded is no version either: it turns auto-merge off
+# and fails the step, as a failed read does
+LISTS_ONLY = ("#!/usr/bin/env bash\n" + FILES_LINE).encode()
+for what, script in (("is empty", b""), ("lists the five files but prints no version", LISTS_ONLY)):
+    rc, log = go(last, [("success", VER)], waits="true", main={SCRIPT: script})
+    if rc == 0 or "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
+        bad.append("the script on main %s: the step must turn auto-merge off and fail, never say it stands (rc "
+                "%s)\n%s%s" % (what, rc, LASTOUT, log))
 # a failed read of any one of the files or of the script (the first, a middle one, the last) is no version: a success
 # does not count
 for path in (PATHS[0], PATHS[1], PATHS[-1], SCRIPT):
@@ -661,19 +720,21 @@ for path in PATHS:
 # every reader of the reviewer's checks asks for 100 at a time and fails closed on a cut answer (total_count over
 # the runs read): a success among 30 of 31 runs is no verdict
 for step_name, step in (("last step", last), ("arm step", arm)):
-    rc, log = go(step, "none", armed="false" if step is arm else "true")
-    if not any("check-runs?check_name=dependabot-reviewer" in l and "per_page=100" in l for l in log.splitlines()):
-        bad.append("the %s does not ask for per_page=100\n%s" % (step_name, log))
+    rc, log = go(step, "none", armed="false" if step_name == "arm step" else "true")
+    if not any("check-runs?check_name=dependabot-reviewer" in l and "filter=all" in l and "per_page=100" in l
+               for l in log.splitlines()):
+        bad.append("the %s does not ask for filter=all and per_page=100\n%s" % (step_name, log))
 cut = [("neutral", VER)] * 29
 for what, newest in (("the current version", VER), ("an old version", OLDVER)):
     rc, log = go(last, cut + [("success", newest)], total=31, waits="true", armed="true")
-    if "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
-        bad.append("30 of 31 check runs read, the newest a success of %s: the last step must not keep the arm (rc "
-                "%s)\n%s%s" % (what, rc, LASTOUT, log))
+    # the stub gh runs the real jq filter: its error is gh's nonzero exit, as a cut answer is for the real gh
+    if rc == 0 or "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
+        bad.append("30 of 31 check runs read, the newest a success of %s: the last step must turn auto-merge off and "
+                "fail (rc %s)\n%s%s" % (what, rc, LASTOUT, log))
     rc, log = go(arm, cut + [("success", newest)], total=31, armed="false")
-    if "pr merge --auto" in log:
-        bad.append("30 of 31 check runs read, the newest a success of %s: the arm step must arm nothing (rc %s)\n%s"
-                % (what, rc, log))
+    if rc == 0 or "pr merge --auto" in log:
+        bad.append("30 of 31 check runs read, the newest a success of %s: the arm step must arm nothing and fail (rc "
+                "%s)\n%s" % (what, rc, log))
 # REQ-DEP-001-AC14, REQ-DEP-003-AC3: the head and the arm state are one read of the pull request; when it fails the arm
 # is turned off and the step fails
 for verdict in ("success", "failure"):
@@ -802,108 +863,10 @@ PY
 then pass=$((pass+1)); echo "PASS gate-window-same-in-both"
 else failn=$((failn+1)); echo "FAIL gate-window-same-in-both"; fi
 
-# REQ-DEP-001-AC13: the gate's sweep skips a green head, except a Dependabot head (head branch dependabot/...): that one
-# is judged again, and a check goes up only when the conclusion differs from the one there. The sweep runs as written,
-# over stand-ins for the five checks and a gh that serves the pull request list and the App's gate checks.
-if python3 - "$root" "$work" <<'PY'
-import datetime, json, os, subprocess, sys, yaml
-root, work = sys.argv[1], sys.argv[2]
-steps = yaml.safe_load(open(os.path.join(root, ".github/workflows/agent-review-gate.yml")))["jobs"]["sweep"]["steps"]
-(sweep,) = [s["run"] for s in steps if "judge and publish every open PR" in s.get("name", "")]
-def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
-genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
-        GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
-base = os.path.join(work, "sweep"); src, fx, stub = (os.path.join(base, x) for x in ("src", "fx", "stub"))
-os.makedirs(src); os.makedirs(stub)
-subprocess.run(["git", "init", "-q", src], check=True, env=genv)
-open(os.path.join(src, "f"), "w").write("x")
-subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=genv)
-subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=genv, capture_output=True)
-sha = sh("git", "-C", src, "rev-parse", "HEAD")
-sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
-sh("git", "clone", "-q", src, fx)
-for rel, body in {
-    ".github/agent/bin/check-action-pins.py": "import os\nopen(os.environ['CALLS'], 'a').write('pins\\n')\n",
-    "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\n",
-    ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\n",
-    "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\n",
-    "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\nexit \"$STUB_AUDIT\"\n",
-}.items():
-    f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
-    open(f, "w").write(body)
-os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
-open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
-case "$1 $2" in
-  "pr list") echo "7 %s $HEADREF owner/repo" ;;
-  "api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate")
-      f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" "$GATE_JSON" ;;
-  "api repos/o/r/check-runs") [ "${PUBFAIL:-}" = 1 ] && exit 1
-      for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$PUBLISHED" ;; esac; done ;;
-  *) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;
-esac
-""" % (sha, sha))
-os.chmod(os.path.join(stub, "gh"), 0o755)
-def sweep_over(headref, gate, audit, pubfail=False):
-    """(exit status, what was published, the checks called) for one open pull request"""
-    calls, published, gate_json = (os.path.join(base, x) for x in ("calls", "published", "gate.json"))
-    for f in (calls, published): open(f, "w").close()
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    json.dump({"check_runs": [] if gate == "none" else [{"conclusion": gate, "completed_at": now,
-            "app": {"slug": "app"}}]}, open(gate_json, "w"))
-    env = dict(os.environ, CALLS=calls, PUBLISHED=published, GATE_JSON=gate_json, HEADREF=headref,
-            RUNNER_TEMP=os.path.join(base, "tmp"),
-               GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-               STUB_AUDIT=str(audit),
-               PUBFAIL="1" if pubfail else "", PATH=stub + ":" + os.environ["PATH"])
-    os.makedirs(env["RUNNER_TEMP"], exist_ok=True)
-    r = subprocess.run(["bash", "-c", sweep], cwd=fx, env=env, capture_output=True, text=True)
-    return r.returncode, open(published).read().split(), open(calls).read().split()
-bad = []
-dep = "dependabot/pip/requests-2.0"
-def want(name, got, rc, published, judged):
-    code, pub, calls = got
-    if code != rc or pub != published or ("audit" in calls) != judged or any("unexpected" in c for c in calls):
-        bad.append("%s: exit %s (want %s), published %s (want %s), judged %s (want %s)" % (name, code, rc, pub,
-                published, "audit" in calls, judged))
-want("a Dependabot head with a gate success whose judge now fails", sweep_over(dep, "success", 1), 0,
-     ["conclusion=failure"], True)
-want("a Dependabot head with a gate success whose judge still passes", sweep_over(dep, "success", 0), 0, [], True)
-want("a Dependabot head with a gate success, judge failing, the failure cannot be published", sweep_over(dep, "success",
-        1, pubfail=True), 1, [], True)
-for headref in ("feature/bump", "dependabot", "dependabot-pip/x", "xdependabot/pip/x", "feature/dependabot/pip/x",
-        "Dependabot/pip/x"):
-    for audit in (0, 1):
-        want("a head %r with a gate success is skipped (judge %d)" % (headref, audit), sweep_over(headref, "success",
-                audit), 0, [], False)
-# REQ-DEP-001-AC13: a green Dependabot head did not change, so it is judged only for the reviewer's verdict (the
-# passed-audit judge, which refuses a success of an old version of the reviewer): the pin, allowlist, wiring and scanner
-# checks are never called on it
-def only_the_judge(name, got, rc, published):
-    code, pub, calls = got
-    if code != rc or pub != published or calls != ["audit"]:
-        bad.append("%s: exit %s (want %s), published %s (want %s), checks called %s (want only the judge)" % (name,
-                code, rc, pub, published, calls))
-only_the_judge("a green Dependabot head whose reviewer success is of an old version (the judge fails): it loses its "
-        "green, with no pin check", sweep_over(dep, "success", 1), 0, ["conclusion=failure"])
-only_the_judge("a green Dependabot head whose judge passes: nothing published, no pin check", sweep_over(dep, "success",
-        0), 0, [])
-only_the_judge("a green Dependabot head, judge failing, the failure cannot be published: the run fails, no pin check",
-        sweep_over(dep, "success", 1, pubfail=True), 1, [])
-want("a Dependabot head with no gate check is judged and published as before", sweep_over(dep, "none", 0), 0,
-        ["conclusion=success"], True)
-if sweep_over(dep, "none", 0)[2] != ["pins", "allow", "wiring", "scan", "audit"]:
-    bad.append("a head with no gate check runs every check, in order: %s" % sweep_over(dep, "none", 0)[2])
-want("a Dependabot head with a recent gate failure that still fails publishes nothing", sweep_over(dep, "failure", 1),
-        0, [], True)
-print("gate sweep: " + ("ok" if not bad else "; ".join(bad)))
-sys.exit(1 if bad else 0)
-PY
-then pass=$((pass+1)); echo "PASS gate-sweep-judges-a-green-dependabot-head-again"
-else failn=$((failn+1)); echo "FAIL gate-sweep-judges-a-green-dependabot-head-again"; fi
-
 # REQ-DEP-001-AC14: bin/dependabot-reviewer-version.sh, run from a checkout root, prints the version: the sha256 of the
 # output of sha256sum over the five files in order (computed here, not by the script); --files prints the five paths one
-# per line; a file it cannot read fails it.
+# per line; a file it cannot read fails it. The root folder may be its argument (from any working directory); with none
+# it works in the current directory.
 if python3 - "$root" "$work" <<'PY'
 import hashlib, os, shutil, subprocess, sys
 root, work = sys.argv[1], sys.argv[2]
@@ -917,6 +880,11 @@ def expected(tree):
     return hashlib.sha256(lines.encode()).hexdigest()
 def run(tree, *args):
     p = subprocess.run(["bash", SCRIPT, *args], cwd=tree, capture_output=True, text=True)
+    return p.returncode, p.stdout, p.stderr
+def run_with_root(tree):
+    """the script with the root folder as its argument, from a working directory that is not the root"""
+    other = os.path.join(work, "version-elsewhere"); os.makedirs(other, exist_ok=True)
+    p = subprocess.run(["bash", os.path.join(tree, SCRIPT), tree], cwd=other, capture_output=True, text=True)
     return p.returncode, p.stdout, p.stderr
 def fixture(name):
     tree = os.path.join(work, "version-" + name); shutil.rmtree(tree, ignore_errors=True)
@@ -937,6 +905,15 @@ if rc != 0 or out.split("\n") != PATHS + [""]:
 rc, out, err = run(root)
 if rc != 0 or out.strip() != expected(root):
     bad.append("the version of this checkout: want %s, got rc %s %r %r" % (expected(root), rc, out, err[-80:]))
+for what, folder in (("the fixture tree", tree), ("this checkout", root)):
+    rc, out, err = run_with_root(folder)
+    if rc != 0 or out.strip() != expected(folder):
+        bad.append("the root of %s as the argument, from another directory: want %s, got rc %s %r %r" % (what,
+                expected(folder), rc, out, err[-80:]))
+gone = fixture("gone-by-argument")
+os.remove(os.path.join(gone, PATHS[1]))
+if run_with_root(gone)[0] == 0:
+    bad.append("a file missing under the root given as the argument must fail the script")
 for path in (PATHS[3], PATHS[4]):
     changed = fixture("changed")
     before = run(changed)[1].strip()
