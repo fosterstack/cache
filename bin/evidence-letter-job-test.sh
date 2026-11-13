@@ -479,7 +479,7 @@ for t in ("v0.3.1", "v0.4.0"):
 check("F1 7: per release the policy is made, then the list is verified, then check-list runs", order_ok, log)
 
 
-def helper(edit=None, tag=None):
+def helper(edit=None, tag=None, bundle='{"verificationMaterial":{"tlogEntries":[{}]}}'):
     """The shared check on an UNMODIFIED policy made by the real `chain-verify.py policy make` (a branch ref, or a tag)."""
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
@@ -493,7 +493,7 @@ def helper(edit=None, tag=None):
         edit(doc)
         json.dump(doc, open(pol, "w"))
     open(letter, "w").write("a letter\n")
-    open(letter + ".bundle", "w").write('{"verificationMaterial":{"tlogEntries":[{}]}}')
+    open(letter + ".bundle", "w").write(bundle)
     p = subprocess.run(["bash", "bin/evidence-letter-verify.sh", pol, letter], cwd=env["REPO_DIR"], env=env,
                        capture_output=True, text=True)
     return p, open(os.path.join(tmp, "log")).read().splitlines()
@@ -506,6 +506,11 @@ for label, tag in (("a branch ref", None), ("a tag", "v0.3.1")):
 ph, lh = helper(lambda d: d.pop("release_key"))
 check("F1 5b: a policy with no release key ends the helper in one line before any verify",
       one_line(ph) and "release key" in ph.stderr and not any("verify-blob" in l for l in lh), (ph.stderr, lh))
+for field in ("certificate", "x509CertificateChain"):
+    cert = '{"verificationMaterial":{"%s":{"x":"y"},"tlogEntries":[{}]}}' % field
+    ph, lh = helper(bundle=cert)
+    check("F-cert: a bundle whose verificationMaterial holds %s is refused in one line, before any verify" % field,
+          one_line(ph) and "certificate" in ph.stderr and not any("verify-blob" in l for l in lh), (ph.stderr, lh))
 check("R1 c: the pinned log root the helper names is a file in the tree",
       os.path.isfile(os.path.join(ROOT, ".github/policy/rekor-trusted-root.json")))
 
@@ -730,7 +735,7 @@ pk, lk, upk, _l = publish(FAIL_UPLOAD="letter", FAIL_DELETE="1")
 check("AC9: if the bundle cannot be removed the one line says so",
       one_line(pk) and "could not be removed" in pk.stderr, pk.stderr)
 # ---- the daily presence check (F7): bin/evidence-letter-present.sh, run by a job of supply-chain.yml
-def present(pages, today="2026-12-10", **extra):
+def present(pages, today="2026-12-10", old_manifest=None, **extra):
     """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body."""
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
@@ -750,6 +755,12 @@ def present(pages, today="2026-12-10", **extra):
                 open(os.path.join(fix, "assets", str(next_id)), "w").write(body)
                 listed.append({"id": next_id, "name": name})
                 next_id += 1
+            if old_manifest and any(a["name"].endswith(".md.bundle") for a in listed):
+                for name, data in zip(("release-key-manifest.json", "release-key-manifest.sig"),
+                                      old_manifest(tmp)):
+                    open(os.path.join(fix, "assets", str(next_id)), "wb").write(data)
+                    listed.append({"id": next_id, "name": name})
+                    next_id += 1
             rels.append({"tag_name": tag, "draft": draft, "prerelease": False, "assets": listed})
         out.append(rels)
     json.dump(out, open(os.path.join(fix, "pages.json"), "w"))
@@ -810,6 +821,36 @@ twice = [V4, ("v0.4.1", False, pair("2026-11"))]
 pr, lr = present([twice], FAIL_VERIFY_AFTER="1")
 check("F7 15: every copy of last month's pair is verified (the second one fails)",
       pr.returncode == 1 and verifies(lr) == 2, (pr.stderr, lr))
+
+
+# F7 16: last month's letter is checked with the key the root-signed manifest lists for the letter's date, which is
+# the manifest published on the release that carries it, not the key of today's checkout
+def old_key_manifest(root_signed=True):
+    """A function of the sandbox folder: the (manifest, signature) of an older release key, valid in November."""
+    def make(tmp):
+        keys = os.path.join(tmp, "keys")
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", keys + "/old.key")
+        openssl("pkey", "-in", keys + "/old.key", "-pubout", "-out", keys + "/old.pub")
+        pub = open(keys + "/old.pub").read()
+        der = openssl("pkey", "-pubin", "-in", keys + "/old.pub", "-outform", "DER")
+        body = json.dumps({"public_key": pub, "key_id": sha(der), "valid_from": "2026-11-01T00:00:00Z",
+                           "valid_to": "2026-12-01T00:00:00Z"}, sort_keys=True, indent=1).encode() + b"\n"
+        open(keys + "/old-m.json", "wb").write(body)
+        signer = keys + ("/root.key" if root_signed else "/old.key")
+        sig = openssl("dgst", "-sha256", "-sign", signer, keys + "/old-m.json")
+        open(os.path.join(tmp, "old-line"), "w").write(pub.splitlines()[1])
+        return body, base64.b64encode(sig) + b"\n"
+    return make
+
+
+pr, lr = present([[V4]], old_manifest=old_key_manifest())
+cur = key_of(lr)
+check("F7 16: the letter is verified with the key its date lists in the root-signed manifest, not today's key",
+      pr.returncode == 0 and verifies(lr) == 1 and lr.count(cur) == 0
+      and lr.count("key-file: -----BEGIN PUBLIC KEY-----") == 1, (pr.stderr, lr))
+pr, lr = present([[V4]], old_manifest=old_key_manifest(root_signed=False))
+check("F7 17: a manifest the root did not sign lists no key: one line, nothing verified",
+      one_line(pr) and "manifest" in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
 print("%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
