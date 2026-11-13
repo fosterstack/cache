@@ -394,7 +394,8 @@ check("items-merge: digests.json names no base-layout apk (assembled into the im
       rc == 0 and got_digests is not None and not [k for k in got_digests if "baselayout" in k] and "apk-baselayout-x86_64" in (got_items or {}), "exit %s" % rc)
 
 
-# Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text with printf '%s'. The file the
+# Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text
+# with printf '%s'. The file the
 # Witness product hashes must therefore BE those bytes (compact, no trailing newline), or Sign's byte binding refuses every release. The test hashes what Sign
 # actually receives and runs the REAL verifier comparison on it.
 original = open(d + "/digests.json", "rb").read() if os.path.exists(d + "/digests.json") else b""
@@ -504,7 +505,8 @@ layout_refused("a layout whose blob does not hash to its name is refused", bad_b
 def bad_version(dd):
     open(dd + "/out/production/oci-layout", "w").write('{"imageLayoutVersion": "2.0.0"}')
 layout_refused("an oci-layout file of another version is refused", bad_version, "production")
-# The sidecar digests are bound to the platform descriptors of the parsed index blob, and the child blobs exist and hash to their names
+# The sidecar digests are bound to the platform descriptors of the parsed index blob, and the child blobs
+# exist and hash to their names
 d = merge_tree("idx-ok")
 rc, out, err = do_merge(d)
 ix = json.loads(open("%s/out/production/blobs/sha256/%s" % (d, h.image_outputs("production", "v0.3.0")["digest"].split(":")[1])).read())
@@ -534,7 +536,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1", vex=False),
       "exit %s %s" % (rc, err[:100]))
 
-# ---- admission-baseline (REQ-CHAIN-007-AC19): the baseline admission chose, as a file of Build's own record ----------------------
+# ---- admission-baseline (REQ-CHAIN-007-AC19): the baseline admission chose, as a file of Build's own record
 # chain-verify.py admission-baseline --admission A.json --admission B.json --tag T --sha S --out F   (run by the assemble job right after both legs are bound)
 #   A and B are the admission.json of the two apk legs, already verified by `bind` (each is a product of its leg's record). Exit 0 writes F, canonical
 #   (sorted keys, indent 1): exactly {baseline, baseline_version, sha, tag}, taken from the legs, which must agree on those four fields (their evidence
@@ -584,7 +586,8 @@ for label, ver, path in (("a version that is not vX.Y.Z", "0.3.0", "requirements
                          ("a release candidate version", "v0.3.0-rc1", "requirements/releases/v0.3.0-rc1.yaml"), ("a path that is not the version's file", "v0.3.0", "requirements/releases/v0.2.0.yaml"),
                          ("an absolute path", "v0.3.0", "/etc/passwd")):
     adm("admission-baseline: %s is refused (baseline)" % label, adm_tree("adm14", dict(ADM, baseline_version=ver, baseline=path), dict(ADM, baseline_version=ver, baseline=path)), 1, "baseline")
-# A release candidate tag is admitted with its OWN baseline (version = tag, rc spelling) and the transfer must accept exactly that
+# A release candidate tag is admitted with its OWN baseline (version = tag, rc spelling) and the transfer must
+# accept exactly that
 RCA = dict(ADM, tag="v0.3.0-rc1", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml")
 adm("admission-baseline: a release candidate tag's own baseline (version = the rc tag) is accepted", adm_tree("adm20", RCA, dict(RCA, run={"id": 2, "attempt": 1})), 0, tag="v0.3.0-rc1")
 adm("admission-baseline: a release candidate tag with a baseline that is not its own (v0.3.0) is refused (baseline)", adm_tree("adm21", dict(RCA, baseline_version="v0.3.0", baseline="requirements/releases/v0.3.0.yaml"), dict(RCA, baseline_version="v0.3.0", baseline="requirements/releases/v0.3.0.yaml")), 1, "baseline", tag="v0.3.0-rc1")
@@ -646,7 +649,8 @@ def run_env(args, cwd, env):
 SR_REF = "refs/tags/v0.3.0"        # the ref the environment attestor of a made record carries (Sign's own, unless a case sets another)
 
 
-def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, ref=None, stdout="built\n", env_raw=None):
+def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT,
+                ptype="application/vnd.in-toto+json", env_vars=None, ref=None, stdout="built\n", env_raw=None):
     """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}."""
     ref = ref or SR_REF
     subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in material]
@@ -761,7 +765,8 @@ REPO_ROOT = root
 
 
 def make_keys_dir():
-    """A key manifest made here: an offline root key and a release key from openssl, the manifest signed by the root key. The
+    """A key manifest made here: an offline root key and a release key from openssl, the manifest signed by
+    the root key. The
     committed manifest does not exist yet (the owner makes the root key), and sign-records checks one before it reads a record."""
     d = work + "/keys"
     os.makedirs(d)
@@ -909,7 +914,8 @@ d, _ = sr_tree("sr23", "rebuild"); put(d, "digests.json", b'{"apk":"sha256:' + b
 sr("sign-records rebuild: a record whose material digests.json is not Build's attested list (--digests) is refused", d, "rebuild", 1, ["material", "digests"])
 d, _ = sr_tree("sr24", "rebuild"); os.remove(d + "/witness-rebuild/verdict.json")
 sr("sign-records rebuild: Rebuild's record without the verdict.json it names is refused", d, "rebuild", 1, ["verdict.json"])
-# the Rebuild job's list of the records it made (--expect-digests): Sign's second call refuses any record folder that differs from it
+# the Rebuild job's list of the records it made (--expect-digests): Sign's second call refuses any record
+# folder that differs from it
 d, _ = sr_tree("sr32", "rebuild"); ex = sr_expect(d)
 rc, out, err = sr("sign-records rebuild: the folders match the Rebuild job's list (made by the real bin/rebuild-records-digests.sh) -> accepted", d, "rebuild", 0, args=sr_args("rebuild", d, expect=ex))
 d, _ = sr_tree("sr33", "rebuild"); ex = sr_expect(d); put(d, "witness-rebuild/verdict.json", b'{"verdict":"swapped after the job listed it"}')
@@ -932,7 +938,8 @@ d, _ = sr_tree("sr41", "rebuild"); open(d + "/bad.json", "w").write("{not json")
 sr("sign-records rebuild: a list that is not JSON is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
 d, _ = sr_tree("sr42", "rebuild"); open(d + "/bad.json", "w").write('{"witness-rebuild":{"verdict.json":"abc"}}')
 sr("sign-records rebuild: a list whose digest is not sha256:<64 hex> is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
-# the apk legs' own lists and the assemble job's --check: each rapk job prints its folder's list after its Witness step, and the assemble job refuses any record
+# the apk legs' own lists and the assemble job's --check: each rapk job prints its folder's list after its
+# Witness step, and the assemble job refuses any record
 # folder that changed between that upload and its own start
 RRD = REPO_ROOT + "/bin/rebuild-records-digests.sh"
 def rrd(args, cwd, env=None):
