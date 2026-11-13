@@ -115,7 +115,7 @@ set -euo pipefail
 SEG_SHARDS=3
 # The cases each shard must pass: counted from the unsharded suite (624 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
 # made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
-SEG_CASES="201 171 273"
+SEG_CASES="201 174 273"
 SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
@@ -283,6 +283,7 @@ repo="$work/repo"; mkdir -p "$repo/docs/quality" "$repo/internal" "$repo/cmd"
 printf '# fscache README\nSee https://docs.example.org/guide/install and [releases](https://github.com/example/cache/releases).\n' >"$repo/README.md"
 printf 'install steps\nSee https://docs-only.example.net/guide (a link that occurs ONLY in a docs page, not in the README)\n' >"$repo/docs/install.md"
 echo "gradle steps"     >"$repo/docs/gradle.md"
+mkdir -p "$repo/build/keys"; printf 'RELEASE-KEY-BYTES\n' >"$repo/build/keys/release.rsa.pub"   # the key the reviewer's file must equal
 echo "INTERNAL TRACE"   >"$repo/docs/quality/traceability.md"
 echo "UNRELEASED NOTES" >"$repo/docs/next-release-notes.md"
 echo "package internal // SECRET-SOURCE" >"$repo/internal/x.go"
@@ -460,6 +461,8 @@ if p.get("leak"):
     if os.path.exists(kc):      # the persona's own ServiceAccount token, as a pasted kubeconfig line
         ans["transcript"] += open(kc).read() + "\n"
 ans["transcript"] += p.get("transcript_extra", "")
+if "keyfile" in p:      # the key file the reviewer fetched into its working folder (its sandbox)
+    open("release.rsa.pub", "w").write(p["keyfile"])
 cmds = list(p.get("commands", []))
 acts = [dict(x) for x in p["actions"]] if "actions" in p else [{"tool": "shell", "argv": ["sh", "-c", c], "exit": 0} for c in cmds]
 if "actions" in p and not cmds:
@@ -1409,6 +1412,9 @@ need = {"gradle-platform-engineer": ("first-time", "gradle", "proxy"), "maven-je
 for p, words in need.items():
     for w in words:
         assert w in rows[p].lower(), (p, w)
+low = rows["compliance-reviewer"].lower()
+assert "--key" in low and "release.rsa.pub" in low, "the reviewer must be told the --key form of the guide"
+assert "certificate identity" not in low and "certificate-identity" not in low, "no verifying by certificate identity"
 for p, text in rows.items():          # every persona is told how to classify what it finds, and what a doc step is
     for w in ("broken behavior", "friction", "as written"):
         assert w in text.lower(), (p, w)
@@ -3558,7 +3564,7 @@ CASE="compliance proof: the digest inside a flag's value (not an image argument)
 check test "$(head -1 "$(out cmp11)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 # the release key file: `cosign verify --key release.rsa.pub` (fetched from build/keys/ at the tag) is proof of FosterStack's signature when it is the ONLY key and no certificate identity or issuer is beside it; any other --key value is not (orchestrator ruling, as the cache#828 judge)
 kcase() { # <name> <verify arguments before the image, as JSON words> <pass|blocking> <exit> <label> [image]
-  cmpcase "$1" "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",$2,\"${6:-$RCD}\"],\"exit\":$4}]}"
+  cmpcase "$1" "{\"noverify\":true,\"keyfile\":\"RELEASE-KEY-BYTES\\n\",\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",$2,\"${6:-$RCD}\"],\"exit\":$4}]}"
   CASE="compliance proof: $5: $3"
   check test "$(head -1 "$(out "$1")/compliance-reviewer.report.md")" = "VERDICT: $3"
 }
@@ -3585,6 +3591,17 @@ kcase cmpk20 '"--key","release.rsa.pub","--insecure-ignore-tlog"' blocking 0 "th
 cmpcase cmpk21 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-blob\",\"--key\",\"release.rsa.pub\",\"$RCD\"],\"exit\":0}]}"
 CASE="compliance proof: verify-blob with the release key is not judged as proof of the image (only cosign verify of the image counts): blocking"
 check test "$(head -1 "$(out cmpk21)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+# the --key proof compares the BYTES of the reviewer's release.rsa.pub with build/keys/release.rsa.pub: the name alone is no proof
+KARGS='{"tool":"cosign","argv":["verify","--key","release.rsa.pub","'$RCD'"],"exit":0}'
+cmpcase cmpk22 "{\"noverify\":true,\"keyfile\":\"OTHER-BYTES\\n\",\"actions\":[$KARGS]}"
+CASE="compliance proof: a file named release.rsa.pub with other bytes than build/keys/release.rsa.pub is no proof: blocking"
+check test "$(head -1 "$(out cmpk22)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmpk23 "{\"noverify\":true,\"keyfile\":\"RELEASE-KEY-BYTES\",\"actions\":[$KARGS]}"
+CASE="compliance proof: the key file without its final newline differs in bytes from build/keys/release.rsa.pub: blocking"
+check test "$(head -1 "$(out cmpk23)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmpk24 "{\"noverify\":true,\"actions\":[$KARGS]}"
+CASE="compliance proof: no release.rsa.pub in the reviewer's folder is no proof: blocking"
+check test "$(head -1 "$(out cmpk24)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 run proofreset '{"gradle-platform-engineer":{"requests":3},"maven-jenkins-ci":{"requests":3},"readme-evaluator":{"reset":true,"requests":1}}' weekly
 CASE="proof: a counter that went BACKWARDS during the window (the server restarted: fewer samples after than before) is no proof: that persona, with no findings, is blocking; the others pass"
 check test "$(head -1 "$(out proofreset)/readme-evaluator.report.md")" = "VERDICT: blocking" -a "$(head -1 "$(out proofreset)/gradle-platform-engineer.report.md")" = "VERDICT: pass"
@@ -3950,7 +3967,7 @@ for scn in return crash timeout; do
   case $scn in
     return) plan='{"maven-jenkins-ci":{"daemon":true,"requests":1,"sleep":0.3},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at="";;
     crash) plan='{"maven-jenkins-ci":{"daemon":"crash","requests":1},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at="";;
-    timeout) plan='{"maven-jenkins-ci":{"daemon":true,"sleep":30},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at=1;;
+    timeout) plan='{"maven-jenkins-ci":{"daemon":true,"sleep":30},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at=5;;   # the timeout covers every persona: 5s keeps the 0.8s ones clear on a loaded box
   esac
   AGENT_TIMEOUT=$at run "daemon-$scn" "$plan" weekly
   live=$(reapd)
