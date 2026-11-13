@@ -63,8 +63,8 @@ def _mask(s):
     written into the report (REQ-AUD-6 in .github/agent/docs/cve-auditor-matrix.md: identifiers never leak)."""
     s = str(s or "")
     for k in _SECRET_ENVS:
-        v = os.environ.get(k)
-        if v and len(v) >= 4:
+        v = os.environ.get(k, "").strip()
+        if len(v) >= 4:
             s = s.replace(v, "<%s>" % k)
     s = re.sub(r"claude-[A-Za-z0-9._-]+", "<model-id>", s)
     s = re.sub(r"sk-[A-Za-z0-9._-]{6,}", "<redacted-key>", s)
@@ -413,14 +413,26 @@ def _head_is(ws, pr, oid):
     return None
 
 
+def _os_failure(ex, command):
+    """Why `command` did not start: `ex` is the OSError subprocess raised."""
+    name = ex.filename or command
+    if isinstance(ex, FileNotFoundError):
+        return "%s is missing: %s" % (name, ex.strerror)
+    return "%s: %s" % (name, ex.strerror)
+
+
 def _find_pr(ws, branch):
     """(url, None) for the open same-repo PR from `branch` into main, ("", None) when the lookup SUCCEEDED and found
     none, ("", error) when it failed:
     a failed lookup is never "no PR" (the caller would replace the branch under a PR it could not see, armed)."""
-    q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json",
-                        "url,isCrossRepository,baseRefName",
-                        "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'],
-                       cwd=ws, capture_output=True, text=True)
+    try:
+        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json",
+                            "url,isCrossRepository,baseRefName",
+                            "--jq",
+                            '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'],
+                           cwd=ws, capture_output=True, text=True)
+    except OSError as ex:
+        return "", _os_failure(ex, "gh")
     if q.returncode != 0:
         return "", "gh pr list: " + ((q.stderr or q.stdout or "").strip() or "failed")
     return (q.stdout or "").strip(), None
@@ -440,7 +452,7 @@ def _fetch_base(ws):
             return None, "git fetch: " + (r.stderr or "").strip()
         s = subprocess.run(["git", "rev-parse", "origin/main"], cwd=ws, capture_output=True, text=True)
     except OSError as ex:
-        return None, "%s is missing: %s" % (ex.filename, ex.strerror)
+        return None, _os_failure(ex, "git")
     sha = (s.stdout or "").strip()
     if s.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
         return None, "git rev-parse: " + ((s.stderr or "").strip() or sha)
@@ -478,8 +490,8 @@ def _preflight_delivery(out, supp):
 
 def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False, base_sha=None):
     """Deliver the consolidated suppressions as ONE non-stacked draft PR against main,
-    carrying .vex/fosterstack-cache.openvex.json (the only exception there is) in a single commit
-    by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
+    carrying .vex/fosterstack-cache.openvex.json (the only suppression file, no .snyk or osv-scanner.toml) in a
+    single commit by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
     failure returns (None, stderr) so the caller marks the run AUDIT INCOMPLETE — never a
     false 'opened'. No vendor/model name appears in the branch, commit, or PR text.
 
@@ -2184,8 +2196,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         try:
             head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws0, capture_output=True, text=True)
         except OSError as ex:
-            raise ReviewedInputInvalid("the workspace commit cannot be read: %s is missing (%s)"
-                                       % (ex.filename, ex.strerror))
+            raise ReviewedInputInvalid("the workspace commit cannot be read: %s" % _os_failure(ex, "git"))
         evidence_sha = None
         if head.returncode == 0:
             evidence_sha = head.stdout.strip() or None
