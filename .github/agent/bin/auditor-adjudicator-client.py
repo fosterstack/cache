@@ -201,7 +201,7 @@ def _whole_answer(text):
     in the model's wording or an injected leading object can never choose the disposition."""
     try:
         obj = json.loads(str(text or "").strip(), object_pairs_hook=parsers.no_dup_pairs)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return obj if isinstance(obj, dict) else None
 
