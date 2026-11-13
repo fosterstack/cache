@@ -9,10 +9,12 @@ secrets, so the federation identity is only reachable from a scheduled run on ma
 
 Subcommands (each one is small and testable on its own; the workflow strings them together):
 
-  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, kind}; kind is major, flagged,
+  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, kind}; kind is major,
+                                                 flagged,
                                                  not-major or unparsed
   gather   --pr N --sha SHA --updates F --out DIR
-                                              -> DIR/bundle.md (commits + the whole diff of SHA against main + release notes + our usage)
+                                              -> DIR/bundle.md (commits + the whole diff of SHA against main
+                                                 + release notes + our usage)
   same-diff --repo R --base B SHA SHA         -> exit 0 only when both commits change B by the same diff text
   read     --bundle F --prompt F --model-env NAME --out F
                                               -> one reader's ranked findings (JSON)
@@ -407,34 +409,41 @@ def our_usage(name):
     return text
 
 
-DEPENDABOT = ("dependabot[bot]", 49699333, "Bot")   # the author GitHub reports on a commit Dependabot made; GitHub commits and signs it (web-flow)
+# the author GitHub reports on a commit Dependabot made; GitHub commits and signs it (web-flow)
+DEPENDABOT = ("dependabot[bot]", 49699333, "Bot")
 MAX_COMMIT_PAGES = 3                                  # GitHub lists at most 250 commits of a pull request
 
 
 def head_diff(repo, base, sha):
     """(text, rc): GitHub's diff of the commit `sha` against its merge base with `base`: what that exact commit changes,
     whatever the pull request's head is by now."""
-    return _run(["gh", "api", "-H", "Accept: application/vnd.github.diff", "repos/%s/compare/%s...%s" % (repo, base, sha)])
+    return _run(["gh", "api", "-H", "Accept: application/vnd.github.diff",
+                 "repos/%s/compare/%s...%s" % (repo, base, sha)])
 
 
 def pr_commits(pr, sha):
-    """(text, state): one line per commit of the pull request, oldest first, each one GitHub does not report as Dependabot's
-    own marked; state is "ok", "unavailable" (a failed or empty read, or 250 commits: GitHub lists no more) or "moved" (the
+    """(text, state): one line per commit of the pull request, oldest first, each one GitHub does not report as
+    Dependabot's
+    own marked; state is "ok", "unavailable" (a failed or empty read, or 250 commits: GitHub lists no more) or
+    "moved" (the
     list does not end at `sha`, the commit the verdict is for)."""
     repo = os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}"
     commits = []
     for page in range(1, MAX_COMMIT_PAGES + 1):
         chunk = _gh_json(["repos/%s/pulls/%s/commits?per_page=100&page=%d" % (repo, pr, page)])
         if not isinstance(chunk, list) or (page == 1 and not chunk):
-            return "(commit list UNAVAILABLE: the GitHub API read failed; this bundle cannot be judged)\n", "unavailable"
+            return ("(commit list UNAVAILABLE: the GitHub API read failed; "
+                    "this bundle cannot be judged)\n"), "unavailable"
         commits.extend(chunk)
         if len(chunk) < 100:
             break
     if len(commits) >= 250 or not all(isinstance(c, dict) for c in commits):
-        return ("(commit list UNAVAILABLE: GitHub lists at most 250 commits of a pull request, or its answer is not a commit "
+        return ("(commit list UNAVAILABLE: GitHub lists at most 250 commits of a pull request, "
+                "or its answer is not a commit "
                 "list; this bundle cannot be judged)\n"), "unavailable"
     if commits[-1].get("sha") != sha:
-        return "(the pull request's head is no longer %s: its last commit is %s)\n" % (sha, commits[-1].get("sha")), "moved"
+        return ("(the pull request's head is no longer %s: its last commit is %s)\n"
+                % (sha, commits[-1].get("sha"))), "moved"
     lines = []
     for c in commits:
         author = c.get("author") or {}
@@ -450,7 +459,11 @@ def pr_commits(pr, sha):
     return "\n".join(lines) + "\n", "ok"
 
 
-_VENDORED = re.compile(r"^diff --git a/vendor/\S+ b/vendor/\S+$")
+def _is_vendored(head):
+    """True for the header line of a file under vendor/ that is not renamed: `diff --git a/vendor/x b/vendor/x`."""
+    old, _, new = head.removeprefix("diff --git ").partition(" ")
+    return (head.startswith("diff --git ") and old.startswith("a/vendor/")
+            and new.startswith("b/vendor/") and " " not in new)
 
 
 def vendor_is_required(path=".github/policy/required-checks.json"):
@@ -463,27 +476,37 @@ def vendor_is_required(path=".github/policy/required-checks.json"):
 
 
 def shown_diff(diff, omit_vendor):
-    """The diff as the readers get it. With omit_vendor, a section whose old and new path are both under vendor/ keeps its
-    header line and a count of its lines: the required `vendor` check compares those bytes with what go.mod and go.sum make."""
+    """The diff as the readers get it. With omit_vendor, a section whose old and new path are both under vendor/
+    keeps its
+    header line and a count of its lines: the required `vendor` check compares those bytes with what go.mod and
+    go.sum make."""
     if not omit_vendor:
         return diff
     out = []
     for section in re.split(r"(?m)^(?=diff --git )", diff):
         head, _, body = section.partition("\n")
-        if not _VENDORED.match(head):
+        if not _is_vendored(head):
             out.append(section)
             continue
         hunks = body[body.index("\n@@") + 1:] if "\n@@" in body else ""
         added = sum(1 for l in hunks.splitlines() if l.startswith("+"))
         removed = sum(1 for l in hunks.splitlines() if l.startswith("-"))
-        out.append("%s\n(a vendored module file: %d added and %d removed line(s) not shown; the required `vendor` check "
-                   "regenerates vendor/ from go.mod and go.sum and compares it byte for byte)\n" % (head, added, removed))
+        out.append("%s\n(a vendored module file: %d added and %d removed line(s) not shown; "
+                   "the required `vendor` check "
+                   "regenerates vendor/ from go.mod and go.sum and compares it byte for byte)\n"
+                   % (head, added, removed))
     return "".join(out)
 
 
-_KIND_LABEL = {"major": "MAJOR", "flagged": "FLAGGED: its release notes say breaking or deprecated", "not-major": "not major",
+_KIND_LABEL = {"major": "MAJOR",
+               "flagged": "FLAGGED: its release notes say breaking or deprecated",
+               "not-major": "not major",
                "unparsed": "UNPARSED: the title and description name no update that could be read"}
-_BINARY = re.compile(r"(?m)^(?:Binary files |GIT binary patch)")   # a changed binary file: its bytes are not in a diff
+
+
+def _has_binary(diff):
+    """True when the diff names a changed binary file: its bytes are not in a diff."""
+    return any(line.startswith(("Binary files ", "GIT binary patch")) for line in diff.split("\n"))
 
 
 def cmd_gather(a):
@@ -500,23 +523,29 @@ def cmd_gather(a):
     # the diff of exactly that commit against main, by its id: a head that moves after this changes nothing in it
     diff, rc = head_diff(repo, a.base, a.sha)
     if rc != 0 or not diff.strip():
-        sys.stderr.write("gather: could not fetch the diff of %s (PR #%s, rc %s) — no bundle, no review\n" % (a.sha, a.pr, rc))
+        sys.stderr.write("gather: could not fetch the diff of %s (PR #%s, rc %s) — no bundle, no review\n"
+                         % (a.sha, a.pr, rc))
         sys.exit(3)
     diff = shown_diff(diff, vendor_is_required())
-    if _BINARY.search(diff):  # the readers cannot be given a binary file's bytes: what they were not shown could merge unread
-        sys.stderr.write("gather: the diff of PR #%s names a binary file, whose bytes are not in a diff — no bundle, no review\n" % a.pr)
+    # the readers cannot be given a binary file's bytes: what they were not shown could merge unread
+    if _has_binary(diff):
+        sys.stderr.write("gather: the diff of PR #%s names a binary file, whose bytes are not in a diff "
+                         "— no bundle, no review\n" % a.pr)
         sys.exit(3)
     if len(diff) > CAP_DIFF:  # never a cut diff, for the same reason
-        sys.stderr.write("gather: the diff of PR #%s is %d characters, over the %d the readers are given — no bundle, no review\n"
+        sys.stderr.write("gather: the diff of PR #%s is %d characters, over the %d the readers are given "
+                         "— no bundle, no review\n"
                          % (a.pr, len(diff), CAP_DIFF))
         sys.exit(3)
-    kinds = [u.get("kind") or ("flagged" if u.get("flagged") else "major" if u["major"] else "not-major") for u in updates]
+    kinds = [u.get("kind") or ("flagged" if u.get("flagged") else "major" if u["major"] else "not-major")
+             for u in updates]
     parts = ["# Bundle for Dependabot PR #%s at its head %s\n" % (a.pr, a.sha),
              "## Updates in this PR (as Dependabot's title and description name them)\n",
              "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], _KIND_LABEL.get(k, k))
                        for u, k in zip(updates, kinds)) + "\n",
              "## Commits in this PR\n\n%s" % commits,
-             "## The PR diff (the whole pull request, every commit above: %s against %s)\n\n```diff\n%s```\n" % (a.sha, a.base, diff)]
+             "## The PR diff (the whole pull request, every commit above: %s against %s)\n\n```diff\n%s```\n"
+             % (a.sha, a.base, diff)]
     notes, unavailable = 0, ([] if state == "ok" else ["the commit list"])
     for u in updates:
         text, count = release_notes(u["name"], u["from"], u["to"])
@@ -544,7 +573,8 @@ def same_diff(repo, base, shas):
     """(same, why). True only when GitHub's diff of each commit against its merge base with `base` is, byte for byte,
     the same non-empty text, at most CAP_DIFF characters, naming no binary file. Then both commits make the same change
     to `base`: the same files, the same hunks at the same lines with the same context, the same mode changes and
-    renames. A binary file's bytes are not in a diff, so it is never "the same"; a read that fails is never "the same"."""
+    renames. A binary file's bytes are not in a diff, so it is never "the same"; a read that fails is never
+    "the same"."""
     texts = []
     for sha in shas:
         out, rc = head_diff(repo, base, sha)
@@ -555,7 +585,7 @@ def same_diff(repo, base, shas):
         return False, "the diffs against %s differ" % base
     if len(texts[0]) > CAP_DIFF:
         return False, "the diff is %d characters, over %d" % (len(texts[0]), CAP_DIFF)
-    if _BINARY.search(texts[0]):
+    if _has_binary(texts[0]):
         return False, "the diff names a binary file"
     return True, "the same %d characters of diff against %s" % (len(texts[0]), base)
 
@@ -729,9 +759,22 @@ def cmd_decide(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("updates"); p.add_argument("--title", default=""); p.add_argument("--body-file"); p.set_defaults(fn=cmd_updates)
-    p = sub.add_parser("gather"); p.add_argument("--pr", required=True); p.add_argument("--sha", required=True); p.add_argument("--base", default="main"); p.add_argument("--updates", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_gather)
-    p = sub.add_parser("same-diff"); p.add_argument("--repo", required=True); p.add_argument("--base", required=True); p.add_argument("sha", nargs=2); p.set_defaults(fn=cmd_same_diff)
+    p = sub.add_parser("updates")
+    p.add_argument("--title", default="")
+    p.add_argument("--body-file")
+    p.set_defaults(fn=cmd_updates)
+    p = sub.add_parser("gather")
+    p.add_argument("--pr", required=True)
+    p.add_argument("--sha", required=True)
+    p.add_argument("--base", default="main")
+    p.add_argument("--updates", required=True)
+    p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_gather)
+    p = sub.add_parser("same-diff")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--base", required=True)
+    p.add_argument("sha", nargs=2)
+    p.set_defaults(fn=cmd_same_diff)
     p = sub.add_parser("mask-tree"); p.add_argument("dir"); p.set_defaults(fn=cmd_mask_tree)
     p = sub.add_parser("read"); p.add_argument("--bundle", required=True); p.add_argument("--prompt", required=True); p.add_argument("--model-env", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_read)
     p = sub.add_parser("decide"); p.add_argument("--reader", action="append", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_decide)
