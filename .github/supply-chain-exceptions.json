@@ -1610,26 +1610,6 @@
       "ruling": "text, not a command: the value of a plain assignment (a description or data string); nothing runs it"
     },
     {
-      "file": "bin/chain-release-scripts-test.sh",
-      "form": "a gh release or extension download",
-      "key": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
-      "line": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-first": "python3 - \"$@\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "dc975e83c778fd1225ccf46c72362d3291b8728e08707d4314127658bac8197c"
-    },
-    {
-      "file": "bin/chain-release-scripts-test.sh",
-      "form": "a download",
-      "key": "79e7659c1a2056476a68c25b2f567b52580cee016ff7aff348f01a790978d8f5",
-      "line": "8e9bce3842b02632d74b106efe79b2cba26d0804e9bdbbc394fef535f32415a1",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-first": "python3 - \"$@\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "dc975e83c778fd1225ccf46c72362d3291b8728e08707d4314127658bac8197c"
-    },
-    {
       "file": "bin/chain-verify-test.sh",
       "form": "a package-manager install",
       "key": "9794c47d867fc898ef9d8f1ecb860c55866f695e3b5007fe72fd049d494273a1",
@@ -8698,6 +8678,26 @@
       "body-first": "python3 - <<'PY'",
       "body-last": "PY",
       "body-sha256": "af0cd21d8d3e5d3e3ea22acce34a5427b4258c9770b258d2dbe90538ec15a54e"
+    },
+    {
+      "file": "bin/chain-release-scripts-test.sh",
+      "form": "a gh release or extension download",
+      "key": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
+      "line": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "body-first": "python3 - \"$@\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a94764f8b74cceb1e7b4a6233fa48d0c453bcca71d7801d411c63e2b767dbaa6"
+    },
+    {
+      "file": "bin/chain-release-scripts-test.sh",
+      "form": "a download",
+      "key": "79e7659c1a2056476a68c25b2f567b52580cee016ff7aff348f01a790978d8f5",
+      "line": "8e9bce3842b02632d74b106efe79b2cba26d0804e9bdbbc394fef535f32415a1",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "body-first": "python3 - \"$@\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a94764f8b74cceb1e7b4a6233fa48d0c453bcca71d7801d411c63e2b767dbaa6"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
