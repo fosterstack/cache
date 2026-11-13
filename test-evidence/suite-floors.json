@@ -4,6 +4,7 @@
  "acceptance-maven-413-test.sh": 6,
  "admission-tag-signer-test.sh": 61,
  "analyze-egress-trace-test.sh": 11,
+ "assemble-image-test.sh": 763,
  "auditor-labels-test.sh": 22,
  "auditor-matrix-test.sh": 313,
  "branch-sweep-test.sh": 156,
