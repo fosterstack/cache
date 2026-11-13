@@ -2084,6 +2084,15 @@ else
 fi
 fi
 
+# the checker over this repository's own tree finds nothing: no other case reads the workflows as they are checked in
+if take real-tree-has-no-finding; then
+if python3 "$here/../bin/check-action-pins.py" "$(cd "$here/../../.." && pwd)" >"$work/real-tree.out" 2>&1; then
+  pass=$((pass+1)); echo "PASS real-tree-has-no-finding → ok"
+else
+  failn=$((failn+1)); echo "FAIL real-tree-has-no-finding → bad (want ok): $(cat "$work/real-tree.out")"
+fi
+fi
+
 # Codex #164 r11/r12: an ordinary bash array-append (arr+=(...), building a flag list -- release.yml's own
 # base_arg+=(--base-grype "$f")) was read element by element as a separate command the moment one element
 # contained a $variable, because a tokenizer with no notion of bash arrays can't tell the array's own parens
