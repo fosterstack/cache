@@ -23,16 +23,14 @@ MAX_BYTES = 1 << 20
 MAX_NARRATIVE = 20000
 MAX_FIELD = 2000
 CATEGORIES = ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance", "under_investigation")
-# the model gave a disposition; anything else is unsettled
+# Categories where the model gave a disposition; any other is unsettled.
 SETTLED = ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance")
 HOLDS = ("policy-held", "upstream-held")
 PULL_KEYS = ("pullable", "lift_trigger", "hold", "component_fixed", "candidate_release", "bump_attempted",
-             "bump_result",
-             "repo_version", "base_release", "evidence")
+             "bump_result", "repo_version", "base_release", "evidence")
 STATE_KEYS = {"schema", "run_date", "finding_set_hash", "verdicts", "pullability", "narrative", "unsettled"}
 UNSETTLED_MAX = 5000
 FINDING_ID = policy.FINDING_ID
-# matches 64 lowercase hex digits; DATE matches "2026-11-12"
 HEX64 = re.compile(r"[0-9a-f]{64}")
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 RUNS_MAX = 1000
@@ -83,9 +81,8 @@ def _evidence(v):
 
 
 PULL_CHECKS = {"pullable": _flag, "bump_attempted": _flag, "hold": lambda v: v in (None,) + HOLDS,
-               "evidence": _evidence,
-               "lift_trigger": _evidence, "component_fixed": _text, "candidate_release": _text, "bump_result": _text,
-               "repo_version": _text, "base_release": _text}
+               "evidence": _evidence, "lift_trigger": _evidence, "component_fixed": _text,
+               "candidate_release": _text, "bump_result": _text, "repo_version": _text, "base_release": _text}
 
 
 def valid_pull(d):
@@ -206,12 +203,13 @@ def dump(today, fs_hash, verdicts, pull, narr, unsettled=None):
 
 
 def load_unsettled(path, today):
-    """The per-finding count of consecutive runs left unsettled (REQ-AUD-9 AC3, "a five-iteration stop"), from the
-    carrier of the no-change day's state. ("missing", {}) when there is no usable state: no file (the first run, or the
-    artifact expired), a file that is not an auditor state at all (not JSON, another schema, not a
-    regular file, too large: REQ-AUD-3 AC3 ignores such a file) or a state written before the counts existed. The counts
-    restart and the run says so. ("ok", counts) for a valid file. Raises CounterInvalid for a state that IS an auditor
-    state (right schema) whose counts cannot be trusted (malformed, a date that is not a
+    """The per-finding count of consecutive runs left unsettled (REQ-AUD-9 AC3, "a five-iteration stop").
+
+    The counts come from the carrier of the no-change day's state. ("missing", {}) when there is no usable state:
+    no file (the first run, or the artifact expired), a file that is not an auditor state at all (not JSON, another
+    schema, not a regular file, too large: REQ-AUD-3 AC3 ignores such a file) or a state written before the counts
+    existed. The counts restart and the run says so. ("ok", counts) for a valid file. Raises CounterInvalid for a
+    state that IS an auditor state (right schema) whose counts cannot be trusted (malformed, a date that is not a
     calendar date, or a date after `today`): the caller stops the run, before any model call or mutating call."""
     doc = _read(path) if path else None
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
