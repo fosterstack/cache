@@ -10,7 +10,7 @@ first frame names a function: the PR gate's own rule); a finding of an imported 
 Two holes proved on the pinned govulncheck (panel note, Oct 23 2026) are closed: a go.mod `ignore` directive (Go 1.25+) hides packages from `./...` (with a decoy main package the scan
 exits 0 with no called advisory while the shipped package still builds), and a call that exists only in the linux/arm64 build is invisible to a scan of the runner's own platform. So the
 scan refuses a go.mod with an `ignore` directive, reads the shipped main package(s) from the recipes the build compiles from (build/melange.yaml and build/melange-fips.yaml: exactly one
-build line each, the same package, CGO_ENABLED present; the rest of the recipe is gen-recipes.py --check's; never from a package listing, which a decoy main could join), and runs `./...` AND each shipped package by explicit path on
+build line each, the same package, CGO_ENABLED present; the rest of the recipe is the recipe generator's check; never from a package listing, which a decoy main could join), and runs `./...` AND each shipped package by explicit path on
 linux/amd64 and linux/arm64 with the build's CGO_ENABLED; a called finding in any of the six runs fails, naming the platform and the target. The file written is still the stream of the
 amd64 `./...` run, byte for byte (the product the Release stage binds); the other runs are judged only.
 Exit 1 on any other outcome, 2 on a usage error. Python is used here for one reason: the pinned toolchain has to be first on the tool's search path, which a plain shell
@@ -62,7 +62,7 @@ CGO_LINE = re.compile(r'    CGO_ENABLED: "([01])"')
 
 
 def read_recipe(rec):
-    """(the package path, CGO_ENABLED) of one recipe: its one `go build` line and its one CGO_ENABLED line. The rest of the template is guarded by gen-recipes.py --check."""
+    """(the package path, CGO_ENABLED) of one recipe: its one `go build` line and its one CGO_ENABLED line. The rest of the template is guarded by the recipe generator's check."""
     try:
         lines = open(rec).read().splitlines()
     except OSError:
