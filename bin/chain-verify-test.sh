@@ -216,7 +216,7 @@ def slsa_ok(ref):
     return {"buildDefinition": {"buildType": site + "/release-chain/v0.3.0",
                                 "externalParameters": {"ref": ref, "workflow": site + "/.github/workflows/release.yml@" + ref},
                                 "internalParameters": {}, "resolvedDependencies": [{"uri": "git+" + site + "@" + ref, "digest": {"gitCommit": "f" * 40}}]},
-            "runDetails": {"builder": {"id": site + "/.github/workflows/stage-sign.yml@" + ref},
+            "runDetails": {"builder": {"id": site + "/.github/workflows/release.yml@" + ref},
                            "metadata": {"invocationId": site + "/actions/runs/1"}}}
 SLSA_OK = slsa_ok(T)
 def prov_predicate(ptype, predicate, raw=False, ref=T):
@@ -601,7 +601,7 @@ for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("pty
     mutate_field("sign_prov", "env_" + _nm, _ed)
 # ---- PR 4 (advisor 0386, read-back verifier-bindings): bind-items and check-list ----
 # items.json is a PRODUCT of Build's record next to digests.json; the four Check records (scanners, acceptance, runtime, arm64) are Witness collections
-# named for their step, signed by stage-sign.yml at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
+# named for their step, signed by release.yml (its sign jobs) at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
 MAT = "https://witness.dev/attestations/material/v0.1/file:"
 PRD = "https://witness.dev/attestations/product/v0.1/file:"
 def _fsha(n): return hashlib.sha256(open(p(n), "rb").read()).hexdigest()
@@ -782,7 +782,7 @@ RG="$work/rcrepo"
 rcg() { git -C "$RG" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
 mkdir -p "$RG/.github/workflows" "$RG/.github/policy" "$RG/bin"
 git -C "$RG" init -q -b main
-for f in release stage-build stage-sign stage-verify; do printf 'name: %s\n' "$f" > "$RG/.github/workflows/$f.yml"; done
+for f in release; do printf 'name: %s\n' "$f" > "$RG/.github/workflows/$f.yml"; done   # the release is one file: no stage-*.yml exists (REQ-REL-008-AC1)
 printf 'name: ci\n' > "$RG/.github/workflows/ci.yml"
 cp "$CB" "$RG/bin/chain-bytes-sha.py" 2> /dev/null || printf 'x\n' > "$RG/bin/chain-bytes-sha.py"
 printf '#!/bin/sh\necho b\n' > "$RG/bin/b.sh"; printf '#!/bin/sh\necho other\n' > "$RG/bin/other.sh"
@@ -1062,7 +1062,7 @@ expect_ok     "KEY the keyid is never used to find a key: a record whose keyid n
 
 
 # ---- REQ-CHAIN-001-AC4: provenance only as the Sign stage's record, the record type bound to the stage ------------------
-expect_ok     "001-AC4 provenance under stage-sign.yml@tag is accepted" verify $(V) --stage sign $(rec sign_prov)
+expect_ok     "001-AC4 provenance under release.yml@tag (the sign jobs' file) is accepted" verify $(V) --stage sign $(rec sign_prov)
 expect_refuse "001-AC4 provenance presented as stage build's record is refused (type is bound to the stage)" "provenance" verify $(V) --stage build $(rec build_as_sign)
 for s in rebuild check release; do
   expect_refuse "001-AC4 provenance presented as stage $s's record is refused (type is bound to the stage)" "provenance" verify $(V) --stage $s $(rec ${s}_as_sign)
@@ -1158,7 +1158,7 @@ assert st["_type"] == "https://in-toto.io/Statement/v1" and st["predicateType"] 
 assert {s["name"]: "sha256:" + s["digest"]["sha256"] for s in st["subject"]} == df and len(st["subject"]) == len(df)
 assert env["signatures"] and env["payloadType"] == "application/vnd.in-toto+json"
 # a real SLSA v1 predicate, not {}: buildDefinition and runDetails.builder.id (the Sign workflow identity)
-pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["builder"]["id"].endswith("/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"), pr
+pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["builder"]["id"].endswith("/.github/workflows/release.yml@refs/tags/v0.3.0"), pr
 PY
 # rc-2 R1a (Fable R1 part a): `sign` writes GITHUB_SHA and GITHUB_RUN_ID into the signed provenance, so it refuses what is not a 40-hex commit or a run number, naming which, before KMS is asked to sign
 SGN() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/$1"; }
@@ -1824,7 +1824,7 @@ expect_refuse "PR4 check-list: a record signed by the throwaway key is refused" 
 expect_refuse "G bind-check: a record signed by a key the manifest does not name is refused" "check|signature" $(BC gv_otherkey)
 
 # ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc-proof marker, bin/chain-bytes-sha.py and `chain-verify.py rc-proof` ----
-# bin/chain-bytes-sha.py defines the chain-file set ONCE: the workflows release.yml and stage-*.yml, every script a row of .github/policy/chain-scripts.json lists, and every file
+# bin/chain-bytes-sha.py defines the chain-file set ONCE: the workflow release.yml (the one release file; no stage-*.yml exists), every script a row of .github/policy/chain-scripts.json lists, and every file
 # of .github/policy/ except the marker itself; its sha256 is taken over `<sha256>  <path>` lines sorted by path, read from the commit's objects. `check-marker` is what
 # admission and the patch decide job run: the marker is the closed object {rc_tag, run_id, chain_sha256, records}, the rc tag exists and is an ancestor of the commit, and
 # the chain files of the commit AND of the rc tag's commit hash to chain_sha256. `chain-verify.py rc-proof` adds the records of the rc run, verified under the rc tag's identities.
@@ -1844,9 +1844,9 @@ S1b=; cbx sha --commit "$C1" --repo "$RG" && S1b=$(cat "$work/cb.out") || true
 [ -n "$S1" ] && [ "$S1" = "$S1b" ] && ok "AC6 bytes: the same commit gives the same sha twice" || bad "AC6 bytes: not deterministic"
 cbx list --commit "$C1" --repo "$RG" || true
 lst=$(cat "$work/cb.out")
-want_in="bin/b.sh bin/chain-bytes-sha.py .github/policy/chain-scripts.json .github/policy/x.json .github/workflows/release.yml .github/workflows/stage-build.yml .github/workflows/stage-sign.yml .github/workflows/stage-verify.yml"
+want_in="bin/b.sh bin/chain-bytes-sha.py .github/policy/chain-scripts.json .github/policy/x.json .github/workflows/release.yml"
 miss=0; for f in $want_in; do grep -F -q "  $f" <<< "$lst" || miss=1; done
-[ "$miss" = 0 ] && [ "$(grep -c . <<< "$lst")" = 8 ] && ok "AC6 bytes: the set is the release and stage workflows, the listed scripts and the policy files, eight files here" || bad "AC6 bytes: the set is not the eight files: $(tr '\n' ' ' <<< "$lst" | head -c 300)"
+[ "$miss" = 0 ] && [ "$(grep -c . <<< "$lst")" = 5 ] && ok "AC6 bytes: the set is the release workflow, the listed scripts and the policy files, five files here" || bad "AC6 bytes: the set is not the five files: $(tr '\n' ' ' <<< "$lst" | head -c 300)"
 ! grep -E -q 'other\.sh|ci\.yml|README' <<< "$lst" && ok "AC6 bytes: a file the chain does not use (an unlisted script, ci.yml, the README) is not in the set" || bad "AC6 bytes: an unrelated file is in the set"
 shaof() { local o rc=0; o=$(python3 "$CB" sha --commit "$1" --repo "$RG" 2> /dev/null) || rc=$?; [ "$rc" = 0 ] && echo "$o" || echo "ERR$rc"; }
 mutc() { # mutc NAME FILE TEXT : a commit on top of C1 with TEXT appended to FILE; prints its sha
@@ -1858,7 +1858,7 @@ import json, sys
 d = json.load(open(sys.argv[1])); d["scripts"][0]["reason"] = "changed"; json.dump(d, open(sys.argv[1], "w"))
 PY
   rcg add -A > /dev/null; rcg commit -q -m m-rowsjson; rcg rev-parse HEAD; rcg checkout -q main; }
-for spec in "workflow:.github/workflows/release.yml" "stage:.github/workflows/stage-sign.yml" "script:bin/b.sh" "self:bin/chain-bytes-sha.py" "policy:.github/policy/x.json" "rows:.github/policy/chain-scripts.json"; do
+for spec in "workflow:.github/workflows/release.yml" "script:bin/b.sh" "self:bin/chain-bytes-sha.py" "policy:.github/policy/x.json" "rows:.github/policy/chain-scripts.json"; do
   n=${spec%%:*}; f=${spec#*:}; c=$(mutc "$n" "$f" "# changed")
   [ "$n" = rows ] && c=$(mutrows)
   [[ "$(shaof "$c")" =~ ^[0-9a-f]{64}$ ]] && [ "$(shaof "$c")" != "$S1" ] && ok "AC6 bytes: a changed $n file ($f) changes the sha" || bad "AC6 bytes: a changed $f did not change the sha"
@@ -1915,7 +1915,7 @@ cm_no() { local l=$1 w=$2 rc=0; shift 2; cm "$@" || rc=$?   # cm_no LABEL "word|
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && [[ "$first" == "refused at marker: "* ]] && ! grep -F -q Traceback "$work/cb.err"; then ok "$l"; else bad "$l (exit $rc, wanted 1 with '$w'; $first)"; fi; }
 cm_ok "AC6 marker: a marker for the bytes of the commit it is committed in, and an rc tag that is its ancestor, validates" "$C2"
 cm_ok "AC6 marker: it still validates at a later commit that changes no chain file (the README)" "$C3"
-cother=$(mutc chg .github/workflows/stage-build.yml "# edited after the proof"); cm_no "AC6 marker: a marker for other bytes (a chain file changed after the proof) is refused, naming the bytes" "bytes" "$cother"
+cother=$(mutc chg .github/workflows/release.yml "# edited after the proof"); cm_no "AC6 marker: a marker for other bytes (a chain file changed after the proof) is refused, naming the bytes" "bytes" "$cother"
 cm_no "AC6 marker: a missing marker file is refused, never skipped" "missing" "$C2" "$work/no-such-marker.json"
 mkdir -p "$work/markerdir"; cm_no "AC6 marker: an unreadable marker (a directory) is refused" "unreadable" "$C2" "$work/markerdir"
 : > "$work/marker-empty.json"; cm_no "AC6 marker: an empty marker is refused" "shape" "$C2" "$work/marker-empty.json"
