@@ -119,7 +119,10 @@ jobs:
           git show origin/main:.github/policy/required-checks.json > /tmp/policy/ruleset-checks.json
           git show origin/main:.github/policy/release-only-checks.json > /tmp/policy/release-only-checks.json
           # admission requires the ruleset's checks and the release-only ones
-          jq -s '.[0].required_checks += .[1].required_checks | .[0]' \
+          jq -s 'if length == 2 and all(.[]; type == "object" and (.required_checks | type) == "array"
+                                    and (.required_checks | length) > 0)
+            then .[0].required_checks += .[1].required_checks | .[0]
+            else error("a required-checks list is missing, empty or malformed") end' \
             /tmp/policy/ruleset-checks.json /tmp/policy/release-only-checks.json > /tmp/policy/required-checks.json
           # automatic patch releases (REQ-REL-009-AC6): the signer route and the pinned gitsign installer, from main too
           git show origin/main:bin/admission-tag-signer.py        > /tmp/policy/admission-tag-signer.py
