@@ -105,6 +105,7 @@ bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh bin/build-freeze.sh bin/with-aws-token.sh
 bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py bin/install-host-bwrap.py bin/refresh-inputs.py
 bin/melange-apko-lib.sh
+bin/acceptance-gradle-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
 bin/oci-digest.py bin/net-probe.py
 bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
@@ -121,7 +122,7 @@ bin/evidence-letter.py bin/evidence-letter-test.sh docs/evidence-letter-signator
 bin/evidence-letter-fetch.sh bin/evidence-letter-publish.sh bin/evidence-letter-job-test.sh
 bin/evidence-letter-verify.sh bin/evidence-letter-present.sh
 """.split())
-if len(DECLARED) != 97: errs.append("declared list is not 97 paths: %d" % len(DECLARED))
+if len(DECLARED) != 98: errs.append("declared list is not 98 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -131,8 +132,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 231 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 231, 6
+# 232 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 232, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -797,7 +798,7 @@ runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "b
 
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
 # it is NOT part of the v0.3.0 build plan.
-passfam "feature/x" "v030: the split build-chain test files and library" "bin/melange-apko-lib.sh" "bin/build-helpers-test.sh" "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
+passfam "feature/x" "v030: the split build-chain test files and library" "bin/melange-apko-lib.sh" "bin/acceptance-gradle-lib.sh" "bin/build-helpers-test.sh" "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
 passfam "feature/x" "REQ-CHAIN-001-AC5: the sandbox wall probe, its offline test and its six recipe templates" "bin/chain-sandbox-probe.sh" "bin/build-sandbox-hostile-test.sh" "build/probe/control.yaml.tmpl" "build/probe/read-record.yaml.tmpl" "build/probe/write-record.yaml.tmpl" "build/probe/read-keydir.yaml.tmpl" "build/probe/read-token.yaml.tmpl" "build/probe/network.yaml.tmpl"
 runeach fail "feature/x" "REQ-CHAIN-001-AC5: sandbox probe near-miss siblings refused" "bin/chain-sandbox-probe.py" "bin/chain-sandbox-probes.sh" "bin/build-sandbox-hostile-test.py" "bin/build-sandbox-hostile-tests.sh" "build/probe/other.yaml.tmpl" "build/probe/control.yaml" "build/probe/control.yaml.tmpl.bak" "build/probe/sub/control.yaml.tmpl"
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"

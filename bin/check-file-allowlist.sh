@@ -322,6 +322,7 @@ ALLOW_PATTERNS=(
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
+  '^bin/acceptance-gradle-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
