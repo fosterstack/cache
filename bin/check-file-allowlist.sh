@@ -320,7 +320,7 @@ ALLOW_PATTERNS=(
   # The wrapper that hands the release role and its token file to a release step as AWS variables.
   '^bin/with-aws-token\.sh$'
   '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap|refresh-inputs)\.py$'
-  # The shared test library and the split build-chain tests.
+  # The shared test libraries and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/acceptance-gradle-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
