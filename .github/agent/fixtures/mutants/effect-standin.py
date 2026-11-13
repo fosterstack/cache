@@ -1,5 +1,5 @@
-# Source: independent second-gate review, audits/2026-09-22/cve-auditor-matrix-second-gate-rerun-b2d51eb/evidence/effect-standin.py
-# Checked in verbatim as a TEST INPUT (adversary) for .github/agent/tests/auditor-matrix-mutants.sh. Not auditor code.
+# A test input for .github/agent/tests/auditor-matrix-mutants.sh: the harness installs it in place of the auditor
+# programs and runs it in the mode named by AUDIT_MUTANT. It is not auditor code.
 """Audit-only counterexamples. Never installed into the repository under review."""
 import json, os, sys, subprocess, hashlib
 from pathlib import Path
