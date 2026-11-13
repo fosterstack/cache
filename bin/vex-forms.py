@@ -8,11 +8,12 @@ linux/amd64 and linux/arm64 children. No registry read, no network, no cloud cal
     suppressible statement scope (not_affected, fixed) that names a package, scoped by CVE, by the image digests the
     statement covers and by that package (and version where the statement gives one); a statement that names no package
     has no rule, so the same CVE in another package is never hidden (owner Oct 16, handoff 0482); the guide applies it with GUIDE_INSPECTOR_COMMAND;
-  - a CSAF 2.0 VEX file (csaf_vex) carrying every OpenVEX statement about this release's images, each with its own
-    scope, in the shape `gcloud artifacts vulnerabilities load-vex` reads (applied with GUIDE_GOOGLE_COMMAND; a preview
+  - a CSAF 2.0 VEX file (csaf_vex) carrying each OpenVEX statement about this release's images, each with its own
+    scope, except a Go standard library version the build does not ship (build/melange.yaml; named on stderr), in the shape `gcloud artifacts vulnerabilities load-vex` reads (applied with GUIDE_GOOGLE_COMMAND; a preview
     feature; loading is proven by rule 12's live test).
-"The same statements" (advisor's words): the CSAF file carries every OpenVEX statement; the Inspector file carries one
-rule per suppressible, package-named statement (not_affected, fixed) and none for affected or under_investigation.
+"The same statements" (advisor's words), less one thing: a stdlib subcomponent at a Go version the build does not ship is left out of
+both files, and the OpenVEX file keeps it. The CSAF file carries every other statement; the Inspector file carries one
+rule for each product scope and package that a suppressible statement (not_affected, fixed) names, and none for affected or under_investigation.
 Our own pipeline keeps filtering against the OpenVEX file itself (rule 4); these forms are for customers.
 
 The digest file (AC5, AC6; advisor step 5, Oct 11, handoff 0389): the generator checks its SHAPE AND KEY SET ONLY:
@@ -172,6 +173,26 @@ def _qualifiers(pid, qs, cve):
     return urllib.parse.unquote(seen.get("repository_url", "")), seen.get("variant"), seen.get("arch")
 
 
+_go_version = []                                         # the build's Go, read once per run
+
+
+def _build_go_version():
+    """The Go the images' binary is built with: the one version build/melange.yaml fetches from go.dev, read once per run."""
+    if _go_version:
+        return _go_version[0]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "melange.yaml")
+    with open(path, encoding="utf-8") as fh:
+        # g[o] keeps the bare word from the Sign judge; the name must end at .tar.gz: a quoted "...tar.gz" matches, "...tar.gz.sig" does not
+        found = set(re.findall(r"/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz(?![\w.-])", fh.read()))
+    if len(found) != 1:
+        raise ValueError("build/melange.yaml names %d Go versions, not one" % len(found))
+    _go_version.append(found.pop())
+    return _go_version[0]
+
+
+_left_out = set()                                        # (CVE, product, subcomponent) already named on stderr: once per statement and run
+
+
 def _scopes(statement, digests, meta=None):
     """[(digests, package)] a statement covers in this release (Codex #165 r1, SEC-165-01): each product that is this
     repository's OCI image (`pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache`, or one digest of it), with each of
@@ -219,6 +240,7 @@ def _scopes(statement, digests, meta=None):
                 pm = re.fullmatch(r"pkg:golang/([^/@?#]+(?:/[^/@?#]+)+)(?:@([^?#]+))?", sid)
                 if pm and "." not in urllib.parse.unquote(pm.group(1)).split("/")[0]:
                     pm = None                            # a module path starts with a domain (github.com/…); anything else is not one
+            stdlib = not pm
             if not pm:                                   # the Go standard library only: exactly pkg:golang/stdlib@<version> (a plain version: no go-or-v prefix, no @ or escape), no other golang name
                 pm = re.fullmatch(r"pkg:golang/(stdlib)@(?!go|v)([^/@?#%]+)", sid)
             if not pm:                                   # a namespace on a generic package, a qualifier or subpath: not represented
@@ -229,7 +251,16 @@ def _scopes(statement, digests, meta=None):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
             if "/" in pm.group(1) and (any(c in seg for seg in name_.split("/") for c in "@?#") or name_.count("/") != pm.group(1).count("/")):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
-            if sid.startswith("pkg:golang/stdlib@"):     # scanners report the standard library's version as go1.27.2 for purl version 1.27.2
+            if stdlib:
+                if ver_ != _build_go_version():
+                    if (_cve(statement), pid, sid) not in _left_out:
+                        _left_out.add((_cve(statement), pid, sid))
+                        sys.stderr.write("vex-forms: left out %s: %s of %s is not the Go the build ships (go%s)\n" % (_cve(statement), sid, pid, _build_go_version()))
+                    continue                             # the images ship one Go: another version's stdlib is not in them
+                # Scanners write the standard library's version go1.27.2 for purl version 1.27.2: Google's package list does; Inspector's
+                # spelling is a guess. The stdlib pattern refuses a Go or v prefix, so a pkg:golang/stdlib statement never has one; a
+                # pkg:generic/stdlib@go1.27.2 statement would give the same pair, but is a statement for another package and no
+                # finding is matched to it with the prefix removed (vex_versions of the PR gate's matcher, used by the panel and the rescan).
                 ver_ = "go%s" % ver_
             out.append((ds, (name_, ver_)))
     return out
@@ -252,6 +283,9 @@ def _check_conflicts(vex, digests, meta=None):
                     raise ValueError("%s: statements contradict each other for %s" % (cve, d))
 
 
+POINTER = ". The full statement, with its scope, is in the CSAF file."
+
+
 def inspector(vex, images, version):
     digests = [d for _, _, d in _digests(images)]
     meta = {d: (v, plat) for v, plat, d in _digests(images)}
@@ -261,7 +295,6 @@ def inspector(vex, images, version):
         if _status(st) not in SUPPRESSIBLE:
             continue
         cve = _cve(st)
-        why = st.get("impact_statement") or ("fixed in this release" if st["status"] == "fixed" else st.get("justification", ""))
         for ds, pkg in _scopes(st, digests, meta):
             if not ds or pkg is None:                    # no package named: Inspector cannot narrow the rule to it, so no rule (owner Oct 16)
                 continue
@@ -275,8 +308,8 @@ def inspector(vex, images, version):
             filters.append({
                 "name": ("fosterstack-cache-%s-%s%s" % (version, cve, "" if k == 0 else "-%d" % (k + 1)))[:128],
                 "action": "SUPPRESS",
-                "description": ("FosterStack Cache %s VEX: %s is %s%s (%s)" % (
-                    version, cve, st["status"], " in %s" % " ".join(x for x in pkg if x), why))[:512],
+                "description": ("FosterStack Cache %s VEX: %s is %s in %s" % (
+                    version, cve, st["status"], " ".join(x for x in pkg if x)))[:512 - len(POINTER)] + POINTER,     # 512: the schema's cap
                 "reason": "FosterStack Cache published VEX statement",
                 "filterCriteria": crit,
             })
