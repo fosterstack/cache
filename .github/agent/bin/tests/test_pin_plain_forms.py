@@ -124,6 +124,9 @@ class AcceptanceScriptsCheckTheJar(unittest.TestCase):
             src = f.read().replace(SYSTEM_TEMP + "/", scratch + "/")
         with open(os.path.join(d, script), "w") as f:
             f.write(src)
+        lib = os.path.join(ROOT, "bin/acceptance-gradle-lib.sh")
+        if os.path.exists(lib):
+            shutil.copy(lib, os.path.join(d, "bin/acceptance-gradle-lib.sh"))
         os.makedirs(os.path.join(d, ".github/policy"))
         shutil.copy(JAR_SUM_FILE, os.path.join(d, JAR_SUM_REL))
         if drop_sum:
