@@ -127,7 +127,7 @@ read -r -d '' PIN_WIRING_CHAIN25 <<'JSON' || true
 JSON
 export PIN_WIRING_CHAIN25
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -626,23 +626,27 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
         else:
             bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
-# the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
-# and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
+# the required-check policy (release admission reads it): required-checks.json (the ruleset's list) and release-only-checks.json (admission's extra
+# list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
+# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
 try:
-    pol = json.load(open(os.environ["PIN_WIRING_POLICY_FILE"]))["required_checks"]
-    if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
-        raise ValueError("required_checks is not a list of objects")
+    pol = []
+    for _name in ("PIN_WIRING_POLICY_FILE", "PIN_WIRING_RELEASE_ONLY_FILE"):
+        _list = json.load(open(os.environ[_name]))["required_checks"]
+        if not isinstance(_list, list) or not all(isinstance(c, dict) for c in _list):
+            raise ValueError("required_checks is not a list of objects")
+        pol += _list
 except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
-    bad.append(f"required-checks.json is unreadable or malformed ({type(e).__name__})")
+    bad.append(f"required-checks.json or release-only-checks.json is unreadable or malformed ({type(e).__name__})")
 if pol is not None:
     ctxs = [c.get("context") for c in pol]
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
-        bad.append(f"required-checks.json lists the context {dup} more than once")
+        bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
     for jid in PROTECTED:
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
-            bad.append(f"required-checks.json does not have exactly one entry {jid} (integration 15368, scope push)")
+            bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
 # the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression or come from a matrix (its rendered name cannot be judged).
@@ -702,13 +706,16 @@ PY
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  # the landing form (chain-v030) has no release-only list: a commit without one is judged with an empty list
+  git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" 2> /dev/null \
+    || echo '{"required_checks": []}' > "$work/head-release-only.json"
   mkdir -p "$work/head-wf"
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
   # Two exact forms are accepted: main's own (judged here) or the landing form, chain-v030's ci.yml, judged by
   # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
-  export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
+  export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json"
   if main_out=$(judge "$work/head-ci.yml"); then exit 0; fi
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
   [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
@@ -831,7 +838,7 @@ case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.s
 gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
-  mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
+  mkdir -p "$r/.github/policy"; cp "$here"/.github/policy/*-checks.json "$r/.github/policy/"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
 import sys, yaml
@@ -1085,9 +1092,10 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
-# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
+# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them);
+# allowlist-chain is in release-only-checks.json, so these edit that file
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
-  python3 - "$here/.github/policy/required-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
+  python3 - "$here/.github/policy/release-only-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); rc = d["required_checks"]
 e = [c for c in rc if c["context"] == "allowlist-chain"][0]
@@ -1101,9 +1109,23 @@ elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
 if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
 else: json.dump(d, open(sys.argv[2], "w"))
 PY
-  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
+  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
 
+# a protected context counts once across the two lists: only in release-only passes, in neither or in both is refused
+for mut in "only-release-only ok" "in-neither bad" "in-both bad"; do
+  python3 - "$here/.github/policy" "$work/pol-${mut% *}" "${mut% *}" <<'PY'
+import json, sys
+req = json.load(open(sys.argv[1] + "/required-checks.json")); rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
+e = [c for c in rel["required_checks"] if c["context"] == "allowlist-chain"][0]
+if sys.argv[3] == "in-neither": rel["required_checks"].remove(e)
+elif sys.argv[3] == "in-both": req["required_checks"].append(e)
+json.dump(req, open(sys.argv[2] + "-required.json", "w")); json.dump(rel, open(sys.argv[2] + "-release-only.json", "w"))
+PY
+  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-${mut% *}-required.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-${mut% *}-release-only.json" \
+    judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "${mut#* }" ]; then pass=$((pass+1)); echo "PASS policy-${mut% *} → $got"; else failn=$((failn+1)); echo "FAIL policy-${mut% *} → $got ($out)"; fi
+done
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
