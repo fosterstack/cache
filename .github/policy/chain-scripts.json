@@ -2685,7 +2685,7 @@
       "reason": "Sign job, release signatures: the detached KMS signatures of the release (bin/chain-verify.py kms-sign through bin/with-aws-token.sh, one Rekor entry each, made here and shipped to Release) over the image payloads, the release manifest attestations, the SBOMs, lock files, policy, vendor evidence, dependency list, checksums, release-files.sha256 and the apks control streams (REQ-CHAIN-007-AC8); it makes the blobs it signs from Build verified outputs; the Release job holds no key. `bash` is the command that starts with-aws-token.sh",
       "reads_env": [],
       "path": "bin/release-signatures.sh",
-      "sha256": "3d65ff204ed9fde89a6c679a18f6633136b85cbfdfc48e4ee509ffcc82213d5c",
+      "sha256": "1eadc8399d659a03d2def55cd78635716c752ef613faecfe1095eb9e8f3db234",
       "exceptions": [
         {
           "rule": "deny",
