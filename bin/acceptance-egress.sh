@@ -437,7 +437,8 @@ docker network create --internal fscache-denied >/dev/null 2>&1 || true
 docker network create fscache-nc-open >/dev/null 2>&1 || true
 docker network create --internal fscache-nc-denied >/dev/null 2>&1 || true
 for n in fscache-denied fscache-nc-denied; do
-  [ "$(docker network inspect -f '{{.Internal}}' "$n")" = true ] || fail "network $n is not --internal: the denied phase would run with egress open"
+  [ "$(docker network inspect -f '{{.Internal}}' "$n")" = true ] \
+    || fail "network $n is not --internal: the denied phase would run with egress open"
 done
 
 echo "== phase pre-0: build and prove the static candidate tracer =="

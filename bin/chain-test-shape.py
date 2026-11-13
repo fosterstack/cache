@@ -898,7 +898,7 @@ NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
     "bin/apk-tool.py": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
-    "bin/archive-pull.sh": "a5799f46e362f45600f3c052358c51cbc618494d371ea34a9ec7414c9a0d83bf",
+    "bin/archive-pull.sh": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
     "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485",
     "bin/audit-record.py": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f",

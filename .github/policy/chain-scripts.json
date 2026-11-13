@@ -24,7 +24,7 @@
       ],
       "signs": false,
       "reason": "the stage's archive pull: fetches the archive by the digest committed in build/archive.json with the pinned crane into a new directory and checks every file against the pointer (REQ-CHAIN-004-AC16); nothing is pulled by tag and there is no fallback source",
-      "sha256": "a5799f46e362f45600f3c052358c51cbc618494d371ea34a9ec7414c9a0d83bf",
+      "sha256": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
       "exceptions": [
         {
           "rule": "script-name",
@@ -73,7 +73,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "5791847e1023388b222f1cc54000758c7aea6821cfac23080383322826aa5cae",
+      "sha256": "e2cd5264e39079f5050b76443228a7812aa7397d731cfbcc68ca09804f36b4d6",
       "tools": [
         "at",
         "aws",
@@ -1307,7 +1307,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "ccec66cdd13ae2c18de22c9a31373fcfd1bebd52177ec1e5bad98f1e849d8585",
+      "sha256": "3b2ec216dabb9fcb506e53f1c0dec6a46d24605d5f5d8313d5de5e3f327ed627",
       "tools": [
         "at",
         "awk",
@@ -1466,7 +1466,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "ce4468ef6f0f287d97339721c1cfccfc547c5c8edcb86c0929e345f0185b4463",
+      "sha256": "547e713afc32797e9783a9780f1b9d98cce9dd6c8fc8c35f47232b9dfe52de8d",
       "tools": [
         "curl",
         "docker",
