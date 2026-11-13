@@ -1282,7 +1282,7 @@ for what, text, want in (
     check(rc == 1 and not calls(t) and want in se, "KL-1 post-publish: %s is refused and nothing runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": kmod(lambda b: b.update(cert="x", verificationMaterial=json.loads(KCERT)["verificationMaterial"]))})
 check(rc == 1 and not calls(t) and CERTMSG in se, "KL-1 post-publish: a certificate bundle with an unknown key too gets the certificate refusal first", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
-KREAL = kmod(lambda b: b["verificationMaterial"].update(timestampVerificationData={"rfc3161Timestamps": []}))      # the key set of a real key-signed bundle (the image-publishers fixture)
+KREAL = kmod(lambda b: b["verificationMaterial"].update(timestampVerificationData={"rfc3161Timestamps": []}))      # the key set of a real key-signed bundle
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KREAL})
 check(rc == 0 and len(calls(t)) == 1, "KL-1 post-publish control: a bundle with publicKey, tlogEntries and timestampVerificationData is accepted (the shape check is not vacuous)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KKEY}, cv="altercommon")
