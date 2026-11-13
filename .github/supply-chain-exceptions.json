@@ -4075,33 +4075,6 @@
       "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
     },
     {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "b484483e631d98b6c01ee75b78147dcdcd35d815fc208d82028bceb8a4b66600",
-      "line": "b484483e631d98b6c01ee75b78147dcdcd35d815fc208d82028bceb8a4b66600",
-      "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
-      "line": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat >\"$work/pre.py\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
-    },
-    {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
-      "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat >\"$work/pre.py\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
-    },
-    {
       "file": "bin/acceptance-k8s-smoke.py",
       "form": "a download",
       "key": "5b37492aaf0af6aac6004983ae31a3118c928a8006fb479126f2d30168dfccdd",
@@ -5870,6 +5843,33 @@
       "body-first": "check python3 - \"$aud\" <<'PY'",
       "body-last": "PY",
       "body-sha256": "a1258b22ad5c96e60eb27d3c8a8641a6d6cd172e090173a768fca31bdbbe2f03"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
+      "line": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat >\"$work/pre.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat >\"$work/pre.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
+      "line": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
+      "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",

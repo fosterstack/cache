@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC3, REQ-SUP-001-AC5
-# cache#359 round 5, section 2, group P2, rows 1-3: a lookup that cannot be answered is a FAILURE, never "no proof" or "nothing there".
-#   (1) PyPI, the Go proxy and the Go index: an outage (network error, 5xx) raises CouldNotLook; only a 404 stays "not there".
+# cache#359 round 5, section 2, group P2, rows 1-3: a lookup that cannot be answered is a FAILURE, never "no proof" or
+# "nothing there".
+#   (1) PyPI, the Go proxy and the Go index: an outage (network error, 5xx) raises CouldNotLook; only a 404 stays "not
+#   there".
 #       pin-audit's published-name query to PyPI is strict as well (a failure, not the pinned name alone).
 #   (2) a gotool item is dated by the Go index time: an older PR clock must not win over it.
-#   (3) an action.yml that cannot be read fails in nested() (Fail), which the nested pass turns into an incomplete run, and prints no "no known-compromised" line.
-# In-process: the network is replaced by a fake urlopen, gh by a script on a scratch path. Written from the English rows only.
+#   (3) an action.yml that cannot be read fails in nested() (Fail), which the nested pass turns into an incomplete run,
+#   and prints no "no known-compromised" line.
+# In-process: the network is replaced by a fake urlopen, gh by a script on a scratch path. Written from the English
+# rows only.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 export SC="$here/../supply-chain"
@@ -14,7 +18,14 @@ pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
-check() { if "$@" >"$work/last.out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/     | /' "$work/last.out" | tail -5; fi; }
+check() {
+  if "$@" >"$work/last.out" 2>&1; then
+    ok "$CASE"
+  else
+    bad "$CASE"
+    sed 's/^/     | /' "$work/last.out" | tail -5
+  fi
+}
 
 cat >"$work/pre.py" <<'PY'
 import base64, contextlib, datetime as dt, hashlib, importlib.util, io, json, os, sys, urllib.error, urllib.request
@@ -56,7 +67,7 @@ python3 -c 'import base64,json;print(json.dumps({"content": base64.b64encode(b"r
 SH
 chmod +x "$work/gh404" "$work/ghok" "$work/ghyaml"
 
-# --- (1) PyPI -----------------------------------------------------------------------------------------------------------------
+# --- (1) PyPI ---------------------------------------------------------------------------------------------------------
 PYPI='age = load("pin-age-check"); it = age.inv.Item("package", "pypi/requests", "2.32.0")'
 CASE="PyPI network outage while dating a package is CouldNotLook, not 'no proof'"
 check python3 - "$work/pre.py" <<PY
@@ -77,7 +88,7 @@ serve(code(404))
 assert age.live_proofs(it, "/nonexistent", None) == []
 PY
 
-# --- (1) Go proxy and Go index ---------------------------------------------------------------------------------------------------
+# --- (1) Go proxy and Go index ----------------------------------------------------------------------------------------
 GOT='age = load("pin-age-check"); it = age.inv.Item("gotool", "github.com/securego/gosec/v2/cmd/gosec", "v2.29.0")'
 CASE="Go proxy network outage while dating a go install is CouldNotLook"
 check python3 - "$work/pre.py" <<PY
@@ -115,7 +126,8 @@ PY
 CASE="Go index that answers with the module's row yields the go-index proof (a working path stays working)"
 check python3 - "$work/pre.py" <<PY
 import sys; exec(open(sys.argv[1]).read()); $GOT
-row = json.dumps({"Path": "github.com/securego/gosec/v2/cmd/gosec", "Version": "v2.29.0", "Timestamp": "2026-09-02T00:00:00Z"}) + "\n"
+row = json.dumps({"Path": "github.com/securego/gosec/v2/cmd/gosec", "Version": "v2.29.0",
+                  "Timestamp": "2026-09-02T00:00:00Z"}) + "\n"
 INDEX = lambda url: R(row.encode())
 $GOIDX
 serve(h)
@@ -123,8 +135,9 @@ got = age.live_proofs(it, "/nonexistent", None)
 assert ("2026-09-02T00:00:00Z", "go-index") in got, got
 PY
 
-# --- pin-audit's published-name query to PyPI ----------------------------------------------------------------------------------
-CASE="pin-audit: an unreachable PyPI while it asks for the published name of a package is a failure (Fail or CouldNotLook), not the pinned name alone"
+# --- pin-audit's published-name query to PyPI -------------------------------------------------------------------------
+CASE="pin-audit: an unreachable PyPI while it asks for the published name of a package is a failure (Fail "
+CASE+="or CouldNotLook), not the pinned name alone"
 check python3 - "$work/pre.py" "$work/ghok" <<'PY'
 import sys; exec(open(sys.argv[1]).read())
 aud = load("pin-audit")
@@ -138,7 +151,7 @@ it = aud.inv.Item("package", "pypi/requests", "2.32.0")
 assert raises((aud.Fail, aud.age.CouldNotLook), lambda: net.lists(it)), "PyPI outage ignored by the advisory query"
 PY
 
-# --- (2) gotool is dated by the Go index time -----------------------------------------------------------------------------------
+# --- (2) gotool is dated by the Go index time -------------------------------------------------------------------------
 CASE="gotool: a PR clock older than the Go index time does not win; the item is too young by the index time"
 check python3 - "$work/pre.py" <<PY
 import sys; exec(open(sys.argv[1]).read()); $GOT
@@ -158,15 +171,19 @@ ok, why, proof = age.judge_item(it, [(ago(30), "pr-clock")], NOW)
 assert ok and proof["source"] == "pr-clock", (ok, why, proof)
 PY
 
-# --- (3) an unreadable action.yml ------------------------------------------------------------------------------------------------
-# the run: pin-audit's nested pass reads action.yml through LiveNet.nested; a Fail there is turned into incomplete by nested_safe
+# --- (3) an unreadable action.yml -------------------------------------------------------------------------------------
+# the run: pin-audit's nested pass reads action.yml through LiveNet.nested; a Fail there is turned into incomplete by
+# nested_safe
 cat >"$work/nested-run.py" <<'PY'
 import sys; exec(open(sys.argv[1]).read())
 import subprocess
 work, gh = sys.argv[2], sys.argv[3]; r = work + "/repo-" + os.path.basename(gh)
 os.makedirs(r + "/.github/workflows", exist_ok=True)
-open(r + "/.github/workflows/ci.yml", "w").write("on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4.1.0\n")
-g = lambda *a: subprocess.run(["git", "-C", r, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+open(r + "/.github/workflows/ci.yml", "w").write(
+    "on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
+    + "1" * 40 + " # v4.1.0\n")
+g = lambda *a: subprocess.run(["git", "-C", r, "-c", "user.name=t", "-c", "user.email=t@x", *a],
+                              check=True, capture_output=True)
 g("init", "-q"); g("add", "-A"); g("commit", "-q", "-m", "x")
 json.dump({"lists": {}, "versions": {}, "prs": []}, open(work + "/fx.json", "w"))
 aud = load("pin-audit")
@@ -178,7 +195,8 @@ with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
 assert "could not be read" in out.getvalue(), out.getvalue()[-400:]
 assert rc != 0 and "no known-compromised" not in out.getvalue(), (rc, out.getvalue()[-300:])
 PY
-CASE="an action.yml and action.yaml that are both missing (404) end the run incomplete: no 'no known-compromised' line, non-zero exit"
+CASE="an action.yml and action.yaml that are both missing (404) end the run incomplete: no 'no "
+CASE+="known-compromised' line, non-zero exit"
 check python3 "$work/nested-run.py" "$work/pre.py" "$work" "$work/gh404"
 CASE="an action.yml that is not valid YAML ends the run incomplete: no 'no known-compromised' line, non-zero exit"
 check python3 "$work/nested-run.py" "$work/pre.py" "$work" "$work/ghyaml"
