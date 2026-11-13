@@ -1608,7 +1608,7 @@ The v0.3.0 customer verification guide (docs/verify-release.md) shall be one pag
 
 The branch protection requires the check `allowlist-chain` of .github/workflows/ci.yml. It is a gate job that needs the `suites` job (one matrix leg per suite that no counting step of ci.yml runs, REQ-CI-005) and fails unless the result of that job is exactly `success`, so a failed, skipped, cancelled or missing suite cannot pass the required check.
 
-*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor)*
+*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23*
 
 > The gate fails on a missing or empty result as on a failed, skipped or cancelled one. The legs of the matrix come from the floors file, so a suite added to or removed from it needs no edit of the gate.
 
@@ -1629,7 +1629,7 @@ Every suite named in test-evidence/suite-floors.json is run once per workflow ru
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CI-005-AC1 | Given a suite named in the floors file and a counting step of ci.yml for it (`suite-guard-run.py run FLOORS NAME PATH`, NAME the file name of PATH); when the workflow runs; then the suite is run once, by that step, which requires exit 0 and a case count at or above its floor, and the suites matrix has no leg for it | unit |  | approved | 1 item(s) |
+| REQ-CI-005-AC1 | Given a suite named in the floors file and a counting step of ci.yml for it (`suite-guard-run.py run FLOORS NAME PATH`, NAME the file name of PATH); when the workflow runs; then the suite is run once, by that step, which requires exit 0 and a case count at or above its floor, carries no `if` and no `continue-on-error` (a skipped step would drop the suite from the matrix and from the run), and the suites matrix has no leg for it | unit |  | approved | 1 item(s) |
 | REQ-CI-005-AC2 | Given a suite named in the floors file that no counting step of ci.yml names; when the workflow runs; then the suites matrix runs it in its own leg through the same `suite-guard-run.py run` command, and a leg that fails fails the job | unit |  | approved | 1 item(s) |
 | REQ-CI-005-AC3 | Given a suite run by a counting step; when it loses cases (below its floor), prints no case count, or exits non-zero; then its step fails | unit |  | approved | 1 item(s) |
 | REQ-CI-005-AC4 | Given the suite guard's floors; when a pull request lowers or drops a floor; then the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised | unit |  | approved | 1 item(s) |
