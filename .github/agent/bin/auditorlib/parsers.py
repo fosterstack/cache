@@ -23,7 +23,7 @@ def _load(path):
 
 
 def finding(scanner, fid, purl, aliases=(), package=None, fixed_version=None,
-             severity=None, extra=None):
+            severity=None, extra=None):
     return {
         "scanner": scanner,
         "finding_id": fid,
@@ -98,15 +98,14 @@ _FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of",
 _DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited", "purl"))
 _SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
-# no control characters, no backtick (the issue text quotes with it)
-# matches "libc6 2.36"; not text holding a backtick
+# no control characters, no backtick (the issue text quotes with it) matches "libc6 2.36"; not text holding a backtick
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")
-# CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result; capped, and the same grammar the
-# unsettled-run counter keeps
+# CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result; capped, and the same grammar
+# the unsettled-run counter keeps
 _ID = policy.FINDING_ID
 class _PurlGrammar:
-    """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs (bin/panel.py
-    purl_ok)."""
+    """The package-URL grammar the verdict allows: one rule, defined where the tally writes
+    the URLs (bin/panel.py purl_ok)."""
     @staticmethod
     def fullmatch(purl):
         return True if panel_module().purl_ok(purl) else None
@@ -291,7 +290,7 @@ def parse_panel(path, scanner):
         rec = seen.get(key)
         if rec is None:
             rec = seen[key] = finding(scanner, f["id"], purl, (), f.get("package"), None, None,
-                                       {"images": [], "version": f.get("version"), "by_image": {}})
+                                      {"images": [], "version": f.get("version"), "by_image": {}})
         rec["extra"]["images"].append(f["image"])
         if mine.get("severity") and (rec["severity"] is None
                                      or _SEVERITIES.index(mine["severity"]) > _SEVERITIES.index(rec["severity"])):
@@ -303,10 +302,9 @@ def parse_panel(path, scanner):
         rec["aliases"] = sorted(set(rec["aliases"]) | set(mine.get("aliases") or []))
         rec["extra"]["by_image"][f["image"]] = {"seen_by": sorted(f["seen_by"]), "of": f["of"], "unique": f["unique"]}
     # What the tally recorded as HIDDEN by our published VEX for this scanner (its Inspector and Google results are
-    # filtered against the document, bin/panel.py): a carried statement must stay re-judgeable each run, so each
-    # entry is emitted as a finding flagged `carried`. It carries no package URL of its own (the tally keeps package
-    # and version); the run resolves it to the carried statement's scope, or drops it when no carried statement
-    # matches.
+    # filtered against the document, bin/panel.py): a carried statement must stay re-judgeable each run, so each entry
+    # is emitted as a finding flagged `carried`. It carries no package URL of its own (the tally keeps package and
+    # version); the run resolves it to the carried statement's scope, or drops it when no carried statement matches.
     for c in d["vex_covered"]:
         if c["scanner"] != scanner:
             continue
@@ -315,7 +313,7 @@ def parse_panel(path, scanner):
         rec = seen.get(key)
         if rec is None:
             rec = seen[key] = finding(scanner, c["id"], purl, (), c["package"], None, None,
-                                       {"images": [], "version": c["version"], "by_image": {}, "carried": True})
+                                      {"images": [], "version": c["version"], "by_image": {}, "carried": True})
         if c["image"] not in rec["extra"]["images"]:
             rec["extra"]["images"].append(c["image"])
     for rec in seen.values():
@@ -368,8 +366,8 @@ def parse_govulncheck(path):
                     sbom_ver[mm["path"]] = mm["version"]
             mods = [(mm.get("path") or "") for mm in (sbom.get("modules") or []) if mm.get("path")]
             # roots[0] is the scanned PACKAGE import path, NOT the module:
-            # the module is the SBOM module whose path is a prefix of that package (longest
-            # match, excluding stdlib). Fall back to roots[0] only if no module matches.
+            # the module is the SBOM module whose path is a prefix of that package (longest match, excluding stdlib).
+            # Fall back to roots[0] only if no module matches.
             root0 = roots[0] if roots else None
             if root0:
                 cands = [p for p in mods if p != "stdlib" and (root0 == p or root0.startswith(p + "/"))]
@@ -383,9 +381,8 @@ def parse_govulncheck(path):
         if not osv:
             raise ParseError("govulncheck: finding with no osv id")
         # A REAL frame names a module, package, or function; a bare {} is not a frame
-        # (`[{}]` is not a trace). A function-bearing frame is a real call
-        # path; a non-empty trace of real frames WITHOUT a function is imported-but-not-
-        # called; an empty (or all-bare) trace proves nothing.
+        # (`[{}]` is not a trace). A function-bearing frame is a real call path; a non-empty trace of real frames
+        # WITHOUT a function is imported-but-not-called; an empty (or all-bare) trace proves nothing.
         trace = [fr for fr in f.get("trace", [])
                  if isinstance(fr, dict) and (fr.get("module") or fr.get("package") or fr.get("function"))]
         called = any(fr.get("function") for fr in trace)
