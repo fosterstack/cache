@@ -38,7 +38,7 @@
 #       `witness-build` into witness-build (Build's verified record, the --build-record of hand_sign_code, NOT a file the hostile
 #       step supplied); `provenance` into provenance (THIS run's genuine Sign output, for the positive control); the pinned
 #       `policy make` line above; then one step per attempt (five) and one POSITIVE CONTROL step (verify --stage sign --record
-#       provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json, must exit 0, recorded as its own row positive_control that
+#       provenance/provenance.json --policy policy.json, without --rekor-stub, must exit 0, recorded as its own row positive_control that
 #       the verdict requires to be ACCEPTED: a policy that refuses everything, e.g. made for the wrong ref, is caught here), each
 #       exactly three lines:
 #           rc=0
@@ -53,9 +53,8 @@
 #         read_sign_key     hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json
 #         hand_sign_code    check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json
 #                           (the same refusals as `sign --check`, with no signer in it: this job holds no id-token and installs no cosign, step-8 SF4)
-#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json   (must be ACCEPTED;
-#                           the stub is the tlogEntry Sign extracted from its own cosign bundle into the provenance artifact; a verify
-#                           without the stub is refused 'rekor' (chain-verify-test.sh), so the control cannot pass by a shortcut)
+#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json   (must be ACCEPTED;
+#                           no --rekor-stub: the stub file is not part of the positive control, and adding it is not the pinned shape)
 #         forge_provenance  verify --stage sign --record attempts/forge_provenance.json --policy policy.json
 #       A refusal only counts when its stage and cause fit the attempt (the verdict checks): mint_sign_cert -> stage sign|release,
 #       cause names the identity or stage-sign.yml; read_sign_token / read_sign_key -> stage runner, `nothing usable`;
@@ -414,7 +413,7 @@ PIN = {
  "read_sign_token": r'python3 bin/chain-verify\.py hostile-material --kind token --file attempts/read_sign_token\.txt',
  "read_sign_key": r'python3 bin/chain-verify\.py hostile-material --kind key --file attempts/read_sign_key\.txt --policy policy\.json',
  "hand_sign_code": r'python3 bin/chain-verify\.py check-build-record --digests attempts/hand_sign_code\.json --build-record witness-build/build-collection\.json --policy policy\.json',
- "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json',
+ "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json',
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
@@ -722,7 +721,7 @@ EOF
     cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=\$?
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json 2> /tmp/positive_control.err || rc=\$?
           python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "\$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
       - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
       - uses: actions/upload-artifact@$sha # v7
@@ -1378,7 +1377,7 @@ d=$(mk w_pf_literal); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
 d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
 d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
 d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
-d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
+d=$(mk w_rekorstub); pymut "$(rel "$d")" "--policy policy.json 2> /tmp/positive_control.err" "--policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err"; wexpect caught "wiring: the positive control given the Rekor stub is not the pinned three-line shape (the stub is not part of the control)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
 # AC5's runtime proof has a fixed place (advisor accepted Oct 10, lane AC; moved to a signed rc-tag run, advisor 0383; order changed Oct 12): the rc-tag run is
@@ -1403,17 +1402,17 @@ for words in ("is cut on main after the cutover pull request has merged, must be
     assert words in then, "AC5 lacks: " + words
 assert "before the cutover pull request merges chain-v030 to main" not in then and "each of the six cases" not in then, "AC5 then still has the old order or six cases"
 a6 = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC6")
-assert a6["given"] == "a final (v0.3.0) or patch tag, or the patch automation's decide job, on main", "AC6 given"
-assert a6["when"] == "admission and decide read .github/policy/rc-proof.json (the marker)", "AC6 when"
-for words in ("both refuse (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5)",
+assert a6["given"] == "a final (v0.3.0) or patch tag on main", "AC6 given"
+assert a6["when"] == "admission reads .github/policy/rc-proof.json (the marker)", "AC6 when"
+for words in ("it refuses (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5)",
               "bin/chain-verify.py against the rc tag's own identities", "an rc tag that is not an ancestor of the commit, an unreadable marker, or a missing one is refused, never skipped"):
     assert words in a6["then"], "AC6 lacks: " + words
 assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
-assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
+assert "CUTOVER CHECKLIST" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line"
 # the accepted order of Oct 12 (CK): the cutover merge first with only KR-CUTOVER left, then the owner's rc tag on main, then the marker pull request, which removes KR-CUTOVER
-for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the owner signs a release-candidate tag vX.Y.Z-rcN on main's merge commit",
-              "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "admission and the patch decide job refuse every final and patch tag"):
+for words in ("CUTOVER CHECKLIST (order accepted Oct 12)", "bin/chain-known-red.py empty-except KR-CUTOVER", "it does not wait for an rc run", "the maintainers sign a release-candidate tag vX.Y.Z-rcN on main's merge commit",
+              "the marker pull request of REQ-CHAIN-001-AC6", "it removes KR-CUTOVER", "admission and the patch decision refuse every final and patch tag"):
     assert words in r["notes"], "REQ-CHAIN-001 notes lack the accepted checklist order: " + words
 assert "does not merge without a green rc-tag run of the same commit's chain files" not in r["notes"], "REQ-CHAIN-001 notes still say the cutover waits for an rc run (advisor 0383, superseded Oct 12)"
 assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
