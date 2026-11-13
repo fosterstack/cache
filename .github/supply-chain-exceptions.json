@@ -3348,46 +3348,6 @@
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
-      "file": ".github/agent/tests/auditor-matrix-test.sh",
-      "form": "a download",
-      "key": "d4af1c91e7f509cad75e207eb720168fbc827665d4772cf33f47b170d7938b40",
-      "line": "d4af1c91e7f509cad75e207eb720168fbc827665d4772cf33f47b170d7938b40",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat > \"$WORK/mkpm.py\" <<'PYEOF'",
-      "body-last": "PYEOF",
-      "body-sha256": "8b3d30c1a8dc39d56231b1a6fa7668c4898b2508f7a69663f000982dfdcbe9c4"
-    },
-    {
-      "file": ".github/agent/tests/auditor-matrix-test.sh",
-      "form": "a download",
-      "key": "fde5e4737ff1074d00ee2996af0798e390456bcc58694de0cbb5942466fe94e7",
-      "line": "fde5e4737ff1074d00ee2996af0798e390456bcc58694de0cbb5942466fe94e7",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat > \"$WORK/mkpm.py\" <<'PYEOF'",
-      "body-last": "PYEOF",
-      "body-sha256": "8b3d30c1a8dc39d56231b1a6fa7668c4898b2508f7a69663f000982dfdcbe9c4"
-    },
-    {
-      "file": ".github/agent/tests/auditor-matrix-test.sh",
-      "form": "a download",
-      "key": "a936f8979e52a6933c091af14e1199d6da29c6c3fef43a0fd4744b71cbfa2ef7",
-      "line": "a936f8979e52a6933c091af14e1199d6da29c6c3fef43a0fd4744b71cbfa2ef7",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat > \"$WORK/mkpv.py\" <<'PYEOF'",
-      "body-last": "PYEOF",
-      "body-sha256": "80fdbda0388047822b1df066f916ee5a0544fd837539107b55455b016efaa525"
-    },
-    {
-      "file": ".github/agent/tests/auditor-matrix-test.sh",
-      "form": "a download",
-      "key": "aa24aa466180d9da15f1cb34473a70fbf9c77cf3affed05f6d908722abab7474",
-      "line": "aa24aa466180d9da15f1cb34473a70fbf9c77cf3affed05f6d908722abab7474",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat > \"$WORK/mkpv.py\" <<'PYEOF'",
-      "body-last": "PYEOF",
-      "body-sha256": "80fdbda0388047822b1df066f916ee5a0544fd837539107b55455b016efaa525"
-    },
-    {
       "file": ".github/agent/tests/check-action-pins-test.sh",
       "form": "a package-manager install",
       "key": "39e988241f3140b25ba243fedafe211aaff44ca8224de8474ea4e78941658715",
@@ -5884,6 +5844,67 @@
       "key": "947d6890bbf1d822cc85a9d958af71c4f0eb1b53052b6a04cb08eb2b326bfb28",
       "line": "947d6890bbf1d822cc85a9d958af71c4f0eb1b53052b6a04cb08eb2b326bfb28",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/tests/auditor-matrix-test.sh",
+      "form": "a download",
+      "key": "d4af1c91e7f509cad75e207eb720168fbc827665d4772cf33f47b170d7938b40",
+      "line": "d4af1c91e7f509cad75e207eb720168fbc827665d4772cf33f47b170d7938b40",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat > \"$WORK/mkpm.py\" <<'PYEOF'",
+      "body-last": "PYEOF",
+      "body-sha256": "8b3d30c1a8dc39d56231b1a6fa7668c4898b2508f7a69663f000982dfdcbe9c4"
+    },
+    {
+      "file": ".github/agent/tests/auditor-matrix-test.sh",
+      "form": "a download",
+      "key": "fde5e4737ff1074d00ee2996af0798e390456bcc58694de0cbb5942466fe94e7",
+      "line": "fde5e4737ff1074d00ee2996af0798e390456bcc58694de0cbb5942466fe94e7",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat > \"$WORK/mkpm.py\" <<'PYEOF'",
+      "body-last": "PYEOF",
+      "body-sha256": "8b3d30c1a8dc39d56231b1a6fa7668c4898b2508f7a69663f000982dfdcbe9c4"
+    },
+    {
+      "file": ".github/agent/tests/auditor-matrix-test.sh",
+      "form": "a download",
+      "key": "a936f8979e52a6933c091af14e1199d6da29c6c3fef43a0fd4744b71cbfa2ef7",
+      "line": "a936f8979e52a6933c091af14e1199d6da29c6c3fef43a0fd4744b71cbfa2ef7",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat > \"$WORK/mkpv.py\" <<'PYEOF'",
+      "body-last": "PYEOF",
+      "body-sha256": "80fdbda0388047822b1df066f916ee5a0544fd837539107b55455b016efaa525"
+    },
+    {
+      "file": ".github/agent/tests/auditor-matrix-test.sh",
+      "form": "a download",
+      "key": "aa24aa466180d9da15f1cb34473a70fbf9c77cf3affed05f6d908722abab7474",
+      "line": "aa24aa466180d9da15f1cb34473a70fbf9c77cf3affed05f6d908722abab7474",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat > \"$WORK/mkpv.py\" <<'PYEOF'",
+      "body-last": "PYEOF",
+      "body-sha256": "80fdbda0388047822b1df066f916ee5a0544fd837539107b55455b016efaa525"
+    },
+    {
+      "file": ".github/agent/tests/auditor-matrix-test.sh",
+      "form": "a package-manager install",
+      "key": "4e9bddf8bd0beb75081380a05c6fcfd5b40b413f363fe7fd99d92ecddd58faa0",
+      "line": "4e9bddf8bd0beb75081380a05c6fcfd5b40b413f363fe7fd99d92ecddd58faa0",
+      "ruling": "text, not a command: a line of .github/agent/tests/auditor-matrix-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/auditor-matrix-test.sh",
+      "form": "a package-manager install",
+      "key": "fdd62592add7f0463cae283cfa133201fe89906977c81f3ccb7330a465489058",
+      "line": "fdd62592add7f0463cae283cfa133201fe89906977c81f3ccb7330a465489058",
+      "ruling": "text, not a command: a line of .github/agent/tests/auditor-matrix-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/auditor-matrix-test.sh",
+      "form": "a download",
+      "key": "c9ca8a67674b0ef47222cd08f632e3e1d95176cef69004045204e507e045f1f7",
+      "line": "040ac96bc94950c53c6214c30317e4df9efd1774e03818672b77475bdfe22315",
+      "ruling": "text, not a command: a line of .github/agent/tests/auditor-matrix-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
