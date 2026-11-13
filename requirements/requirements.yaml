@@ -1920,11 +1920,13 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is limited to a fixed list (21 files today)
+    title: The workflow set is limited to a fixed list (16 files today), each file grouping jobs by purpose
     statement: >
-      The repository's workflows shall be limited to a fixed list of files, 20 today (AC1 fixes the list), each merge
-      keeping every required check's name, top-level placement and events, and a new workflow file added only when
-      the work cannot reasonably live in an existing one.
+      The repository's workflows shall be limited to a fixed list of files, 16 today (AC1 fixes the list), each file holding the jobs that a person would group by what they are
+      for (jobs with nothing to do with each other never share a file to cut the count, and related jobs never get files of
+      their own), the release being one file, release.yml, whose build, rebuild, check, sign and release jobs each run on their
+      own runner. Each merge keeps every required check's name, top-level placement and events, and a new workflow file is
+      added only when its jobs have a purpose no existing file has.
     source: [.github/workflows/go-freshness.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
@@ -1934,7 +1936,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 21 listed files, the list fixed by bin/workflow-consolidation-test.sh (the consolidated set after the v0.3.0 removals of the legacy workflows; dependabot-auto-merge.yml, supply-chain.yml, stage-sign.yml, customer-words-edited.yml and evidence-letter.yml (the monthly evidence letter, REQ-REL-013; a new file under the owner's Oct 3 amendment) are files of their own)"
+        then: "it holds exactly the 16 listed files, the list fixed by bin/workflow-consolidation-test.sh: acceptance.yml, agent-review-gate.yml, auditor.yml, ci.yml, codeql.yml, customer-words-edited.yml, dependabot-auto-merge.yml, dependabot-reviewer.yml, go-freshness.yml, main-candidate-rescan.yml, persona-uat.yml, release.yml, reserved-branch-guard.yml, scan.yml, scorecard.yml and supply-chain.yml; no stage-*.yml file exists, because the release is the one file release.yml (owner rule workflow-grouped-by-purpose of Nov 13 2026); persona-uat.yml holds the persona UAT jobs (the weekly run and the release-candidate leg), one purpose"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -3230,9 +3232,9 @@ requirements:
   # ── The v0.3.0 release chain: the Sign boundary (pipeline lane, PR 1) ─────
 
   - id: REQ-CHAIN-001
-    title: The Sign job is its own workflow file and cannot be reached from Build
+    title: The Sign stage is its own jobs in the release workflow, in the environment sign, and cannot be reached from Build
     statement: >
-      The release provenance shall be written and signed with the release signing key by a Sign job that lives in its own workflow file, runs on its own fresh GitHub-hosted runner, never runs code from the build, receives only Build's digests, Build's and Rebuild's local Witness records and the exact artifacts those records name (all as data, never executed), signs the release provenance and, after checking them, the Witness records of Build and Rebuild, and whose access to the release signing key (reached through federation only, never a stored credential) no other job can obtain, so that a malicious Build step cannot produce provenance that Release accepts (SLSA Build Level 3 design).
+      The release provenance shall be written and signed with the release signing key by a Sign stage, the jobs sign, sign-rebuild and sign-check of release.yml, each running on its own fresh GitHub-hosted runner in the GitHub environment sign (the release is one workflow file; the owner's rule of Nov 13 2026 is that only the sign jobs get signing permission), never runs code from the build, receives only Build's digests, Build's and Rebuild's local Witness records and the exact artifacts those records name (all as data, never executed), signs the release provenance and, after checking them, the Witness records of Build and Rebuild, and whose access to the release signing key (reached through federation only, never a stored credential, and trusted by the key's role only for the subject repo:fosterstack/cache:environment:sign with job_workflow_ref release.yml, which the owner applies by hand in terraform/aws-apply) no other job, of any environment or file, can obtain, and the apk signing of the release in the same key moves into that stage so that the release job holds no key role, so that a malicious Build step cannot produce provenance that Release accepts (SLSA Build Level 3 design).
     source: [.github/workflows/stage-sign.yml, .github/workflows/release.yml, bin/chain-verify.py, bin/chain-hostile-step.sh, .github/policy/chain-signers.json, .github/policy/chain-scripts.json]
     tier: community
     introduced: v0.3.0
