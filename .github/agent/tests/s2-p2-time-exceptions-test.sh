@@ -107,7 +107,7 @@ for f in emptyver idstr ranges ev; do
 import sys; exec(open(sys.argv[1]).read())
 aud = load("pin-audit")
 try: aud.load_exceptions(sys.argv[2], True)
-except aud.Fail as e: assert str(e).strip(), "empty message"
+except aud.Fail as e: assert "is malformed: exception 0 is not well formed" in str(e), str(e)
 else: raise SystemExit("no failure")
 PY
   CASE="load_exceptions: the malformed file '$f' raises Fail even under python -O (no assert doing the validation)"
@@ -115,7 +115,7 @@ PY
 import sys; exec(open(sys.argv[1]).read())
 aud = load("pin-audit")
 try: aud.load_exceptions(sys.argv[2], True)
-except aud.Fail: pass
+except aud.Fail as e: assert "is malformed" in str(e), str(e)
 else: raise SystemExit("python -O: the malformed file was accepted")
 PY
 done
@@ -125,7 +125,7 @@ for f in dup-top dup-inner dup-modified; do
 import sys; exec(open(sys.argv[1]).read())
 aud = load("pin-audit")
 try: aud.load_exceptions(sys.argv[2], True)
-except aud.Fail as e: assert sys.argv[2] in str(e), str(e)
+except aud.Fail as e: assert sys.argv[2] in str(e) and "repeats a key" in str(e), str(e)
 else: raise SystemExit("a repeated key was accepted")
 PY
 done
@@ -142,8 +142,8 @@ pa_args=(--root "$work/r" --fixtures "$work/fx.json" --now 2026-10-05T12:00:00Z 
   --exceptions "$work/dup-top.json")
 python3 "$SC/pin-audit.py" "${pa_args[@]}" >"$work/e2e.out" 2>"$work/e2e.err" || rc=$?
 check test "$rc" -eq 2
-CASE="pin-audit end to end: the stderr says 'cannot do its job'"
-check grep -q 'cannot do its job' "$work/e2e.err"
+CASE="pin-audit end to end: the stderr says 'cannot do its job' and that the key is repeated"
+check grep -q 'cannot do its job.*repeats a key' "$work/e2e.err"
 
 echo "s2-p2-time-exceptions: $pass ok, $failn failed"
 [ "$failn" -eq 0 ]
