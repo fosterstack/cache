@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-CI-005-AC1, REQ-CI-005-AC2, REQ-CI-005-AC5, REQ-CI-005-AC6, REQ-CI-005-AC7 — every floored suite runs once (a counting step or a matrix leg); the legs are the floors file less the counting steps; grype only where the VEX suites need it
-# Tests for the suites matrix of .github/workflows/ci.yml (self-contained: needs bash, git, jq, python3 with PyYAML). Proves:
-#  - the `list` step of the suite-list job, run for real, prints exactly the floors-file suites that no counting step names;
-#  - each floored suite is run once: by its counting step (and then it has no leg) or by its own leg through suite-guard-run.py run;
-#  - the pinned grype is installed in the legs of vex-scope-test.sh and vex-both-scanners-test.sh only;
-#  - the old policy list ci-suites.json is gone and CHAIN_TEST_REQUIRE_NETCUT is gone (the chain test reads GITHUB_ACTIONS instead);
-#  - the checks themselves fail on broken copies of the workflow (a check that cannot fail proves nothing).
-# It prints "ci-suites-matrix: N passed, M failed" and fails if N+M is not the number of cases it declares.
+# Guards the suites matrix of .github/workflows/ci.yml: each floored suite must run exactly once, and a wiring slip would otherwise drop a suite silently.
+# The real `list` step is executed (not re-implemented) and compared with a list worked out independently; the checks are also run against broken
+# copies of the workflow, since a check that cannot fail proves nothing. Needs bash, git, jq and python3 with PyYAML.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d -t ci-suites-matrix.XXXXXX)
@@ -43,7 +39,6 @@ def legs():
     return got
 if check == "form":
     got = legs()
-    if not isinstance(got, list) or not all(isinstance(x, str) for x in got): fail("the output is not a JSON list of strings")
     if len(got) != len(set(got)): fail("the list repeats a suite")
 elif check == "ac1":
     got = legs()
@@ -51,6 +46,11 @@ elif check == "ac1":
     both = set(counted) & set(got)
     if both: fail("a suite with a counting step also has a leg: %s" % sorted(both))
     if set(counted) - set(floors): fail("a counting step names a suite the floors file lacks")
+elif check == "plain":
+    # a skipped or failure-tolerant counting step would drop its suite from both the matrix and the run
+    for j in wf["jobs"]:
+        for st in steps(j):
+            if COUNT.match(str(st.get("run", "")).strip()) and ("if" in st or "continue-on-error" in st): fail("counting step has if or continue-on-error: " + st["run"])
 elif check == "ac2":
     missing = set(expected) - set(legs())
     if missing: fail("floored suites with no counting step and no leg: %s" % sorted(missing))
@@ -94,6 +94,7 @@ elif kind == "suite-missing": lst["run"] = emit('["b-test.sh"]')
 elif kind == "not-a-string-list": lst["run"] = emit('[{"suite":"b-test.sh"},{"suite":"c-test.sh"}]')
 elif kind == "leg-not-guarded": runs["run"] = 'bash "bin/$SUITE"'
 elif kind == "netcut-variable": runs["env"]["CHAIN_TEST_REQUIRE_NETCUT"] = "1"
+elif kind == "counting-skipped": wf["jobs"]["other"]["steps"][0]["if"] = "${{ false }}"
 elif kind == "counted-twice": wf["jobs"]["other"]["steps"].append(dict(wf["jobs"]["other"]["steps"][0]))
 yaml.safe_dump(wf, open(dst, "w"), width=10000)
 PY
@@ -144,7 +145,7 @@ pass_() { local out; if out=$(chk "$1" "$2"); then ok "$3"; else bad "$3 -> $out
 refuse() { local out; if out=$(chk "$1" "$2"); then bad "$3 (the check did not fail)"; else ok "$3 ($out)"; fi; }
 
 # ---- the checks hold on a well-formed workflow --------------------------------------------------------------------------------
-for c in form ac1 ac2 ac5 wiring grype netcut; do pass_ $c "$work/good" "control: check '$c' holds on a well-formed workflow"; done
+for c in form ac1 ac2 ac5 plain wiring grype netcut; do pass_ $c "$work/good" "control: check '$c' holds on a well-formed workflow"; done
 
 # ---- ...and fail on a broken copy of it ---------------------------------------------------------------------------------------
 broken() { local kind=$1 check=$2 label=$3 d="$work/m-$1"; mk "$d"; python3 -I "$work/mut.py" "$kind" "$work/good/.github/workflows/ci.yml" "$d/.github/workflows/ci.yml"; refuse "$check" "$d" "mutation: $label"; }
@@ -152,6 +153,7 @@ broken grype-dropped grype "the grype condition dropped (every leg installs it) 
 broken grype-widened grype "the grype condition widened to a third suite is refused"
 broken grype-one-missing grype "the grype condition missing a VEX suite is refused"
 broken counted-in-matrix ac1 "a suite with a counting step also listed in the matrix is refused"
+broken counting-skipped plain "a counting step with if: false (its suite would run nowhere) is refused"
 broken counted-twice ac1 "a suite with two counting steps is refused"
 broken suite-missing ac2 "a floored suite missing from the list (no step, no leg) is refused"
 broken suite-missing ac5 "a list that differs from floors minus counting steps is refused"
@@ -164,6 +166,7 @@ cd "$root"
 pass_ form "$root" "REQ-CI-005-AC5 real ci.yml: the list step prints a JSON list of strings, each suite once"
 pass_ ac5 "$root" "REQ-CI-005-AC5 real ci.yml: the legs are exactly the floors file less the suites a counting step names"
 pass_ ac1 "$root" "REQ-CI-005-AC1 real ci.yml: a suite with a counting step has no leg and one step"
+pass_ plain "$root" "REQ-CI-005-AC1 real ci.yml: no counting step carries if or continue-on-error"
 pass_ ac2 "$root" "REQ-CI-005-AC2 real ci.yml: every other floored suite has a leg"
 pass_ wiring "$root" "REQ-CI-005-AC2 real ci.yml: the legs come from the list job and run suite-guard-run.py run"
 pass_ grype "$root" "REQ-CI-005-AC6 real ci.yml: grype is installed in the legs of the two VEX suites only"
@@ -179,7 +182,7 @@ elif grep -q '"${GITHUB_ACTIONS:-}" = true' bin/chain-verify-test.sh; then ok "R
 else bad "REQ-CI-005-AC7 bin/chain-verify-test.sh does not test GITHUB_ACTIONS = true"; fi
 if ! git grep -q 'CHAIN_TEST_REQUIRE_NETCUT' -- . ':!bin/ci-suites-matrix-test.sh' ':!docs' ':!requirements'; then ok "REQ-CI-005-AC7 CHAIN_TEST_REQUIRE_NETCUT appears nowhere else in the repository"; else bad "REQ-CI-005-AC7 CHAIN_TEST_REQUIRE_NETCUT is still used: $(git grep -l 'CHAIN_TEST_REQUIRE_NETCUT' -- . ':!bin/ci-suites-matrix-test.sh' ':!docs' ':!requirements' | tr '\n' ' ')"; fi
 
-EXPECT=28
+EXPECT=31
 echo "ci-suites-matrix: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
