@@ -701,7 +701,8 @@ check(rc == 2 and not policy_calls(t) and not os.path.exists(os.path.join(t, "po
 t = tree_without_policy(); rc, so, se = sign_step(t, tag="v0.3.0-rc1")
 check(rc == 1 and not policy_calls(t) and not os.path.exists(os.path.join(t, "policy.json")),
       "G1 a refused tag stops the step before the policy is made", "rc=%s %s" % (rc, first(se)))
-t = tree_without_policy(); rc, so, se = sign_step(t, tag="v0.3.1")
+t = tree_without_policy(); adm(t, "v0.3.1", "v0.3.0")      # Build's admission file is for the tag of the run
+rc, so, se = sign_step(t, tag="v0.3.1")
 check(rc == 0 and policy_calls(t) == [POLICY.replace("v0.3.0", "v0.3.1")], "G1 the policy is made for the tag of the run", "rc=%s %s" % (rc, policy_calls(t)))
 # a signature that fails stops the step at that call
 t = tree(); rc, so, se = sign_step(t, env={"KMSSIGN_FAIL_ON": "images/ghcr.io/production.bundle"}); check(rc != 0 and len(kms_calls(t)) == 1, "I1 a failing first signature (the KMS key refuses) stops the step at that one call", "rc=%s n=%d %s" % (rc, len(kms_calls(t)), first(se)))
