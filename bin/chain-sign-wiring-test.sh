@@ -7,8 +7,8 @@
 #               `digests`, with no outputs and no secrets, whose steps are exactly, in order:
 #                 1. actions/checkout (persist-credentials: false, explicit)
 #                 2. actions/download-artifact name witness-build path witness-build (Build's signed Witness record: DATA, never run)
-#                 3. run: bash bin/install-scanner.sh cosign     (the signing tool, pinned by checksum like gitsign; the PR adds
-#                                                                 cosign to bin/install-scanner.sh)
+#                 3. run: bash bin/install-scanner.sh aws-cli    (the aws CLI, pinned by checksum; signatures are made through it,
+#                                                                 so the job installs NO cosign and runs no cosign binary)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
 #                 5. run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json
 #                         --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
@@ -86,7 +86,6 @@ R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_PRINTF_REC = r"printf '%s' \"\$RECORDS\" > rebuild-records\.json"
 R_PRINTF_CREC = r"printf '%s' \"\$RECORDS\" > check-records\.json"
 R_PRINTF_CRECA = r"printf '%s' \"\$RECORDS_ARM64\" > check-records-arm64\.json"
-R_INSTALL = r"bash bin/install-scanner\.sh cosign"
 R_INSTALL_AWS = r"bash bin/install-scanner\.sh aws-cli"      # KA-2 p4 group 4: the pinned aws CLI, installed in the three jobs that reach KMS
 R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
@@ -102,7 +101,7 @@ EXPECT_STEPS = {
             + [("download", "witness-apk-" + r, "witness-apk-" + r) for r in RUNNERS]
             + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
             + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
-            + [("install", "cosign"), ("install", "aws-cli"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
+            + [("install", "aws-cli"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
                ("upload", "signed-witness-build", "signed/witness-build")],
     "sign-rebuild": [("checkout",)]
             + [("download", "witness-rapk-" + r, "witness-rapk-" + r) for r in RUNNERS]
@@ -198,9 +197,6 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_PRINTF_CRECA, line):
                     order.append("printf"); seq.append(("printfchka",))
                     if env != {"RECORDS_ARM64": "${{ inputs.records-arm64 }}"}: bad.append("AC3: the arm64 check records step must have exactly env RECORDS_ARM64: ${{ inputs.records-arm64 }}, found %s" % env)
-                elif "\n" not in line and re.fullmatch(R_INSTALL, line):
-                    order.append("install"); seq.append(("install", "cosign"))
-                    if env: bad.append("AC3: step %r passes env" % sn)
                 elif "\n" not in line and re.fullmatch(R_INSTALL_AWS, line):
                     order.append("install"); seq.append(("install", "aws-cli"))
                     if env: bad.append("AC3: step %r passes env" % sn)
@@ -217,7 +213,7 @@ def judge_sign(path):
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
                                              ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", os.environ["SINK_ARTIFACT_RX"])) if re.search(rx, run)]
-                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install cosign or witness; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; the one chain-verify.py sign --check ... --out provenance)"
+                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install witness or the aws CLI; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; the one chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
         want = EXPECT_STEPS.get(name)
@@ -718,8 +714,6 @@ jobs:
         with:
           name: apk-ubuntu-24.04-arm
           path: artifacts/witness-apk-ubuntu-24.04-arm/out
-      - name: install the signing tool (pinned by checksum)
-        run: bash bin/install-scanner.sh cosign
       - name: install the aws CLI (pinned by checksum)
         run: bash bin/install-scanner.sh aws-cli
       - name: write the digest list to a file
@@ -916,8 +910,9 @@ caught "WIT3 the records step with an env" "      - name: check Build's records 
 caught "WIT3 the records step after the provenance step (the records must be checked first)" "(      - name: check Build's records against the artifacts, then sign them\n        run: [^\n]*\n)(      - name: sign the staged records and check each signed one\n(?:        env:\n(?:          [^\n]*\n)+)?        run: [^\n]*\n)(      - name: check Build's record, compare the digests, then sign the provenance\n(?:        env:\n(?:          [^\n]*\n)+)?        run: [^\n]*\n)" '\3\1\2'
 caught "WIT3 the whole signed directory uploaded (only the named signed-witness-* directories may leave)" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed'
 caught "WIT3 an unsigned record directory uploaded as a signed artifact" 'name: signed-witness-build\n          path: signed/witness-build\n' 'name: signed-witness-build\n          path: witness-build\n'
-caught "WIT3 cosign is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: cu''''rl -sL https://example.com/cosign -o /usr/local/bin/cosign'
-caught "WIT3 sign installs no cosign (the provenance and the records are signed through it)" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
+caught "WIT3 cosign is not installed by a download in the sign job" 'run: bash bin/install-scanner.sh aws-cli' 'run: cu''''rl -sL https://example.com/cosign -o /usr/local/bin/cosign'
+caught "WIT3 sign installs no cosign (a pinned-installer cosign step added before the aws CLI step is refused)" '      - name: install the aws CLI \(pinned by checksum\)\n' '      - name: install the signing tool\n        run: bash bin/install-scanner.sh cosign\n      - name: install the aws CLI \(pinned by checksum\)\n'
+caught "WIT3 sign installs no cosign (a pinned-installer cosign step added after the aws CLI step is refused)" '      - name: write the digest list to a file\n' '      - name: install the signing tool\n        run: bash bin/install-scanner.sh cosign\n      - name: write the digest list to a file\n'
 # ---- W1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-001-AC2, whose text lists Sign's steps with a Witness install and a Witness sign step and no step env, REQ-CHAIN-001-AC1, whose text says step env names come from the closed env_names list, and REQ-CHAIN-007-AC18): the signing steps carry exactly the three federation entries as step-level literals
 caught "KA-2 p4 group 4 sign installs no aws CLI (the pinned one the signing call needs)" '      - name: install the aws CLI \(pinned by checksum\)\n        run: bash bin/install-scanner.sh aws-cli\n' ''
 caught "W1 the staged-signing step has no federation env" '        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witness-sign-staged.sh' '        run: bash bin/witness-sign-staged.sh'
@@ -928,7 +923,7 @@ caught "W1 the role is another account's" 'AWS_ROLE_ARN: arn:aws:iam::8213028038
 caught "W1 the region differs" 'AWS_REGION: us-east-1' 'AWS_REGION: eu-west-1'
 caught "W1 the key reference differs from the verifier's RELEASE_KEY_REF" 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing' 'RELEASE_KMS_KEY_REF: awskms:///alias/other'
 caught "W1 job-level env carrying a federation entry" '    runs-on: ubuntu-24.04' '    runs-on: ubuntu-24.04\n    env:\n      AWS_REGION: us-east-1'
-caught "W1 an install step carries a federation entry" '      - name: install the signing tool \(pinned by checksum\)\n' '      - env:\n          AWS_REGION: us-east-1\n        name: install the signing tool (pinned by checksum)\n'
+caught "W1 an install step carries a federation entry" '      - name: install the aws CLI \(pinned by checksum\)\n' '      - env:\n          AWS_REGION: us-east-1\n        name: install the aws CLI (pinned by checksum)\n'
 # ---- A1 (#822 round 2; wording pending the owner's approval for REQ-CHAIN-001-AC2): the provenance signature is made with a fresh identity token fetched by the one token-fetch script, for that one call only
 caught "A1 the provenance step calls chain-verify.py sign without the token wrapper" 'run: bash bin/with-aws-token.sh sign --check' 'run: python3 -I -B bin/chain-verify.py sign --check'
 caught "A1 the provenance step wraps another command in the token wrapper" 'run: bash bin/with-aws-token.sh sign --check' 'run: bash bin/with-aws-token.sh bash -c true; python3 -I -B bin/chain-verify.py sign --check'
@@ -951,7 +946,7 @@ caught "AC1 a step with two run: keys (the second the benign sign line)" "      
 caught "AC1 a job with two permissions: keys (the second the benign one)" '    permissions:\n      contents: read\n      id-token: write' '    permissions: write-all\n    permissions:\n      contents: read\n      id-token: write'
 caught "AC1 two top-level permissions: keys (the second the benign one)" 'permissions:\n  contents: read\njobs' "permissions: write-all\npermissions:\n  contents: read\njobs"
 caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
-caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh cosign' 'run: '$'\u00a0''bash bin/install-scanner.sh cosign'
+caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh aws-cli' 'run: '$'\u00a0''bash bin/install-scanner.sh aws-cli'
 caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE"$'\u200b'
 okmut() { if mutate "$1" "$2" "$3"; then expect ok "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi; }
 caught "AC1 Sign judge: runs-on ubuntu-. is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.'
@@ -990,8 +985,8 @@ cat > "$FXDIR/FXD_44" <<'FXEOF'
 run: curl -sL https://example.com/cosign -o cosign
 FXEOF
 FXD_44=$(cat "$FXDIR/FXD_44")
-caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' "$FXD_44"
-caught "AC2 the signing step runs before the tool is installed" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
+caught "AC2 a cosign tool downloaded in the sign job (no pinned installer, no cosign at all)" 'run: bash bin/install-scanner.sh aws-cli' "$FXD_44"
+caught "AC2 a cosign install added to the sign job (the job installs no cosign)" '      - name: install the aws CLI \(pinned by checksum\)\n' '      - name: install the signing tool\n        run: bash bin/install-scanner.sh cosign\n      - name: install the aws CLI \(pinned by checksum\)\n'
 caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
 # 0707 fix 4: Sign names its SBOM input, the items.json the Build record holds, downloaded to witness-build/
 caught "AC2 the signing step without --items" ' --items witness-build/items\.json' ''
@@ -5222,7 +5217,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2134
+EXPECT=2135
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
