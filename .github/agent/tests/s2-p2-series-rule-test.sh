@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
-# cache#359 round 5, section 2, group P2, row "a series is not a pin": for EVERY installer-input tool (INSTALLER_INPUTS of pin-inventory.py: golangci-lint,
-# python, java, node, goreleaser, cosign, gcloud, helm, buildx, kind, kubectl) a version of fewer than three numeric parts (v2.1, 2.1, 3) is a series, not an
-# exact release: the age judge refuses it ("not a pin"/"series") whatever proof it is given. Three numeric parts still pass with an old enough proof.
+# cache#359 round 5, section 2, group P2, row "a series is not a pin": for EVERY installer-input tool (INSTALLER_INPUTS
+# of pin-inventory.py: golangci-lint,
+# python, java, node, goreleaser, cosign, gcloud, helm, buildx, kind, kubectl) a version of fewer than three numeric
+# parts (v2.1, 2.1, 3) is a series, not an
+# exact release: the age judge refuses it ("not a pin"/"series") whatever proof it is given. Three numeric parts still
+# pass with an old enough proof.
 # Written from the English rows only; judge_item is called in-process.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -12,7 +15,14 @@ pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
-check() { if "$@" >"$work/last.out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/     | /' "$work/last.out" | tail -5; fi; }
+check() {
+  if "$@" >"$work/last.out" 2>&1; then
+    ok "$CASE"
+  else
+    bad "$CASE"
+    sed 's/^/     | /' "$work/last.out" | tail -5
+  fi
+}
 cat >"$work/pre.py" <<'PY'
 import datetime as dt, importlib.util, os, sys
 D = os.environ["SC"]
@@ -27,9 +37,11 @@ PY
 CASE="the installer-input tool list is the eleven the rows name (the loop below covers every one of them)"
 check python3 - "$work/pre.py" <<'PY'
 import sys; exec(open(sys.argv[1]).read())
-assert TOOLS == sorted("golangci-lint python java node goreleaser cosign gcloud helm buildx kind kubectl".split()), TOOLS
+assert TOOLS == sorted(
+    "golangci-lint python java node goreleaser cosign gcloud helm buildx kind kubectl".split()), TOOLS
 PY
-CASE="every installer-input tool: a two-part version (v2.1 and 2.1) is a series, refused as 'not a pin' even with a 30-day-old release proof"
+CASE="every installer-input tool: a two-part version (v2.1 and 2.1) is a series, refused as 'not a pin' "
+CASE+="even with a 30-day-old release proof"
 check python3 - "$work/pre.py" <<'PY'
 import sys; exec(open(sys.argv[1]).read())
 bad = []
