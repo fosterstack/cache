@@ -12,6 +12,8 @@ from unittest import mock
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 REPO = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
 PATH = os.path.join(BIN, "auditor-panel.py")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from locale_cleared import setUpModule, tearDownModule  # noqa: E402,F401
 
 
 def load():
@@ -26,23 +28,6 @@ SHA40 = "c" * 40
 OID40 = "d" * 40
 GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID40, "signature": {"isValid": True, "state": "VALID"}}}}})
 GO_BIN = b"\x7fELF....." + P.GO_MARK + b"...."
-
-
-_LOCALE_VARS = ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG")
-
-
-def setUpModule():
-    """argparse looks up translations in the system's locale directory when any locale variable is set, and the guard refuses that read of a
-    real system path: this module runs with none set, and puts the environment back exactly as it was."""
-    global _ENV_PATCH
-    _ENV_PATCH = mock.patch.dict(os.environ)
-    _ENV_PATCH.start()
-    for k in _LOCALE_VARS:
-        os.environ.pop(k, None)
-
-
-def tearDownModule():
-    _ENV_PATCH.stop()
 
 
 def tar_bytes(files, gz=True):
@@ -921,7 +906,8 @@ class Deliver(Tmp):
                 self.assertEqual(self.tree(self.out), out_before, label)
         self.assertEqual(P.validate_day(dict(json.load(open(os.path.join(self.out, "day.json"))), vex=[full])), [])
         for key in ("package", "version"):
-            bad = P.validate_day(dict(json.load(open(os.path.join(self.out, "day.json"))), vex=[{k: v for k, v in full.items() if k != key}]))
+            day = json.load(open(os.path.join(self.out, "day.json")))
+            bad = P.validate_day(dict(day, vex=[{k: v for k, v in full.items() if k != key}]))
             self.assertTrue([e for e in bad if repr(key) in e], bad)
 
     def test_invalid_utf8_in_the_checkouts_panel_state_is_a_named_stop_read_through_text_of(self):
