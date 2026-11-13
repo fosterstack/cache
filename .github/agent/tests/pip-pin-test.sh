@@ -19,7 +19,8 @@
 # Boundaries (documented, not tested): code that shells out to pip from inside another program (python -c "subprocess..."), third-party actions that
 # install packages inside themselves, and the inside of an external reusable workflow. A job-level `uses:` is therefore required to be either a
 # local workflow (which is read here like any other) or a digest-pinned external one, and a job that has `uses:` has no steps of its own (case 7).
-# Not testable offline: that the pinned version exists on the index (the pin scan, REQ-SUP-001-AC2, names it on the PR that moves it).
+# Not testable offline: that the pinned version exists on the index (the pin scan, REQ-SUP-001-AC2, names it on the PR
+# that moves it).
 # Everything is read from the PARSED files (vendored PyYAML); the real tree must pass and every mutation (made through the parsed document,
 # or on the requirement text) must be rejected FOR THE REASON NAMED. PIPPIN_ROOT points the judge at another tree (the mutant builder's reference).
 set -euo pipefail
@@ -531,8 +532,9 @@ def dep_twice(t):
 def dep_dir(t):
     for u in dep_pip(t): u["directory"] = "/"
     return True
-mutants += [("the Dependabot pip entry missing", "C4", dep_missing), ("a second Dependabot pip entry for the same directory", "C4", dep_twice),
-             ("the Dependabot pip entry on directory /", "C4", dep_dir)]
+mutants += [("the Dependabot pip entry missing", "C4", dep_missing),
+            ("a second Dependabot pip entry for the same directory", "C4", dep_twice),
+            ("the Dependabot pip entry on directory /", "C4", dep_dir)]
 
 def ci_steps(t): return t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"]
 def ci_unwire(t):
