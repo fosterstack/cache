@@ -46,7 +46,8 @@ LEDGER="$WORK/model.ledger"; export AUDITOR_MODEL_LEDGER="$LEDGER"
 # .vex/.snyk/osv-scanner.toml/.auditor (REQ-AUD-18); a case needing its own sets it explicitly.
 export GITHUB_WORKSPACE="$WORK/workspace"; mkdir -p "$GITHUB_WORKSPACE"; cp -R .vex "$GITHUB_WORKSPACE/" 2>/dev/null || true
 cp README.md "$GITHUB_WORKSPACE/" 2>/dev/null || true   # the file a model proposal names as its evidence
-# a proposal's evidence is read only at a git commit (no workspace fallback): the workspace is a repository whose one commit holds that file, the fixture commit of every dry and test run
+# a proposal's evidence is read only at a git commit (no workspace fallback): the workspace is a repository
+# whose one commit holds that file, the fixture commit of every dry and test run
 git -C "$GITHUB_WORKSPACE" init -q && git -C "$GITHUB_WORKSPACE" add README.md && git -C "$GITHUB_WORKSPACE" -c user.name=t -c user.email=t@example.org -c commit.gpgsign=false commit -qm fixture \
   || { echo "fixture commit failed" >&2; exit 2; }
 MISS="__MISSING__"
@@ -701,6 +702,20 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   onlytoggle="$(pj "$WORK/sh.json" 'str(sorted(d.get("identifier_env_vars",[]))==["AUDITOR_AUTOMERGE","AUDITOR_SCHEDULE_MODE"])')"
   { eq "$fromsecrets" "True" && eq "$onlytoggle" "True"; } \
     && ok || no "identifiers via secrets.* (no SNYK_TOKEN: the auditor runs no scanner); only vars.* are AUDITOR_SCHEDULE_MODE + AUDITOR_AUTOMERGE" "from_secrets=$fromsecrets only_toggle=$onlytoggle vars=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
+
+begin "req6-ac2-workflow-writes-the-token-budget" "the parsed workflow passes the judge step the per-run token budget the code stops at"
+if ! have "$WF"; then no "$WF present" "absent"; else
+  r="$(WF="$WF" PYTHONPATH="$BIN" "$PY" - <<'PY'
+import os, re, yaml
+from auditorlib import policy
+wf = yaml.safe_load(open(os.environ["WF"]))
+runs = [s.get("run") or "" for j in wf["jobs"].values() for s in j.get("steps") or []]
+judge = [t for t in runs if "auditor-panel.py judge" in t]
+got = [re.findall(r"--token-budget (\d+)", t) for t in judge]
+print("OK" if len(judge) == 1 and got == [[str(policy.TOKEN_BUDGET)]] else "BAD:%r" % got)
+PY
+)"
+  { eq "$r" "OK"; } && ok || no "one judge step carrying --token-budget equal to policy.TOKEN_BUDGET" "$r"; fi
 
 begin "req6-ac4-no-key-leak" "a canary is never printed to stdout OR stderr, nor written anywhere under the output tree"
 o="$WORK/leak"; rm -rf "$o"; canary="sk-""ant-oat01-CANARY-$$"   # split: this suite lives under the scanned .github/agent/
@@ -2795,7 +2810,7 @@ env AUDITOR_AUTOMERGE=on AUDITOR_GIT_SHIM_LOG="$sh" "$PY" "$BIN/auditor-run.py" 
 # the merge is NOT blocked by the pending owner decision: the PR is delivered + auto-merge armed
 delivered="$(grep -c 'pr create' "$sh" 2>/dev/null)"; delivered="${delivered:-0}"
 armed="$(grep -c 'pr merge --auto --squash' "$sh" 2>/dev/null)"; armed="${armed:-0}"
-# but the RELEASE gate holds on the unaccepted at-or-above item.
+# and the unaccepted at-or-above item is still recorded in accepted-items.json for the owner.
 az="$WORK/req17-ac5-authz"; rm -rf "$az"; mkdir -p "$az"
 cp "$o/.auditor/accepted-items.json" "$az/cand.json" 2>/dev/null
 hold="$("$PY" -c "
@@ -2805,6 +2820,25 @@ at=[i for i in d['accepted_items'] if i.get('threshold')=='at_or_above']
 print('yes' if at else 'no')" 2>/dev/null)"; hold="${hold:-no}"
 { [ "$delivered" -ge 1 ] 2>/dev/null && [ "$armed" -ge 1 ] 2>/dev/null && eq "$hold" "yes"; } \
   && ok || no "PR delivered/armed; owner item recorded for release-hold (not a merge block)" "delivered=$delivered armed=$armed at_threshold_item=$hold"
+
+begin "req17-ac5-open-owner-item-is-held-in-the-tag-time-record" "an open at-or-above owner item stays in the delivered accepted-items record that holds the tag"
+o="$WORK/req17-ac5t"; rm -rf "$o"; sh="$WORK/req17-ac5t.shim"; rm -f "$sh"; _req17_src "$WORK/req17-ac5t-src"
+env AUDITOR_AUTOMERGE=on AUDITOR_GIT_SHIM_LOG="$sh" "$PY" "$BIN/auditor-run.py" --dry-run false \
+  --manifest "$WORK/req17-ac5t-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" \
+  --today 2026-09-24 --out "$o" >/dev/null 2>&1 || true
+held="$("$PY" -c 'import json,sys
+items=json.load(open(sys.argv[1]))["accepted_items"]
+at=[i for i in items if i.get("threshold")=="at_or_above" and i.get("cve")=="CVE-2099-CRIT"]
+print("held" if len(at)==1 and at[0].get("owner_issue") and not at[0].get("accepted") else "BAD:%r"%at)' "$o/.auditor/accepted-items.json" 2>/dev/null)"; held="${held:-missing}"
+carried="$(grep -c 'createCommitOnBranch .*\.auditor/accepted-items.json' "$sh" 2>/dev/null)"; carried="${carried:-0}"
+o2="$WORK/req17-ac5u"; rm -rf "$o2"; sh2="$WORK/req17-ac5u.shim"; rm -f "$sh2"
+env AUDITOR_GIT_SHIM_LOG="$sh2" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" \
+  --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o2" >/dev/null 2>&1 || true
+none="$("$PY" -c 'import json,sys
+items=json.load(open(sys.argv[1]))["accepted_items"]
+print("none" if not [i for i in items if i.get("threshold")=="at_or_above"] else "BAD")' "$o2/.auditor/accepted-items.json" 2>/dev/null)"; none="${none:-missing}"
+{ eq "$held" "held" && [ "$carried" -ge 1 ] 2>/dev/null && eq "$none" "none"; } \
+  && ok || no "the open at-or-above item held in the delivered record; a run without one records none" "held=$held carried=$carried contrast=$none"
 
 echo "=== REQ-AUD-16 — auditor knowledge ==="
 
@@ -4826,7 +4860,8 @@ got=[ask('{\"category\": \"false_positive\"}'), ask('This is not a false_positiv
 want=['false_positive'and('false_positive',False),'FAILED-ATTEMPT',('under_investigation',False),'FAILED-ATTEMPT',('under_investigation',True),('real_fixable',False),('under_investigation',False),'FAILED-ATTEMPT',('under_investigation',True),'FAILED-ATTEMPT','FAILED-ATTEMPT']
 print('OK' if got==want else 'BAD %r'%(got,))" 2>/dev/null | tail -1)"
 eq "$r12" "OK" && ok || no "client category and refusal are read from exact JSON keys" "$r12"
-begin "rc5b-12-proposals-validated-by-shape-and-name" "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap and no vendor/model name; a refused proposal does not stop the run"
+begin "rc5b-12-proposals-validated-by-shape-and-name" "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap "\
+"and no vendor/model name; a refused proposal does not stop the run"
 EVREPO="$WORK/evidence-repo"; rm -rf "$EVREPO"; mkdir -p "$EVREPO/docs" "$WORK/evidence-outside"
 cp README.md "$EVREPO/README.md"; printf 'x\n' > "$EVREPO/LICENSE"; printf 'x\n' > "$EVREPO/docs/a.md"; printf 'x\n' > "$WORK/evidence-outside/x.md"; ln -s "$WORK/evidence-outside" "$EVREPO/escape"
 git -C "$EVREPO" init -q && git -C "$EVREPO" add -A && git -C "$EVREPO" -c user.name=t -c user.email=t@example.org -c commit.gpgsign=false commit -qm fixture
