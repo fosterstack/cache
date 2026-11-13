@@ -30,6 +30,7 @@ melange-baselayout.yaml in DIR.
 import argparse
 import difflib
 import hashlib
+import itertools
 import os
 import re
 import sys
@@ -198,9 +199,11 @@ def main():
     a = ap.parse_args()
     text = read_template(a.template)
     bl_text = read_baselayout_template(a.baselayout_template)
-    if len({os.path.abspath(p) for p in (a.regular, a.fips, a.baselayout)}) != 3:
-        bad("--regular, --fips and --baselayout must name three files, two name the same file; refusing "
-            "(one recipe would silently replace another)", 2)
+    flags = {"--regular": a.regular, "--fips": a.fips, "--baselayout": a.baselayout}
+    for (flag1, path1), (flag2, path2) in itertools.combinations(flags.items(), 2):
+        if os.path.abspath(path1) == os.path.abspath(path2):
+            bad("%s %s and %s %s name the same file; refusing (one recipe would silently replace another)"
+                % (flag1, path1, flag2, path2), 2)
     packages, module = read_packages(a.melange_lock), read_fips_module(a.fips_module)
     regular, fips = generate(text, "regular", packages, module), generate(text, "fips", packages, module)
     baselayout = generate_baselayout(bl_text, packages)
