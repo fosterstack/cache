@@ -1568,6 +1568,8 @@ def main(argv=None):
                 fx = json.load(open(a.fixtures))
             except (OSError, ValueError) as e:
                 raise Fail(f"unreadable fixtures: {e}")
+            if not isinstance(fx, dict):
+                raise Fail("unreadable fixtures: not a JSON object")
         now = age.parse_time(a.now, True) if a.now else dt.datetime.now(dt.timezone.utc)
         if now is None:
             raise Fail("--now is not an ISO time")

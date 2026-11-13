@@ -835,6 +835,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         fx = json.load(open(a.fixtures)) if a.fixtures else None
+        if a.fixtures and not isinstance(fx, dict):
+            raise ValueError("--fixtures is not a JSON object")
         now = parse_time(a.now, True) if a.now else (parse_time((fx or {}).get("now"), True) if fx and fx.get("now")
             else dt.datetime.now(dt.timezone.utc))
         if now is None:
