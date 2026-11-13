@@ -381,8 +381,9 @@ mappings:
   - ac: REQ-DEPLOY-002-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }
-  # The platform and FIPS credits to chain-check-scripts-test.sh rest on stub binaries and a stub docker: unit coverage of bin/check-artifacts.sh,
-  # not a run of the shipped artifact. The credit for that run (Check's run of bin/check-artifacts.sh on the real images and archives)
+  # The platform and FIPS credits to chain-check-scripts-test.sh rest on stub binaries and a stub docker:
+  # unit coverage of bin/check-artifacts.sh, not a run of the shipped artifact. The credit for that run
+  # (Check's run of bin/check-artifacts.sh on the real images and archives)
   # is added when section 1 settles the Check job's name.
   - ac: REQ-PLAT-002-AC1
     evidence:
@@ -822,6 +823,7 @@ mappings:
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-009-AC6
     evidence:
+      - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
   - ac: REQ-REL-009-AC13
     evidence:
@@ -840,7 +842,8 @@ mappings:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
-  # The credited suite asserts only that no step after Sign attaches or changes an attestation; the digest-equality clause is unproved.
+  # The credited suite asserts only that no step after Sign attaches or changes an attestation;
+  # the digest-equality clause is unproved.
   - ac: REQ-REL-010-AC4
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1066,7 +1069,7 @@ mappings:
   - ac: REQ-CHAIN-001-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
-  # The credited suites check known-red states only; no case drives the marker refusal itself.
+  # The marker refusal is driven by chain-build-admit-test.sh, marker-gate-test.sh and chain-verify-test.sh.
   - ac: REQ-CHAIN-001-AC6
     evidence:
       - { type: shell-test, ref: "bin/marker-gate-test.sh" }
