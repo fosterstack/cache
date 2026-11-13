@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""The supply-chain audit (REQ-SUP-001-AC5 to AC10): advisories, malicious-package reports, upstream reachability, disputed hits.
+"""The supply-chain audit (REQ-SUP-001-AC5 to AC10): advisories, malicious-package reports, upstream reachability,
+disputed hits.
 
   pin-audit.py --root REPO [--base REV] [--fixtures FILE] [--now ISO] [--gh CMD] [--exceptions FILE]
 
-Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull request mode (--base REV): only the
-items the head moved. A hit becomes ONE issue (found again later: updated, never a second issue) labelled supply-chain-hit, naming the version,
-the advisory id and the rollback; it is also labelled owner-decision when no clean version exists or the version ran in the last
-90 days. A disputed hit (the two lists disagree about the same incident) is reported without rolling back unless a checked-in exception applies.
+Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull
+request mode (--base REV): only the items the head moved. A hit becomes ONE issue (found again later: updated,
+never a second issue) labelled supply-chain-hit, naming the version,
+the advisory id and the rollback; it is also labelled owner-decision when no clean version exists or the version
+ran in the last 90 days. A disputed hit (the two lists disagree about the same incident) is reported without
+rolling back
+unless a checked-in exception applies.
 Exit 0: clean (or only excepted disputes); 1: a hit or an unexcepted disputed hit; 2: it could not do its job.
 Only public facts go in an issue: versions, advisory ids, dates. It never produces run, environment or secret names.
 """
@@ -960,7 +964,9 @@ def rollback(item, net):
             continue
         cand = v.get("_item")
         if cand is not None and not age.judge_item(cand)[0]:
-            continue  # the candidate must itself be an exact pin (an action named by its commit): a tag or a missing sha is no rollback target
+            # the candidate must itself be an exact pin (an action named by its commit):
+            # a tag or a missing sha is no rollback target
+            continue
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
             # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
             try:
@@ -1028,7 +1034,8 @@ def body_of(f, rb, owner, ran, today):
                      "nobody has looked for a clean one, so the owner decides.")
     elif rb:
         lines.append(f"Rollback: pin the newest clean version: {_safe(rb['version'])}"
-                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + (f", published {_safe(rb['published'])}" if rb.get("published") else "") + ".")
+                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "")
+                     + (f", published {_safe(rb['published'])}" if rb.get("published") else "") + ".")
     else:
         lines.append("No clean version exists: drop it (remove its use) until one does.")
     if ran:
@@ -1241,7 +1248,9 @@ def main(argv=None):
             raise Fail(str(e))
         # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the pin scan
         audited = [i for i in audited if i.version not in ("(local)", "(source)")]
-        if a.base:    # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the pin scan reports it), never as an advisory hit
+        # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling
+        # (the pin scan reports it), never as an advisory hit
+        if a.base:
             try:
                 audited = age.drop_ruled_unpinned(audited, age.ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or age.DEFAULT_EXCEPTIONS))
             except RuntimeError as e:
