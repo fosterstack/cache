@@ -198,8 +198,13 @@ def judge_build(path):
             if re.search(r"GITHUB_ENV", str(s.get("run") or "")) and re.search(r"secrets\.|github\.token|toJSON|ACTIONS_ID_TOKEN|\$\{\{", str(s.get("run") or "") + yaml.dump(s.get("env") or {}, width=10**6)):
                 bad.append("002-AC4: job %s writes a secret or token into GITHUB_ENV in a job that signs" % jn)
         for s in signs:
-            blob = yaml.dump(s, width=10**6); nm = s.get("name") or s.get("uses")
-            if re.search(r"secrets\.|secrets\[|github\.token|toJSON|secrets\b", blob):
+            nm = s.get("name") or s.get("uses")
+            # the one binding 002-AC4 allows: the run's own read-only token, on job apk's apk step only
+            env = dict(s.get("env") or {})
+            if jn == "apk" and nm == "apk under Witness" and env.get("GH_TOKEN") == "${{ github.token }}":
+                del env["GH_TOKEN"]
+            blob = yaml.dump({**s, "env": env}, width=10**6)
+            if re.search(r"secrets\.|secrets\[|github\.token|toJSON|secrets\b", blob) or "GH_TOKEN" in env:
                 bad.append("002-AC4: signing step %r takes a secret or the job token" % nm)
             for fm in re.finditer(r"--(annotation|certificate-[a-z-]+|oidc-[a-z-]+|fulcio-oidc-client-id|signer-fulcio-[a-z-]+)[ =]+\S*\$\{\{", blob):
                 bad.append("002-AC4: signing step %r puts an expression into %s" % (nm, fm.group(1)))
@@ -994,6 +999,36 @@ printf '%s\n' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" "     
 expect caught "002-AC4 a secret in a signing step whose command line is long enough for yaml.dump to wrap" build "$work/build-wrap.yml"
 printf '%s\n' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" "      - run: echo \"K=\${{ secrets.KEY }}\" >> \"\$GITHUB_ENV\"" "      - run: witness run --step build -- ./bin/build.sh" > "$work/build-ghenv.yml"
 expect caught "002-AC4 a secret written to GITHUB_ENV by an earlier step of a job that signs" build "$work/build-ghenv.yml"
+# 002-AC4: the one binding a signing step may take: GH_TOKEN with the run token, on job apk's apk step
+bfix() {  # bfix FILE JOB STEP-NAME ENV-LINE... : one job whose one step runs bin/witnessed-local.sh with that env
+  local f=$1 job=$2 step=$3; shift 3
+  printf '%s\n' "jobs:" "  $job:" "    runs-on: ubuntu-24.04" "    steps:" "      - name: $step" "        env:" > "$f"
+  printf '          %s\n' "$@" >> "$f"
+  printf '%s\n' "        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh" >> "$f"
+}
+TOK='GH_TOKEN: ${{ github.token }}'
+bfix "$work/tok-ok.yml" apk "apk under Witness" "$TOK"
+expect ok "002-AC4 the one allowed binding, on the apk step of job apk" build "$work/tok-ok.yml"
+bfix "$work/tok-name.yml" apk "apk under Witness" 'OTHER: ${{ github.token }}'
+expect caught "002-AC4 the job token under another env name" build "$work/tok-name.yml"
+bfix "$work/tok-secret.yml" apk "apk under Witness" 'GH_TOKEN: ${{ secrets.X }}'
+expect caught "002-AC4 GH_TOKEN carrying a secret" build "$work/tok-secret.yml"
+bfix "$work/tok-literal.yml" apk "apk under Witness" 'GH_TOKEN: not-the-run-token'
+expect caught "002-AC4 GH_TOKEN with a literal value" build "$work/tok-literal.yml"
+bfix "$work/tok-gh-secret.yml" apk "apk under Witness" 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
+expect caught "002-AC4 GH_TOKEN with secrets.GITHUB_TOKEN" build "$work/tok-gh-secret.yml"
+bfix "$work/tok-step.yml" apk "snapshot-apk under Witness" "$TOK"
+expect caught "002-AC4 the binding on another step of job apk" build "$work/tok-step.yml"
+bfix "$work/tok-job.yml" other "apk under Witness" "$TOK"
+expect caught "002-AC4 the binding in a job not named apk" build "$work/tok-job.yml"
+{ printf '%s\n' "jobs:" "  apk:" "    runs-on: ubuntu-24.04" "    env:" "      $TOK" "    steps:"
+  printf '%s\n' "      - name: apk under Witness" "        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
+} > "$work/tok-jobenv.yml"
+expect caught "002-AC4 the binding in the job-level env of apk" build "$work/tok-jobenv.yml"
+{ printf '%s\n' "env:" "  $TOK"; cat "$work/tok-ok.yml"; } > "$work/tok-wfenv.yml"
+expect caught "002-AC4 the binding in the workflow-level env" build "$work/tok-wfenv.yml"
+bfix "$work/tok-two.yml" apk "apk under Witness" "$TOK" 'K: ${{ secrets.KEY }}'
+expect caught "002-AC4 the allowed binding plus a second env name with a secret" build "$work/tok-two.yml"
 # 001-AC1 (advisor decision, Oct 9, replaces the script-reach scan): the tree judge on fixture trees. A stage file may only run what
 # .github/policy/chain-scripts.json lists (path + sha256); a listed script may use only its tools and start only its `runs`.
 gen() { judge gen "$1" > /dev/null; }
