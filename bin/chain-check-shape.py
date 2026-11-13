@@ -361,7 +361,9 @@ def script(path):
 
 
 def phase(path, step):
-    """REQ-CHAIN-006-AC1/AC3 (ruling 0384): the thin target of a witnessed step is ONE command line, `bash bin/check-stage.sh STEP`, and nothing else."""
+    """REQ-CHAIN-006-AC1/AC3 (ruling 0384): the thin target of a witnessed step is ONE command line,
+    `bash bin/check-stage.sh STEP`, and nothing else; the arm64 target puts `set -euo pipefail` before it, so a failed
+    verification stops it (AC17)."""
     if step not in STEPS + [ARM_STEP]:
         return ["unknown phase %r" % step]
     raw = open(path, newline="").read()
@@ -370,8 +372,11 @@ def phase(path, step):
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
     one = "bash bin/check-stage.sh %s" % step
-    if lines != [one]:
-        bad.append("the target must be exactly the one line `%s`, found %s" % (one, [l[:80] for l in lines]))
+    want, what = [one], "the one line `%s`" % one
+    if step == ARM_STEP:
+        want, what = ["set -euo pipefail", one], "the two lines `set -euo pipefail` and `%s`" % one
+    if lines != want:
+        bad.append("the target must be exactly %s, found %s" % (what, [l[:80] for l in lines]))
     return bad
 
 
