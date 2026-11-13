@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-007-AC1, REQ-CHAIN-007-AC2, REQ-CHAIN-007-AC3, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC11, REQ-CHAIN-007-AC12, REQ-CHAIN-007-AC13, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC16, REQ-CHAIN-007-AC19, REQ-CHAIN-005-AC4
 #
-# Release, static half. Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml). No network, no secrets, no keys.
+# Release, static half. Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml). No
+# network, no secrets, no keys.
 # Every judge lives in bin/chain-release-shape.py and is FIRST proven on a known-good fixture and on mutated copies (a judge that cannot fail
 # shows nothing), then applied to the real repository, which must pass. Finite grammars and allowlists, no shell analysis. The behaviour of
 # the scripts (what they do with stub records, a stub registry and a fake signer) is in bin/chain-release-scripts-test.sh.
@@ -48,14 +49,16 @@ def wit(step, env, helper="witnessed.sh"):
 def renv(step, always=False, local=False):
     cond = "" if always or step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"
     return f"      - name: {step} record holds no token\n" + cond + f"        run: python3 -I bin/chain-verify.py record-env --record witness-{step}/{step}-collection{'.local' if local else ''}.json\n"
-# every witnessed step of the release job (the helper signs each record through the one signing function) carries the three non-secret federation entries as literals
+# every witnessed step of the release job (the helper signs each record through the one signing function)
+# carries the three non-secret federation entries as literals
 FED = {"AWS_ROLE_ARN": "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing", "AWS_REGION": "us-east-1", "RELEASE_KMS_KEY_REF": "awskms:///alias/fosterstack-release-signing"}
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
 VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "signed-witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
 VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
 def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("signed-witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
-# REQ-CHAIN-007-AC1 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
+# REQ-CHAIN-007-AC1 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY
+# (no id-token, no environment,
 # no secret): it receives Build's and Rebuild's apks, runs bin/release-compare.sh as a plain step and uploads the small result apk-compare. `verify` needs it and holds contents read
 # only (it runs release-verify under the local Witness script with a throwaway key: no identity token), no environment, no secret, and reads only the result file; `release` needs both, is skipped for a release candidate, holds the environment and the three
 # writes, receives Build's artifacts only (never a rapk), and re-runs release-verify first on its own downloads before any credential step.
@@ -72,12 +75,15 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + "  release:\n    needs: [compare, verify]\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
-         + inst("witness") + inst("cosign") + inst("crane") + inst("aws-cli")      # the pinned aws CLI, installed job-locally after the three, before the downloads
+         # the pinned aws CLI, installed job-locally after the three, before the downloads
+         + inst("witness") + inst("cosign") + inst("crane") + inst("aws-cli")
          + vdowns()      # the nine records and files release-verify reads (the baseline admission chose, REQ-CHAIN-007-AC19; the arm64 leg's record, REQ-CHAIN-006-AC17), then the six the later steps use
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))
          + wit("release-verify", FED) + wit("release-apks", FED)
          + wit("release-publish", dict(FED, **REG)) + wit("release-sign", dict(FED, **REG)) + wit("release-assets", dict(FED, GH_TOKEN="${{ github.token }}")) + wit("release-postverify", FED)
-         + "".join(renv(x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"))      # the six records are checked for a token before any upload
+         # the six records are checked for a token before any upload
+         + "".join(renv(x) for x in ("release-verify", "release-apks", "release-publish", "release-sign",
+                                     "release-assets", "release-postverify"))
          + up("release-evidence") + up("witness-release"))
 open(w + "/stage.yml", "w").write(stage)
 open(w + "/release.yml", "w").write("""name: Release
@@ -135,7 +141,8 @@ V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] ||
      "python3 bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json",
      "python3 bin/chain-verify.py apk-compare --file apk-compare/apk-compare.json --digests witness-build/digests.json",
      "python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check",
-     # the govulncheck stream Release hands the evidence step is a product of Check's scanners record, bound under Check's identity
+     # the govulncheck stream Release hands the evidence step is a product of Check's scanners record, bound
+     # under Check's identity
      "python3 bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json"]
 open(w + "/verify.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(V) + "\n")
 # the five release scripts, plain, using only their tools; and the list that describes them
@@ -193,7 +200,8 @@ done
 expect ok "fixture: all release scripts and the helper are listed with sha256, tools, signs and runs" "" listed "$work/s/.github/policy/chain-scripts.json" "$work/s"
 expect ok "fixture: a Witness record with none of the credentials" "" record "$work/record.json" SENTINEL-VALUE-123
 mkdir -p "$work/rm" && expect ok "fixture: none of the old authorization machinery" "" removed "$work/rm"
-# ---- the run strings of the real stage-promote.yml are EXECUTED: a clean record exits 0, a leaking one exits 1, a missing one exits 2 -------------
+# ---- the run strings of the real stage-promote.yml are EXECUTED: a clean record exits 0, a leaking one exits
+# 1, a missing one exits 2
 python3 - "$root" "$work" <<'PYX' && ok "AC12 (R4) every record-env run string of the real stage-promote.yml executes: clean 0, leaking 1, missing 2 (seven steps: six in the release job, one in the verify job)" || bad "AC12 (R4) the record-env run strings do not execute as the grammar says"
 import base64, json, os, re, subprocess, sys, tempfile, yaml
 root, work = sys.argv[1], sys.argv[2]
@@ -241,7 +249,8 @@ m s_dlbin   'name: images\n          path: images'        'name: images\n       
 m s_dlgh    'name: dist\n          path: dist'            'name: dist\n          path: .github'                       'download-artifact'  "AC1 a download into .github/"
 m s_upname  'name: release-evidence\n          path: release-evidence' 'name: anything\n          path: release-evidence' 'upload-artifact'  "AC1 an upload outside the allowlist"
 m s_noup    '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence\n          path: release-evidence\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-release\n          path: witness-release\n' '' 'only uploads' "AC1 no upload of the evidence"
-# the Release job checks each of its own six Witness records for a token (REQ-CHAIN-007-AC12) right after the witnessed steps and before any upload
+# the Release job checks each of its own six Witness records for a token (REQ-CHAIN-007-AC12) right after the
+# witnessed steps and before any upload
 m s_re_none '      - name: release-apks record holds no token\n        if: [^\n]*\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-apks/release-apks-collection\.json\n' '' 'Witness records for a token' "AC12 (R4) one of the six record checks is missing"
 m s_re_path '=record-env --record witness-release-sign/release-sign-collection.json' 'record-env --record witness-release-sign/release-apks-collection.json' 'none of checkout' "AC12 (R4) a record check that reads another step's record"
 m s_re_swallow '=record-env --record witness-release-publish/release-publish-collection.json' 'record-env --record witness-release-publish/release-publish-collection.json || true' 'none of checkout' "AC12 (R4) a record check whose failure is swallowed"
@@ -270,7 +279,8 @@ m s_rnoneeds '=  release:\n    needs: [compare, verify]\n' '  release:\n'       
 m s_rneedsot '=needs: [compare, verify]'                       'needs: build'                                                          'needs'   "AC1 (Astra R6) the release job needs another job than verify"
 m s_rnoif    "=    needs: [compare, verify]\n    if: \${{ !contains(github.ref_name, '-') }}\n" '    needs: [compare, verify]\n'                          'job'     "AC1 (Astra R6) the release job is not skipped for a release candidate (it would enter the environment for an rc)"
 
-# ---- signer and builder never share a machine (ratify 2026-10-21-signer-builder-separate-jobs): the comparison of Build's and Rebuild's apks is the `compare` job, which holds no key, no token and
+# ---- signer and builder never share a machine (ratify 2026-10-21-signer-builder-separate-jobs): the
+# comparison of Build's and Rebuild's apks is the `compare` job, which holds no key, no token and
 # no environment; the jobs that hold the id-token or the signing key and the publish credentials never receive a rapk, and each build is its own job (the compare job runs no build script) ------------
 m c_norel   '=needs: [compare, verify]'                        'needs: verify'                                         'needs'   "SIGNER the release job does not need the compare job"
 m c_novneed '=  verify:\n    needs: compare\n'                  '  verify:\n'                                           'needs'   "SIGNER the verify job does not need the compare job"
@@ -297,7 +307,8 @@ m r_rapk    'name: dist\n          path: dist'                'name: rapk-ubuntu
 m v_nocmp   '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: apk-compare\n          path: apk-compare\n' '' 'download'  "SIGNER the verify job does not download the comparison result (the first occurrence: release-verify would have nothing to read)"
 m r_nocmp   '(name: apk-compare\n          path: apk-compare\n.*?)      - uses: [^\n]*\n        with:\n          name: apk-compare\n          path: apk-compare\n' '\1' 'download'  "SIGNER the release job does not download the comparison result"
 m s_rnorv    '=      - name: release-verify\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks\n' '      - name: release-apks\n' 'exactly' "AC1 (Astra R6) the release job's first witnessed step is not release-verify (no re-run before the credentials)"
-# the steps between the first and last Witness step are Witness steps and nothing else, and an install never comes after the first four
+# the steps between the first and last Witness step are Witness steps and nothing else, and an install never
+# comes after the first four
 m s_latemel  '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: install melange again\n        run: bash bin/install-build-tools.sh melange\n      - name: release-apks' 'none of checkout' "AC1 the release job installs no build tool: a melange install between release-verify and release-apks is refused"
 m s_latecos  '=run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n' 'run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n      - name: install cosign again\n        run: bash bin/install-scanner.sh cosign\n' 'between' "AC1 (Astra R4, round 1) an install between two Witness steps"
 m s_latedl   '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: release-apks' 'downloads' "AC1 (Astra R4, round 1) a download between release-verify and release-apks"
@@ -307,13 +318,15 @@ m s_vuppath  '=name: witness-release-verify\n          path: witness-release-ver
 # the verify job's upload and downloads are exact
 m s_vupwarn  '=          path: witness-release-verify\n          if-no-files-found: error\n' '          path: witness-release-verify\n' 'verify' "AC1 (Astra R6, round 2) the verify job's upload does not fail when it finds no file (the default is a warning)"
 m s_vdist    '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: witness-release-verify\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n' 'verify' "AC1 (Astra R6, round 2) the verify job downloads dist into its proof directory (it would be uploaded with the record)"
-# download-artifact trims its path input, so a padded path reached the directory the verify job uploads; the verify job's downloads are the exact nine pairs, and no download path has surrounding whitespace
+# download-artifact trims its path input, so a padded path reached the directory the verify job uploads; the
+# verify job's downloads are the exact nine pairs, and no download path has surrounding whitespace
 m s_vws      '=      - name: release-verify\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: " witness-release-verify"\n      - name: release-verify\n' 'verify' "AC1 (Astra R6, round 3) a download into ' witness-release-verify' (the action trims the path) puts digests.json into the uploaded directory"
 m s_vtrail   '=          name: signed-witness-build\n          path: witness-build\n' '          name: signed-witness-build\n          path: "witness-build "\n' 'verify' "AC1 (Astra R6, round 3) a download path with trailing whitespace"
 m s_vdupdl   '=          name: provenance\n          path: provenance\n' '          name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n' 'verify' "AC1 (Astra R6, round 3) the same artifact downloaded twice in the verify job"
 m s_vpair    '=          name: check-results\n          path: check-results\n' '          name: check-results\n          path: witness-check\n' 'verify' "AC1 (Astra R6, round 3) a verify download into another artifact's directory"
 m s_rws      '=          name: images\n          path: images\n' '          name: images\n          path: " bin"\n' 'download' "AC1 (Astra R6, round 3) a release-job download whose padded path the action trims into bin/"
-# the release job's downloads are the exact fifteen pairs too (its upload witness-release holds the Witness record directories)
+# the release job's downloads are the exact fifteen pairs too (its upload witness-release holds the Witness
+# record directories)
 m s_rdupdl   '=          name: dist\n          path: dist\n' '          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' 'release job' "AC1 (Astra R6, round 4) the release job downloads dist twice"
 m s_rpair    '=          name: dist\n          path: dist\n' '          name: dist\n          path: witness-release-publish\n' 'release job' "AC1 (Astra R6, round 4) dist is downloaded into a Witness record directory of the release job's upload"
 m s_rmissdl  '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n' '' 'release job' "AC1 (Astra R6, round 4) the release job does not download the images"
@@ -357,7 +370,8 @@ c c_assreg  '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/wit
 c c_ghsec   '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets' '          GH_TOKEN: ${{ secrets.OTHER }}\n        run: bash bin/witnessed.sh release-assets' 'whole read' "AC2 GH_TOKEN from another secret"
 c c_part    '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}x\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'whole read' "AC2 a credential read in part"
 c c_foo     '=        run: bash bin/witnessed.sh release-apks bin/release-apks.sh' '          FOO: bar\n        run: bash bin/witnessed.sh release-apks bin/release-apks.sh' 'release-apks' "AC2 an extra variable in the apk step"
-# the judge loads the workflow once and refuses a duplicate mapping key: PyYAML keeps the last one, so a second env: key would hide the first)
+# the judge loads the workflow once and refuses a duplicate mapping key: PyYAML keeps the last one, so a
+# second env: key would hide the first)
 c c_dupapk  '=        run: bash bin/witnessed.sh release-apks bin/release-apks.sh' '        env:\n          FOO: bar\n        run: bash bin/witnessed.sh release-apks bin/release-apks.sh' 'duplicate key' "AC2 a second env key on the apk step is refused, not hidden"
 c c_dupver  '=        run: bash bin/witnessed.sh release-verify bin/release-verify.sh' '        env:\n          FOO: bar\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh' 'duplicate key' "AC2 a second env key on the release-verify step is refused, not hidden"
 # the federation entries are exact literals on exactly the six witnessed steps of the release job
@@ -572,7 +586,8 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-# the requirement text and the stage file's header say only what is enforced about credentials (no job holds a write token or a secret before an earlier job verified; no explicit credential binding up to release-verify)
+# the requirement text and the stage file's header say only what is enforced about credentials (no job holds a
+# write token or a secret before an earlier job verified; no explicit credential binding up to release-verify)
 python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "text: REQ-CHAIN-007-AC1 does not claim that no credential exists before the tool installs, and states the explicit bindings and the verify gate" || bad "text: REQ-CHAIN-007-AC1 overstates credential absence"
 import sys, yaml
 t = next(a for q in yaml.safe_load(open(sys.argv[1]))["requirements"] if q["id"] == "REQ-CHAIN-007" for a in q["acceptance_criteria"] if a["id"] == "REQ-CHAIN-007-AC1")["then"]
@@ -594,7 +609,7 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-# ---- release signing with the release KMS key, wired end to end --------------------------------------------------------
+# ---- release signing with the release KMS key, wired end to end
 # every signing line of bin/release-sign.sh is judged as a whole line, not by how it starts: a second --key, a prefix, another spelling of the word cosign all fail
 KW='cosign signing line'
 sg m_k_dup   '(--signing-config \.github/policy/cosign-signing-config\.json )("\$host/\$repo@\$digest")'   '\1--key awskms:///alias/other \2'    "$KW" "P3 a second --key after the approved arguments of the image signature"
@@ -662,13 +677,15 @@ rsx() { mkdir -p "$work/rsx_$1"; cp "$root/bin/$1.sh" "$work/rsx_$1/$1.sh"
   printf '\ncosign sign-blob --yes --key "$RELEASE_KMS_KEY_REF" --signing-config .github/policy/cosign-signing-config.json --bundle b.json f\n' >> "$work/rsx_$1/$1.sh"
   expect caught "P3 a keyed cosign sign-blob line added to bin/$1.sh is refused (only bin/release-sign.sh lists cosign)" "uses 'cosign'" scan "$work/rsx_$1/$1.sh" "$root/.github/policy/chain-scripts.json"; }
 for n in release-publish release-assets release-verify; do rsx "$n"; done
-# no bare /usr/local/bin/aws path is left in any non-test script or workflow (the pinned aws CLI is installed under RUNNER_TEMP/aws-cli/aws by bin/install-scanner.sh aws-cli).
+# no bare /usr/local/bin/aws path is left in any non-test script or workflow (the pinned aws CLI is installed
+# under RUNNER_TEMP/aws-cli/aws by bin/install-scanner.sh aws-cli).
 # The KA-0 guard's `--aws` defaults (found by name) in bin/chain-verify.py are not this scan's subject.
 bare_aws() { grep -rIn --include='*.sh' --include='*.py' --include='*.yml' -e '/usr/local/bin/aws' "$@" 2>/dev/null | grep -v -e '-test\.' ; }
 if [ -z "$(bare_aws "$root/bin" "$root/.github/workflows")" ]; then ok "KA-2 p4 group 4 no script or workflow of the repository names /usr/local/bin/aws"; else bad "KA-2 p4 group 4 a bare aws path is left: $(bare_aws "$root/bin" "$root/.github/workflows" | head -3 | tr '\n' ' ')"; fi
 mkdir -p "$work/bareaws"; printf '#!/usr/bin/env bash\npython3 bin/chain-verify.py kms-sign --aws /usr/local/bin/aws --key-ref x\n' > "$work/bareaws/m.sh"
 if [ -n "$(bare_aws "$work/bareaws")" ]; then ok "KA-2 p4 group 4 mutant: a script that names /usr/local/bin/aws is found by the scan"; else bad "KA-2 p4 group 4 mutant: the bare-path scan missed a script that names /usr/local/bin/aws"; fi
-# every job of stage-sign.yml that reaches KMS (its steps run bin/witness-sign-staged.sh or bin/with-aws-token.sh) installs the pinned aws CLI
+# every job of stage-sign.yml that reaches KMS (its steps run bin/witness-sign-staged.sh or
+# bin/with-aws-token.sh) installs the pinned aws CLI
 # (bin/install-scanner.sh aws-cli, which checks aws-cli/<pinned version>) in a step BEFORE the first of those steps; the judge is proven on a mutant that loses the install step.
 ssjudge() { python3 - "$1" <<'SSPY'
 import sys, yaml
@@ -689,7 +706,8 @@ done
 grep -v 'install-scanner.sh aws-cli' "$root/.github/workflows/stage-sign.yml" > "$work/ss_noaws.yml"
 ssout=$(ssjudge "$work/ss_noaws.yml")
 if [[ "$ssout" == *MISSING* ]]; then ok "KA-2 p4 group 4 mutant: a stage-sign.yml without the aws CLI install is found by the judge"; else bad "KA-2 p4 group 4 mutant: the stage-sign aws CLI judge missed a file without the install"; fi
-# no signer script leaves the aws CLI to be found by name. Every direct call of bin/chain-verify.py key-ref-check, kms-sign, sign or sign-record, and every call of bin/with-aws-token.sh kms-sign
+# no signer script leaves the aws CLI to be found by name. Every direct call of bin/chain-verify.py
+# key-ref-check, kms-sign, sign or sign-record, and every call of bin/with-aws-token.sh kms-sign
 # (the wrapper appends --aws only for sign and sign-record), carries the literal --aws "$RUNNER_TEMP/aws-cli/aws" in its (continued) line. The scan reads every non-test script of bin/.
 awscalls() { python3 - "$@" <<'AWSPY'
 import os, re, sys
@@ -697,7 +715,8 @@ bad = []
 SUBS = r"(?:key-ref-check|kms-sign|sign-record|sign)(?![-\w])"
 for pth in sys.argv[1:]:
     text = open(pth, errors="replace").read()
-    # a call through a variable that the same file assigns a path ending in chain-verify.py ("$KMSSIGN") is judged like a literal call; "$AWS" counts as the RUNNER_TEMP literal only where the file
+    # a call through a variable that the same file assigns a path ending in chain-verify.py ("$KMSSIGN") is
+    # judged like a literal call; "$AWS" counts as the RUNNER_TEMP literal only where the file
     # assigns AWS exactly the pinned path ($RUNNER_TEMP/aws-cli/aws, as $RUNNER_TEMP, ${RUNNER_TEMP} or ${RUNNER_TEMP:-}, quoted or not), never a bare name
     names = re.findall(r"(?m)^\s*(?:export\s+)?([A-Za-z_]\w*)=[\"']?\S*chain-verify\.py[\"']?\s*(?:#.*)?$", text)
     aws_pinned = re.search(r"(?m)^\s*AWS=(\"?)\$\{?RUNNER_TEMP(?::-)?\}?/aws-cli/aws\1\s*(?:#.*)?$", text) is not None
@@ -714,7 +733,8 @@ print("\n".join(bad))
 AWSPY
 }
 real_scripts=(); for f in "$root"/bin/*.sh; do case "$f" in *-test.sh) ;; *) real_scripts+=("$f") ;; esac; done
-for f in "$root"/.github/workflows/*.y*ml; do real_scripts+=("$f"); done      # the run: text of the workflows is scanned too (none calls kms-sign today)
+# the run: text of the workflows is scanned too (none calls kms-sign today)
+for f in "$root"/.github/workflows/*.y*ml; do real_scripts+=("$f"); done
 awsout=$(awscalls "${real_scripts[@]}")
 if [ -z "$awsout" ]; then ok "KA-2 p4 r2 C1 every direct chain-verify.py key-ref-check/kms-sign/sign/sign-record call and every wrapped kms-sign call in bin/*.sh names --aws \"\$RUNNER_TEMP/aws-cli/aws\""; else bad "KA-2 p4 r2 C1 a signer call leaves the aws CLI to be found by name: $(head -3 <<< "$awsout" | tr '\n' ' ')"; fi
 mkdir -p "$work/awscalls"
@@ -745,8 +765,14 @@ out = re.sub(r"(chain-verify\.py key-ref-check[^\n]*?) --aws \"\$RUNNER_TEMP/aws
 open(sys.argv[2], "w").write(out)
 DROPPY
 if [ -n "$(awscalls "$work/awscalls/m_release_sign.sh")" ]; then ok "KA-2 p4 r2 C1 mutant: the real release-sign.sh with --aws dropped from its key-ref-check line is found by the scan"; else bad "KA-2 p4 r2 C1 mutant: the aws scan missed release-sign.sh without --aws on key-ref-check"; fi
-# the pinned aws CLI is installed only where KMS is reached: `bash bin/install-scanner.sh aws-cli` runs in no job of .github/workflows/*.yml except stage-sign sign, sign-rebuild and sign-check, evidence-letter sign and stage-promote release
-awsfiles() { local r=$1; shopt -s globstar nullglob; printf '%s\n' "$r"/.github/workflows/*.y*ml "$r"/.github/actions/**/action.y*ml; }      # .yml and .yaml, workflows and composite actions
+# the pinned aws CLI is installed only where KMS is reached: `bash bin/install-scanner.sh aws-cli` runs in no
+# job of .github/workflows/*.yml except stage-sign sign, sign-rebuild and sign-check, evidence-letter sign and
+# stage-promote release
+# .yml and .yaml, workflows and composite actions
+awsfiles() {
+  local r=$1; shopt -s globstar nullglob
+  printf '%s\n' "$r"/.github/workflows/*.y*ml "$r"/.github/actions/**/action.y*ml
+}
 awsjobs() { python3 - "$@" <<'JOBSPY'
 import os, re, sys, yaml
 INST = re.compile(r"install-scanner\.sh\s+[\"']?aws-cli[\"']?(?![-\w])")      # bare or quoted
@@ -772,7 +798,8 @@ yaml.safe_dump(d, open(sys.argv[2], "w"))
 JOBMUT
 mj=$(awsjobs "$work/awsjobs/stage-build.yml")
 if [ -n "$mj" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 1b' mutant: an aws CLI install step in a job of stage-build.yml ($mj) is outside the allowed signing jobs, so the tree-level check is red"; else bad "KA-2 p4 r2 1b' mutant: the aws CLI install in a stage-build.yml job was not found outside the allowed jobs ($mj)"; fi
-# the file set is .y*ml in workflows and action.y*ml under .github/actions (a .yaml workflow, a composite action), and `aws-cli` is matched quoted as well as bare
+# the file set is .y*ml in workflows and action.y*ml under .github/actions (a .yaml workflow, a composite
+# action), and `aws-cli` is matched quoted as well as bare
 mkdir -p "$work/awstree/.github/workflows" "$work/awstree/.github/actions/x/y"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh aws-cli\n' > "$work/awstree/.github/workflows/w.yaml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
@@ -783,9 +810,14 @@ mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
 if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
 # a local composite action that installs the aws CLI is found by the scan, and it is outside the allowed signing jobs
 rm -f "$work/awstree/.github/workflows/q.yml"
-printf 'runs:\n  using: composite\n  steps:\n    - run: bash bin/install-scanner.sh aws-cli\n      shell: bash\n' > "$work/awstree/.github/actions/x/y/action.yml"
+printf 'runs:\n  using: composite\n  steps:\n    - run: bash bin/install-scanner.sh aws-cli\n      shell: bash\n' \
+  > "$work/awstree/.github/actions/x/y/action.yml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
-if [ "$mj" = "action.yml:(action)" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "mutant: an aws CLI install in a local composite action ($mj) is found and is outside the allowed signing jobs"; else bad "mutant: the aws CLI install in a local composite action was not found by the scan ($mj)"; fi
+if [ "$mj" = "action.yml:(action)" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then
+  ok "mutant: an aws CLI install in a local composite action ($mj) is found and is outside the allowed signing jobs"
+else
+  bad "mutant: the aws CLI install in a local composite action was not found by the scan ($mj)"
+fi
 EXPECT=356
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
