@@ -62,38 +62,33 @@ def purl_name_version(purl):
     return (name, ver)
 
 
-def component_pairs(comps, strict):
+def component_pairs(comps):
     """The identifiers of a component list: STRUCTURED (name, version) pairs, never a joined string (a name containing "@"
     cannot collide with another name/version split). A component with a purl is identified by the pair parsed from the
     purl (the service rewrites the name and version fields of Go modules); one without, by its name and version fields
-    (version "" when absent). Our own module is left out. strict: an unusable component is an error (the request SBOM);
-    otherwise it is skipped (the response: an unreadable extra can only make the binding fail, never pass)."""
+    (version "" when absent). Our own module is left out. An unusable component is an error."""
     if not isinstance(comps, list):
         raise ValueError("no components")
     pairs = []
     for c in comps:
-        try:
-            if not isinstance(c, dict):
-                raise ValueError("component is not an object")
-            purl, name, ver = c.get("purl"), c.get("name"), c.get("version")
-            if purl is not None and not isinstance(purl, str):
-                raise ValueError("purl is not a string")
-            if (purl and OURS_PURL.match(purl)) or (isinstance(name, str) and OURS_NAME.match(name)):
-                continue
-            if purl:
-                pairs.append(purl_name_version(purl))
-            elif isinstance(name, str) and name:
-                pairs.append((name, ver if isinstance(ver, str) else ""))
-            else:
-                raise ValueError("component without purl or name")
-        except ValueError:
-            if strict:
-                raise
+        if not isinstance(c, dict):
+            raise ValueError("component is not an object")
+        purl, name, ver = c.get("purl"), c.get("name"), c.get("version")
+        if purl is not None and not isinstance(purl, str):
+            raise ValueError("purl is not a string")
+        if (purl and OURS_PURL.match(purl)) or (isinstance(name, str) and OURS_NAME.match(name)):
+            continue
+        if purl:
+            pairs.append(purl_name_version(purl))
+        elif isinstance(name, str) and name:
+            pairs.append((name, ver if isinstance(ver, str) else ""))
+        else:
+            raise ValueError("component without purl or name")
     return pairs
 
 
 def request_pairs(comps):
-    pairs = component_pairs(comps, True)
+    pairs = component_pairs(comps)
     if not pairs:
         raise ValueError("no package identifiers: an empty inventory has no key")
     return pairs
@@ -174,7 +169,7 @@ def check_answer(path, req_pairs, sbom_path=None):
     sbom = doc.get("sbom") if isinstance(doc, dict) else None
     if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX" or not isinstance(sbom.get("components"), list):
         raise ValueError("not a ScanSbom envelope")
-    if not set(req_pairs) <= set(component_pairs(sbom["components"], True)):
+    if not set(req_pairs) <= set(component_pairs(sbom["components"])):
         raise ValueError("the answer does not cover the requested inventory")
     # a findings field that is present must be a list of objects that each carry an id: anything else would read as "no findings" in the gate
     # (`or []`), so it is refused here (fail closed); an absent field is the service's answer for an image without findings
