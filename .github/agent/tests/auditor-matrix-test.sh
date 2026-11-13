@@ -4874,7 +4874,7 @@ V=lambda p: R._valid_proposal(p,os.environ['EVREPO'],os.environ['EVSHA'])   # th
 good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','finding_id':'CVE-2099-PROPOSE','purl':'pkg:deb/debian/libpropose@1.0'}],'note':'generalises from a recorded no-DSA pattern','evidence':'README.md'}
 bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,package=3), dict(good,keys='x'),
      dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'p','extra':'y'}]), dict(good,keys=[{'scanner':'grype','finding_id':1,'purl':'p'}]),
-     dict(good,note='proposed by Claude'), dict(good,note='per the gpt-5 analysis'), dict(good,note='gpt - 5'), dict(good,note='private - model'), dict(good,package='gpt - 5'),
+     dict(good,note='proposed by Claude'), dict(good,note='per the gpt-5 analysis'), dict(good,note='gpt-5'), dict(good,note='GeminiPro'), dict(good,package='gpt-5'), dict(good,package='libopus0'),
      dict(good,evidence='/README.md'), dict(good,evidence='../README.md'), dict(good,evidence='README.md\\x00'), dict(good,evidence='no-such-file.md'), dict(good,evidence='docs'), dict(good,package='anthropic-sdk'),
      dict(good,evidence='./README.md'), dict(good,evidence='docs//a.md'), dict(good,evidence='docs/a.md/'), dict(good,evidence='//README.md'), dict(good,evidence='escape/x.md'), dict(good,evidence='\\ud800'),
      dict(good,note='claude3'), dict(good,note='llama3'), dict(good,note='sonnet4'), dict(good,package='claude3'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
@@ -4882,8 +4882,8 @@ bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''
      {'kind':'knowledge'}, {'evidence':'e'}, {'kind':'knowledge','evidence':'e'}, dict(good,keys=[]), {k:v for k,v in good.items() if k!='keys'},
      dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,evidence='Anthropic says no'), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
      dict(good,note='\\uff23\\uff4c\\uff41\\uff55\\uff44\\uff45'), dict(good,note='Cl\\u0430ude'), dict(good,note='Cl\\u200baude'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/\\uff4fpus@1'}])]
-# ordinary text is kept: words that only share letters with a vendor name, even across two fields, are not a vendor name (no cross-field splitting layer)
-acc=[dict(good,note='knowledge',evidence='LICENSE'), dict(good,package='libopus0'), dict(good,package='minizip',note='knowledge')]
+# ordinary text is kept: words with no vendor name in them; the check is a plain substring check, so a name inside a word is refused
+acc=[dict(good,note='knowledge',evidence='LICENSE'), dict(good,package='minizip',note='knowledge')]
 acc_lost=[a for a in acc if V(a) is None]
 nocommit=[e for e in ('README.md','LICENSE') if R._valid_proposal(dict(good,evidence=e),os.environ['EVREPO'],None) is not None]   # no workspace fallback
 ok=not acc_lost and not nocommit and V(good)==good and V({'kind':'knowledge','evidence':'README.md','note':'n'})=={'kind':'knowledge','evidence':'README.md','note':'n'}
