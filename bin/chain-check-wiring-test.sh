@@ -137,7 +137,8 @@ PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.j
                    "bash bin/check-acceptance.sh k8s --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results",
-                   "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"])]
+                   "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"]]),
+      ("arm64", ["bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"])]
 POL = 'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json'
 body = "set -euo pipefail\n" + POL + "\n" + "\n".join(V) + '\ncase "$1" in\n'
 for n, cs in PH:
@@ -221,31 +222,24 @@ expect caught "AC3 a phase target with a second command" "exactly the one line" 
 printf '#!/usr/bin/env bash\nbash bin/check-stage.sh scanners || true\n' > "$work/ph_swallow.sh"
 expect caught "AC3 a phase target that swallows a failure" "exactly the one line" phase "$work/ph_swallow.sh" scanners
 expect caught "AC3 a phase outside the closed list" "unknown phase" phase "$work/ph_scanners.sh" checks
-ARMV='python3 -I -B bin/chain-verify.py'
 ARML='bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results'
 armt() { # armt FILE LINE... : an arm64 target holding exactly these lines after the shebang
   local f=$1; shift; { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$@"; } > "$f"; }
-P1="$ARMV policy make --template .github/policy/release-policy.template.json --tag \"\$GITHUB_REF_NAME\" --out policy.json"
-P2="$ARMV stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"
-P3="$ARMV verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json"   # Sign's provenance is Release's to verify (rule 58: Check's previous stage is Build)
-armt "$work/ph_arm64.sh" "set -euo pipefail" "$P1" "$P2" "$ARML"
-expect ok "fixture: the arm64 target passes the phase judge (rule 58: it verifies Build's record, then the artifact checks)" "" phase "$work/ph_arm64.sh" arm64
-armt "$work/ph_arm64b.sh" "set -euo pipefail" "$P1" "$P2" "${ARML/ --arch arm64/}"
-expect caught "AC17 an arm64 target without --arch arm64" "exactly" phase "$work/ph_arm64b.sh" arm64
-armt "$work/ph_arm64c.sh" "set -euo pipefail" "$P1" "$P2" "$ARML || true"
+DISP="bash bin/check-stage.sh arm64"      # the dispatcher's arm64 phase makes the policy, verifies Build's record, then runs the artifact checks
+armt "$work/ph_arm64.sh" "set -euo pipefail" "$DISP"
+expect ok "fixture: the arm64 target passes the phase judge (set -euo pipefail, then the dispatcher's arm64 phase)" "" phase "$work/ph_arm64.sh" arm64
+armt "$work/ph_arm64b.sh" "set -euo pipefail" "$ARML"
+expect caught "rule 58 an arm64 target that skips the dispatcher (the artifact checks without the policy and Build's verification)" "exactly" phase "$work/ph_arm64b.sh" arm64
+armt "$work/ph_arm64c.sh" "set -euo pipefail" "$DISP || true"
 expect caught "AC17 an arm64 target that swallows a failure" "exactly" phase "$work/ph_arm64c.sh" arm64
-armt "$work/ph_arm64d.sh" "set -euo pipefail" "$P1" "$ARML"
-expect caught "rule 58 an arm64 target that does not verify Build's record (no stage-start)" "exactly" phase "$work/ph_arm64d.sh" arm64
-armt "$work/ph_arm64e.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "$ARML"
-expect caught "rule 58 an arm64 target that verifies Sign's provenance (Release's to verify)" "exactly" phase "$work/ph_arm64e.sh" arm64
-armt "$work/ph_arm64f.sh" "set -euo pipefail" "$P1" "$ARML" "$P2"
-expect caught "rule 58 an arm64 target that checks the artifacts before it verifies Build" "exactly" phase "$work/ph_arm64f.sh" arm64
-armt "$work/ph_arm64g.sh" "set -euo pipefail" "$P1" "${P2/python3 -I -B/python3}" "$ARML"
-expect caught "rule 58 an arm64 target whose verifier is not isolated" "exactly" phase "$work/ph_arm64g.sh" arm64
-armt "$work/ph_arm64h.sh" "set -euo pipefail" "$P1" "${P2/witness-build\/digests.json/other\/digests.json}" "$ARML"
-expect caught "rule 58 an arm64 target that verifies other digests than the ones it checks" "exactly" phase "$work/ph_arm64h.sh" arm64
-armt "$work/ph_arm64i.sh" "$P1" "$P2" "$ARML"
-expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64i.sh" arm64
+armt "$work/ph_arm64d.sh" "set -euo pipefail" "$DISP" "$ARML"
+expect caught "rule 58 an arm64 target with a second command after the dispatcher" "exactly" phase "$work/ph_arm64d.sh" arm64
+armt "$work/ph_arm64e.sh" "set -euo pipefail" "bash bin/check-stage.sh runtime"
+expect caught "AC3 an arm64 target that runs another phase" "exactly" phase "$work/ph_arm64e.sh" arm64
+armt "$work/ph_arm64f.sh" "$DISP"
+expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64f.sh" arm64
+armt "$work/ph_arm64g.sh" "set -euo pipefail" "$DISP" "true"
+expect caught "an arm64 target with a trailing command" "exactly" phase "$work/ph_arm64g.sh" arm64
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
 FXD_3="fixture: plain scripts that only use scanners, docker and curl pass the plain judge"
@@ -670,9 +664,10 @@ for st in scanners acceptance runtime arm64; do
 done
 out=$(signstaged evil)
 if grep -Fq "unknown step in the plan" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh still refuses a step that is not a record step"; else bad "REL-011-AC1 witness-sign-staged.sh accepted an unknown step: ${out:0:140}"; fi
-if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
+# the steps are validated first (the loop above: every step name outside the closed list is refused at the plan check), so the one `*) stage=check` arm is reached only by scanners, acceptance, runtime and arm64
+if grep -Fq '*) stage=check' "$root/bin/witness-sign-staged.sh" && grep -Fq 'apk|build) stage=build' "$root/bin/witness-sign-staged.sh" && grep -Fq 'rapk|rebuild) stage=rebuild' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-EXPECT=309
+EXPECT=307
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
