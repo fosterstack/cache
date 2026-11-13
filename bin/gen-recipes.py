@@ -198,13 +198,16 @@ def main():
     a = ap.parse_args()
     text = read_template(a.template)
     bl_text = read_baselayout_template(a.baselayout_template)
-    if os.path.abspath(a.regular) == os.path.abspath(a.fips):
-        bad("--regular and --fips name the same file; refusing (one recipe would silently replace the other)", 2)
+    if len({os.path.abspath(p) for p in (a.regular, a.fips, a.baselayout)}) != 3:
+        bad("--regular, --fips and --baselayout must name three files, two name the same file; refusing "
+            "(one recipe would silently replace another)", 2)
     packages, module = read_packages(a.melange_lock), read_fips_module(a.fips_module)
-    want = {a.regular: generate(text, "regular", packages, module), a.fips: generate(text, "fips", packages, module),
-            a.baselayout: generate_baselayout(bl_text, packages)}
+    regular, fips = generate(text, "regular", packages, module), generate(text, "fips", packages, module)
+    baselayout = generate_baselayout(bl_text, packages)
+    want = {a.regular: regular, a.fips: fips, a.baselayout: baselayout}
     if a.emit:
-        for fn, content in zip(("melange.yaml", "melange-fips.yaml", "melange-baselayout.yaml"), want.values()):
+        named = {"melange.yaml": regular, "melange-fips.yaml": fips, "melange-baselayout.yaml": baselayout}
+        for fn, content in named.items():
             with open(os.path.join(a.emit, fn), "w", encoding="utf-8") as f:
                 f.write(content)
         return
