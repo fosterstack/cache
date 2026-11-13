@@ -21,6 +21,12 @@
 #               step output) are each a named mutation. QUESTION FOR THE PARENT: cosign (above) or Witness for Sign's signature?
 #               Cosign is proposed because the provenance is customer-verifiable and rule 53b needs a Rekor entry, which Witness
 #               cannot write (Witness has no Rekor support, rule 53b); the Witness record of Build stays Witness.
+#               S2 design (cache#912): the job sign-check also signs the release files. After Check's records it runs
+#               bin/release-signatures.sh over Build's verified outputs, which it downloads (digests, items, admission-baseline, images, dist,
+#               both apk artifacts, and check-results a second time at the path that script reads), then uploads release-signed/ as the artifact
+#               release-signed. Those two steps alone carry `if: ${{ !contains(github.ref_name, '-') }}` (a release candidate makes no release
+#               signatures); no other step of any job carries an if. Only provenance, signed-witness-* and release-signed leave Sign. sign and
+#               sign-rebuild are unchanged. EXPECT_STEPS pins every step of the three jobs, in order.
 #   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
 #               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
 #   judge_tree  001-AC1 over the tracked files of .github/ and bin/ plus the pinned build configuration, one function per AC1 clause:
@@ -90,6 +96,8 @@ R_INSTALL = r"bash bin/install-scanner\.sh cosign"
 R_INSTALL_AWS = r"bash bin/install-scanner\.sh aws-cli"      # KA-2 p4 group 4: the pinned aws CLI, installed in the three jobs that reach KMS
 R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
+R_SIGNATURES = r"bash bin/release-signatures\.sh"      # sign-check's release signing step
+RC_IF = "${{ !contains(github.ref_name, '-') }}"      # the if of that step and of the release-signed upload: a release candidate makes no release signatures
 # the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
 # the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
 R_REC_BUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
@@ -110,10 +118,16 @@ EXPECT_STEPS = {
             + [("upload", "signed-witness-rapk-" + r, "signed/witness-rapk-" + r) for r in RUNNERS]
             + [("upload", "signed-witness-rebuild", "signed/witness-rebuild")],
     # REQ-REL-011-AC1 (cache#606): the third call signs the Check jobs' records; Sign receives the records and the check-results the records name, nothing else
+    # S2 design (cache#912): sign-check also signs the release files from Build's verified outputs, which it downloads after the Check ones
     "sign-check": [("checkout",), ("download", "witness-check", "rec-check"), ("download", "witness-check-arm64", "rec-arm64/witness-arm64"),
-                   ("download", "check-results", "artifacts/check-results"), ("download", "check-results-arm64", "artifacts/check-results-arm64"),
-                   ("install", "aws-cli"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
-                   ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64")],
+                   ("download", "check-results", "artifacts/check-results"), ("download", "check-results-arm64", "artifacts/check-results-arm64")]
+                  + [("download", n, "witness-build") for n in ("digests", "items", "admission-baseline")]
+                  + [("download", "images", "images"), ("download", "dist", "dist")]
+                  + [("download", "apk-" + r, "apks/" + r) for r in RUNNERS]
+                  + [("download", "check-results", "check-results"),
+                     ("install", "aws-cli"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",), ("signatures",),
+                     ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64"),
+                     ("upload", "release-signed", "release-signed")],
 }
 R_SIGN = r"bash bin/with-aws-token\.sh sign --check --signer cosign --digests digests\.json --items witness-build/items\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 SIGN_ROLE = "arn:aws:iam::821302803867:role/fosterstack-cache-release-signing"      # the role of the release Sign identity (ops/terraform/aws-apply/main.tf :382, README :62)
@@ -158,7 +172,7 @@ def judge_sign(path):
         seq = []
         for s in j.get("steps") or []:
             sn = s.get("name") or s.get("uses") or s.get("run")
-            extra = set(s) - {"name", "uses", "with", "run", "env", "id"}
+            extra = set(s) - {"name", "uses", "with", "run", "env", "id", "if"}
             if extra: bad.append("AC2: step %r has %s" % (sn, sorted(extra)))
             u, w, run, env = s.get("uses"), s.get("with") or {}, s.get("run"), s.get("env") or {}
             if (u is None) == (run is None): bad.append("AC2: step %r must have exactly one of uses/run" % sn); continue
@@ -175,11 +189,11 @@ def judge_sign(path):
                 elif act == "actions/download-artifact":
                     order.append("download"); seq.append(("download", w.get("name"), w.get("path")))
                     if set(w) - {"name", "path"} or ("download", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []):
-                        bad.append("AC2: step %r downloads %s; Sign downloads only the records and the artifacts it signs, at the fixed paths (data, never run); sign-rebuild receives no Rebuild apk or image" % (sn, w))
+                        bad.append("AC2: step %r downloads %s; Sign downloads only the records and the artifacts it signs, at the fixed paths (data, never run); sign-check also takes Build's verified outputs for bin/release-signatures.sh, each at its fixed path; sign-rebuild receives no Rebuild apk or image" % (sn, w))
                 elif act == "actions/upload-artifact":
                     order.append("upload"); seq.append(("upload", w.get("name"), w.get("path")))
                     if ("upload", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []) or set(w) - {"name", "path", "if-no-files-found", "retention-days"}:
-                        bad.append("AC3 (artifact sink): step %r uploads %s; only provenance and the signed-witness-* directories may leave Sign" % (sn, w))
+                        bad.append("AC3 (artifact sink): step %r uploads %s; only provenance, the signed-witness-* directories and release-signed (sign-check's release files) may leave Sign" % (sn, w))
                 else:
                     bad.append("AC2: step %r uses %s, which Sign may not" % (sn, act))
             else:
@@ -207,6 +221,9 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_SIGN, line):
                     order.append("sign"); seq.append(("sign",))
                     if env != want_sign_env(): bad.append("W1: the provenance signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
+                elif "\n" not in line and re.fullmatch(R_SIGNATURES, line):
+                    order.append("signatures"); seq.append(("signatures",))
+                    if env != want_sign_env(): bad.append("S3: the release signing step must have exactly the step env %s (literals, as the other signing steps), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
                     order.append("signstaged"); seq.append(("signstaged",))
                     if env != want_sign_env(): bad.append("W1: the staged-signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
@@ -217,9 +234,13 @@ def judge_sign(path):
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
                                              ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", os.environ["SINK_ARTIFACT_RX"])) if re.search(rx, run)]
-                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install cosign or witness; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; the one chain-verify.py sign --check ... --out provenance)"
+                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install cosign or witness; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; bin/release-signatures.sh in sign-check; the one chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
+            # S3: only sign-check's release signing step and its release-signed upload carry an if, exactly the release-candidate one; no step of sign or sign-rebuild may
+            has_rc_if = name == "sign-check" and bool(seq) and seq[-1] in (("signatures",), ("upload", "release-signed", "release-signed"))
+            if has_rc_if and s.get("if") != RC_IF: bad.append("S3: step %r of sign-check must carry exactly `if: %s` (a release candidate makes no release signatures), found %r" % (sn, RC_IF, s.get("if")))
+            if not has_rc_if and "if" in s: bad.append("S3: step %r of %s carries an if; only sign-check's release signing step and its release-signed upload may, with the release candidate if" % (sn, name))
         want = EXPECT_STEPS.get(name)
         if want is not None and seq != want: bad.append("AC2: job %s's steps must be exactly %s in that order (check-then-sign: the records step and, in sign, the provenance step are the only signers), found %s" % (name, want, seq))
     return bad
@@ -826,6 +847,38 @@ jobs:
         with:
           name: check-results-arm64
           path: artifacts/check-results-arm64
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: images
+          path: images
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results
+          path: check-results
       - name: install the aws CLI (pinned by checksum)
         run: bash bin/install-scanner.sh aws-cli
       - name: write the digest list to a file
@@ -848,6 +901,13 @@ jobs:
           AWS_REGION: us-east-1
           RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witness-sign-staged.sh staged signed
+      - name: sign the release files
+        if: \${{ !contains(github.ref_name, '-') }}
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+        run: bash bin/release-signatures.sh
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: signed-witness-check
@@ -859,6 +919,11 @@ jobs:
         with:
           name: signed-witness-check-arm64
           path: signed/witness-arm64
+      - uses: actions/upload-artifact@$sha # v7
+        if: \${{ !contains(github.ref_name, '-') }}
+        with:
+          name: release-signed
+          path: release-signed
 EOF
 # mutate LABEL  python-regex  replacement : writes $work/LABEL.yml, or counts a FAILURE if the mutation did not apply
 mutate() {
@@ -953,6 +1018,101 @@ caught "AC1 two top-level permissions: keys (the second the benign one)" 'permis
 caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
 caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh cosign' 'run: '$'\u00a0''bash bin/install-scanner.sh cosign'
 caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE"$'\u200b'
+# ---- S1..S5 (cache#912, release design): sign-check also signs the release files (bin/release-signatures.sh) and uploads release-signed -------------------------------------------
+# caughtx is `caught` with the regex groups usable in the replacement (\1), so that a mutation changes one step of one job and nothing else
+mutatex() {
+  python3 - "$good" "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml" "$2" "$3" <<'PY' || { failn=$((failn + 1)); echo "FAIL mutation $1 did not apply to the fixture"; return 1; }
+import re, sys
+t = open(sys.argv[1]).read()
+n = re.sub(sys.argv[3], sys.argv[4], t, count=1, flags=re.S)
+if n == t: sys.exit(1)
+open(sys.argv[2], "w").write(n)
+PY
+}
+caughtx() { # LABEL regex replacement
+  if mutatex "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
+}
+SC='(  sign-check:.*?)'
+DLX() { printf '      - uses: actions/download-artifact@a{40} # v8\\n        with:\\n          name: %s\\n          path: %s\\n' "$1" "$2"; }
+RCIF="if: \${{ !contains(github.ref_name, '-') }}"
+SIGSTEP="      - name: sign the release files\\n        $RCIF\\n        env:\\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\\n          AWS_REGION: us-east-1\\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\\n        run: bash bin/release-signatures.sh\\n"
+SIGSTEP_RX='      - name: sign the release files\n        if: [^\n]*\n        env:\n(?:          [^\n]*\n)+        run: bash bin/release-signatures\.sh\n'
+UPSIGNED="      - uses: actions/upload-artifact@$sha # v7\\n        $RCIF\\n        with:\\n          name: release-signed\\n          path: release-signed\\n"
+UPSIGNED_RX='      - uses: actions/upload-artifact@a{40} # v7\n        if: [^\n]*\n        with:\n          name: release-signed\n          path: release-signed\n'
+# S2: the steps of sign-check, exactly and in order
+caughtx "S2 sign-check does not run bin/release-signatures.sh" "$SC$SIGSTEP_RX" '\1'
+caughtx "S2 sign-check runs bin/release-signatures.sh twice" '(--record-dir rec-arm64/witness-arm64\n)' "\\1$SIGSTEP"
+caughtx "S2 sign-check runs bin/release-signatures.sh before the staged signing" "$SC(      - name: sign the staged records and check each signed one\n        env:\n(?:          [^\n]*\n)+        run: bash bin/witness-sign-staged\.sh staged signed\n)($SIGSTEP_RX)" "\\1$SIGSTEP\\2"
+caughtx "S2 sign-check does not upload release-signed" "$SC$UPSIGNED_RX" '\1'
+caughtx "S2 sign-check uploads release-signed from another path" 'name: release-signed\n          path: release-signed' 'name: release-signed\n          path: signed'
+caughtx "S2 sign-check uploads release-signed before the signed Check records" "(      - uses: actions/upload-artifact@a{40} # v7\n        with:\n          name: signed-witness-check\n)" "$UPSIGNED\\1"
+caughtx "S2 sign-check installs no aws CLI" "$SC      - name: install the aws CLI [^\n]*\n        run: bash bin/install-scanner\.sh aws-cli\n" '\1'
+caughtx "S2 sign-check has no check records step" "$SC      - name: check Check's records[^\n]*\n        run: [^\n]*\n" '\1'
+caughtx "S2 sign-check does not upload the signed arm64 Check records" "$SC      - uses: actions/upload-artifact@a{40} # v7\n        with:\n          name: signed-witness-check-arm64\n          path: signed/witness-arm64\n" '\1'
+for pair in "digests witness-build" "items witness-build" "admission-baseline witness-build" "images images" "dist dist" "apk-ubuntu-24.04 apks/ubuntu-24.04" "apk-ubuntu-24.04-arm apks/ubuntu-24.04-arm" "check-results check-results"; do
+  read -r nm pth <<< "$pair"
+  caughtx "S2 sign-check does not download $nm into $pth" "$SC$(DLX "$nm" "$pth")" '\1'
+  caughtx "S2 sign-check downloads $nm into another path than $pth" "$SC(      - uses: actions/download-artifact@a{40} # v8\n        with:\n          name: $nm\n          path: )$pth\n" '\1elsewhere\n'
+done
+caughtx "S2 sign-check downloads the second check-results into the path of the first" "$SC(          name: check-results\n          path: )check-results\n" '\1artifacts/check-results\n'
+caughtx "S2 sign-check downloads digests twice" "$SC($(DLX digests witness-build))" '\1\2\2'
+caughtx "S2 sign-check also downloads Build's signed record (witness-build)" "$SC($(DLX check-results-arm64 artifacts/check-results-arm64))" "\\1\\2      - uses: actions/download-artifact@$sha # v8\\n        with:\\n          name: witness-build\\n          path: witness-build\\n"
+caughtx "S2 sign-check also downloads the compare result" "$SC($(DLX check-results-arm64 artifacts/check-results-arm64))" "\\1\\2      - uses: actions/download-artifact@$sha # v8\\n        with:\\n          name: apk-compare\\n          path: apk-compare\\n"
+caughtx "S2 sign-check downloads items before digests" "$SC($(DLX digests witness-build))($(DLX items witness-build))" '\1\3\2'
+# S3: the if of the release signing step and of the release-signed upload, and no other if; the same step env as the other signing steps
+caughtx "S3 the release signing step has no if (a release candidate would sign)" "$SC(      - name: sign the release files\n)        if: [^\n]*\n" '\1\2'
+caughtx "S3 the release signing step has another if" "$SC(      - name: sign the release files\n        if: )[^\n]*" '\1\2${{ always() }}'
+caughtx "S3 the release signing step tests the ref, not the ref name" "$SC(      - name: sign the release files\n        if: )[^\n]*" "\\1\\2\${{ !contains(github.ref, '-') }}"
+caughtx "S3 the release-signed upload has no if" "        if: [^\n]*\n(        with:\n          name: release-signed\n)" '\1'
+caughtx "S3 the release-signed upload has another if" "(      - uses: actions/upload-artifact@a{40} # v7\n        if: )[^\n]*(\n        with:\n          name: release-signed\n)" '\1${{ success() }}\2'
+caughtx "S3 the staged signing step of sign-check carries the if" "$SC(      - name: sign the staged records and check each signed one\n)" "\\1\\2        $RCIF\\n"
+caughtx "S3 the checkout of sign-check carries the if" "$SC(      - uses: actions/checkout@a{40} # v7.0.1\n)" "\\1\\2        $RCIF\\n"
+caughtx "S3 the signed Check records upload carries the if" "(      - uses: actions/upload-artifact@a{40} # v7\n)(        with:\n          name: signed-witness-check\n)" "\\1        $RCIF\\n\\2"
+caughtx "S3 a step of sign carries the if" "(      - name: sign the staged records and check each signed one\n)" "\\1        $RCIF\\n"
+caughtx "S3 a step of sign-rebuild carries the if" "(  sign-rebuild:.*?      - name: sign the staged records and check each signed one\n)" "\\1        $RCIF\\n"
+caughtx "S3 the provenance step of sign carries the if" "(      - name: check Build's record, compare the digests, then sign the provenance\n)" "\\1        $RCIF\\n"
+caughtx "S3 the release signing step has no step env" "(      - name: sign the release files\n        if: [^\n]*\n)        env:\n(?:          [^\n]*\n)+" '\1'
+caughtx "S3 the release signing step has another role" "(      - name: sign the release files\n.*?AWS_ROLE_ARN: )[^\n]*" '\1arn:aws:iam::111111111111:role/other'
+caughtx "S3 the release signing step has another region" "(      - name: sign the release files\n.*?AWS_REGION: )[^\n]*" '\1eu-west-1'
+caughtx "S3 the release signing step has another key reference" "(      - name: sign the release files\n.*?RELEASE_KMS_KEY_REF: )[^\n]*" '\1awskms:///alias/other'
+caughtx "S3 the release signing step has a fourth env key" "(      - name: sign the release files\n.*?RELEASE_KMS_KEY_REF: [^\n]*\n)" '\1          GH_TOKEN: x\n'
+caughtx "S3 the release signing step has the role as a variable lookup" "(      - name: sign the release files\n.*?AWS_ROLE_ARN: )[^\n]*" '\1${{ vars.ROLE }}'
+caughtx "S3 the release signing step has arguments" 'run: bash bin/release-signatures\.sh\n' 'run: bash bin/release-signatures.sh --force\n'
+# S4: only provenance, signed-witness-* and release-signed may leave Sign
+caughtx "S4 sign-check uploads dist" "($UPSIGNED_RX)" "\\1      - uses: actions/upload-artifact@$sha # v7\\n        with:\\n          name: dist\\n          path: dist\\n"
+caughtx "S4 sign-check uploads images" "($UPSIGNED_RX)" "\\1      - uses: actions/upload-artifact@$sha # v7\\n        with:\\n          name: images\\n          path: images\\n"
+caughtx "S4 sign-check uploads a Build artifact it downloaded (items)" "($UPSIGNED_RX)" "\\1      - uses: actions/upload-artifact@$sha # v7\\n        with:\\n          name: items\\n          path: witness-build\\n"
+caughtx "S4 sign-check uploads the release-signed directory under another name" 'name: release-signed\n' 'name: release-files\n'
+caughtx "S4 sign-check uploads a part of release-signed only" 'path: release-signed\n' 'path: release-signed/images\n'
+caughtx "S4 sign-check uploads the whole workspace as release-signed" 'path: release-signed\n' 'path: .\n'
+caughtx "S4 sign uploads release-signed" "(          name: signed-witness-build\n          path: signed/witness-build\n)" "\\1      - uses: actions/upload-artifact@$sha # v7\\n        with:\\n          name: release-signed\\n          path: release-signed\\n"
+caughtx "S4 sign-check uploads release-signed with an option outside the closed keys" "$SC(          name: release-signed\n)" '\1\2          overwrite: true\n'
+# S1: sign and sign-rebuild are unchanged; the job set, the job if, the permissions and the id-token list of the file are unchanged
+caughtx "S1 sign also runs bin/release-signatures.sh" "(        run: bash bin/witness-sign-staged\.sh staged signed\n)" "\\1$SIGSTEP"
+caughtx "S1 sign-rebuild also runs bin/release-signatures.sh" "(  sign-rebuild:.*?        run: bash bin/witness-sign-staged\.sh staged signed\n)" "\\1$SIGSTEP"
+caughtx "S1 sign has another job if" "(  sign:\n    if: )[^\n]*" "\\1\${{ inputs.stage != 'build' }}"
+caughtx "S1 sign-rebuild has another job if" "(  sign-rebuild:\n    if: )[^\n]*" "\\1\${{ inputs.stage != 'rebuild' }}"
+caughtx "S1 sign-check holds id-token read" "$SC(      id-token: )write" '\1\2read'
+caughtx "S1 sign-check holds contents write" "$SC(      contents: )read" '\1\2write'
+caughtx "S1 sign-check holds packages write" "$SC(      id-token: write\n)" '\1\2      packages: write\n'
+caughtx "S1 sign holds contents write" "(  sign:\n.*?      contents: )read" '\1write'
+caughtx "S1 sign-rebuild holds id-token read" "(  sign-rebuild:\n.*?id-token: )write" '\1read'
+caughtx "S1 a fourth job is added" "(  sign-check:)" '  fourth:\n    runs-on: ubuntu-24.04\n    steps: []\n\1'
+# S5: the judge's header and its refusal messages describe the new job: sign-check also signs the release files from Build's verified outputs
+says() { # LABEL WORD regex replacement : the refusal text of the mutated file must name WORD
+  if mutatex "$1" "$3" "$4"; then
+    local out; out=$(judge sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml") || true
+    if grep -Fq -- "$2" <<< "$out"; then pass=$((pass + 1)); echo "ok   $1"; else failn=$((failn + 1)); echo "FAIL $1 -> the refusal does not name '$2': ${out:0:200}"; fi
+  fi
+}
+says "S5 an upload outside the list is refused with a message that names release-signed" "release-signed" "$SC$UPSIGNED_RX" '\1      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7\n        with:\n          name: dist\n          path: dist\n'
+says "S5 a download outside the list is refused with a message that names release-signatures.sh" "release-signatures.sh" '(          name: )images(\n          path: images\n)' '\1apk-compare\2'
+says "S5 an unknown run line is refused with a message that names release-signatures.sh" "release-signatures.sh" 'run: bash bin/release-signatures\.sh\n' 'run: bash bin/other.sh\n'
+says "S5 a misplaced if is refused with a message that names the release candidate" "release candidate" "(      - name: sign the staged records and check each signed one\n)" "\\1        $RCIF\\n"
+sed -n '1,60p' "$0" > "$work/own-header.txt"
+if grep -q 'bin/release-signatures.sh' "$work/own-header.txt" && grep -q 'release-signed' "$work/own-header.txt" && ! grep -q 'sign-check receives nothing' "$work/own-header.txt"; then
+  pass=$((pass + 1)); echo "ok   S5 the header of this suite says that sign-check runs bin/release-signatures.sh and uploads release-signed"
+else failn=$((failn + 1)); echo "FAIL S5 the header of this suite does not describe sign-check's release signing"; fi
 okmut() { if mutate "$1" "$2" "$3"; then expect ok "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi; }
 caught "AC1 Sign judge: runs-on ubuntu-. is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.'
 caught "AC1 Sign judge: runs-on ubuntu-24..04 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-24..04'
@@ -1074,6 +1234,7 @@ cat > "$FXDIR/spec_good.json" <<'FXEOF'
  {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},
  {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
  {"path":"bin/witness-sign-staged.sh","tools":[],"signs":"other","reason":"Sign's staged-record signer (REQ-CHAIN-005-AC4)","runs":[]},
+ {"path":"bin/release-signatures.sh","tools":[],"signs":"other","reason":"Sign's release signer (cache#912): sign-check signs the release files from Build's verified outputs","runs":[]},
  {"path":"bin/with-aws-token.sh","tools":[],"signs":"other","reason":"Sign's token fetch for one signing call (the provenance signature; wording pending the owner's approval for REQ-CHAIN-001-AC2)","runs":[]},
  {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
 FXEOF
@@ -1091,6 +1252,7 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/witness-sign-staged.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho fetched\n' > "$d/bin/with-aws-token.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho release-signed\n' > "$d/bin/release-signatures.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
   printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"stage-sign.yml","job":"sign-check","reason":"Sign, the signer of the Check records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
@@ -3430,7 +3592,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='680f7b71775420876889e4a82cb7dd51331551941707892d8f084fa39817297f'
+FX_PIN='a715a4fa664332960ef3a47187dbef0c1519c60e7c6e6c61b7133841e73fdb8e'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5222,7 +5384,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2134
+EXPECT=2205
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
