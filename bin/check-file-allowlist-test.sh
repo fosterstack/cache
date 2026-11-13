@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "676deba4ddb9645932c6bcdc5cccc315646bdea561b99fe16d421699b5b342e3"
+PINNED_SHA256 = "be4bb18c27164945a222c84bb0f66895782eed96449df8d68e98ec945361c58d"
 if rstart and rend:
     import hashlib
     _b = _rawlines
