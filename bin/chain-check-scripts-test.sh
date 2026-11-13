@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC30, REQ-SUP-001-AC33, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
-# Behaviour of the Check scripts (bin/check-*.sh, bin/witnessed-local.sh). Each runs in a throw-away tree with fake tools first on PATH
-# (grype, osv-scanner, docker, curl, cosign, witness, ...), so the scripts carry no test-only code path. No network, no Docker, no keys.
+# Behaviour of the Check scripts (bin/check-*.sh, bin/witnessed-local.sh). Each runs in a throw-away tree with
+# fake tools first on PATH (grype, osv-scanner, docker, curl, cosign, witness, ...), so the scripts carry no
+# test-only code path. No network, no Docker, no keys.
 # Needs bash, jq, python3.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -10,15 +11,17 @@ pass=0 failn=0
 command -v jq > /dev/null || { echo "FAIL jq is required"; exit 1; }
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
-FAKE_NOW=$(jq -n '"2026-10-10T00:00:00Z" | fromdateiso8601'); export FAKE_NOW   # AC15: the scan's `now`, given by a fake `date` first on PATH
+# AC15: the scan's `now`, given by a fake `date` first on PATH
+FAKE_NOW=$(jq -n '"2026-10-10T00:00:00Z" | fromdateiso8601'); export FAKE_NOW
 GDB_SUM=972de542534d3461cc3c3849a37a3f917b823de3b9c367e289db0d163519b42b
 GDB_FROM="https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-10-09T00:33:02Z_1790058641.tar.zst?checksum=sha256%3A$GDB_SUM"
 export FAKE_DB_FROM="$GDB_FROM" FAKE_DB_BUILT=2026-10-09T06:30:41Z FAKE_DB_RC=0
 export COPYFILE_DISABLE=1   # macOS bsdtar would add AppleDouble ._ members for extended attributes; the archive member lists are asserted exactly
 export FAKE_OSV_DB_RC=0 FAKE_OSV_ZIP=ok FAKE_OSV_MODIFIED=2026-10-09T20:00:00Z FAKE_OSV_ECOS="Go Debian:12"
-# REAL OCI image layouts : an index of linux/amd64 and linux/arm64 child manifests, each with a config blob and a layer blob, every blob
-# under the name of its sha256; the digest Build records is the index blob's. SEED makes two layouts valid and different. LIE_ARCH makes every config say
-# another architecture than the index's platform entry (a lying descriptor).
+# REAL OCI image layouts : an index of linux/amd64 and linux/arm64 child manifests, each with a config blob
+# and a layer blob, every blob under the name of its sha256; the digest Build records is the index blob's.
+# SEED makes two layouts valid and different. LIE_ARCH makes every config say another architecture than the
+# index's platform entry (a lying descriptor).
 cat > "$work/mkoci.py" <<'PYM'
 import hashlib, json, os, sys
 root, seed = sys.argv[1], sys.argv[2]
@@ -117,7 +120,9 @@ cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$ro
   "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh \
   "$root"/bin/layout-archive.sh "$fx/bin/" 2> /dev/null || true
 mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
-D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory
+# images/<variant>/ is an OCI layout directory
+D1=$(python3 "$work/mkoci.py" "$fx/images/production" production)
+D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
 mkdig "$fx"
 mkdir -p "$fx/tools/requirements"; printf 'module example.com/a\n' > "$fx/go.mod"; printf 'module example.com/b\n' > "$fx/tools/requirements/go.mod"
@@ -581,7 +586,8 @@ if [ -f "$fx/out/scan-results.json" ] && jq -e --arg u "$GDB_FROM" --arg s "sha2
 u=$(grep -n '^grype db update' "$work/log" | head -1 | cut -d: -f1 || true); s=$(grep -n '^grype .*\(docker-archive\|oci-dir\|file\):' "$work/log" | head -1 | cut -d: -f1 || true)
 if [ -n "$u" ] && [ -n "$s" ] && [ "$u" -lt "$s" ]; then ok "AC15 the database is fetched fresh (grype db update) before the first scan"; else bad "AC15 db update (line ${u:-none}) must come before the first scan (line ${s:-none})"; fi
 FAKE_DB_BUILT=2026-10-07T00:00:00Z want_fail "AC15 a database built 72 h before now fails closed" "older than 48 hours" "${SCAN[@]}"
-# the clock is the runner's. A CHECK_SCAN_NOW in the environment (an older `now` makes any database fresh) is refused, never read.
+# the clock is the runner's. A CHECK_SCAN_NOW in the environment (an older `now` makes any database fresh) is
+# refused, never read.
 OLD=$(jq -n '"2026-10-07T00:00:00Z" | fromdateiso8601')
 CHECK_SCAN_NOW=$OLD FAKE_DB_BUILT=2026-10-07T00:00:00Z want_fail "AC15 F4 an inherited CHECK_SCAN_NOW does not make a 72 h old database fresh: the variable is refused" CHECK_SCAN_NOW "${SCAN[@]}"
 CHECK_SCAN_NOW=$OLD want_fail "AC15 F4 an inherited CHECK_SCAN_NOW is refused even beside a fresh database (no silent use of a variable the stage cannot set)" CHECK_SCAN_NOW "${SCAN[@]}"
@@ -920,7 +926,8 @@ if [ "$rc" = 0 ] && [ "$addrs" = " 3 127.0.0.1:0;" ]; then
 else
   bad "PLAT-001-AC1 the servers were given [$addrs] (rc=$rc): ${out:0:160}"
 fi
-# REQ-CHAIN-006-AC17: the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on an arm64 runner
+# REQ-CHAIN-006-AC17: the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on
+# an arm64 runner
 mkarch "$fa/dist"
 aok "AC17 --arch arm64: the arm64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}" --arch arm64
 if grep -Fq -- '--platform linux/arm64' "$work/log" && [ -f "$fa/out/artifacts-result-arm64.json" ] && jq -e '.arch == "arm64" and .production.digest and .fips.digest' "$fa/out/artifacts-result-arm64.json" > /dev/null 2>&1; then ok "AC17 the arm64 images run with --platform linux/arm64 and the result names the arch and the same candidate digests"; else bad "AC17 arm64 run: no --platform linux/arm64, or artifacts-result-arm64.json incomplete"; fi
@@ -966,8 +973,10 @@ afail "FIPS-002-AC1 F5 the standard build with the note off but fips140 true (co
 afail "FIPS-002-AC1 F5 the standard build whose note is not exactly off fails" "standard" FAKE_STD_NOTE='off (validated module v1.0.0 linked, mode disabled at runtime)' -- "${ART[@]}"
 afail "FIPS-002-AC1 F5 the forced build reporting fips140 false with the forced note (contradictory) fails" "forced" FAKE_FORCED_BOOL=false -- "${ART[@]}"
 afail "FIPS-002-AC1 F5 the forced build whose note only starts like the forced line fails" "forced" FAKE_FORCED_NOTE='active (fips140 mode forced at runtime; not the validated-module build) and more' -- "${ART[@]}"
-afail "FIPS-002-AC1 the -fips note plus a trailing newline fails" "fips build" FAKE_FIPS_NOTE=$'active (Go validated module v1.0.0, CMVP cert #5247)\n' -- "${ART[@]}"
-afail "FIPS-002-AC1 the standard note off plus a trailing newline fails" "standard" FAKE_STD_NOTE=$'off\n' -- "${ART[@]}"
+afail "FIPS-002-AC1 the -fips note plus a trailing newline fails" "fips build" \
+  FAKE_FIPS_NOTE=$'active (Go validated module v1.0.0, CMVP cert #5247)\n' -- "${ART[@]}"
+afail "FIPS-002-AC1 the standard note off plus a trailing newline fails" "standard" \
+  FAKE_STD_NOTE=$'off\n' -- "${ART[@]}"
 afail "FIPS-002-AC1 the standard default reporting active fails" "standard" FAKE_STD_NOTE='active (x)' -- "${ART[@]}"
 afail "FIPS-001-AC2 the forced-standard build claiming the validated module fails" "forced" FAKE_FORCED_NOTE='active (Go validated module v1.0.0, CMVP cert #5247)' -- "${ART[@]}"
 afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" FAKE_FORCED_NOTE=off -- "${ART[@]}"
@@ -983,7 +992,8 @@ cp "$work/dig.keep" "$fa/digests.json"
 mv "$fa/images/production" "$fa/images/production.off"
 afail "ART a missing production image fails naming it" production -- "${ART[@]}"
 mv "$fa/images/production.off" "$fa/images/production"
-# the platform helper reads the manifests and configs the platform entries refer to (a descriptor that merely says linux/arm64 is not an arm64 image)
+# the platform helper reads the manifests and configs the platform entries refer to (a descriptor that merely
+# says linux/arm64 is not an arm64 image)
 plat() { local d=$1; rc=0; out=$(python3 "$root/bin/check-image-platforms.py" "$d" 2>&1) || rc=$?; }
 plat_want_fail() { local l=$1 w=$2; plat "$3"; if [ "$rc" = 1 ] && grep -Fq -- "$w" <<< "$out"; then ok "$l (caught: ${out:0:70})"; else bad "$l -> rc=$rc, wanted exit 1 naming '$w': ${out:0:140}"; fi; }
 pl="$work/pl"; mkdir -p "$pl"
@@ -998,11 +1008,11 @@ plat_want_fail "PLAT-002-AC1 F1 a linux/arm64 entry whose config says amd64 is r
 cp -R "$pl/good" "$pl/nocfg"; rm -f "$pl/nocfg/blobs/sha256/$(jq -r .arm64.config "$pl/good.map")"
 plat_want_fail "PLAT-002-AC1 F1 a platform entry whose config blob is missing is refused" linux/arm64 "$pl/nocfg"
 # ---- REQ-CHAIN-006-AC7: check-guide.sh (a FIXTURE guide in cache-3f's format; the real docs/verify-release.md does not exist yet) ------
-# A verify command whose subject is an image reference (<IMAGE_REF>,
-# <IMAGE_REF_FIPS>, a literal registry reference with `:` or `@`, or oci://...) needs a registry: it is NEVER run, it must be listed
-# exactly in the cannot-run list (then not-run, exit 0, covered by Release's post-publish verification), or the check fails closed ("unlisted command
-# needs a registry"). A command runs only when every operand is a local file or a placeholder Check fills with a local
-# value (<TAG>).
+# A verify command whose subject is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>, a literal registry
+# reference with `:` or `@`, or oci://...) needs a registry: it is NEVER run, it must be listed exactly in the
+# cannot-run list (then not-run, exit 0, covered by Release's post-publish verification), or the check fails
+# closed ("unlisted command needs a registry"). A command runs only when every operand is a local file or a
+# placeholder Check fills with a local value (<TAG>).
 # A LISTED command is Release's: it carries exactly one key flag whose value is <RELEASE_KEY> (a runnable one names a
 # local key file, fx.pub). `$` is refused anywhere but inside single quotes ("$TAG", "${TAG}", "$(x)"). The registry
 # text below is in the GUIDE
@@ -1089,8 +1099,9 @@ gwant_fail "AC7 an unlisted -fips verify command on a literal registry reference
 g "$(blk "$(U "$RO")")";
 gwant_fail "AC7 an unlisted verify command on an oci:// target fails closed" "unlisted command needs a registry"
 g "$(blk "$RL")"; lst "$RL"; gwant_ok "AC7 the literal -fips registry command, listed, is not run (exit 0)"
-# the syntax and the placeholders are judged BEFORE the cannot-run list excuses a command (a listed command is run unattended by
-# Release after publishing, so an excused `$(...)`, `;` or unsupported placeholder would be run there)
+# the syntax and the placeholders are judged BEFORE the cannot-run list excuses a command (a listed command is
+# run unattended by Release after publishing, so an excused `$(...)`, `;` or unsupported placeholder would be
+# run there)
 X1="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \"\$(id)\""
 X2="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \$IDENT"
 X3="cosign verify <IMAGE_REF> --key <RELEASE_KEY>; jq -n 1"
@@ -1192,8 +1203,14 @@ gwant_fail "AC7 a command on a file that is not local to Check is not runnable a
 JQF="jq -e --arg ref <IMAGE_REF> '.payload | @base64d | fromjson | .subject[0].digest.sha256 == \$ref'"
 Q1="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> <IMAGE_REF> | $JQF"
 g "$(blk "$Q1")"; lst "$Q1"
-gwant_ok "AC7 a listed verify command piped to a jq filter that itself holds pipes inside single quotes is one verify form (not refused as 'not a verify form')"
-if jq -e '(.commands | length) == 1 and .commands[0].outcome == "not-run"' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 the quoted-pipe jq command is recorded as not-run"; else bad "AC7 quoted-pipe results"; fi
+gwant_ok "AC7 a listed verify command piped to a jq filter that itself holds pipes inside single quotes "\
+"is one verify form (not refused as 'not a verify form')"
+if jq -e '(.commands | length) == 1 and .commands[0].outcome == "not-run"' \
+  "$fx/out/guide-results.json" > /dev/null 2>&1; then
+  ok "AC7 the quoted-pipe jq command is recorded as not-run"
+else
+  bad "AC7 quoted-pipe results"
+fi
 g "$(blk "$(U "$Q1")")";
 gwant_fail "AC7 the same command unlisted still fails closed (it needs a registry)" \
   "unlisted command needs a registry"
@@ -1206,7 +1223,9 @@ for c in "cosign verify <IMAGE_REF> --key <RELEASE_KEY> | sh" \
          "$CHAIN_TO_DL" \
          "jq -n \\'.a | rm -rf x" \
          "jq -n '.a | .b"; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 a chain to a command that is not a verify form or jq (or an unterminated quote) is still refused: ${c:0:60}" "verify form"
+  g "$(blk "$c")"; lst "$c"
+  gwant_fail "AC7 a chain to a command that is not a verify form or jq (or an unterminated quote) "\
+"is still refused: ${c:0:60}" "verify form"
 done
 for c in "jq -n '.a | .b' ; rm -rf x" \
          "jq -n '.a | .b' \$(id)" \
@@ -1214,7 +1233,8 @@ for c in "jq -n '.a | .b' ; rm -rf x" \
          "jq -n \".a | \`id\`\"" \
          "jq -n '.a | .b' && rm -rf x" \
          "jq -n '.a | .b' > /etc/x"; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 a quoted pipe cannot smuggle shell syntax past the F8 checks: ${c:0:60}" "shell syntax"
+  g "$(blk "$c")"; lst "$c"
+  gwant_fail "AC7 a quoted pipe cannot smuggle shell syntax past the F8 checks: ${c:0:60}" "shell syntax"
 done
 # (2) a value of --bundle, --certificate, --cert, --signature, --sig, --key, --certificate-chain, --rekor-url is a file operand unless it is a URL: a command whose
 #     only file operand is such a value, not local to Check, is not runnable at Check (it may be listed; Release runs it with the downloaded files).
@@ -1232,8 +1252,13 @@ for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X
   # only --bundle is in a listed command's closed flag set; the other file-valued flags are refused there (G2), so no
   # listed half
   case "$f" in --bundle*) ;; *) continue;; esac
-  g "$(blk "$c")"; lst "$c"; gwant_ok "AC7 the same command listed with its reason is not run and is recorded as not-run (exit 0): $f"
-  if ! grep -q '^cosign' "$work/log"; then ok "AC7 the listed flag-value command was not run: $f"; else bad "AC7 the listed flag-value command ran: $f"; fi
+  g "$(blk "$c")"; lst "$c"
+  gwant_ok "AC7 the same command listed with its reason is not run and is recorded as not-run (exit 0): $f"
+  if ! grep -q '^cosign' "$work/log"; then
+    ok "AC7 the listed flag-value command was not run: $f"
+  else
+    bad "AC7 the listed flag-value command ran: $f"
+  fi
 done
 c="$BA --key fx.pub --bundle=https://example.com/provenance.bundle checksums.txt"
 g "$(blk "$c")"; gwant_ok "AC7 a URL value of --bundle is not a file operand: the command (local blob) runs"
@@ -1274,15 +1299,21 @@ printf '[{"command": "%s", "reason": "needs the published GitHub release, which 
 gwant_fail "AC7 a cannot-run entry that is not one of the verify forms fails (Release runs only verify forms from this list; the list is the one exact-text list)" "not a verify form"
 # a backslash-escaped quote is a literal character, so a $ after it is outside single quotes and is refused
 for c in "cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \\'x\${HOME}y\\'" "jq -n \\'\$TAG\\'"; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 an escaped quote does not open a quoted region: a \$ after it is refused: ${c:0:70}" "shell syntax"
+  g "$(blk "$c")"; lst "$c"
+  gwant_fail "AC7 an escaped quote does not open a quoted region: a \$ after it is refused: ${c:0:70}" \
+    "shell syntax"
 done
-# the command words are compared one word at a time, so a quoted "cosign verify" (one word holding a space) is not the verify form
+# the command words are compared one word at a time, so a quoted "cosign verify" (one word holding a space) is
+# not the verify form
 for c in "\"cosign verify\" | jq ." "'gh attestation' verify | jq ."; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 a listed command whose quoted word holds a space is not a verify form (compared word by word): ${c:0:60}" "not a verify form"
+  g "$(blk "$c")"; lst "$c"
+  gwant_fail "AC7 a listed command whose quoted word holds a space is not a verify form "\
+"(compared word by word): ${c:0:60}" "not a verify form"
 done
 for c in "cosign verify-evil x" "cosign verifyx y" "gh attestation verify-evil z" "jqx ."; do
   g "$(blk "$L2" "$c")"; printf '[{"command": "%s", "reason": "x"}]\n' "$c" > "$fx/guide.cannot-run.json"
-  gwant_fail "AC7 a cannot-run entry whose first words only START with a verify form is not a verify form (the form is compared by whole words): $c" "not a verify form"
+  gwant_fail "AC7 a cannot-run entry whose first words only START with a verify form is not a verify form "\
+"(the form is compared by whole words): $c" "not a verify form"
 done
 g "$(blk "$L2" "jq -n 1")"; printf '[{"command": "jq -n 1", "reason": "x"}]\n' > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a runnable command in the cannot-run list fails (it is run, never excused)" "runnable"
@@ -1290,7 +1321,8 @@ g "$(blk "$L2")"; printf '[{"command": "%s", "reason": "x"}]\n' "$R1" > "$fx/gui
 gwant_fail "AC7 a cannot-run entry that is not a command of the guide fails (a stale list)" "not in the guide"
 rm -f "$fx/guide.md" "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a missing guide file fails" "guide"
-# ---- REQ-CHAIN-006-AC5: the interface, and a failing or empty suite (suite scripts are stubs in the throw-away tree) ----
+# ---- REQ-CHAIN-006-AC5: the interface, and a failing or empty suite (suite scripts are stubs in the
+# throw-away tree) ----
 want_rc "AC5 an unknown suite name is a named refusal (exit 2)" 2 check-acceptance.sh nosuch --digests digests.json --images images --out out
 want_rc "AC5 no suite name is a named refusal (exit 2)" 2 check-acceptance.sh --digests digests.json --images images --out out
 want_rc "AC5 a missing image directory is a named refusal (exit 2)" 2 check-acceptance.sh gradle --digests digests.json --images /nonexistent --out out
@@ -1298,46 +1330,98 @@ rm -rf "$work/keep-p"; cp -R "$fx/images/production" "$work/keep-p"; rm -rf "$fx
 want_fail "AC5 F1 a valid OCI layout that is not Build's production image (digests.json intact) is refused naming the image before the suite or docker" image-production check-acceptance.sh gradle --digests digests.json --images images --out out
 if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind the refused production layout"; else bad "AC5 F1 docker ran: $(head -2 "$work/log" | tr '\n' '|')"; fi
 rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
-# a suite script that fails, or reports no passing assertion, fails the script; one that passes names the candidate digest
+# a suite script that fails, or reports no passing assertion, fails the script; one that passes names the
+# candidate digest
 printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/acceptance-serve.sh"
 for suite in egress k8s; do
-  stub() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$fx/bin/acceptance-$suite.sh"; }   # stub BODY: the suite script, in the throw-away tree only
+  # stub BODY: the suite script, in the throw-away tree only
+  stub() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$fx/bin/acceptance-$suite.sh"; }
   rm -f "$fx/out/acceptance-$suite.json"
   stub 'echo "the suite broke" >&2; exit 3'
-  want_fail "AC5 the $suite suite script exits non-zero: the script fails naming the suite" "$suite suite script failed" check-acceptance.sh $suite --digests digests.json --images images --out out
+  want_fail "AC5 the $suite suite script exits non-zero: the script fails naming the suite" \
+    "$suite suite script failed" check-acceptance.sh $suite \
+    --digests digests.json --images images --out out
   stub 'echo "results=[{\"ac\":\"AC5\",\"result\":\"pass\"}]" >> "$GITHUB_OUTPUT"; exit 3'
-  want_fail "AC5 the $suite suite script exits non-zero after reporting a pass: the script still fails" "$suite suite script failed" check-acceptance.sh $suite --digests digests.json --images images --out out
+  want_fail "AC5 the $suite suite script exits non-zero after reporting a pass: the script still fails" \
+    "$suite suite script failed" check-acceptance.sh $suite \
+    --digests digests.json --images images --out out
   stub 'exit 0'
-  want_fail "AC5 the $suite suite exits 0 with no results line: ran no test, the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
+  want_fail "AC5 the $suite suite exits 0 with no results line: ran no test, the script fails" \
+    "no passing assertion" check-acceptance.sh $suite \
+    --digests digests.json --images images --out out
   stub 'echo "results=[]" >> "$GITHUB_OUTPUT"'
-  want_fail "AC5 the $suite suite reports an empty results array: ran no test, the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
+  want_fail "AC5 the $suite suite reports an empty results array: ran no test, the script fails" \
+    "no passing assertion" check-acceptance.sh $suite \
+    --digests digests.json --images images --out out
   stub 'echo "results=[{\"ac\":\"AC5\",\"result\":\"pass\"},{\"ac\":\"AC6\",\"result\":\"fail\"}]" >> "$GITHUB_OUTPUT"'
-  want_fail "AC5 the $suite suite reports one failed assertion beside a pass: the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
+  want_fail "AC5 the $suite suite reports one failed assertion beside a pass: the script fails" \
+    "no passing assertion" check-acceptance.sh $suite \
+    --digests digests.json --images images --out out
   stub 'echo "results=[{\"ac\":\"AC5\"}]" >> "$GITHUB_OUTPUT"'
-  want_fail "AC5 the $suite suite reports an assertion with no result: the script fails" "no passing assertion" check-acceptance.sh $suite --digests digests.json --images images --out out
-  if [ ! -e "$fx/out/acceptance-$suite.json" ]; then ok "AC5 no $suite results file is written for a failed suite"; else bad "AC5 a $suite results file exists after failed suites"; fi
+  want_fail "AC5 the $suite suite reports an assertion with no result: the script fails" \
+    "no passing assertion" check-acceptance.sh $suite \
+    --digests digests.json --images images --out out
+  if [ ! -e "$fx/out/acceptance-$suite.json" ]; then
+    ok "AC5 no $suite results file is written for a failed suite"
+  else
+    bad "AC5 a $suite results file exists after failed suites"
+  fi
   stub 'echo "results=[{\"ac\":\"AC5\",\"result\":\"pass\"}]" >> "$GITHUB_OUTPUT"'
-  want_ok "AC5 the $suite suite reports a passing assertion: the script passes" check-acceptance.sh $suite --digests digests.json --images images --out out
-  if [ "$(jq -r '.suite + " " + .candidate' "$fx/out/acceptance-$suite.json" 2> /dev/null)" = "$suite $D1" ]; then ok "AC5 acceptance-$suite.json names the candidate digest"; else bad "AC5 acceptance-$suite.json: $(cat "$fx/out/acceptance-$suite.json" 2> /dev/null)"; fi
+  want_ok "AC5 the $suite suite reports a passing assertion: the script passes" \
+    check-acceptance.sh $suite --digests digests.json --images images --out out
+  if [ "$(jq -r '.suite + " " + .candidate' "$fx/out/acceptance-$suite.json" 2> /dev/null)" = "$suite $D1" ]; then
+    ok "AC5 acceptance-$suite.json names the candidate digest"
+  else
+    bad "AC5 acceptance-$suite.json: $(cat "$fx/out/acceptance-$suite.json" 2> /dev/null)"
+  fi
   rm -f "$fx/bin/acceptance-$suite.sh"
 done
 # gradle runs two suite scripts (main, capped): a failure of either fails the script even after it reported a pass
 PASS_LINE='echo "results=[{\"ac\":\"AC5\",\"result\":\"pass\"}]" >> "$GITHUB_OUTPUT"'
 for failing in gradle gradle-capped; do
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/acceptance-gradle.sh"   # as in the repo: main writes no results line, capped does
+  # as in the repo: main writes no results line, capped does
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/acceptance-gradle.sh"
   printf '#!/usr/bin/env bash\n%s\n' "$PASS_LINE" > "$fx/bin/acceptance-gradle-capped.sh"
-  if [ "$failing" = gradle ]; then printf '#!/usr/bin/env bash\nexit 3\n' > "$fx/bin/acceptance-gradle.sh"; else printf '#!/usr/bin/env bash\n%s; exit 3\n' "$PASS_LINE" > "$fx/bin/acceptance-gradle-capped.sh"; fi
+  if [ "$failing" = gradle ]; then
+    printf '#!/usr/bin/env bash\nexit 3\n' > "$fx/bin/acceptance-gradle.sh"
+  else
+    printf '#!/usr/bin/env bash\n%s; exit 3\n' "$PASS_LINE" > "$fx/bin/acceptance-gradle-capped.sh"
+  fi
   rm -f "$fx/out/acceptance-gradle.json"
-  want_fail "AC5 the $failing suite script exits non-zero: the script fails naming it" "$failing suite script failed" check-acceptance.sh gradle --digests digests.json --images images --out out
-  if [ ! -e "$fx/out/acceptance-gradle.json" ]; then ok "AC5 no gradle results file is written when the $failing script failed"; else bad "AC5 a gradle results file exists after the $failing script failed"; fi
+  want_fail "AC5 the $failing suite script exits non-zero: the script fails naming it" \
+    "$failing suite script failed" check-acceptance.sh gradle --digests digests.json --images images --out out
+  if [ ! -e "$fx/out/acceptance-gradle.json" ]; then
+    ok "AC5 no gradle results file is written when the $failing script failed"
+  else
+    bad "AC5 a gradle results file exists after the $failing script failed"
+  fi
 done
 # a suite script is a plain command: the caller's standard input reaches it, it is not redirected
-printf '#!/usr/bin/env bash\ncat > "$FAKE_DIR/stdin-seen"\n' > "$fx/bin/acceptance-gradle.sh"
-printf '#!/usr/bin/env bash\n%s\n' "$PASS_LINE" > "$fx/bin/acceptance-gradle-capped.sh"
-mkdir -p "$work/fakedir"; rm -f "$work/fakedir/stdin-seen"; printf 'caller-stdin\n' > "$work/stdin-in"
-run check-acceptance.sh gradle --digests digests.json --images images --out out < "$work/stdin-in"
-if [ "$rc" = 0 ] && [ "$(cat "$work/fakedir/stdin-seen" 2> /dev/null)" = caller-stdin ]; then ok "AC5 a suite script that reads standard input gets the caller's, not a redirected one"; else bad "AC5 stdin reached the suite script as '$(cat "$work/fakedir/stdin-seen" 2> /dev/null)' (rc=$rc): ${out:0:140}"; fi
-rm -f "$fx/bin/acceptance-gradle.sh" "$fx/bin/acceptance-gradle-capped.sh"
+# (maven is not run: its branch deletes /tmp/mvn-* and rewrites bench/maven-sample, which a stub must not touch)
+# each stub script takes one line of the caller's input and records it
+READ_LINE='IFS= read -r line; printf "%s\n" "$line" > "$FAKE_DIR/stdin-seen-$(basename "$0")"'
+printf 'caller-line-1\ncaller-line-2\n' > "$work/stdin-in"; mkdir -p "$work/fakedir"
+for suite in gradle egress k8s; do
+  rm -f "$fx/bin/acceptance-"{gradle,gradle-capped,egress,k8s}.sh "$work/fakedir"/stdin-seen-*
+  if [ "$suite" = gradle ]; then   # main reads the first line, capped the second
+    printf '#!/usr/bin/env bash\n%s\n' "$READ_LINE" > "$fx/bin/acceptance-gradle.sh"
+    printf '#!/usr/bin/env bash\n%s\n%s\n' "$READ_LINE" "$PASS_LINE" > "$fx/bin/acceptance-gradle-capped.sh"
+    want_seen="acceptance-gradle-capped.sh:caller-line-2 acceptance-gradle.sh:caller-line-1 "   # name order
+  else
+    printf '#!/usr/bin/env bash\n%s\n%s\n' "$READ_LINE" "$PASS_LINE" > "$fx/bin/acceptance-$suite.sh"
+    want_seen="acceptance-$suite.sh:caller-line-1 "
+  fi
+  run check-acceptance.sh $suite --digests digests.json --images images --out out < "$work/stdin-in"
+  seen=$(cd "$work/fakedir" && for f in stdin-seen-*; do
+    [ -e "$f" ] && echo "${f#stdin-seen-}:$(cat "$f")"
+  done | tr '\n' ' ')
+  if [ "$rc" = 0 ] && [ "$seen" = "$want_seen" ]; then
+    ok "AC5 the $suite suite script that reads standard input gets the caller's, not a redirected one"
+  else
+    bad "AC5 $suite stdin reached the scripts as '$seen' (rc=$rc): ${out:0:140}"
+  fi
+done
+rm -f "$fx/bin/acceptance-"{gradle,gradle-capped,egress,k8s}.sh
 rm -f "$fx/bin/acceptance-serve.sh"
 # ---- REQ-SUP-001-AC30: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
 srv="$work/srv"; mkdir -p "$srv/bin" "$srv/fakedir"; cp "$root/bin/acceptance-serve.sh" "$srv/bin/"; printf '#!/bin/sh\nexit 0\n' > "$srv/bin/loopback-get.sh"
@@ -1433,7 +1517,14 @@ reset_h; hrun X=1 -- extra bin/step.sh extra
 if [ "$h_ok" = 1 ] && [ "$rc" = 2 ] && [ ! -s "$work/hwlog" ] && [ ! -s "$work/hwargv" ]; then ok "AC11 a fourth step outside the closed list (extra) is refused (exit 2) before anything runs"; else bad "AC11 unknown step extra -> rc=$rc"; fi
 reset_h; for s in scanners acceptance runtime arm64; do hrun X=1 -- "$s" bin/step.sh "$s"; done
 got=$(cd "$hw" && find . -path './witness-*' -type f | sed 's|^\./||' | sort | tr '\n' ' ')
-if [ "$got" = "witness-acceptance/acceptance-collection.local.json witness-arm64/arm64-collection.local.json witness-runtime/runtime-collection.local.json witness-scanners/scanners-collection.local.json " ]; then ok "AC12 the four steps (scanners, acceptance, runtime, arm64) are accepted and leave exactly four records, one per step (the next stage verifies the list)"; else bad "AC12 the records: $got"; fi
+want="witness-acceptance/acceptance-collection.local.json witness-arm64/arm64-collection.local.json"
+want="$want witness-runtime/runtime-collection.local.json witness-scanners/scanners-collection.local.json "
+if [ "$got" = "$want" ]; then
+  ok "AC12 the four steps (scanners, acceptance, runtime, arm64) are accepted and leave exactly four records, "\
+"one per step (the next stage verifies the list)"
+else
+  bad "AC12 the records: $got"
+fi
 # ---- REQ-CHAIN-006-AC3 / AC11: bin/check-stage.sh, the fixed dispatcher (verify first, then only the phase's checks) -------------------
 dp="$work/dp"; mkdir -p "$dp/bin"; cp "$root/bin/check-stage.sh" "$dp/bin/" 2> /dev/null || true
 cat > "$dp/bin/chain-verify.py" <<'EOF'
@@ -1484,16 +1575,28 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-# in every phase the policy is made, then Build's record verified, before the first check runs; a failure of either runs no check
+# in every phase the policy is made, then Build's record verified, before the first check runs; a failure of
+# either runs no check
 for ph in scanners acceptance runtime; do
   drun $ph
-  if [ "$rc" = 0 ] && [ "$(head -2 "$work/dplog" | cut -d' ' -f1,2 | tr '\n' '|')" = "verify policy|verify stage-start|" ] && [[ "$(sed -n 3p "$work/dplog")" == check-* ]]; then ok "AC3 phase $ph: the policy, then the verification of Build's record, then the first check"; else bad "AC3 phase $ph order: $(tr '\n' '|' < "$work/dplog" | cut -c1-300)"; fi
+  if [ "$rc" = 0 ] \
+    && [ "$(head -2 "$work/dplog" | cut -d' ' -f1,2 | tr '\n' '|')" = "verify policy|verify stage-start|" ] \
+    && [[ "$(sed -n 3p "$work/dplog")" == check-* ]]; then
+    ok "AC3 phase $ph: the policy, then the verification of Build's record, then the first check"
+  else
+    bad "AC3 phase $ph order: $(tr '\n' '|' < "$work/dplog" | cut -c1-300)"
+  fi
   for step in policy stage-start; do
     VERIFY_FAIL=$step drun $ph
-    if [ "$rc" != 0 ] && grep -q "^verify $step" "$work/dplog" && ! grep -q '^check-' "$work/dplog"; then ok "AC3 phase $ph: a failed $step stops the script before any check"; else bad "AC3 phase $ph a failed $step -> rc=$rc, log: $(tr '\n' '|' < "$work/dplog" | cut -c1-200)"; fi
+    if [ "$rc" != 0 ] && grep -q "^verify $step" "$work/dplog" && ! grep -q '^check-' "$work/dplog"; then
+      ok "AC3 phase $ph: a failed $step stops the script before any check"
+    else
+      bad "AC3 phase $ph a failed $step -> rc=$rc, log: $(tr '\n' '|' < "$work/dplog" | cut -c1-200)"
+    fi
   done
 done
-# ---- bin/check-govulncheck.py, the source scan of the product module, whose output Release reads from Check's record -----------------------
+# ---- bin/check-govulncheck.py, the source scan of the product module, whose output Release reads
+# from Check's record -----------------------
 # `govulncheck -json ./...` runs once in the scanners step with the pinned Go (the fixed path /usr/local/bin/fscache-go/bin first on PATH, GOTOOLCHAIN=local,
 # GOFLAGS=-mod=vendor and GOPROXY=off, so the scan reads the exact bytes the build uses; never a flag or toolchain of the caller's environment); the raw stream is written byte for byte to OUT/govulncheck.json, which the Witness
 # record of the step carries as a product. Exit 0 only when the tool ran (a config message of scanner govulncheck, database https://vuln.go.dev) and no finding
@@ -1728,19 +1831,20 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-# the egress suite's strace target is the image's real entrypoint: the path in the script equals both apko entrypoints and the path the recipes install to
+# the egress suite's strace target is the image's real entrypoint: the path in the script equals both apko
+# entrypoints and the path the recipes install to
 ce_=$(sed -n 's/^CANDIDATE_ENTRYPOINT=\(.*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 ae_=$(sed -n '/^entrypoint:/,/^[a-z]/s/^  command: \(.*\)$/\1/p' "$root/build/apko.yaml" | head -1)
 af_=$(sed -n '/^entrypoint:/,/^[a-z]/s/^  command: \(.*\)$/\1/p' "$root/build/apko-fips.yaml" | head -1)
 if [ -n "$ce_" ] && [ "$ce_" = "$ae_" ] && [ "$ce_" = "$af_" ]; then ok "acceptance-egress.sh: the strace target $ce_ is the entrypoint of both apko images"; else bad "acceptance-egress.sh: CANDIDATE_ENTRYPOINT '$ce_' != apko.yaml '$ae_' / apko-fips.yaml '$af_'"; fi
 if [ -n "$ce_" ] && grep -q "go build -trimpath -o \${{targets.destdir}}${ce_} " "$root/build/melange.yaml" && grep -q "go build -trimpath -o \${{targets.destdir}}${ce_} " "$root/build/melange-fips.yaml"; then ok "acceptance-egress.sh: both recipes install the binary at the strace target $ce_"; else bad "acceptance-egress.sh: a recipe does not install the binary at '$ce_'"; fi
-# the tracer target is assigned ONCE and the strace command line really ends with it: a literal path in the strace launch line, or a second assignment
-# after the first, would leave the value above checked but not used
+# the tracer target is assigned ONCE and the strace command line really ends with it: a literal path in the
+# strace launch line, or a second assignment after the first, would leave the value above checked but not used
 if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 ]; then ok "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned exactly once"; else bad "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned $(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh") times (the first one is the one checked, the last one is the one used)"; fi
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=624
+EXPECT=626
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
