@@ -296,6 +296,18 @@ done
 mkdir -p "$work/stepnotok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepnotok/fns.sh"
 (cd "$work/stepnotok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
 if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q -e '^environ-read:' -e '^environ-unreadable-same-user:' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, no environ line and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+# the REAL step's token fetch: the request token is in no argv, only in the file hostile-work/token-header that the stand-in for bin/loopback-get.sh reads at call time; the file is gone afterwards
+mkdir -p "$work/steptok/bin" && cp "$work/stepnotok/fns.sh" "$work/steptok/fns.sh"
+cat > "$work/steptok/bin/loopback-get.sh" <<'STUB'
+printf '%s\n' "$@" > argv.log
+cat hostile-work/token-header > header-at-call.txt
+printf '{"value": "aaa.bbb.ccc"}\n'
+STUB
+(cd "$work/steptok" && env -i PATH="$PATH" ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:9/token?x=1" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRETREQUESTTOKEN bash -c '. ./fns.sh; attempt_read_sign_token')
+if ! grep -q SECRETREQUESTTOKEN "$work/steptok/argv.log" && grep -qx -e '-H' "$work/steptok/argv.log" && grep -qx '@hostile-work/token-header' "$work/steptok/argv.log" && grep -qx 'http://127.0.0.1:9/token?x=1&audience=sigstore' "$work/steptok/argv.log"; then ok "hostile step: the request token is in no argument of the fetch, which gets -H @hostile-work/token-header and the address with &audience=sigstore"; else bad "hostile step: the fetch argv is $(tr '\n' '|' < "$work/steptok/argv.log")"; fi
+if [ "$(cat "$work/steptok/header-at-call.txt" 2> /dev/null)" = "Authorization: bearer SECRETREQUESTTOKEN" ]; then ok "hostile step: at the time of the fetch the file held the line Authorization: bearer <token>"; else bad "hostile step: the file at call time held $(head -c 100 "$work/steptok/header-at-call.txt" 2> /dev/null)"; fi
+if [ ! -e "$work/steptok/hostile-work/token-header" ]; then ok "hostile step: the token header file is removed after the step"; else bad "hostile step: hostile-work/token-header is still there"; fi
+if grep -qx 'claims: aaa.bbb.' "$work/steptok/attempts/read_sign_token.txt" && ! grep -q SECRETREQUESTTOKEN "$work/steptok/attempts/read_sign_token.txt"; then ok "hostile step: the transcript is unchanged (claims line header.payload., no token)"; else bad "hostile step: transcript $(tr '\n' '|' < "$work/steptok/attempts/read_sign_token.txt" | head -c 200)"; fi
 # Linux only (/proc/PID/environ): an UNRELATED process of the same user that denies its environ (dumpable off, as hosted runners have) must not change the grade; a non-dumpable
 # ANCESTOR of the step must be an error (it could hide a request variable). Skipped, with an ok line, where there is no /proc.
 if [ -r /proc/self/environ ]; then
@@ -1518,7 +1530,7 @@ if [ "$(id -u)" != 0 ]; then
   s2c perm; printf '{}' > "$work/s2rows-perm/bad.json"; chmod 000 "$work/s2rows-perm/bad.json"
   s2expect "S2 hostile-collect: an unreadable (permission denied) row file is a named error, exit 2, no traceback" perm
 else ok "S2 hostile-collect: permission-denied case skipped, running as root"; fi
-EXPECT=292
+EXPECT=296
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
