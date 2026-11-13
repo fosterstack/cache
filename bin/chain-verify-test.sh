@@ -1548,6 +1548,25 @@ expect_refuse "KA-2 R4C-3 record-env refuses a Witness record whose recorded env
 expect_ok     "KA-2 R4C-3 record-env accepts a Witness record with an arn:aws: string only outside the recorded environment (a command line)" record-env --record "$work/renv_arnout.json"
 expect_ok     "KA-2 R4C-3 record-env accepts a Witness record that carries the signing key ARN (arn:aws:kms) outside the recorded environment" record-env --record "$work/renv_arnkms.json"
 expect_refuse "R4 record-env refuses a Witness record that holds a Docker Hub token value" "env|docker hub token" record-env --record "$work/renv_dckr.json"
+# S2 record-env decodes the payload once, with strict_json: a payload that is not strict JSON is refused, never read with a reader that keeps the last of a repeated key
+python3 - "$work" <<'PYE'
+import base64, json, sys
+w = sys.argv[1]
+r = json.load(open(w + "/build_coll.json"))
+st = json.loads(base64.b64decode(r["payload"]))
+ENVT = "https://witness.dev/attestations/environment/v0.1"
+def raw_record(name, marker_value, text):
+    q = json.loads(json.dumps(st)); q.setdefault("predicate", {})["attestations"] = [{"type": ENVT, "attestation": {"os": "linux", "variables": {"MARK": marker_value}}}]
+    raw = json.dumps(q)
+    assert raw.count('{"MARK": 0}') == 1
+    e = dict(r); e["payload"] = base64.b64encode(raw.replace('{"MARK": 0}', text).encode()).decode(); json.dump(e, open("%s/renv_%s.json" % (w, name), "w"))
+raw_record("dupa", 0, '{"SOME_ROLE": "arn:aws:iam::111122223333:role/release-signing", "SOME_ROLE": "plain"}')
+raw_record("dupb", 0, '{"GITHUB_REF": "refs/tags/v0.3.0", "GITHUB_REF": "refs/tags/v0.3.0"}')
+raw_record("nan", 0, '{"SOME_NUMBER": NaN}')
+PYE
+expect_refuse "S2 record-env refuses a payload whose recorded variables repeat a key, the first value being an arn:aws: one that the last hides" "build" record-env --record "$work/renv_dupa.json"
+expect_refuse "S2 record-env refuses a payload that repeats a key even when both values are the same" "build" record-env --record "$work/renv_dupb.json"
+expect_refuse "S2 record-env refuses a payload that holds NaN (not strict JSON)" "build" record-env --record "$work/renv_nan.json"
 # N-c: only a JOB-level `uses:` naming a .yml/.yaml file is a reusable workflow (not opened as a directory); a STEP-level reference to a
 # directory that is called thing.yml and holds an action.yml is followed
 mkdir -p "$work/tree/.github/workflows/acts/d.yml"
@@ -2205,7 +2224,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=797
+EXPECT=800
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
