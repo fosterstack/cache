@@ -239,12 +239,21 @@ jobs:
           # newer head the reviewer has already approved
           head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
           [ "$head" = "$HEAD_SHA" ] || echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
-          # a success counts only with the version of the reviewer on main (the sha256 of bin/dependabot-reviewer.py)
-          version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer.py?ref=main" --jq .content | base64 -d | sha256sum | cut -d' ' -f1)
-          verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
-                      --jq "[.check_runs[] | select(.app.slug == \"fosterstack-automation\")] | sort_by(.id) | last
-                            | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
-                              else .conclusion // \"none\" end")
+          # the verdict first; a read that fails turns the arm off before the step fails
+          if ! verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
+                           --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last
+                                 | "\(.conclusion // "none") \(.external_id // "")"'); then
+            gh pr merge --disable-auto "$PR_URL" || echo "::error::could not turn auto-merge off"
+            echo "::error::could not read the reviewer's verdict on ${head:0:7}"; exit 1
+          fi
+          read -r verdict external_id <<<"$verdict"
+          if [ "$verdict" = success ]; then
+            # a success counts only with the version of the reviewer on main (the sha256 of the three files that decide its verdict)
+            version=$(for f in bin/dependabot-reviewer.py .github/policy/dependabot-reviewer-prompt.txt .github/workflows/dependabot-reviewer.yml; do
+                        gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main" --jq .content | base64 -d
+                      done | sha256sum | cut -d' ' -f1) || version=
+            [ -n "$version" ] && [ "$external_id" = "$version" ] || verdict=none
+          fi
           armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
           if [ "$verdict" = success ]; then echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
           elif [ "$armed" != true ]; then echo "auto-merge is not armed; nothing to turn off"
