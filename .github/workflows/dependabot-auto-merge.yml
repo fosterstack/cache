@@ -218,8 +218,10 @@ jobs:
         # read first.
         run: |
           set -euo pipefail
-          verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer" \
-                      --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")]
+          verdict=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer&per_page=100" \
+                      --jq 'if .total_count != (.check_runs | length) then error else . end
+                            | [.check_runs[] | select(.app.slug == "fosterstack-automation")]
                             | sort_by(.id) | last | .conclusion // "none"')
           if [ "$verdict" = failure ]; then
             echo "the reviewer failed this head (${HEAD_SHA:0:7}); it is not armed"
@@ -252,22 +254,31 @@ jobs:
           head=$(jq -r .headRefOid <<<"$pr"); armed=$(jq -r '.autoMergeRequest != null' <<<"$pr")
           [ "$head" = "$HEAD_SHA" ] ||
             echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
-          if ! verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
-                           --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last
+          if ! verdict=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer&per_page=100" \
+                           --jq 'if .total_count != (.check_runs | length) then error else . end
+                                 | [.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last
                                  | "\(.conclusion // "none") \(.external_id // "")"'); then
             disarm; echo "::error::could not read the reviewer's verdict on ${head:0:7}"; exit 1
           fi
           read -r verdict external_id <<<"$verdict"
-          if [ "$verdict" = success ]; then
-            # a success counts only with the reviewer's version on main, computed by main's own script
-            main=$(mktemp -d); mkdir "$main/bin"
-            fetch() { gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=main" --jq .content | base64 -d > "$main/$1"; }
-            version=$(fetch bin/dependabot-reviewer-version.sh
-                      for f in $(bash "$main/bin/dependabot-reviewer-version.sh" --files); do
-                        mkdir -p "$main/$(dirname "$f")"; fetch "$f"
-                      done
-                      cd "$main" && bash bin/dependabot-reviewer-version.sh) || version=
-            [ -n "$version" ] && [ "$external_id" = "$version" ] || verdict=none
+          if [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ]; then
+            # a success counts only with the reviewer's version on main, computed by main's own script; a plain
+            # patch or minor keeps its arm with a success or with none, so it needs no version
+            main=$(mktemp -d)
+            # each file lands in its own file; any failed read leaves auto-merge off and fails the step
+            fetch() { # <path>
+              mkdir -p "$main/$(dirname "$1")"
+              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=main" --jq .content | base64 -d > "$main/$1" ||
+                { disarm; echo "::error::could not read $1 on main: the reviewer's version is unknown"; exit 1; }
+            }
+            fetch bin/dependabot-reviewer-version.sh
+            files=$(bash "$main/bin/dependabot-reviewer-version.sh" --files) ||
+              { disarm; echo "::error::could not list the reviewer's files"; exit 1; }
+            for f in $files; do fetch "$f"; done
+            version=$(cd "$main" && bash bin/dependabot-reviewer-version.sh) ||
+              { disarm; echo "::error::could not compute the reviewer's version"; exit 1; }
+            [ "$external_id" = "$version" ] || verdict=none
           fi
           if [ "$verdict" = success ]; then
             echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
