@@ -64,7 +64,7 @@
  "required-check-guard-test.sh": 9,
  "rescan-current-only-test.sh": 33,
  "rescan-statement-test.sh": 198,
- "suite-guard-test.sh": 113,
+ "suite-guard-test.sh": 114,
  "supply-chain-wiring-test.sh": 146,
  "vendor-provenance-test.sh": 199,
  "vendoring-test.sh": 175,
