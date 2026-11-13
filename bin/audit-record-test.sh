@@ -118,6 +118,7 @@ open(os.path.join(fake, "gh"), "w").write('''#!/usr/bin/env bash
 echo "gh $*" >> "$CALLS"
 case "$2" in
   repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; ;;
+  repos/o/r/commits/*/pulls) f="$FAKE/pulls"; ;;
   repos/o/r/commits/*) f="$FAKE/commit"; ;;
   repos/o/r/compare/main...*) f="$FAKE/compare"; ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
@@ -130,8 +131,10 @@ root = os.path.join(d, "repo"); os.makedirs(root + "/bin"); os.makedirs(root + "
 for src, dst in ((sys.argv[1], root + "/bin/audit-record.py"), (JUDGE_SH, root + "/bin/audit-record-judge.sh")):
     open(dst, "w").write(open(src).read()); os.chmod(dst, 0o755)
 open(root + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
-def wrap(head=HEAD, base_ref="main", ref=REF, commit=COMMIT, ref_err=None, commit_err=None, repo="o/r", compare=None):
+def wrap(head=HEAD, base_ref="main", ref=REF, commit=COMMIT, ref_err=None, commit_err=None, repo="o/r", compare=None, pulls=None):
     fk = tempfile.mkdtemp(dir=d)
+    if pulls is not None: open(os.path.join(fk, "pulls.json"), "w").write(json.dumps(pulls))
+    else: open(os.path.join(fk, "pulls.err"), "w").write("gh: Not Found (HTTP 404)")
     if compare is not None: open(os.path.join(fk, "compare.json"), "w").write(json.dumps(compare))
     else: open(os.path.join(fk, "compare.err"), "w").write("gh: Not Found (HTTP 404)")
     for name, obj, err in (("ref", ref, ref_err), ("commit", commit, commit_err)):
@@ -154,30 +157,69 @@ r, calls = wrap(commit=mut(COMMIT, ["commit", "verification", "verified"], False
 r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and "repos/o/r/commits/" not in calls, (r.returncode, r.stdout, calls))
 r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/name exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stderr, calls))
 
-# a head whose every commit is Dependabot's or the audit writer's needs no record; any other author, committer or signature puts it back under the record
+# a head needs no record only when it is Dependabot's: every pull request listed for it is Dependabot's, and every commit is verified and committed by an audit writer or GitHub's web-flow
 DEP = {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"}
 GH = {"login": "web-flow", "id": 19864447, "type": "User"}
+PERSON = {"login": "someone", "id": 5, "type": "User"}
 def bump_commit(author=DEP, committer=GH, verified=True):
     return {"author": author, "committer": committer, "commit": {"verification": {"verified": verified, "reason": "valid" if verified else "unsigned"}}}
 def cmp_of(*commits): return {"total_commits": len(commits), "commits": list(commits)}
-check("Dependabot's verified commit, committed by GitHub, needs no record", A.bot_authored(cmp_of(bump_commit()), WRITERS))
-check("the audit writer's App commits count too", A.bot_authored(cmp_of(bump_commit(), bump_commit(author=BOT, committer=BOT)), WRITERS))
+def dep_pulls(*users): return [{"number": 9, "user": u} for u in (users or (DEP,))]
+check("Dependabot's verified commit, committed by GitHub, on a Dependabot pull request needs no record", A.bot_authored(cmp_of(bump_commit()), dep_pulls(), WRITERS))
+check("the audit writer's App commits among Dependabot's do not stop a Dependabot pull request", A.bot_authored(cmp_of(bump_commit(), bump_commit(author=BOT, committer=BOT)), dep_pulls(), WRITERS))
+check("two Dependabot pull requests for the head are exempt", A.bot_authored(cmp_of(bump_commit()), dep_pulls(DEP, DEP), WRITERS))
+check("a pull request by the audit writer App with only App commits is NOT exempt", not A.bot_authored(cmp_of(bump_commit(author=BOT, committer=BOT)), dep_pulls(BOT), WRITERS))
+check("an App pull request with Dependabot-shaped commits is NOT exempt", not A.bot_authored(cmp_of(bump_commit()), dep_pulls(BOT), WRITERS))
+for name, pulls in (
+    ("a person's pull request", dep_pulls(PERSON)),
+    ("another bot's pull request", dep_pulls({"login": "renovate[bot]", "id": 29139614, "type": "Bot"})),
+    ("Dependabot's login with another id", dep_pulls(dict(DEP, id=1))),
+    ("Dependabot's login and id with type User", dep_pulls(dict(DEP, type="User"))),
+    ("an empty pull request list", []),
+    ("a pull request answer that is not a list", {"number": 9, "user": DEP}),
+    ("no answer", None),
+    ("an entry that is not an object", ["x"]),
+    ("an entry without a user", [{"number": 9}]),
+    ("an entry whose user is null", [{"number": 9, "user": None}]),
+    ("two pull requests where one is a person's", dep_pulls(DEP, PERSON)),
+    ("two pull requests where one is a malformed entry", dep_pulls(DEP) + [5]),
+):
+    check("a record is still needed for " + name, not A.bot_authored(cmp_of(bump_commit()), pulls, WRITERS))
 for name, cmp_ in (
-    ("one commit by a person among Dependabot's", cmp_of(bump_commit(), bump_commit(author={"login": "someone", "id": 5, "type": "User"}))),
+    ("one commit by a person among Dependabot's", cmp_of(bump_commit(), bump_commit(author=PERSON))),
     ("Dependabot's name with another id", cmp_of(bump_commit(author=dict(DEP, id=1)))),
-    ("a commit committed by a person (signed with their own key)", cmp_of(bump_commit(committer={"login": "someone", "id": 5, "type": "User"}))),
+    ("a commit committed by a person (signed with their own key)", cmp_of(bump_commit(committer=PERSON))),
+    ("a commit whose author claims to be Dependabot but whose committer is a person", cmp_of(bump_commit(author=DEP, committer=PERSON))),
+    ("a commit committed by web-flow whose author is a person", cmp_of(bump_commit(author=PERSON, committer=GH))),
+    ("a person's commit committed by the audit writer", cmp_of(bump_commit(author=PERSON, committer=BOT))),
+    ("a committer with web-flow's name and another id", cmp_of(bump_commit(committer=dict(GH, id=5)))),
     ("an unverified commit", cmp_of(bump_commit(verified=False))),
     ("an author GitHub cannot name", cmp_of(bump_commit(author=None))),
     ("no commits past main", cmp_of()),
     ("a list cut short of its total", {"total_commits": 2, "commits": [bump_commit()]}),
     ("a malformed answer", []),
 ):
-    check("a record is still needed for " + name, not A.bot_authored(cmp_, WRITERS))
-check("a malformed writers policy exempts nothing", not A.bot_authored(cmp_of(bump_commit()), {}))
-r, calls = wrap(ref=None, compare=cmp_of(bump_commit())); check("wrapper: no record, but only Dependabot's commits, exits 0", r.returncode == 0 and "no record needed" in r.stdout, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(ref=None, compare=cmp_of(bump_commit(), bump_commit(author={"login": "someone", "id": 5, "type": "User"}))); check("wrapper: no record and a person's commit among them exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(ref=None); check("wrapper: no record and the commits cannot be read exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(compare=cmp_of(bump_commit())); check("wrapper: a good record never asks for the commits", r.returncode == 0 and "compare" not in calls, (r.returncode, calls))
+    check("a record is still needed for " + name, not A.bot_authored(cmp_, dep_pulls(), WRITERS))
+check("a malformed writers policy exempts nothing", not A.bot_authored(cmp_of(bump_commit()), dep_pulls(), {}))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit()), pulls=dep_pulls()); check("wrapper: no record, a Dependabot pull request and only Dependabot's commits, exits 0", r.returncode == 0 and "no record needed" in r.stdout and "commits/%s/pulls" % HEAD in calls, (r.returncode, r.stdout, r.stderr, calls))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit()), pulls=dep_pulls(PERSON)); check("wrapper: the same commits on a pull request that is not Dependabot's exit 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit(author=BOT, committer=BOT)), pulls=dep_pulls(BOT)); check("wrapper: an App pull request with only App commits exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit())); check("wrapper: a pulls fetch error (404) exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit())); check("wrapper: a pulls fetch error still asks for the pulls", "commits/%s/pulls" % HEAD in calls, calls)
+r, calls = wrap(ref=None, pulls=dep_pulls()); check("wrapper: a Dependabot pull request but a compare fetch error exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None, compare=cmp_of(bump_commit(), bump_commit(author=PERSON)), pulls=dep_pulls()); check("wrapper: no record, a Dependabot pull request and a person's commit among them exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref=None); check("wrapper: no record and nothing else can be read exits 1", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(compare=cmp_of(bump_commit()), pulls=dep_pulls()); check("wrapper: a good record never asks for the commits or the pull requests", r.returncode == 0 and "compare" not in calls and "/pulls" not in calls, (r.returncode, calls))
+# the command line: the exemption needs both files
+def cli_ex(compare=None, pulls=None):
+    extra = []
+    if compare is not None: extra += ["--compare-json", w("compare.json", compare)]
+    if pulls is not None: extra += ["--pulls-json", w("pulls.json", pulls)]
+    return cli(*extra, ref=None, commit=None)
+r = cli_ex(cmp_of(bump_commit()), dep_pulls()); check("cli: both files, both passing, exits 0", r.returncode == 0 and "no record needed" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r = cli_ex(cmp_of(bump_commit())); check("cli: --compare-json alone exempts nothing (exit 1)", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = cli_ex(pulls=dep_pulls()); check("cli: --pulls-json alone exempts nothing (exit 1)", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = cli_ex(cmp_of(bump_commit()), dep_pulls(PERSON)); check("cli: a person's pull request exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 
 # the writer's own checks: the pull request must be open, into main, with exactly this head, before anything is written
 PR = {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD}, "base": {"ref": "main"}}
