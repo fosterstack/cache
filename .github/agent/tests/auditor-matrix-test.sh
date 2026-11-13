@@ -4866,7 +4866,7 @@ want=['false_positive'and('false_positive',False),'FAILED-ATTEMPT',('under_inves
 print('OK' if got==want else 'BAD %r'%(got,))" 2>/dev/null | tail -1)"
 eq "$r12" "OK" && ok || no "client category and refusal are read from exact JSON keys" "$r12"
 begin "rc5b-12-proposals-validated-by-shape-and-name" \
-  "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap " \
+  "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap "\
   "and no vendor/model name; a refused proposal does not stop the run"
 EVREPO="$WORK/evidence-repo"; rm -rf "$EVREPO"; mkdir -p "$EVREPO/docs" "$WORK/evidence-outside"
 cp README.md "$EVREPO/README.md"; printf 'x\n' > "$EVREPO/LICENSE"; printf 'x\n' > "$EVREPO/docs/a.md"
