@@ -1,5 +1,5 @@
 """Test infrastructure (not product code), shared by bin/chain-build-wiring-test.sh and bin/chain-rebuild-test.sh: the judges for
-the shape of the Build and Rebuild stage files, the four stage scripts, the job graph of release.yml and the environment record of
+the shape of the Build and Rebuild stage files, the stage scripts, the job graph of release.yml and the environment record of
 a Witness collection. Each judge prints `ok` or the list of faults and exits 1 on any fault; the tests first prove every judge on a
 known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then apply it to the real repository (RED until
 PR 2 is implemented).
@@ -12,16 +12,16 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   directwitness FILE...                     REQ-CHAIN-004-AC2: no `witness run` in any stage file or stage script (every call goes through the helper)
   stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
-  lockflow BUILD_ASM REBUILD_ASM STAGE_YML...   REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: Build and Rebuild assemble identically; no stage file names apko
-  listed CHAIN_SCRIPTS.json ROOT            the four scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
+  lockflow STAGE_YML...                     REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: no stage file names apko
+  listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
   callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls stage-build.yml with mode: snapshot and nothing else
   graph FILE                                REQ-CHAIN-005-AC5: the chain jobs of release.yml
   workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml,
                                              and stage-image.yml / stage-admission.yml are gone
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
   nosource ROOT                             sandboxed-build rule 1: no step of Build or Rebuild runs source code
-    outside melange (34 closure files:
-                                             13 shell files by exact lines, 21 files held whole by sha256)
+    outside melange (31 closure files:
+                                             10 shell files by exact lines, 21 files held whole by sha256)
 
 === Rule 68 seam (advisor ruling, Oct 9; the Release helper no longer carries the ten-minute bound of the earlier certificate: Witness signs with a throwaway key, the release key signs afterwards) ===========
 The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
@@ -108,27 +108,8 @@ def version_check(variant):
         '--sha "$GITHUB_SHA"' % variant)
 
 
-def bind_files(step, rec_dir, record, apk_dir):
-    """Every file of each downloaded apk artifact must be the product the building job's LOCAL record holds under the same name (rule 58); the record is unsigned
-    (the building jobs hold no identity token) and Sign checks it again against the artifacts it receives before it signs it."""
-    return ["python3 -I bin/chain-verify.py bind --local --step %s --record %s/%s/%s --dir %s/%s --as out" % (step,
-        rec_dir, r, record, apk_dir, r)
-            for r, a in RUNNERS]
-
-
-def melange_repo(apk_dir):
-    return (["mkdir -p melange-repo"] + ["cp -R %s/%s/%s melange-repo/%s" % (apk_dir, r, a, a) for r, a in RUNNERS]
-            + ["mkdir -p keyring", "cp %s keyring/wolfi-signing.rsa.pub" % KEYRING_WOLFI, "cp %s keyring/assembly.rsa.pub" % ASSEMBLY_PUB])
-
-
 def archives(ver=VER):
     return "python3 -I bin/build-archives.py --melange-repo melange-repo --version %s --out dist" % ver
-
-
-def merge(apk_dir, outputs, ver=VER):
-    frags = " ".join("--fragment %s/%s/items-apk.json" % (apk_dir, r) for r, a in RUNNERS)
-    return ("python3 -I bin/chain-verify.py items-merge %s --images out --archives dist --version %s --archive %s %s"
-            % (frags, ver, ARCHIVE, outputs))
 
 
 def items_apk():
@@ -141,45 +122,24 @@ def expected_lines(kind):
         return ([H, "python3 -I bin/build-admit.py run", "unset GH_TOKEN"] + SDE + [apk_cmd("standard"),
             apk_cmd("fips"), baselayout_cmd(),
                 version_check("standard"), version_check("fips"), items_apk(), ADMISSION_COPY])
-    if kind == "assemble":
-        return ([H] + bind_files("apk", "rec-apk", "apk-collection.local.json", "apk")
-                + [ADMISSION_BASELINE] + melange_repo("apk") + SDE + [image_cmd("production"), image_cmd("fips")] + vex_attach() + [archives(),
-                merge("apk", "--digests digests.json --items items.json")])
+    if kind == "assemble":     # one script for Build and Rebuild, release and snapshot: STEP is apk, rapk, snapshot-apk or snapshot-rapk
+        return ASSEMBLE_LINES
     if kind == "snapshot-apk":       # no admission, no version check, no tag: the version is the fixed snapshot one
         return ([H] + SNAPSHOT_TAG_LINES + SDE
                 + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION),
                    baselayout_cmd(SNAPSHOT_VERSION), items_apk()])
-    if kind == "snapshot-assemble":  # no policy and no verify (a snapshot record is refused by every verifier): the bind is the only link to the record
-        return ([H] + bind_files("snapshot-apk", "rec-apk", "snapshot-apk-collection.local.json", "apk") + melange_repo("apk") + SDE
-                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION)] + vex_attach() + [archives(SNAPSHOT_VERSION),
-                   merge("apk", "--digests digests.json --items items.json", SNAPSHOT_VERSION)])
     if kind == "snapshot-rebuild-apk":      # the same local-tag discipline as the snapshot Build; no policy, no stage-start (a snapshot record is refused)
         return ([H] + SNAPSHOT_TAG_LINES + SDE
                 + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION),
                    baselayout_cmd(SNAPSHOT_VERSION), items_apk()])
-    if kind == "snapshot-rebuild-assemble":     # --snapshot makes rebuild-compare accept exactly Build's snapshot-build record and nothing else
-        return ([H] + bind_files("snapshot-rapk", "rec-rapk", "snapshot-rapk-collection.local.json", "rapk") + melange_repo("rapk") + SDE
-                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION)] + vex_attach() + [archives(SNAPSHOT_VERSION),
-                   merge("rapk", "--items items.json", SNAPSHOT_VERSION),
-                   "python3 -I bin/chain-verify.py rebuild-compare --snapshot --build-record "
-                   "witness-build/snapshot-build-collection.local.json "
-                   "--expected build-in/items.json --actual items.json --out %s" % SNAPSHOT_VERDICT])
     if kind == "rebuild-apk":
         return [H, POLICY, START] + SDE + [apk_cmd("standard"), apk_cmd("fips"), baselayout_cmd(), items_apk()]
-    if kind == "rebuild-assemble":
-        return ([H, POLICY, START]
-                + bind_files("rapk", "rec-rapk", "rapk-collection.local.json", "rapk") + melange_repo("rapk") + SDE
-                + [image_cmd("production"), image_cmd("fips")] + vex_attach() + [archives(), merge("rapk", "--items items.json"),
-                   "cp build-in/digests.json digests.json",          # REQ-CHAIN-005-AC2 (Astra R2): Rebuild's record carries the digest list it was started against as a product
-                   "python3 -I bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json "
-                   "--expected build-in/items.json --actual items.json --out witness-rebuild/verdict.json"])
     raise KeyError(kind)
 
 
 SCRIPTS = {"witnessed": "bin/witnessed.sh", "apk": "bin/build-stage-apk.sh", "assemble": "bin/build-stage-assemble.sh",
-           "rebuild-apk": "bin/build-stage-rebuild-apk.sh", "rebuild-assemble": "bin/build-stage-rebuild-assemble.sh",
-           "snapshot-apk": "bin/build-stage-snapshot-apk.sh", "snapshot-assemble": "bin/build-stage-snapshot-assemble.sh",
-           "snapshot-rebuild-apk": "bin/build-stage-snapshot-rebuild-apk.sh", "snapshot-rebuild-assemble": "bin/build-stage-snapshot-rebuild-assemble.sh"}
+           "rebuild-apk": "bin/build-stage-rebuild-apk.sh", "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
+           "snapshot-rebuild-apk": "bin/build-stage-snapshot-rebuild-apk.sh"}
 
 
 def read_exact(path):
@@ -300,6 +260,27 @@ MODE_GUARD_RUN = 'bash bin/build-stage-refuse-mode.sh "$MODE"'
 # the closed list of snapshot step names
 SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build", "rapk": "snapshot-rapk", "rebuild": "snapshot-rebuild"}
 SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Rebuild's verdict: named, so it can never be mistaken for a release verdict
+SNAP = "snapshot-"
+CASE = 'case "$step" in'
+ASSEMBLE_LINES = (
+    [H, "step=$1", "version=$2", "dir=${step#%s}" % SNAP, CASE, "  rapk)", "    " + POLICY, "    " + START + " ;;", "esac"]
+    + ['python3 -I bin/chain-verify.py bind --local --step "$step" --record "rec-$dir/%s/$step-collection.local.json" '
+       '--dir "$dir/%s" --as out' % (r, r) for r, a in RUNNERS]
+    + [CASE, "  apk)", "    " + ADMISSION_BASELINE + " ;;", "esac", "mkdir -p melange-repo"]
+    + ['cp -R "$dir/%s/%s" melange-repo/%s' % (r, a, a) for r, a in RUNNERS]
+    + ["mkdir -p keyring", "cp %s keyring/wolfi-signing.rsa.pub" % KEYRING_WOLFI, "cp %s keyring/assembly.rsa.pub" % ASSEMBLY_PUB]
+    + SDE + [image_cmd("production", '"$version"'), image_cmd("fips", '"$version"')] + vex_attach()
+    + [archives('"$version"'), "digests=()", CASE, "  apk | snapshot-apk) digests=(--digests digests.json) ;;", "esac",
+       'python3 -I bin/chain-verify.py items-merge --fragment "$dir/ubuntu-24.04/items-apk.json" '
+       '--fragment "$dir/ubuntu-24.04-arm/items-apk.json" --images out --archives dist --version "$version" '
+       '--archive %s "${digests[@]}" --items items.json' % ARCHIVE,
+       CASE, "  rapk)", "    cp build-in/digests.json digests.json",
+       "    python3 -I bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json "
+       "--expected build-in/items.json --actual items.json --out witness-rebuild/verdict.json ;;",
+       "  snapshot-rapk)",
+       "    python3 -I bin/chain-verify.py rebuild-compare --snapshot --build-record "
+       "witness-build/snapshot-build-collection.local.json --expected build-in/items.json --actual items.json "
+       "--out %s ;;" % SNAPSHOT_VERDICT, "esac"])
 HOSTILE_IF = "${{ inputs.hostile }}"
 HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 PROBE_RUN = "bash bin/chain-sandbox-probe.sh"      # the dry run's sandbox wall probe, a step of the apk job after its Witness steps
@@ -320,7 +301,7 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
     ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="freeze",
     down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True, probe=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
+    ("build", "assemble"): dict(kind="assemble", step="build", args="apk " + VER, snap_args="snapshot-apk " + SNAPSHOT_VERSION, perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
     ("rebuild", "rapk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
@@ -329,7 +310,7 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
     ("rebuild", "rapk-arm"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04-arm", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
         up=[("rapk-ubuntu-24.04-arm", "out"), ("witness-rapk-ubuntu-24.04-arm", "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
+    ("rebuild", "assemble"): dict(kind="assemble", step="rebuild", args="rapk " + VER, snap_args="snapshot-rapk " + SNAPSHOT_VERSION, perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
@@ -540,7 +521,9 @@ def job(j, family, name, allowed):
     bad += witness_seam(s.get("run") or "", spec, family)
     if spec.get("mode"):         # the snapshot Witness step: its own closed step name and script, no GH_TOKEN (nothing is admitted), gated by the mode
         s = steps[i] if i < len(steps) else {}; i += 1
-        snap = dict(spec, step=SNAPSHOT_STEP[spec["step"]], kind="snapshot-" + spec["kind"])
+        snap = dict(spec, step=SNAPSHOT_STEP[spec["step"]])
+        if "args" in spec: snap["args"] = spec["snap_args"]
+        else: snap["kind"] = "snapshot-" + spec["kind"]
         if set(s) - {"run", "name", "if"} or s.get("if") != MODE_SNAPSHOT_IF:
             bad.append("step %d (the snapshot Witness step) may carry only name, run and if: %s" % (i, MODE_SNAPSHOT_IF))
         bad += witness_seam(s.get("run") or "", snap, family)
@@ -678,6 +661,7 @@ def localhelper(path):
 def witness_seam(run, spec, family):
     """1/3: the stage's Witness step is exactly ONE line through the helper, with the step name of its job and the committed script of its kind."""
     want = "bash bin/witnessed-local.sh %s bin/build-stage-%s.sh" % (spec["step"], spec["kind"])
+    if "args" in spec: want += " " + spec["args"]
     got = str(run).strip()
     return [] if got == want else ["the Witness step must be exactly the one line `%s`, found %r" % (want, got[:120])]
 
@@ -711,16 +695,7 @@ def directwitness(files):
 # ---- Build vs Rebuild --------------------------------------------------------------------------------------------------------------
 def lockflow(files):
     bad = []
-    if len(files) < 2: return ["lockflow needs the Build and Rebuild assemble scripts"]
-    asm = []
-    for f in files[:2]:
-        try:
-            asm.append([l for l in commands_of(read_exact(f))[0] if l.startswith("./bin/assemble-image.sh")])
-        except FileNotFoundError:
-            bad.append("missing file: %s" % f); asm.append([])
-    if not bad and (not asm[0] or asm[0] != asm[1]):
-        bad.append("Build and Rebuild assemble-image.sh lines are not identical (same script, same arguments, same lock flow): %s vs %s" % (asm[0], asm[1]))
-    for f in files[2:]:
+    for f in files:
         try:
             d = yaml.load(open(f).read(), Loader=yaml.BaseLoader)
         except FileNotFoundError:
@@ -772,9 +747,9 @@ def listed(path, root):
 # ---- nosource: no step of Build or Rebuild runs source code outside melange (sandboxed-build rule 1) -----------------
 # In Build and Rebuild the compile of our source and of its dependencies happens only inside melange's sandbox
 # (bin/build-apk.sh); apko only lays packages down.
-# The judge reads every script the stage scripts and the workflows' other bin/ steps can start, 34 files, and reads no
+# The judge reads every script the stage scripts and the workflows' other bin/ steps can start, 31 files, and reads no
 # free-form shell or Python (orchestrator ruling of Oct 30):
-#   shell by exact text: the nine stage scripts, bin/witnessed-local.sh, the three helpers (build-apk.sh,
+#   shell by exact text: the six stage scripts, bin/witnessed-local.sh, the three helpers (build-apk.sh,
 #   assemble-image.sh, apko-lock.sh) and the mode guard are compared
 #   command by command with the lines held here (script, localhelper, shell_exact); a case, a loop, a function, a
 #   subshell or a read in a helper is one more command,
