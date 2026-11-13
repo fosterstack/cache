@@ -9,11 +9,11 @@
 #   fulcio-chain.pem             STAYS   no longer read by the release chain, but the pin-age check (pin-age-check.py, REQ-SUP-001)
 #                                        verifies recorded vendor image signatures against it; those two files are its only readers
 #   tsa-chain.pem                GOES    the Rekor entry carries the integrated time; no kept reader needs a timestamp authority
-# Until the deletions are made this test is red. It reads the committed policy files and the code that names them; it opens no network connection.
+# It reads the committed policy files and the code that names them; it opens no network connection.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 -I - "$root" <<'PY'
-import hashlib, json, os, re, subprocess, sys
+import base64, hashlib, json, os, shutil, subprocess, sys, tempfile
 
 root = sys.argv[1]
 pol = os.path.join(root, ".github", "policy")
@@ -78,7 +78,6 @@ check(set(trust) <= {"_note", "rekor_sha256"} and "rekor_sha256" in trust, "sigs
 der = subprocess.run(["openssl", "pkey", "-pubin", "-in", os.path.join(pol, "rekor.pub"), "-outform", "DER"], capture_output=True).stdout
 check(trust.get("rekor_sha256") == hashlib.sha256(der).hexdigest(), "the pinned rekor_sha256 is the sha256 of rekor.pub's DER")
 
-import base64
 tr = load("rekor-trusted-root.json")
 check(tr.get("mediaType", "").startswith("application/vnd.dev.sigstore.trustedroot"), "rekor-trusted-root.json is a Sigstore trusted root")
 check(tr.get("certificateAuthorities") == [] and tr.get("ctlogs") == [] and tr.get("timestampAuthorities") == [],
@@ -107,6 +106,43 @@ check("rekor.pub" in verify_py or "rekor-key" in verify_py or "rekor_public_key"
 check("sigstore-trust.json" in verify_py or "sigstore-trust" in verify_py, "a kept reader exists for sigstore-trust.json: bin/chain-verify.py names it")
 signers = [p for p in code_files() if os.path.basename(p).startswith("release-") and p.endswith(".sh")]
 check(any("cosign-signing-config.json" in open(p, errors="ignore").read() for p in signers), "a kept reader exists for cosign-signing-config.json: a bin/release-*.sh script passes it to cosign")
+
+
+def openssl(*args):
+    return subprocess.run(("openssl",) + args, capture_output=True, check=True).stdout
+
+
+def policy_make_with_pin(pin):
+    """Runs `policy make` in a scratch policy folder with a throwaway release key; the Rekor pin is `pin`. Returns (exit code, stderr, policy path)."""
+    with tempfile.TemporaryDirectory() as d:
+        def at(name):
+            return os.path.join(d, name)
+        openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", at("root.key"))
+        openssl("pkey", "-in", at("root.key"), "-pubout", "-out", at("release-key-root.pub"))
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", at("rel.key"))
+        openssl("pkey", "-in", at("rel.key"), "-pubout", "-out", at("rel.pub"))
+        key_der = openssl("pkey", "-pubin", "-in", at("rel.pub"), "-outform", "DER")
+        manifest = {"public_key": open(at("rel.pub")).read(), "key_id": hashlib.sha256(key_der).hexdigest(), "valid_from": "2020-01-01T00:00:00Z"}
+        with open(at("release-key-manifest.json"), "w") as f:
+            json.dump(manifest, f, sort_keys=True, indent=1)
+            f.write("\n")
+        signature = openssl("dgst", "-sha256", "-sign", at("root.key"), at("release-key-manifest.json"))
+        with open(at("release-key-manifest.sig"), "w") as f:
+            f.write(base64.b64encode(signature).decode() + "\n")
+        shutil.copy(os.path.join(pol, "rekor.pub"), at("rekor.pub"))
+        shutil.copy(os.path.join(pol, "release-policy.template.json"), at("template.json"))
+        with open(at("sigstore-trust.json"), "w") as f:
+            json.dump({"rekor_sha256": pin}, f)
+        r = subprocess.run([sys.executable, os.path.join(root, "bin", "chain-verify.py"), "policy", "make", "--template", at("template.json"),
+                            "--tag", "v0.3.0", "--out", at("policy.json")], capture_output=True, text=True)
+        return r.returncode, r.stderr, os.path.exists(at("policy.json"))
+
+
+rekor_hash = hashlib.sha256(der).hexdigest()
+code, _err, written = policy_make_with_pin(rekor_hash)
+check(code == 0 and written, "policy make writes the policy when the trust file's pin is the key file's hash")
+code, err, written = policy_make_with_pin("0" * 64)
+check(code != 0 and "rekor_sha256" in err and not written, "policy make refuses a trust file whose pin differs from the key file's hash, and writes no policy")
 
 print("pass=%d fail=%d" % (passed, failed))
 sys.exit(1 if failed else 0)
