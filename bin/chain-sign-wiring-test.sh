@@ -3428,7 +3428,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='c79a59065e05f79618a92588648ad320057f7291cbc1a1c24b37d86f9453a414'
+FX_PIN='042bec9ad91d32fbd8f6efb2f0673d247d151233b5511c59420187f8b88fbed3'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5227,7 +5227,7 @@ wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record
 wr_mutant "the token is fetched before a caller's option is refused" 's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2143
+EXPECT=2153
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
