@@ -1418,11 +1418,6 @@ unplant_stray "$fx/images/production"; rm -f "$fx/bin/acceptance-serve.sh" "$fx/
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
 cp "$root/bin/witnessed-local.sh" "$hw/bin/" 2> /dev/null || true
 printf '#!/usr/bin/env bash\necho "step $*" >> "$HW_LOG"\n[ -z "${STEP_FAIL:-}" ] || exit 1\n' > "$hw/bin/step.sh"
-FXD_1="$hw/fakebin/curl"
-cat > "$FXD_1" <<'EOF'
-#!/usr/bin/env bash
-printf '{"value":"fake-token-value"}'
-EOF
 cat > "$hw/fakebin/timeout" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = -k ]; then echo "timeout -k $2 $3" >> "$HW_LOG"; shift 3; else echo "timeout $1" >> "$HW_LOG"; shift; fi
