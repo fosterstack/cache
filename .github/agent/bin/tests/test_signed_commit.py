@@ -806,11 +806,11 @@ class RecordsReusable(unittest.TestCase):
     """branch_reusable accepts a head whose ONE extra commit is the sweep's records commit: GitHub-verified, by the
     App, its message exactly records_message(branch), one parent; that parent is judged by the ordinary rules (by the
     App too). Every file in the records commit must be a records path (no renames). The file list is read page by page
-    (300 a page) and must end on a short page within ten pages."""
+    (per_page=100, GitHub's cap) and must end on a short page (under 100 files) within thirty pages."""
     WANT = {"go.mod": b"module m\n", "go.sum": None}
 
     class Gh2(Gh):
-        """commit lookups by sha: `docs` maps sha -> (rc, out, err); the file list is cut into pages of 300 by the
+        """commit lookups by sha: `docs` maps sha -> (rc, out, err); the file list is cut into pages of 100 by the
         page= query, and `pages` maps (sha, page) -> (rc, out, err) to replace one page's answer"""
         def __init__(self, docs, pages=None, **kw):
             super().__init__(**kw); self.docs, self.pages = docs, pages or {}
@@ -825,7 +825,7 @@ class RecordsReusable(unittest.TestCase):
                 if r[0] == 0 and not self.pages.get((sha, page)):
                     doc = json.loads(r[1])
                     if isinstance(doc.get("files"), list):
-                        doc["files"] = doc["files"][(page - 1) * 300:page * 300]
+                        doc["files"] = doc["files"][(page - 1) * 100:page * 100]
                     r = (0, json.dumps(doc), "")
                 return subprocess.CompletedProcess(list(cmd), r[0], r[1], r[2])
             return super().__call__(cmd, **kw)
@@ -867,36 +867,58 @@ class RecordsReusable(unittest.TestCase):
         files = tuple(("vendor/f%d.go" % i, "modified") for i in range(n))
         return self.gh(job=self.doc(H2, files + ((last,) if last else ()), JM))
 
-    def test_a_records_commit_of_347_files_is_reused_by_paging(self):
-        gh = self.records_commit(347)
+    def pages(self, n):
+        return ["per_page=100&page=%d" % i for i in range(1, n + 1)]
+
+    def test_a_records_commit_of_348_files_is_reused_by_paging_at_100_a_page(self):
+        gh = self.records_commit(348)
         self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
-        self.assertEqual(gh.pages_asked(H1), ["per_page=300&page=1", "per_page=300&page=2"])
+        self.assertEqual(gh.pages_asked(H1), self.pages(4))
         self.assertEqual(gh.writes(), [])
 
     def test_a_short_first_page_is_one_request(self):
-        gh = self.records_commit(299)
+        gh = self.records_commit(99)
         self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
-        self.assertEqual(gh.pages_asked(H1), ["per_page=300&page=1"])
+        self.assertEqual(gh.pages_asked(H1), self.pages(1))
 
-    def test_a_list_of_exactly_300_files_ends_on_the_empty_second_page(self):
+    def test_every_request_asks_for_100_a_page_and_never_300(self):
+        gh = self.records_commit(348)
+        S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP)
+        asked = gh.pages_asked(H1)
+        self.assertTrue(asked and all(q.startswith("per_page=100&") for q in asked), asked)
+
+    def test_a_list_of_exactly_100_files_ends_on_the_empty_second_page(self):
+        gh = self.records_commit(100)
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
+        self.assertEqual(gh.pages_asked(H1), self.pages(2))
+
+    def test_a_list_of_exactly_300_files_ends_on_the_empty_fourth_page(self):
         gh = self.records_commit(300)
         self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
-        self.assertEqual(gh.pages_asked(H1), ["per_page=300&page=1", "per_page=300&page=2"])
+        self.assertEqual(gh.pages_asked(H1), self.pages(4))
 
-    def test_the_tenth_page_may_be_the_short_one(self):
+    def test_the_last_page_of_3000_may_be_the_short_one(self):
         gh = self.records_commit(2999)
         self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)
-        self.assertEqual(len(gh.pages_asked(H1)), 10)
+        self.assertEqual(len(gh.pages_asked(H1)), 30)
 
-    def test_a_list_with_no_short_page_by_page_ten_is_refused(self):
+    def test_a_list_with_no_short_page_within_3000_files_is_refused(self):
         gh = self.records_commit(3000)
         self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
-        self.assertEqual(len(gh.pages_asked(H1)), 10)
+        self.assertEqual(len(gh.pages_asked(H1)), 30)
         self.assertEqual(gh.writes(), [])
 
-    def test_a_bad_path_on_a_later_page_is_refused(self):
-        gh = self.records_commit(347, last=("go.sum", "modified"))
+    def test_a_bad_path_on_page_four_of_a_348_file_commit_is_refused(self):
+        gh = self.records_commit(347, last=("go.sum", "modified"))             # the 348th file, on page 4
         self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP))
+        self.assertEqual(gh.pages_asked(H1), self.pages(4))
+
+    def test_a_bad_path_on_each_of_the_first_pages_is_refused(self):
+        for at in (0, 99, 100, 250, 299):
+            files = [("vendor/f%d.go" % i, "modified") for i in range(348)]
+            files[at] = ("go.sum", "modified")
+            gh = self.gh(job=self.doc(H2, tuple(files), JM))
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), at)
 
     def test_a_failed_second_page_is_refused(self):
         gh = self.records_commit(347)
@@ -970,6 +992,27 @@ class RecordsReusable(unittest.TestCase):
             self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.Gh2({H1: self.doc(BASE)},
                 live=H1),
                                                 app_login=login), login)
+
+    def test_the_author_is_the_apis_author_login_a_null_login_is_refused_and_no_email_is_looked_up(self):
+        """The commit's author is the API's author.login. A commit whose login is null is refused even when its git author
+        email is the App's noreply address, whether it is the bump commit or the records commit on it; the email is never
+        resolved to a login (no call other than the commit, ref and contents reads)."""
+        email = {"email": "1+app[bot]@users.noreply.github.com", "name": "app[bot]"}
+        def with_email(doc, login):
+            d = json.loads(doc[1]); d["author"] = {"login": login}; d["commit"]["author"] = email
+            return (0, json.dumps(d), "")
+        for label, kw in (("a null login on the bump commit", dict(bump=with_email(self.doc(BASE), None))),
+                          ("a null login on the records commit", dict(job=with_email(self.doc(H2, self.RECORDS, JM), None))),
+                          ("an empty login on the bump commit", dict(bump=with_email(self.doc(BASE), "")))):
+            gh = self.gh(**kw)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), label)
+            self.assertEqual(gh.writes(), [], label)
+            self.assertFalse([c for c in gh.calls if "users" in c[2] or "search" in c[2] or "@" in " ".join(c)], label)
+        nobody = json.loads(self.doc(BASE)[1]); nobody["author"] = None
+        self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, app_login=APP,
+                                            run=self.gh(bump=(0, json.dumps(nobody), ""))))
+        gh = self.gh(job=self.doc(H2, self.RECORDS, JM), bump=with_email(self.doc(BASE), APP))
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), H1)   # the login is what counts
 
     def test_a_plain_commit_with_a_records_looking_message_is_judged_by_the_ordinary_rules(self):
         # another branch's records message: just a message
