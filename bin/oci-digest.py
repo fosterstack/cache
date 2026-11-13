@@ -588,7 +588,8 @@ def verify_apk(path, e):
     data_lo, data_hi = span["data"]
     try:
         import io, tarfile, zlib
-        pk = tarfile.open(fileobj=io.BytesIO(zlib.decompressobj(31).decompress(raw[control_lo:control_hi + 1], 16 * 1024 * 1024))).extractfile(".PKGINFO").read().decode()
+        control = zlib.decompressobj(31).decompress(raw[control_lo:control_hi + 1], 16 * 1024 * 1024)
+        pk = tarfile.open(fileobj=io.BytesIO(control)).extractfile(".PKGINFO").read().decode()
         dhs = re.findall(r"^datahash = ([0-9a-f]{64})$", pk, re.M)
         ok(len(dhs) == 1)
         dh = dhs[0]
@@ -692,7 +693,7 @@ def check_config(path):
             refuse("line %d is outside the closed plain grammar (no quoting, escapes, brackets, block scalars or other YAML constructs): %r" % (n, ln.strip()[:60]))
         if re.match(r"\s*#", ln) or not ln.strip():
             continue
-        km =re.match(r"\s*(?:- )?(%s):" % KEY, ln)
+        km = re.match(r"\s*(?:- )?(%s):" % KEY, ln)
         if km and "repositor" in km.group(1).lower() and km.group(1) != "repositories":
             refuse("line %d has a repository-like key other than 'repositories'" % n)
         m = re.match(r"^(\s*)repositories:\s*$", ln)
@@ -873,13 +874,19 @@ VICTIM_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567
 def base_lock_victim(lock, script):
     """The first package of the base lock by name and architecture. Its name and version become a path, so only plain
     characters are accepted."""
-    first = min(json.load(open(lock))["contents"]["packages"], key=lambda p: (p["name"], p["architecture"]))
+    try:
+        packages = json.load(open(lock))["contents"]["packages"]
+        first = min(packages, key=lambda p: (p["name"], p["architecture"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        print("%s: %s is not a lock whose contents.packages name each package and its architecture" % (script, lock),
+              file=sys.stderr)
+        sys.exit(2)
     if first["architecture"] not in ("x86_64", "aarch64"):
         print("%s: the base lock's first package has the architecture %r, not x86_64 or aarch64" %
               (script, first["architecture"]), file=sys.stderr)
         sys.exit(2)
     for field in ("name", "version"):
-        value = first[field]
+        value = first.get(field)
         plain = isinstance(value, str) and not set(value) - VICTIM_CHARS
         if not plain or value in ("", ".") or value.startswith("-") or ".." in value:
             print("%s: the base lock's first package has the %s %r; only letters, digits and ._+- are accepted"

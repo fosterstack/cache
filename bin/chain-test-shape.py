@@ -917,7 +917,7 @@ NS_SHA = {
     "bin/install-host-bwrap.py": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
-    "bin/oci-digest.py": "0a3644399e4c46d0104cde5d231747dfbf38778fda9ff76552aeeb6ea0514273",
+    "bin/oci-digest.py": "ec2344e00188598cba80da00e280158daaf0ad59200a16ead3474a2779701d91",
     "bin/rebuild-records-digests.sh": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49",
     "bin/vex-index.py": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d",
 }

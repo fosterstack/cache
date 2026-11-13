@@ -2557,7 +2557,7 @@
       "runs": [],
       "signs": false,
       "reason": "the OCI layout digest tool assemble-image.sh runs",
-      "sha256": "0a3644399e4c46d0104cde5d231747dfbf38778fda9ff76552aeeb6ea0514273",
+      "sha256": "ec2344e00188598cba80da00e280158daaf0ad59200a16ead3474a2779701d91",
       "exceptions": [
         {
           "rule": "script-name",
