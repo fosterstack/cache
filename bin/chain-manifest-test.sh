@@ -30,7 +30,8 @@ import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys
 W = sys.argv[1]
 T0 = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
 def at(days): return (T0 + dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")      # the window is judged by the real clock
-FROZEN = dt.datetime(2026, 6, 1, 12, 0, 0, tzinfo=dt.timezone.utc)        # the clock of the boundary cases (chain-manifest-test.sh freezes it)
+# the clock of the boundary cases (chain-manifest-test.sh freezes it)
+FROZEN = dt.datetime(2026, 6, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
 def fz(sec): return (FROZEN + dt.timedelta(seconds=sec)).strftime("%Y-%m-%dT%H:%M:%SZ")
 def p(n): return os.path.join(W, n)
 def sh(*a):
@@ -73,9 +74,14 @@ write_set("future-revoke", good(revoked_at=at(30)))
 write_set("revoked", good(revoked_at=at(-30)))
 write_set("notyet", good(valid_from=at(1)))
 write_set("expired", good(valid_to=at(-30)))
-for _name, _over in (("from-before", {"valid_from": fz(-1)}), ("from-equal", {"valid_from": fz(0)}), ("from-after", {"valid_from": fz(1)}),
+for _name, _over in (("from-before", {"valid_from": fz(-1)}),
+                     ("from-equal", {"valid_from": fz(0)}),
+                     ("from-after", {"valid_from": fz(1)}),
                      ("to-before", {"valid_to": fz(-1)}), ("to-after", {"valid_to": fz(1)}),
-                     ("revoked-before", {"revoked_at": fz(-1)}), ("revoked-equal", {"revoked_at": fz(0)}), ("revoked-after", {"revoked_at": fz(1)})):
+                     ("to-equal", {"valid_to": fz(0)}),
+                     ("revoked-before", {"revoked_at": fz(-1)}),
+                     ("revoked-equal", {"revoked_at": fz(0)}),
+                     ("revoked-after", {"revoked_at": fz(1)})):
     write_set("fz-" + _name, good(**_over))
 write_set("rekor-mismatch", good())
 json.dump({"rekor_sha256": "0" * 64}, open(p("rekor-mismatch/sigstore-trust.json"), "w"))
@@ -145,7 +151,7 @@ expect_refuse() { local l=$1 w=$2 d=$3 rc=0 miss=0 l1 x; shift 3; mk "$d" "$@" |
 
 # frozen_check DIR: check_manifest with the clock fixed at 2026-06-01T12:00:00Z; prints "accepted" or the refusal text
 cat > "$work/frozen.py" <<'PY'
-import datetime as dt, importlib.util, sys, types
+import datetime as dt, importlib.util, sys
 cv, keys_dir = sys.argv[1:3]
 class Frozen(dt.datetime):
     @classmethod
@@ -153,7 +159,7 @@ class Frozen(dt.datetime):
 spec = importlib.util.spec_from_file_location("chain_verify", cv)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-mod.dt = types.SimpleNamespace(datetime=Frozen, timezone=dt.timezone)
+dt.datetime = Frozen
 try:
     mod.check_manifest(keys_dir)
     print("accepted")
@@ -226,6 +232,7 @@ expect_frozen "valid_from equal to the verification time is accepted" fz-from-eq
 expect_frozen "valid_from one second after the verification time is refused" fz-from-after "not yet valid"
 expect_frozen "valid_to one second after the verification time is accepted" fz-to-after accepted
 expect_frozen "valid_to one second before the verification time is refused" fz-to-before "expired"
+expect_frozen "valid_to equal to the verification time is refused (the window is half open)" fz-to-equal "expired"
 expect_frozen "revoked_at one second after the verification time is accepted" fz-revoked-after accepted
 expect_frozen "revoked_at equal to the verification time is refused" fz-revoked-equal "revoked"
 expect_frozen "revoked_at one second before the verification time is refused" fz-revoked-before "revoked"
@@ -234,10 +241,15 @@ expect_refuse "a date that does not exist" "valid_from|date" bad-date2
 expect_refuse "a valid_to that is not a date" "valid_to|date" bad-date3
 expect_refuse "a date that is a number" "valid_from|date" date-number
 
-# ---- the Rekor key is pinned by the hash in the trust file: a different hash refuses and writes nothing ------------------------------------
+# ---- the Rekor key is pinned by the hash in the trust file: a different hash refuses and writes nothing -------------
 rc=0; mk rekor-mismatch || rc=$?
-if [ "$rc" = 1 ] && grep -q "rekor_sha256" "$work/err" && [ ! -e "$work/policy.json" ]; then ok "a Rekor pin that does not match rekor.pub refuses and writes no policy"
-else bad "Rekor pin mismatch (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); policy $([ -e "$work/policy.json" ] && echo WRITTEN || echo absent))"; fi
+if [ "$rc" = 1 ] && grep -q "rekor_sha256" "$work/err" && [ ! -e "$work/policy.json" ]; then
+  ok "a Rekor pin that does not match rekor.pub refuses and writes no policy"
+else
+  seen=$(head -c 200 "$work/err" | tr '\n' ' ')
+  [ -e "$work/policy.json" ] && state=WRITTEN || state=absent
+  bad "Rekor pin mismatch (exit $rc; $seen; policy $state)"
+fi
 
 # ---- the manifest is read before the template's tag rules write anything -----------------------------------------------------------------
 rm -f "$work/policy.json"; rc=0; run policy make --template "$work/edited/template.json" --tag v0.3.0 --out "$work/policy.json" || rc=$?
