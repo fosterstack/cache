@@ -48,7 +48,7 @@ fixture() { # folder: the jar, the policy folder and a gradlew that leaves a mar
   chmod +x "$1/bench/gradle-sample/gradlew"
 }
 nl=$'\n'
-zeros=$(head -c 64 /dev/zero | tr '\0' 0)
+zeros=$(printf '%064d' 0)
 policy_case() { # script, name, policy file content as plain data (-, no file), want (refuse|accept)
   local dir="$work/policy-$((++cases))" out rc ok=1
   fixture "$dir"
