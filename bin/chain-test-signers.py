@@ -869,6 +869,10 @@ def load_scripts(base):
                                or not all(isinstance(k, str) and re.fullmatch(r"[A-Za-z0-9_-]+", k) for k in r["arg_map"])
                                or not all(isinstance(v, str) for v in r["arg_map"].values())):
             errs.append("chain-scripts.json: %s `arg_map` must be a non-empty object of plain STEP words to listed script paths" % p)
+        if "arg_extra" in r and (not isinstance(r["arg_extra"], dict) or not isinstance(r.get("arg_map"), dict)
+                                 or not all(k in r["arg_map"] and isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]+", v)
+                                            for k, v in r["arg_extra"].items())):
+            errs.append("chain-scripts.json: %s `arg_extra` must be an object of arg_map STEP words to one plain word each" % p)
         if not isinstance(r.get("runs", []), list):
             errs.append("chain-scripts.json: %s `runs` must be a list" % p)
         em = r.get("env_mentions", [])
@@ -1081,9 +1085,14 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
             errs.append("line %d: %s: %s has an arg_map: it runs only as `bash %s STEP TARGET` (found %r)" % (n, line[:90], path, path, cmd))
         if isinstance(am, dict):                # round 3 (2): the wrapper's line is EXACTLY `bash WRAPPER STEP TARGET`, STEP bound to its one TARGET
             args = words[2:]
-            raw0, raw1 = (args[0][0], args[1][0]) if len(args) == 2 else (None, None)
-            if len(args) != 2 or am.get(raw0) != raw1 or any(len(a[1]) != 1 or a[1][0][0] != "lit" for a in args):
-                errs.append("line %d: %s: %s takes exactly STEP TARGET as plain words with TARGET the one path its arg_map binds to STEP (%s)" % (n, line[:90], path, ", ".join("%s %s" % kv for kv in sorted(am.items()))))
+            raw0, raw1 = (args[0][0], args[1][0]) if len(args) >= 2 else (None, None)
+            extras = rows[path].get("arg_extra")
+            extras = extras if isinstance(extras, dict) else {}
+            extra = extras.get(raw0)                                   # the one word a step's script takes after its path
+            want = 2 + (extra is not None)
+            if len(args) != want or am.get(raw0) != raw1 or any(len(a[1]) != 1 or a[1][0][0] != "lit" for a in args) \
+                    or (extra is not None and args[2][0] != extra):
+                errs.append("line %d: %s: %s takes exactly STEP TARGET as plain words with TARGET the one path its arg_map binds to STEP, then the word its arg_extra names for STEP (%s; %s)" % (n, line[:90], path, ", ".join("%s %s" % kv for kv in sorted(am.items())), ", ".join("%s %s" % kv for kv in sorted(extras.items())) or "no arg_extra"))
         elif isinstance(aw, list):              # round 2 (4b): a wrapper's FIRST argument is one of its closed words
             f0 = _literal_value(words[2][1]) if len(words) > 2 else None
             if f0 is None or f0 not in aw:
