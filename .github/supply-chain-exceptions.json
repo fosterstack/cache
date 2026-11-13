@@ -3895,33 +3895,6 @@
       "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
-      "line": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat >\"$work/pre.py\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
-    },
-    {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
-      "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat >\"$work/pre.py\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
-    },
-    {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
-      "line": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
-      "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
-    },
-    {
       "file": ".github/agent/bin/tests/test_check_action_pins.py",
       "form": "a download",
       "key": "448ac7aa9a015cec52414dd6c4cb808f88c2f847cf9b8328b30f116d08dee661",
@@ -8688,6 +8661,33 @@
       "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
       "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
       "ruling": "text, not a command: a line of .github/agent/tests/s2-p2-gh-404-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
+      "line": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat >\"$work/pre.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "afb0738bf2e0c187e77fb950b2031ac551bae47f4859c4d2d983bd42924d0349"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat >\"$work/pre.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "afb0738bf2e0c187e77fb950b2031ac551bae47f4859c4d2d983bd42924d0349"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
+      "line": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
+      "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
