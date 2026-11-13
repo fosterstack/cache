@@ -137,7 +137,7 @@ PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.j
                    "bash bin/check-acceptance.sh k8s --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results",
-                   "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"]]),
+                   "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"]),
       ("arm64", ["bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"])]
 POL = 'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json'
 body = "set -euo pipefail\n" + POL + "\n" + "\n".join(V) + '\ncase "$1" in\n'
