@@ -1005,15 +1005,149 @@ def _span_hash(lines):
 
 
 def _body_spans(lines, first, last, sha):
-    """The (start, end) of every run from a line `first` to any later line `last` whose text hashes to `sha`."""
+    """The (start, end) of every run from a line `first` to any later line `last` whose text hashes to `sha`: hashed
+    only from lines equal to `first`, one line at a time, and compared only at lines equal to `last`."""
     spans = []
     for start, line in enumerate(lines):
         if line != first:
             continue
+        h = hashlib.sha256(line.encode("utf-8", "replace"))
         for end in range(start, len(lines)):
-            if lines[end] == last and _span_hash(lines[start:end + 1]) == sha:
+            if end > start:
+                h.update(b"\n" + lines[end].encode("utf-8", "replace"))
+            if lines[end] == last and h.copy().hexdigest() == sha:
                 spans.append((start, end))
     return spans
+
+
+# A row for a span is a human review of it, and two things the review cannot see are closed here. The wrapper function
+# an opener calls (`check python3 - <<'PY'`) may run its input: it is one of these, by the sha256 of its whole
+# flattened definition (a new wrapper is a change here: a human gate). A file the span writes may be run later: it may
+# only be read as data.
+_REVIEWED_WRAPPERS = {
+    "check": frozenset((
+        "d9f0551a0eefa0c75ab77d72fe9446ac100bf33458d956b500c865ccf33f2b43",   # persona-uat-agent-test.sh and others
+        "0eeb4484c724571050ef124103472beb31a6983886cd15e2f00c6e6e1a1f2629",   # persona-uat-test.sh
+    )),
+    # check-action-pins-test.sh, pin-wiring-test.sh, pin-audit-go-major-test.sh
+    "case_": frozenset(("3ba3075b9b3bce3c45b9af7eb1b0e88366ee0710955dc343ca6ddf35e6a094b4",)),
+    "judge": frozenset(("b5bd68dd1ef9c5be7fe26c3c9d3c970f5f8adc5b0cfc749bd34ff1eb177f5cea",)),
+    "py": frozenset(("042c3df4e8b93248712f320b1f47a9a7d3525229710aa44e7828d05012227125",)),
+}
+_DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum md5sum od"
+    .split())
+_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))")
+_REDIRECT = re.compile(r"(?:^|[^\d<>&])(?:\d*>>?|&>>?)[ \t]*(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)")
+
+
+def _func_bodies(lines):
+    """{name: flattened definition text} of the shell functions the file defines, and how many times each is defined:
+    a definition runs from its line to the line where its braces close."""
+    out, count = {}, {}
+    for idx, ln in enumerate(lines):
+        m = _DEF_FUNC.match(ln)
+        if not m:
+            continue
+        name = m.group(1) or m.group(2)
+        depth, body, opened = 0, [], False
+        for k in range(idx, len(lines)):
+            bare = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k])
+            bare = re.sub(r"(?:^|(?<=\s))#.*$", "", bare)
+            body.append(lines[k])
+            depth += bare.count("{") - bare.count("}")
+            opened = opened or "{" in bare
+            if opened and depth <= 0:
+                break
+        out[name] = " ".join(" ".join(body).split())
+        count[name] = count.get(name, 0) + 1
+    return out, count
+
+
+def _wrapper_reviewed(lines, opener):
+    """False when the opener's command word is a function the file defines and that function is not one reviewed
+    wrapper, defined once, with the reviewed text."""
+    m = re.match(r"\s*(?:function\s+)?([A-Za-z_][\w.-]*)", opener)
+    bodies, count = _func_bodies(lines)
+    if not m or m.group(1) not in bodies:
+        return True
+    name = m.group(1)
+    return count[name] == 1 and _line_hash(bodies[name]) in _REVIEWED_WRAPPERS.get(name, ())
+
+
+def _strip_comment(ln):
+    """The line without a trailing shell comment: a # starts one only outside quotes, at the start or after a space,
+    a tab or one of ; & | ( ."""
+    sq = dq = False
+    i = 0
+    while i < len(ln):
+        c = ln[i]
+        if sq:
+            sq = c != "'"
+        elif c == "\\":
+            i += 1
+        elif c == "'" and not dq:
+            sq = True
+        elif c == '"':
+            dq = not dq
+        elif c == "#" and not dq and (i == 0 or ln[i - 1] in " \t;&|("):
+            return ln[:i]
+        i += 1
+    return ln
+
+
+def _reads_only(seg):
+    """True when the (comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor,
+    and no -o or --output option, clustered or not."""
+    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![^\s;&|<>()])", " ", seg)
+    if re.search(r"\d*>|&>", flat):
+        return False
+    flat = re.sub(r"[\"'\\]", "", flat)
+    return not re.search(r"(?:^|[ \t])(?:-[A-Za-z]*o\S*|--output\S*)(?=[ \t=]|$)", flat)
+
+
+def _written_file_used_later(lines, start, end):
+    """True when a file the opener (line `start`) redirects its output to, or a variable that holds its name, is named
+    after the span's last line `end` in any way but: as the argument of a data-reading command that is alone on its
+    line; in a plain assignment. Running, sourcing, copying, a pipe to anything else, a substitution and a program
+    the checker does not know all refuse."""
+    names = {t.strip("'\"") for t in _REDIRECT.findall(lines[start])}
+    names -= {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty", ""}
+    names = {t for t in names if not t.startswith("&") and not t.startswith("/dev/fd/")}
+    if not names:
+        return False
+    assign = re.compile(r"(?:^|[;&|\s])([A-Za-z_]\w*)=(\"[^\"]*\"|'[^']*'|[^\s;&|]+)")
+    for _ in range(4):                        # a variable that holds the name, a few levels
+        for ln in lines:
+            for var, val in assign.findall(ln):
+                if any(t in val for t in names):
+                    names |= {"$" + var, "${" + var + "}"}
+    spell = set(names)
+    for t in list(names):
+        if not t.startswith("$"):
+            spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
+    rxs = [re.compile(re.escape(t) if t.startswith("$") else r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])")
+        for t in spell if t]
+    for ln in lines[end + 1:]:
+        ln = _strip_comment(ln)
+        if not any(rx.search(ln) for rx in rxs):
+            continue
+        if "`" in ln or "$(" in ln:
+            return True
+        for seg in (sg for sg in re.split(r"\|\||&&|[|;&]", ln) if sg.strip()):
+            toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
+            if all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
+                continue                      # a plain assignment: the variable rule above follows the name
+            words = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*|\d*[<>]+.*", t)]
+            cmd = words[0].strip("'\"").split("/")[-1] if words else ""
+            if cmd not in _DATA_CONSUMERS or not _reads_only(seg):
+                return True
+    return False
+
+
+def _span_reviewed(lines, start, end):
+    """The two closed rules of a row for a span (AC16): its opener's wrapper is reviewed, and a file it writes is
+    never used later except as data."""
+    return _wrapper_reviewed(lines, lines[start]) and not _written_file_used_later(lines, start, end)
 
 
 # the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
@@ -1128,7 +1262,8 @@ def _body_proved(root, head, path, line_hash, row):
     lines = raw.decode("utf-8", "replace").split("\n")
     spans = _body_spans(lines, *row[2])
     held = [i for i, ln in enumerate(lines) if _line_hash(" ".join(ln.split())) == line_hash]
-    return len(spans) == 1 and bool(held) and all(spans[0][0] <= i <= spans[0][1] for i in held)
+    return len(spans) == 1 and bool(held) and all(spans[0][0] <= i <= spans[0][1] for i in held) \
+        and _span_reviewed(lines, *spans[0])
 
 
 def _body_regressions(root, head, rulings):
@@ -1246,7 +1381,7 @@ def load_file_pins(path, required=False):
         fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
         if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) \
             or not r["upstream"].startswith("https://") \
-                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", r["published"]) \
+                or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", r["published"]) \
                     or parse_time(r["published"]) is None:
             continue
         out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
