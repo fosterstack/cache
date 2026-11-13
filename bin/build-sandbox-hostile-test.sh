@@ -133,7 +133,7 @@ HASHES="4001dd1ab79625d0cd0cb6973ff669f0d6804a0ac91e544e3cf93480e9146970  build/
 df707bfb928110a6e64a8e59348518ea7b1059d028a91f7cb708891170177cca  build/probe/write-record.yaml.tmpl
 12cfdd0158eb21599faa6e61195fcc907c1b324b596dfb43720178571db46eb5  build/probe/read-keydir.yaml.tmpl
 82f2ebf932271a9d691cef7da932c0a84f4e2ab59624adc4cec14589af468501  build/probe/read-token.yaml.tmpl
-4daa5ea586db05a262db01ec4953f55b355e8fcefbe4b44254801a5621ffcd91  build/probe/network.yaml.tmpl"
+e1793239e22eedbdf02b1b955293223e788a9ead4de20807a8e4881f1a3cec9c  build/probe/network.yaml.tmpl"
 t "AC5" "the six templates equal the hashes bound in this test" \
   bash -c "cd '$root' && printf '%s\\n' \"\$0\" | sha256sum -c --quiet -" "$HASHES"
 
