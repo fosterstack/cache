@@ -74,6 +74,12 @@ def _covers(product, image):
     return scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
 
 
+def _unquoted_id(sub):
+    """`sub` with the purl in its @id decoded once (the query, if any, as it is)."""
+    purl, mark, query = sub.get("@id", "").partition("?")
+    return dict(sub, **{"@id": urllib.parse.unquote(purl) + mark + query}) if "@id" in sub else sub
+
+
 def load_vex(path):
     """Per-image VEX indexes ({image: index}): each image is filtered only by the statements whose product covers it,
     with purl versions decoded (%2B is +) so a statement matches the version the scanner reports."""
@@ -85,11 +91,8 @@ def load_vex(path):
             prods = [p for p in st.get("products") or [] if _covers(_product_id(p), img)]
             if not prods:
                 continue
-            for p in prods:
-                for sub in p.get("subcomponents") or []:
-                    if "@id" in sub:
-                        sub["@id"] = urllib.parse.unquote(sub["@id"].split("?", 1)[0]) + (
-                            "?" + sub["@id"].split("?", 1)[1] if "?" in sub["@id"] else "")
+            prods = [dict(p, subcomponents=[_unquoted_id(sub) for sub in p["subcomponents"]])
+                     if p.get("subcomponents") else p for p in prods]
             stmts.append(dict(st, products=prods))
         out[img] = _gate.vex_index(dict(doc, statements=stmts))
     return out
