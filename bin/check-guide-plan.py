@@ -26,32 +26,9 @@ for l in lines[:first]:
         if m.group(1) in defined:
             fail("the placeholder <%s> is defined twice" % m.group(1))
         defined.add(m.group(1))
-cmds, state, pending = [], None, None
-for l in lines:
-    s = l.strip()
-    if state is None:
-        if s == "```sh":
-            state = "sh"
-        elif s.startswith("```"):
-            state = "other"
-        continue
-    if s == "```":
-        if pending is not None:
-            fail("a command ends in a line continuation")
-        state = None
-        continue
-    if state == "other":
-        continue
-    if pending is not None:
-        s, pending = pending + " " + s, None
-    elif not s or s.startswith("#"):
-        continue
-    if s.endswith("\\"):
-        pending = s[:-1].rstrip()
-        continue
-    cmds.append(s)
-if state is not None:
-    fail("the guide ends inside a fenced block")
+cmds, why = judge_mod.guide_commands(lines)
+if why:
+    fail(why)
 if not cmds:
     fail("no command was extracted from the guide %s (a vacuous pass is not a pass)" % guide)
 if len(cmds) > 10:
@@ -79,8 +56,8 @@ def not_local(word):
 
 
 def classify(segs, files):
-    """("run", "") | ("registry", why) | ("no", why) for a judged command: it runs, needs a registry image, or has
-    an operand that is not a local file (Release runs it with the downloaded files)."""
+    """("run", "") | ("registry", why) | ("later", why) for a judged command: it runs, needs a registry image, or
+    has a file operand that is not a local file (release-postverify runs it on the staged copy before publishing)."""
     registry, nonlocal_ = [], []
     for s in segs:
         if s[0] == "jq":
@@ -96,7 +73,7 @@ def classify(segs, files):
     if registry:
         return "registry", "it verifies the image reference %s" % ", ".join(registry)
     if nonlocal_:
-        return "no", "its operand %s is not a local file" % ", ".join(nonlocal_)
+        return "later", "its operand %s is not a local file" % ", ".join(nonlocal_)
     return "run", ""
 
 
@@ -123,7 +100,7 @@ plan = []
 for c in cmds:
     for u in PH.findall(c):
         if u not in defined:
-            fail("the command `%s` uses <%s>, which the guide does not define (undefined placeholder)" % (c, u))
+            fail("the command `%s` is refused: it uses <%s>, which the guide does not define (undefined placeholder)" % (c, u))
     segs, files, why = judge_mod.judge(c)
     if why:
         fail("the command `%s` is refused: %s (Release runs every command, listed as not-run or not, unattended)"
@@ -135,15 +112,17 @@ for c in cmds:
                  % (c, u))
     kind, why = classify(segs, files)
     if c in excused:
-        if kind == "run":
-            fail("the cannot-run entry `%s` is runnable: a runnable command is run, never excused" % c)
+        if kind != "registry":
+            fail("the cannot-run entry `%s` is not an image-reference command: a runnable command is run, and a "
+                 "file command is run by postverify; only an image-reference command is listed" % c)
         plan.append({"command": c, "run": None, "reason": excused[c]})
         continue
     if kind == "registry":
         fail("unlisted command needs a registry: `%s` (%s); Check holds the candidate as a file, so it is never run: "
              "list it exactly, with its reason, in %s" % (c, why, listpath))
-    if kind != "run":
-        fail("the command `%s` is not runnable on a candidate (%s) and the cannot-run list does not name it" % (c, why))
+    if kind == "later":
+        plan.append({"command": c, "run": None, "reason": "run by postverify before publishing: " + why})
+        continue
     run = c
     for u in sorted(set(PH.findall(c))):
         v = values[u]
