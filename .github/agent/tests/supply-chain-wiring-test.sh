@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC4
-# Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175; the owner removed the wait for new versions on Nov 11 2026): the pull request check is a job that runs
-# on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it can be the owner's required check without ever blocking an
-# unrelated PR (AC4); the daily job may write issues and nothing else; no job holds actions: write; REQ-SUP-001 is pipeline-only for automatic patches; CI runs the tests.
-# Read from the PARSED files: the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
+# Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175; the owner removed the wait for new
+# versions on Nov 11 2026): the pull request check is a job that runs
+# on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it can
+# be the owner's required check without ever blocking an
+# unrelated PR (AC4); the daily job may write issues and nothing else; no job holds actions: write; REQ-SUP-001 is
+# pipeline-only for automatic patches; CI runs the tests.
+# Read from the PARSED files: the real files must pass and every mutation (made through the parsed document) must be
+# rejected FOR THE REASON NAMED.
 #   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `daily-audit` (schedule)
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -20,7 +24,23 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
 
-CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\npython3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n# the advisor\'s rulings come from the base branch too: a pull request must not bring its own\nexceptions=trusted/.github/supply-chain-exceptions.json\nif [ ! -f "$exceptions" ]; then\n  exceptions="$RUNNER_TEMP/no-exceptions.json"\n  echo \'{"exceptions": []}\' > "$exceptions"\nfi\npython3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1\nexit $status\n', 'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py'}
+CANONICAL_RUNS = {'pin-age': (
+    'set -uo pipefail\n'
+    'status=0\n'
+    'python3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr '
+    '--base ${{ github.event.pull_request.base.sha }} '
+    '--head ${{ github.event.pull_request.head.sha }} || status=1\n'
+    '# the advisor\'s rulings come from the base branch too: a pull request must not bring its own\n'
+    'exceptions=trusted/.github/supply-chain-exceptions.json\n'
+    'if [ ! -f "$exceptions" ]; then\n'
+    '  exceptions="$RUNNER_TEMP/no-exceptions.json"\n'
+    '  echo \'{"exceptions": []}\' > "$exceptions"\n'
+    'fi\n'
+    'python3 trusted/.github/agent/supply-chain/pin-audit.py --root pr '
+    '--base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} '
+    '--exceptions "$exceptions" --report-only || status=1\n'
+    'exit $status\n'
+    ), 'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py'}
 
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -86,13 +106,15 @@ def judge_wf(d, real=False):
     if "exceptions=trusted/.github/supply-chain-exceptions.json" not in runs or '--exceptions "$exceptions"' not in runs or "pr/.github/supply-chain-exceptions.json" in runs:
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
     if "set -e" in runs or runs.count("|| status=1") != 2 or "exit $status" not in runs:
-        bad.append("pin-age stops at the first failure: the pin scan and the advisory audit must both run, and the job fails if either did")
+        bad.append("pin-age stops at the first failure: the pin scan and the advisory audit must both run, "
+                   "and the job fails if either did")
     if "${{ github.event.pull_request.base.sha }}" not in runs or "${{ github.event.pull_request.head.sha }}" not in runs:
         bad.append("pin-age does not compare the PR's base and head commits")
     # daily-audit
     j = jobs["daily-audit"]
     if j.get("permissions") != {"contents": "read", "issues": "write"}:
-        bad.append(f"daily-audit's permissions are not exactly contents: read + issues: write (found {j.get('permissions')})")
+        bad.append(f"daily-audit's permissions are not exactly contents: read + issues: write "
+                   f"(found {j.get('permissions')})")
     if (j.get("concurrency") or {}).get("group") != "supply-chain-daily" or (j.get("concurrency") or {}).get("cancel-in-progress") != "false":
         bad.append("daily-audit has no concurrency group (two runs at once could double-file an issue)")
     if str(j.get("if", "")) != "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'":
@@ -206,14 +228,19 @@ def judge_db(d):
             bad.append(f"{k[0]} {k[1]} has {n} entries: one entry per ecosystem and directory")
     by = {(u.get("package-ecosystem"), u.get("directory")): u for u in ups}
     want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
-            "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: unchanged, except that gomod may group its updates
+            "docker": {"package-ecosystem": "docker", "directory": "/build/docker",
+                       "schedule": {"interval": "daily"}}}
+    # the product's CVE-fix targets: unchanged, except that gomod may group its updates
     for eco, entry in want.items():
-        found = next((u for u in ups if u.get("package-ecosystem") == eco and (eco == "docker" or u.get("directory") == "/")), None)
+        found = next((u for u in ups if u.get("package-ecosystem") == eco
+                      and (eco == "docker" or u.get("directory") == "/")), None)
         compared = {k: v for k, v in found.items() if k != "groups"} if eco == "gomod" and found is not None else found
         if found is not None and compared != entry:
             bad.append(f"the {eco} entry is not unchanged")
-    for eco, directory in (("github-actions", "/"), ("gomod", "/"), ("gomod", "/tools/requirements"), ("docker", "/build/docker"), ("pip", "/.github/agent")):
-        if (eco, directory) not in by and not (eco == "docker" and any(k[0] == eco for k in by)):  # docker's directory change is judged as "not unchanged" above
+    for eco, directory in (("github-actions", "/"), ("gomod", "/"), ("gomod", "/tools/requirements"),
+                           ("docker", "/build/docker"), ("pip", "/.github/agent")):
+        # docker's directory change is judged as "not unchanged" above
+        if (eco, directory) not in by and not (eco == "docker" and any(k[0] == eco for k in by)):
             bad.append(f"the {eco} entry is missing")
     return bad
 
@@ -252,7 +279,8 @@ result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a par
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: one entry per ecosystem and directory, gomod and docker unchanged (the gone-wait test judges the rest)" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: one entry per ecosystem and directory, gomod and docker unchanged "
+       "(the gone-wait test judges the rest)" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
@@ -297,13 +325,17 @@ mut_wf("no schedule", "no single daily schedule", lambda d: d["on"].pop("schedul
 mut_wf("pin-age is skipped for bots", "pin-age has an if", lambda d: J(d, "pin-age").update({"if": "github.actor != 'dependabot[bot]'"}))
 mut_wf("pin-age needs another job", "pin-age has an if, needs", lambda d: J(d, "pin-age").update(needs=["daily-audit"]))
 mut_wf("pin-age is allowed to fail", "pin-age has an if, needs", lambda d: J(d, "pin-age").update({"continue-on-error": "true"}))
-mut_wf("pin-age can write", "pin-age's permissions are not exactly contents: read", lambda d: J(d, "pin-age")["permissions"].update(issues="write"))
-mut_wf("pin-age has actions write", "pin-age has actions write", lambda d: J(d, "pin-age")["permissions"].update(actions="write"))
-mut_wf("pin-age reads actions again", "pin-age's permissions are not exactly contents: read", lambda d: J(d, "pin-age")["permissions"].update(actions="read"))
+mut_wf("pin-age can write", "pin-age's permissions are not exactly contents: read", lambda d: J(d,
+        "pin-age")["permissions"].update(issues="write"))
+mut_wf("pin-age has actions write", "pin-age has actions write", lambda d: J(d,
+        "pin-age")["permissions"].update(actions="write"))
+mut_wf("pin-age reads actions again", "pin-age's permissions are not exactly contents: read", lambda d: J(d,
+        "pin-age")["permissions"].update(actions="read"))
 mut_wf("pin-age has no timeout", "no short timeout-minutes", lambda d: J(d, "pin-age").pop("timeout-minutes"))
 mut_wf("pin-age timeout above 15", "no short timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 16}))
 mut_wf("pin-age timeout far above", "no short timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 360}))
-mut_wf("pin-age never runs the pin scan", "does not run .github/agent/supply-chain/pin-age-check.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
+mut_wf("pin-age never runs the pin scan", "does not run .github/agent/supply-chain/pin-age-check.py", lambda d: J(d,
+        "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
 mut_wf("pin-age never audits what moves", "does not run .github/agent/supply-chain/pin-audit.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-audit" not in str(s.get("run", ""))]))
 mut_wf("pin-age compares the wrong commits", "does not compare the PR's base and head", lambda d: [s.update(run=s["run"].replace("github.event.pull_request.base.sha", "github.sha")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the PR's own checker runs", "does not run the BASE branch's checker", lambda d: [x.update(run=x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-age-check.py", "python3 pr/.github/agent/supply-chain/pin-age-check.py")) for x in J(d, "pin-age")["steps"] if "run" in x])
@@ -311,7 +343,9 @@ mut_wf("the audit runs from the PR's tree", "does not run the BASE branch's chec
 mut_wf("a variable names the checker again", "does not run the BASE branch's checker", lambda d: [x.update(run="checker=trusted\n" + x["run"].replace("python3 trusted/.github/agent/supply-chain/pin-age-check.py", 'python3 "$checker/.github/agent/supply-chain/pin-age-check.py"')) for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("exceptions are read from the PR's tree", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace("exceptions=trusted/.github", "exceptions=pr/.github")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the audit stops passing --exceptions", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace(' --exceptions "$exceptions"', "")) for s in J(d, "pin-age")["steps"] if "run" in s])
-mut_wf("the pin scan's failure hides the audit", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("set -uo pipefail", "set -euo pipefail")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("the pin scan's failure hides the audit", "pin-age stops at the first failure",
+        lambda d: [s.update(run=s["run"].replace("set -uo pipefail", "set -euo pipefail")) for s in J(d,
+        "pin-age")["steps"] if "run" in s])
 mut_wf("the audit's exit status is dropped", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("--report-only || status=1", "--report-only")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("a step is disabled with if: false", "a step has a condition", lambda d: J(d, "pin-age")["steps"][-1].update({"if": "false"}))
 mut_wf("a step skips bots", "a step has a condition", lambda d: J(d, "pin-age")["steps"][-1].update({"if": "github.actor != 'dependabot[bot]'"}))
@@ -335,7 +369,9 @@ mut_wf("--now is passed", "test-only flag", lambda d: [x.update(run=x["run"].rep
 mut_wf("a step sets PYTHONPATH", "sets env", lambda d: [x.setdefault("env", {}).update(PYTHONPATH="pr") for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("PYTHONPATH in the script", "test-only flag", lambda d: [x.update(run="export PYTHONPATH=pr\n" + x["run"]) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("status=0 before the exit", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("exit $status", "status=0\nexit $status")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
-mut_wf("--exceptions is added to the scan", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("--root pr", "--exceptions pr/x.json --root pr", 1)) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("--exceptions is added to the scan", "differ from the ratified text",
+        lambda d: [x.update(run=x["run"].replace("--root pr", "--exceptions pr/x.json --root pr", 1)) for x in J(d,
+        "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("a duplicated --base argument", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("--report-only", "--base ${{ github.event.pull_request.head.sha }} --report-only")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("--report-only on the daily audit", "differ from the ratified text", lambda d: [x.update(run=x["run"] + " --report-only") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a secret indexed with brackets", "indexes secrets", lambda d: [x["env"].update(GH_TOKEN="${{ secrets['PAT'] }}") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
@@ -350,8 +386,10 @@ mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, 
 mut_wf("checkout keeps credentials", "persist-credentials", lambda d: next(s for s in J(d, "pin-age")["steps"] if "checkout" in str(s.get("uses", "")))["with"].pop("persist-credentials"))
 mut_wf("daily-audit loses issues: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].pop("issues"))
 mut_wf("daily-audit gains contents: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(contents="write"))
-mut_wf("daily-audit gains actions: write", "daily-audit has actions write", lambda d: J(d, "daily-audit")["permissions"].update(actions="write"))
-mut_wf("daily-audit reads actions again", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(actions="read"))
+mut_wf("daily-audit gains actions: write", "daily-audit has actions write", lambda d: J(d,
+        "daily-audit")["permissions"].update(actions="write"))
+mut_wf("daily-audit reads actions again", "daily-audit's permissions are not exactly", lambda d: J(d,
+        "daily-audit")["permissions"].update(actions="read"))
 mut_wf("a top-level concurrency that cancels every event", "not the reviewed block", lambda d: d["concurrency"].update({"cancel-in-progress": "true"}))
 mut_wf("a top-level concurrency with a shared ref group", "not the reviewed block", lambda d: d.update(concurrency={"group": "${{ github.workflow }}-${{ github.ref }}", "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}))
 mut_wf("a top-level concurrency whose pull-request group is shared by re-runs", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace(" && github.run_attempt == '1'", "")))
@@ -359,23 +397,36 @@ mut_wf("a top-level concurrency that borrows github.workflow", "not the reviewed
 mut_wf("a top-level concurrency dropped entirely", "not the reviewed block", lambda d: d.pop("concurrency"))
 mut_wf("a top-level concurrency on its own", "not the reviewed block", lambda d: d.update(concurrency={"group": "x", "cancel-in-progress": "false"}))
 mut_wf("daily-audit loses its concurrency group", "no concurrency group", lambda d: J(d, "daily-audit").pop("concurrency"))
-mut_wf("the PR job writes observations", "re-runs a run or records tag observations", lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "pin-age")["steps"] if "run" in x])
-mut_wf("the daily audit records observations again", "re-runs a run or records tag observations", lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
-mut_wf("the daily audit re-runs a run", "re-runs a run or records tag observations", lambda d: [x.update(run=x["run"] + "\ngh run rerun 1") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
-mut_wf("an upload-artifact step appears", "is not on the allowlist", lambda d: J(d, "daily-audit")["steps"].append({"uses": "actions/upload-artifact@" + "a" * 40, "with": {"name": "x"}}))
-mut_wf("a rerun job comes back", "the jobs are not exactly", lambda d: d["jobs"].update({"rerun-pr": {"runs-on": "ubuntu-latest", "permissions": {"actions": "write"}, "steps": []}}))
+mut_wf("the PR job writes observations", "re-runs a run or records tag observations",
+        lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "pin-age")["steps"]
+        if "run" in x])
+mut_wf("the daily audit records observations again", "re-runs a run or records tag observations",
+        lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "daily-audit")["steps"]
+        if "pin-audit" in str(x.get("run", ""))])
+mut_wf("the daily audit re-runs a run", "re-runs a run or records tag observations",
+        lambda d: [x.update(run=x["run"] + "\ngh run rerun 1") for x in J(d, "daily-audit")["steps"]
+        if "pin-audit" in str(x.get("run", ""))])
+mut_wf("an upload-artifact step appears", "is not on the allowlist", lambda d: J(d,
+        "daily-audit")["steps"].append({"uses": "actions/upload-artifact@" + "a" * 40, "with": {"name": "x"}}))
+mut_wf("a rerun job comes back", "the jobs are not exactly",
+        lambda d: d["jobs"].update({"rerun-pr": {"runs-on": "ubuntu-latest", "permissions": {"actions": "write"},
+        "steps": []}}))
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))
-mut_wf("a third job appears", "the jobs are not exactly", lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
+mut_wf("a third job appears", "the jobs are not exactly",
+        lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
 # --- dependabot ---
-mut_db("a second github-actions entry for the same directory", "one entry per ecosystem and directory", lambda d: d["updates"].append(copy.deepcopy(eco(d, "github-actions"))))
+mut_db("a second github-actions entry for the same directory", "one entry per ecosystem and directory",
+        lambda d: d["updates"].append(copy.deepcopy(eco(d, "github-actions"))))
 mut_db("gomod gains an ignore rule", "gomod entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
 mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
-mut_db("docker gains a group", "docker entry is not unchanged", lambda d: eco(d, "docker").update(groups={"all": {"patterns": ["*"]}}))
+mut_db("docker gains a group", "docker entry is not unchanged", lambda d: eco(d,
+        "docker").update(groups={"all": {"patterns": ["*"]}}))
 mut_db("docker's directory changes", "docker entry is not unchanged", lambda d: eco(d, "docker").update(directory="/"))
 mut_db("docker's schedule slows", "docker entry is not unchanged", lambda d: eco(d, "docker")["schedule"].update(interval="weekly"))
 mut_db("gomod is removed", "the gomod entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
-mut_db("the tools/requirements gomod entry is removed", "the gomod entry is missing", lambda d: d["updates"].remove(next(u for u in d["updates"] if u["directory"] == "/tools/requirements")))
+mut_db("the tools/requirements gomod entry is removed", "the gomod entry is missing",
+        lambda d: d["updates"].remove(next(u for u in d["updates"] if u["directory"] == "/tools/requirements")))
 mut_db("pip is removed", "the pip entry is missing", lambda d: d["updates"].remove(eco(d, "pip")))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
