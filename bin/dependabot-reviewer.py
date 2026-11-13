@@ -10,8 +10,7 @@ secrets, so the federation identity is only reachable from a scheduled run on ma
 Subcommands (each one is small and testable on its own; the workflow strings them together):
 
   updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, kind}; kind is major,
-                                                 flagged,
-                                                 not-major or unparsed
+                                                 flagged, not-major or unparsed
   gather   --pr N --sha SHA --updates F --out DIR
                                               -> DIR/bundle.md (commits + the whole diff of SHA against main
                                                  + release notes + our usage)
@@ -423,10 +422,8 @@ def head_diff(repo, base, sha):
 
 def pr_commits(pr, sha):
     """(text, state): one line per commit of the pull request, oldest first, each one GitHub does not report as
-    Dependabot's
-    own marked; state is "ok", "unavailable" (a failed or empty read, or 250 commits: GitHub lists no more) or
-    "moved" (the
-    list does not end at `sha`, the commit the verdict is for)."""
+    Dependabot's own marked; state is "ok", "unavailable" (a failed or empty read, or 250 commits: GitHub lists no
+    more) or "moved" (the list does not end at `sha`, the commit the verdict is for)."""
     repo = os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}"
     commits = []
     for page in range(1, MAX_COMMIT_PAGES + 1):
@@ -477,13 +474,16 @@ def vendor_is_required(path=".github/policy/required-checks.json"):
 
 def shown_diff(diff, omit_vendor):
     """The diff as the readers get it. With omit_vendor, a section whose old and new path are both under vendor/
-    keeps its
-    header line and a count of its lines: the required `vendor` check compares those bytes with what go.mod and
-    go.sum make."""
+    keeps its header line and a count of its lines: the required `vendor` check compares those bytes with what
+    go.mod and go.sum make."""
     if not omit_vendor:
         return diff
     out = []
-    for section in re.split(r"(?m)^(?=diff --git )", diff):
+    # one section per file: each starts at a line that begins with "diff --git "
+    pieces = diff.split("\ndiff --git ")
+    sections = [pieces[0]] + ["diff --git " + piece for piece in pieces[1:]]
+    sections = [section + "\n" for section in sections[:-1]] + sections[-1:]
+    for section in sections:
         head, _, body = section.partition("\n")
         if not _is_vendored(head):
             out.append(section)
@@ -492,8 +492,8 @@ def shown_diff(diff, omit_vendor):
         added = sum(1 for l in hunks.splitlines() if l.startswith("+"))
         removed = sum(1 for l in hunks.splitlines() if l.startswith("-"))
         out.append("%s\n(a vendored module file: %d added and %d removed line(s) not shown; "
-                   "the required `vendor` check "
-                   "regenerates vendor/ from go.mod and go.sum and compares it byte for byte)\n"
+                   "the required `vendor` check regenerates vendor/ from go.mod and go.sum and compares it "
+                   "byte for byte)\n"
                    % (head, added, removed))
     return "".join(out)
 
