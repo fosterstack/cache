@@ -24,7 +24,8 @@
 # is not in the table is not seen (add it to the table first); signing done by a binary a script downloads at run time or reached
 # through an argv array in script code is not seen.
 # The judge is proven on a known-good fixture tree and mutated copies, then applied to the real repository.
-# Needs python3 with PyYAML (apt: python3-yaml): chain-test-signers.py parses a candidate file's root mapping with it. The scan itself is by text.
+# Needs python3 with PyYAML (apt: python3-yaml): chain-test-signers.py parses a candidate file's root mapping
+# with it. The scan itself is by text.
 set -euo pipefail
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
   _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
