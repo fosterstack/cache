@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC5
 # cache#359 round 5, section 2, group P2, rows "exact 404 token" and "a 404 on a list endpoint is Fail":
-#   (1) "not there" is gh's exact status token (HTTP 404, 410 or 422), never the digits anywhere in gh's output: a 403 whose URL, id or body holds 404 is a
+#   (1) "not there" is gh's exact status token (HTTP 404, 410 or 422), never the digits anywhere in gh's output: a 403
+#   whose URL, id or body holds 404 is a
 #       failure to look (CouldNotLook / Fail), not "absent".
-#   (2) strict mode: a 404 on a list endpoint (a path with '?') is Fail, never "no advisories"; a 404 on a single record stays "absent" (None).
+#   (2) strict mode: a 404 on a list endpoint (a path with '?') is Fail, never "no advisories"; a 404 on a single
+#   record stays "absent" (None).
 # Written from the English rows only; gh is a script on a scratch path, the helpers are called in-process.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -13,7 +15,14 @@ pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
-check() { if "$@" >"$work/last.out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/     | /' "$work/last.out" | tail -5; fi; }
+check() {
+  if "$@" >"$work/last.out" 2>&1; then
+    ok "$CASE"
+  else
+    bad "$CASE"
+    sed 's/^/     | /' "$work/last.out" | tail -5
+  fi
+}
 cat >"$work/pre.py" <<'PY'
 import importlib.util, os, sys, types
 D = os.environ["SC"]
@@ -54,7 +63,8 @@ for body in \
 import sys; exec(open(sys.argv[1]).read())
 age = load("pin-age-check")
 err, _, out = sys.argv[2].partition("|")
-assert raises(age.CouldNotLook, lambda: age._gh_failed(res(err, out))), "digits 404 in a longer text read as 'not there'"
+assert raises(age.CouldNotLook, lambda: age._gh_failed(res(err, out))), (
+    "digits 404 in a longer text read as 'not there'")
 PY
 done
 CASE="_gh_api: a 403 whose URL contains 404 raises CouldNotLook instead of returning None"
@@ -80,7 +90,8 @@ check python3 - "$work/pre.py" "$work/gh" <<PY
 import sys; exec(open(sys.argv[1]).read()); $LN
 os.environ["GH_ERR"] = "gh: Forbidden (HTTP 403)  https://api.github.com/repos/o/404/contents/action.yml"
 for strict in (True, False):
-    assert raises(aud.Fail, lambda: net._gh_json("repos/o/404/contents/action.yml", need=(("content", str),), strict=strict)), strict
+    assert raises(aud.Fail, lambda: net._gh_json("repos/o/404/contents/action.yml",
+                                                    need=(("content", str),), strict=strict)), strict
 PY
 CASE="pin-audit _gh_json (strict): a 404 on a single record is still absent (None)"
 check python3 - "$work/pre.py" "$work/gh" <<PY
@@ -93,15 +104,18 @@ check python3 - "$work/pre.py" "$work/gh" <<PY
 import sys; exec(open(sys.argv[1]).read()); $LN
 os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
 p = "advisories?ecosystem=pip&affects=requests&per_page=100&page=1"
-assert raises(aud.Fail, lambda: net._gh_json(p, rows=(("ghsa_id", str),), strict=True)), "list 404 read as an empty list"
+assert raises(aud.Fail, lambda: net._gh_json(p, rows=(("ghsa_id", str),), strict=True)), (
+    "list 404 read as an empty list")
 PY
 CASE="pin-audit _gh_json (strict): a 404 on a list endpoint is Fail for a releases list too"
 check python3 - "$work/pre.py" "$work/gh" <<PY
 import sys; exec(open(sys.argv[1]).read()); $LN
 os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
-assert raises(aud.Fail, lambda: net._gh_json("repos/o/r/releases?per_page=100&page=1", rows=(("tag_name", str),), strict=True))
+assert raises(aud.Fail, lambda: net._gh_json("repos/o/r/releases?per_page=100&page=1",
+                                                rows=(("tag_name", str),), strict=True))
 PY
-CASE="pin-audit: the advisory list of a package whose GitHub list answers 404 ends lists() in Fail, not in an empty advisory list"
+CASE="pin-audit: the advisory list of a package whose GitHub list answers 404 ends lists() in Fail, not "
+CASE+="in an empty advisory list"
 check python3 - "$work/pre.py" "$work/gh" <<PY
 import sys, urllib.request, urllib.error, json; exec(open(sys.argv[1]).read()); $LN
 os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
