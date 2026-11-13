@@ -122,19 +122,23 @@ sed "s/grep -Eqx /grep -q /" "$MF" >"$work/gen-new/substr-fips.yaml"
 t "REQ-BUILDAPK-001-AC1" "mutant: a FIPS recipe whose proof line is the substring form (grep -q) is refused by mel-fipsproof" bash -c '! env ROOT="$1" python3 "$2" mel-fipsproof "$3"' _ "$root" "$work/chk.py" "$work/gen-new/substr-fips.yaml"
 awk '{print} /grep .*gobuildinfo/{print}' "$MF" >"$work/gen-new/dup-fips.yaml"
 t "REQ-BUILDAPK-001-AC1" "mutant: a FIPS recipe with the proof line twice is refused by mel-fipsproof" bash -c '! env ROOT="$1" python3 "$2" mel-fipsproof "$3"' _ "$root" "$work/chk.py" "$work/gen-new/dup-fips.yaml"
-# bin/check-artifacts.sh pins the certified id itself and a person edits it on a new certificate (the refresh PR body names the file),
-# so these cases follow the script's own command, not the lock
-ca_cmd=$(sed -n 's/^\(grep -E.*GOFIPS140=v1.*\) <<< "\$info_fips".*/\1/p' "$root/bin/check-artifacts.sh")
-ca_id=$(printf '%s\n' "$ca_cmd" | sed -n 's/.*GOFIPS140=\(v[0-9.\\]*-[0-9a-f]\{8\}\).*/\1/p' | tr -d '\\')
+# bin/check-artifacts.sh reads the id from the lock and requires the exact build line; these cases run the script's own command with the lock's id
+ca_cmd=$(sed -n 's/^\(grep -E.*GOFIPS140=\${fipsmod.*\) <<< "\$info_fips".*/\1/p' "$root/bin/check-artifacts.sh")
+ca_id=$(cat "$root/build/locks/fips-module.txt")
 t "REQ-FIPS-001-AC1" "bin/check-artifacts.sh has one grep command for the -fips build info" test "$(printf '%s\n' "$ca_cmd" | grep -c .)" = 1
-t "REQ-FIPS-001-AC1" "the id in the check-artifacts.sh command is found" test -n "$ca_id"
+t "REQ-FIPS-001-AC1" "the id in the lock is found, and the script holds no id of its own" test -n "$ca_id" -a -z "$(grep -E 'GOFIPS140=v[0-9]' "$root/bin/check-artifacts.sh")"
 stub ca-exact "\tbuild\tGOFIPS140=$ca_id\n"
 stub ca-longer "\tbuild\tGOFIPS140=${ca_id}9\n"
 stub ca-shorter "\tbuild\tGOFIPS140=${ca_id%?}\n"
-t "REQ-FIPS-001-AC1" "the check-artifacts.sh command passes on build info with the exact GOFIPS140 build line" bash -c 'bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-ca-exact.txt"
+t "REQ-FIPS-001-AC1" "the check-artifacts.sh command passes on build info with the exact GOFIPS140 build line" env fipsmod="$ca_id" bash -c 'bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-ca-exact.txt"
 for c in longer shorter; do
-  t "REQ-FIPS-001-AC1" "the check-artifacts.sh command fails on build info with a $c id" bash -c '! bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-ca-$c.txt"
+  t "REQ-FIPS-001-AC1" "the check-artifacts.sh command fails on build info with a $c id" env fipsmod="$ca_id" bash -c '! bash -c "$1" < "$2"' _ "$ca_cmd" "$work/bi-ca-$c.txt"
 done
+ca_chk=$(grep -F '[[ "$fipsmod" =~' "$root/bin/check-artifacts.sh")
+for v in "" "v1.0.0" "v1.0.0-DEADBEEF"; do
+  t "REQ-FIPS-001-AC1" "the check-artifacts.sh lock check refuses a lock holding '$v'" bash -c '! (fail() { exit 1; }; fipsmod=$1; eval "$2")' _ "$v" "$ca_chk"
+done
+t "REQ-FIPS-001-AC1" "the check-artifacts.sh lock check accepts the lock's id" bash -c 'fail() { exit 1; }; fipsmod=$1; eval "$2"' _ "$ca_id" "$ca_chk"
 printf 'v1.1.0-DEADBEEF\n' >"$work/lib-lock-bad.txt"
 t "REQ-BUILDAPK-001-AC1" "a malformed lock file fails the recipe checks (closed grammar, fail closed)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips' _ "$work/lib-lock-bad.txt" "$root" "$work/chk.py" "$MF"
 t "rule 21" "bin/gen-recipes.py --check passes on the committed pair: both recipes are exactly the generator's output from build/melange.yaml.tmpl, so they differ only in name, description and the two FIPS lines" python3 "$root/bin/gen-recipes.py" --check
@@ -1205,6 +1209,7 @@ cmpmk "$work/cmb4"; cp "$fx/pair/c.apk" "$work/cmb4/rapks/ubuntu-24.04/x86_64/fs
 cmpexpect "a base-layout apk whose bytes differ between Build and Rebuild -> exit 1, named, no pass record" 1 'fscache-baselayout-0.3.0-r0.apk' "$work/cmb4"
 cmpmk "$work/cm13"; mkdir -p "$work/cm13/elsewhere"; (cd "$work/cm13/elsewhere" && env -i PATH="$PATH" HOME=/nonexistent "$(command -v bash)" ../bin/release-compare.sh) >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"
 t "rule 22" "release-compare: a run from another directory is refused (exit 2) naming the repository root" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -qi 'repository root' '$work/log'"
+t "rule 22" "release-compare: the root refusal is one line, kept in one place" bash -c "test \"\$(grep -ci 'repository root' '$work/log')\" = 1"
 # the no-key guard and its mutated-compare case run ONE pattern (NOKEY_PAT) through ONE function (nokey_flags): a copy of the pattern in the case would stay green when the guard's pattern is reverted
 NOKEY_PAT='melange|openssl|release\.rsa\b|RELEASE_KMS_KEY_REF|awskms|APK_RELEASE|DOCKERHUB|GH_TOKEN|cu''rl|wg''et|\bnc\b|socket|urllib|requests|crane'
 nokey_flags() { grep -v '^ *#' | grep -Eqi "$NOKEY_PAT"; }
