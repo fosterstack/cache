@@ -1,5 +1,5 @@
 """Test infrastructure (not product code): a throw-away repository tree with FAKE cache scripts and a FAKE chain-verify.py, so
-bin/chain-build-wiring-test.sh can RUN the four stage scripts bin/build-stage-KIND.sh and check what they do. The fakes log their argv.
+bin/chain-build-wiring-test.sh can RUN the stage scripts bin/build-stage-KIND.sh (KIND assemble, rebuild-assemble, snapshot-assemble, snapshot-rebuild-assemble: the one bin/build-stage-assemble.sh with its STEP) and check what they do. The fakes log their argv.
 The expected results are computed here by the ORACLE, from the inputs of the tree, never from anything the implementation wrote.
 
   python3 chain-test-harness.py mktree DIR KIND SCRIPT [MODE [TAG]]     MODE oracle (default) | real (items-apk and items-merge go to the
@@ -410,7 +410,9 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
                        ("build-baselayout-apk.sh", FAKE_BUILD_BASELAYOUT),
                        ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
-    shutil.copy(script, d + "/bin/build-stage-%s.sh" % kind); os.chmod(d + "/bin/build-stage-%s.sh" % kind, 0o755)
+    # the four assemble kinds are cases of the ONE script bin/build-stage-assemble.sh (run with STEP and VERSION by the caller); kind only lays out the tree
+    name = "assemble" if kind.endswith("assemble") else kind
+    shutil.copy(script, d + "/bin/build-stage-%s.sh" % name); os.chmod(d + "/bin/build-stage-%s.sh" % name, 0o755)
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shutil.copy(os.path.join(here, "bin", "vex-index.py"), d + "/bin/vex-index.py"); os.chmod(d + "/bin/vex-index.py", 0o755)      # the REAL tool runs in the stage tree (REQ-REL-010-AC1)
     os.makedirs(d + "/.vex", exist_ok=True); shutil.copy(os.path.join(here, VEX_FILE), d + "/" + VEX_FILE)
