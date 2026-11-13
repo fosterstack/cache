@@ -1412,7 +1412,7 @@ plant_stray "$fx/images/production"; rm -rf "$work/fakedir"; mkdir -p "$work/fak
 run check-acceptance.sh gradle --digests digests.json --images images --out out
 if [ "$rc" = 0 ] && members_only "$work/fakedir/members-production" "$fx/images/production"; then ok "AC33 check-acceptance loads the production layout from its named members only (a stray manifest.json, fake.tar and unreferenced blob stay out)"; else bad "AC33 check-acceptance rc=$rc handed docker load [$MO_WHY]: $(tr '\n' ' ' < "$work/fakedir/members-production" 2> /dev/null | cut -c1-200) $out"; fi
 unplant_stray "$fx/images/production"; rm -f "$fx/bin/acceptance-serve.sh" "$fx/bin/acceptance-gradle.sh" "$fx/bin/acceptance-gradle-capped.sh"
-# ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed-local.sh (Check's four steps hold no identity token; REQ-REL-011-AC1) and its 9-minute cap -------------------------------------------
+# ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed-local.sh (Check's four steps hold no identity token; REQ-REL-011-AC1) -------------------------------------------
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
 cp "$root/bin/witnessed-local.sh" "$hw/bin/" 2> /dev/null || true
 printf '#!/usr/bin/env bash\necho "step $*" >> "$HW_LOG"\n[ -z "${STEP_FAIL:-}" ] || exit 1\n' > "$hw/bin/step.sh"
@@ -1452,12 +1452,12 @@ reset_h() { rm -rf "$hw"/witness-*; : > "$work/hwlog"; : > "$work/hwargv"; }
 reset_h; hrun X=1 -- scanners bin/step.sh scanners
 h_ok=0; [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.local.json" ] && h_ok=1
 if [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.local.json" ] && grep -q '^step scanners' "$work/hwlog"; then ok "AC11 the helper runs the script with its arguments under Witness and writes witness-scanners/scanners-collection.local.json (PR 2's naming)"; else bad "AC11 helper normal run -> rc=$rc ${out:0:140}"; fi
-if [ "$(grep -c '^timeout ' "$work/hwlog")" = 1 ] && grep -qx 'timeout -k 20 540' "$work/hwlog"; then ok "AC11 the wrapped command is run through exactly one timeout of 540 seconds (9 minutes) with a kill-after of 20 seconds"; else bad "AC11 the helper must run the command through exactly one 'timeout -k 20 540': $(tr '\n' ' ' < "$work/hwlog")"; fi
+# the helper adds no time limit of its own: Witness is handed plain bash, SCRIPT, ARGS
+wcmd=$(grep '^witness ' "$work/hwargv" | head -1); wcmd=${wcmd##* -- }
+if [ "$wcmd" = "bash bin/step.sh scanners" ] && ! grep -q '^timeout' "$work/hwlog"; then ok "AC11 the command Witness is handed after -- is exactly bash, the script and its arguments, with no timeout"; else bad "AC11 the command after -- must be 'bash bin/step.sh scanners' with no timeout: '$wcmd' log: $(tr '\n' ' ' < "$work/hwlog")"; fi
 if grep -q -- '--step scanners' "$work/hwargv" && grep -q -- '-o witness-scanners/scanners-collection.local.json' "$work/hwargv" && grep -q -- '--signer-file-key-path' "$work/hwargv" \
    && grep -q -- '--env-filter-sensitive-vars' "$work/hwargv" && ! grep -Eq -- '-a [a-z,-]*(github|slsa)' "$work/hwargv" && ! grep -q -- 'fulcio' "$work/hwargv"; then ok "AC9 the helper gives Witness the step name, the local record path, the throwaway key and the environment filter, and never the github or slsa attestor or a Fulcio signer"; else bad "AC9 witness argv: $(cat "$work/hwargv" | cut -c1-200)"; fi
 if [ "$h_ok" = 1 ] && grep -qx 'tokenvars=\[\]' "$work/hwargv"; then ok "AC9 the identity-token request variables never reach Witness (the helper unsets them; Check holds no token)"; else bad "AC9 an identity-token variable reached Witness: $(grep tokenvars "$work/hwargv")"; fi
-reset_h; hrun FAKE_OUTLIVE=1 -- scanners bin/step.sh scanners
-if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-scanners/scanners-collection.local.json" ]; then ok "AC11 a command that outlives the cap makes the helper fail (exit $rc) and leaves no record"; else bad "AC11 an overrun must fail with no record: rc=$rc"; fi
 reset_h; hrun STEP_FAIL=1 -- acceptance bin/step.sh acceptance
 if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-acceptance/acceptance-collection.local.json" ]; then ok "AC11 a failing script makes the helper fail and leaves no record"; else bad "AC11 a failing script must fail with no record: rc=$rc"; fi
 reset_h; hrun X=1 -- '../x' bin/step.sh a
@@ -1768,7 +1768,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=592
+EXPECT=591
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
