@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# bin/acceptance-k8s-manifests.py substitutes the candidate image into the documented manifests and refuses unless each of its
-# two image placeholders occurs exactly once (else the suite would test the published image, not the candidate). The docs are fixtures.
+# bin/acceptance-k8s-manifests.py substitutes the candidate image into the documented manifests and refuses unless
+# each of its two image placeholders occurs exactly once (else the suite would test the published image,
+# not the candidate). The docs are fixtures.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 sut="$here/acceptance-k8s-manifests.py"
@@ -29,7 +30,9 @@ check "the tag placeholder zero times is refused" nonzero "the image placeholder
 doc "image: $PH" "image: $PH"
 check "the tag placeholder twice is refused" nonzero "the image placeholder must occur exactly once"
 doc "env: $PH" "kind: x"
-check "the image line zero times (placeholder not on an image line) is refused" nonzero "the image line must occur exactly once"
+check "the image line zero times (placeholder not on an image line) is refused" nonzero \
+  "the image line must occur exactly once"
 doc "image: $PH" "image: $CAND"
-check "the image line twice (the candidate already on another image line) is refused" nonzero "the image line must occur exactly once"
+check "the image line twice (the candidate already on another image line) is refused" nonzero \
+  "the image line must occur exactly once"
 echo "acceptance-k8s-manifests: $pass passed, $fail failed"; [ "$fail" -eq 0 ]
