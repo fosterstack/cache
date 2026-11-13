@@ -677,6 +677,32 @@ refused_ref("awskms:///alias/other", "W2 another awskms alias is refused with ex
 refused_ref("arn:aws:kms:us-east-1:111122223333:key/abc", "P3 a key reference that is not awskms:/// is refused before any signature")
 for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main", "v0.3", "v0.3.0-fips"):
     t = tree(); rc, so, se = sign_step(t, tag=tag); check(rc == 1 and "tag" in se and not log(t) and not os.path.exists(os.path.join(t, S)), "AC14 release-signatures refuses the tag %r with exit 1 before anything is made (only vX.Y.Z reaches it)" % tag, "rc=%s %s" % (rc, first(se)))
+# G1: release-signatures.sh makes policy.json itself (a stage file's run lines cannot read GITHUB_REF_NAME): after the tag check and the key-reference check, before anything is made or signed
+POLICY = "chain-verify policy make --template .github/policy/release-policy.template.json --tag v0.3.0 --out policy.json"
+def tree_without_policy():
+    t = tree(); os.remove(os.path.join(t, "policy.json")); return t
+def policy_calls(t): return [l for l in log(t) if l.startswith("chain-verify policy")]
+t = tree_without_policy(); rc, so, se = sign_step(t); lg = log(t)
+first_made = next((i for i, l in enumerate(lg) if l.startswith(("vendor-provenance", "with-aws-token", "vex-forms", "release-metadata"))), len(lg))
+check(rc == 0 and os.path.isfile(os.path.join(t, "policy.json")) and policy_calls(t) == [POLICY],
+      "G1 the step makes ./policy.json itself, once, with `policy make --template .github/policy/release-policy.template.json --tag $GITHUB_REF_NAME --out policy.json`", "rc=%s %s %s" % (rc, policy_calls(t), first(se)))
+check(lg[:2] == ["chain-verify key-ref-check", POLICY] and lg.index(POLICY) < first_made,
+      "G1 the policy is made right after the key-reference check and before anything is made or signed", str(lg[:3]))
+t = tree(); open(os.path.join(t, "policy.json"), "w").write("stale\n"); rc, so, se = sign_step(t)
+pol = [opts(c) for c in kms_calls(t) if opts(c).get("--bundle") == S + "/release-evidence/release-policy.bundle"]
+check(rc == 0 and open(os.path.join(t, "policy.json")).read() == "{}" and len(pol) == 1 and pol[0]["--digest"] == hashlib.sha256(b"{}").hexdigest(),
+      "G1 release-policy.bundle is the signature of the policy.json the step made (a file left in the tree is replaced)", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); rc, so, se = sign_step(t, env={"POLICY_FAIL": "1"})
+check(rc != 0 and not [l for l in log(t) if l.startswith(("vendor-provenance", "with-aws-token", "vex-forms", "release-metadata"))] and not os.path.exists(os.path.join(t, S, "checksums.txt")),
+      "G1 a policy that cannot be made stops the step (exit non-zero) before anything is made or signed", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); rc, so, se = sign_step(t, env={"RELEASE_KMS_KEY_REF": "awskms:///alias/other"})
+check(rc == 2 and not policy_calls(t) and not os.path.exists(os.path.join(t, "policy.json")),
+      "G1 a refused key reference stops the step before the policy is made", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); rc, so, se = sign_step(t, tag="v0.3.0-rc1")
+check(rc == 1 and not policy_calls(t) and not os.path.exists(os.path.join(t, "policy.json")),
+      "G1 a refused tag stops the step before the policy is made", "rc=%s %s" % (rc, first(se)))
+t = tree_without_policy(); rc, so, se = sign_step(t, tag="v0.3.1")
+check(rc == 0 and policy_calls(t) == [POLICY.replace("v0.3.0", "v0.3.1")], "G1 the policy is made for the tag of the run", "rc=%s %s" % (rc, policy_calls(t)))
 # a signature that fails stops the step at that call
 t = tree(); rc, so, se = sign_step(t, env={"KMSSIGN_FAIL_ON": "images/ghcr.io/production.bundle"}); check(rc != 0 and len(kms_calls(t)) == 1, "I1 a failing first signature (the KMS key refuses) stops the step at that one call", "rc=%s n=%d %s" % (rc, len(kms_calls(t)), first(se)))
 t = tree(); rc, so, se = sign_step(t, env={"KMSSIGN_FAIL_ON": "checksums.txt.bundle"}); kc2 = kms_calls(t)
@@ -1493,7 +1519,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "646"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "653"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
