@@ -1464,8 +1464,12 @@ _VENDOR_TOOLWORD = re.compile(r"(?<![\w-])go\s+mod\s+vendor(?![\w/.-])|(?<![\w-]
 _ESCAPE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2}))")
 _SHELL_DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")
 _PY_FETCH = re.compile(r"\b(?:urlopen|urlretrieve|urllib\.request|requests\.(?:get|post|put|head|request|Session))\b")
-# these clients also serve plain API calls: they are a fetch only in a file that names a release download URL
-_PY_CLIENT = re.compile(r"\b(?:urllib3|httpx|http\.client|from\s+requests\s+import)\b")
+# these clients also serve plain API calls: a file that imports one (plain, aliased or from-imported) fetches every
+# release download URL it names; the client is found by its module, never by how it is called
+_CLIENT_MODULE = r"(?:requests|urllib3|httpx|http\.client|urllib\.request)"
+_PY_CLIENT = re.compile(r"^[ \t]*(?:import\s+(?:[\w.]+(?:\s+as\s+\w+)?\s*,\s*)*" + _CLIENT_MODULE
+    + r"\b|from\s+" + _CLIENT_MODULE + r"\b|from\s+http\s+import\s+[^#\n]*\bclient\b"
+    + r"|from\s+urllib\s+import\s+[^#\n]*\brequest\b)", re.M)
 _RELEASE_URL = re.compile(r"github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/")
 _SURFACE = re.compile(r"(?:\.py|\.mk|(?:^|/)(?:GNU)?[Mm]akefile|(?:^|/)Dockerfile[\w.-]*|\.dockerfile)$")
 
@@ -1541,6 +1545,7 @@ def unmeasured_occurrences(files):
                         + _hide(ln)[:100]), " ".join(ln.split()), False
                     break
         # marks where a continuation was joined; a file that already holds it is never bash-like
+        client = _PY_CLIENT.search(text)
         mark = "\ue000"
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
@@ -1563,7 +1568,7 @@ def unmeasured_occurrences(files):
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/",
                     u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
-                fetch = _PY_FETCH.search(seg) or (_PY_CLIENT.search(seg) and _RELEASE_URL.search(text))
+                fetch = _PY_FETCH.search(seg) or (client and _RELEASE_URL.search(seg))
                 if fetch or (_SHELL_DOWNLOADER.search(seg) and not plain):
                     yield (path, "a download",
                         hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":"
