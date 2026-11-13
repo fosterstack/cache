@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC13
+# proves: REQ-REL-009-AC6, REQ-REL-009-AC13
 # Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057; KMS rule 2): only the owner's
 # SSH signature (allowed-signers), on any tag. An unsigned tag, any other signature format (PGP, or a keyless x509 signature such as the
 # release.yml gitsign identity), or an ambiguous tag object is refused. The route only picks the verifier; the verifier
@@ -264,6 +264,36 @@ try:
 except SystemExit:
     got = "refused"
 check("B01 the old --releases-dir (a directory of any origin) is gone", got == "refused", got)
+# --- bin/build-admit.py: admit() runs the tag-signature check; a refusal there stops it before any later check
+spec = importlib.util.spec_from_file_location("ba", os.path.join(os.path.dirname(sys.argv[1]), "build-admit.py"))
+BA = importlib.util.module_from_spec(spec); spec.loader.exec_module(BA)
+ORDER = ["check_tag_ref", "check_tag_syntax", "check_tag_points_at_sha", "check_policy_from_main",
+         "check_tag_annotated", "check_tag_signature", "check_commit_signature", "check_ancestor_of_main",
+         "check_audit_approval", "check_required_checks", "check_baseline", "check_rc_proof",
+         "check_admission_evidence"]
+def admit_with(signature_check):
+    """Run admit() with each check replaced by a recorder (signature_check runs in the tag-signature one)."""
+    calls, refusal = [], None
+    for name in ORDER:
+        setattr(BA, name, lambda *a, _n=name: calls.append(_n))
+    BA.check_tag_signature = lambda ctx: (calls.append("check_tag_signature"), signature_check())
+    env = {"GITHUB_REF": "refs/tags/v0.3.0", "GITHUB_REF_NAME": "v0.3.0", "GITHUB_SHA": "a" * 40,
+           "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1", "GH_TOKEN": "x"}
+    os.environ.update(env)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            BA.admit(os.path.join(tempfile.mkdtemp(), "admission.json"))
+    except BA.Refusal as e:
+        refusal = e
+    return calls, refusal
+def bad_signature():
+    raise BA.Refusal("tag-signature", "the tag signature does not verify")
+calls, refusal = admit_with(lambda: None)
+check("admit runs the tag-signature check after tag-annotated and before commit-signature",
+      refusal is None and calls == ORDER, calls)
+calls, refusal = admit_with(bad_signature)
+check("admit refuses at tag-signature when the tag signature is bad, and runs no later check",
+      refusal is not None and refusal.step == "tag-signature" and calls == ORDER[:6], (calls, refusal))
 print("admission-tag-signer: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
