@@ -23,7 +23,6 @@ sha, so an old record then names a different sha and does not apply.
 Every doubt fails closed: a missing or malformed answer, a head that is not 40 lower-case hex, a missing policy file.
 """
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -36,11 +35,12 @@ WEB_FLOW = ("web-flow", 19864447)     # GitHub's own committer for commits it ma
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot, the user of a pull request it opened
-REVIEWER_CHECK = "dependabot-reviewer"       # the check run dependabot-reviewer.yml publishes as its verdict on a head
-REVIEWER_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
-                  ".github/workflows/dependabot-reviewer.yml")   # what decides that verdict; their sha256 is its version
-OTHER_VERSION = "a success of another reviewer version"   # reviewer_verdict's answer for a success that does not carry the current version
-NO_RUN = object()                            # reviewer_verdict's answer for a commit the reviewer has not run on; no string a run can carry equals it
+# the check run dependabot-reviewer.yml publishes as its verdict on a head
+REVIEWER_CHECK = "dependabot-reviewer"
+# reviewer_verdict's answer for a success that does not carry the current version
+OTHER_VERSION = "a success of another reviewer version"
+# reviewer_verdict's answer for a commit the reviewer has not run on; no string a run can carry equals it
+NO_RUN = object()
 MAX_UPDATES = 50                             # the merges of main followed back from a head
 
 
@@ -143,12 +143,10 @@ def bump_pull(head, pulls):
 
 
 def _reviewer_version(root):
-    """The sha256 of the files that decide the reviewer's verdict, read in this order (what `cat` of them gives)."""
-    digest = hashlib.sha256()
-    for path in REVIEWER_FILES:
-        with open(os.path.join(root, path), "rb") as f:
-            digest.update(f.read())
-    return digest.hexdigest()
+    """The reviewer's version, from the script of the checkout of main that holds the list of the files behind it."""
+    out = subprocess.run(["bash", "bin/dependabot-reviewer-version.sh"],
+                         cwd=root, capture_output=True, text=True, check=True)
+    return out.stdout.strip()
 
 
 def reviewer_verdict(checks, logins, version):
@@ -336,7 +334,7 @@ def bump(head, repo, root):
     allowed = _writers(_load(os.path.join(root, WRITERS_PATH)))
     try:
         version = _reviewer_version(root)
-    except OSError:
+    except (OSError, subprocess.CalledProcessError):
         return None, ""
     if not (isinstance(head, str) and _SHA.fullmatch(head) and allowed is not None
             and isinstance(repo, str) and re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo)):
