@@ -4,7 +4,7 @@
 # native runner of each architecture, `assemble` builds the images and archives on an ubuntu-24.04 VM from them. Every
 # command of apk and assemble runs through bin/witnessed-local.sh, which records the step under a throwaway key (no job
 # here holds an
-# id-token; Sign checks the record and signs it keyless); the
+# id-token; Sign checks the record and signs it with the release key in AWS KMS, not keyless); the
 # scripts it runs are listed with their sha256 in .github/policy/chain-scripts.json. Nothing here is published: Sign gets the digests.json text (the stage
 # output `digests`), Rebuild and Check get the artifacts.
 # `mode` is release (the default) or snapshot (REQ-CHAIN-004-AC12): the guard step (no if: GitHub compares

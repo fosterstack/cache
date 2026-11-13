@@ -355,8 +355,57 @@ named = lambda s: any(p.get("subcomponents") for p in s["products"] if "pkg:oci/
 wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed") and named(s)})
 rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
 check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies and names a package, and no other", rcv == wsup, (rcv, wsup))
-check("the real file's CSAF passes the loader's checks; its one statement stays scoped to the jwt/v4 module",
-      bool(google_validate(rc)) and rc["product_tree"].get("relationships") and all(r["product_reference"] == "component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@" for r in rc["product_tree"].get("relationships", [])))
+check("the real file's CSAF passes the loader's checks; its two package statements stay scoped to the jwt/v4 module and the Go standard library go1.27.2",
+      bool(google_validate(rc)) and {r["product_reference"] for r in rc["product_tree"]["relationships"]} == {"component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@", "component-stdlib@go1.27.2"})
+# cache#772 round 1 (A2, ruled): the relationship SET above does not say which statement points at which component. For every vulnerability of the real
+# file's CSAF, each product id in its product_status must resolve to a relationship whose product_reference is the component that statement names
+# (computed here from the OpenVEX subcomponent purls, independent of the generator), and none may be a whole-image product id. A statement that names
+# no subcomponent is image-wide: its ids must be whole-image products (the opposite check).
+import urllib.parse as _up
+def _comp(purl):
+    body = purl.split(":", 1)[1].split("/", 1)[1]            # pkg:generic/busybox@1.37.0 -> busybox@1.37.0 ; pkg:golang/stdlib@1.27.2 -> stdlib@1.27.2
+    name, _, ver = body.partition("@")
+    if purl.startswith("pkg:golang/stdlib@"): ver = "go" + ver      # scanners name the standard library's version go1.27.2 for purl version 1.27.2
+    return "component-%s@%s" % (_up.quote(name, safe=""), ver)
+def stmt_scope_ok(doc, csaf_doc):
+    rel = {r["full_product_name"]["product_id"]: r for r in csaf_doc["product_tree"].get("relationships", [])}
+    images = {b["product"]["product_id"] for b in csaf_doc["product_tree"]["branches"]}
+    for v in csaf_doc["vulnerabilities"]:
+        want = {_comp(c["@id"]) for s in doc["statements"] if s["vulnerability"]["name"] == v["cve"]
+                for p in s["products"] for c in p.get("subcomponents") or []}
+        ids = [i for lst in v["product_status"].values() for i in lst]
+        if not ids:
+            return False
+        if not want:                        # a statement with no subcomponent is an image-wide statement (CVE-2024-51744 here): its ids are whole-image products only
+            if any(i not in images for i in ids):
+                return False
+        elif any(i in images or i not in rel or rel[i]["product_reference"] not in want for i in ids):
+            return False
+    return True
+check("A2 every product id of each real vulnerability resolves to a relationship on that statement's own component, never a whole-image product",
+      stmt_scope_ok(real, rc))
+import copy as _copy
+wide = _copy.deepcopy(rc)
+_v = next(v for v in wide["vulnerabilities"] if v["cve"] == "CVE-2026-111943")
+_k = next(iter(_v["product_status"]))
+_v["product_status"][_k] = sorted({b["product"]["product_id"] for b in wide["product_tree"]["branches"]})
+check("A2 red proof: widening CVE-2026-111943's product_status to every whole-image product (a temporary copy) is refused", not stmt_scope_ok(real, wide))
+# cache#772 audit: the cache-candidates claim for CVE-2026-111943 has no evidence
+_s = next(s for s in real["statements"] if s["vulnerability"]["name"] == "CVE-2026-111943")
+_img = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+_p = _s["products"]
+check("AC1 CVE-2026-111943 has exactly one product: the cache image (@id, purl) with subcomponent stdlib@1.27.2",
+      len(_p) == 1 and _p[0]["@id"] == _img and _p[0].get("identifiers", {}).get("purl") == _img
+      and _p[0].get("subcomponents") == [{"@id": "pkg:golang/stdlib@1.27.2"}], _p)
+check("AC1 no product of CVE-2026-111943 names cache-candidates", "cache-candidates" not in json.dumps(_p))
+check("AC2 CVE-2026-111943's impact_statement does not name cache-candidates",
+      "cache-candidates" not in _s.get("impact_statement", ""))
+from datetime import datetime as _dt, timezone as _tz
+_ts = lambda t: _dt.fromisoformat(t.replace("Z", "+00:00"))
+check("AC3 the document timestamp is not before the newest statement timestamp",
+      _ts(real["timestamp"]) >= max(_ts(s["timestamp"]) for s in real["statements"]), real["timestamp"])
+check("AC3 the document timestamp is not in the future",
+      _ts(real["timestamp"]) <= _dt.now(_tz.utc), real["timestamp"])
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
@@ -597,8 +646,8 @@ check("G a Go module and a generic package of the same last segment stay distinc
 gj = V.inspector({"statements": [scoped("CVE-G4", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"]
 check("G the Inspector rule names the Go module by its full path", [f["filterCriteria"]["vulnerablePackages"] for f in gj] == [[{"name": {"comparison": "EQUALS", "value": "github.com/golang-jwt/jwt/v4"}}]], gj)
 sts = real["statements"]
-check("G the published document holds exactly one statement, CVE-2024-51744", [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744"])
-oci = [p_ for s_ in sts for p_ in s_["products"]]
+check("G the published document holds exactly two statements, CVE-2024-51744 and CVE-2026-111943", [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744", "CVE-2026-111943"])
+oci = [p_ for s_ in sts if s_["vulnerability"]["name"] == "CVE-2024-51744" for p_ in s_["products"]]
 check("G every product of that statement (the image products AND the Go product) names the jwt/v4 module, and nothing else, as its subcomponent",
       oci and all([x["@id"] for x in p_.get("subcomponents", [])] == [JWT] for p_ in oci), oci)
 for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.com%2Fgolang-jwt%2Fjwt%2Fv4", "pkg:generic/busybox%401.37.0", "pkg:generic/busybox@1.37.0%2F1", "pkg:golang/github.com/golang-jwt/jwt%40v4"):
@@ -610,6 +659,37 @@ check("G an encoded dot in the host segment is still a Go module path (decoded o
       V._scopes(scoped("CVE-G10", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/github%2Ecom/golang-jwt/jwt/v4"}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", ""))])
 check("G an encoded slash in a Go module path (host or later segment) stops generation",
       all(refused({"@id": OURS, "subcomponents": [{"@id": x}]}) for x in ("pkg:golang/github%2Ecom%2Fgolang-jwt/jwt/v4", "pkg:golang/github.com/golang-jwt%2Fjwt/v4")))
+# rc-5a G amended: the Go standard library is the one name allowed outside a full module path, and only with a version
+STD = "pkg:golang/stdlib@1.27.2"
+STD_PRODUCT = [{"@id": OURS, "subcomponents": [{"@id": STD}]}]
+def std_doc(cve): return {"statements": [scoped(cve, "not_affected", STD_PRODUCT)]}
+def std_scopes():
+    try: return V._scopes(std_doc("CVE-G11")["statements"][0], [D("1")])
+    except ValueError as e: return str(e)    # a refusal is a failed check, not a crash of the whole run
+check("G the Go standard library with a version is the package (stdlib, go1.27.2: the form scanners report)",
+      std_scopes() == [([D("1")], ("stdlib", "go1.27.2"))], std_scopes())
+try: gs = [f["filterCriteria"]["vulnerablePackages"]
+           for f in V.inspector(std_doc("CVE-G12"), IMAGES, "v0.3.0")["filters"]]
+except ValueError as e: gs = str(e)
+check("G the Inspector rule names the standard library and its version as the scanner field has it (go1.27.2, one rule)",
+      gs == [[{"name": {"comparison": "EQUALS", "value": "stdlib"}, "version": {"comparison": "EQUALS", "value": "go1.27.2"}}]], gs)
+try: grels = V.csaf(std_doc("CVE-G13"), IMAGES, "v0.3.0")["product_tree"].get("relationships", [])
+except ValueError as e: grels = str(e)
+GIDS = sorted("fosterstack-cache-v0.3.0-" + x for x in ("production", "production-linux-amd64", "production-linux-arm64",
+                                                         "fips", "fips-linux-amd64", "fips-linux-arm64"))
+check("G the CSAF names the standard library component inside each of the six images",
+      isinstance(grels, list) and len(grels) == 6 and all(r["product_reference"] == "component-stdlib@go1.27.2" for r in grels)
+      and sorted(r["relates_to_product_reference"] for r in grels) == GIDS, grels)
+for sub_ in ("pkg:golang/stdlib", "pkg:golang/stdlib@", "pkg:golang/stdlibx@1", "pkg:golang/std@1", "pkg:golang/%73tdlib@1.27.2",
+             STD + "?goos=linux", STD + "%3Fgoos=linux", STD + "%2Fx", "pkg:golang/stdlib/sub@1.27.2",
+             "pkg:golang/stdlib@go1.27.2", "pkg:golang/stdlib@v1.27.2", STD + "@x", STD + "%40x"):
+    check("G a standard library name outside the one allowed form stops generation: " + sub_,
+          refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
+# pkg:golang/stdlib@1.27.2 is (stdlib, go1.27.2) and pkg:generic/stdlib@1.27.2 is (stdlib, 1.27.2): two packages (_scopes checked here)
+check("G pkg:generic/stdlib@1.27.2 stays a plain generic package, apart from pkg:golang/stdlib@1.27.2",
+      V._scopes(scoped("CVE-G14", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/stdlib@1.27.2"}]}]),
+                [D("1")])
+      == [([D("1")], ("stdlib", "1.27.2"))])
 check("G the empty version leaves no stray space in the published text",
       "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
 check("G the published document no longer describes a :debug image or busybox",
