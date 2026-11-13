@@ -87,7 +87,7 @@ def parse(data, label, as_name=None, spec=None):
     or ReviewedInputInvalid. `label` names it in the stop."""
     try:
         doc = json.loads(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data)
-    except (ValueError, UnicodeError) as ex:
+    except (ValueError, UnicodeError, RecursionError) as ex:
         raise ReviewedInputInvalid("%s cannot be read as JSON (%s)" % (label, type(ex).__name__))
     if not isinstance(doc, dict):
         raise ReviewedInputInvalid("%s is not a JSON object" % label)
@@ -97,14 +97,14 @@ def parse(data, label, as_name=None, spec=None):
 def read(path, as_name=None, spec=None):
     """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else
     that is not a readable JSON object carrying its required keys
-    is a stop. `as_name` reads a file under the rules of another name (the release gate's per-finding VEX files)."""
+    is a stop. `as_name` reads a file under the rules of another name."""
     if not present(path):
         # absent (the first run); any other failure to look (EACCES on a parent, EIO) is a stop, not "missing"
         return None
     try:
         with open(path) as f:
             doc = json.load(f)
-    except (OSError, ValueError, UnicodeError) as ex:
+    except (OSError, ValueError, UnicodeError, RecursionError) as ex:
         raise ReviewedInputInvalid("%s is present but cannot be read as JSON (%s)" % (path, type(ex).__name__))
     if not isinstance(doc, dict):
         raise ReviewedInputInvalid("%s is not a JSON object" % path)
