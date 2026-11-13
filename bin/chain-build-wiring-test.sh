@@ -2,31 +2,49 @@
 # proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
 # proves: REQ-CHAIN-004-AC18
 # proves: REQ-CHAIN-008-AC6
-# Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job graph of release.yml, and what the
-# scripts do when run against fake cache scripts (v0.3.0 rules 24, 31, 33, 38a, 38b, 39, 50, 51, 54, 58, 59, 62, 63, 68, 70).
-# Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml), jq, shasum. No network, no secrets, no keys.
+# Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job
+# graph of release.yml, and what the
+# scripts do when run against fake cache scripts (v0.3.0 rules 24, 31, 33, 38a, 38b, 39, 50, 51, 54, 58, 59,
+# 62, 63, 68, 70).
+# Runs on ubuntu-24.04 with: bash, timeout(1), python3 + PyYAML (apt: python3-yaml), jq, shasum.
+# No network, no secrets, no keys.
 #
-# Each judge in bin/chain-test-shape.py is a finite exact grammar: a stage file is exactly the steps of one table, a stage script is exactly the
-# lines of expected_lines(KIND), the Witness helper is exactly witnessed_lines(), the chain jobs of release.yml are exactly five. A judge is first
-# proven on a known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then it runs on the real tree.
+# Each judge in bin/chain-test-shape.py is a finite exact grammar: a stage file is exactly the steps of one
+# table, a stage script is exactly the
+# lines of expected_lines(KIND), the Witness helper is exactly witnessed_lines(), the chain jobs of
+# release.yml are exactly five. A judge is first
+# proven on a known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then it runs
+# on the real tree.
 #
-# One stage = one workflow file = one identity. stage-build.yml has the jobs `freeze` (release mode only), `apk` (matrix over ubuntu-24.04 and
-# ubuntu-24.04-arm) and `assemble`; stage-reproducibility.yml has the two matching Witness jobs. The four Witness scripts are rows of
-# .github/policy/chain-scripts.json with their sha256. Each Witness job runs one Witness step, one line through bin/witnessed-local.sh, so the
+# One stage = one workflow file = one identity. stage-build.yml has the jobs `freeze` (release mode only),
+# `apk` (matrix over ubuntu-24.04 and
+# ubuntu-24.04-arm) and `assemble`; stage-reproducibility.yml has the two matching Witness jobs. The four
+# Witness scripts are rows of
+# .github/policy/chain-scripts.json with their sha256. Each Witness job runs one Witness step, one line
+# through bin/witnessed-local.sh, so the
 # command runs from the repo root and Witness names product subjects relative to it.
 # Every upload names one path, because actions/upload-artifact roots an artifact at the common ancestor of its paths.
-# digests.json holds the two image index digests, the four apk digests (apk-tool.py digest, which ignores the signature) and the four Linux archives,
-# so that Sign's provenance covers everything Release publishes (rules 35, 51); items.json holds the same plus the comparison items.
-# The stage passes --version = the tag minus the leading v (0.3.0, or 0.3.0-rc.1); the apk of a variant is found by bin/build-version-check.py
+# digests.json holds the two image index digests, the four apk digests (apk-tool.py digest, which ignores the
+# signature) and the four Linux archives,
+# so that Sign's provenance covers everything Release publishes (rules 35, 51); items.json holds the same plus
+# the comparison items.
+# The stage passes --version = the tag minus the leading v (0.3.0, or 0.3.0-rc.1); the apk of a variant is
+# found by bin/build-version-check.py
 # and `items-apk`, so the stage names no apk file.
-# bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env; the script runs `unset GH_TOKEN` right after the admission line.
-# bin/witnessed-local.sh holds all the Witness flags and `timeout 540`; the judge is witness_seam, helper and directwitness in
+# bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env; the script runs `unset
+# GH_TOKEN` right after the admission line.
+# bin/witnessed-local.sh holds all the Witness flags and `timeout 540`; the judge is witness_seam, helper and
+# directwitness in
 # bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below.
-# Witness loads its Fulcio signer when the command starts and takes the timestamp when it ends, so a build longer than the 10-minute certificate
+# Witness loads its Fulcio signer when the command starts and takes the timestamp when it ends, so a build
+# longer than the 10-minute certificate
 # may not verify; `timeout 540` is the answer in the tests.
-# The cache scripts' interface is a given: build-apk.sh refuses (exit 2) RELEASE_KMS_KEY_REF, GOPROXY other than off, HTTPS_PROXY and --signing-key,
-# and exits 4 on a network attempt in the sealed call; assemble-image.sh takes no --apko-config. The CLI of bin/chain-verify.py that the scripts
-# use is documented in bin/chain-bind-test.sh (bind, items-apk, items-merge), bin/chain-rebuild-test.sh (rebuild-compare) and PR 1's tests.
+# The cache scripts' interface is a given: build-apk.sh refuses (exit 2) RELEASE_KMS_KEY_REF, GOPROXY other
+# than off, HTTPS_PROXY and --signing-key,
+# and exits 4 on a network attempt in the sealed call; assemble-image.sh takes no --apko-config. The CLI of
+# bin/chain-verify.py that the scripts
+# use is documented in bin/chain-bind-test.sh (bind, items-apk, items-merge), bin/chain-rebuild-test.sh
+# (rebuild-compare) and PR 1's tests.
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
@@ -1678,10 +1696,17 @@ fi
 # (MODE real). Each function below covers one kind, so a wrong script fails its cases and the summary still prints.
 script_of() { if [ "$1" = fixture ]; then echo "$work/s-$2.sh"; else echo "$root/bin/build-stage-$2.sh"; fi; }
 mk() { python3 "$harness" mktree "$1" "$2" "$3" "$4" "$5" > /dev/null; }       # mk DIR KIND SCRIPT MODE TAG
-with_timeout() { timeout -k 2 "$@"; }   # with_timeout SECONDS COMMAND...: a stuck stage fails its case, and one that ignores TERM is killed
+# with_timeout SECONDS COMMAND...: a stuck stage fails its case, and one that ignores TERM is killed
+with_timeout() { timeout -k 2 "$@"; }
 rc=0; with_timeout 1 bash -c "trap '' TERM; sleep 30" || rc=$?
-[ "$rc" = 137 ] && ok "with_timeout kills a child that ignores TERM" || bad "with_timeout left a child that ignores TERM alive (exit $rc)"
-run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 or 137 if it hangs); GH_TOKEN is set as the apk job's Witness step sets it
+if [ "$rc" = 137 ]; then
+  ok "with_timeout kills a child that ignores TERM"
+else
+  bad "with_timeout left a child that ignores TERM alive (exit $rc)"
+fi
+# run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 or 137 if it hangs)
+# GH_TOKEN is set as the apk job's Witness step sets it
+run_stage() {
   local dir=$1 kind=$2 mode=$3 tag=$4; shift 4
   ( cd "$dir" && if with_timeout 120 env GITHUB_ACTIONS=true "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" \
         HARNESS_DIR="$root/bin" REAL_CV="$CV" \
@@ -2617,7 +2642,8 @@ out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/release-
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
-# rules 61 and 62 (advisor Oct 12; REQ-REL-009, the base-input-changed signal): every base input .github/policy/base-inputs.json names is a file of origin/main. A ref that cannot be read
+# rules 61 and 62 (advisor Oct 12; REQ-REL-009, the base-input-changed signal): every base input
+# .github/policy/base-inputs.json names is a file of origin/main. A ref that cannot be read
 # counts every path as absent (never a pass).
 absent=$(python3 - "$root" <<'PY'
 import json, subprocess, sys
@@ -3759,7 +3785,71 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1320
+# ---- the release scripts the chain relies on, run for real against fakes
+# (a switched-off guard must turn a case red) ----
+DA="sha256:$(printf 'a%.0s' $(seq 64))"
+DB="sha256:$(printf 'b%.0s' $(seq 64))"
+DF="sha256:$(printf 'f%.0s' $(seq 64))"
+# bin/patch-decide.py classify: a data file under .vex/ or .auditor/ is fix-class
+out=$(python3 -I - "$root/bin/patch-decide.py" <<'PY' 2>&1 || true
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pd", sys.argv[1])
+pd = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pd)
+for f in (".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"):
+    print(pd.classify({"files": [f], "modes": {f: "100644"}}, [])[0])
+PY
+)
+if [ "$out" = $'fix\nfix' ]; then
+  ok "AC12 patch-decide classify: a data file under .vex/ and one under .auditor/ are fix-class"
+else bad "AC12 patch-decide classify of .vex and .auditor data: $out"; fi
+# bin/patch-decide.py rc-proof: a marker that does not validate is refused (exit 1), never passed
+rc=0; out=$(python3 -I "$root/bin/patch-decide.py" rc-proof --marker "$work/no-such-marker.json" \
+  --commit HEAD --repo "$root" 2>&1) || rc=$?
+if [ "$rc" = 1 ] && grep -Fq "refused at marker" <<< "$out"; then
+  ok "AC12 patch-decide rc-proof refuses a marker that does not validate (exit 1)"
+else bad "AC12 patch-decide rc-proof with a missing marker: exit $rc: ${out:0:140}"; fi
+# bin/witness-sign-staged.sh signs each planned record through bin/with-aws-token.sh sign-record
+wss="$work/wss"; mkdir -p "$wss/bin" "$wss/staged/witness-build" "$wss/fake"
+cp "$root/bin/witness-sign-staged.sh" "$wss/bin/"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$FAKE_LOG"' > "$wss/bin/with-aws-token.sh"
+printf '%s\n' 'import sys' > "$wss/bin/chain-verify.py"
+printf 'payload' > "$wss/staged/witness-build/build-collection.payload"
+printf '%s\t%s\n' staged/witness-build/build-collection.payload \
+  signed/witness-build/build-collection.json > "$wss/staged/plan.txt"
+rc=0; out=$(cd "$wss" && FAKE_LOG="$wss/log" AWS_ROLE_ARN=arn AWS_REGION=r RELEASE_KMS_KEY_REF=k \
+  GITHUB_REF=refs/tags/v0.3.0 ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL=u \
+  bash bin/witness-sign-staged.sh staged signed 2>&1) || rc=$?
+want="sign-record --payload staged/witness-build/build-collection.payload"
+want="$want --out signed/witness-build/build-collection.json"
+if [ "$rc" = 0 ] \
+   && grep -Fxq "$want --template .github/policy/release-policy.template.json" "$wss/log" 2> /dev/null; then
+  ok "AC2 witness-sign-staged.sh signs the planned record through with-aws-token.sh sign-record"
+else bad "AC2 witness-sign-staged.sh: exit $rc, sign calls: $(cat "$wss/log" 2> /dev/null), ${out:0:100}"; fi
+# bin/release-publish.sh stops on the first pushed tag whose registry digest is not the attested one
+rp="$work/rp"; mkdir -p "$rp/bin" "$rp/witness-build" "$rp/fake"
+cp "$root/bin/release-publish.sh" "$rp/bin/"; : > "$rp/bin/release-layout.py"
+printf '{"image-production": "%s", "image-fips": "%s"}\n' "$DA" "$DB" > "$rp/witness-build/digests.json"
+for v in production fips; do
+  mkdir -p "$rp/images/$v"; : > "$rp/images/$v/oci-layout"; : > "$rp/images/$v/index.json"
+done
+printf '%s\n' "$DA" > "$rp/images/production.digest"; printf '%s\n' "$DB" > "$rp/images/fips.digest"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$FAKE_LOG"' \
+  'case "$1" in auth) cat > /dev/null ;; push) : > "$FAKE_STATE" ;;' \
+  '  digest) if [ -e "$FAKE_STATE" ]; then echo "$WRONG"; else echo MANIFEST_UNKNOWN >&2; exit 1; fi ;; esac' \
+  > "$rp/fake/crane"
+chmod +x "$rp/fake/crane"
+rc=0; out=$(cd "$rp" && PATH="$rp/fake:$PATH" FAKE_LOG="$rp/log" FAKE_STATE="$rp/pushed" WRONG="$DF" \
+  DOCKERHUB_USERNAME=u DOCKERHUB_TOKEN=t GH_TOKEN=g GITHUB_REF_NAME=v1.2.3 bash bin/release-publish.sh 2>&1) || rc=$?
+if [ "$rc" = 1 ] \
+   && grep -Fq "ghcr.io/fosterstack/cache:1.2.3 differs: the registry shows $DF, Build attested $DA" <<< "$out" \
+   && [ "$(grep -c '^push ' "$rp/log")" = 1 ]; then
+  ok "AC7 release-publish.sh stops at the first pushed tag whose registry digest differs from the attested one"
+else
+  pushes=$(grep -c '^push ' "$rp/log")
+  bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
+fi
+EXPECT=1324
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
