@@ -659,6 +659,8 @@ for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT
 for name in ("RELEASE_KMS_KEY_REF", "RUNNER_TEMP", "GITHUB_SHA", "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_WORKFLOW_REF"):
     tg = tree(); rc, so, se = sign_step(tg, env={name: None})
     check(rc == 2 and name in se and not log(tg) and not os.path.exists(os.path.join(tg, S)), "I1 an unset %s exits 2, naming it, before anything is made or signed" % name, "rc=%s %s" % (rc, first(se)))
+tg = tree(); rc, so, se = sign_step(tg, env={"RELEASE_KMS_KEY_REF": None}, tag="v1.2.3-rc1")
+check(rc == 2 and "RELEASE_KMS_KEY_REF" in se and not log(tg) and not os.path.exists(os.path.join(tg, S)), "I1 an unset name together with an rc tag exits 2 (names are checked before the tag)", "rc=%s %s" % (rc, first(se)))
 tg = tree(); rc, so, se = sign_step(tg, env={"GITHUB_REF_NAME": None}); check(rc != 0 and not log(tg) and not kms_calls(tg), "I1 an unset GITHUB_REF_NAME stops the step before anything is signed", "rc=%s %s" % (rc, first(se)))
 def refused_ref(val, label):
     t = tree(); before = files_of(t)
@@ -1520,7 +1522,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "653"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "654"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
