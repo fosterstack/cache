@@ -2503,7 +2503,8 @@ class ProposalEvidence(unittest.TestCase):
             "keys": [{"scanner": "grype", "finding_id": "CVE-2099-1", "purl": "pkg:deb/debian/libpropose@1.0"}]}
 
     def git(self, *a):
-        return subprocess.run(["git", "-C", self.root, "-c", "user.name=t", "-c", "user.email=t@example.org", "-c", "commit.gpgsign=false", *a],
+        return subprocess.run(["git", "-C", self.root, "-c", "user.name=t", "-c", "user.email=t@example.org",
+                               "-c", "commit.gpgsign=false", *a],
                               check=True, capture_output=True, text=True).stdout.strip()
 
     def setUp(self):
@@ -2553,20 +2554,23 @@ class ProposalEvidence(unittest.TestCase):
         self.assertIsNone(self.ask("later-escape/x.md"))
         self.assertIsNone(self.ask("later-escape/x.md", sha=None))
 
-    def test_a_model_name_split_by_separators_is_refused_in_every_text_field(self):
-        for text in ("per the gpt-5 analysis", "gpt - 5", "gpt _ 5", "gpt . 5", "private - model", "private model"):
-            for field in ("note", "package"):
-                self.assertIsNone(self.ask("top.txt", **{field: text}), (field, text))
-
-    def test_a_model_name_with_digits_attached_is_refused_in_every_text_field(self):
-        for text in ("claude3", "llama3", "sonnet4", "Claude3 wrote it", "a llama3 note", "SONNET4", "claude 3", "opus4", "gemini2", "gpt5"):
+    def test_a_model_name_is_refused_as_a_plain_substring_in_every_text_field(self):
+        for text in ("per the gpt-5 analysis", "claude3", "llama3", "sonnet4", "Claude3 wrote it", "a llama3 note",
+                     "SONNET4", "claude 3", "opus4", "gemini2", "GeminiPro", "libopus0", "libllama-compat",
+                     "codexample", "ask codex", "OpenAI said so"):
             for field in ("note", "package"):
                 self.assertIsNone(self.ask("top.txt", **{field: text}), (field, text))
             self.assertIsNone(self.ask("top.txt", keys=[dict(self.GOOD["keys"][0], finding_id=text)]), text)
 
-    def test_ordinary_words_that_share_letters_with_a_model_name_are_kept(self):
-        for text in ("libopus0", "minizip", "knowledge", "libllama-compat", "codexample"):
+    def test_a_separated_spelling_of_a_model_name_is_not_refused(self):
+        for text in ("gpt - 5", "gpt _ 5", "gpt . 5", "private - model", "private model"):
+            for field in ("note", "package"):
+                self.assertIsNotNone(self.ask("top.txt", **{field: text}), (field, text))
+
+    def test_ordinary_words_that_contain_no_model_name_are_kept(self):
+        for text in ("minizip", "knowledge", "libpng", "zlib-ng", "operations"):
             self.assertIsNotNone(self.ask("top.txt", package=text), text)
+            self.assertIsNotNone(self.ask("top.txt", note=text), text)
 
     def test_a_path_that_is_not_a_regular_file_in_the_commit_is_refused(self):
         for path in ("docs", "missing.txt", "docs/missing.md", "link.txt"):
@@ -2680,34 +2684,45 @@ class CarriedVersion(unittest.TestCase):
 
 
 class NarrativeScrub(unittest.TestCase):
-    """One separator-aware model-name check covers every text the scrubber reads, a narrative as much as a proposal's fields."""
+    """One plain-substring model-name check (over the lowered text) covers a narrative; a name is refused inside a word too."""
     SECS = {n: [] for n in range(1, 8)}
 
     def ok(self, text):
         return R._narrative_ok(text, self.SECS)
 
-    def test_a_model_name_split_by_separators_is_refused_in_a_narrative(self):
-        for text in ("Reviewed by gpt - 5 today.", "gpt _ 5", "gpt . 5", "private - model wrote this", "the private model", "GPT - 5", "gpt-5", "chat gpt 5"):
+    def test_a_model_name_written_literally_is_refused_in_a_narrative(self):
+        for text in ("Reviewed by gpt-5 today.", "gpt-5", "GPT-5", "Reviewed by Claude.", "OpenAI said so"):
             self.assertFalse(self.ok(text), text)
 
     def test_a_model_name_with_digits_attached_is_refused_in_a_narrative(self):
         for text in ("claude3 says so", "llama3", "sonnet4", "Llama3.1", "we asked claude3", "opus4"):
             self.assertFalse(self.ok(text), text)
 
-    def test_a_configured_model_identifier_is_refused_however_it_is_separated(self):
+    def test_a_configured_model_identifier_is_refused_as_plain_text_in_any_case_or_suffix(self):
         with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7", "AUDITOR_MODEL_FALLBACK": ""}):
-            for text in ("acme-big-7 said", "acme - big - 7", "ACME big_7", "acme-big-7b"):
+            for text in ("acme-big-7 said", "ACME-BIG-7 said", "acme-big-7b"):
                 self.assertFalse(self.ok(text), text)
             self.assertTrue(self.ok("a bigger acme reading of 7 packages"))
 
+    def test_a_name_inside_a_word_or_followed_by_digits_is_refused_in_a_narrative(self):
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big", "AUDITOR_MODEL_FALLBACK": ""}):
+            for text in ("GeminiPro wrote this", "ClaudeAI wrote this", "OpenAIs wrote this", "CodexCLI wrote this",
+                         "acme-big-70 wrote this"):
+                self.assertFalse(self.ok(text), text)
+            self.assertTrue(self.ok("Nothing changed today."))
+
     def test_plain_text_is_kept(self):
-        for text in ("Nothing changed today.", "libopus0 and minizip need no action; knowledge of the tracker is current.",
-                     "Package libllama-compat is not a model name"):
+        for text in ("Nothing changed today.", "zlib and minizip need no action; knowledge of the tracker is current.",
+                     "Package libfoo-compat is not a model name"):
             self.assertTrue(self.ok(text), text)
 
-    def test_the_conclusion_withholds_a_narrative_that_names_a_model_with_a_separator(self):
+    def test_a_name_inside_a_package_word_is_refused_too(self):
+        for text in ("libopus0 needs no action", "libllama-compat needs no action"):
+            self.assertFalse(self.ok(text), text)
+
+    def test_the_conclusion_withholds_a_narrative_that_names_a_model(self):
         st = {"tokens": 0, "nc_prev": None, "nc_narr": None, "nc_today": "2026-10-24"}
-        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "Judged by gpt - 5.", "token_usage": 3}):
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "Judged by gpt-5.", "token_usage": 3}):
             text = R._conclusion("/x/real.py", self.SECS, {}, st)
         self.assertEqual(text, "conclusion withheld: narrative disagreed with the record.")
         self.assertIsNone(st["nc_narr"])
