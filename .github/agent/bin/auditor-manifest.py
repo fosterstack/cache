@@ -266,9 +266,8 @@ def _norm_ref(ref):
 
 
 def _archives(rescan_dir, test_image, oci, tar):
-    """Produce BOTH an oci-archive and a docker-save tar (no daemon). grype reads the
-    oci-archive directly; the docker-save tar is the digest source. Returns
-    (source_desc, err)."""
+    """Produce BOTH an oci-archive and a docker-save tar (no daemon). syft reads the oci-archive directly; the
+    docker-save tar is the digest source. Returns (source_desc, err)."""
     if test_image:
         # the input says ref@digest; it is held to it — a tag-only reference could fetch any bytes the tag points at
         if "@sha256:" not in test_image:
