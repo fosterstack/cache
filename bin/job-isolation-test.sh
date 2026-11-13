@@ -3,12 +3,12 @@
 # The owner's isolation rule (ratified Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): on GitHub-hosted runners
 # the separate job is the isolation unit. AC1: a job that holds a credential (a secrets.* reference, an environment, id-token: write or
 # packages: write) never compiles or builds; govulncheck, which publishes no release binary, is built in a job with no credential and
-# reaches auditor.yml's audit job as an artifact whose sha256 the audit job compares first, and stage-verify.yml's Check job as an artifact whose download keeps download-artifact's own
+# reaches auditor.yml's audit job as an artifact whose sha256 the audit job compares first, and release.yml's check job as an artifact whose download keeps download-artifact's own
 # digest check on (no override). The build that `install-scanner.sh govulncheck` hides inside a script counts: the installer word is read after quotes and continuations are
 # normalized, and a word the judge cannot read is refused in a credential job. AC2: no job runs two builds.
 # AC2 scope: builds of what we ship or run as a tool. The acceptance/bench jobs that run a sample project's own Gradle/Maven build as the
-# workload under test are not release builds and are outside it. The real workflows must pass (the four release-chain jobs the chain-v030 landing replaces are listed exclusions with their reason);
-# each mutated copy must be caught.
+# workload under test are not release builds and are outside it. The real workflows must pass (no exclusion names a job of the release chain: the Build, Rebuild, Check, Sign and Release jobs of release.yml each satisfy AC1 through
+# their own permissions, REQ-REL-011-AC1); each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -19,11 +19,15 @@ wf = sys.argv[1]
 # a step that builds or compiles (commands and actions; comment lines never count)
 COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\bgoreleaser\s+(?:build|release)\b|\bdocker\s+(?:buildx\s+)?build\b|\bbuildx\s+(?:build|bake)\b|docker/build-push-action|docker/bake-action"
                                           r"|\bmelange\s+build\b|\bapko\s+(?:build|publish)\b|\bcargo\s+(?:build|install)\b|\bmake\b|\bnpm\s+(?:run\s+)?build\b")
-# Exclusions: none on the release-chain branch (cache#561 ruling B2). On main the table named the old release-chain jobs (stage-build build, stage-image assemble, stage-promote promote,
-# stage-reproducibility reproduce, stage-acceptance-artifacts artifacts) that the chain landing replaces; those jobs do not exist here, so the rows are gone (the requirement's own note
-# says the list shrinks to nothing at the landing). The stale-row check below stays: a row added later must name a job that exists.
-CREDENTIAL_CALLEES = ("stage-sign.yml", "stage-promote.yml")   # the only reusable workflows a credential-holding job may call (Sign and Release)
-BUILD_SIDE_FILES = ("stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml")   # the release chain's Build, Rebuild and Check workflows (owner Oct 21 separate jobs, Oct 22 Witness)
+# Exclusions: none (REQ-REL-011-AC1). The jobs of the release chain are the Build, Rebuild, Check, Sign and Release jobs of release.yml; stage-build.yml, stage-reproducibility.yml, stage-verify.yml,
+# stage-sign.yml and stage-promote.yml no longer exist, so no row names any of them. The stale-row check below stays: a row added later must name a job that exists, and none may name a job of release.yml.
+# The only reusable workflows a credential-holding job may call: release.yml in snapshot mode (the callers' static ceiling, REQ-CHAIN-004-AC14: the sign environment, not the caller's grant, decides what can sign)
+# and persona-uat.yml (release.yml's one call of the release-candidate persona leg, REQ-UAT-001-AC6: identity token for the persona federation only).
+CREDENTIAL_CALLEES = ("release.yml", "persona-uat.yml")
+# the build side of release.yml (REQ-CHAIN-004-AC1, REQ-CHAIN-005-AC1, REQ-CHAIN-006-AC1): each its own job, each declaring its OWN permissions block (the workflow-level block is empty) and holding no credential
+BUILD_SIDE_JOBS = ("build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "check")
+# the sign jobs of release.yml (REQ-CHAIN-001-AC9): the only jobs that may hold the sign environment; they build nothing (AC1 above applies to them like to every credential holder)
+SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")
 EXCLUDED_AC1 = {}
 # ci.yml test: the one required Go test job builds twice, without a credential, to /dev/null and to /tmp (neither is shipped): the static build and the -fips variant build, which had
 # their own jobs until the test, coverage, vendor and fips140-only jobs became one (audit row C-F7). Neither build is a release artifact.
@@ -127,14 +131,22 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
         if w and unresolved:
             bad.append("%s/%s holds %s and runs the line %r in the step %r: a credential job may name install-scanner.sh only as exactly `bash bin/install-scanner.sh TOOL` (TOOL a literal word, not govulncheck) or a listed exception" % (key[0], jn, ", ".join(w), unresolved[0][1], unresolved[0][0]))
-        # the release chain's build-side workflows (Build, Rebuild, Check): a caller grants them no credential, and every job declares its own permissions (undeclared, it would inherit the caller's)
-        if os.path.basename(f) in BUILD_SIDE_FILES and j.get("permissions", d.get("permissions")) is None:
-            bad.append("%s/%s declares no permissions (neither the job nor the workflow): a build-side job would inherit its caller's, credentials included" % (key[0], jn))
+        # the build-side jobs of release.yml (Build, Rebuild, Check): each declares its own permissions (undeclared, it would inherit nothing but also prove nothing) and holds no credential
+        if key[0] == "release.yml" and jn in BUILD_SIDE_JOBS:
+            if "permissions" not in j:
+                bad.append("%s/%s declares no permissions of its own: every job of the release chain keeps its own minimal block" % (key[0], jn))
+            if w:
+                bad.append("%s/%s is a build-side job of release.yml and holds %s: only the sign jobs hold a credential" % (key[0], jn, ", ".join(w)))
+        # the sign environment belongs to the four sign jobs of release.yml alone
+        if j.get("environment") == "sign" and not (key[0] == "release.yml" and jn in SIGN_JOBS):
+            bad.append("%s/%s is in the environment sign but is not one of the four sign jobs of release.yml" % key)
         callee = os.path.basename(str(j.get("uses") or ""))
         if j.get("uses") and w and not (str(j.get("uses")).startswith("./.github/workflows/") and callee in CREDENTIAL_CALLEES):
-            bad.append("%s/%s holds %s and calls a reusable workflow that is not Sign's or Release's local file (%s): the callee could build with the caller's credentials" % (key[0], jn, ", ".join(w), j.get("uses")))
-        if str(j.get("uses") or "").startswith("./.github/workflows/") and callee in BUILD_SIDE_FILES and w:
-            bad.append("%s/%s calls the build-side workflow %s and holds %s: only Sign's calls hold an identity token" % (key[0], jn, callee, ", ".join(w)))
+            bad.append("%s/%s holds %s and calls a reusable workflow that is not release.yml's local file (%s): the callee could build with the caller's credentials" % (key[0], jn, ", ".join(w), j.get("uses")))
+        if j.get("uses") and w and callee == "release.yml" and (j.get("with") or {}) != {"mode": "snapshot"}:
+            bad.append("%s/%s holds %s and calls release.yml in a mode other than snapshot: %s" % (key[0], jn, ", ".join(w), j.get("with")))
+        if str(j.get("uses") or "").split("/")[-1].startswith("stage-"):
+            bad.append("%s/%s calls %s: no stage-*.yml file exists" % (key[0], jn, j.get("uses")))
         # a job that records a step with bin/witnessed-local.sh (Build, Rebuild, Check: the throwaway-key Witness records, owner Oct 22) is a build-side job whatever its scripts hide: no credential, and never the keyless bin/witnessed.sh
         stext = "\n".join(steps_text(s_) for s_ in (j.get("steps") or []))
         stext = re.sub(r"['\"\\]", "", re.sub(r"\\\n[ \t]*", "", stext))   # quotes, backslashes and continuations are not part of the word the shell runs (bin/witnessed-"local".sh is witnessed-local.sh)
@@ -169,6 +181,21 @@ if sj_.get("name") != "scan (grype)":
 for key in list(EXCLUDED_AC1) + list(EXCLUDED_AC2):
     if key not in jobs_seen:
         bad.append("the exclusion %s/%s names a job that does not exist (remove the row)" % key)
+    if key[0] == "release.yml":
+        bad.append("the exclusion %s/%s names a job of the release chain: the list holds no such row (REQ-REL-011-AC1)" % key)
+if EXCLUDED_AC1:
+    bad.append("EXCLUDED_AC1 is not empty: no job is exempt from AC1 (REQ-REL-011-AC1: there is no exclusion)")
+# the release chain's jobs all exist under the names the English gives them, and release.yml reaches no reusable workflow
+rel_jobs = {k[1] for k in jobs_seen if k[0] == "release.yml"}
+for need in BUILD_SIDE_JOBS + SIGN_JOBS + ("release-compare", "release-verify", "release"):
+    if need not in rel_jobs:
+        bad.append("release.yml has no job %s" % need)
+for k_, j_ in jobs_seen.items():
+    if k_[0] == "release.yml" and j_.get("uses") and j_.get("uses") != "./.github/workflows/persona-uat.yml":
+        bad.append("release.yml/%s calls a reusable workflow (%s): the release is one file (its one call is persona-uat.yml)" % (k_[1], j_.get("uses")))
+for gone in ("stage-build.yml", "stage-sign.yml", "stage-verify.yml", "stage-promote.yml", "stage-reproducibility.yml"):
+    if os.path.exists(os.path.join(wf, gone)):
+        bad.append("%s still exists" % gone)
 # govulncheck: built in its own credential-free job, checked by digest before the audit job uses it
 a = yaml.safe_load(open(os.path.join(wf, "auditor.yml"))) or {}
 b = (a.get("jobs") or {}).get("govulncheck-build")
@@ -199,50 +226,50 @@ if g:
         bad.append("the downloaded govulncheck is referenced outside the digest-gated install")
 if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
     bad.append("the audit job still builds govulncheck itself")
-# the Check stage (stage-verify.yml): govulncheck is built by `install-scanner.sh govulncheck` (a Go module, no release binary), so its build gets its own job with no credential;
+# the Check jobs of release.yml (check-govulncheck, check): govulncheck is built by `install-scanner.sh govulncheck` (a Go module, no release binary), so its build gets its own job with no credential;
 # the `check` job (no identity token: Sign signs its records) downloads the artifact with download-artifact's own digest check left on (it fails the step when the digest differs from the one GitHub
 # recorded at upload) and installs it. The download is by the artifact id the build job exports, not by name, so a same-name artifact another job uploads is not the one it gets. The check
 # and the id prove only that the artifact arrived intact and is the one that job uploaded; the guarantee is that no build runs in a job
 # that holds a credential (AC1 above, which sees this installer arm as a build).
-sv = yaml.safe_load(open(os.path.join(wf, "stage-verify.yml"))) or {}
+sv = yaml.safe_load(open(os.path.join(wf, "release.yml"))) or {}
 sj = sv.get("jobs") or {}
-gb = sj.get("govulncheck-build")
+gb = sj.get("check-govulncheck")
 chk = sj.get("check") or {}
 if not gb:
-    bad.append("stage-verify.yml has no govulncheck-build job")
+    bad.append("release.yml has no check-govulncheck job")
 else:
     if holds(sv, gb):
-        bad.append("stage-verify.yml govulncheck-build holds a credential: %s" % holds(sv, gb))
+        bad.append("release.yml check-govulncheck holds a credential: %s" % holds(sv, gb))
     if not any("govulncheck" in installer_args(steps_text(st)) for st in gb.get("steps") or []):
-        bad.append("stage-verify.yml govulncheck-build does not build govulncheck")
+        bad.append("release.yml check-govulncheck does not build govulncheck")
     if gb.get("outputs") != {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}:
-        bad.append("stage-verify.yml govulncheck-build must expose exactly the output artifact-id, the artifact-id of its upload step: %s" % gb.get("outputs"))
+        bad.append("release.yml check-govulncheck must expose exactly the output artifact-id, the artifact-id of its upload step: %s" % gb.get("outputs"))
     ups = [st for st in gb.get("steps") or [] if str(st.get("uses") or "").startswith("actions/upload-artifact@")]
     if len(ups) != 1 or ups[0].get("id") != "upload" or ups[0].get("with") != {"name": "govulncheck", "path": "govulncheck-out/govulncheck"}:
-        bad.append("stage-verify.yml govulncheck-build must have exactly one upload-artifact step, with id: upload, carrying the artifact govulncheck from govulncheck-out/govulncheck")
+        bad.append("release.yml check-govulncheck must have exactly one upload-artifact step, with id: upload, carrying the artifact govulncheck from govulncheck-out/govulncheck")
     packs = [st for st in gb.get("steps") or [] if "pack-govulncheck" in (st.get("run") or "")]
     if len(packs) != 1 or (packs[0].get("run") or "").strip() != "bash bin/pack-govulncheck.sh":
-        bad.append("stage-verify.yml govulncheck-build must place the binary with exactly one plain step, `run: bash bin/pack-govulncheck.sh`")
+        bad.append("release.yml check-govulncheck must place the binary with exactly one plain step, `run: bash bin/pack-govulncheck.sh`")
 cneeds = chk.get("needs")
 cneeds = [cneeds] if isinstance(cneeds, str) else (cneeds or [])
-if "govulncheck-build" not in cneeds:
-    bad.append("stage-verify.yml check does not need govulncheck-build")
+if "check-govulncheck" not in cneeds:
+    bad.append("release.yml check does not need check-govulncheck")
 csteps = chk.get("steps") or []
 dls = [st for st in csteps if str(st.get("uses") or "").startswith("actions/download-artifact@") and ("artifact-ids" in (st.get("with") or {}) or (st.get("with") or {}).get("name") == "govulncheck")]
 if len(dls) != 1:
-    bad.append("stage-verify.yml check must download the govulncheck artifact exactly once, by the artifact id of govulncheck-build")
+    bad.append("release.yml check must download the govulncheck artifact exactly once, by the artifact id of check-govulncheck")
 else:
     # the digest check of download-artifact stays on: the step carries only uses and with {name, path} (no digest-mismatch input, no continue-on-error, no if), and nothing in the file sets digest-mismatch
-    if set(dls[0]) - {"name", "uses", "with"} or (dls[0].get("with") or {}) != {"artifact-ids": "${{ needs.govulncheck-build.outputs.artifact-id }}", "path": "govulncheck-dl"}:
-        bad.append("stage-verify.yml check: the govulncheck download must carry only uses and with exactly artifact-ids ${{ needs.govulncheck-build.outputs.artifact-id }} and path govulncheck-dl (no name, no digest-mismatch input, no continue-on-error, no if): %s" % sorted(dls[0]))
-if "digest-mismatch" in open(os.path.join(wf, "stage-verify.yml")).read():
-    bad.append("stage-verify.yml sets digest-mismatch (download-artifact's default, error, must stand untouched)")
+    if set(dls[0]) - {"name", "uses", "with"} or (dls[0].get("with") or {}) != {"artifact-ids": "${{ needs.check-govulncheck.outputs.artifact-id }}", "path": "govulncheck-dl"}:
+        bad.append("release.yml check: the govulncheck download must carry only uses and with exactly artifact-ids ${{ needs.check-govulncheck.outputs.artifact-id }} and path govulncheck-dl (no name, no digest-mismatch input, no continue-on-error, no if): %s" % sorted(dls[0]))
+if "digest-mismatch" in open(os.path.join(wf, "release.yml")).read():
+    bad.append("release.yml sets digest-mismatch (download-artifact's default, error, must stand untouched)")
 HAND = "bash bin/unpack-govulncheck.sh"
 inst = [st for st in csteps if "unpack-govulncheck" in (st.get("run") or "")]
 if len(inst) != 1 or (inst[0].get("run") or "").strip() != HAND or set(inst[0]) - {"name", "run"}:
-    bad.append("stage-verify.yml check: the downloaded govulncheck must be used by exactly one plain step, `run: %s` (no env, if or continue-on-error)" % HAND)
+    bad.append("release.yml check: the downloaded govulncheck must be used by exactly one plain step, `run: %s` (no env, if or continue-on-error)" % HAND)
 if chk.get("continue-on-error") or gb and gb.get("continue-on-error"):
-    bad.append("stage-verify.yml: continue-on-error on the Check job or its build job")
+    bad.append("release.yml: continue-on-error on the Check job or its build job")
 print("\n".join(bad)); sys.exit(1 if bad else 0)
 PY
 }
@@ -264,6 +291,14 @@ import os, re, sys, yaml
 wf = sys.argv[1]
 def edit(fname, fn):
     p = os.path.join(wf, fname); s = open(p).read(); s2 = fn(s); assert s2 != s, "mutation did not apply"; open(p, "w").write(s2)
+def job_span(s, job):   # the text of one job of a workflow file: from its header to the next job (two-space indent) or the end
+    m = re.search(r"^  " + re.escape(job) + r":[ \t]*\n", s, re.M); assert m, "no job " + job
+    n = re.search(r"^  [A-Za-z0-9_-]+:[ \t]*\n", s[m.end():], re.M)
+    return m.start(), (m.end() + n.start() if n else len(s))
+def in_job(s, job, old, new, regex=False):   # the first match inside one job only (release.yml holds many jobs with the same step text)
+    a, b = job_span(s, job); seg = s[a:b]
+    seg2 = re.sub(old, new, seg, count=1, flags=re.S) if regex else seg.replace(old, new, 1)
+    return s[:a] + seg2 + s[b:]
 def in_refresh(s, old, new):   # the first match inside the refresh job (go-freshness.yml has the same installer lines in other jobs)
     i = s.index("\n  refresh:"); return s[:i] + s[i:].replace(old, new, 1)
 $py
@@ -281,47 +316,68 @@ mutate "go build added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: s.replace("  panel-probe:\n", "  panel-probe:\n", 1).replace("    environment: agent\n", "    environment: agent\n    # mutated\n", 1))
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: go build ./...\n", s, count=1, flags=re.S))'
 mutate "make added to the Check job given id-token: write back" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: make all\n", s, count=1, flags=re.S))'
-mutate "docker build added to a job that reads a secret (release.yml persona-uat)" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  check:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: make all\n", s, count=1, flags=re.S))'
+mutate "docker build added to a job that holds a credential (release.yml sign)" '
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
 mutate "id-token: write granted to a job that builds (ci.yml lint)" '
 edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
-# the build-side jobs of the release chain hold no identity token and sign with the throwaway key only (owner Oct 21 separate jobs; Oct 22 Witness: only Sign signs keyless; cache-2a, handoff 0671).
-# The judge finds a build-side job by the word witnessed-local.sh in its step text; a job that stops naming it (a reusable-workflow call, the script through a variable) escapes THIS rule. The fail-closed backstop for the
-# identity token is bin/chain-sign-wiring-test.sh, which refuses any job with id-token: write that is not in .github/policy/id-token-jobs.json (only the Sign and release jobs are).
-# Each of these mutations must be refused BY this rule, not by another one: want_msg names the refusal text.
-for spec in stage-build.yml:apk stage-build.yml:assemble stage-reproducibility.yml:rapk stage-reproducibility.yml:rapk-arm stage-reproducibility.yml:assemble stage-verify.yml:check stage-verify.yml:check-arm64; do
-  wf=${spec%%:*} job=${spec##*:}
+# the build-side jobs of the release chain hold no identity token and sign with the throwaway key only (owner Oct 21 separate jobs; Oct 22 Witness: only the Sign jobs sign keyless; cache-2a, handoff 0671).
+# The judge finds a Witness job by the word witnessed-local.sh in its step text; a job that stops naming it (the script through a variable) escapes THIS rule, and is caught by the next one: every build-side job of
+# release.yml (BUILD_SIDE_JOBS) holds no credential whatever its steps say. The fail-closed backstop for the identity token is bin/chain-sign-wiring-test.sh (.github/policy/id-token-jobs.json).
+# Each of these mutations must be refused BY its rule, not by another one: want_msg names the refusal text.
+for job in build-apk build-assemble rebuild-apk rebuild-assemble check; do
   want_msg="records its steps with witnessed-local.sh (a build-side job) and holds id-token: write"
-  mutate "$wf job $job is granted id-token: write" '
-edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+  mutate "release.yml job $job is granted id-token: write (Witness job)" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    permissions:\n)", r"\1      id-token: write\n", regex=True))'
   want_msg="also runs the keyless witnessed.sh"
-  mutate "$wf job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
-edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
+  mutate "release.yml job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", regex=True))'
 done
+for job in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check; do
+  want_msg="is a build-side job of release.yml and holds"
+  mutate "release.yml build-side job $job holds the environment sign" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    runs-on:)", "    environment: sign\n\\1", regex=True))'
+  mutate "release.yml build-side job $job reads a secret" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n", regex=True))'
+  want_msg="declares no permissions of its own"
+  mutate "release.yml build-side job $job declares no permissions of its own (the workflow-level block is empty)" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"    permissions:\n(?:      [a-z-]+: [a-z]+\n)+", "", regex=True))'
+done
+for job in sign sign-rebuild sign-check sign-release; do
+  want_msg="and builds in the step"
+  mutate "release.yml sign job $job builds (go build): a credential holder never compiles" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: go build ./...\n", regex=True))'
+  mutate "release.yml sign job $job installs govulncheck (a hidden build)" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", regex=True))'
+done
+want_msg="is in the environment sign but is not one of the four sign jobs"
+mutate "release.yml release job is placed in the environment sign" '
+edit("release.yml", lambda s: in_job(s, "release", r"(    runs-on:)", "    environment: sign\n\\1", regex=True))'
+mutate "ci.yml lint is placed in the environment sign" '
+edit("ci.yml", lambda s: re.sub(r"(  lint:.*?)(    runs-on:)", lambda m: m.group(1) + "    environment: sign\n" + m.group(2), s, count=1, flags=re.S))'
 want_msg=""
 # fail closed (round 2, reviewer A): a job that holds a credential never runs a script whose path is built from a variable under bin/ (bash "bin/${helper}-local.sh" would hide the wrapper and the build from the rules above)
 want_msg="names a script path under bin/ through a variable"
 mutate "a credential job runs bash \"bin/\${helper}-local.sh\" (the wrapper named through a variable)" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          helper=witnessed\n          bash \"bin/${helper}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          helper=witnessed\n          bash \"bin/${helper}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
 mutate "a credential job runs bash \"bin/\${helper}.sh\" (the keyless wrapper named through a variable)" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash \"bin/${helper}.sh\" x bin/x.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash \"bin/${helper}.sh\" x bin/x.sh\n", s, count=1, flags=re.S))'
 want_msg="names a script path under bin/ through a variable"
 mutate "a credential job assigns the wrapper's path to a variable (h=bin/witnessed; bash \"\${h}-local.sh\")" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          h=bin/witnessed\n          bash \"${h}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          h=bin/witnessed\n          bash \"${h}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
 mutate "a credential job runs a script whose directory is a variable (bash \"\$P/witnessed-\${K}.sh\")" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        env:\n          P: bin\n          K: local\n        run: bash \"$P/witnessed-${K}.sh\" build x.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        env:\n          P: bin\n          K: local\n        run: bash \"$P/witnessed-${K}.sh\" build x.sh\n", s, count=1, flags=re.S))'
 # quote and backslash spellings of the wrapper names are the same word to the shell (round 4, reviewer A): the judge reads the step text with quotes and backslashes removed
 want_msg="records its steps with witnessed-local.sh (a build-side job) and holds"
 mutate "a credential job runs bash bin/witnessed-\"local\".sh (quote fragment inside the wrapper name)" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-\"local\".sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-\"local\".sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
 mutate "a credential job runs bash bin/witnessed-lo\\cal.sh (backslash inside the wrapper name)" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-lo\\cal.sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-lo\\cal.sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
 want_msg="also runs the keyless witnessed.sh"
 mutate "the Check job runs bash bin/witnessed\"\".sh (empty quotes inside the keyless wrapper name)" '
-edit("stage-verify.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed\"\".sh x bin/x.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed\"\".sh x bin/x.sh\n", s, count=1, flags=re.S))'
 mutate "the Check job runs bash bin/witn\\essed.sh (backslash inside the keyless wrapper name)" '
-edit("stage-verify.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witn\\essed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witn\\essed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
 # the pinned Go toolchain install in the audit job (cache#687): accepted exactly as listed; govulncheck through the same installer stays refused
 mwant=ok
 mutate "the audit job's pinned Go toolchain install is accepted (a comment added ahead of it)" '
@@ -333,20 +389,26 @@ edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh go \
 # round 5 (reviewers A and B): a continuation split inside a variable-built path; a caller that grants a credential to a build-side workflow; a build-side job that declares no permissions (it would inherit its caller's)
 want_msg="names a script path under bin/ through a variable"
 mutate "a credential job splits a variable-built wrapper path over a backslash-newline continuation" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          k=local\n          bash bin/witnessed-\\\n          ${k}.sh build x.sh\n", s, count=1, flags=re.S))'
-want_msg="calls the build-side workflow"
-mutate "release.yml rebuild (a caller of stage-reproducibility.yml) is granted id-token: write" '
-edit("release.yml", lambda s: re.sub(r"(  rebuild:\n    needs: \[build, sign\]\n    permissions:\n      contents: read\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1))'
-want_msg="declares no permissions"
-mutate "stage-reproducibility.yml rapk declares no permissions and neither does the workflow (it would inherit its caller's)" '
-edit("stage-reproducibility.yml", lambda s: s.replace("permissions:\n  contents: read\njobs:", "jobs:", 1))
-edit("stage-reproducibility.yml", lambda s: re.sub(r"(\n  rapk:\n.*?)    permissions:\n      contents: read\n", lambda m: m.group(1), s, count=1, flags=re.S))'
-# round 6 (reviewer A): a credential-holding job that calls a reusable workflow may call only Sign's or Release's local workflow files (a remote or any other callee could build with the caller's credentials)
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          k=local\n          bash bin/witnessed-\\\n          ${k}.sh build x.sh\n", s, count=1, flags=re.S))'
+# a build-side job of release.yml declares its own permissions (the workflow-level block is empty, so an undeclared job proves nothing): covered above for every build-side job
+# a credential-holding caller (the ceiling of scan.yml's and main-candidate-rescan.yml's job build, REQ-CHAIN-004-AC14) may call only release.yml, only in snapshot mode; a remote or any other callee could build with the caller's credentials
 want_msg="calls a reusable workflow that is not"
-mutate "release.yml sign calls a remote reusable workflow with id-token: write" '
-edit("release.yml", lambda s: s.replace("    uses: ./.github/workflows/stage-sign.yml\n", "    uses: someone/else/.github/workflows/build.yml@0123456789abcdef0123456789abcdef01234567\n", 1))'
-mutate "release.yml sign calls a local workflow other than Sign's or Release's with id-token: write" '
-edit("release.yml", lambda s: s.replace("    uses: ./.github/workflows/stage-sign.yml\n", "    uses: ./.github/workflows/stage-verify.yml\n", 1))'
+for wfile in scan.yml main-candidate-rescan.yml; do
+  mutate "$wfile build (holding the ceiling's id-token: write) calls a remote reusable workflow" '
+edit("'$wfile'", lambda s: s.replace("    uses: ./.github/workflows/release.yml\n", "    uses: someone/else/.github/workflows/build.yml@0123456789abcdef0123456789abcdef01234567\n", 1))'
+  mutate "$wfile build (holding the ceiling's id-token: write) calls a local workflow other than release.yml" '
+edit("'$wfile'", lambda s: s.replace("    uses: ./.github/workflows/release.yml\n", "    uses: ./.github/workflows/ci.yml\n", 1))'
+  want_msg="in a mode other than snapshot"
+  mutate "$wfile build (holding the ceiling) calls release.yml in release mode" '
+edit("'$wfile'", lambda s: s.replace("      mode: snapshot\n", "      mode: release\n", 1))'
+  want_msg="calls a reusable workflow that is not"
+done
+want_msg="no stage-*.yml file exists"
+mutate "scan.yml build calls a stage file again" '
+edit("scan.yml", lambda s: s.replace("    uses: ./.github/workflows/release.yml\n", "    uses: ./.github/workflows/stage-build.yml\n", 1))'
+want_msg="calls a reusable workflow"
+mutate "release.yml sign job calls a reusable workflow (the release is one file)" '
+edit("release.yml", lambda s: in_job(s, "sign", r"(    runs-on:[^\n]*\n)", r"    uses: ./.github/workflows/ci.yml\n", regex=True))'
 want_msg=""
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml lint)" '
@@ -430,63 +492,61 @@ prgate_case() { local out rc
 }
 slot prgate_case
 # the Check stage hand-over: the build job, the output, and download-artifact's digest check left on
-mutate "the Check job stops needing govulncheck-build" '
-edit("stage-verify.yml", lambda s: s.replace("    needs: govulncheck-build\n", "", 1))'
-mutate "govulncheck-build is granted id-token: write" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    permissions:\n      contents: read\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
-mutate "govulncheck-build reads a secret" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n        run: echo x\n", s, count=1, flags=re.S))'
-mutate "govulncheck-build has no artifact-id output" '
-edit("stage-verify.yml", lambda s: s.replace("    outputs:\n      artifact-id: ${{ steps.upload.outputs.artifact-id }}\n", "", 1))'
-mutate "govulncheck-build's output is not the upload's artifact-id" '
-edit("stage-verify.yml", lambda s: s.replace("steps.upload.outputs.artifact-id", "steps.upload.outputs.artifact-digest", 1))'
+mutate "the Check job stops needing check-govulncheck" '
+edit("release.yml", lambda s: in_job(s, "check", r"    needs:.*?\n(?=    [a-z])", "    needs: [build-assemble, sign]\n", regex=True))'
+mutate "check-govulncheck is granted id-token: write" '
+edit("release.yml", lambda s: re.sub(r"(  check-govulncheck:.*?    permissions:\n      contents: read\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+mutate "check-govulncheck reads a secret" '
+edit("release.yml", lambda s: re.sub(r"(  check-govulncheck:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n        run: echo x\n", s, count=1, flags=re.S))'
+mutate "check-govulncheck has no artifact-id output" '
+edit("release.yml", lambda s: s.replace("    outputs:\n      artifact-id: ${{ steps.upload.outputs.artifact-id }}\n", "", 1))'
+mutate "check-govulncheck's output is not the upload's artifact-id" '
+edit("release.yml", lambda s: s.replace("steps.upload.outputs.artifact-id", "steps.upload.outputs.artifact-digest", 1))'
 mutate "the upload step has no id (the output would be empty)" '
-edit("stage-verify.yml", lambda s: s.replace("      - id: upload\n        uses:", "      - uses:", 1))'
+edit("release.yml", lambda s: s.replace("      - id: upload\n        uses:", "      - uses:", 1))'
 mutate "the Check job turns the digest check off (digest-mismatch: ignore)" '
-edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: ignore\n", 1))'
+edit("release.yml", lambda s: s.replace("          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: ignore\n", 1))'
 mutate "the Check job only warns on a digest mismatch (digest-mismatch: warn)" '
-edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: warn\n", 1))'
+edit("release.yml", lambda s: s.replace("          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: warn\n", 1))'
 mutate "the Check job sets digest-mismatch even to the default (error): the default must stand untouched" '
-edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: error\n", 1))'
+edit("release.yml", lambda s: s.replace("          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: error\n", 1))'
 mutate "the Check job's govulncheck download may fail without stopping the job (continue-on-error)" '
-edit("stage-verify.yml", lambda s: s.replace("        with:\n          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "        continue-on-error: true\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
+edit("release.yml", lambda s: s.replace("        with:\n          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n          path: govulncheck-dl\n", "        continue-on-error: true\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
 mutate "the Check job's govulncheck download is conditional (if: always())" '
-edit("stage-verify.yml", lambda s: s.replace("        with:\n          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "        if: always()\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
+edit("release.yml", lambda s: s.replace("        with:\n          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n          path: govulncheck-dl\n", "        if: always()\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
 mutate "the Check job's govulncheck download goes to another path" '
-edit("stage-verify.yml", lambda s: s.replace("path: govulncheck-dl\n", "path: dl\n", 1))'
+edit("release.yml", lambda s: s.replace("path: govulncheck-dl\n", "path: dl\n", 1))'
 mutate "the Check job downloads by name again (no artifact-ids)" '
-edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n", "          name: govulncheck\n", 1))'
+edit("release.yml", lambda s: s.replace("          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n", "          name: govulncheck\n", 1))'
 mutate "the Check job's artifact-ids is another expression" '
-edit("stage-verify.yml", lambda s: s.replace("needs.govulncheck-build.outputs.artifact-id }}", "needs.govulncheck-build.outputs.other }}", 1))'
+edit("release.yml", lambda s: s.replace("needs.check-govulncheck.outputs.artifact-id }}", "needs.check-govulncheck.outputs.other }}", 1))'
 mutate "the Check job's artifact-ids is a literal number" '
-edit("stage-verify.yml", lambda s: s.replace("artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}", "artifact-ids: 123456", 1))'
+edit("release.yml", lambda s: s.replace("artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}", "artifact-ids: 123456", 1))'
 mutate "the Check job adds the name beside artifact-ids" '
-edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n", "          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          name: govulncheck\n", 1))'
+edit("release.yml", lambda s: s.replace("          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n", "          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n          name: govulncheck\n", 1))'
 mutate "the Check job adds a pattern beside artifact-ids" '
-edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n", "          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          pattern: govulncheck*\n", 1))'
-mutate "govulncheck-build has no id on its upload (the output would be empty)" '
-edit("stage-verify.yml", lambda s: s.replace("      - id: upload\n        uses:", "      - uses:", 1))'
-mutate "govulncheck-build's upload overwrites an existing artifact" '
-edit("stage-verify.yml", lambda s: s.replace("          path: govulncheck-out/govulncheck\n", "          path: govulncheck-out/govulncheck\n          overwrite: true\n", 1))'
+edit("release.yml", lambda s: s.replace("          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n", "          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}\n          pattern: govulncheck*\n", 1))'
+mutate "check-govulncheck has no id on its upload (the output would be empty)" '
+edit("release.yml", lambda s: s.replace("      - id: upload\n        uses:", "      - uses:", 1))'
+mutate "check-govulncheck's upload overwrites an existing artifact" '
+edit("release.yml", lambda s: s.replace("          path: govulncheck-out/govulncheck\n", "          path: govulncheck-out/govulncheck\n          overwrite: true\n", 1))'
 mutate "the upload carries another path than govulncheck-out/govulncheck" '
-edit("stage-verify.yml", lambda s: s.replace("path: govulncheck-out/govulncheck\n", "path: govulncheck-out\n", 1))'
-mutate "govulncheck-build no longer places the binary (pack step removed)" '
-edit("stage-verify.yml", lambda s: s.replace("      - name: place the built govulncheck for upload\n        run: bash bin/pack-govulncheck.sh\n", "", 1))'
+edit("release.yml", lambda s: s.replace("path: govulncheck-out/govulncheck\n", "path: govulncheck-out\n", 1))'
+mutate "check-govulncheck no longer places the binary (pack step removed)" '
+edit("release.yml", lambda s: s.replace("      - name: place the built govulncheck for upload\n        run: bash bin/pack-govulncheck.sh\n", "", 1))'
 mutate "a second install of the downloaded govulncheck is added to the Check job" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/unpack-govulncheck.sh\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  check:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/unpack-govulncheck.sh\n", s, count=1, flags=re.S))'
 mutate "the install of the downloaded govulncheck may fail silently (continue-on-error)" '
-edit("stage-verify.yml", lambda s: s.replace("        run: bash bin/unpack-govulncheck.sh\n", "        run: bash bin/unpack-govulncheck.sh\n        continue-on-error: true\n", 1))'
+edit("release.yml", lambda s: s.replace("        run: bash bin/unpack-govulncheck.sh\n", "        run: bash bin/unpack-govulncheck.sh\n        continue-on-error: true\n", 1))'
 mutate "the install of the downloaded govulncheck gets an env" '
-edit("stage-verify.yml", lambda s: s.replace("        run: bash bin/unpack-govulncheck.sh\n", "        env:\n          X: y\n        run: bash bin/unpack-govulncheck.sh\n", 1))'
+edit("release.yml", lambda s: s.replace("        run: bash bin/unpack-govulncheck.sh\n", "        env:\n          X: y\n        run: bash bin/unpack-govulncheck.sh\n", 1))'
 mutate "the Check job's whole job may fail without stopping the run (continue-on-error)" '
-edit("stage-verify.yml", lambda s: s.replace("    needs: govulncheck-build\n", "    needs: govulncheck-build\n    continue-on-error: true\n", 1))'
+edit("release.yml", lambda s: in_job(s, "check", r"(    needs:.*?\n)(?=    [a-z])", r"\1    continue-on-error: true\n", regex=True))'
 # the hidden build in the jobs that hold id-token in the Check stage and elsewhere
 mutate "install-scanner.sh govulncheck put back in the Check job given id-token: write back" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
-mutate "install-scanner.sh govulncheck added to the arm64 Check job given id-token: write back" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  check-arm64:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
-mutate "install-scanner.sh govulncheck added to a job that reads a secret (release.yml persona-uat)" '
-edit("release.yml", lambda s: re.sub(r"(  persona-uat:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+edit("release.yml", lambda s: re.sub(r"(\n  check:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+mutate "install-scanner.sh govulncheck added to a job that holds a credential (release.yml sign)" '
+edit("release.yml", lambda s: re.sub(r"(\n  sign:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
