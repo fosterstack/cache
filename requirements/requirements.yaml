@@ -1984,7 +1984,7 @@ requirements:
       blocks): the versions and the line judged come from one parse of the require directives only (never a comment,
       replace or exclude line), and anything the parser does not read (a '/* */' comment, a quoted string, a control or
       other space character, a module required twice, a require that is not a path and a semantic version, an unclosed
-      block) is refused, naming go.mod:line; Go is not on the decide job's PATH, so the parser is in the script. Versions
+      block) is refused, naming go.mod:line; Go is not on the patch decision's PATH, so the parser is in the script. Versions
       are read as golang.org/x/mod/semver reads them (vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD], ASCII digits, no leading
       zero, no empty identifier), the go directive as a Go release version (1.21, 1.21.0, 1.21rc1), and every supported
       directive in its own shape (module, toolchain, require, exclude, replace, retract, godebug, tool, ignore); the name
@@ -2011,7 +2011,7 @@ requirements:
     acceptance_criteria:
       - id: REQ-REL-009-AC1
         given: "the commits on main since the latest release tag"
-        when: "release.yml's decide job classifies them"
+        when: "the patch decision classifies them"
         then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, a change of a base input listed in .github/policy/base-inputs.json (the apko base locks, the melange lock and the archive records of the image build; an executable, symlinked or deleted one never counts), or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why; no base image is scanned (none exists), so no distribution-package finding counts as removed"
         verification: { method: unit, release_blocking: false }
         status: approved
@@ -2023,13 +2023,13 @@ requirements:
         status: approved
       - id: REQ-REL-009-AC3
         given: "a push to main that removes a critical or high finding present in the latest release, on a patch-clean main (the latest release being scanned in every image that exists for its version: X.Y.Z and X.Y.Z-fips, and X.Y.Z-debug only for releases before v0.3.0)"
-        when: "release.yml runs on that push"
+        when: "the patch decision runs on that push"
         then: "it cuts the patch in that run"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC4
         given: "the daily schedule, main ahead of the latest tag in shipped bytes and patch-clean"
-        when: "release.yml runs"
+        when: "the patch decision runs"
         then: "it cuts one patch that day; it never cuts a second patch the same day except for a critical or high fix"
         verification: { method: unit, release_blocking: false }
         status: approved
@@ -2054,7 +2054,7 @@ requirements:
       - id: REQ-REL-009-AC8
         given: "a patch release"
         when: "its notes are generated"
-        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
+        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release from the notes carried in the generated patch tag's message (any other tag keeps the fixed evidence text) and in the changelog, and name no vendor or model"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC9
@@ -2070,7 +2070,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC11
-        given: "a CI patch release"
+        given: "a patch release"
         when: "it is published"
         then: "it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest"
         verification: { method: unit, release_blocking: false }
@@ -2082,8 +2082,8 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC13
-        given: "a CI-signed patch tag vX.Y.Z (maintainers approved amendment, Oct 2: which approved ACs a CI patch uses)"
-        when: "decide considers cutting it, and source admission admits it"
+        given: "a CI-signed patch tag vX.Y.Z (maintainers approved amendment, Oct 2: which approved ACs an automatic patch uses)"
+        when: "the patch decision considers cutting it, and source admission admits it"
         then: "it uses the latest release-manager-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the release manager; admission records which baseline it used; release-manager-signed tags keep needing their own approved baseline"
         verification: { method: unit, release_blocking: false }
         status: approved
@@ -2095,7 +2095,7 @@ requirements:
         status: approved
       - id: REQ-REL-009-AC15
         given: "the commits on main since the latest release tag change only the auditor's own work (.auditor/panel-state.json, .auditor/knowledge.md and the JSON files directly under .auditor/proposals/) or the .vex/README.md file (advisor 0254)"
-        when: "decide classifies them"
+        when: "the patch decision classifies them"
         then: "those files are neutral, as data only: they ship no bytes, cut no release by themselves and never block a patch cut for another change; a script, an executable or linked file, a test, or a file with a shebang line (a line starting with #!, anywhere in its content, or in the content a commit deletes or replaces) at those paths is not data and is not patch-clean (text that looks like a script but has no shebang line is data); every other file under .auditor/ and .vex/ keeps its classification (the accepted-items suppression file and the VEX JSON stay fix-class)"
         verification: { method: unit, release_blocking: false }
         status: approved
@@ -3246,13 +3246,13 @@ requirements:
       - id: REQ-CHAIN-001-AC1
         given: "the workflow files of the release chain"
         when: "they are parsed"
-        then: "stage-sign.yml is a reusable workflow with exactly one job; it is the only signing workflow file v0.3.0 adds beyond the files that existed at v0.2.2 (customer-words-edited.yml, the one other added file, signs nothing; evidence-letter.yml, the monthly evidence letter, REQ-REL-013, the owner's Oct 3 amendment, may also be there, and its one signing job is on the id-token list); the Sign job runs on a GitHub-hosted runner (never self-hosted); no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json; every stage-*.yml is judged over a closed set of keys (finite grammar): the workflow, job and step keys come from fixed lists (no defaults, container, services, shell, working-directory, workflow or job env, continue-on-error, job-level uses; strategy only a matrix of literal runner labels), step env names come from the closed env_names list of .github/policy/chain-scripts.json (never BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each is read whole by that step, step uses is only a digest-pinned actions/checkout (persist-credentials false, no ref, repository, path or token), actions/download-artifact (an explicit path that cannot overwrite a listed script, bin/ or .github/) or actions/upload-artifact (no local composite action, docker://, github-script or reusable-workflow call), and every run line is exactly set -euo pipefail, bash or python3 followed by a plain relative path that is listed in chain-scripts.json with the sha256 the file has, or one printf of a whole env variable into digests.json (any other printf line is an error), with arguments that are literals or whole reads of the step own env (anything else at command position, such as a variable, glob, make, xargs, find, npm, a pipe or a direct tool, fails and names the file and line); a listed script is scanned as raw text whatever its extension or shebang: it names no command from the fixed deny list (interpreters, source, eval, exec, make, xargs, find, curl, wget, ssh, gh, git, docker and similar) that its tools list does not allow, names no other script that its runs list does not allow, passes only a literal path in its runs list after witness run --, sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS, and signs only as its signs value says (a signer named anywhere in the text, comments and quotes included, counts); a script whose signs value is provenance is run by stage-sign.yml alone (except through a sign_subcommand row, whose sign call text is itself a provenance signer)"
+        then: "stage-sign.yml is a reusable workflow with exactly one job; it is the only signing workflow file v0.3.0 adds beyond the files that existed at v0.2.2 (customer-words-edited.yml, the one other added file, signs nothing; evidence-letter.yml, the monthly evidence letter, REQ-REL-013, the owner's Oct 3 amendment, may also be there, and its one signing job is on the id-token list); the Sign job runs on a GitHub-hosted runner (never self-hosted); no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json; every stage-*.yml is judged over a closed set of keys (finite grammar): the workflow, job and step keys come from fixed lists (no defaults, container, services, shell, working-directory, workflow env, continue-on-error, job-level uses; job env only on the job release of stage-promote.yml, exactly its three AWS federation literals AWS_ROLE_ARN, AWS_REGION and RELEASE_KMS_KEY_REF, which no step there carries; strategy only a matrix of literal runner labels), step env names come from the closed env_names list of .github/policy/chain-scripts.json (never BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each is read whole by that step, step uses is only a digest-pinned actions/checkout (persist-credentials false, no ref, repository, path or token), actions/download-artifact (an explicit path that cannot overwrite a listed script, bin/ or .github/) or actions/upload-artifact (no local composite action, docker://, github-script or reusable-workflow call), and every run line is exactly set -euo pipefail, bash or python3 followed by a plain relative path that is listed in chain-scripts.json with the sha256 the file has, or one printf of a whole env variable into digests.json (any other printf line is an error), with arguments that are literals or whole reads of the step own env (anything else at command position, such as a variable, glob, make, xargs, find, npm, a pipe or a direct tool, fails and names the file and line); a listed script is scanned as raw text whatever its extension or shebang: it names no command from the fixed deny list (interpreters, source, eval, exec, make, xargs, find, curl, wget, ssh, gh, git, docker and similar) that its tools list does not allow, names no other script that its runs list does not allow, passes only a literal path in its runs list after witness run --, sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS, and signs only as its signs value says (a signer named anywhere in the text, comments and quotes included, counts); a script whose signs value is provenance is run by stage-sign.yml alone (except through a sign_subcommand row, whose sign call text is itself a provenance signer)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC2
         given: "the Sign job"
         when: "its inputs and steps are read"
-        then: "its inputs are Build's digest list, the stage (build or rebuild; the job sign runs only for build and the job sign-rebuild only for rebuild, each by its own condition on that input) and, for the rebuild call only, `records`: the sha256 of every file of the record folders Rebuild's assemble job made (witness-rebuild and witness-rapk-<runner>), printed by that job after its Witness step and passed on as a job output, which sign-records checks the received folders against with --expect-digests (a folder, file or digest that differs, extra or missing is refused); the things it downloads are the local Witness records and the artifacts they name (for build: witness-build, witness-apk-<runner>, Build's digests, items and admission-baseline data files into witness-build/, and Build's images and archives into artifacts/witness-build/out and artifacts/witness-build/dist; for rebuild: witness-rebuild and witness-rapk-<runner>, and nothing of Rebuild's apks), each into its own fresh named folder, as data only and never executed; none of its steps runs anything Build produced; its job is exactly: checkout, those downloads, install cosign, install Witness, write the digest list (and, for the rebuild call, the records list) to a file, one chain-verify.py sign-records command (which signs nothing and writes only a staging folder), the Witness sign step on each staged payload, one chain-verify.py verify of each signed record under the per-tag policy's release key, one `chain-verify.py sign --check` command on Build's record as Sign just signed it, upload the signed records (signed-witness-build for the build call; signed-witness-rebuild and signed-witness-rapk-<runner> for the rebuild call) and, for the build call, the provenance folder; Witness sign is never started on a refusal of sign-records; and that command refuses to sign (and writes nothing) unless Build's verified record attests the digest file by the sha256 of its bytes (the real Witness product subject file:digests.json) and the file's own content passes the format check on its own (a JSON object, no duplicate key, every name plain: lower-case letters, digits and hyphens, no code, no path; every value sha256: and 64 lower-case hex characters); the policy it checks against is made per tag by the check itself from the committed template, the key manifest next to it, the committed trust file and the tag in GITHUB_REF (a PUSHED refs/tags/vX.Y.Z or refs/tags/vX.Y.Z-rcN exactly, N decimal digits and nothing else, the policy and the records carrying the FULL tag string: v0.3.0-RC1, v0.3.0-rc, v0.3.0-rc1x, v0.3.0-rc.1, other tags, a branch on a push, a workflow_dispatch on a tag and an empty ref are refused, an rc record presented for the final tag and a final record presented for an rc tag are refused; the one other mode is a dry run, chosen by the run itself as a workflow_dispatch on a branch, where the policy is made for that branch, the provenance says dryRun true and a DRY-RUN marker sits beside it, and Release's tag-pinned policy can never accept such a record); the signing tool is never started on a refusal (the check comes before the signature); the provenance it writes is SLSA v1 with a real buildDefinition (the source commit and the calling workflow) and runDetails (the Sign workflow as builder and the run URL), and what it writes verifies as it stands: it reads the REAL Sigstore bundle cosign writes (the signature by the release key and the Rekor v1 dsse entry with its signed entry timestamp; the bundle carries no certificate and no timestamp response), the signing tool being asked for Rekor v1 by the committed cosign-signing-config.json"
+        then: "its inputs are Build's digest list, the stage (build or rebuild; the job sign runs only for build and the job sign-rebuild only for rebuild, each by its own condition on that input) and, for the rebuild call only, `records`: the sha256 of every file of the record folders Rebuild's assemble job made (witness-rebuild and witness-rapk-<runner>), printed by that job after its Witness step and passed on as a job output, which sign-records checks the received folders against with --expect-digests (a folder, file or digest that differs, extra or missing is refused); the things it downloads are the local Witness records and the artifacts they name (for build: witness-build, witness-apk-<runner>, Build's digests, items and admission-baseline data files into witness-build/, and Build's images and archives into artifacts/witness-build/out and artifacts/witness-build/dist; for rebuild: witness-rebuild and witness-rapk-<runner>, and nothing of Rebuild's apks), each into its own fresh named folder, as data only and never executed; none of its steps runs anything Build produced; its job is exactly: checkout, those downloads, install Witness, write the digest list (and, for the rebuild call, the records list) to a file, one chain-verify.py sign-records command (which signs nothing and writes only a staging folder), the Witness sign step on each staged payload, one chain-verify.py verify of each signed record under the per-tag policy's release key, one `chain-verify.py sign --check` command on Build's record as Sign just signed it, upload the signed records (signed-witness-build for the build call; signed-witness-rebuild and signed-witness-rapk-<runner> for the rebuild call) and, for the build call, the provenance folder; Witness sign is never started on a refusal of sign-records; and that command refuses to sign (and writes nothing) unless Build's verified record attests the digest file by the sha256 of its bytes (the real Witness product subject file:digests.json) and the file's own content passes the format check on its own (a JSON object, no duplicate key, every name plain: lower-case letters, digits and hyphens, no code, no path; every value sha256: and 64 lower-case hex characters); the policy it checks against is made per tag by the check itself from the committed template, the key manifest next to it, the committed trust file and the tag in GITHUB_REF (a PUSHED refs/tags/vX.Y.Z or refs/tags/vX.Y.Z-rcN exactly, N decimal digits and nothing else, the policy and the records carrying the FULL tag string: v0.3.0-RC1, v0.3.0-rc, v0.3.0-rc1x, v0.3.0-rc.1, other tags, a branch on a push, a workflow_dispatch on a tag and an empty ref are refused, an rc record presented for the final tag and a final record presented for an rc tag are refused; the one other mode is a dry run, chosen by the run itself as a workflow_dispatch on a branch, where the policy is made for that branch, the provenance says dryRun true and a DRY-RUN marker sits beside it, and Release's tag-pinned policy can never accept such a record); the signing tool is never started on a refusal (the check comes before the signature); the provenance it writes is SLSA v1 with a real buildDefinition (the source commit and the calling workflow) and runDetails (the Sign workflow as builder and the run URL), and what it writes verifies as it stands: it reads the REAL Sigstore bundle cosign writes (the signature by the release key and the Rekor v1 dsse entry with its signed entry timestamp; the bundle carries no certificate and no timestamp response), the signing tool being asked for Rekor v1 by the committed cosign-signing-config.json"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-001-AC3
@@ -5044,29 +5044,28 @@ requirements:
   - id: REQ-CI-005
     title: A floored suite is run once, by the step that counts it
     statement: >
-      Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the
-      step that re-runs the suites of the floors file runs only those that no counting step runs.
-    source: [ci-speed read-back of Oct 23 (advisor), the suite guard (bin/suite-guard-run.py), the pin-wiring judge (pin-wiring-test.sh)]
+      Every suite named in test-evidence/suite-floors.json is run once per workflow run, with its cases counted against its floor: by the counting step of
+      ci.yml that names it or, when no step does, by its own leg of the suites matrix, whose list is the floors file less the suites a counting step names.
+    source: [ci-speed read-back of Oct 23 (advisor), the suite guard (bin/suite-guard-run.py)]
     tier: community
     introduced: v0.3.0
     origin: advisor Oct 23 2026 (CI speed; the floor re-run of every suite took 4876 s on top of the suites themselves; no check is dropped and every test runs exactly once)
     confidence: documented
     notes: >
       A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
-      once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
-      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
-      is not the file name of its PATH. The floors only rise as before.
+      once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. A suite no counting step names runs in its own leg of the
+      suites matrix of ci.yml through the same command. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
-        given: "a suite named in the floors file and a counting step that is the whole run text of a step with no key but name and run, in a job with no key but name, runs-on and steps (so no if, needs, strategy or continue-on-error can skip it), whose PATH is the one file of that name"
-        when: "the floor check of the workflow run (`suite-guard-run.py all`) runs"
-        then: "the suite is not run again by it; the suite ran once, in its own step, which required exit 0 and a case count at or above its floor; any other suite is still run by `all`, and a counting line that is not the whole of its step is refused"
+        given: "a suite named in the floors file and a counting step of ci.yml for it (`suite-guard-run.py run FLOORS NAME PATH`, NAME the file name of PATH)"
+        when: "the workflow runs"
+        then: "the suite is run once, by that step, which requires exit 0 and a case count at or above its floor, and the suites matrix has no leg for it"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC2
-        given: "a counting step in ci.yml"
-        when: "it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`"
-        then: "`suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it"
+        given: "a suite named in the floors file that no counting step of ci.yml names"
+        when: "the workflow runs"
+        then: "the suites matrix runs it in its own leg through the same `suite-guard-run.py run` command, and a leg that fails fails the job"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC3
@@ -5082,9 +5081,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC5
-        given: "the committed ci.yml and floors file (Fable ruling on cache#695: PR 2 of the wrap left eight suites in `all`, PR 3 migrated five of them)"
-        when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
-        then: "it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (2 runs: its job holds a `permissions:` block, so it is not a plain job and its step cannot be a counting step; advisor Oct 24, AC1 unchanged) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
+        given: "the committed ci.yml and floors file"
+        when: "the suites job lists its legs"
+        then: "they are exactly the suites of the floors file that no counting step of ci.yml names, so each floored suite runs once in a workflow run; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
         verification: { method: unit, release_blocking: false }
         status: approved
 
