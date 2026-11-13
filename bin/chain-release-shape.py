@@ -79,10 +79,10 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
     r"python3 -I -B bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/items\.json",
     # REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the baseline admission chose is a second product of Build's record, bound by name
     r"python3 -I -B bin/chain-verify\.py bind-items --policy policy\.json --record witness-build/build-collection\.json --items witness-build/admission-baseline\.json --product admission-baseline\.json",
-    r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous sign --record provenance/provenance\.json --digests witness-build/digests\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json",
+    r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous sign --record provenance/provenance\.json --digests witness-build/digests\.json --policy policy\.json --rekor-entries provenance/provenance\.rekor\.json",
     r"python3 -I -B bin/chain-verify\.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection\.json --digests witness-build/digests\.json --policy policy\.json",
     # the owner's rule of Oct 21 2026: Rebuild's apks are compared in the compare job (no key, no token); this job reads only its result file, for Build's attested apk digests
-    r"python3 -I -B bin/chain-verify\.py apk-compare --file apk-compare/apk-compare\.json --digests witness-build/digests\.json",
+    r"python3 -I -B bin/chain-verify\.py apk-compare --policy policy\.json --record witness-rebuild/rebuild-collection\.json --file apk-compare/apk-compare\.json --digests witness-build/digests\.json",
     r"python3 -I -B bin/chain-verify\.py check-list --policy policy\.json --digests witness-build/digests\.json --dir witness-check",
     # ruling G (advisor Oct 12): check-results/govulncheck.json, the file release-sign hands the evidence step, is a product of Check's verified scanners record
     r"python3 -I -B bin/chain-verify\.py bind-check --policy policy\.json --record witness-check/witness-scanners/scanners-collection\.json --digests witness-build/digests\.json --file check-results/govulncheck\.json --product check-results/govulncheck\.json",
