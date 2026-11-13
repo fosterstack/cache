@@ -479,6 +479,7 @@ jobs:
     uses: ./.github/workflows/acceptance.yml
     permissions:
       contents: read
+      packages: read   # the called jobs ask for it (release mode pulls the private candidates package); a caller ceiling below it fails the call
 
 
   # REQ-CI-001-AC6: a failed scheduled run opens a fix item (an issue with a fixed title and label, or a comment on the open one) and blocks nothing;
