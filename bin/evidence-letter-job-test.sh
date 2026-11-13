@@ -735,8 +735,10 @@ pk, lk, upk, _l = publish(FAIL_UPLOAD="letter", FAIL_DELETE="1")
 check("AC9: if the bundle cannot be removed the one line says so",
       one_line(pk) and "could not be removed" in pk.stderr, pk.stderr)
 # ---- the daily presence check (F7): bin/evidence-letter-present.sh, run by a job of supply-chain.yml
-def present(pages, today="2026-12-10", old_manifest=None, **extra):
-    """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body."""
+def present(pages, today="2026-12-10", old_manifest=None, without=None, **extra):
+    """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body.
+    A release with a letter bundle also gets the key manifest and its signature (today's, or old_manifest's),
+    except the asset named by without."""
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
     env.update(extra)
@@ -755,9 +757,11 @@ def present(pages, today="2026-12-10", old_manifest=None, **extra):
                 open(os.path.join(fix, "assets", str(next_id)), "w").write(body)
                 listed.append({"id": next_id, "name": name})
                 next_id += 1
-            if old_manifest and any(a["name"].endswith(".md.bundle") for a in listed):
+            if any(a["name"].endswith(".md.bundle") for a in listed):
                 for name, data in zip(("release-key-manifest.json", "release-key-manifest.sig"),
-                                      old_manifest(tmp)):
+                                      (old_manifest or today_manifest)(tmp)):
+                    if name == without:
+                        continue
                     open(os.path.join(fix, "assets", str(next_id)), "wb").write(data)
                     listed.append({"id": next_id, "name": name})
                     next_id += 1
@@ -767,6 +771,12 @@ def present(pages, today="2026-12-10", old_manifest=None, **extra):
     script = os.path.join(env["REPO_DIR"], "bin/evidence-letter-present.sh")
     p = subprocess.run(["bash", script], cwd=env["REPO_DIR"], env=env, capture_output=True, text=True)
     return p, open(os.path.join(tmp, "log")).read().splitlines()
+
+
+def today_manifest(tmp):
+    """The (manifest, signature) of the sandbox's own release key, root-signed, as the repository commits them."""
+    pol = os.path.join(tmp, "repo/.github/policy")
+    return (open(pol + "/release-key-manifest.json", "rb").read(), open(pol + "/release-key-manifest.sig", "rb").read())
 
 
 def pair(m):
@@ -851,6 +861,15 @@ check("F7 16: the letter is verified with the key its date lists in the root-sig
 pr, lr = present([[V4]], old_manifest=old_key_manifest(root_signed=False))
 check("F7 17: a manifest the root did not sign lists no key: one line, nothing verified",
       one_line(pr) and "manifest" in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
+for asset, n in (("release-key-manifest.json", 18), ("release-key-manifest.sig", 19)):
+    pr, lr = present([[V4]], without=asset)
+    check("F7 %d: a release with the letter and its bundle but no %s: one line naming the month, the tag and the asset, "
+          "nothing verified" % (n, asset),
+          one_line(pr) and "2026-11" in pr.stderr and "v0.4.0" in pr.stderr
+          and "the release carries no " + asset in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
+pr, lr = present([[V4]], without="release-key-manifest.json")
+check("F7 20: with the manifest missing the .json is named first, and today's key is not used",
+      "release-key-manifest.sig" not in pr.stderr and not any("policy make" in l for l in lr), (pr.stderr, lr))
 print("%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
