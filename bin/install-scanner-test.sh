@@ -137,7 +137,8 @@ if ! grep -qE 'INSTALL_SCANNER_ARCH|_BASE_URL' "$sut"; then
   echo "ok: the installer names no environment hook"; pass=$((pass+1))
 else echo "FAIL: the installer still names INSTALL_SCANNER_ARCH or a _BASE_URL"; fail=$((fail+1)); fi
 # 4i. The usage line names every subcommand the installer accepts (the docker-scout-<version> forms as one).
-usage=$(sed -n 's/^# Usage: install-scanner\.sh <\(.*\)> \[dest-dir\]$/\1/p' "$sut")
+usage=$(sed -n '/^# Usage: install-scanner\.sh </,/\[dest-dir\]$/p' "$sut" | sed 's/^# *//' | tr -d '\n' |
+  sed -n 's/^Usage: install-scanner\.sh <\(.*\)> \[dest-dir\]$/\1/p')
 unlisted=
 for n in $(sed -n 's/^case "\$TOOL" in \(.*\)) ;; \*).*/\1/p' "$sut" | head -1 | tr '|' ' '); do
   case "$n" in docker-scout-[0-9]*) n='docker-scout-<version>' ;; esac
