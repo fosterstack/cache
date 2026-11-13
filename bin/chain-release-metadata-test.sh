@@ -5,7 +5,7 @@
 # The four release metadata files and their signed list. bin/release-metadata.py has four subcommands, all offline and deterministic (no clock, no network):
 #   images    --digests D --images-dir I --items ITEMS --out F   the image digests for bin/vex-forms.py, ONLY from Build's verified digests.json and images/<variant>.digest/.manifests
 #   manifest  --digests D --images-dir I --items ITEMS --modules-dir DIR --vex-dir DIR --version V --commit SHA
-#             --ci-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
+#             --ci-url U --workflow W --published-at T --reason R --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
 #             the shape the REQ-REL-004 rescan reads)
 #   list      --version V --dir DIR --out F        release-files.sha256: the sha256 of exactly the four files, in this order: release-manifest.json, the OpenVEX file,
 #             the CSAF file, the inspector-filters file (the form of cache's change under handoff 0362, PR #276)
@@ -91,13 +91,15 @@ def repo(t, base=V):
     r = t + "/repo"; os.makedirs(r + "/requirements/releases", exist_ok=True); os.makedirs(r + "/test-evidence", exist_ok=True)
     open("%s/requirements/releases/%s.yaml" % (r, base), "w").write("baseline of " + base + "\n"); open(r + "/test-evidence/mappings.yaml", "w").write("evidence\n")
     return r
-def manifest(t, out, version=V, commit="a" * 40, extra=(), base=None, root=None):
+PUB, REASON = "2026-11-13T09:30:00Z", "Regular release.\nSecond line of the reason.\n"
+def manifest(t, out, version=V, commit="a" * 40, extra=(), base=None, root=None, pub=PUB, reason=REASON):
     return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
                "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
                "--vex-dir", vexdir(t, version),
                "--version", version, "--commit", commit, "--baseline-version", base or version,
                "--repo-root", root or repo(t, base or version),
-               "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out, *extra)
+               "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out,
+               *(("--published-at", pub) if pub is not None else ()), *(("--reason", reason) if reason is not None else ()), *extra)
 t, d = tree(); m1, m2 = t + "/m1.json", t + "/m2.json"; rc, so, se = manifest(t, m1); rc2, _, _ = manifest(t, m2)
 mj = json.load(open(m1)) if os.path.exists(m1) else {}
 check(rc == 0 and rc2 == 0 and open(m1, "rb").read() == open(m2, "rb").read(), "manifest: two runs give the same bytes (no clock, no random value)", se[:200])
@@ -106,13 +108,25 @@ check(mj.get("version") == V and mj.get("commit") == "a" * 40 and "generated_at"
 check({a["name"]: a["digest"] for a in mj.get("archives", [])} == {k: v for k, v in d.items() if k.startswith("archive-")} and {a["name"]: a["digest"] for a in mj.get("apks", [])} == {k: v for k, v in d.items() if k.startswith("apk-")}, "manifest: archives and apks are exactly Build's attested digests")
 hexs = lambda n: hashlib.sha256(open(t + "/vex/" + n, "rb").read()).hexdigest()
 check([(x.get("form"), x.get("file"), x.get("sha256")) for x in mj.get("vex", [])] == [("openvex", "fosterstack-cache.openvex.json", hexs("fosterstack-cache.openvex.json")), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % V, hexs("fosterstack-cache-%s.inspector-filters.json" % V)), ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % V, hexs("fosterstack-cache-%s.csaf.json" % V))], "manifest: records the sha256 of the OpenVEX, inspector-filters and CSAF files it was made after (generated before the manifest)", str(mj.get("vex")))
+check(mj.get("published_at") == PUB and mj.get("reason") == REASON, "manifest: records published_at and the whole reason as given", str((mj.get("published_at"), mj.get("reason"))))
+t, d = tree(); m3 = t + "/m3.json"; rc3, _, _ = manifest(t, m3, reason="Another reason"); mk = json.load(open(m3)) if rc3 == 0 else {}
+check(mk.get("reason") == "Another reason" and mk.get("published_at") == PUB and {k: v for k, v in mk.items() if k != "reason"} == {k: v for k, v in mj.items() if k != "reason"}, "manifest: the reason is the only key that changes with the reason", str(rc3))
+for label, bad_pub in (("a date only", "2026-11-13"), ("a +00:00 offset", "2026-11-13T09:30:00+00:00"), ("no Z", "2026-11-13T09:30:00"), ("an empty value", "")):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", pub=bad_pub)
+    check(rc == 1 and "published-at %r is not a UTC YYYY-MM-DDTHH:MM:SSZ time" % bad_pub in se and not os.path.exists(t + "/m.json"), "manifest: published-at as " + label + " is refused, naming it", "rc=%s %s" % (rc, se[:160]))
+for label, bad_reason in (("empty", ""), ("only whitespace", " \t\n"), ("blank on its first line", "\nreal text after\n")):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", reason=bad_reason)
+    check(rc == 1 and "the reason is empty" in se and not os.path.exists(t + "/m.json"), "manifest: a reason that is " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
+for opt in ("pub", "reason"):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json", **{opt: None})
+    check(rc == 2 and "--" + ("published-at" if opt == "pub" else "reason") in se and not os.path.exists(t + "/m.json"), "manifest: a missing --%s is an argument error (exit 2)" % ("published-at" if opt == "pub" else "reason"), "rc=%s %s" % (rc, se[:160]))
 for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % V, "fosterstack-cache-%s.inspector-filters.json" % V):
     t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n)
     rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images",
                      "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
                      "--vex-dir", t + "/vex",
                      "--version", V, "--commit", "a" * 40, "--baseline-version", V, "--repo-root", t + "/repo",
-                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json")
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json", "--published-at", PUB, "--reason", REASON)
     check(rc == 1 and n in se and not os.path.exists(t + "/m2.json"), "manifest: a missing %s (not generated before the manifest) is refused, naming it" % n, se[:160])
 for label, ver, com in (("a version that is not vX.Y.Z", "v0.3", "a" * 40), ("a release candidate (no release is made for one)", "v0.3.0-rc1", "a" * 40), ("a commit that is not 40 hex", V, "abc")):
     t, d = tree(); rc, so, se = manifest(t, t + "/m.json", ver, com); check(rc == 1 and not os.path.exists(t + "/m.json"), "manifest: " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
@@ -158,7 +172,7 @@ for bad_base in ("main", "0.3.0", "v0.3", "../v0.3.0", "v0.3.0/x", ""):
                      "--items", t + "/witness-build/items.json", "--modules-dir", t + "/modules",
                      "--vex-dir", vexdir(t),
                      "--version", V, "--commit", "a" * 40, "--baseline-version", bad_base, "--repo-root", r,
-                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json")
+                     "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json", "--published-at", PUB, "--reason", REASON)
     check(rc == 1 and not os.path.exists(t + "/m.json"), "baseline: the version %r is not vX.Y.Z and is refused" % bad_base, se[:120])
 t, d = tree(); r = repo(t); f = r + "/requirements/releases/%s.yaml" % V; os.remove(f); os.symlink(r + "/test-evidence/mappings.yaml", f); rc, so, se = manifest(t, t + "/m.json", root=r)
 check(rc == 1 and "symlink" in se, "baseline: a symlinked baseline file is refused", se[:120])
@@ -336,7 +350,7 @@ check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "122"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "133"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
