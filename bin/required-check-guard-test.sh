@@ -28,10 +28,10 @@ jq '[{"type":"deletion"},
        [.required_checks[] | {context, integration_id}]}}]' "$list" > "$w/match.json"
 jq '(.[1].parameters.required_status_checks) |= map(select(.context != "vendor"))' "$w/match.json" > "$w/missing.json"
 jq '(.[1].parameters.required_status_checks) += [{"context":"surprise","integration_id":15368}]' "$w/match.json" > "$w/extra.json"
-jq '(.[1].parameters.required_status_checks) |= map(if .context=="dependency-review" then .integration_id=0 else . end)' "$w/match.json" > "$w/wrongid.json"
+jq '(.[1].parameters.required_status_checks) |= map(if .context=="pin-age" then .integration_id=0 else . end)' "$w/match.json" > "$w/wrongid.json"
 echo '[{"type":"deletion"}]' > "$w/none.json"
 echo 'not json' > "$w/garbage.json"
-jq '.required_checks |= map(if .context=="dependency-review" then .integration_id=0 else . end)' "$list" > "$w/stale-list.json"
+jq '.required_checks |= map(if .context=="pin-age" then .integration_id=0 else . end)' "$list" > "$w/stale-list.json"
 echo '{"comment":["no array"]}' > "$w/nolist.json"
 # REQ-CI-001-AC8: auditor-review-gate is not a required check; a list that names it again differs from main's ruleset
 jq '.required_checks += [{"context":"auditor-review-gate","integration_id":5054756,"scope":"pull_request"}]' "$list" > "$w/gate-back-list.json"
@@ -39,14 +39,14 @@ jq '.required_checks += [{"context":"auditor-review-gate","integration_id":50547
 check "ruleset == list passes"                    0 "match \([0-9]+ checks"                   "$w/match.json"   "$list"
 check "check removed from the ruleset is drift"   1 '^\+ .*"context":"vendor"'                  "$w/missing.json" "$list"
 check "extra ruleset check is drift"              1 '^- .*"context":"surprise"'                "$w/extra.json"   "$list"
-check "wrong integration ID is drift"             1 '"dependency-review","integration_id":0' "$w/wrongid.json" "$list"
-check "stale list (the #133 case) is drift"       1 '^\+ .*"dependency-review","integration_id":0' "$w/match.json" "$w/stale-list.json"
+check "wrong integration ID is drift"             1 '"pin-age","integration_id":0' "$w/wrongid.json" "$list"
+check "stale list (the #133 case) is drift"       1 '^\+ .*"pin-age","integration_id":0' "$w/match.json" "$w/stale-list.json"
 check "auditor-review-gate listed again is drift"  1 '^\+ .*"context":"auditor-review-gate"'   "$w/match.json"   "$w/gate-back-list.json"
-if jq -e '[.required_checks[] | select(.context=="dependency-review" and .integration_id==15368 and .scope=="pull_request")] | length == 1' "$list" >/dev/null \
-   && ! jq -e '[.required_checks[], .promotion_checks[]?] | any(.context=="auditor-review-gate")' "$list" >/dev/null; then
-  echo "ok: the committed list has dependency-review (15368, pull_request) and not auditor-review-gate"; pass=$((pass+1))
+if jq -e '[.required_checks[] | select(.context=="pin-age" and .integration_id==15368 and .scope=="pull_request")] | length == 1' "$list" >/dev/null \
+   && ! jq -e '[.required_checks[], .promotion_checks[]?] | any(.context=="auditor-review-gate" or .context=="dependency-review")' "$list" >/dev/null; then
+  echo "ok: the committed list has pin-age (15368, pull_request) and neither auditor-review-gate nor dependency-review"; pass=$((pass+1))
 else
-  echo "FAIL: the committed list has dependency-review (15368, pull_request) and not auditor-review-gate"; fail=$((fail+1))
+  echo "FAIL: the committed list has pin-age (15368, pull_request) and neither auditor-review-gate nor dependency-review"; fail=$((fail+1))
 fi
 check "no required checks on main = exit 2"       2 "NO required status checks"                "$w/none.json"    "$list"
 check "unreadable ruleset response = exit 2"      2 "not the expected JSON"                    "$w/garbage.json" "$list"
