@@ -2499,7 +2499,7 @@ def then(rid, n): return next(a for a in R[rid]["acceptance_criteria"] if a["id"
 t10, t9, ts = then("REQ-CHAIN-006", 10), then("REQ-REL-009", 1), then("REQ-SUP-001", 1)
 assert "and no .goreleaser.yaml, no build/docker directory or file named Dockerfile and no Dependabot docker entry exists" in t10 and "a candidate image is read by crane, by digest" in t10
 assert "a change of a base input listed in .github/policy/base-inputs.json" in t9 and "base-image digest pins" not in t9
-assert "no docker entry exists (rule 61: there is no Dockerfile)" in ts and "docker entries are unchanged" not in ts
+assert "no docker entry exists (there is no Dockerfile)" in ts and "docker entries are unchanged" not in ts
 PY
 # an entry added since the merge base is refused unless the PR body names it
 kg="$work/kr/repo"; rm -rf "$kg"; mkdir -p "$kg/test-evidence"
