@@ -3348,310 +3348,6 @@
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a package-manager install",
-      "key": "39e988241f3140b25ba243fedafe211aaff44ca8224de8474ea4e78941658715",
-      "line": "39e988241f3140b25ba243fedafe211aaff44ca8224de8474ea4e78941658715",
-      "ruling": "text, not a command: a comment in .github/agent/tests/check-action-pins-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a package-manager install",
-      "key": "2ed6f2446bda113ad02f387be3ca7b4f324a4f5284113f8483133c77ed58c688",
-      "line": "2ed6f2446bda113ad02f387be3ca7b4f324a4f5284113f8483133c77ed58c688",
-      "ruling": "text, not a command: a comment in .github/agent/tests/check-action-pins-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "006c3deafb22f6eaa77ed77b227efcd9251a11f82d62063848f88079a095364c",
-      "line": "9ad8ed24314887d6473c0572cc266e1b05cb723616e1f5a2cf3787f2def07586",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "b2a542e722d2b75012f13c9200c2b08ae25ae70cd24e214ba52e2fe23a67384b",
-      "line": "bb75398b6978a588dd0dece1a4904704863620c761716656b3ddf6eb5378798f",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "09c4a19fe1b45fdeab7bfd28c1a336b2c658c1ccf710361551e4e4dbf00a13dd",
-      "line": "09c4a19fe1b45fdeab7bfd28c1a336b2c658c1ccf710361551e4e4dbf00a13dd",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "0d1f35648d6fadc8b578027797a7cb11070aa00f623bafbe2472c4825e1988bf",
-      "line": "537e8749342b2bd1645a24c8a14be44b142f54f752b941cedd471f50b6e7a003",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "537e8749342b2bd1645a24c8a14be44b142f54f752b941cedd471f50b6e7a003",
-      "line": "537e8749342b2bd1645a24c8a14be44b142f54f752b941cedd471f50b6e7a003",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "a821f5e370087a846238f0ff46201d1dbdd06e9419f9b100eab4fb1a64128208",
-      "line": "a821f5e370087a846238f0ff46201d1dbdd06e9419f9b100eab4fb1a64128208",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "13cabbdf3354d43748e8a30cb463e5cb87b8bd3c533a67122780509ca30d853b",
-      "line": "13cabbdf3354d43748e8a30cb463e5cb87b8bd3c533a67122780509ca30d853b",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "0a0a7cce1b9217e984166c288ebc444aef095a4ba582b9c4b088dc5aa09e658e",
-      "line": "0a0a7cce1b9217e984166c288ebc444aef095a4ba582b9c4b088dc5aa09e658e",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "051f0f309508fd55dd32c32f0d69089994ca4782cd19077c7175ea7204d7b4cd",
-      "line": "051f0f309508fd55dd32c32f0d69089994ca4782cd19077c7175ea7204d7b4cd",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "13bed6c5e2f6c1e04d15774ed41cc507d81de97f6e2dea0eb38053d093159f89",
-      "line": "13bed6c5e2f6c1e04d15774ed41cc507d81de97f6e2dea0eb38053d093159f89",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a helm or kubectl fetch",
-      "key": "a22f4b30747564b34ad2356491f1a363b3c17d703ce69ed34f6a2896c1d3693e",
-      "line": "a22f4b30747564b34ad2356491f1a363b3c17d703ce69ed34f6a2896c1d3693e",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "17fcb1bf3a8ab34be97c44a8bf92c6b91160bada3905c3995fe2f2efefa94789",
-      "line": "17fcb1bf3a8ab34be97c44a8bf92c6b91160bada3905c3995fe2f2efefa94789",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "c7ff9a81c39470e270e6ca7f308d948c4cb79f32b652e6f33330cff6c251efae",
-      "line": "c7ff9a81c39470e270e6ca7f308d948c4cb79f32b652e6f33330cff6c251efae",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "89ad875655fe4702397b85ef5999483ef050046fddc8678872c21c9715c2cee1",
-      "line": "89ad875655fe4702397b85ef5999483ef050046fddc8678872c21c9715c2cee1",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "8a688464a4d7460c15613fe65e863747ae16c43fcf09ddbf62002db381db108b",
-      "line": "8a688464a4d7460c15613fe65e863747ae16c43fcf09ddbf62002db381db108b",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "1b801ea810585f402c8b25b71663bcd749ede5479ce1f1dc0d24e039dd95343c",
-      "line": "1b801ea810585f402c8b25b71663bcd749ede5479ce1f1dc0d24e039dd95343c",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "75903c25e479ac72291ff2bd00593d86fc8f6047d53c76c7a0bfe0073c56a807",
-      "line": "75903c25e479ac72291ff2bd00593d86fc8f6047d53c76c7a0bfe0073c56a807",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "28cf91c179cff9dbf3f6ebbb97c6a99b5edbc5e22ac8174740ddf5e7134068f0",
-      "line": "28cf91c179cff9dbf3f6ebbb97c6a99b5edbc5e22ac8174740ddf5e7134068f0",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "d785267e5e8d863daefc778e2b1dd4173076e3c0965a50b8e47f8807aae56aa5",
-      "line": "d785267e5e8d863daefc778e2b1dd4173076e3c0965a50b8e47f8807aae56aa5",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "982fa1408ebb46c21a91fec4b43dd258d807865ae4117c6b9ba0cad25b2bd4ed",
-      "line": "982fa1408ebb46c21a91fec4b43dd258d807865ae4117c6b9ba0cad25b2bd4ed",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "688992a50958452623b21e6870ed3a824c9a55ef89cb2521c8cad735253927ad",
-      "line": "aa58f560453c536d4eb4e1fe6caeae46c3a57ecd9b1e0ac70a227502bb395679",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "7a6978c8952f56fa88861da8a9eb245eb7fac1d34880e0d6ae9693065001ed0f",
-      "line": "7a6978c8952f56fa88861da8a9eb245eb7fac1d34880e0d6ae9693065001ed0f",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "16e68fb85d44d6e7e588564e6a0f1a8bc145b49243a011855571eeeaeaaa6684",
-      "line": "16e68fb85d44d6e7e588564e6a0f1a8bc145b49243a011855571eeeaeaaa6684",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "125eccc51b85a82c14a11f3e97a2cb7f2ed2b692f8338ba9ae8892ce54bb3342",
-      "line": "125eccc51b85a82c14a11f3e97a2cb7f2ed2b692f8338ba9ae8892ce54bb3342",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "8820859f9a837261a21efc1cd0b104337d89879372e7934f57e1b8bc99c9d9a5",
-      "line": "8820859f9a837261a21efc1cd0b104337d89879372e7934f57e1b8bc99c9d9a5",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "8094431c1c0fb6401764a1e6f3a13e83ad8f985f9cb224e5e4e7d0ddd0894b61",
-      "line": "7dc56c5097d215e328c213c60cb740eecf143f4049a8babbd515f343c8a2dd65",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "ab5156ab2bd09f593fa29a6df962bd82939511a2d717f9a7060f883808b91649",
-      "line": "ab5156ab2bd09f593fa29a6df962bd82939511a2d717f9a7060f883808b91649",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "0f50670827ea4613979a4a9185b8d2d2a0290bee820b333c67e2768e90e5e146",
-      "line": "7f52a7f2c09e9a23062af10aaa8f63b25bffd0ef21164203df2875817e4b8eae",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "form": "a download",
-      "key": "1e39bf6dc4b2106c57c4a223d45eb3172d06e3cca34db92838ca55eec48ba913",
-      "line": "1e39bf6dc4b2106c57c4a223d45eb3172d06e3cca34db92838ca55eec48ba913",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "4f93eefdb19755c5bb2e302b10db4e58e18df723963e3463bd3da7ef09e79fd8"
-    },
-    {
       "file": ".github/agent/tests/docs-snippets-test.sh",
       "form": "a download",
       "key": "1290bbdb88a5d88436122a39f3c3915276e7ddf5ac099aed7cfb2d25e02abfc6",
@@ -5905,6 +5601,1886 @@
       "key": "c9ca8a67674b0ef47222cd08f632e3e1d95176cef69004045204e507e045f1f7",
       "line": "040ac96bc94950c53c6214c30317e4df9efd1774e03818672b77475bdfe22315",
       "ruling": "text, not a command: a line of .github/agent/tests/auditor-matrix-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "39e988241f3140b25ba243fedafe211aaff44ca8224de8474ea4e78941658715",
+      "line": "39e988241f3140b25ba243fedafe211aaff44ca8224de8474ea4e78941658715",
+      "ruling": "text, not a command: a comment in .github/agent/tests/check-action-pins-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "2ed6f2446bda113ad02f387be3ca7b4f324a4f5284113f8483133c77ed58c688",
+      "line": "2ed6f2446bda113ad02f387be3ca7b4f324a4f5284113f8483133c77ed58c688",
+      "ruling": "text, not a command: a comment in .github/agent/tests/check-action-pins-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "006c3deafb22f6eaa77ed77b227efcd9251a11f82d62063848f88079a095364c",
+      "line": "9ad8ed24314887d6473c0572cc266e1b05cb723616e1f5a2cf3787f2def07586",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "b2a542e722d2b75012f13c9200c2b08ae25ae70cd24e214ba52e2fe23a67384b",
+      "line": "bb75398b6978a588dd0dece1a4904704863620c761716656b3ddf6eb5378798f",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "09c4a19fe1b45fdeab7bfd28c1a336b2c658c1ccf710361551e4e4dbf00a13dd",
+      "line": "09c4a19fe1b45fdeab7bfd28c1a336b2c658c1ccf710361551e4e4dbf00a13dd",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "0d1f35648d6fadc8b578027797a7cb11070aa00f623bafbe2472c4825e1988bf",
+      "line": "537e8749342b2bd1645a24c8a14be44b142f54f752b941cedd471f50b6e7a003",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "537e8749342b2bd1645a24c8a14be44b142f54f752b941cedd471f50b6e7a003",
+      "line": "537e8749342b2bd1645a24c8a14be44b142f54f752b941cedd471f50b6e7a003",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "a821f5e370087a846238f0ff46201d1dbdd06e9419f9b100eab4fb1a64128208",
+      "line": "a821f5e370087a846238f0ff46201d1dbdd06e9419f9b100eab4fb1a64128208",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "13cabbdf3354d43748e8a30cb463e5cb87b8bd3c533a67122780509ca30d853b",
+      "line": "13cabbdf3354d43748e8a30cb463e5cb87b8bd3c533a67122780509ca30d853b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "0a0a7cce1b9217e984166c288ebc444aef095a4ba582b9c4b088dc5aa09e658e",
+      "line": "0a0a7cce1b9217e984166c288ebc444aef095a4ba582b9c4b088dc5aa09e658e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "051f0f309508fd55dd32c32f0d69089994ca4782cd19077c7175ea7204d7b4cd",
+      "line": "051f0f309508fd55dd32c32f0d69089994ca4782cd19077c7175ea7204d7b4cd",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "13bed6c5e2f6c1e04d15774ed41cc507d81de97f6e2dea0eb38053d093159f89",
+      "line": "13bed6c5e2f6c1e04d15774ed41cc507d81de97f6e2dea0eb38053d093159f89",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a helm or kubectl fetch",
+      "key": "a22f4b30747564b34ad2356491f1a363b3c17d703ce69ed34f6a2896c1d3693e",
+      "line": "a22f4b30747564b34ad2356491f1a363b3c17d703ce69ed34f6a2896c1d3693e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "17fcb1bf3a8ab34be97c44a8bf92c6b91160bada3905c3995fe2f2efefa94789",
+      "line": "17fcb1bf3a8ab34be97c44a8bf92c6b91160bada3905c3995fe2f2efefa94789",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "c7ff9a81c39470e270e6ca7f308d948c4cb79f32b652e6f33330cff6c251efae",
+      "line": "c7ff9a81c39470e270e6ca7f308d948c4cb79f32b652e6f33330cff6c251efae",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "89ad875655fe4702397b85ef5999483ef050046fddc8678872c21c9715c2cee1",
+      "line": "89ad875655fe4702397b85ef5999483ef050046fddc8678872c21c9715c2cee1",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8a688464a4d7460c15613fe65e863747ae16c43fcf09ddbf62002db381db108b",
+      "line": "8a688464a4d7460c15613fe65e863747ae16c43fcf09ddbf62002db381db108b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1b801ea810585f402c8b25b71663bcd749ede5479ce1f1dc0d24e039dd95343c",
+      "line": "1b801ea810585f402c8b25b71663bcd749ede5479ce1f1dc0d24e039dd95343c",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "75903c25e479ac72291ff2bd00593d86fc8f6047d53c76c7a0bfe0073c56a807",
+      "line": "75903c25e479ac72291ff2bd00593d86fc8f6047d53c76c7a0bfe0073c56a807",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "28cf91c179cff9dbf3f6ebbb97c6a99b5edbc5e22ac8174740ddf5e7134068f0",
+      "line": "28cf91c179cff9dbf3f6ebbb97c6a99b5edbc5e22ac8174740ddf5e7134068f0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "d785267e5e8d863daefc778e2b1dd4173076e3c0965a50b8e47f8807aae56aa5",
+      "line": "d785267e5e8d863daefc778e2b1dd4173076e3c0965a50b8e47f8807aae56aa5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "982fa1408ebb46c21a91fec4b43dd258d807865ae4117c6b9ba0cad25b2bd4ed",
+      "line": "982fa1408ebb46c21a91fec4b43dd258d807865ae4117c6b9ba0cad25b2bd4ed",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "688992a50958452623b21e6870ed3a824c9a55ef89cb2521c8cad735253927ad",
+      "line": "aa58f560453c536d4eb4e1fe6caeae46c3a57ecd9b1e0ac70a227502bb395679",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "7a6978c8952f56fa88861da8a9eb245eb7fac1d34880e0d6ae9693065001ed0f",
+      "line": "7a6978c8952f56fa88861da8a9eb245eb7fac1d34880e0d6ae9693065001ed0f",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "16e68fb85d44d6e7e588564e6a0f1a8bc145b49243a011855571eeeaeaaa6684",
+      "line": "16e68fb85d44d6e7e588564e6a0f1a8bc145b49243a011855571eeeaeaaa6684",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "125eccc51b85a82c14a11f3e97a2cb7f2ed2b692f8338ba9ae8892ce54bb3342",
+      "line": "125eccc51b85a82c14a11f3e97a2cb7f2ed2b692f8338ba9ae8892ce54bb3342",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8820859f9a837261a21efc1cd0b104337d89879372e7934f57e1b8bc99c9d9a5",
+      "line": "8820859f9a837261a21efc1cd0b104337d89879372e7934f57e1b8bc99c9d9a5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8094431c1c0fb6401764a1e6f3a13e83ad8f985f9cb224e5e4e7d0ddd0894b61",
+      "line": "7dc56c5097d215e328c213c60cb740eecf143f4049a8babbd515f343c8a2dd65",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "ab5156ab2bd09f593fa29a6df962bd82939511a2d717f9a7060f883808b91649",
+      "line": "ab5156ab2bd09f593fa29a6df962bd82939511a2d717f9a7060f883808b91649",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "0f50670827ea4613979a4a9185b8d2d2a0290bee820b333c67e2768e90e5e146",
+      "line": "7f52a7f2c09e9a23062af10aaa8f63b25bffd0ef21164203df2875817e4b8eae",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1e39bf6dc4b2106c57c4a223d45eb3172d06e3cca34db92838ca55eec48ba913",
+      "line": "1e39bf6dc4b2106c57c4a223d45eb3172d06e3cca34db92838ca55eec48ba913",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "f666d98034c9784ac717862782539d7cc9564df9de2823e506ac22b870b35496",
+      "line": "f666d98034c9784ac717862782539d7cc9564df9de2823e506ac22b870b35496",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "cc19dd2057e3ae52234fc52786fd08076c3e1d21496fc7dcba2927f97a824d9c",
+      "line": "cc19dd2057e3ae52234fc52786fd08076c3e1d21496fc7dcba2927f97a824d9c",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "6b4144e48fc9e6799c820f66e28b053ecdde4fe68e983525607095d1e2df6db6",
+      "line": "6b4144e48fc9e6799c820f66e28b053ecdde4fe68e983525607095d1e2df6db6",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "095cf6a166ca700d42ba52d2e4e09fa32f261e57f1534819996f48518ba9e5c0",
+      "line": "095cf6a166ca700d42ba52d2e4e09fa32f261e57f1534819996f48518ba9e5c0",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "66253a162d6e2988245b23838f0265323a0aa4a2328fd6823d2b167fab528cca",
+      "line": "66253a162d6e2988245b23838f0265323a0aa4a2328fd6823d2b167fab528cca",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "7912735dafa458f823d647f80af42743d353bae843b3747290b56490bef82056",
+      "line": "7912735dafa458f823d647f80af42743d353bae843b3747290b56490bef82056",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "a4377168c31a4aadf66761c6d9c714390e2e1da89ec614abbc2ef304a9c3935c",
+      "line": "a4377168c31a4aadf66761c6d9c714390e2e1da89ec614abbc2ef304a9c3935c",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "7f7cd6298a6633506fce9e87d346636f53bd3c98806ff2a015e3e7369053f79e",
+      "line": "7f7cd6298a6633506fce9e87d346636f53bd3c98806ff2a015e3e7369053f79e",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "c4c8a90ccea8358aed1bc4691ff4dceb43f57381fb8346a259a9528f4a7feb2a",
+      "line": "c4c8a90ccea8358aed1bc4691ff4dceb43f57381fb8346a259a9528f4a7feb2a",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "07b8a5e38497e6464e32cfdb8da6804b4657ce028089a7f1a830ee2c703f785b",
+      "line": "07b8a5e38497e6464e32cfdb8da6804b4657ce028089a7f1a830ee2c703f785b",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "f151eb4c339c6b1e13404977483230c273e45f7e71ae98f3e1cbe1004a8dcb60",
+      "line": "f151eb4c339c6b1e13404977483230c273e45f7e71ae98f3e1cbe1004a8dcb60",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "f151eb4c339c6b1e13404977483230c273e45f7e71ae98f3e1cbe1004a8dcb60",
+      "line": "f151eb4c339c6b1e13404977483230c273e45f7e71ae98f3e1cbe1004a8dcb60",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "18f8512e718b0ee7ac270f8fcb7210ea779b8de8764c67165779aecc19d00de5",
+      "line": "18f8512e718b0ee7ac270f8fcb7210ea779b8de8764c67165779aecc19d00de5",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "11d550b5f2d6cb84d518d660f80016f82a661900afd72679b24e128da1a71b5d",
+      "line": "11d550b5f2d6cb84d518d660f80016f82a661900afd72679b24e128da1a71b5d",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "da091541ed745b14bf43866d0311c803444e4f25112a0fb2338561911851f195",
+      "line": "da091541ed745b14bf43866d0311c803444e4f25112a0fb2338561911851f195",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "da091541ed745b14bf43866d0311c803444e4f25112a0fb2338561911851f195",
+      "line": "da091541ed745b14bf43866d0311c803444e4f25112a0fb2338561911851f195",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "14dd1e874e16f08aa22ea77beb700223ef873c42cd671c2ba74c3c86b05b4618",
+      "line": "14dd1e874e16f08aa22ea77beb700223ef873c42cd671c2ba74c3c86b05b4618",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "60bbbbf29e5342e366192d51b6861eb218f59719c9807744c3aa4a94c144447d",
+      "line": "60bbbbf29e5342e366192d51b6861eb218f59719c9807744c3aa4a94c144447d",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "fb0d61ceaf718b75a355530caa44e7e0a5cfe3b05373799595a616f26ac271ad",
+      "line": "fb0d61ceaf718b75a355530caa44e7e0a5cfe3b05373799595a616f26ac271ad",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "c4f3c417494022a25edaa13138da644864426ba44ed2ebc5eea3e5ea5b35c1ae",
+      "line": "c4f3c417494022a25edaa13138da644864426ba44ed2ebc5eea3e5ea5b35c1ae",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "9ac6cc4a6256c5f6af2d90383512c4602555de2af7d924a4b5afabbf16f54c91",
+      "line": "9ac6cc4a6256c5f6af2d90383512c4602555de2af7d924a4b5afabbf16f54c91",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "7d92743f0e323c2b99de0917f3734bf93c942f5836368621723a68e5a30d1526",
+      "line": "7d92743f0e323c2b99de0917f3734bf93c942f5836368621723a68e5a30d1526",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "c116f2a7b5b74c8266f9fd433052bcb84ab18d343a0397770e70fe2f501684bd",
+      "line": "c116f2a7b5b74c8266f9fd433052bcb84ab18d343a0397770e70fe2f501684bd",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "008e0194efe0b041acbd18b730648afc333b318c4bae5cf0054406bd9c18b208",
+      "line": "9dc5fe13f82af0b78f3c8f6e04fcfbd45d091c967a87bbb4beb102f11fadc96e",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "003c68be89e1aade5d79bef4821efe0b011107facbfd48992405d310bec89c85",
+      "line": "003c68be89e1aade5d79bef4821efe0b011107facbfd48992405d310bec89c85",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "d67c44f044444ae66ff3e3db16b0f25c781aa0e06b2307a6487036d98c01a09e",
+      "line": "d67c44f044444ae66ff3e3db16b0f25c781aa0e06b2307a6487036d98c01a09e",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "d67c44f044444ae66ff3e3db16b0f25c781aa0e06b2307a6487036d98c01a09e",
+      "line": "d67c44f044444ae66ff3e3db16b0f25c781aa0e06b2307a6487036d98c01a09e",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "68c8cf7cec6959e4726010427a6e70ddb9bbca26d35d10a526d5ce6b7483c831",
+      "line": "68c8cf7cec6959e4726010427a6e70ddb9bbca26d35d10a526d5ce6b7483c831",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "a3529be30dd7f27f768242f5ffc56264e44dd68ab7f593b2d58826824e0fc807",
+      "line": "a3529be30dd7f27f768242f5ffc56264e44dd68ab7f593b2d58826824e0fc807",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "caee0b69f64e7c0648de3e6ba68b17c218cd6613d67e234b9567730abccfc547",
+      "line": "caee0b69f64e7c0648de3e6ba68b17c218cd6613d67e234b9567730abccfc547",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "c2472ac3419c897aa23a4d3d4f7de1151bf69d2cd85c1abd45bf91dac5883978",
+      "line": "b978e2af452fcb43e1a89cbc6bf62df13433a01f2573c0a391efb7d2c14663ee",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "b978e2af452fcb43e1a89cbc6bf62df13433a01f2573c0a391efb7d2c14663ee",
+      "line": "b978e2af452fcb43e1a89cbc6bf62df13433a01f2573c0a391efb7d2c14663ee",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "26ffd923c881e8cd733764a68ba6960e62213b45ccacaecd98381c7ec3d6d4ec",
+      "line": "26ffd923c881e8cd733764a68ba6960e62213b45ccacaecd98381c7ec3d6d4ec",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "aa3d2efa68c2589147a31d91c541e44dfefec0bf9bc33e12bcdd4d6fe4d2e8e8",
+      "line": "aa3d2efa68c2589147a31d91c541e44dfefec0bf9bc33e12bcdd4d6fe4d2e8e8",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "a323720802bb6890a278e2289c51301cf3c72a95f55d7275ca3dda3a53f0c62a",
+      "line": "a323720802bb6890a278e2289c51301cf3c72a95f55d7275ca3dda3a53f0c62a",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "91e2b9653117640a1f800e73a18788ba2eeba86c36bad7339156c17d19ce6c6d",
+      "line": "91e2b9653117640a1f800e73a18788ba2eeba86c36bad7339156c17d19ce6c6d",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "032245af6f2ca3af75e725e780ce41bb739288e332d8fae05e7de73e022eef18",
+      "line": "032245af6f2ca3af75e725e780ce41bb739288e332d8fae05e7de73e022eef18",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "032245af6f2ca3af75e725e780ce41bb739288e332d8fae05e7de73e022eef18",
+      "line": "032245af6f2ca3af75e725e780ce41bb739288e332d8fae05e7de73e022eef18",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "e25d2682db315ab967aeb2a7f80901c5989d70ecc7649fe8abfec7b706ec1853",
+      "line": "e25d2682db315ab967aeb2a7f80901c5989d70ecc7649fe8abfec7b706ec1853",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "e662c0d07fea834f3703d36236768dcb30ad5b5d9a5ef2ec2a6a29c9bc0b8b70",
+      "line": "e662c0d07fea834f3703d36236768dcb30ad5b5d9a5ef2ec2a6a29c9bc0b8b70",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "2671525c168e1770bb40d734fa8c9366cdcf9bdca73581c25579beb914ee3802",
+      "line": "2671525c168e1770bb40d734fa8c9366cdcf9bdca73581c25579beb914ee3802",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "2671525c168e1770bb40d734fa8c9366cdcf9bdca73581c25579beb914ee3802",
+      "line": "2671525c168e1770bb40d734fa8c9366cdcf9bdca73581c25579beb914ee3802",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "db792ba875e457a5ec6577e69a181ff305e8d73f63c26f0b9404bd9e3c143d54",
+      "line": "db792ba875e457a5ec6577e69a181ff305e8d73f63c26f0b9404bd9e3c143d54",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "87ec8d47f1ac7d6b220af96580427a6bce35bb1a267701512c3e7e441bea8fbd",
+      "line": "87ec8d47f1ac7d6b220af96580427a6bce35bb1a267701512c3e7e441bea8fbd",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "2b6771aa70280bbe5785a2deb0dc560754625c99dbf1ee3b3b30f6b942bed8ea",
+      "line": "2b6771aa70280bbe5785a2deb0dc560754625c99dbf1ee3b3b30f6b942bed8ea",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a system package install",
+      "key": "f4b36578e46e550419043268d97d493e14b1345d44c421744dee1191c6e84739",
+      "line": "f4b36578e46e550419043268d97d493e14b1345d44c421744dee1191c6e84739",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a system package install",
+      "key": "38a6f8f0e0393eb7bd2976e7f4f327751591823d8d2b22c814803a3168059515",
+      "line": "38a6f8f0e0393eb7bd2976e7f4f327751591823d8d2b22c814803a3168059515",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "29ee5d918725b260b4b720be399b827e7c17dd5672b22ede333abcd6fa92f9c7",
+      "line": "29ee5d918725b260b4b720be399b827e7c17dd5672b22ede333abcd6fa92f9c7",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "fa5b931b553a80565d57de14ab988060b215ac1989d12bfe46d3d9993075a52c",
+      "line": "be3158153148d7ab5e2dfd120b106a818d7d9a77695e20c251ff1c8f01a5b42e",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1fcef32a37f3c039aa2faf84a51792ee660f34d7593cf953392c05511ac94af6",
+      "line": "4aa65a9178d09e2e510c255c626f35740b009878f1357b076b845592e5305e4e",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a docker build from a URL",
+      "key": "4201a73ff61b95c828a5c269c8b715996729c494207f37cebb21b010d7c6de91",
+      "line": "4201a73ff61b95c828a5c269c8b715996729c494207f37cebb21b010d7c6de91",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "121dc9e9603514c1438be71161230dd8f73cb8e08bb69b30331e6880a4fdde2f",
+      "line": "121dc9e9603514c1438be71161230dd8f73cb8e08bb69b30331e6880a4fdde2f",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "121dc9e9603514c1438be71161230dd8f73cb8e08bb69b30331e6880a4fdde2f",
+      "line": "121dc9e9603514c1438be71161230dd8f73cb8e08bb69b30331e6880a4fdde2f",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "f1f9abb265e39e3b82b08a8369f49d4fe6aec7905eb0634bf0c91baa76b5102c",
+      "line": "f1f9abb265e39e3b82b08a8369f49d4fe6aec7905eb0634bf0c91baa76b5102c",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "f1f9abb265e39e3b82b08a8369f49d4fe6aec7905eb0634bf0c91baa76b5102c",
+      "line": "f1f9abb265e39e3b82b08a8369f49d4fe6aec7905eb0634bf0c91baa76b5102c",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "b9f83fa9de415791af012ecc444e2a9b4890bc22c8df5709afc56525fa231cd2",
+      "line": "b9f83fa9de415791af012ecc444e2a9b4890bc22c8df5709afc56525fa231cd2",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "2cb7827888a828683c0c332e8db5a250ff0c917c1a68db197157adbbb2bc2be6",
+      "line": "2cb7827888a828683c0c332e8db5a250ff0c917c1a68db197157adbbb2bc2be6",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "2cb7827888a828683c0c332e8db5a250ff0c917c1a68db197157adbbb2bc2be6",
+      "line": "2cb7827888a828683c0c332e8db5a250ff0c917c1a68db197157adbbb2bc2be6",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "15808152f1b87ac6e42ecc2ea779a5cd35105666a0820545a5c9419f1d6f2014",
+      "line": "15808152f1b87ac6e42ecc2ea779a5cd35105666a0820545a5c9419f1d6f2014",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "4027de5385e9fd13517e6a0d08e140b63d73b622430613894099648ad1982a5c",
+      "line": "4027de5385e9fd13517e6a0d08e140b63d73b622430613894099648ad1982a5c",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "4027de5385e9fd13517e6a0d08e140b63d73b622430613894099648ad1982a5c",
+      "line": "4027de5385e9fd13517e6a0d08e140b63d73b622430613894099648ad1982a5c",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8e0aa650271d87870f5244eac96388b4e2516b3e9f5832de0c664f1f196bbbeb",
+      "line": "21bbca10153978703fe684e6097225bcbbca52dfeea2544a4473ea32bf3e6d33",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "e11e4f1572b60b0a84b7824514d6e66b7febebd0bd583b9a067ee5fbdcb46908",
+      "line": "e11e4f1572b60b0a84b7824514d6e66b7febebd0bd583b9a067ee5fbdcb46908",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a package-manager install",
+      "key": "362a25b776aca2c83f88a9dc71461edff02777f06aca2c30695f56f9bfac6922",
+      "line": "362a25b776aca2c83f88a9dc71461edff02777f06aca2c30695f56f9bfac6922",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "3d9cc262b39ce991ae6a468c436a70b7155c16d1d9c0b5f5ce47e0cba22b2523",
+      "line": "3d9cc262b39ce991ae6a468c436a70b7155c16d1d9c0b5f5ce47e0cba22b2523",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "3b72f12d5e27998569d5241e1366765788591f8eab7526566e96449bb21d48ba",
+      "line": "3b72f12d5e27998569d5241e1366765788591f8eab7526566e96449bb21d48ba",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "an unpinned package install",
+      "key": "364bbebf33301b2f79e5e9cf94c14214c55067a0253beb2c6ff9516dd4002993",
+      "line": "364bbebf33301b2f79e5e9cf94c14214c55067a0253beb2c6ff9516dd4002993",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "364bbebf33301b2f79e5e9cf94c14214c55067a0253beb2c6ff9516dd4002993",
+      "line": "364bbebf33301b2f79e5e9cf94c14214c55067a0253beb2c6ff9516dd4002993",
+      "ruling": "text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "f4421ebde8adcd0b6f6b957ba7972c97598f0000cf2baf56e4b4cb528aae0b2f",
+      "line": "f4421ebde8adcd0b6f6b957ba7972c97598f0000cf2baf56e4b4cb528aae0b2f",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8130a60d97015d35694dc5e508c37291ca6ad91ad0baa9a3a3bcd95543560a4d",
+      "line": "8130a60d97015d35694dc5e508c37291ca6ad91ad0baa9a3a3bcd95543560a4d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "f543e6ee8ae656fcb20c0c8a01ea28bff1695b5f956e83de71e52e41d9a5dfd5",
+      "line": "f543e6ee8ae656fcb20c0c8a01ea28bff1695b5f956e83de71e52e41d9a5dfd5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "db73d08730d7662e9a3baab0f352e76e79afb6354e302d00e2ab835bfd5f2dde",
+      "line": "db73d08730d7662e9a3baab0f352e76e79afb6354e302d00e2ab835bfd5f2dde",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "3190d7445f5f562f5018731ffcfc9aa2674830bb3316fd9dd0d059b4e699998e",
+      "line": "3190d7445f5f562f5018731ffcfc9aa2674830bb3316fd9dd0d059b4e699998e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "54a9b3f3137061067bd018c5f807c593d326f0a034e964f6563baec21c5770e7",
+      "line": "54a9b3f3137061067bd018c5f807c593d326f0a034e964f6563baec21c5770e7",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "691b13f92a710f20839374ba949dab3c31e1525b7590b21745a50b8fdaa46cf3",
+      "line": "691b13f92a710f20839374ba949dab3c31e1525b7590b21745a50b8fdaa46cf3",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1dff544a5e2e8a3938e44ad8c01c5c713997e31870e13209d4058ef1571fa94d",
+      "line": "1dff544a5e2e8a3938e44ad8c01c5c713997e31870e13209d4058ef1571fa94d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "3459406a4242ff7480d37ae29c95615d9f9f2ab0f8b5f40e47e847df8d30cbff",
+      "line": "3459406a4242ff7480d37ae29c95615d9f9f2ab0f8b5f40e47e847df8d30cbff",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "2ce9c2e7327a742323f35f31d6d151f592152f57dca03784bc8b3ee2f73e0396",
+      "line": "2ce9c2e7327a742323f35f31d6d151f592152f57dca03784bc8b3ee2f73e0396",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "971cfd2af3819cd76176fdd9f0d0df34cb6c9fa50b91b289438ac757431c7586",
+      "line": "971cfd2af3819cd76176fdd9f0d0df34cb6c9fa50b91b289438ac757431c7586",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "41e68a10dae79019822519d3f77467e61f4c2448b784b801909fa4b4472e7864",
+      "line": "41e68a10dae79019822519d3f77467e61f4c2448b784b801909fa4b4472e7864",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "4e98d5ba2a12c6c847cc6d7a04a5779671b660215968257caa6bef19cd69963b",
+      "line": "4e98d5ba2a12c6c847cc6d7a04a5779671b660215968257caa6bef19cd69963b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "9762f1e67cbf908c011cadb89f1566c7cc2743cd9fef11fd65849b4f9a714c58",
+      "line": "9762f1e67cbf908c011cadb89f1566c7cc2743cd9fef11fd65849b4f9a714c58",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "20e462db026be4b6d020a1a3b41aea02e8d98a78def3a7f0780764f66fd7854d",
+      "line": "20e462db026be4b6d020a1a3b41aea02e8d98a78def3a7f0780764f66fd7854d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "4a8fa2d6cf3498c5f4530ff818eb8c0a343c916b8c6f90327966ec28dd8115fc",
+      "line": "a3ed6959f02033d71a36a9a76906931c16c4b01e362972dd6b4996670d270db4",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "74dc440bb93675d03366b8364cdf1dfe9cb28d89dda6f458eef78826e84fae6a",
+      "line": "319ad416e7d982ebe912aab5d15dac354ea6dc3e1e33cc8785a7dc54b33079fc",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "9f1f477dca7e2c46737b63402756604942ced418825eecc53e023b1ea0f26def",
+      "line": "65254b459e02c823a76cb1c3b2d3919b6e6aa157495a2ba31db231d0b6bb3dd3",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "d4d1f1a9e308c6767475888e61d074c701251c7b8ab1542d8c73840ba59f9361",
+      "line": "d4d1f1a9e308c6767475888e61d074c701251c7b8ab1542d8c73840ba59f9361",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "dc1cb8c10f461a4f33cf88352d92667d54f9c33973af8e1081b4b2d1caec49c4",
+      "line": "dc1cb8c10f461a4f33cf88352d92667d54f9c33973af8e1081b4b2d1caec49c4",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "3e3b57b0a67167f2778a4a1795ea4d5142bc9ea4f9f85252e0dc2e918f995ce5",
+      "line": "3e3b57b0a67167f2778a4a1795ea4d5142bc9ea4f9f85252e0dc2e918f995ce5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "0343d1cfbd5341f0ae1badb1c463f40ce8f95142da239189196a01e49e38f33b",
+      "line": "0343d1cfbd5341f0ae1badb1c463f40ce8f95142da239189196a01e49e38f33b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "c26092d1c9b6d5dbccf2a4c45ae026cc81b257e25c5ee61e385603ae4c614228",
+      "line": "c26092d1c9b6d5dbccf2a4c45ae026cc81b257e25c5ee61e385603ae4c614228",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "45025f9277580de367f683d22054837f397ae8dd45977f3c0fe4d3d2de883739",
+      "line": "45025f9277580de367f683d22054837f397ae8dd45977f3c0fe4d3d2de883739",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "f434d57aa13204ab9a05b6d1e25fc4ec3174196b93204042fff35de445152a8a",
+      "line": "f434d57aa13204ab9a05b6d1e25fc4ec3174196b93204042fff35de445152a8a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "cfdfe97145a3c04a81fd960b1696be6f0ca2b6368ac5a51f0af933511032ae46",
+      "line": "cfdfe97145a3c04a81fd960b1696be6f0ca2b6368ac5a51f0af933511032ae46",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "55f2d50d182619d7a6cd459d0cff984a445b9bd7c627565b813bb5f1f119fce0",
+      "line": "55f2d50d182619d7a6cd459d0cff984a445b9bd7c627565b813bb5f1f119fce0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "5d12bc9c717d5424721f25277d48bfbad2e89b09f0ba82805a582887338c8791",
+      "line": "5d12bc9c717d5424721f25277d48bfbad2e89b09f0ba82805a582887338c8791",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "c5e86e8b4761d092de3164ebc55e4a5479de2da98275dd645d83872f3c5c9418",
+      "line": "c5e86e8b4761d092de3164ebc55e4a5479de2da98275dd645d83872f3c5c9418",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "080fd748bcf7aec1d06e789600b185c160eb0ff6dfba35438b867281079569d1",
+      "line": "080fd748bcf7aec1d06e789600b185c160eb0ff6dfba35438b867281079569d1",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "3c28838c3d7ef5a1bf8dca73fea960971f913fea8ec6ae69f7c8ff7e8ad7b16b",
+      "line": "3c28838c3d7ef5a1bf8dca73fea960971f913fea8ec6ae69f7c8ff7e8ad7b16b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8115ed9f0e96442de6798a2a97feef0aed3e7072cfc9ba9b98f3176f95ba3f7a",
+      "line": "8115ed9f0e96442de6798a2a97feef0aed3e7072cfc9ba9b98f3176f95ba3f7a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1361e48f7ca4bc7d633605cbb58355cf8e4d300e6f7b9ede329600c1a29a1536",
+      "line": "1361e48f7ca4bc7d633605cbb58355cf8e4d300e6f7b9ede329600c1a29a1536",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "bdea65fe66a69ace800625e5ae8f1f2350d57c1664d5300d5fca3d18251455e8",
+      "line": "bdea65fe66a69ace800625e5ae8f1f2350d57c1664d5300d5fca3d18251455e8",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "ca1d303b78a4f9f84211167818f07aa40b035eeb3d8527af048b6b4c4bb2dc3f",
+      "line": "ca1d303b78a4f9f84211167818f07aa40b035eeb3d8527af048b6b4c4bb2dc3f",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "fa680ffdac5705ebd8966bbd7b6c9c2802d1c4621f610d8f079ba68c9fbd6f08",
+      "line": "fa680ffdac5705ebd8966bbd7b6c9c2802d1c4621f610d8f079ba68c9fbd6f08",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "77e12db04f095eb6422757964f4836ed5084a9ba424e236eae3453d75374d9da",
+      "line": "2dca81bcceca7059eee80f6992302581ef03afff94d622f210eddefc4bc7072e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "b4117038a650366b74ce146f66e740bc4195eafc6fb859981014afef63bebea6",
+      "line": "b4117038a650366b74ce146f66e740bc4195eafc6fb859981014afef63bebea6",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "ac6199a88a15070b23d43fb12e21322045200e69d8c5365c21456976461cfa7d",
+      "line": "ac6199a88a15070b23d43fb12e21322045200e69d8c5365c21456976461cfa7d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "4f81dad642bc6dd12c9e50a5390a76919641a041fac4dfe930aacd65c30555ed",
+      "line": "4f81dad642bc6dd12c9e50a5390a76919641a041fac4dfe930aacd65c30555ed",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1a88e92bfd0b20a915cea9f061271cbeb10b5b2c23ce5a5fc7b107cc2a4a53b3",
+      "line": "eda81e58d772a30227dd2e7afbdcd7da416c43d4e86420368f6bab35ea74e60d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "6c81ad0bdd7034973c653aae0067533a529a4f961a33076ac2a1249c722b6bb9",
+      "line": "47c4048fc70d5652d453f3f60440c9aa9a13276e3e519fa125611372e2007914",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "ea35d6c10d9f3a84d19fb49d7e8cd2e73c981d65fd147ba3fe3633ec5039a102",
+      "line": "9326ed661668c5c829aa35f77a2a82c103fb195bc758f7d74337d09d56122571",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "32209cab98704ae02c0c13cbdcf13790c40b19ef83589757a454b9e4a423df36",
+      "line": "d0e2bbaea0a40b678c670e93b2f48398915521ce22efd245b9d8c50c97ae81f1",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1b412d51d8f75bcf28162f40ddc51dbf533d60da01a8ee66694987f2c1148e11",
+      "line": "1b412d51d8f75bcf28162f40ddc51dbf533d60da01a8ee66694987f2c1148e11",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "c767cf55297e203cefd91b443ed4442fc615a966e134df41ed3f34865b809972",
+      "line": "c767cf55297e203cefd91b443ed4442fc615a966e134df41ed3f34865b809972",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "93a8c61617deed4f928036bf18c6a44304a4a0e99fa982ce70a38ef2ea90674f",
+      "line": "93a8c61617deed4f928036bf18c6a44304a4a0e99fa982ce70a38ef2ea90674f",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1fa3ccb9e5d444ba69dcdc5e72d1de769da7a9e3a91814eeee9b37cdba0fe511",
+      "line": "62424532a6d587223ecacf9d4bf21d519467dde4980cbc2d2d0538f145ca361f",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "ca9bfcbcfddbd70008042c8ceef3f9679bfe13376eec8cd576a3d68e18b1012e",
+      "line": "ca9bfcbcfddbd70008042c8ceef3f9679bfe13376eec8cd576a3d68e18b1012e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "3c65c1fb6d4f28398ed844a59468ea379fa33f60515194039a64b060c1944998",
+      "line": "3c65c1fb6d4f28398ed844a59468ea379fa33f60515194039a64b060c1944998",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "d3994335ccbc3af6661699b4202215271e195c12a62151d62b7d67fef42065f8",
+      "line": "d3994335ccbc3af6661699b4202215271e195c12a62151d62b7d67fef42065f8",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "9f10a8b4a7e8e4d8ea0fc077893e9045c71905b20926edf2278579ca6050114e",
+      "line": "9f10a8b4a7e8e4d8ea0fc077893e9045c71905b20926edf2278579ca6050114e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "4704fc3278eb23ee6c0c6dbfe33885a13dc754a5c6a5eb2b37138cd1596ee197",
+      "line": "4704fc3278eb23ee6c0c6dbfe33885a13dc754a5c6a5eb2b37138cd1596ee197",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "7daa4b1ca0590f185a8d09e69b096d30a7a0ed80f10feebc40f27f3486656725",
+      "line": "7daa4b1ca0590f185a8d09e69b096d30a7a0ed80f10feebc40f27f3486656725",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "ab4f8bd2456dc93a545ba176c3ed2fd035f2991a0b09b43b86eaebc31578013b",
+      "line": "ab4f8bd2456dc93a545ba176c3ed2fd035f2991a0b09b43b86eaebc31578013b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8fa234136103eab5590220e541ad8fcc40533558f8f83108f42d67f10ebc0033",
+      "line": "8fa234136103eab5590220e541ad8fcc40533558f8f83108f42d67f10ebc0033",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "0eba3e94dc013aa137bcb6d170f3d51ceb16299cc15aae0c92ee262c1bd4ca62",
+      "line": "0eba3e94dc013aa137bcb6d170f3d51ceb16299cc15aae0c92ee262c1bd4ca62",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "b31318a0b9ff57e6c3c53f5cf524a46a3adf2b4fa8306dcbc6910795febb6f67",
+      "line": "b31318a0b9ff57e6c3c53f5cf524a46a3adf2b4fa8306dcbc6910795febb6f67",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "fe94a70831cb5e3b89ee8e54d6a8f5c29ed90023816fb9ebe7d1a7d69dc5ac29",
+      "line": "fe94a70831cb5e3b89ee8e54d6a8f5c29ed90023816fb9ebe7d1a7d69dc5ac29",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "26935daa1f7bfad8ab259aece2a3868efbcf3ff8af1f86103b30c64463072dad",
+      "line": "26935daa1f7bfad8ab259aece2a3868efbcf3ff8af1f86103b30c64463072dad",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "7d75b8a73dc71bb8d4ae1a71cbb937536ad7b3f40a6d333b9ce7c5d5c54bcf3b",
+      "line": "7d75b8a73dc71bb8d4ae1a71cbb937536ad7b3f40a6d333b9ce7c5d5c54bcf3b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "7a3470b4eb8bc452927f788c10fe0e1cbc61def5c8cb48de370e83fc813af9b3",
+      "line": "7a3470b4eb8bc452927f788c10fe0e1cbc61def5c8cb48de370e83fc813af9b3",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1fe0a27db979ca0bda3e809d3a6c452b3a4841cfacbfbcc870d23b0264dc0087",
+      "line": "1fe0a27db979ca0bda3e809d3a6c452b3a4841cfacbfbcc870d23b0264dc0087",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "0bddbe227d5979486ebdbb7d302c47882e66f68feee7aaba845f3e8527aa165a",
+      "line": "0bddbe227d5979486ebdbb7d302c47882e66f68feee7aaba845f3e8527aa165a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "e838a0762b175baa95341ca8f67bcf6de3cfc0613eb32b41bdf877e7c860983c",
+      "line": "e838a0762b175baa95341ca8f67bcf6de3cfc0613eb32b41bdf877e7c860983c",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "a38cdf1f3ef321379c2496c2417f83737b39560c46aca7af22f7a4ad30d8c389",
+      "line": "a38cdf1f3ef321379c2496c2417f83737b39560c46aca7af22f7a4ad30d8c389",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "80e9630ea4d52c367c313ba26fa42b69f318591f3fa8de9734ff414af8a79e59",
+      "line": "80e9630ea4d52c367c313ba26fa42b69f318591f3fa8de9734ff414af8a79e59",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "d8fa037ed50cd5742dab1a216d1ef2afc1258dbc0f7c8efa3c568aa10e463324",
+      "line": "d8fa037ed50cd5742dab1a216d1ef2afc1258dbc0f7c8efa3c568aa10e463324",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "07e586d7ac68212c47c16289f8c15b4be5e6ee8e0b7d5a94ced713324b9389c2",
+      "line": "07e586d7ac68212c47c16289f8c15b4be5e6ee8e0b7d5a94ced713324b9389c2",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "67f6ebe7a8e234b46f6ad7baf10099fbc36148f046410e9b47cf2723ed0498ed",
+      "line": "67f6ebe7a8e234b46f6ad7baf10099fbc36148f046410e9b47cf2723ed0498ed",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "46945ee6f719e25ed3a4973438d6c5efa6bf853d0be33ffae58cf2a81e17d88b",
+      "line": "46945ee6f719e25ed3a4973438d6c5efa6bf853d0be33ffae58cf2a81e17d88b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "b93850e042c7d76d7d2191b1a67a36690cb15b2fc52812c908a14d4ae1fff1aa",
+      "line": "b93850e042c7d76d7d2191b1a67a36690cb15b2fc52812c908a14d4ae1fff1aa",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "12b6d6483ba798ca547f466b20a40e3ae4db7d118a68f832c1b3907e0ee6e688",
+      "line": "12b6d6483ba798ca547f466b20a40e3ae4db7d118a68f832c1b3907e0ee6e688",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "15d9b20cf556ffd4469509381fc05653a6a2ee20b28fe8e226096e31edb63f50",
+      "line": "15d9b20cf556ffd4469509381fc05653a6a2ee20b28fe8e226096e31edb63f50",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "24e03ed8aeedce30da07bdfb3d7ed1a8a05b7af1e7d45a46943b4e37ea6005c2",
+      "line": "24e03ed8aeedce30da07bdfb3d7ed1a8a05b7af1e7d45a46943b4e37ea6005c2",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "013492d600b7a5985e0ca74305304d2090d369876ef206bd7c1e16fb77e77b24",
+      "line": "013492d600b7a5985e0ca74305304d2090d369876ef206bd7c1e16fb77e77b24",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "b70835ceebcd489d012d48a5e33cc8fee91ed907e3fa3d4984237f994e7cbf8a",
+      "line": "b70835ceebcd489d012d48a5e33cc8fee91ed907e3fa3d4984237f994e7cbf8a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "2c04868e89b2cccfce909dff5d539c4ca3d21c11a5aa65c91319d7cc095ec3f6",
+      "line": "3e792a54caed2c32243704e906908ddacfb3de9a848e57e28312388a98681c81",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "2c04868e89b2cccfce909dff5d539c4ca3d21c11a5aa65c91319d7cc095ec3f6",
+      "line": "87d0fd6c5008e785d57e12be6b34bfc03af5de3d66420c68d860fd9abaee35a0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "2c04868e89b2cccfce909dff5d539c4ca3d21c11a5aa65c91319d7cc095ec3f6",
+      "line": "59b2dceaca9d2023ce8f00d8d926c045a2872149f6f75ef50d7b973ea68baec5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "b4b82366a229447bbd8b5bd744e62d9ac041e4bfdfeff8f2be2bff029d5c8ba6",
+      "line": "b4b82366a229447bbd8b5bd744e62d9ac041e4bfdfeff8f2be2bff029d5c8ba6",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "4049114f96fcf980d6e965864f93a6bed17849bb2989f0d887717a6e12616714",
+      "line": "4049114f96fcf980d6e965864f93a6bed17849bb2989f0d887717a6e12616714",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "5777edb29201c4a6cc827d94b49ee6c0eee5725ff7dd035eb55e0c4446d6f4d4",
+      "line": "5777edb29201c4a6cc827d94b49ee6c0eee5725ff7dd035eb55e0c4446d6f4d4",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "0c8e388ec3578ec5e0176a9bed259bc80ce2b9c5563e8f9223e415c456beddc9",
+      "line": "0c8e388ec3578ec5e0176a9bed259bc80ce2b9c5563e8f9223e415c456beddc9",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8780346cd75b69f15d044f5cc91823b7e5f6379284cf32d2607f10249c0fd6e0",
+      "line": "8780346cd75b69f15d044f5cc91823b7e5f6379284cf32d2607f10249c0fd6e0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "6ebb3e5ee39f7e9a0b581d5d311a42a8b44c23b0f176ac5ccddcaa492ceea942",
+      "line": "6ebb3e5ee39f7e9a0b581d5d311a42a8b44c23b0f176ac5ccddcaa492ceea942",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1271078161f833b46168fa8e495f17508f1af2766508fd42d6f3aa04cf4ade6d",
+      "line": "1271078161f833b46168fa8e495f17508f1af2766508fd42d6f3aa04cf4ade6d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "54640ee8f3e1a04ec019b18f6c30f12e27ef37c80ad07f5b28eea48bd88b3d63",
+      "line": "54640ee8f3e1a04ec019b18f6c30f12e27ef37c80ad07f5b28eea48bd88b3d63",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "7350c85a0e8f6c5f882dcc7d7bf4521a3c774a95518ad8a60fe97d8160c2c27e",
+      "line": "7350c85a0e8f6c5f882dcc7d7bf4521a3c774a95518ad8a60fe97d8160c2c27e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "5e534413da7fff47034d51d366269c1c2b93add6c3798bc58f27ee1d26d3b8a2",
+      "line": "5e534413da7fff47034d51d366269c1c2b93add6c3798bc58f27ee1d26d3b8a2",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "4680a8d41316db46b1e62a339e5269f2866519024991f43dce96b06d08f63c2a",
+      "line": "4680a8d41316db46b1e62a339e5269f2866519024991f43dce96b06d08f63c2a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "014b8679846bdedb810523579b4f3cde7ebc31d3e04a4aa709fff835eccd0719",
+      "line": "da495f2953767727deac0324031911d6a02ed7102dd4ce87a416fa44eb318fac",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "9e9c33de3c6805e50e345b4a0ccdca4a3ea31d9d5ffc19e5de95268751a99807",
+      "line": "9e9c33de3c6805e50e345b4a0ccdca4a3ea31d9d5ffc19e5de95268751a99807",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "47281b5f2e36342bbfb8650b20065db4c114f2e73ba97a60067a9679c607ffd0",
+      "line": "47281b5f2e36342bbfb8650b20065db4c114f2e73ba97a60067a9679c607ffd0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "2f7cd4438a7fa3dcccc1daa36cbf4a295187f62697c4ebfa46a447aa7513fe09",
+      "line": "4edfa746a690a4e3527b79188deba5fb34faebdff56892ef9c011382973aa9a8",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "1956b789a1243ca949d0f37e309d896d16ce875701833f91211cac9b5aac00b5",
+      "line": "1956b789a1243ca949d0f37e309d896d16ce875701833f91211cac9b5aac00b5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "d19701e66c17c7221d52db92c861d4d6ac2c8b46f41790d769e3a77a64005dcb",
+      "line": "d19701e66c17c7221d52db92c861d4d6ac2c8b46f41790d769e3a77a64005dcb",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "a00eae8183564d154048d247fa5941b1755b030db0f6ed43dea8cbdb6aaaa3c3",
+      "line": "2623a511b601213fb68ba133f5ee59e22169dcc046fbc921b1c0a047b1b455b5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "14d04def1545ad88951bf4715afa3924cb0e4d230978c08b88502d7f527017e1",
+      "line": "c54bf41cbf60c67cc5a72ccf6a7f23692faa076d2909da8e5ad6b6f72a0a72f5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "84d3c482d859fd6d8989c05992a954ed738f8cab3411abfebda3f7c1d4b9c572",
+      "line": "84d3c482d859fd6d8989c05992a954ed738f8cab3411abfebda3f7c1d4b9c572",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "6e3ce51910b1e52b42a0ff2da26e82b6e94ea1586fdee17b4a982ccfc5c842b9",
+      "line": "6e3ce51910b1e52b42a0ff2da26e82b6e94ea1586fdee17b4a982ccfc5c842b9",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "cdefa2f9818ee32ca71535bc0e90384608edbad25c5aef849f410a52503375cd",
+      "line": "cdefa2f9818ee32ca71535bc0e90384608edbad25c5aef849f410a52503375cd",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "8eb3d0cf767cfca88f9f7a137fc669eaed880d0ef655fcfb075b3c6ef1e4ab85",
+      "line": "8eb3d0cf767cfca88f9f7a137fc669eaed880d0ef655fcfb075b3c6ef1e4ab85",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "cc2800c510722972e8accf61984f3a00852ed496de2d61f7701d30c2e4f40ff3",
+      "line": "cc2800c510722972e8accf61984f3a00852ed496de2d61f7701d30c2e4f40ff3",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "cf345c09c76ee4ca546d3582892f4a3fcd806060c9ff3fc594c06dc22837660b",
+      "line": "cf345c09c76ee4ca546d3582892f4a3fcd806060c9ff3fc594c06dc22837660b",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "b89ae164fcf713ab8c5dbabac40bf050b1fa940456d25e2fcf6ed49dce43f24c",
+      "line": "b89ae164fcf713ab8c5dbabac40bf050b1fa940456d25e2fcf6ed49dce43f24c",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "9ee9e2b4df9d10ba83127279fb0597eab7e3c202073d41302d13be846fe98b4c",
+      "line": "9ee9e2b4df9d10ba83127279fb0597eab7e3c202073d41302d13be846fe98b4c",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "4c1ca3d7c6ceee363c3a56ac9e2ae2ee3841b975218acf137dc2fe37b01c5791",
+      "line": "4c1ca3d7c6ceee363c3a56ac9e2ae2ee3841b975218acf137dc2fe37b01c5791",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "ce24e4224e0ca69bab9d59213af9335e5e038a6c9aacc9656d43188b089a2eb3",
+      "line": "ce24e4224e0ca69bab9d59213af9335e5e038a6c9aacc9656d43188b089a2eb3",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
+    },
+    {
+      "file": ".github/agent/tests/check-action-pins-test.sh",
+      "form": "a download",
+      "key": "f77bed210ad983cf41e05d0ae3f6420934afe76ce8926138fd26736a2c851fc5",
+      "line": "f77bed210ad983cf41e05d0ae3f6420934afe76ce8926138fd26736a2c851fc5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "case_ c02-python-heredoc-ok    ok  \"$(rb \"python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ac250da36dfa112cc1dba2a5a8e6cb9dde47320b46ef8629352840db585a9be0"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
