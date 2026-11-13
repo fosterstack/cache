@@ -87,7 +87,7 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm"), ("release-signed", "release-signed")))
          + wit("release-verify", {}) + wit("release-apks", {})
          + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-postverify", {}) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"})
-         + "".join(renv(x) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-postverify", "release-assets"))      # rc-2 R4: the six records are checked for a token before any upload
+         + "".join(renv(x, True) for x in ("release-verify", "release-apks", "release-publish", "release-sign", "release-postverify", "release-assets"))      # rc-2 R4: the six records are checked for a token before any upload
          + up("release-evidence") + up_records())
 open(w + "/stage.yml", "w").write(stage)
 open(w + "/release.yml", "w").write("""name: Release
@@ -229,6 +229,30 @@ for jn, run in runs:
             r = subprocess.run(["bash", "-c", run], cwd=d, capture_output=True, text=True)
             assert r.returncode == want, (jn, step, kind, r.returncode, want, r.stdout[-200:], r.stderr[-300:])
 PYX
+# AC12: the path each of the six record-env run strings reads is the file bin/witnessed.sh really writes for that step (a stub `witness` writes the -o file)
+mkdir -p "$work/wb/bin" "$work/wb/rt"
+printf '#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do if [ "$1" = -o ]; then printf "{}" > "$2"; exit 0; fi; shift; done\nexit 1\n' > "$work/wb/bin/witness"; chmod +x "$work/wb/bin/witness"
+python3 - "$root" "$work/wb" <<'PYW' && ok "AC12 each of the six record-env run strings of the real stage-promote.yml names the file bin/witnessed.sh writes for its step (exit 0, not 2)" || bad "AC12 a record-env run string of stage-promote.yml reads a file bin/witnessed.sh does not write"
+import base64, json, os, re, subprocess, sys, yaml
+root, wb = sys.argv[1], sys.argv[2]
+wf = yaml.safe_load(open(root + "/.github/workflows/stage-promote.yml"))
+runs = [s["run"] for s in wf["jobs"]["release"]["steps"] if "record-env" in (s.get("run") or "")]
+assert len(runs) == 6, runs
+env = {**os.environ, "PATH": wb + "/bin:" + os.environ["PATH"], "RUNNER_TEMP": wb + "/rt"}
+body = {"payloadType": "application/vnd.in-toto+json", "signatures": [], "payload": base64.b64encode(json.dumps({"_type": "https://in-toto.io/Statement/v1", "predicateType": "https://witness.dev/attestations/collection/v0.1", "subject": [], "predicate": {"name": "x", "attestations": [{"type": "environment", "attestation": {"variables": {"CI": "true"}}}]}}).encode()).decode()}
+for run in runs:
+    step = re.search(r"witness-(release-[a-z]+)/", run).group(1)
+    r = subprocess.run(["bash", root + "/bin/witnessed.sh", step, "x.sh"], cwd=wb, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, (step, r.returncode, r.stderr[-300:])
+    made = [os.path.join(dp, f) for dp, _, fs in os.walk(wb + "/witness-" + step) for f in fs]
+    assert len(made) == 1, (step, made)
+    open(made[0], "w").write(json.dumps(body))      # a clean, valid record in the place the wrapper wrote
+    os.symlink(root + "/bin", wb + "/bin-real") if not os.path.exists(wb + "/bin-real") else None
+    cmd = run.replace("bin/chain-verify.py", wb + "/bin-real/chain-verify.py")
+    if not os.path.exists(wb + "/.github"): os.symlink(root + "/.github", wb + "/.github")
+    r = subprocess.run(["bash", "-c", cmd], cwd=wb, capture_output=True, text=True)
+    assert r.returncode == 0, (step, run, "wrapper wrote", made, r.returncode, r.stderr[-300:])
+PYW
 # ---- AC1: the stage file, mutated one rule at a time ----------------------------------------------------------------------
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
@@ -257,9 +281,9 @@ m s_dlgh    'name: dist\n          path: dist'            'name: dist\n         
 m s_upname  'name: release-evidence\n          path: release-evidence' 'name: anything\n          path: release-evidence' 'upload-artifact'  "AC1 an upload outside the allowlist"
 m s_noup    '(?s)      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence.*\Z' '' 'only uploads' "AC1 no upload of the evidence"
 # rc-2 R4 (Fable R4): the Release job checks each of its own six Witness records for a token (REQ-CHAIN-007-AC12) right after the witnessed steps and before any upload
-m s_re_none '      - name: release-apks record holds no token\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-apks/release-apks-collection\.json\n' '' 'Witness records for a token' "AC12 (R4) one of the six record checks is missing"
-m s_re_path '=record-env --record witness-release-sign/release-sign-collection.json' 'record-env --record witness-release-sign/release-apks-collection.json' 'none of checkout' "AC12 (R4) a record check that reads another step's record"
-m s_re_swallow '=record-env --record witness-release-publish/release-publish-collection.json' 'record-env --record witness-release-publish/release-publish-collection.json || true' 'none of checkout' "AC12 (R4) a record check whose failure is swallowed"
+m s_re_none '      - name: release-apks record holds no token\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-apks/release-apks-collection\.local\.json\n' '' 'Witness records for a token' "AC12 (R4) one of the six record checks is missing"
+m s_re_path '=record-env --record witness-release-sign/release-sign-collection.local.json' 'record-env --record witness-release-sign/release-apks-collection.local.json' 'none of checkout' "AC12 (R4) a record check that reads another step's record"
+m s_re_swallow '=record-env --record witness-release-publish/release-publish-collection.local.json' 'record-env --record witness-release-publish/release-publish-collection.local.json || true' 'none of checkout' "AC12 (R4) a record check whose failure is swallowed"
 m s_vre_none '      - name: release-verify record holds no token[^\n]*\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-verify/release-verify-collection\.local\.json\n' '' 'verify job: right after' "AC12 (R4) the verify job uploads its Witness record without checking it for a token"
 m s_vre_if '(      - name: release-verify record holds no token[^\n]*\n)' '\1        if: true\n' 'no env, no if' "AC12 (R4) the verify job's record check carries an if"
 m s_swap    'install cosign\n        run: bash bin/install-scanner.sh cosign\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign' 'start with checkout' "AC1 the installs in another order"
@@ -870,7 +894,7 @@ rm -f "$work/awstree/.github/workflows/w.yaml"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh "aws-cli"\n' > "$work/awstree/.github/workflows/q.yml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
 if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
-EXPECT=405
+EXPECT=406
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
