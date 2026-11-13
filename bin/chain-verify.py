@@ -1107,7 +1107,7 @@ RC_RECORDS = (
 
 
 def _rc_stages(rec, pol_path):
-    """Release's stage checks over the rc run's records, as release-verify.sh makes them."""
+    """Release's stage checks over the rc run's records, as the verify step of Release makes them."""
     digests = rec("witness-build/digests.json")
     cmd_stage_start(argparse.Namespace(stage="release", previous="build", rekor_entries=None,
                                        record=rec("witness-build/build-collection.json"),
@@ -2483,7 +2483,7 @@ class Parser(argparse.ArgumentParser):
     def parse_known_args(self, args=None, namespace=None):
         ns, rest = super().parse_known_args(args, namespace)
         if getattr(ns, "algorithm_guard", False) and not ns.aws:
-            self.error("--algorithm-guard needs --aws: the aws CLI is named, never looked up on PATH")
+            self.error("--algorithm-guard needs --aws: the aws CLI is named, never looked up by name")
         return ns, rest
 
 
