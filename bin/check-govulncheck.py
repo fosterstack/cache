@@ -20,7 +20,6 @@ import json, os, re, shutil, subprocess, sys
 
 GO_DIR = "/usr/local/bin/fscache-go/bin"
 DB = "https://vuln.go.dev"
-UNSET = ("GOROOT", "GOENV", "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOSUMDB", "GOINSECURE", "GOVCS", "GOEXPERIMENT", "GODEBUG", "GOCACHEPROG", "GOAUTH", "GOTOOLDIR")
 
 
 def fail(msg):
