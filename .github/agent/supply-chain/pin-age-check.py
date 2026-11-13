@@ -3,8 +3,10 @@
 
   pin-age-check.py --root REPO --base REV --head REV [--json FILE] [--base-inputs FILE] [--exceptions FILE]
 
-Exit 0: nothing moved, or every moved version is a pin the scan can read (an exact version, a commit or a digest) or is ruled. Exit 1: a moved item the scan
-cannot read or pin (a range, a moving name, an expression, an unpinned install) and that no ruling covers. Exit 2: the check could not run (unreadable input,
+Exit 0: nothing moved, or every moved version is a pin the scan can read (an exact version, a commit or a
+digest) or is ruled. Exit 1: a moved item the scan
+cannot read or pin (a range, a moving name, an expression, an unpinned install) and that no ruling covers.
+Exit 2: the check could not run (unreadable input,
 a tree that does not parse). No time is measured: the scan never waits for a version to age.
 """
 import argparse
@@ -51,7 +53,9 @@ def parse_time(s, clock=False):
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
     d = d.replace(tzinfo=dt.timezone.utc)
     if frac and not clock:
-        d += dt.timedelta(seconds=1)   # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated: a publication time is never shown earlier than it was
+        # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated:
+        # a publication time is never shown earlier than it was
+        d += dt.timedelta(seconds=1)
     return d
 
 
@@ -67,9 +71,12 @@ def judge_item(item):
     """(ok, reason): a moved item passes when it is a pin the scan can read."""
     if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
-        return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit"
-    if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
-        return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch)"
+        return False, (f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, "
+                       "or an action not named by its commit")
+    if (item.kind == "tool" and item.name in ("python", "java", "node")
+            and len(item.version.lstrip("v").split(".")) < 3):
+        return False, (f"not a pin: {item.version!r} is a series, not an exact release "
+                       "(the installer picks the newest patch)")
     return True, f"pinned at {item.version}"
 
 
@@ -103,17 +110,6 @@ def _gh_pages(path):
         return None
     try:
         return [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
-    except ValueError:
-        return None
-
-
-def _gh_api(path):
-    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
-    if r.returncode:
-        _gh_failed(r)
-        return None
-    try:
-        return json.loads(r.stdout)
     except ValueError:
         return None
 
@@ -1117,7 +1113,8 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     return out
 
 
-GO_INSTALL_REASON = "Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Nov 11 2026, REQ-SUP-001-AC27); the advisory check still applies"
+GO_INSTALL_REASON = ("Go's own release, downloaded from go.dev and verified against its pinned sha256 "
+                     "(owner ratified Nov 11 2026, REQ-SUP-001-AC27); the advisory check still applies")
 _GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
 _GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
 _GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
@@ -1134,8 +1131,10 @@ _GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$") f
 
 
 def go_install_pin(root, head):
-    """The pinned Go version when the head's bin/install-scanner.sh fetches Go ONLY from https://go.dev/dl/ at its pinned GO_VER, pins the sha256 of both
-    architectures (64 hex each) and verifies the file right after the download; otherwise None. Any other line that downloads
+    """The pinned Go version when the head's bin/install-scanner.sh fetches Go ONLY from https://go.dev/dl/ at its
+    pinned GO_VER, pins the sha256 of both
+    architectures (64 hex each) and verifies the file right after the download; otherwise None. Any other line
+    that downloads
     something Go-shaped (curl or wget naming go.tgz, GO_VER, go.dev or golang) voids it."""
     try:
         text = inv.tree_files(root, head).get("bin/install-scanner.sh")
@@ -1191,9 +1190,12 @@ def go_install_pin(root, head):
         depth -= len(re.findall(r"(?:^|[;&|)][ \t]*)(?:fi|done|esac)\b", t)) + (1 if t[:1] in ")}" else 0)
     if depth != 1:
         return None
-    # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the installed-version grep, each ending in a
-    # pipeline_fail whose message contains no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
-    # non-comment line voids the pin: a write in any form, a second transfer by any command, a URL variable, a read in another command
+    # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and
+    # the installed-version grep, each ending in a
+    # pipeline_fail whose message contains no command substitution); ANY other mention of GO_VER, gofile, go.tgz,
+    # go.dev or a Go archive name (go<N>.<N>) in a
+    # non-comment line voids the pin: a write in any form, a second transfer by any command, a URL variable,
+    # a read in another command
     for i, l in enumerate(joined):
         if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l) \
                 or _GO_WANT.match(l) or _GO_SHOW.match(l):
@@ -1209,7 +1211,8 @@ def go_install_pin(root, head):
 
 
 def split_go_install(moved, root, head):
-    """(the moved items without the Go release the installer pins, those Go items): only `tool:go` at the installer's own pinned version."""
+    """(the moved items without the Go release the installer pins, those Go items):
+    only `tool:go` at the installer's own pinned version."""
     ver = go_install_pin(root, head) if any(it.kind == "tool" and it.name == "go" for it in moved) else None
     keep = [it for it in moved if not (ver and it.kind == "tool" and it.name == "go" and it.version == ver)]
     return keep, [it for it in moved if it not in keep]
@@ -1251,8 +1254,10 @@ def _run(a, moved):
         rows = []
         for it in moved:
             ok, reason = judge_item(it)
-            if it.kind == "tool" and it.name == "go":    # the Go release passes only by the installer's own lines (split_go_install above), never as a plain pin
-                ok, reason = False, f"Go {it.version} is not the release bin/install-scanner.sh pins from go.dev with both sha256 pins and the verify call (REQ-SUP-001-AC27)"
+            # the Go release passes only by the installer's own lines (split_go_install above), never as a plain pin
+            if it.kind == "tool" and it.name == "go":
+                ok, reason = False, (f"Go {it.version} is not the release bin/install-scanner.sh pins from go.dev "
+                                     "with both sha256 pins and the verify call (REQ-SUP-001-AC27)")
             rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason})
         for it in go_free:
             rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_INSTALL_REASON})
@@ -1264,10 +1269,12 @@ def _run(a, moved):
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
     for it in base_files:
-        rows.append({"item": it.key, "label": "", "ok": True, "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
+        rows.append({"item": it.key, "label": "", "ok": True,
+                     "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
         print(f"  ok   {it.key}: base input (REQ-SUP-001-AC21)")
     for it, ruling in ruled_calls:
-        rows.append({"item": it.key, "label": "", "ok": True, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
+        rows.append({"item": it.key, "label": "", "ok": True,
+                     "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
         print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True,
