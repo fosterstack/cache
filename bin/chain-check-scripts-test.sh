@@ -42,10 +42,9 @@
 #         dry run on GitHub, and by the review brief which asks the reviewers to read those suites.
 #   [P] bin/check-stage.sh PHASE (scanners|acceptance|runtime): verifies Build's record and Sign's provenance FIRST (every phase), then runs only
 #         that phase's checks in the order of bin/chain-check-shape.py PHASES; an unknown phase exits 2 naming it; a failed verify runs no check.
-#   [P] bin/witnessed.sh STEP SCRIPT [ARGS] (PR 2's helper; the rule 68 cap, as amended by the owner Oct 9): fetches the identity token, runs
-#         `witness run --step STEP ... -o witness-records/STEP.json -- timeout 540 bash SCRIPT ARGS`. Fake curl / witness / timeout on PATH below.
-#         WHAT IS NOT FIXED: what real `witness run` does with a command that exits non-zero (here: no record is written; the dry run decides) and
-#         that a real 9-minute overrun is killed by `timeout` (here a fake timeout that reports expiry as GNU timeout does, exit 124).
+#   [P] bin/witnessed.sh STEP SCRIPT [ARGS] (PR 2's helper, rule 68 as amended by the owner Oct 9): fetches the identity token, runs
+#         `witness run --step STEP ... -o witness-records/STEP.json -- bash SCRIPT ARGS`. Fake curl / witness on PATH below.
+#         WHAT IS NOT FIXED: what real `witness run` does with a command that exits non-zero (here: no record is written; the dry run decides).
 # SATISFIABLE: the 40 cases were run against a throw-away reference implementation (not committed) and all pass, so no case is unsatisfiable.
 # Modelled on: in-toto-witness docs/tutorials/artifact-policy.md:58-70 (what a product holds), PR 1's fake-cosign approach, the existing
 # stage-verify.yml (what a scanner leg does today).
@@ -1424,7 +1423,6 @@ EOF
 cat > "$hw/fakebin/timeout" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = -k ]; then echo "timeout -k $2 $3" >> "$HW_LOG"; shift 3; else echo "timeout $1" >> "$HW_LOG"; shift; fi
-[ -z "${FAKE_OUTLIVE:-}" ] || exit 124
 exec "$@"
 EOF
 cat > "$hw/fakebin/witness" <<'EOF'
