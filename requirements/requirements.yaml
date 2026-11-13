@@ -3034,7 +3034,6 @@ requirements:
     confidence: implementation-only
     acceptance_criteria:
       # Source: advisor reading Oct 17 of the owner's Oct 3/4 rule and REQ-CHAIN-007-AC14 (a release candidate publishes nothing); settled with the advisor (handoff 0486, read-back line 4).
-      # Earlier wording of the changed fragments: "given: a release candidate tag v*-rc.*; when: its release run promotes; then: five persona agents (... a compliance reviewer verifying signatures, SBOMs and VEX per our guide, ... and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, ...".
       - id: REQ-UAT-001-AC1
         given: a release candidate tag (v*-rcN) and the repository variable PERSONA_UAT_ENABLED set to true
         when: the candidate's own run has built it
@@ -3646,8 +3645,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       # Source: advisor reading Oct 16, Astra release review (R2: Release's stage-start asks Rebuild's record for the product file:digests.json, which Rebuild never wrote);
-      # owner's Oct 13 latitude. Earlier wording, kept here:
-      #   then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against"
+      # owner's Oct 13 latitude.
       - id: REQ-CHAIN-005-AC2
         given: "the Rebuild scripts bin/build-stage-rebuild-apk.sh and bin/build-stage-rebuild-assemble.sh run in Rebuild"
         when: "it rebuilds"
@@ -3886,8 +3884,7 @@ requirements:
       plain scripts (bin/acceptance-*.sh) shared with acceptance.yml; Q8 AC14 (the advisor's AC, numbered 14 because AC8 exists): the node image kindest/node:v1.37.0@sha256:a1ed56cf...580ae5 comes from the kind v0.33.0 release notes,
       https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0 (published 2026-08-26). Amended Oct 24 (advisor, rule 13 of the simplest-correct-form rules: a tool that must
       already exist is used where it is): the earlier text pinned kind v0.33.0 and kubectl v1.37.0 by sha256 and installed them; they are now the runner image's own (image 20261012:
-      Kind 0.33.0, Kubectl 1.37.1) and the Check stage has no step for them. Earlier wording of the AC: "kind and kubectl are installed by a run step from exact versions (kind v0.33.0,
-      kubectl v1.37.0) verified against sha256 values committed in the repository, no action installs them, and the node image is given by digest".
+      Kind 0.33.0, Kubectl 1.37.1) and the Check stage has no step for them.
       AC15 (advisor, Oct 10, option 1: fresh databases at scan time from the scanners' own hosts only): grype's database status is read
       from the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json (descriptor.db.status: from, built, valid; host
       grype.anchore.io, digest the sha256 in the download URL's checksum). osv-scanner (advisor, Oct 10, from osv-scanner v2.6.0
@@ -4026,7 +4023,7 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
 
-  # Source: advisor reading Oct 16, Astra release review (R6) and Codex PR 415 round 2. Earlier wording of the changed fragment of the statement below, kept here: "...in a fixed order and before any credential exists in its job, and only then use..."
+  # Source: advisor reading Oct 16, Astra release review (R6) and Codex PR 415 round 2.
   - id: REQ-CHAIN-007
     title: Release verifies everything first, then alone holds the credentials and publishes the exact bytes
     statement: >
@@ -4043,12 +4040,8 @@ requirements:
       PROPOSED/UNVERIFIED: the script names and command lines of bin/release-*.sh; the tool that re-signs an apk with the stored key (melange sign is assumed; cache-3f's apk-tool.py signer reports assembly.rsa.pub, release.rsa.pub or unsigned and is fixed by cache's tests); the copy tool (crane, pinned by checksum through bin/install-scanner.sh); the registry-state check before publishing; the artifact names images and apks; the floating tags (REQ-REL-009 moves them for finals only); and that cosign's bundle for a sign-blob holds a Rekor entry (tlogEntries) in the shape PR 1 verifies; that PR 1's stage-start accepts --rekor-stub for Sign's provenance (else one more verify line); the crane entry of bin/install-scanner.sh (version, asset names, CRANE_BASE_URL; tested by bin/chain-install-crane-test.sh). The environment named release restricted to v* tags is the owner's setting (note only, no test). This PR cannot be run end to end before PRs 1 to 3 exist.
     acceptance_criteria:
       # Source: advisor reading Oct 16, Astra release review (R4: release-apks runs release-sign-apks.sh, which needs melange, but the Release job never installed it); owner's Oct 13 latitude.
-      # Earlier wording of the changed fragment, kept here: "...a digest-pinned checkout (persist-credentials false and nothing else), one step per tool each running
-      # `bash bin/install-scanner.sh witness`, `bash bin/install-scanner.sh cosign` or `bash bin/install-scanner.sh crane`, digest-pinned downloads of named artifacts..."
       # Source: advisor reading Oct 16, Astra release review (R6: the one job held contents/packages/id-token write from its start, before release-verify); read-back approved by the
-      # advisor Oct 16; owner's Oct 13 latitude. Earlier wording of the changed fragment, kept here: "it is a reusable workflow with exactly one job, release, on a fresh GitHub-hosted
-      # runner, in the environment named release, with permissions exactly contents write, packages write and id-token write and no container, services, env, defaults, strategy,
-      # needs or inherited secrets; its steps are exactly, in this order, ..."
+      # advisor Oct 16; owner's Oct 13 latitude.
       - id: REQ-CHAIN-007-AC1
         given: "stage-promote.yml"
         when: "it is parsed"
