@@ -1,63 +1,32 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
 # proves: REQ-CHAIN-004-AC18
 # proves: REQ-CHAIN-008-AC6
-# Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed-local.sh, bin/chain_items.py (bind, items-apk,
-# items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
-#
-# Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job graph of release.yml and what the
-# scripts DO when run against fake cache scripts (v0.3.0 rules 24, 31, 33, 38a, 38b, 39, 50, 51, 54, 58, 59, 62, 63, 68, 70).
+# Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job graph of release.yml, and what the
+# scripts do when run against fake cache scripts (v0.3.0 rules 24, 31, 33, 38a, 38b, 39, 50, 51, 54, 58, 59, 62, 63, 68, 70).
 # Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml), jq, shasum. No network, no secrets, no keys.
 #
-# HOW IT IS BUILT (the lesson of PR 1's ten review rounds, and the owner's: readability for a human is a review item). No judge analyses shell or
-# keeps a denylist. Each judge in bin/chain-test-shape.py is a FINITE EXACT GRAMMAR: a stage file is exactly the steps of one table, a stage script is
-# exactly the lines of expected_lines(KIND), the Witness helper is exactly witnessed_lines(), the chain jobs of release.yml are exactly five. A
-# judge is first proven on a known-good fixture and on mutated copies (a judge that cannot fail proves nothing); a few plain probes name the
-# mutations a reviewer asked about, and the sweeps try every deletion, swap, suffix and insertion on every line; then the judge runs on the real tree.
+# Each judge in bin/chain-test-shape.py is a finite exact grammar: a stage file is exactly the steps of one table, a stage script is exactly the
+# lines of expected_lines(KIND), the Witness helper is exactly witnessed_lines(), the chain jobs of release.yml are exactly five. A judge is first
+# proven on a known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then it runs on the real tree.
 #
-# THE SHAPE (ratified Oct 9, owner, rule 50 wording: one stage = one workflow file = one identity; Build's two-machine matrix plus its assemble job fit):
-# stage-build.yml: job `freeze` (contents read, no token, no Witness step: bin/build-freeze.sh, release mode only), job
-# `apk` (matrix over
-# ubuntu-24.04 and ubuntu-24.04-arm: bin/build-stage-apk.sh), job `assemble` (the VM, needs apk:
-# bin/build-stage-assemble.sh);
-# stage-reproducibility.yml: the same two Witness jobs (bin/build-stage-rebuild-apk.sh and -rebuild-assemble.sh). Four
-# Witness scripts,
-#   so there is no dispatch to analyse, each a row of .github/policy/chain-scripts.json with its sha256 (PR 1's design).
-# Each Witness job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a
-# fresh directory) -> ONE Witness
-#   step, one line through bin/witnessed-local.sh -> the uploads (exact name, ONE path each). No witness -d: the command runs from the repo root, so Witness
-#   names product subjects relative to it.
-# THE ARTIFACT LAYOUT (fix round 2): actions/upload-artifact roots an artifact at the common ancestor of its paths, so every upload names ONE path.
-#   The apk job uploads `out` (apks, indexes, SBOMs and the items fragment out/items-apk.json) and its record directory; the assemble job downloads
-#   them into apk/<runner> and rec-apk/<runner> (Rebuild: rapk/<runner> and rec-rapk/<runner>) and `bind`s every file of apk/<runner> to the verified
-#   record's products named out/... (rule 58). The assemble job writes digests.json and items.json at the repo root (Witness records
-#   file:digests.json, the subject PR 1's sign --check reads, and file:items.json), the archives into dist, and uploads `out` as `images`.
-# WHAT digests.json HOLDS (PROPOSED, advisor to confirm): the two image index digests, the four apk digests (cache's `apk-tool.py digest`, by name:
-#   which sections it covers is cache's to change; it differs from the whole-file sha256 and ignores the signature) and the four Linux archives
-#   (archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64, archive-fips-linux-arm64: goreleaser's fscache_<ver>_linux_<arch>.tar.gz and
-#   fscache-fips_...), so that Sign's provenance covers everything Release publishes (rules 35, 51). items.json holds the same plus the comparison items.
-# THE VERSION (PROPOSED/UNVERIFIED, cache-3f): the stage passes --version = the tag minus the leading v (0.3.0, or 0.3.0-rc.1); cache's driver accepts
-#   X.Y.Z and X.Y.Z-rc.N and names the apk fscache-0.3.0-r0.apk (final) or fscache-0.3.0_rc1-r0.apk (rc), fips as fscache-fips-.... Both forms run below.
-#   The stage names no apk file: bin/build-version-check.py and `items-apk` find the apk of a variant in a directory.
-# THE GH TOKEN: bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env (job permissions contents, checks, statuses, pull-requests
-#   read, no id-token; advisor ruling, confirmed; the Witness move of Oct 22 removed the token). The script runs `unset GH_TOKEN` right after the admission line, so cache's scripts never see it.
-#
-# THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed-local.sh holds ALL the Witness flags and `timeout 540`; the judge is the
-# three functions witness_seam, helper and directwitness in bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below. If
-# harness spike (d) changes the wrapping, only those change; the script grammar never names Witness.
-#
-# CACHE'S INTERFACE (ops/handoffs/outbox/2026-10-09-cache-pipeline-interface.md; [F] = fixed by a cache test, [P] = PROPOSED/UNVERIFIED):
-#   build-apk.sh --print-source-date-epoch --source-dir DIR [F]; --variant standard|fips --arch A --version V --source-dir DIR --repo DIR --keyring FILE
-#   --go-archive DIR --melange-lock FILE --out DIR [F]; refuses (exit 2) RELEASE_KMS_KEY_REF, GOPROXY other than off, HTTPS_PROXY, --signing-key [F];
-#   exit 4 = a network attempt in the sealed call [F]. assemble-image.sh --variant production|fips --version V --archive DIR --melange-repo DIR
-#   --keyring-dir DIR --out DIR [F]; the config defaults to build/apko.yaml | build/apko-fips.yaml, so NO --apko-config is ever passed (AC11 B); outputs
-#   OUT/V.digest (the OCI index digest), V.manifests, V.tar, V.full.lock.json [F]. The scripts do their own sudo and unshare [F]; the stage does not.
-#   [P]: the archive layout constants, `bin/build-archives.py` (this lane's: the four Linux archives from the apks), the items layout, whether sudo's PATH
-#   finds melange and apko, Witness's linux arm64 pin. The CLI of bin/chain-verify.py that the scripts use is documented in bin/chain-bind-test.sh
-#   (bind, items-apk, items-merge, which are tested against the REAL subcommands there), bin/chain-rebuild-test.sh (rebuild-compare) and PR 1's tests.
-# KNOWN LIMIT (PROPOSED/UNVERIFIED; the dry run decides): Witness loads its Fulcio signer when the command starts and takes the timestamp when it ends,
-#   so a build longer than the 10-minute certificate may not verify (harness spike (d)); `timeout 540` is the answer in the tests.
-# INTEGRATION BRANCH (advisor 0341): PR 2 targets chain-v030; the real-tree cases are RED here and become green on chain-v030 after PR 1 and PR 2 merge.
+# One stage = one workflow file = one identity. stage-build.yml has the jobs `freeze` (release mode only), `apk` (matrix over ubuntu-24.04 and
+# ubuntu-24.04-arm) and `assemble`; stage-reproducibility.yml has the two matching Witness jobs. The four Witness scripts are rows of
+# .github/policy/chain-scripts.json with their sha256. Each Witness job runs one Witness step, one line through bin/witnessed-local.sh, so the
+# command runs from the repo root and Witness names product subjects relative to it.
+# Every upload names one path, because actions/upload-artifact roots an artifact at the common ancestor of its paths.
+# digests.json holds the two image index digests, the four apk digests (apk-tool.py digest, which ignores the signature) and the four Linux archives,
+# so that Sign's provenance covers everything Release publishes (rules 35, 51); items.json holds the same plus the comparison items.
+# The stage passes --version = the tag minus the leading v (0.3.0, or 0.3.0-rc.1); the apk of a variant is found by bin/build-version-check.py
+# and `items-apk`, so the stage names no apk file.
+# bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env; the script runs `unset GH_TOKEN` right after the admission line.
+# bin/witnessed-local.sh holds all the Witness flags and `timeout 540`; the judge is witness_seam, helper and directwitness in
+# bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below.
+# Witness loads its Fulcio signer when the command starts and takes the timestamp when it ends, so a build longer than the 10-minute certificate
+# may not verify; `timeout 540` is the answer in the tests.
+# The cache scripts' interface is a given: build-apk.sh refuses (exit 2) RELEASE_KMS_KEY_REF, GOPROXY other than off, HTTPS_PROXY and --signing-key,
+# and exits 4 on a network attempt in the sealed call; assemble-image.sh takes no --apko-config. The CLI of bin/chain-verify.py that the scripts
+# use is documented in bin/chain-bind-test.sh (bind, items-apk, items-merge), bin/chain-rebuild-test.sh (rebuild-compare) and PR 1's tests.
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
@@ -555,8 +524,6 @@ st s_probe_ct   "AC2 the probe step continues on error (a held wall and an open 
 GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
 SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
-RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-rapk.sh\n"
-RSNAP_STEP="$RSNAP_STEP      - name: rapk under Witness\n"
 st s_mode_none "AC12 the mode input is missing from the Build stage" "on: must be" \
               '      mode:\n        description: release or snapshot\n        type: string\n        default: release\n' ''
 st s_mode_snap "AC12 the mode defaults to snapshot (a caller that passes nothing would build a snapshot)" "on: must be" 'default: release' 'default: snapshot'
@@ -1372,8 +1339,7 @@ expect ok     "AC16 the real chain-scripts.json lists bin/archive-pull.sh and bi
 expect caught "AC16 archive-pull.sh listed with a sha256 that is not the committed file's" "sha256" archive-listed "$work/ar-nosha.json" "$root"
 expect caught "AC16 archive-verify.py (run by the pull) is not a row of chain-scripts.json" "not a row" archive-listed "$work/ar-norow.json" "$root"
 # REQ-CHAIN-004-AC16: the pointer the stage's pull step reads, in the format cache#345 defines (bin/archive-verify.py): a fixture pointer is accepted, malformed ones are
-# refused, and the committed build/archive.json, the real input of every pull, is held to the same check. It does not exist until the first refresh run's pull request
-# merges: that one case is the only red of this block (known-red KR-ARCHIVE-1, green by the pointer pull request).
+# refused, and the committed build/archive.json, the real input of every pull, is held to the same check.
 AV="$root/bin/archive-verify.py"
 python3 - "$work" <<'PY'
 import json, os, sys
@@ -1685,7 +1651,7 @@ record_env() {
   elif [ "$rc" = 1 ] && grep -Eq '^refused at (build|rebuild): ' < <(head -1 "$work/cv.err") && grep -Fq -- "$word" "$work/cv.err"; then ok "$label"
   else bad "$label -> exit $rc, wanted 1 'refused at <stage>:' naming '$word': $(head -c 140 "$work/cv.err" | tr '\n' ' ')"; fi
 }
-[ -f "$CV" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
+[ -f "$CV" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist"
 record_env ok     "AC8 record-env: a clean DSSE record is accepted" "" clean
 record_env refuse "AC8 record-env: a masked ACTIONS_ID_TOKEN_REQUEST_TOKEN inside the base64 payload is refused and named" ACTIONS_ID_TOKEN_REQUEST_TOKEN masked
 record_env refuse "AC8 record-env: a real-looking value is refused and named" ACTIONS_ID_TOKEN_REQUEST_TOKEN value
@@ -1712,15 +1678,10 @@ fi
 # (MODE real). Each function below covers one kind, so a wrong script fails its cases and the summary still prints.
 script_of() { if [ "$1" = fixture ]; then echo "$work/s-$2.sh"; else echo "$root/bin/build-stage-$2.sh"; fi; }
 mk() { python3 "$harness" mktree "$1" "$2" "$3" "$4" "$5" > /dev/null; }       # mk DIR KIND SCRIPT MODE TAG
-with_timeout() { # with_timeout SECONDS COMMAND...   macOS has no timeout(1): a stuck stage must fail its case, never hang the test
-  local seconds=$1 pid killer status; shift
-  "$@" & pid=$!
-  ( sleep "$seconds"; kill "$pid" 2> /dev/null ) & killer=$!
-  wait "$pid" && status=0 || status=$?
-  kill "$killer" 2> /dev/null; wait "$killer" 2> /dev/null || true
-  return "$status"
-}
-run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 if it hangs); GH_TOKEN is set as the apk job's Witness step sets it
+with_timeout() { timeout -k 2 "$@"; }   # with_timeout SECONDS COMMAND...: a stuck stage fails its case, and one that ignores TERM is killed
+rc=0; with_timeout 1 bash -c "trap '' TERM; sleep 30" || rc=$?
+[ "$rc" = 137 ] && ok "with_timeout kills a child that ignores TERM" || bad "with_timeout left a child that ignores TERM alive (exit $rc)"
+run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 or 137 if it hangs); GH_TOKEN is set as the apk job's Witness step sets it
   local dir=$1 kind=$2 mode=$3 tag=$4; shift 4
   ( cd "$dir" && if with_timeout 120 env GITHUB_ACTIONS=true "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" \
         HARNESS_DIR="$root/bin" REAL_CV="$CV" \
@@ -3634,10 +3595,10 @@ PY
 # exactly those ten paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json freeze/;
 # Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the
 # recipe check and build-apk.sh stay strict.
-TREE=$(mktemp -d)/tree.sh
+TREE=$(mktemp -d -p "$work")/tree.sh
 { echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; echo 'PY3=/usr/bin/python3'
   sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
-tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
+tree_repo() { local d; d=$(mktemp -d -p "$work"); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
   mkdir archive host-tools out witness-apk freeze && for f in archive host-tools out witness-apk freeze; do echo x > \
     "$f/f"; done; echo '{}' > admission.json; echo x > freeze/freeze.txt ); echo "$d"; }
 d=$(tree_repo)
@@ -3650,18 +3611,18 @@ if [ -f "$TREE" ]; then bash "$TREE" "$d" > /dev/null 2>&1; fi
 echo s > "$d/stray.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a stray untracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a stray file is hidden"
 rm "$d/stray.go"; mkdir -p "$d/pkg/archive" && echo s > "$d/pkg/archive/x.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a nested archive/ below the root still makes the tree dirty (the exclusions are anchored)" || bad "REQ-BUILDAPK-001-AC4 tree: a nested archive/ is hidden"
 rm -r "$d/pkg"; echo b >> "$d/tracked"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a modified tracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a modified tracked file is hidden"
-n=$(mktemp -d); nrc=0; if [ -f "$TREE" ]; then bash "$TREE" "$n" > /dev/null 2>&1 || nrc=$?; fi
+n=$(mktemp -d -p "$work"); nrc=0; if [ -f "$TREE" ]; then bash "$TREE" "$n" > /dev/null 2>&1 || nrc=$?; fi
 [ "$nrc" = 1 ] && [ -z "$(ls -A "$n")" ] && ok "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block refuses (exit 1) and writes nothing" || bad "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block did not refuse with exit 1 and write nothing (exit $nrc)"
-r=$(mktemp -d); ( cd "$r" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
+r=$(mktemp -d -p "$work"); ( cd "$r" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
   mkdir build-in witness-build witness-rapk && for f in build-in witness-build witness-rapk; do echo x > "$f/f"; done; echo '{}' > policy.json; mkdir archive out witness-apk host-tools; echo x > archive/f; echo x > out/f; echo x > witness-apk/f; echo x > host-tools/f; echo '{}' > admission.json )
 [ -n "$(git -C "$r" status --porcelain)" ] && bash "$TREE" "$r" > /dev/null 2>&1 && [ -z "$(git -C "$r" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout (build-in/, witness-build/, witness-rapk/, policy.json beside the Build paths) is clean after the block" || bad "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout is still dirty after the block: $(git -C "$r" status --porcelain | tr '\n' ' ')"
-f=$(mktemp -d); ( cd "$f" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && printf '# local excludes' > .git/info/exclude )
+f=$(mktemp -d -p "$work"); ( cd "$f" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && printf '# local excludes' > .git/info/exclude )
 bash "$TREE" "$f" > /dev/null 2>&1; [ -z "$(git -C "$f" status --porcelain)" ] && [ "$(head -1 "$f/.git/info/exclude")" = "# local excludes" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline keeps its last line and still takes the patterns" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline swallowed a pattern: $(head -3 "$f/.git/info/exclude" | tr '\n' '|')"
-g=$(mktemp -d); ( cd "$g" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir out && echo x > out/f && printf ' /out/\n' > .git/info/exclude )
+g=$(mktemp -d -p "$work"); ( cd "$g" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir out && echo x > out/f && printf ' /out/\n' > .git/info/exclude )
 bash "$TREE" "$g" > /dev/null 2>&1; [ -z "$(git -C "$g" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' (a different pattern to git) is not taken for /out/, and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' left the tree dirty: $(git -C "$g" status --porcelain | tr '\n' ' ')"
-m=$(mktemp -d); ( cd "$m" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && rm -rf .git/info )
+m=$(mktemp -d -p "$work"); ( cd "$m" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && rm -rf .git/info )
 bash "$TREE" "$m" > /dev/null 2>&1; [ -z "$(git -C "$m" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the block makes it and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the tree is dirty or the block failed: $(git -C "$m" status --porcelain | tr '\n' ' ')"
-n=$(mktemp -d); ( cd "$n" && git init -q && rm -rf .git/info && echo x > .git/info )
+n=$(mktemp -d -p "$work"); ( cd "$n" && git init -q && rm -rf .git/info && echo x > .git/info )
 nrc=0; nerr=$(bash "$TREE" "$n" 2>&1 >/dev/null) || nrc=$?
 [ "$nrc" = 1 ] && case "$nerr" in *"the exclude file"*) true ;; *) false ;; esac && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block exits 1 and names the exclude file" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block did not exit 1 naming the exclude file (rc=$nrc: $nerr)"
 python3 - << 'PY' && ok "REQ-BUILDAPK-001-AC4 tree: build-apk.sh holds the exclusion block once, before the sealed melange call" || bad "REQ-BUILDAPK-001-AC4 tree: the exclusion block is missing, repeated or after the sealed melange call"
@@ -3798,7 +3759,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1319
+EXPECT=1320
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
