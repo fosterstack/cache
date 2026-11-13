@@ -46,7 +46,7 @@ child() { # manifest-file  childno  platform  exit  report-json  [packages: a nu
 # A child whose scanner produced NO file at all (operational crash).
 assert_stmt() { # desc scanner manifest want_verdict want_hasfindings want_count
   local desc="$1" scanner="$2" mf="$3" wv="$4" whf="$5" wc="$6" out v hf c
-  out=$(python3 "$SCRIPT" statement --scanner "$scanner" --children "$mf" "${STMT_EXTRA[@]}" \
+  out=$(python3 "$SCRIPT" statement --scanner "$scanner" --children "$mf" --expect-children "$(grep -c . "$mf")" "${STMT_EXTRA[@]}" \
         --raw-out "$D/raw.json" --out "$D/stmt.json" \
         --release v0.2.0 --variant production --digest "$AMD" \
         --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00) || {
@@ -123,7 +123,7 @@ mf=$D/m; : >"$mf"
 child "$mf" 1 linux/amd64 1 "$OSV_FIND"
 assert_stmt "osv-scanner finding (exit 1)" osv-scanner "$mf" findings true 1
 # the normalized finding keeps the CVE alias, package and source path.
-python3 "$SCRIPT" statement --scanner osv-scanner --children "$mf" "${STMT_EXTRA[@]}" \
+python3 "$SCRIPT" statement --scanner osv-scanner --children "$mf" --expect-children 1 "${STMT_EXTRA[@]}" \
   --raw-out "$D/raw.json" --out "$D/stmt.json" --digest "$AMD" >/dev/null
 if [ "$(jq -r '.findings[0].id' "$D/stmt.json")" = "CVE-2024-9999" ] \
    && [ "$(jq -r '.findings[0].package' "$D/stmt.json")" = "golang.org/x/net" ] \
@@ -204,7 +204,7 @@ vrun() { # scanner exit report vexfile [variant] [platform] [image-ref]
   local sc="$1" ex="$2" rep="$3" vf="$4" var="${5:-production}" plat="${6:-linux/amd64}" iref="${7:-$REPO@$AMD}" mfv=$D/mv
   : >"$mfv"; child "$mfv" 9 "$plat" "$ex" "$rep"
   local args=(); [ -n "$vf" ] && args=(--vex "$vf")
-  out=$(python3 "$SCRIPT" statement --scanner "$sc" --children "$mfv" "${args[@]}" --raw-out "$D/rawv.json" --out "$D/stmtv.json" \
+  out=$(python3 "$SCRIPT" statement --scanner "$sc" --children "$mfv" --expect-children 1 "${args[@]}" --raw-out "$D/rawv.json" --out "$D/stmtv.json" \
         --release v0.2.0 --variant "$var" --digest "$AMD" --image-ref "$iref" --scanned-at 2026-09-14T00:00:00+00:00 2>"$D/vrun.err") || { V=SCRIPT-FAILED; HF=; C=; S=; return; }
   V=$(jq -r '.verdict' <<<"$out"); HF=$(jq -r '.has_findings' <<<"$out"); C=$(jq -r '.count' <<<"$out"); S=$(jq -r '(.vex_suppressed // []) | length' "$D/stmtv.json")
 }
@@ -280,7 +280,7 @@ vrun osv-scanner 0 "$OSV_CLEAN" "$D/v/garbage.json"; expect "osv: a clean scan w
 vrun osv-scanner 1 "$OSV_CLEAN" "$D/v/by-cve.json"; expect "osv: exit 1 but no finding in the report is still an error (nothing was suppressed)" error false 0 0
 # one child's findings are all covered, another child exits 1 with NOTHING readable: that child is not accounted for, so the run stays an error
 mfx=$D/mx; : >"$mfx"; child "$mfx" 7 linux/amd64 1 "$OSV_FIND"; child "$mfx" 8 linux/arm64 1 "$OSV_CLEAN"
-out=$(python3 "$SCRIPT" statement --scanner osv-scanner --children "$mfx" --vex "$D/v/by-cve.json" --raw-out "$D/rawx.json" --out "$D/stmtx.json" --variant production --digest "$AMD" --release v0.2.0 --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00)
+out=$(python3 "$SCRIPT" statement --scanner osv-scanner --children "$mfx" --expect-children 2 --vex "$D/v/by-cve.json" --raw-out "$D/rawx.json" --out "$D/stmtx.json" --variant production --digest "$AMD" --release v0.2.0 --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00)
 if [ "$(jq -r .verdict <<<"$out")" = error ]; then ok; else bad "osv: a child that exits 1 with no readable finding must keep the run an error even when another child's findings are all covered (got $(jq -r .verdict <<<"$out"))"; fi
 # the statement keeps a VEX section and says which scanners are filtered
 if [ "$(jq -r '.vex.filtered_by_pipeline' "$D/stmtv.json")" != "null" ]; then ok; else bad "the statement does not record whether the pipeline filtered"; fi
@@ -739,7 +739,7 @@ mf=$D/pk6; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" '"3"'
 assert_stmt "grype: a package count that is not a number is an error" grype "$mf" error false 0
 mf=$D/pk7; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" -1
 assert_stmt "grype: a negative package count is an error" grype "$mf" error false 0
-if python3 "$SCRIPT" statement --scanner grype --children "$D/pk2" "${STMT_EXTRA[@]}" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 --variant production \
+if python3 "$SCRIPT" statement --scanner grype --children "$D/pk2" --expect-children 1 "${STMT_EXTRA[@]}" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 --variant production \
      --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>&1 >/dev/null | grep -q "inventoried no package"; then ok; else bad "the zero-package error names what happened (inventoried no package)"; fi
 
 # ---- rc-5a D2 round 2 (first look): a manifest shorter than the children that were enumerated is an incomplete rescan, a zero-package child's findings
@@ -778,6 +778,26 @@ vexdoc "$D/v/lw-prod.json" "[$(st CVE-2024-9999 '[]' not_affected "[$PROD_REPO]"
 expect "latest: an affected statement on another product (the Go product) does not retract the image's not_affected" clean false 0 1
 vexdoc "$D/v/lw-alias.json" "[$(st CVE-2024-9999 '["GO-2024-0001"]' not_affected "[$PROD_REPO]"),$(st GO-2024-0001 '[]' affected "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-alias.json"
 expect "latest: a later affected statement under the alias retracts (same vulnerability)" findings true 1 0
+
+# ---- evidence and completeness: a raw report that is claimed must be held; the child count is required; a child with no exit code failed
+raw_args=(--vex "$VEX0" --release v0.2.0 --variant production --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00)
+mf=$D/ev1; : >"$mf"; child "$mf" 1 linux/amd64 1 "$OSV_FIND"
+rc=0; python3 "$SCRIPT" statement --scanner osv-scanner --children "$mf" --expect-children 1 "${raw_args[@]}" --raw-out "$D/raw-ev.json" \
+  --out "$D/stmt-ev.json" >"$D/ev.out" 2>/dev/null || rc=$?
+if [ "$rc" -ne 0 ] || [ "$(jq -r .verdict "$D/ev.out")" = error ] || [ "$(jq -c . "$D/raw-ev.json")" != '{}' ]; then ok
+else bad "osv-scanner: a statement whose raw_report holds {} while a report was read must be refused"; fi
+if [ "$rc" -eq 0 ] && [ "$(jq -r '.raw_report.sha256' "$D/stmt-ev.json")" != "$(sha256sum "$D/raw-ev.json" | cut -d' ' -f1)" ]; then
+  bad "osv-scanner: raw_report.sha256 is not the hash of the raw file written"; else ok; fi
+err=$(python3 "$SCRIPT" statement --scanner osv-scanner --children "$mf" "${raw_args[@]}" --raw-out "$D/raw-ev.json" --out "$D/stmt-ev.json" 2>&1 >/dev/null) \
+  && bad "--expect-children is required: a call without it must fail" || { grep -q "expect-children" <<<"$err" && ok || bad "a call without --expect-children must name it (got: $err)"; }
+mf=$D/ev2; : >"$mf"; jq -nc --arg p linux/amd64 --arg r "$REPO@x" --arg f "$D/report-1.json" '{platform:$p, ref:$r, report:$f, packages:5}' >>"$mf"
+printf '%s' "$GRYPE_CLEAN" >"$D/report-1.json"
+assert_stmt "grype: a child with no exit code is a failure, never clean" grype "$mf" error false 0
+mf=$D/ev3; : >"$mf"; jq -nc --arg p linux/amd64 --arg r "$REPO@x" --arg f "$D/report-1.json" '{platform:$p, ref:$r, exit:null, report:$f, packages:5}' >>"$mf"
+assert_stmt "grype: a child whose exit code is null is a failure, never clean" grype "$mf" error false 0
+# a product known only by identifiers.purl, or with a null @id beside it, is the same product as its @id (the readers agree on null)
+vexdoc "$D/v/null-id.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":null,"identifiers":{"purl":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]')]"
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/null-id.json"; expect "a null @id is skipped: the identifiers.purl product suppresses" clean false 0 1
 
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
