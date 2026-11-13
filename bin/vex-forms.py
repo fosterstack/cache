@@ -22,7 +22,13 @@ digest named twice. Anything else is refused, naming the key path or the value, 
 does NOT check that the digests are the ones Build verified: that check belongs to the release workflow and is
 tested there. The same inputs give the same bytes (AC7): the only dates are the OpenVEX file's own.
 """
-import argparse, json, os, re, sys, urllib.parse
+import argparse, importlib.util, json, os, re, sys, urllib.parse
+
+# the gate's superseded(): the one reading of which statement a later one replaces (the rescan uses it too)
+_spec = importlib.util.spec_from_file_location(
+    "inspector_gate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "inspector-gate.py"))
+_gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_gate)
 
 REPO = "ghcr.io/fosterstack/cache"
 VARIANTS = ("production", "fips")                    # v0.3.0 ships no :debug image (AC5)
@@ -116,6 +122,7 @@ def read_images(path):
 
 
 def _digests(images):
+    """[(variant, platform|None, digest)] of a shape-checked digest file: each index, then its two children."""
     check_images(images)
     out = []
     for v in VARIANTS:
@@ -143,7 +150,10 @@ def _purl_of(component, cve):
     ids = component.get("identifiers") or {}
     if not isinstance(ids, dict) or set(ids) - {"purl"}:
         raise ValueError("%s: %r carries an identifier these forms cannot read" % (cve, component))
-    at = component.get("@id", "")
+    at = component.get("@id")      # null is absent, as in the gate, the panel and the rescan; anything else but a string is refused
+    if at is not None and not isinstance(at, str):
+        raise ValueError("%s: %r has an @id that is not a string" % (cve, component))
+    at = at or ""
     purls = {x for x in (at if at.startswith("pkg:") else None, ids.get("purl")) if x}
     if len(purls) != 1 or (at and not at.startswith("pkg:")):
         raise ValueError("%s: %r does not name exactly one purl" % (cve, component))
@@ -160,7 +170,7 @@ def _qualifiers(pid, qs, cve):
     query is split RAW on '&' (no percent-decoding of keys or of variant/arch), every part is key=value with a non-blank value, the keys are only
     repository_url, variant and arch in lower case, each once, variant is production or fips, arch is amd64 or arm64. repository_url is the first
     qualifier and carries the repository unencoded (the shape every other reader recognises, RAW_OURS); the caller has already checked that.
-    Returns (repository_url, variant|None, arch|None); anything else is ValueError (generation stops: a form that could be read wider must not be)."""
+    Returns (variant|None, arch|None); anything else is ValueError (generation stops: a form that could be read wider must not be)."""
     seen = {}
     for part in qs.split("&") if qs else []:
         k, eq, v = part.partition("=")
@@ -169,7 +179,7 @@ def _qualifiers(pid, qs, cve):
         seen[k] = v
     if seen.get("variant") not in (None,) + VARIANTS or seen.get("arch") not in (None, "amd64", "arm64"):
         raise ValueError("%s: product %s names an unknown variant or architecture" % (cve, pid))
-    return urllib.parse.unquote(seen.get("repository_url", "")), seen.get("variant"), seen.get("arch")
+    return seen.get("variant"), seen.get("arch")
 
 
 def _scopes(statement, digests, meta=None):
@@ -195,7 +205,7 @@ def _scopes(statement, digests, meta=None):
             raise ValueError("%s: product %s has a part these forms cannot represent" % (_cve(statement), pid))
         if not RAW_OURS.match(pid):                      # ours only after decoding or reordering: the gate, panel and rescan would ignore it, so these forms must not honour it
             raise ValueError("%s: product %s names our image in a form the other readers do not recognise (repository_url first, unencoded)" % (_cve(statement), pid))
-        _, variant, arch = _qualifiers(pid, qs, _cve(statement))
+        variant, arch = _qualifiers(pid, qs, _cve(statement))
         want = urllib.parse.unquote(version) if at else None
         if (variant or arch) and meta is None:
             raise ValueError("%s: product %s is scoped by variant or architecture, which needs the digest file to place" % (_cve(statement), pid))
@@ -224,15 +234,27 @@ def _scopes(statement, digests, meta=None):
             if not pm:                                   # a namespace on a generic package, a qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
             name_, ver_ = urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or "")
-            if pm.group(1).count("/") == 0 and any(c in name_ for c in "/@?#") or any(c in ver_ for c in "/?#"):
-                # a delimiter that was only percent-encoded (busybox%401.37.0, github.com%2Fgolang-jwt%2Fjwt): decoded once it would name another package
-                raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
-            if "/" in pm.group(1) and (any(c in seg for seg in name_.split("/") for c in "@?#") or name_.count("/") != pm.group(1).count("/")):
+            # a delimiter only percent-encoded (busybox%401.37.0, github.com%2Fjwt%2Fx) would name another package decoded
+            if (name_.count("/") != pm.group(1).count("/") or any(c in name_ for c in "@?#")
+                    or any(c in ver_ for c in "/?#")):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
             if sid.startswith("pkg:golang/stdlib@"):     # scanners report the standard library's version as go1.27.2 for purl version 1.27.2
                 ver_ = "go%s" % ver_
             out.append((ds, (name_, ver_)))
     return out
+
+
+def _live(vex):
+    """The statements without the products a later statement replaces (the gate's superseded()): a replaced one neither
+    contradicts nor makes a rule."""
+    statements = vex["statements"]
+    dead = _gate.superseded(statements)
+    live = []
+    for si, st in enumerate(statements):
+        prods = [p for pi, p in enumerate(st.get("products") or []) if (si, pi) not in dead]
+        if prods:
+            live.append(dict(st, products=prods))
+    return dict(vex, statements=live)
 
 
 def _check_conflicts(vex, digests, meta=None):
@@ -253,8 +275,10 @@ def _check_conflicts(vex, digests, meta=None):
 
 
 def inspector(vex, images, version):
-    digests = [d for _, _, d in _digests(images)]
-    meta = {d: (v, plat) for v, plat, d in _digests(images)}
+    found = _digests(images)
+    digests = [d for _, _, d in found]
+    meta = {d: (v, plat) for v, plat, d in found}
+    vex = _live(vex)
     _check_conflicts(vex, digests, meta)
     filters = []
     for st in vex["statements"]:
@@ -290,7 +314,8 @@ def csaf(vex, images, version):
     readers and which Google's loader, reading branch products only, does not apply (the safe direction)."""
     found = _digests(images)
     digests = [d for _, _, d in found]
-    meta = {d: (v, plat) for v, plat, d in _digests(images)}
+    meta = {d: (v, plat) for v, plat, d in found}
+    vex = _live(vex)
     _check_conflicts(vex, digests, meta)
     branches, pid = [], {}
     for v, plat, d in found:
