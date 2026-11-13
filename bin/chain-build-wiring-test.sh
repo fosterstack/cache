@@ -109,11 +109,10 @@ json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD]}, open(w + "/allowed-actions.
 
 def witness_block(spec_):       # the stage's Witness step(s): one line through the helper (the fixture side of the seam, 1/2)
     env = "        env:\n          GH_TOKEN: ${{ github.token }}\n" if spec_["gh"] else ""
-    one = {"build": ("apk", '"${GITHUB_REF_NAME#v}"'), "rebuild": ("rapk", '"${GITHUB_REF_NAME#v}"'),
-           "snapshot-build": ("snapshot-apk", "0.0.0-rc.1"), "snapshot-rebuild": ("snapshot-rapk", "0.0.0-rc.1")}
+    one = {"build": "apk", "rebuild": "rapk", "snapshot-build": "snapshot-apk", "snapshot-rebuild": "snapshot-rapk"}
 
-    def line(step, kind):       # the two assemble jobs run the one script with its STEP and VERSION words
-        if step in one: return "bash bin/witnessed-local.sh %s bin/build-stage-assemble.sh %s %s" % ((step,) + one[step])
+    def line(step, kind):       # the two assemble jobs run the one script with its STEP word
+        if step in one: return "bash bin/witnessed-local.sh %s bin/build-stage-assemble.sh %s" % (step, one[step])
         return "bash bin/witnessed-local.sh %s bin/build-stage-%s.sh" % (step, kind)
     run = line(spec_["step"], spec_["kind"])
     if not spec_.get("mode"):
@@ -715,33 +714,33 @@ rb r_chk_argswap "A1 the check's arguments are swapped" "rapk records are checke
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
-# The four assemble Witness lines are exactly the one script with the step word and the version word (REQ-CHAIN-004-AC2, AC12; REQ-CHAIN-005-AC7).
-RV='"${GITHUB_REF_NAME#v}"'
-for want in "witnessed-local.sh build bin/build-stage-assemble.sh apk $RV" \
-            "witnessed-local.sh snapshot-build bin/build-stage-assemble.sh snapshot-apk 0.0.0-rc.1"; do
+# The four assemble Witness lines are exactly the one script with the step word and nothing else (REQ-CHAIN-004-AC2, AC12; REQ-CHAIN-005-AC7).
+for want in "witnessed-local.sh build bin/build-stage-assemble.sh apk" \
+            "witnessed-local.sh snapshot-build bin/build-stage-assemble.sh snapshot-apk"; do
   if grep -Fxq "        run: bash bin/$want" "$work/build.yml"; then ok "AC2 the fixture Build stage spells the Witness line '$want' exactly"
   else bad "AC2 the fixture Build stage lacks the Witness line '$want'"; fi
 done
-for want in "witnessed-local.sh rebuild bin/build-stage-assemble.sh rapk $RV" \
-            "witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh snapshot-rapk 0.0.0-rc.1"; do
+for want in "witnessed-local.sh rebuild bin/build-stage-assemble.sh rapk" \
+            "witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh snapshot-rapk"; do
   if grep -Fxq "        run: bash bin/$want" "$work/rebuild.yml"; then ok "005-AC7 the fixture Rebuild stage spells the Witness line '$want' exactly"
   else bad "005-AC7 the fixture Rebuild stage lacks the Witness line '$want'"; fi
 done
-wit_mutants() { # wit_mutants st|rb ID STEP WORD VERSION WRONGWORD WRONGVERSION OLDSCRIPT   one mutant of each kind of the assemble Witness line
-  local fn=$1 id=$2 step=$3 word=$4 ver=$5 head
+wit_mutants() { # wit_mutants st|rb ID STEP WORD WRONGWORD OTHERMODEWORD OLDSCRIPT   one mutant of each kind of the assemble Witness line
+  local fn=$1 id=$2 step=$3 word=$4 head
   head="witnessed-local.sh $step bin/build-stage-assemble.sh"
-  "$fn" "${id}_ws" "$id a wrong step word on the assemble Witness line" "exactly the one line" "$head $word $ver" "$head $6 $ver"
-  "$fn" "${id}_wv" "$id a wrong version word on the assemble Witness line" "exactly the one line" "$head $word $ver" "$head $word $7"
-  "$fn" "${id}_mw" "$id the step word missing from the assemble Witness line" "exactly the one line" "$head $word $ver" "$head $ver"
-  "$fn" "${id}_mv" "$id the version word missing from the assemble Witness line" "exactly the one line" "$head $word $ver" "$head $word"
-  "$fn" "${id}_xw" "$id an extra word on the assemble Witness line" "exactly the one line" "$head $word $ver" "$head $word $ver extra"
-  "$fn" "${id}_os" "$id the old script name on the assemble Witness line" "exactly the one line" "$head $word $ver" \
-        "witnessed-local.sh $step bin/build-stage-$8.sh $word $ver"
+  "$fn" "${id}_ws" "$id a wrong step word on the assemble Witness line" "exactly the one line" "$head $word" "$head $5"
+  "$fn" "${id}_wm" "$id the step word of the other mode on the assemble Witness line" "exactly the one line" "$head $word" "$head $6"
+  "$fn" "${id}_wv" "$id a version expression added to the assemble Witness line" "exactly the one line" "$head $word" \
+        "$head $word \"\${GITHUB_REF_NAME#v}\""
+  "$fn" "${id}_mw" "$id the step word missing from the assemble Witness line" "exactly the one line" "$head $word" "$head"
+  "$fn" "${id}_xw" "$id an extra word on the assemble Witness line" "exactly the one line" "$head $word" "$head $word extra"
+  "$fn" "${id}_os" "$id the old script name on the assemble Witness line" "exactly the one line" "$head $word" \
+        "witnessed-local.sh $step bin/build-stage-$7.sh $word"
 }
-wit_mutants st ab_rel build apk "$RV" rapk '"$GITHUB_REF_NAME"' rebuild-assemble
-wit_mutants st ab_snap snapshot-build snapshot-apk 0.0.0-rc.1 apk 0.0.0-rc.2 snapshot-assemble
-wit_mutants rb ar_rel rebuild rapk "$RV" apk '"$GITHUB_REF_NAME"' rebuild-assemble
-wit_mutants rb ar_snap snapshot-rebuild snapshot-rapk 0.0.0-rc.1 rapk 0.0.0-rc.2 snapshot-rebuild-assemble
+wit_mutants st ab_rel build apk rapk snapshot-apk rebuild-assemble
+wit_mutants st ab_snap snapshot-build snapshot-apk snapshot-rapk apk snapshot-assemble
+wit_mutants rb ar_rel rebuild rapk apk snapshot-rapk rebuild-assemble
+wit_mutants rb ar_snap snapshot-rebuild snapshot-rapk snapshot-apk rapk snapshot-rebuild-assemble
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
 # no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml and customer-words-edited.yml, minus the two files PR 2 removes
 mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw" "$work/wf-cw-new"
@@ -1026,10 +1025,11 @@ probe assemble "ARM stage-start run for every step (a copy before the binds)" \
        'L[:ix("chain-verify.py bind")] + [L[ix("stage-start")]] + L[ix("chain-verify.py bind"):]'
 probe assemble "ARM a branch of an if added beside the case blocks" \
        'L[:ix("items-merge")] + ["if [ \"$1\" = apk ]; then"] + L[ix("items-merge"):][:1] + ["fi"] + L[ix("items-merge") + 1:]'
-probe assemble "ARM the version hard-wired to the snapshot version on the image build" \
-       '[re.sub(r"--version \S+", "--version 0.0.0-rc.1", l) if "assemble-image.sh" in l else l for l in L]'
-probe assemble "ARM the version taken from the tag name on the archives" \
-       '[re.sub(r"--version \S+", "--version \"${GITHUB_REF_NAME#v}\"", l) if "build-archives.py" in l else l for l in L]'
+probe assemble "ARM the version of a snapshot step taken from the tag (the snapshot version replaced)" \
+       '[l.replace("0.0.0-rc.1", "${GITHUB_REF_NAME#v}") for l in L]'
+probe assemble "ARM the version of a release step hard-wired to the snapshot version (the tag expression replaced)" \
+       '[l.replace("${GITHUB_REF_NAME#v}", "0.0.0-rc.1") for l in L]'
+probe assemble "ARM the snapshot version taken out (the snapshot arm has no version)" '[l for l in L if "0.0.0-rc.1" not in l]'
 probe assemble "ARM the version missing from the items merge" '[l.replace(" --version", " --noversion") if "items-merge" in l else l for l in L]'
 # every deletion, swap, suffix and insertion, on every line of every kind
 python3 - "$shape" "$KINDS" "$work" <<'PY' > "$work/sweep.out"
@@ -1111,8 +1111,8 @@ text = open(sys.argv[1]).read()
 open(sys.argv[2], "w").write(re.sub(r"(--variant production --version )\S+", r"\g<1>9.9.9", text, count=1))
 PY
 expect caught "005-AC6 the one assemble script gives the production image a version other than its VERSION word" command script "$work/lf_ver.sh" assemble
-replace "$work/build.yml" "$work/lf_apko.yml" "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk $RV" \
-       "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk $RV && apko build build/apko.yaml fscache:x out.tar" && expect caught \
+replace "$work/build.yml" "$work/lf_apko.yml" "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk" \
+       "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk && apko build build/apko.yaml fscache:x out.tar" && expect caught \
        "AC11 a stage workflow names apko in a run step" apko lockflow "$work/lf_apko.yml" "$work/rebuild.yml"
 replace "$work/build.yml" "$work/lf_apkoi.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko --version 9' && expect caught \
        "AC11 the apko installer line with an extra argument is not the one admitted line" apko lockflow "$work/lf_apkoi.yml" "$work/rebuild.yml"
@@ -1872,9 +1872,8 @@ with_timeout() { # with_timeout SECONDS COMMAND...   macOS has no timeout(1): a 
 }
 run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 if it hangs); GH_TOKEN is set as the apk job's Witness step sets it
   local dir=$1 kind=$2 mode=$3 tag=$4 words=() ref; shift 4
-  if [ -n "$(step_of "$kind")" ]; then   # the assemble script takes the STEP and the VERSION (the tag minus v; 0.0.0-rc.1 in a snapshot)
-    ref=${REF_NAME:-$tag}; words=("$(step_of "$kind")" "${VERSION_ARG:-${ref#v}}")
-    case "$kind" in snapshot-*) words[1]=${VERSION_ARG:-0.0.0-rc.1};; esac
+  if [ -n "$(step_of "$kind")" ]; then   # the assemble script takes the STEP only; its version comes from GITHUB_REF_NAME (tag minus v) or is 0.0.0-rc.1 in a snapshot
+    words=("$(step_of "$kind")")
   fi
   ( cd "$dir" && if with_timeout 120 env GITHUB_ACTIONS=true "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" \
         HARNESS_DIR="$root/bin" REAL_CV="$CV" \
@@ -2421,14 +2420,15 @@ for tag in fixture real; do
     [ $((pass + failn - before)) = "$n" ] || bad "the $kind behaviour cases ran $((pass + failn - before)) cases, cases_of says $n"
   done
 done
-# The one assemble script takes its version from the VERSION word, never from the tag name (REQ-CHAIN-004-AC3): another word reaches both image builds and the archives
+# The one assemble script derives its version from its STEP (REQ-CHAIN-004-AC3): the tag minus v for apk and rapk, 0.0.0-rc.1 for the snapshot steps
+# whatever GITHUB_REF_NAME is; a tag named v9.9.9 shows which one reaches both image builds and the archives
 for kind in assemble rebuild-assemble snapshot-assemble snapshot-rebuild-assemble; do
-  vd="$work/ver-$kind"; vtag=v0.3.0; case "$kind" in snapshot-*) vtag=$SNAP_TAG;; esac
-  mk "$vd" "$kind" "$(script_of real "$kind")" oracle "$vtag"; VERSION_ARG=9.9.9 run_stage "$vd" "$kind" oracle "$vtag" > /dev/null
-  if [ "$(n_calls '^image .*--version 9\.9\.9 ' "$vd")" = 2 ] && [ "$(n_calls '^archives .*--version 9\.9\.9 ' "$vd")" = 1 ]; then
-    ok "AC3 $kind: the version of both image builds and of the archives is the VERSION word of the one script (STEP $(step_of "$kind"))"
+  vd="$work/ver-$kind"; vtag=v0.3.0; want=9.9.9; case "$kind" in snapshot-*) vtag=$SNAP_TAG; want=0.0.0-rc.1;; esac
+  mk "$vd" "$kind" "$(script_of real "$kind")" oracle "$vtag"; REF_NAME=v9.9.9 run_stage "$vd" "$kind" oracle "$vtag" > /dev/null
+  if [ "$(n_calls "^image .*--version $want " "$vd")" = 2 ] && [ "$(n_calls "^archives .*--version $want " "$vd")" = 1 ]; then
+    ok "AC3 $kind: with GITHUB_REF_NAME v9.9.9 both image builds and the archives get version $want (STEP $(step_of "$kind"))"
   else
-    bad "AC3 $kind: the VERSION word did not reach the images and the archives: $(grep -E '^(image|archives) ' "$vd/calls.log" 2> /dev/null | tr '\n' '|' | cut -c1-200)"
+    bad "AC3 $kind: the version did not reach the images and the archives as $want: $(grep -E '^(image|archives) ' "$vd/calls.log" 2> /dev/null | tr '\n' '|' | cut -c1-200)"
   fi
 done
 # the old scripts are gone: one file, no workflow call, no row, no judge entry (REQ-CHAIN-004-AC3)
@@ -3971,7 +3971,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1361
+EXPECT=1362
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
