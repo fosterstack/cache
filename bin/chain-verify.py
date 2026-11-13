@@ -957,12 +957,12 @@ def cmd_bind_check(a):
 def cmd_apk_compare(a):
     """The comparison job's result (run in a job with no key and no token: the signer and the builder never share a
     machine, Rebuild's apks never reach a job that holds a credential) is a small unsigned file: verdict pass and
-    exactly the four expected pairs (amd64 and arm64, standard and fips) with the sha256 and the apk-tool digest of
-    Build's apk and of Rebuild's. Nothing in it is trusted alone. Rebuild's record (--record) is verified as the rebuild
+    exactly the four expected pairs (amd64 and arm64, standard and fips) with the apk-tool digest of Build's apk and of
+    Rebuild's. Nothing in it is trusted alone. Rebuild's record (--record) is verified as the rebuild
     stage's record and must attest the digest list Build attested (--digests), so every Rebuild digest is Build's. The
     file is then accepted only as a pass for those digests: each pair's Build digest is the apk-<variant>-<arch> digest
     Build attested and its Rebuild digest is the same. A verdict other than the word pass, another number of pairs, a
-    repeated or unknown pair, a key that is not in the schema, or a hash that is not 64 lower-case hex is refused."""
+    repeated or unknown pair, a key that is not in the schema, or a digest that is not sha256:<64 lower-case hex> is refused."""
     stage = "rebuild"
     pol = _release_policy(a, stage)
     try:
@@ -995,7 +995,7 @@ def cmd_apk_compare(a):
     if len(pairs) != 4:
         refuse(stage, "apk-compare: %d pairs, exactly four are required (amd64 and arm64, standard and fips)"
                % len(pairs))
-    want_keys = {"arch", "variant", "name", "build_sha256", "rebuild_sha256", "build_digest", "rebuild_digest"}
+    want_keys = {"arch", "variant", "name", "build_digest", "rebuild_digest"}
     seen = set()
     for p in pairs:
         if not isinstance(p, dict) or set(p) != want_keys:
@@ -1013,9 +1013,6 @@ def cmd_apk_compare(a):
         if key in seen:
             refuse(stage, "apk-compare: the pair %s/%s is listed twice (and another of the four is missing)" % key)
         seen.add(key)
-        for k in ("build_sha256", "rebuild_sha256"):
-            if not isinstance(p[k], str) or not re.fullmatch(r"[0-9a-f]{64}", p[k]):
-                refuse(stage, "apk-compare: %s of %s/%s is not a sha256 (64 lower-case hex)" % (k, p["arch"], p["variant"]))
         for k in ("build_digest", "rebuild_digest"):
             if not isinstance(p[k], str) or not SHA256_DIGEST.fullmatch(p[k]):
                 refuse(stage, "apk-compare: %s of %s/%s is not sha256:<64 lower-case hex>" % (k, p["arch"], p["variant"]))
@@ -1109,6 +1106,70 @@ RC_RECORDS = (
 )
 
 
+def _rc_stages(rec, pol_path):
+    """Release's stage checks over the rc run's records, as release-verify.sh makes them."""
+    digests = rec("witness-build/digests.json")
+    cmd_stage_start(argparse.Namespace(stage="release", previous="build", rekor_entries=None,
+                                       record=rec("witness-build/build-collection.json"),
+                                       digests=digests, policy=pol_path))
+    cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
+                                      items=rec("witness-build/items.json"), product=None))
+    # Build's record names the tag through its signed admission-baseline.json product (`tag`): the baseline is bound to
+    # the record like items.json, and its tag must be the marker's rc tag (checked in _rc_baseline_tag)
+    cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
+                                      items=rec("witness-build/admission-baseline.json"),
+                                      product="admission-baseline.json"))
+    cmd_stage_start(argparse.Namespace(stage="release", previous="sign", rekor_entries=None,
+                                       record=rec("provenance/provenance.json"), digests=digests,
+                                       policy=pol_path))
+    cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", rekor_entries=None,
+                                       record=rec("witness-rebuild/rebuild-collection.json"),
+                                       digests=digests, policy=pol_path))
+    cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check")))
+
+
+def _rc_baseline_tag(rec, marker):
+    """A Build record made in the run for another tag (the final one) is refused."""
+    baseline = load_json(rec("witness-build/admission-baseline.json"), "admission baseline")
+    if not isinstance(baseline, dict) or baseline.get("tag") != marker["rc_tag"]:
+        baseline_tag = baseline.get("tag") if isinstance(baseline, dict) else None
+        refuse("build", "tag: Build's admission baseline is for %s, the marker's rc tag is %s"
+               % (json.dumps(baseline_tag), marker["rc_tag"]))
+
+
+def _rc_provenance(rec, marker, pol_path, repository):
+    """The marker's run id is the run Sign's provenance came from: the statement (verified under the rc tag's Sign
+    identity) names its run as invocationId, and that must be exactly this repository's URL for exactly this run (not
+    a prefix, not another repository). The built commit is the rc tag's commit as the repository holds it now: a moved
+    or recreated tag cannot borrow the run of its earlier commit."""
+    pol = load_json(pol_path, "policy")
+    with tempfile.TemporaryDirectory() as tmp:
+        pstmt, _pp, _pd = verify_record(pol, "sign", rec("provenance/provenance.json"), tmp,
+                                        rekor_path=rec("provenance/provenance.rekor.json"))
+    inv = (((pstmt.get("predicate") or {}).get("runDetails") or {}).get("metadata") or {}).get("invocationId")
+    want_run = "https://github.com/%s/actions/runs/%s" % (repository, marker["run_id"])
+    if inv != want_run:
+        refuse("marker", "run: the marker names run %s of the repository %s but Sign's provenance names the run %r"
+               % (marker["run_id"], repository, inv))
+    deps = (((pstmt.get("predicate") or {}).get("buildDefinition") or {}).get("resolvedDependencies"))
+    srcs = [(d.get("digest") or {}).get("gitCommit") for d in deps if isinstance(d, dict)] if isinstance(deps, list) else []
+    if srcs != [marker["rc_commit"]]:
+        refuse("marker", "built: Sign's provenance names the built commit(s) %r but the rc tag %s is at %s"
+               % (srcs, marker["rc_tag"], marker["rc_commit"]))
+
+
+def _rc_hostile(rec):
+    import contextlib
+    import io
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            chain_hostile.cmd_hostile_verdict(argparse.Namespace(results=rec("hostile-results/hostile-results.json")))
+    except SystemExit as ex:
+        if ex.code not in (0, None):
+            refuse("hostile", "the hostile verdict of the rc run is not green: %s" % " ".join(err.getvalue().split())[:400])
+
+
 def cmd_rc_proof(a):
     import contextlib
     import io
@@ -1120,61 +1181,17 @@ def cmd_rc_proof(a):
     rec = lambda rel: os.path.join(a.records, rel)
     with tempfile.TemporaryDirectory() as tmp:
         pol_path = os.path.join(tmp, "policy.json")
-        ns = argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, out=pol_path)
-        policy_make(ns)
-        quiet = io.StringIO()
-        with contextlib.redirect_stdout(quiet):
-            digests = rec("witness-build/digests.json")
-            cmd_stage_start(argparse.Namespace(stage="release", previous="build", rekor_entries=None,
-                                               record=rec("witness-build/build-collection.json"),
-                                               digests=digests, policy=pol_path))
-            cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                              items=rec("witness-build/items.json"), product=None))
-            # Build's record names the tag through its signed admission-baseline.json product (`tag`): the baseline is
-            # bound to the record like items.json, and
-            # its tag must be the marker's rc tag, so a Build record made in the run for another tag (the final one) is
-            # refused here
-            cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                              items=rec("witness-build/admission-baseline.json"),
-                                              product="admission-baseline.json"))
-            cmd_stage_start(argparse.Namespace(stage="release", previous="sign", rekor_entries=None,
-                                               record=rec("provenance/provenance.json"), digests=digests,
-                                               policy=pol_path))
-            cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", rekor_entries=None,
-                                               record=rec("witness-rebuild/rebuild-collection.json"),
-                                               digests=digests, policy=pol_path))
-            cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check")))
-        # the marker's run id is the run Sign's provenance came from: the statement (verified above under the rc tag's Sign identity) names its run as
-        # invocationId, and that must be exactly this repository's URL for exactly this run (not a prefix, not another repository)
-        baseline = load_json(rec("witness-build/admission-baseline.json"), "admission baseline")
-        if not isinstance(baseline, dict) or baseline.get("tag") != marker["rc_tag"]:
-            baseline_tag = baseline.get("tag") if isinstance(baseline, dict) else None
-            refuse("build", "tag: Build's admission baseline is for %s, the marker's rc tag is %s"
-                   % (json.dumps(baseline_tag), marker["rc_tag"]))
-        pol = load_json(pol_path, "policy")
-        with tempfile.TemporaryDirectory() as tmp2:
-            pstmt, _pp, _pd = verify_record(pol, "sign", rec("provenance/provenance.json"), tmp2,
-                                            rekor_path=rec("provenance/provenance.rekor.json"))
-        inv = (((pstmt.get("predicate") or {}).get("runDetails") or {}).get("metadata") or {}).get("invocationId")
-        want_run = "https://github.com/%s/actions/runs/%s" % (a.repository, marker["run_id"])
-        if inv != want_run:
-            refuse("marker", "run: the marker names run %s of the repository %s but Sign's provenance names the run %r" % (marker["run_id"], a.repository, inv))
-        # the commit the provenance was built from is the rc tag's commit as the repository holds it now: a moved or recreated tag cannot borrow the run of its earlier commit
-        deps = (((pstmt.get("predicate") or {}).get("buildDefinition") or {}).get("resolvedDependencies"))
-        srcs = [(d.get("digest") or {}).get("gitCommit") for d in deps if isinstance(d, dict)] if isinstance(deps, list) else []
-        if srcs != [marker["rc_commit"]]:
-            refuse("marker", "built: Sign's provenance names the built commit(s) %r but the rc tag %s is at %s" % (srcs, marker["rc_tag"], marker["rc_commit"]))
-        err = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(quiet):
-                chain_hostile.cmd_hostile_verdict(argparse.Namespace(results=rec("hostile-results/hostile-results.json")))
-        except SystemExit as ex:
-            if ex.code not in (0, None):
-                refuse("hostile", "the hostile verdict of the rc run is not green: %s" % " ".join(err.getvalue().split())[:400])
+        policy_make(argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, out=pol_path))
+        with contextlib.redirect_stdout(io.StringIO()):
+            _rc_stages(rec, pol_path)
+        _rc_baseline_tag(rec, marker)
+        _rc_provenance(rec, marker, pol_path, a.repository)
+    _rc_hostile(rec)
     for name, rel in RC_RECORDS:
         have = _sha256_bytes_of(rec(rel), "marker", "the %s record %s" % (name, rel))
         if have != marker["records"][name]:
-            refuse("marker", "digest: the %s record %s is not the file the marker names (sha256 %s, marker %s)" % (name, rel, have, marker["records"][name]))
+            refuse("marker", "digest: the %s record %s is not the file the marker names (sha256 %s, marker %s)"
+                   % (name, rel, have, marker["records"][name]))
     print("ok")
 
 
@@ -2025,8 +2042,8 @@ def sr_received(stage, rec_dir, art_dir, name):
     return got
 
 
-def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
-    """Checks one record directory; returns (step, payload bytes, [data file names])."""
+def _sr_layout(stage, rec_dir, name):
+    """The record folder's files: exactly one record, of a step of the stage, and only data files beside it."""
     steps = SR_STEPS[stage]
     names = sorted(os.listdir(rec_dir))
     locals_ = [n for n in names if n.endswith(".local.json")]
@@ -2044,6 +2061,11 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
             refuse(stage, "record: %s holds %s: a Check record folder holds only its record (%s), nothing else is staged or signed" % (name, n, fname))
         if n != fname and n not in SR_DATA:
             refuse(stage, "record: %s holds %s, which is neither the record (%s) nor a data file (%s)" % (name, n, fname, " ".join(SR_DATA)))
+    return names, fname, step
+
+
+def _sr_statement(stage, rec_dir, name, fname, step, ref):
+    """The record's DSSE envelope, its statement and its attestors; returns (payload bytes, statement)."""
     try:
         with open(os.path.join(rec_dir, fname), "rb") as f:
             dsse = strict_json(f.read())
@@ -2078,6 +2100,13 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
             if not isinstance(found, str) or found != ref:
                 refuse(stage, "ref: the ref inside %s/%s (%s) is not Sign's ref %s"
                               % (name, fname, json.dumps(found), ref))
+    return payload, stmt
+
+
+def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
+    """Checks one record directory; returns (step, payload bytes, [data file names])."""
+    names, fname, step = _sr_layout(stage, rec_dir, name)
+    payload, stmt = _sr_statement(stage, rec_dir, name, fname, step, ref)
     subs = typed_subjects(stage, stmt)
     commits = [x["name"][len(GIT_COMMIT_PREFIX):] for x in subs if x["name"].startswith(GIT_COMMIT_PREFIX)]
     if commits != [commit]:
@@ -2111,6 +2140,8 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
         if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
             refuse(stage, "material: the record's file:witness-build/digests.json is not Build's attested digests.json (--digests)")
     return step, payload, [n for n in names if n != fname], {}
+
+
 
 
 def sr_expected_many(stage, paths):
