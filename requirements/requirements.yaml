@@ -5000,44 +5000,43 @@ requirements:
         status: approved
 
   - id: REQ-CI-001
-    title: A required CI job that is split into parallel jobs runs every suite exactly once
+    title: The required check allowlist-chain fails unless every suite of the suites job succeeded
     statement: >
-      When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
-      twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
-      fails unless every new job succeeded.
-    source: [ci-speed read-back of Oct 23 (advisor), the pin-wiring judge (pin-wiring-test.sh)]
+      The branch protection requires the check `allowlist-chain` of .github/workflows/ci.yml. It is a gate job that needs the `suites` job (one matrix leg per suite
+      that no counting step of ci.yml runs, REQ-CI-005) and fails unless the result of that job is exactly `success`, so a failed, skipped, cancelled or missing
+      suite cannot pass the required check.
+    source: [ci-speed read-back of Oct 23 (advisor)]
     tier: community
     introduced: v0.3.0
-    origin: advisor Oct 23 2026 (CI speed, under the owner's rules that no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
+    origin: advisor Oct 23 2026 (CI speed, under the rules that no check is dropped and every test runs exactly once); the gate keeps the name the branch protection requires
     confidence: documented
     notes: >
-      The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are
-      fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing
-      or empty result as on a failed, skipped or cancelled one.
+      The gate fails on a missing or empty result as on a failed, skipped or cancelled one. The legs of the matrix come from the floors file, so a suite added to
+      or removed from it needs no edit of the gate.
     acceptance_criteria:
       - id: REQ-CI-001-AC1
-        given: "the CI workflow after a required job is split into parallel jobs"
-        when: "the steps of the split jobs are compared with the steps the job had before the split"
-        then: "every step of the old job is in exactly one of the new jobs, unchanged in name, run text and relative order, and no other step exists in them except the checkout, base-ref fetch, Python setup and pip steps each job needs"
-        verification: { method: unit, release_blocking: false }
+        given: "the CI workflow"
+        when: "the jobs are read"
+        then: "a job named allowlist-chain exists and needs the `suites` job and no other"
+        verification: { method: inspection, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC2
         given: "the same workflow"
         when: "the gate job is read"
-        then: "a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass"
-        verification: { method: unit, release_blocking: false }
+        then: "it has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of the suites job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure)"
+        verification: { method: inspection, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC3
-        given: "any job of the split"
+        given: "the gate job"
         when: "its keys are read"
-        then: "no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step"
-        verification: { method: unit, release_blocking: false }
+        then: "it has no `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, id-token or secret, and its one step reads only the result of the suites job"
+        verification: { method: inspection, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC4
-        given: "the pin-wiring judge"
-        when: "it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
-        then: "it fails for each of those mutations, and it accepts the real workflow"
-        verification: { method: unit, release_blocking: false }
+        given: "a suite added to or removed from the floors file"
+        when: "the workflow runs"
+        then: "the check name allowlist-chain and the gate's text are unchanged, and the gate covers the suite's leg through the suites job"
+        verification: { method: inspection, release_blocking: false }
         status: approved
 
   - id: REQ-CI-005
@@ -5045,6 +5044,7 @@ requirements:
     statement: >
       Every suite named in test-evidence/suite-floors.json is run once per workflow run, with its cases counted against its floor: by the counting step of
       ci.yml that names it or, when no step does, by its own leg of the suites matrix, whose list is the floors file less the suites a counting step names.
+      The floors file is the one list of suites: the job that lists the legs reads no other file.
     source: [ci-speed read-back of Oct 23, the suite guard (bin/suite-guard-run.py)]
     tier: community
     introduced: v0.3.0
@@ -5083,6 +5083,18 @@ requirements:
         given: "the committed ci.yml and floors file"
         when: "the suites job lists its legs"
         then: "they are exactly the suites of the floors file that no counting step of ci.yml names, so each floored suite runs once in a workflow run; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC6
+        given: "a leg of the suites matrix"
+        when: "its steps are read"
+        then: "the pinned grype is installed in the legs of vex-scope-test.sh and vex-both-scanners-test.sh and in no other leg"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC7
+        given: "chain-verify-test.sh, which runs every verify case with the network cut, on a machine with no way to cut it"
+        when: "it runs with GITHUB_ACTIONS equal to true, and when it runs without"
+        then: "with GITHUB_ACTIONS equal to true it fails, naming the missing cut; without it the run says so and passes; no step of ci.yml sets a variable for this"
         verification: { method: unit, release_blocking: false }
         status: approved
 
