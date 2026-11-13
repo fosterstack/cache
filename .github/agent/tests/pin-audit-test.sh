@@ -5,8 +5,10 @@
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE]
 #   exit 0: no hit and no unexcepted dispute; exit 1: a hit or a disputed hit (the issue says so); exit 2: it could not do its job (a failed gh, unreadable input).
 #   Fixtures: {"lists": {ITEM: {"github": [ADV], "osv": [ADV]}}, "upstream": {"owner/repo@sha": {"reachable": bool}}, "nested": {"owner/repo@sha": [REF]},
-#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}}   with ADV = {"id", "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
-#   gh calls it may make: issue list / issue create / issue edit / label create, NEVER anything about runs, environments or
+#              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}}   with ADV = {"id",
+#              "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
+#   gh calls it may make: issue list / issue create / issue edit / label create, NEVER anything about runs,
+#   environments or
 #   secrets: the private details are produced on the Mac, not by this workflow (advisor 0175 amendment 5).
 set -euo pipefail
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
@@ -103,7 +105,8 @@ check test "$rc" -eq 0; check test "$(creates "$work/clean.gh")" -eq 0
 check grep -q 'no known-compromised versions as of 2026-10-05' "$work/clean.out"
 CASE="AC9: the report never claims 'no supply chain issues' (in any case or spacing), clean day or hit day"
 check none_match -i 'no supply[ -]chain (issue|problem)' "$work/clean.out" "$work/clean.err"
-CASE="AC5: the audit covers every kind of version the pin scan covers: actions, installer-action inputs, install-scanner pins and hash-pinned packages are all in its inventory"
+CASE="AC5: the audit covers every kind of version the pin scan covers: actions, installer-action inputs, \
+install-scanner pins and hash-pinned packages are all in its inventory"
 check python3 - "$work/clean.out" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()
@@ -142,7 +145,8 @@ check grep -qx 'Rollback: pin the newest clean version: v4.1.1.*' "$work/newest.
 check bash -c "! grep '^Rollback:' '$work/newest.gh.bodies' | grep -q 'v4\.[23]\.0'"
 CASE="a hit on a PR's NEW pin (present in its head, absent from its base: it has not run) with a clean rollback available is NOT labelled owner-decision"
 run hitpr "$HIT_GH" "$work/r-pr" --base HEAD~1
-check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/hitpr.gh"; check none_match 'owner-decision' "$work/hitpr.gh"; check grep -q 'v4.3.0' "$work/hitpr.gh.bodies"
+check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/hitpr.gh"
+check none_match 'owner-decision' "$work/hitpr.gh"; check grep -q 'v4.3.0' "$work/hitpr.gh.bodies"
 CASE="a hit on a pin that is on main today is labelled owner-decision (the workflows ran it), and still names the rollback"
 check grep -q 'owner-decision' "$work/hit.gh"; check grep -q 'v4.3.0' "$work/hit.gh.bodies"
 GH_LIST='[{"number": 31, "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run hit2 "$HIT_GH" "$work/r-cur"
@@ -165,9 +169,12 @@ check test "$rc" -eq 1; check grep -q 'MAL-2026-1234' "$work/mal.gh.bodies"
 
 # --- AC8: no clean old version, or we RAN the bad one: owner-decision -----------------------------------------------------------------------------
 ONLYBAD="{\"lists\": {\"$ITEM_CO\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \"modified\": \"$(dago 20)\"}], \"osv\": []}}, \"upstream\": {}, \"nested\": {}, \"prs\": [],
- \"versions\": {\"actions/checkout\": [{\"version\": \"v4.1.0\", \"sha\": \"$SHA1\", \"published\": \"$(dago 90)\", \"lists\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \"modified\": \"$(dago 20)\"}]}}]}}"
+ \"versions\": {\"actions/checkout\": [{\"version\": \"v4.1.0\", \"sha\": \"$SHA1\", \"published\": \"$(dago 90)\", \
+\"lists\": {\"github\": [{\"id\": \"GHSA-aaaa-bbbb-cccc\", \"incident\": \"INC-1\", \"affected\": true, \
+\"modified\": \"$(dago 20)\"}]}}]}}"
 run noclean "$ONLYBAD" "$work/r-pr" --base HEAD~1
-CASE="no clean version exists (only the affected one): the issue says to DROP the action, and is labelled owner-decision as well as supply-chain-hit (even for a PR's not-yet-run pin)"
+CASE="no clean version exists (only the affected one): the issue says to DROP the action, and is labelled \
+owner-decision as well as supply-chain-hit (even for a PR's not-yet-run pin)"
 check grep -qi 'drop' "$work/noclean.gh.bodies"; check grep -q 'owner-decision' "$work/noclean.gh"; check grep -q 'supply-chain-hit' "$work/noclean.gh"
 run ranpast "$HIT_GH" "$work/r-ranpast"
 CASE="the bad version was replaced 20 days ago: the audit reads the workflow git history of the last 90 days, finds that we RAN it, and reports it with owner-decision (though today's tree is clean)"
@@ -184,7 +191,8 @@ import glob, json, sys
 for p in glob.glob(sys.argv[1] + "/*.gh"):
     for l in open(p):
         c = json.loads(l)
-        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["issue", "reopen"], ["label", "create"]), (p, c)
+        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["issue", "reopen"],
+                         ["label", "create"]), (p, c)
 PY
 
 # --- AC5: upstream reachability and nested references -----------------------------------------------------------------------------------------------
@@ -481,14 +489,17 @@ import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 assert any(c[:3] == ["issue", "reopen", "50"] for c in calls) and any(c[:3] == ["issue", "edit", "50"] for c in calls), calls
 PY
-CASE="a rollback candidate must itself be an exact pin: a candidate whose _item is a tag-form action is skipped, the next older clean one is chosen"
+CASE="a rollback candidate must itself be an exact pin: a candidate whose _item is a tag-form action is skipped, the \
+next older clean one is chosen"
 check python3 - "$aud" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 class N:
     def versions(self, item):
-        return [{"version": "v3", "sha": None, "published": "2026-09-01T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "v3", "v3")},
-                {"version": "v2", "sha": "2" * 40, "published": "2026-08-01T00:00:00Z", "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")}]
+        return [{"version": "v3", "sha": None, "published": "2026-09-01T00:00:00Z",
+                 "_item": pa.inv.Item("action", "o/r", "v3", "v3")},
+                {"version": "v2", "sha": "2" * 40, "published": "2026-08-01T00:00:00Z",
+                 "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")}]
     def lists(self, item): return [], []
 r = pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N())
 assert r["version"] == "v2" and r["sha"] == "2" * 40, r
@@ -551,13 +562,19 @@ PY
 CASE="the rollback line names the publish time only when it is known (never 'published None')"
 check python3 - "$aud" <<'PY'
 import importlib.util, sys
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1])
+pa = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pa)
 f = pa.Finding(pa.inv.Item("action", "o/r", "a" * 40, "v4"), "advisory", ["GHSA-x"], "an advisory covers this version")
 line = lambda rb: [l for l in pa.body_of(f, rb, True, False, "2026-10-05").splitlines() if l.startswith("Rollback:")][0]
-assert line({"version": "v2", "sha": "2" * 40, "published": None}) == "Rollback: pin the newest clean version: v2 (commit " + "2" * 40 + ").", line({"version": "v2", "sha": "2" * 40, "published": None})
-assert line({"version": "v2", "sha": None, "published": "2026-08-01T00:00:00Z"}).endswith("v2, published 2026-08-01T00:00:00Z."), "x"
+assert line({"version": "v2", "sha": "2" * 40, "published": None}) == \
+    "Rollback: pin the newest clean version: v2 (commit " + "2" * 40 + ").", \
+    line({"version": "v2", "sha": "2" * 40, "published": None})
+assert line({"version": "v2", "sha": None, "published": "2026-08-01T00:00:00Z"}).endswith(
+    "v2, published 2026-08-01T00:00:00Z."), "x"
 PY
-CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges are never a pin; commits, digests and dotted numbers can"
+CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges are never a pin; commits, \
+digests and dotted numbers can"
 check python3 - "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -849,7 +866,8 @@ fi
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
-# REQ-SUP-001-AC27: Go's own toolchain release is read by the install-line rule of the pin scan; the advisory audit still covers it (the Go vulnerability database files the standard
+# REQ-SUP-001-AC27: Go's own toolchain release is read by the install-line rule of the pin scan; the advisory audit
+# still covers it (the Go vulnerability database files the standard
 # library under the package stdlib): the item go is covered, queried as Go/stdlib at its version, and a stdlib record affecting the pin is a hit.
 CASE="AC27: the audit covers tool:go (queried as the Go package stdlib) and an affected stdlib record is a hit, the fixed one is not"
 check python3 - "$here/../supply-chain/pin-audit.py" <<'PY'
@@ -1376,14 +1394,18 @@ mkdir -p "$work/shim-log"
 rm -f "$work/phstall.log-entered"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-remote ] && exit 0; [ "$a" = log ] && { : >"%s"; exec sleep 60; }; done\nexec %s "$@"\n' "$work/phstall.log-entered" "$REALGIT" >"$work/shim-log/git"; chmod +x "$work/shim-log/git"
 echo "$CLEAN" >"$work/phstall.fx.json"; rc=0
-( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 10 >"$work/phstall.out" 2>"$work/phstall.err" ) || rc=$?
+( cd "$work" && PATH="$work/shim-log:$PATH" timeout 40 python3 "$aud" --root "$work/r-clean" --fixtures \
+    "$work/phstall.fx.json" --now "$NOW" --gh "$work/gh" --deadline 10 >"$work/phstall.out" 2>"$work/phstall.err" ) \
+    || rc=$?
 CASE="markers: a stalled history read on a daily run exits 2"
 check test "$rc" -eq 2
 CASE="markers: that stall happened inside git log, so the history read was reached"
 check test -e "$work/phstall.log-entered"
 CASE="markers: its stderr is exactly one line: still in history after 10 s"
 check python3 -c 'import sys; assert open(sys.argv[1]).read() == "audit: could not finish: still in history after 10 s\n"' "$work/phstall.err"
-run phhit '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true, "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}}' "$work/r-cur"
+run phhit \
+    '{"lists": {"'"$ITEM_CO"'": {"github": [{"id": "GHSA-x", "incident": "i", "affected": true,'\
+' "modified": "2026-10-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}}' "$work/r-cur"
 CASE="markers: a day with a hit ends with the issues phase, and the exit code is 1 as before"
 check test "$rc" -eq 1 -a "$(phases "$work/phhit.out")" = "history,judging,open pull requests,open pull request pins,nested references,exceptions,issues"
 run phbase "$CLEAN" "$work/r-pr" --base HEAD~1 --head HEAD --report-only
@@ -1440,7 +1462,8 @@ for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
 PY
 
 
-# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits 2; one
+# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits
+# 2; one
 # ls-tree -r per revision is all the history reader asks git for ---
 run oversizeobs "$CLEAN" "$work/r-oversize"
 CASE="oversize history, daily run: an unlisted unreadable revision ends the audit with exit 2 and the cap's own message"
