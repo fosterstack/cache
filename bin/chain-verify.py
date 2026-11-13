@@ -31,15 +31,16 @@ import sys
 import tempfile
 import time
 
-# PyYAML is imported by the `actions` subcommand only (load_yaml): the Sign job installs cosign and nothing else (Codex security r1 S4)
+# PyYAML is imported by the `actions` subcommand only (load_yaml): the Sign job installs nothing of the kind
 import types
 
 
 def load_sibling(name):
-    """Load the helper module <name> from this directory, never through sys.path and never from a bytecode cache (Opus #249 r4, r5): its
-    bytes must carry the sha256 listed for it in .github/policy/chain-scripts.json, and those same bytes are compiled and run, so a
-    __pycache__ entry cannot stand in for the hashed file. The module is registered under its name first, so the other helper's
-    `from chain_common import` gets this same copy."""
+    """Load the helper module <name> from this directory, never through sys.path and never from a bytecode cache:
+    its bytes must carry the sha256 listed for it in .github/policy/chain-scripts.json, and those same bytes are
+    compiled and run, so a __pycache__ entry cannot stand in for the hashed file. The module is registered under its
+    name first, so the other helper's `from chain_common import` gets this same copy. The list is read with plain
+    json: strict_json lives in the module this function loads."""
     if name in sys.modules:
         return sys.modules[name]
     here = os.path.dirname(os.path.abspath(__file__))
@@ -370,6 +371,7 @@ def _type_uri(v):
 
 
 HEX_LEN = {"sha1": 40, "sha256": 64, "sha384": 96, "sha512": 128}
+SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def check_subjects(stage, stmt):
@@ -543,7 +545,7 @@ def verify_record(pol, stage, rec_path, tmp, rekor_path=None):
     return stmt, payload, dsse
 
 
-# ---- Rekor (v1 log, the DSSE entry kind that `cosign attest-blob --key` writes) --------------------------------------
+# ---- Rekor (v1 log, the DSSE entry kind kms-sign posts) ------------------------------------------------------------
 # Ratify B (owner, Oct 29): every signature by the KMS release key keeps its Rekor entry, and Release refuses a
 # signature without one.
 # An entry is a protobuf-JSON TransparencyLogEntry as it sits in a Sigstore bundle's tlogEntries (logIndex and
@@ -561,7 +563,7 @@ def verify_record(pol, stage, rec_path, tmp, rekor_path=None):
 # No time in the entry is trusted: the log's signature over it is checked, and the integrated time is not compared with
 # anything.
 CANONICAL_DECIMAL = re.compile(r"0|[1-9][0-9]*")
-# seconds between one try and six retries (about 63 s in all); then Release fails closed
+# seconds between one try and six retries (about 63 s in all); then kms-sign refuses
 REKOR_WAITS = (1, 2, 4, 8, 16, 32)
 
 
@@ -573,6 +575,18 @@ def canonical_int(e, field):
     if not isinstance(v, str) or not CANONICAL_DECIMAL.fullmatch(v):
         raise ValueError("%s %r is not a canonical decimal string" % (field, v))
     return int(v)
+
+
+def rekor_item_numbers_why(item):
+    """None, or the reason a tlogEntries item is not an object with a canonical logIndex and integratedTime."""
+    if not isinstance(item, dict):
+        return "the tlogEntries item is not an object"
+    for k in ("logIndex", "integratedTime"):
+        try:
+            canonical_int(item, k)
+        except (KeyError, ValueError):
+            return "the Rekor entry has no %s" % k
+    return None
 
 
 def rekor_entry_fields(e):
@@ -762,26 +776,6 @@ def check_rekor(pol, stage, rekor_path, payload, sig, key_der):
     refuse(stage, first)
 
 
-class RekorDown(Exception):
-    """Raised by a fetch when Rekor did not answer: the one failure that is worth a wait and another try."""
-
-
-def rekor_with_retry(fetch, sleep, stage="release"):
-    """Ask Rekor for the entries with `fetch`: one try, then up to six retries after waits of 1, 2, 4, 8, 16 and 32
-    seconds. A refusal raised by `fetch` is final and is not retried. Rekor still down after the last wait: the run
-    fails closed with one line naming Rekor, and a re-run continues. `sleep` is passed in so a test waits for nothing."""
-    for wait in REKOR_WAITS + (None,):
-        try:
-            return fetch()
-        except Refuse:
-            raise
-        except Exception:
-            if wait is None:
-                refuse(stage, "rekor did not answer after one try and six retries (63 seconds): the run "
-                              "stops here, run it again when Rekor is back")
-            sleep(wait)
-
-
 def typed_subjects(stage, stmt):
     """The statement's subjects, each {name: string, digest: {algorithm: string}}; anything else is a refusal naming the subject,
     never a traceback (REQ-CHAIN-003-AC1, 001-AC2, Codex security r2)."""
@@ -827,7 +821,7 @@ def parse_digest_bytes(raw, stage="sign"):
     for k, v in obj.items():
         if not re.fullmatch(r"[a-z0-9-]+", k):
             refuse(stage, "digest file format: name %r is not [a-z0-9-]+" % k)
-        if not isinstance(v, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", v):
+        if not isinstance(v, str) or not SHA256_DIGEST.fullmatch(v):
             refuse(stage, "digest file format: value of %r is not sha256:<64 lower-case hex>" % k)
     return obj
 
@@ -847,8 +841,7 @@ def rekor_entries_path(record, given):
 def cmd_verify(a):
     pol = load_json(a.policy, "policy")
     with tempfile.TemporaryDirectory() as tmp:
-        verify_record(pol, a.stage, a.record, tmp,
-                      rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
+        verify_record(pol, a.stage, a.record, tmp, rekor_path=rekor_entries_path(a.record, a.rekor_entries))
     print("ok")
 
 
@@ -859,22 +852,21 @@ STARTS_FROM = {"rebuild": ("build",), "check": ("build",), "sign": ("build",), "
 def cmd_stage_start(a):
     if a.previous not in STARTS_FROM.get(a.stage, ()):
         refuse(a.previous, "stage %s does not start from the %s stage's record (stage)" % (a.stage, a.previous))
-    chain_items.check_digest_names(a.previous, a.digests)
-    pol = load_json(a.policy, "policy")
-    if pol.get("dry_run"):
-        refuse(a.previous, "the policy is a dry-run policy (dry): no stage may start from it")
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
-        d_obj = strict_json(d_bytes)
-    except (OSError, ValueError):
-        refuse(a.previous, "digest file is missing or not JSON")
+    except OSError:
+        refuse(a.previous, "digest file is missing or unreadable")
+    chain_items.check_digest_bytes(a.previous, d_bytes)
+    pol = load_json(a.policy, "policy")
+    if pol.get("dry_run"):
+        refuse(a.previous, "the policy is a dry-run policy (dry): no stage may start from it")
     with tempfile.TemporaryDirectory() as tmp:
-        stmt, payload, dsse = verify_record(pol, a.previous, a.record, tmp,
-                                            rekor_path=rekor_entries_path(a.record, getattr(a, "rekor_entries", None)))
+        stmt, _payload, dsse = verify_record(pol, a.previous, a.record, tmp,
+                                             rekor_path=rekor_entries_path(a.record, a.rekor_entries))
     if dsse["payloadType"] == POLT:
         refuse(a.previous, "predicate: a signed release policy is not a record a stage starts from")
-    parse_digest_bytes(d_bytes, a.previous)   # the same format check Sign applies (Codex security r2), before any comparison
+    d_obj = parse_digest_bytes(d_bytes, a.previous)     # the format check Sign applies, before any comparison
     digest_compare(a.previous, stmt, d_bytes, d_obj)
     print("ok")
 
@@ -905,7 +897,7 @@ def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
     # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
-    product = (a.product if "product" in a else None) or "items.json"
+    product = a.product or "items.json"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
         refuse("build", "product: %r is not a plain file name" % product)
     want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product
@@ -963,18 +955,22 @@ def cmd_bind_check(a):
 
 
 def cmd_apk_compare(a):
-    """The comparison job's result (the release stage's comparison step, run in a job with no key and no token; the owner's rule of Oct 21 2026: the signer and the builder
-    never share a machine, Rebuild's apks never reach a job that holds a credential) is a small file: verdict pass and exactly the four expected pairs (amd64 and
-    arm64, standard and fips) with the whole-file sha256 and the apk-tool digest of Build's apk and of Rebuild's. It is accepted only for Build's attested digests:
-    each pair's Build digest is the apk-<variant>-<arch> digest Build attested in witness-build/digests.json, and Rebuild's is the same. Nothing else about the
-    file is trusted: a verdict other than the word pass, another number of pairs, a repeated or unknown pair, a key that is not in the schema, or a hash that is
-    not 64 lower-case hex is refused."""
+    """The comparison job's result (run in a job with no key and no token: the signer and the builder never share a
+    machine, Rebuild's apks never reach a job that holds a credential) is a small unsigned file: verdict pass and
+    exactly the four expected pairs (amd64 and arm64, standard and fips) with the sha256 and the apk-tool digest of
+    Build's apk and of Rebuild's. Nothing in it is trusted alone. Rebuild's record (--record) is verified as the rebuild
+    stage's record and must attest the digest list Build attested (--digests), so every Rebuild digest is Build's. The
+    file is then accepted only as a pass for those digests: each pair's Build digest is the apk-<variant>-<arch> digest
+    Build attested and its Rebuild digest is the same. A verdict other than the word pass, another number of pairs, a
+    repeated or unknown pair, a key that is not in the schema, or a hash that is not 64 lower-case hex is refused."""
     stage = "rebuild"
+    pol = _release_policy(a, stage)
     try:
         with open(a.digests, "rb") as f:
-            d = parse_digest_bytes(f.read(), stage)
+            d_bytes = f.read()
     except OSError:
         refuse(stage, "apk-compare: the digest list is missing or unreadable")
+    d = parse_digest_bytes(d_bytes, stage)
     try:
         with open(a.file, "rb") as f:
             raw = f.read(200001)
@@ -989,26 +985,30 @@ def cmd_apk_compare(a):
     if not isinstance(obj, dict):
         refuse(stage, "apk-compare: the result is not a JSON object")
     if set(obj) != {"verdict", "pairs"}:
-        refuse(stage, "apk-compare: the result's keys must be exactly verdict and pairs, got %s (an unknown key is refused)" % sorted(obj))
+        refuse(stage, "apk-compare: the result's keys must be exactly verdict and pairs, got %s (an unknown key is "
+                      "refused)" % sorted(obj))
     if obj["verdict"] != "pass":
         refuse(stage, "apk-compare: the verdict is %r, only the word pass is accepted" % (obj["verdict"],))
     pairs = obj["pairs"]
     if not isinstance(pairs, list):
         refuse(stage, "apk-compare: pairs is not a list")
     if len(pairs) != 4:
-        refuse(stage, "apk-compare: %d pairs, exactly four are required (amd64 and arm64, standard and fips)" % len(pairs))
+        refuse(stage, "apk-compare: %d pairs, exactly four are required (amd64 and arm64, standard and fips)"
+               % len(pairs))
     want_keys = {"arch", "variant", "name", "build_sha256", "rebuild_sha256", "build_digest", "rebuild_digest"}
     seen = set()
     for p in pairs:
         if not isinstance(p, dict) or set(p) != want_keys:
-            refuse(stage, "apk-compare: a pair's keys must be exactly %s (an unknown key is refused)" % sorted(want_keys))
+            refuse(stage, "apk-compare: a pair's keys must be exactly %s (an unknown key is refused)"
+                   % sorted(want_keys))
         if p["arch"] not in ("amd64", "arm64"):
             refuse(stage, "apk-compare: arch %r is neither amd64 nor arm64" % (p["arch"],))
         if p["variant"] not in ("standard", "fips"):
             refuse(stage, "apk-compare: variant %r is neither standard nor fips" % (p["variant"],))
-        pat = r"fscache-[0-9][0-9A-Za-z.+_~-]*-r0\.apk" if p["variant"] == "standard" else r"fscache-fips-[0-9][0-9A-Za-z.+_~-]*-r0\.apk"
-        if not isinstance(p["name"], str) or not re.fullmatch(pat, p["name"]):
-            refuse(stage, "apk-compare: the name %r is not an apk Build makes for the %s variant" % (p["name"], p["variant"]))
+        prefix = "fscache-" if p["variant"] == "standard" else "fscache-fips-"
+        if not isinstance(p["name"], str) or not re.fullmatch(prefix + r"[0-9][0-9A-Za-z.+_~-]*-r0\.apk", p["name"]):
+            refuse(stage, "apk-compare: the name %r is not an apk Build makes for the %s variant"
+                   % (p["name"], p["variant"]))
         key = (p["arch"], p["variant"])
         if key in seen:
             refuse(stage, "apk-compare: the pair %s/%s is listed twice (and another of the four is missing)" % key)
@@ -1017,15 +1017,24 @@ def cmd_apk_compare(a):
             if not isinstance(p[k], str) or not re.fullmatch(r"[0-9a-f]{64}", p[k]):
                 refuse(stage, "apk-compare: %s of %s/%s is not a sha256 (64 lower-case hex)" % (k, p["arch"], p["variant"]))
         for k in ("build_digest", "rebuild_digest"):
-            if not isinstance(p[k], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", p[k]):
+            if not isinstance(p[k], str) or not SHA256_DIGEST.fullmatch(p[k]):
                 refuse(stage, "apk-compare: %s of %s/%s is not sha256:<64 lower-case hex>" % (k, p["arch"], p["variant"]))
         attested = d.get("apk-%s-%s" % (p["variant"], p["arch"]))
         if attested is None:
             refuse(stage, "apk-compare: Build attested no digest apk-%s-%s" % (p["variant"], p["arch"]))
         if p["build_digest"] != attested:
-            refuse(stage, "apk-compare: the Build apk of %s/%s has digest %s, Build attested %s" % (p["arch"], p["variant"], p["build_digest"], attested))
+            refuse(stage, "apk-compare: the Build apk of %s/%s has digest %s, Build attested %s"
+                   % (p["arch"], p["variant"], p["build_digest"], attested))
         if p["rebuild_digest"] != p["build_digest"]:
-            refuse(stage, "apk-compare: the rebuild digest of %s/%s differs from Build's (%s, %s)" % (p["arch"], p["variant"], p["rebuild_digest"], p["build_digest"]))
+            refuse(stage, "apk-compare: the rebuild digest of %s/%s differs from Build's (%s, %s)"
+                   % (p["arch"], p["variant"], p["rebuild_digest"], p["build_digest"]))
+    with tempfile.TemporaryDirectory() as tmp:
+        stmt, _payload, dsse = verify_record(pol, stage, a.record, tmp)
+    if dsse["payloadType"] == POLT:
+        refuse(stage, "predicate: a signed release policy is not Rebuild's record")
+    if product_digest(typed_subjects(stage, stmt)) != hashlib.sha256(d_bytes).hexdigest():
+        refuse(stage, "apk-compare: Rebuild's verified record attests another digest list than Build attested "
+                      "(the rebuild digests are not Build's)")
     print("ok")
 
 
@@ -1063,7 +1072,6 @@ def cmd_check_list(a):
         for x in (record, entries):
             if x in inside and os.path.islink(os.path.join(d, x)):
                 refuse("check", "the %s %s is a symlink" % (n, "record" if x == record else "Rekor entries file"))
-    seen = set()
     for n in CHECK_RECORDS:
         path = os.path.join(a.dir, "witness-" + n, "%s-collection.json" % n)
         try:
@@ -1081,10 +1089,6 @@ def cmd_check_list(a):
             refuse("check", "digests: the %s record names %d material subjects file:witness-build/digests.json, exactly one is required" % (n, len(mats)))
         if mats[0]["digest"].get("sha256") != want:
             refuse("check", "digest: the %s record is about another digest list than the one Build attested" % n)
-        h = _sha256_bytes_of(path, "check", n)
-        if h in seen:
-            refuse("check", "the %s record is a duplicate of another record" % n)
-        seen.add(h)
     print("ok")
 
 
@@ -1121,10 +1125,11 @@ def cmd_rc_proof(a):
         quiet = io.StringIO()
         with contextlib.redirect_stdout(quiet):
             digests = rec("witness-build/digests.json")
-            cmd_stage_start(argparse.Namespace(stage="release", previous="build", record=rec("witness-build/build-collection.json"),
+            cmd_stage_start(argparse.Namespace(stage="release", previous="build", rekor_entries=None,
+                                               record=rec("witness-build/build-collection.json"),
                                                digests=digests, policy=pol_path))
             cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
-                                              items=rec("witness-build/items.json")))
+                                              items=rec("witness-build/items.json"), product=None))
             # Build's record names the tag through its signed admission-baseline.json product (`tag`): the baseline is
             # bound to the record like items.json, and
             # its tag must be the marker's rc tag, so a Build record made in the run for another tag (the final one) is
@@ -1132,9 +1137,11 @@ def cmd_rc_proof(a):
             cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
                                               items=rec("witness-build/admission-baseline.json"),
                                               product="admission-baseline.json"))
-            cmd_stage_start(argparse.Namespace(stage="release", previous="sign", record=rec("provenance/provenance.json"), digests=digests,
+            cmd_stage_start(argparse.Namespace(stage="release", previous="sign", rekor_entries=None,
+                                               record=rec("provenance/provenance.json"), digests=digests,
                                                policy=pol_path))
-            cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", record=rec("witness-rebuild/rebuild-collection.json"),
+            cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", rekor_entries=None,
+                                               record=rec("witness-rebuild/rebuild-collection.json"),
                                                digests=digests, policy=pol_path))
             cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check")))
         # the marker's run id is the run Sign's provenance came from: the statement (verified above under the rc tag's Sign identity) names its run as
@@ -1182,11 +1189,8 @@ def make_policy_from_template(a, tpl_path):
         refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z[-rcN] nor a workflow_dispatch on a branch (tag)" % (ref, ev))
     out = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     out.close()
-    ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, out=out.name)
     try:
-        policy_make(ns)
-        with open(out.name) as f:
-            return json.load(f)
+        return policy_make(argparse.Namespace(template=tpl_path, tag=None, ref=ref, out=out.name))
     finally:
         os.unlink(out.name)
 
@@ -1245,7 +1249,7 @@ def sbom_byproducts(stmt, items_path):
     out = []
     for name in SBOM_ITEMS:
         v = items.get(name)
-        if not isinstance(v, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", v):
+        if not isinstance(v, str) or not SHA256_DIGEST.fullmatch(v):
             refuse("sign", "--items: %s is missing or is not sha256:<64 lower-case hex>" % name)
         out.append({"name": name, "digest": {"sha256": v.split(":", 1)[1]}})
     return out
@@ -1258,6 +1262,7 @@ def cmd_check_build_record(a):
 
 # the KMS key, named by its alias and never by an ARN, a token or a file (ruling of Oct 28)
 RELEASE_KEY_REF = "awskms:///alias/fosterstack-release-signing"
+KMS_KEY_REF = re.compile(r"awskms:///([A-Za-z0-9:/_.-]+)")
 
 
 def provenance_statement(pol, obj, dry, byproducts):
@@ -1338,8 +1343,8 @@ def bundle_to_outputs(bun, out_dir, name="provenance", expect_payload=None):
 
 
 # --- kms-sign: the apk signature (KA-1). The algorithm is named on every call, never "the first one the key lists" (the owner, Nov 1):
-# cosign 3.1.3 cannot name it for a KMS key (sigstore uses SigningAlgorithms[0]), so the aws CLI does the signing and this function
-# posts the one Rekor entry itself. The name of the algorithm is written here and nowhere else.
+# the aws CLI does the signing and this module posts the one Rekor entry itself. The name of the algorithm is written
+# here and nowhere else.
 RELEASE_SIGNING_ALGORITHM = "RSASSA_PKCS1_V1_5_SHA_256"
 AWS_CLI_MAJOR = "2"   # the pinned major of the aws CLI: the callers hand kms-sign the checksum-pinned aws CLI 2.39.3 their job installed (the version and sha256 of the installer's aws-cli row); this major check is the second, coarser line
 
@@ -1354,8 +1359,9 @@ def kms_key_file_check(key_file, kms_public_key_b64):
     for the key (get-public-key's PublicKey, base64). A file that differs, is missing or is not a readable public key is one refusal line naming the file; it is made before the KMS Sign call and any Rekor POST."""
     try:
         want = base64.b64decode(kms_public_key_b64, validate=True)
-        assert want
-    except (ValueError, AssertionError, TypeError):
+    except (ValueError, TypeError):
+        want = b""
+    if not want:
         kms_refuse("get-public-key did not answer with the key's PublicKey (base64)")
     got = None
     try:
@@ -1372,13 +1378,11 @@ def rekor_entry_check(item, digest_hex, sig, pub_pem):
     """A1: one tlogEntries item is a Rekor entry for THIS signature: its canonicalized body is a hashedrekord 0.0.1 whose data hash is the
     sha256 of the signed bytes (algorithm sha256), whose signature content is the signature it made and whose public key is the release
     public key, and it carries a logIndex and an integratedTime. Returns None or the reason it is not."""
-    if not isinstance(item, dict):
-        return "the tlogEntries item is not an object"
-    for k in ("logIndex", "integratedTime"):
-        if not isinstance(item.get(k), str) or not item[k].isdigit():
-            return "the Rekor entry has no %s" % k
+    why = rekor_item_numbers_why(item)
+    if why:
+        return why
     try:
-        body = json.loads(base64.b64decode(item["canonicalizedBody"], validate=True))
+        body = strict_json(b64d(item["canonicalizedBody"]))
         spec = body["spec"]
         if body.get("kind") != "hashedrekord" or body.get("apiVersion") != "0.0.1":
             return "the Rekor entry is not a hashedrekord 0.0.1"
@@ -1393,13 +1397,17 @@ def rekor_entry_check(item, digest_hex, sig, pub_pem):
     return None
 
 
+RELEASE_PUB_PEM = re.compile(r"-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+-----END PUBLIC KEY-----\n")
+
+
 def release_pub_pem(pub_path):
+    """The public key file as bytes when it is exactly one PEM public key block and nothing else, else None."""
     try:
-        m = re.search(r"-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+?-----END PUBLIC KEY-----\n", open(pub_path).read())
-        assert m
-        return m.group(0).encode()
-    except (OSError, AssertionError):
+        with open(pub_path) as f:
+            text = f.read()
+    except (OSError, ValueError):
         return None
+    return text.encode() if RELEASE_PUB_PEM.fullmatch(text) else None
 
 
 def cmd_bundle_check(a):
@@ -1407,7 +1415,8 @@ def cmd_bundle_check(a):
     pem = release_pub_pem(a.public_key)
     who = "bundle-check"
     try:
-        doc = json.load(open(a.bundle))
+        with open(a.bundle, "rb") as f:
+            doc = strict_json(f.read())
         entries = doc["verificationMaterial"]["tlogEntries"]
         sig = base64.b64decode(doc["messageSignature"]["signature"], validate=True)
     except (OSError, ValueError, KeyError, TypeError):
@@ -1500,7 +1509,7 @@ def rekor_get_existing(base, location):
         try:
             with rekor_open(urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})) as resp:
                 code, raw = resp.status, resp.read(1 << 20)
-            doc = json.loads(raw)
+            doc = strict_json(raw)
         except urllib.error.HTTPError as ex:   # the same rule as the POST: a 429 or a 5xx is retried, any other status (a 3xx included) fails at once
             if ex.code != 429 and ex.code < 500:
                 kms_refuse("Rekor's existing entry could not be fetched (%s, status %d)" % (type(ex).__name__, ex.code))
@@ -1520,12 +1529,13 @@ def rekor_get_existing(base, location):
 
 def kms_rekor_config(config_path, pub_path):
     """The pinned Rekor v1 URL of the signing config and the release public key as PEM bytes, or a refusal."""
+    pem_bytes = release_pub_pem(pub_path)
     try:
-        cfg = json.load(open(config_path))
-        base = cfg["rekorTlogUrls"][0]["url"].rstrip("/")
-        pem_bytes = release_pub_pem(pub_path)
-        assert pem_bytes
-    except (OSError, ValueError, KeyError, IndexError, TypeError, AssertionError):
+        with open(config_path, "rb") as f:
+            base = strict_json(f.read())["rekorTlogUrls"][0]["url"].rstrip("/")
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        base = None
+    if base is None or pem_bytes is None:
         kms_refuse("cannot read the Rekor URL of the signing config %s or the public key %s" % (config_path, pub_path))
     return base, pem_bytes
 
@@ -1543,7 +1553,7 @@ def kms_rekor_post(base, body):
         try:
             with rekor_open(req) as resp:
                 code, raw = resp.status, resp.read(1 << 20)
-            return json.loads(raw), code
+            return strict_json(raw), code
         except urllib.error.HTTPError as ex:
             if ex.code == 409:
                 return rekor_get_existing(base, (ex.headers.get("Location") if ex.headers is not None else None)), 201
@@ -1586,7 +1596,7 @@ def pem_der(pem_bytes):
 
 def kms_pubkey_hint(pem_bytes):
     """publicKey.hint of every bundle kind: base64(sha256(DER public key))."""
-    return base64.b64encode(hashlib.sha256(base64.b64decode("".join(pem_bytes.decode().splitlines()[1:-1]))).digest()).decode()
+    return b64e(hashlib.sha256(pem_der(pem_bytes)).digest())
 
 
 def kms_rekor_entry(config_path, pub_path, digest_hex, sig, rekor_pem):
@@ -1610,25 +1620,15 @@ def kms_rekor_entry(config_path, pub_path, digest_hex, sig, rekor_pem):
     return item, kms_pubkey_hint(pem_bytes)
 
 
-DSSE_PAYLOAD_TYPE = "application/vnd.in-toto+json"
-
-
-def dsse_pae(payload_type, payload):
-    """The DSSE pre-authentication encoding: "DSSEv1" SP LEN(type) SP type SP LEN(payload) SP payload."""
-    return b"DSSEv1 %d %s %d " % (len(payload_type), payload_type.encode(), len(payload)) + payload
-
-
 def rekor_dsse_entry_check(item, envelope_text, payload, sig_b64, pem_bytes):
     """The dsse 0.0.1 twin of rekor_entry_check: one tlogEntries item is a Rekor entry for THIS envelope: its canonicalized body is a dsse 0.0.1 whose envelopeHash is the sha256 of the envelope text posted, whose
     payloadHash is the sha256 of the statement's bytes, whose one signature is the one made and whose verifier is the release public key (base64 of the PEM), and it carries a logIndex and an integratedTime.
     Returns None or the reason it is not. UNVERIFIED against a real Rekor v1.5.3: the canonical body shape is the one the suite's stub writes (the envelopeHash of the text posted is read from the stub)."""
-    if not isinstance(item, dict):
-        return "the tlogEntries item is not an object"
-    for k in ("logIndex", "integratedTime"):
-        if not isinstance(item.get(k), str) or not item[k].isdigit():
-            return "the Rekor entry has no %s" % k
+    why = rekor_item_numbers_why(item)
+    if why:
+        return why
     try:
-        body = json.loads(base64.b64decode(item["canonicalizedBody"], validate=True))
+        body = strict_json(b64d(item["canonicalizedBody"]))
         spec = body["spec"]
         if body.get("kind") != "dsse" or body.get("apiVersion") != "0.0.1":
             return "the Rekor entry is not a dsse 0.0.1 entry (its kind is %s)" % json.dumps(body.get("kind"))
@@ -1671,10 +1671,28 @@ def kms_usage(reason):
     sys.exit(2)
 
 
-def kms_key_setup(aws, key_ref, public_key, signing_config):
-    """Every KMS signing call starts here: the key reference is awskms:///<key>, the aws CLI is the pinned major, the key lists RELEASE_SIGNING_ALGORITHM, and --public-key is the KMS key (compared as DER) before anything
-    is signed or posted, and the signing config, the key file's PEM and the pinned Rekor key are read (one get-public-key, no DescribeKey, no role change). Returns the key id."""
-    m = re.fullmatch(r"awskms:///([A-Za-z0-9:/_.-]+)", key_ref)
+def kms_public_key(aws, key_id, who="kms-sign"):
+    """The one get-public-key call of a signing run: {SigningAlgorithms: [str], PublicKey: base64}, or a refusal."""
+    query = "{SigningAlgorithms:SigningAlgorithms,PublicKey:PublicKey}"
+    try:
+        answer = strict_json(kms_aws(aws, ["kms", "get-public-key", "--key-id", key_id, "--query", query,
+                                           "--output", "json"], who))
+        algs = answer["SigningAlgorithms"]
+        listed = isinstance(algs, list) and all(isinstance(x, str) for x in algs)
+    except (ValueError, KeyError, TypeError):
+        listed = False
+    if not listed:
+        kms_refuse("the release key %s: get-public-key did not answer with a list of SigningAlgorithms" % key_id, who)
+    return answer
+
+
+def kms_key_setup(aws, key_ref, public_key, signing_config, answer=None):
+    """Every KMS signing call starts here: the key reference is awskms:///<key>, the aws CLI is the pinned major, the
+    key lists RELEASE_SIGNING_ALGORITHM, and --public-key is the KMS key (compared as DER) before anything is signed
+    or posted, and the signing config, the key file's PEM and the pinned Rekor key are read. `answer` is the key's
+    get-public-key answer when the caller already asked (sign does, before it makes its output folder); without it
+    this asks once. No DescribeKey, no role change. Returns the key id."""
+    m = KMS_KEY_REF.fullmatch(key_ref)
     if not m:
         kms_usage("needs --key-ref awskms:///<key>")
     key_id = m.group(1)
@@ -1684,20 +1702,21 @@ def kms_key_setup(aws, key_ref, public_key, signing_config):
         kms_refuse("aws is not runnable at %s" % aws)
     vm = re.match(r"aws-cli/(\d+)\.(\d+)\.(\d+)", (vr.stdout + vr.stderr).strip())
     if vr.returncode != 0 or not vm or vm.group(1) != AWS_CLI_MAJOR:
-        kms_refuse("the aws CLI at %s is %r: version %s.x is pinned" % (aws, (vr.stdout + vr.stderr).strip()[:60], AWS_CLI_MAJOR))
-    print("kms-sign: aws-cli %s.%s.%s (major %s pinned)" % (vm.group(1), vm.group(2), vm.group(3), AWS_CLI_MAJOR), file=sys.stderr)
-    # every call: the key must list the algorithm, and --public-key must be the KMS key (GetPublicKey only, one call; no DescribeKey, no role change)
-    try:
-        gpk = json.loads(kms_aws(aws, ["kms", "get-public-key", "--key-id", key_id, "--query", "{SigningAlgorithms:SigningAlgorithms,PublicKey:PublicKey}", "--output", "json"]))
-        algs = gpk["SigningAlgorithms"]
-        assert isinstance(algs, list) and all(isinstance(x, str) for x in algs)
-    except (ValueError, AssertionError, KeyError, TypeError):
-        kms_refuse("the release key %s: get-public-key did not answer with a list of SigningAlgorithms" % key_ref)
+        kms_refuse("the aws CLI at %s is %r: version %s.x is pinned"
+                   % (aws, (vr.stdout + vr.stderr).strip()[:60], AWS_CLI_MAJOR))
+    print("kms-sign: aws-cli %s.%s.%s (major %s pinned)" % (vm.group(1), vm.group(2), vm.group(3), AWS_CLI_MAJOR),
+          file=sys.stderr)
+    if answer is None:
+        answer = kms_public_key(aws, key_id)
+    algs = answer["SigningAlgorithms"]
     if RELEASE_SIGNING_ALGORITHM not in algs:
-        kms_refuse("the release key %s does not support %s (it lists: %s); the release key must be RSA with usage SIGN_VERIFY" % (key_ref, RELEASE_SIGNING_ALGORITHM, ", ".join(algs)))
-    # KA-2: --public-key (the file the Rekor entry carries) must be the KMS key, checked before the KMS Sign call and the Rekor POST (a refusal leaves no signature, no entry and no bundle)
-    kms_key_file_check(public_key, gpk.get("PublicKey"))
-    # the reads that can still refuse (the signing config's Rekor URL, the key file as PEM, the pinned Rekor key) are made here, before the KMS Sign call: a refusal after it would leave a signature no entry carries
+        kms_refuse("the release key %s does not support %s (it lists: %s); the release key must be RSA with usage "
+                   "SIGN_VERIFY" % (key_ref, RELEASE_SIGNING_ALGORITHM, ", ".join(algs)))
+    # --public-key (the file the Rekor entry carries) must be the KMS key, checked before the KMS Sign call and the
+    # Rekor POST: a refusal leaves no signature, no entry and no bundle
+    kms_key_file_check(public_key, answer.get("PublicKey"))
+    # the reads that can still refuse are made before the KMS Sign call: a refusal after it would leave a signature
+    # no entry carries
     kms_rekor_config(signing_config, public_key)
     pinned_rekor_pem(signing_config)
     return key_id
@@ -1706,14 +1725,13 @@ def kms_key_setup(aws, key_ref, public_key, signing_config):
 def kms_sign_digest(aws, key_id, digest):
     """The one KMS Sign call: the 32-byte sha256 `digest`, RELEASE_SIGNING_ALGORITHM named, DIGEST message type. Returns the signature bytes. Never repeated for a Rekor failure."""
     with tempfile.TemporaryDirectory() as td:
-        os.chmod(td, 0o700)
         msg = os.path.join(td, "digest.bin")
         with open(msg, "wb") as f:
             f.write(digest)
         out = kms_aws(aws, ["kms", "sign", "--key-id", key_id, "--message", "fileb://" + msg, "--message-type", "DIGEST",
                             "--signing-algorithm", RELEASE_SIGNING_ALGORITHM, "--output", "json"])
     try:
-        ans = json.loads(out)
+        ans = strict_json(out)
         got_alg, sig64 = ans["SigningAlgorithm"], ans["Signature"]
     except (ValueError, KeyError, TypeError):
         kms_refuse("aws kms sign answered with no SigningAlgorithm and Signature")
@@ -1721,8 +1739,9 @@ def kms_sign_digest(aws, key_id, digest):
         kms_refuse("aws kms sign answered with SigningAlgorithm %s, not %s" % (got_alg, RELEASE_SIGNING_ALGORITHM))
     try:
         sig = base64.b64decode(sig64, validate=True)
-        assert sig
-    except (ValueError, AssertionError, TypeError):
+    except (ValueError, TypeError):
+        sig = b""
+    if not sig:
         kms_refuse("aws kms sign answered with a Signature that is not base64")
     return sig
 
@@ -1742,23 +1761,26 @@ def kms_write_files(files, what):
         kms_refuse("cannot write %s (%s)" % (what, type(ex).__name__))
 
 
-def kms_dsse_bundle(aws, key_ref, statement_path, bundle_path, signing_config, public_key):
-    """The DSSE kind of kms-sign: the statement file's bytes are the payload, verbatim (the file must hold one JSON object, as cosign attest-blob requires of a statement); the envelope is
-    {payloadType application/vnd.in-toto+json, payload (base64), signatures [{sig}]}; KMS signs sha256 of the PAE once; ONE dsse 0.0.1 entry is posted and its answer judged; the v0.3 bundle (dsseEnvelope, one tlogEntries
-    item, publicKey.hint, no certificate) is written exclusively to `bundle_path`."""
+def kms_dsse_bundle(aws, key_ref, statement_path, bundle_path, signing_config, public_key, answer=None):
+    """The DSSE kind of kms-sign: the statement file's bytes are the payload, verbatim (the file must hold one JSON
+    object); the envelope is {payloadType application/vnd.in-toto+json, payload (base64), signatures [{sig}]}; KMS
+    signs sha256 of the PAE once; ONE dsse 0.0.1 entry is posted and its answer judged; the v0.3 bundle
+    (dsseEnvelope, one tlogEntries item, publicKey.hint, no certificate) is written exclusively to `bundle_path`."""
     try:
         with open(statement_path, "rb") as f:
             statement = f.read()
-        obj = strict_json(statement)
-        assert isinstance(obj, dict)
-    except (OSError, ValueError, AssertionError):
+        is_object = isinstance(strict_json(statement), dict)
+    except (OSError, ValueError):
+        is_object = False
+    if not is_object:
         kms_refuse("the statement file %s is missing, empty or not one JSON object" % statement_path)
     if os.path.lexists(bundle_path):
         kms_refuse("%s already exists; kms-sign writes only files it makes and removes none of another's" % bundle_path)
-    key_id = kms_key_setup(aws, key_ref, public_key, signing_config)
-    sig = kms_sign_digest(aws, key_id, hashlib.sha256(dsse_pae(DSSE_PAYLOAD_TYPE, statement)).digest())
-    envelope = {"payloadType": DSSE_PAYLOAD_TYPE, "payload": base64.b64encode(statement).decode(), "signatures": [{"sig": base64.b64encode(sig).decode()}]}
-    item, hint = kms_rekor_dsse_entry(signing_config, public_key, envelope, statement, envelope["signatures"][0]["sig"], pinned_rekor_pem(signing_config))
+    key_id = kms_key_setup(aws, key_ref, public_key, signing_config, answer)
+    sig = kms_sign_digest(aws, key_id, hashlib.sha256(pae(DSSE_STMT, statement)).digest())
+    envelope = {"payloadType": DSSE_STMT, "payload": b64e(statement), "signatures": [{"sig": b64e(sig)}]}
+    item, hint = kms_rekor_dsse_entry(signing_config, public_key, envelope, statement, envelope["signatures"][0]["sig"],
+                                      pinned_rekor_pem(signing_config))
     bundle = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": hint}, "tlogEntries": [item]}, "dsseEnvelope": envelope}
     kms_write_files([(bundle_path, (json.dumps(bundle) + "\n").encode())], bundle_path)
 
@@ -1773,14 +1795,14 @@ def cmd_kms_sign(a):
                 kms_usage("--dsse-statement takes no %s" % opt)
         if a.bundle is None:
             kms_usage("--dsse-statement needs --bundle")
-        if not re.fullmatch(r"awskms:///[A-Za-z0-9:/_.-]+", a.key_ref):
+        if not KMS_KEY_REF.fullmatch(a.key_ref):
             kms_usage("needs --key-ref awskms:///<key>")
         kms_dsse_bundle(a.aws, a.key_ref, a.dsse_statement, a.bundle, a.signing_config, a.public_key)
         return
     for opt, val in (("--digest", a.digest), ("--out", a.out), ("--bundle", a.bundle)):
         if val is None:
             kms_usage("needs %s (or --dsse-statement FILE with --bundle)" % opt)
-    if not re.fullmatch(r"awskms:///[A-Za-z0-9:/_.-]+", a.key_ref) or not re.fullmatch(r"[0-9a-f]{64}", a.digest):
+    if not KMS_KEY_REF.fullmatch(a.key_ref) or not re.fullmatch(r"[0-9a-f]{64}", a.digest):
         print("error: kms-sign needs --key-ref awskms:///<key> and --digest 64 lowercase hex", file=sys.stderr)
         sys.exit(2)
     for pth in (a.out, a.bundle):
@@ -1794,11 +1816,14 @@ def cmd_kms_sign(a):
     kms_write_files([(a.out, sig), (a.bundle, (json.dumps(bundle) + "\n").encode())], a.out)
 
 
-def kms_sign(statement_path, out_record, signing_config, aws, public_key, bundle_path=None):
-    """The one signing function of the release chain: sign the statement in `statement_path` with the release key held in AWS KMS through the DSSE kind of kms-sign (the aws CLI `aws`, the release key
-    reference constant), keep its Rekor entry, and write `out_record` (a DSSE envelope with exactly one signature) and the entries file beside it (<out_record minus .json>.rekor.json). Any refusal of kms-sign (it has
-    printed its one line), a bundle that signed another payload than the staged one, or a bundle with no Rekor entry is a refusal here, and no record is left. `bundle_path` keeps the bundle at that path (Sign publishes it);
-    without it the bundle is a temporary file."""
+def kms_sign(statement_path, out_record, signing_config, aws, public_key, bundle_path=None, answer=None):
+    """The one signing function of the release chain: sign the statement in `statement_path` with the release key held
+    in AWS KMS through the DSSE kind of kms-sign (the aws CLI `aws`, the release key reference constant), keep its
+    Rekor entry, and write `out_record` (a DSSE envelope with exactly one signature) and the entries file beside it
+    (<out_record minus .json>.rekor.json). Any exit of kms-sign (it has printed its one line), a bundle that signed
+    another payload than the staged one, or a bundle with no Rekor entry is a refusal here, and no record is left.
+    `bundle_path` keeps the bundle at that path (Sign publishes it); without it the bundle is a temporary file.
+    `answer` is the key's get-public-key answer when the caller already has it (see kms_key_setup)."""
     out_record = os.path.abspath(out_record)
     out_dir, base = os.path.split(out_record)
     stem = base[:-len(".json")] if base.endswith(".json") else base
@@ -1813,10 +1838,8 @@ def kms_sign(statement_path, out_record, signing_config, aws, public_key, bundle
     with tempfile.TemporaryDirectory() as tmp:
         bundle = bundle_path or os.path.join(tmp, "record.bundle.json")
         try:
-            kms_dsse_bundle(aws, RELEASE_KEY_REF, statement_path, bundle, signing_config, public_key)
-        except SystemExit as ex:
-            if ex.code in (None, 0):
-                raise
+            kms_dsse_bundle(aws, RELEASE_KEY_REF, statement_path, bundle, signing_config, public_key, answer)
+        except SystemExit:
             refuse("sign", "kms-sign refused to sign the statement (its reason is the line above)")
         try:
             with open(bundle, "rb") as f:
@@ -1847,41 +1870,34 @@ def kms_sign(statement_path, out_record, signing_config, aws, public_key, bundle
             refuse("sign", "cannot write the record and its entries file (%s): nothing is left behind" % type(ex).__name__)
 
 
-def release_key_ref_check(who, aws=None):
-    """The one place the job's key reference is checked (W2): RELEASE_KMS_KEY_REF must be the verifier's own key, byte for byte (exit 2). With `aws` (the interim guard KA-0, which goes with KA-2) the
-    key must also list RSASSA_PKCS1_V1_5_SHA_256 (exit 2; only GetPublicKey is asked). KA-2 deleted the cosign-path half of this guard (the algorithm need no longer be listed FIRST: kms-sign names it on every call and asserts it again).
-    Called before any tool is run: by sign-record, and through `key-ref-check` by the release signing scripts."""
+def release_key_ref_check(who):
+    """The one place the job's key reference is checked (W2): RELEASE_KMS_KEY_REF must be the verifier's own key, byte
+    for byte (exit 2). Called before any tool is run, through `key-ref-check` by the release signing scripts."""
     got = os.environ.get("RELEASE_KMS_KEY_REF")
     if got != RELEASE_KEY_REF:
-        print("error: %s needs RELEASE_KMS_KEY_REF set to %s (got %s): not a KMS key reference of the release key" % (who, RELEASE_KEY_REF, json.dumps(got)), file=sys.stderr)
+        print("error: %s needs RELEASE_KMS_KEY_REF set to %s (got %s): not a KMS key reference of the release key"
+              % (who, RELEASE_KEY_REF, json.dumps(got)), file=sys.stderr)
         sys.exit(2)
-    if aws is None:
-        return
-    release_key_algorithm_guard(who, aws)
 
 
 def release_key_algorithm_guard(who, aws):
-    """The KA-0 guard, alone: the release key must list RSASSA_PKCS1_V1_5_SHA_256 (exit 2), only GetPublicKey is asked, a failing or missing aws CLI refuses (exit 1). Called by key-ref-check
-    --algorithm-guard and sign-record (after the reference check) and by `sign`, which reaches kms-sign with the constant key and never reads RELEASE_KMS_KEY_REF, so W2's check is not part of it there."""
-    try:
-        algs = json.loads(kms_aws(aws, ["kms", "get-public-key", "--key-id", RELEASE_KEY_REF[len("awskms:///"):], "--query", "SigningAlgorithms", "--output", "json"], who))
-        assert isinstance(algs, list) and all(isinstance(x, str) for x in algs)
-    except (ValueError, AssertionError):
-        kms_refuse("the release key: get-public-key did not answer with a list of SigningAlgorithms", who)
+    """The KA-0 guard: the release key must list RELEASE_SIGNING_ALGORITHM (exit 2); only get-public-key is asked, and a
+    failing or missing aws CLI refuses (exit 1). `sign` reaches kms-sign with the constant key and never reads
+    RELEASE_KMS_KEY_REF, so it calls this guard alone. Returns the key's get-public-key answer."""
+    answer = kms_public_key(aws, RELEASE_KEY_REF[len("awskms:///"):], who)
+    algs = answer["SigningAlgorithms"]
     if RELEASE_SIGNING_ALGORITHM not in algs:
-        print("%s: refused: the release key does not support %s (it lists: %s)" % (who, RELEASE_SIGNING_ALGORITHM, ", ".join(algs)), file=sys.stderr)
+        print("%s: refused: the release key does not support %s (it lists: %s)"
+              % (who, RELEASE_SIGNING_ALGORITHM, ", ".join(algs)), file=sys.stderr)
         sys.exit(2)
+    return answer
 
 
 def cmd_key_ref_check(a):
-    release_key_ref_check("key-ref-check", a.aws if a.algorithm_guard else None)
+    release_key_ref_check("key-ref-check")
+    if a.algorithm_guard:
+        release_key_algorithm_guard("key-ref-check", a.aws)
 
-
-def cmd_sign_record(a):
-    """Sign one staged Witness payload with the release key (the one signing function), write the record and its entries."""
-    release_key_ref_check("sign-record", a.aws)
-    signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template)), "cosign-signing-config.json")
-    kms_sign(a.payload, a.out, signing_config, a.aws, a.public_key)
 
 # the files Sign writes into its output folder: on a refusal exactly these, and the folder Sign made, are removed
 OWN_FILES = ("provenance.bundle.json", "provenance.json", "provenance.rekor.json", "DRY-RUN")
@@ -1918,28 +1934,30 @@ def remove_own_out(out):
 def cmd_sign(a):
     if not a.check:
         refuse("sign", "sign requires --check: the check comes before the signature")
-    if a.signer != "cosign":
-        refuse("sign", "the only signer is cosign")
     require_fresh_out(a.out)
     pol, obj, build_stmt = check_build_record(a)
     dry = bool(pol.get("dry_run"))
-    # rc-2 R1a: GITHUB_SHA and GITHUB_RUN_ID are written into the signed provenance, so Sign refuses (before cosign is asked, before an output folder is made) a commit that is not 40 lowercase hex and a run id that is not a number, rather than signing the defaults "" and "0"
+    # GITHUB_SHA and GITHUB_RUN_ID are written into the signed provenance, so Sign refuses (before KMS is asked and
+    # before an output folder is made) a commit that is not 40 lowercase hex and a run id that is not a number,
+    # rather than signing the defaults "" and "0"
     if not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", "")):
         refuse("sign", "provenance: GITHUB_SHA is not a 40-hex commit")
     if not re.fullmatch(r"[0-9]+", os.environ.get("GITHUB_RUN_ID", "")):
         refuse("sign", "provenance: GITHUB_RUN_ID is not a run number (digits)")
-    byproducts = sbom_byproducts(build_stmt, a.items)       # before cosign is asked and before an output folder is made
+    byproducts = sbom_byproducts(build_stmt, a.items)       # before KMS is asked and before an output folder is made
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template or a.policy)), "cosign-signing-config.json")
     with tempfile.TemporaryDirectory() as tmpd:
         sp = os.path.join(tmpd, "statement.json")
         statement = provenance_statement(pol, obj, dry, byproducts)
         with open(sp, "w") as f:
             json.dump(statement, f, sort_keys=True)
-        release_key_algorithm_guard("sign", a.aws)      # KA-0: after every other refusal, before the output folder is made and before KMS is asked
+        # KA-0: after every other refusal, before the output folder is made and before KMS is asked to sign
+        answer = release_key_algorithm_guard("sign", a.aws)
         make_out(a.out)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
         try:
-            kms_sign(sp, os.path.join(os.path.abspath(a.out), "provenance.json"), signing_config, a.aws, a.public_key, bundle_path=bundle)
+            kms_sign(sp, os.path.join(os.path.abspath(a.out), "provenance.json"), signing_config, a.aws, a.public_key,
+                     bundle_path=bundle, answer=answer)
             verify_own_output(a.out, pol, statement, tmpd)
         except Refuse as bad:
             remove_own_out(a.out)   # a failed sign leaves no provenance behind (001-AC2)
@@ -2001,8 +2019,8 @@ def sr_received(stage, rec_dir, art_dir, name):
             for here, _dirs, files in os.walk(base, onerror=walk_failed):
                 for n in files:
                     rel = os.path.relpath(os.path.join(here, n), base)
-                    got.setdefault(rel, _sha256_bytes_of(os.path.join(here, n), stage, rel))
-                    if got[rel] != _sha256_bytes_of(os.path.join(here, n), stage, rel):
+                    have = _sha256_bytes_of(os.path.join(here, n), stage, rel)
+                    if got.setdefault(rel, have) != have:
                         refuse(stage, "digest: %s differs between the record directory and the artifacts" % rel)
     return got
 
@@ -2115,7 +2133,8 @@ def sr_expected(stage, path):
         refuse(stage, "expect-digests: %s is missing or not JSON (%s)" % (path, type(ex).__name__))
     ok = isinstance(exp, dict) and bool(exp)
     for folder, files in (exp.items() if isinstance(exp, dict) else []):
-        ok = ok and isinstance(files, dict) and bool(files) and all(isinstance(h, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", h) for h in files.values())
+        ok = ok and isinstance(files, dict) and bool(files) and all(
+            isinstance(h, str) and SHA256_DIGEST.fullmatch(h) for h in files.values())
     if not ok:
         refuse(stage, "expect-digests: %s is not {record folder: {file: sha256:<64 hex>}} (non-empty)" % path)
     return {folder: {n: h[len("sha256:"):] for n, h in files.items()} for folder, files in exp.items()}
@@ -2245,10 +2264,10 @@ def verify_own_output(out_dir, pol, statement, tmpd):
     os.makedirs(vdir)
     signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), vdir,
                                             rekor_path=os.path.join(out_dir, "provenance.rekor.json"))
-    # compared as parsed JSON, not as bytes: what matters is what the statement says, and cosign may re-serialise the statement file
-    # it was given (key order, spacing) without changing a single subject or field; the parse is strict (no duplicate key, no NaN)
+    # compared as parsed JSON, not as bytes: what matters is what the statement says, not its key order or spacing;
+    # the parse is strict (no duplicate key, no NaN)
     if not same_json(signed, statement):
-        refuse("sign", "the statement cosign signed is not the statement Sign built (subjects or predicate differ)")
+        refuse("sign", "the statement signed is not the statement Sign built (subjects or predicate differ)")
 
 
 # ---- actions: every reference is a listed full digest ------------------------------------------------------------
@@ -2427,9 +2446,19 @@ def cmd_actions(a):
 
 
 # ---- main ----------------------------------------------------------------------------------------------------------
+class Parser(argparse.ArgumentParser):
+    """key-ref-check names its aws CLI only when it asks the key's algorithms: --algorithm-guard requires --aws."""
+
+    def parse_known_args(self, args=None, namespace=None):
+        ns, rest = super().parse_known_args(args, namespace)
+        if getattr(ns, "algorithm_guard", False) and not ns.aws:
+            self.error("--algorithm-guard needs --aws: the aws CLI is named, never looked up on PATH")
+        return ns, rest
+
+
 def build_parser():
-    p = argparse.ArgumentParser(prog="chain-verify.py")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p = Parser(prog="chain-verify.py")
+    sub = p.add_subparsers(dest="cmd", required=True, parser_class=Parser)
     pm = sub.add_parser("policy")
     ps = pm.add_subparsers(dest="sub", required=True)
     m = ps.add_parser("make")
@@ -2443,13 +2472,12 @@ def build_parser():
     v.add_argument("--stage", required=True)
     v.add_argument("--record", required=True)
     # the Rekor entries file of a provenance or a release policy (provenance.rekor.json)
-    v.add_argument("--rekor-stub", dest="rekor_entries")
+    v.add_argument("--rekor-entries", dest="rekor_entries")
     for name in ("sign", "check-build-record"):
         s = sub.add_parser(name)
         if name == "sign":
             s.add_argument("--check", action="store_true")
-            s.add_argument("--signer", default="")
-            s.add_argument("--aws", default="aws")      # the aws CLI the KA-0 guard asks and kms-sign runs (the callers give the pinned one's path)
+            s.add_argument("--aws", required=True)      # the aws CLI the KA-0 guard asks and kms-sign runs
             s.add_argument("--public-key", required=True)   # the release public key (PEM) kms-sign compares with the KMS key and the Rekor entry carries
             s.add_argument("--out", required=True)
             s.add_argument("--items", required=True)    # the items.json Build's record holds (the SBOM byproducts)
@@ -2458,15 +2486,11 @@ def build_parser():
         which = s.add_mutually_exclusive_group(required=True)
         which.add_argument("--template")   # the committed release-policy template: the per-tag policy is made here from GITHUB_REF
         which.add_argument("--policy")     # a finished policy (the dry run's policy.json)
-    sg = sub.add_parser("sign-record")
-    sg.add_argument("--payload", required=True)      # the staged statement, signed byte for byte
-    sg.add_argument("--out", required=True)          # the record to write; its Rekor entries file is written beside it
-    sg.add_argument("--template", required=True)     # the release policy template: the signing config sits beside it
-    sg.add_argument("--aws", default="aws")          # the aws CLI the KA-0 guard asks and kms-sign runs (the callers give the pinned one's path)
-    sg.add_argument("--public-key", required=True)   # the release public key (PEM) kms-sign compares with the KMS key and the Rekor entry carries
-    kc = sub.add_parser("key-ref-check")             # W2: the job's RELEASE_KMS_KEY_REF is the release key's reference; --algorithm-guard (KA-0) also asks the key's algorithm list
+    # W2: the job's RELEASE_KMS_KEY_REF is the release key's reference; --algorithm-guard (KA-0) also asks the key's
+    # algorithm list, through the aws CLI that --aws names
+    kc = sub.add_parser("key-ref-check")
     kc.add_argument("--algorithm-guard", action="store_true")
-    kc.add_argument("--aws", default="aws")          # the aws CLI the guard asks, found by name
+    kc.add_argument("--aws")
     ks = sub.add_parser("kms-sign")
     ks.add_argument("--key-ref", required=True)       # awskms:///<key>
     ks.add_argument("--digest")                       # the sha256 of the signed bytes, 64 lowercase hex (the digest kind: with --out)
@@ -2494,7 +2518,7 @@ def build_parser():
     st.add_argument("--previous", required=True)
     st.add_argument("--record", required=True)
     # the previous stage's Rekor entries file, when its record is a provenance
-    st.add_argument("--rekor-stub", dest="rekor_entries")
+    st.add_argument("--rekor-entries", dest="rekor_entries")
     st.add_argument("--digests", required=True)
     st.add_argument("--policy", required=True)
     bi = sub.add_parser("bind-items")
@@ -2509,6 +2533,8 @@ def build_parser():
     bc.add_argument("--file", required=True)
     bc.add_argument("--product", required=True)
     ap = sub.add_parser("apk-compare")
+    ap.add_argument("--policy", required=True)
+    ap.add_argument("--record", required=True)       # Rebuild's signed collection: its digest list must be Build's
     ap.add_argument("--file", required=True)
     ap.add_argument("--digests", required=True)
     cl = sub.add_parser("check-list")
@@ -2569,8 +2595,6 @@ def main(argv):
             cmd_kms_sign(a)
         elif a.cmd == "bundle-check":
             cmd_bundle_check(a)
-        elif a.cmd == "sign-record":
-            cmd_sign_record(a)
         elif a.cmd == "key-ref-check":
             cmd_key_ref_check(a)
         elif a.cmd == "sign-records":
