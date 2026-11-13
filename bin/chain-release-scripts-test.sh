@@ -972,7 +972,8 @@ def stage_operands(t, rows):
             if w.startswith("--bundle="): w = w[len("--bundle="):]
             elif not re.fullmatch(r"[\w][\w.-]*\.(json|txt|bundle|sig|pem)", w) and not (i and words[i - 1] == "--bundle"): continue
             if w == "release.rsa.pub" or "/" in w or any(ch in w for ch in "{}*?[]") or os.path.lexists(os.path.join(rp, w)): continue
-            open(os.path.join(rp, w), "w").write("staged\n")
+            body = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": True}) if w.endswith(".json") else "staged\n"   # the script reads a .json operand as strict JSON (the same shape as OK below, which is not defined yet when pv first runs)
+            open(os.path.join(rp, w), "w").write(body)
 def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None, creds=("GH_TOKEN",), seed=None):
     t = tree(); os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     real_verifier(t); seed_manifest(t, **(seed or {}))
