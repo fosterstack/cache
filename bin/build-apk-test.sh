@@ -1107,7 +1107,8 @@ P
 ( cd "$work/ra" && run_s "${RK[@]}" GITHUB_REF_NAME=v0.3.0 bash bin/release-apks.sh ); cp "$work/rc" "$work/ra.rc"; cp "$work/log" "$work/ra.log"; cp "$CALLS" "$work/ra.calls"
 t "rule 22" "release-apks.sh: the four attested apks are signed through the signer with the KMS reference and no key file: exit 0, four aws kms sign calls, every released apk is signed by release.rsa.pub with its .bundle beside it, digests as attested" bash -c "
   [ \"\$(cat '$work/ra.rc')\" = 0 ] && [ \"\$(grep -c '^aws kms sign ' '$work/ra.calls')\" = 4 ] && [ \"\$(find '$work/ra/release-apks' -name '*.apk' | wc -l)\" = 4 ] && [ \"\$(find '$work/ra/release-apks' -name '*.apk.bundle' | wc -l)\" = 4 ] \
-  && for f in \$(find '$work/ra/release-apks' -name '*.apk'); do [ \"\$(python3 '$AT' signer \$f)\" = release.rsa.pub ] || exit 1; done"
+  && find '$work/ra/release-apks' -name '*.apk' -print0 \
+  | while IFS= read -r -d '' f; do [ \"\$(python3 '$AT' signer \"\$f\")\" = release.rsa.pub ] || exit 1; done"
 ( cd "$work/ra" && run_s env -u RELEASE_KMS_KEY_REF GITHUB_REF_NAME=v0.3.0 bash bin/release-apks.sh ); cp "$CALLS" "$work/ra.calls"
 t "rule 22" "release-apks.sh: RELEASE_KMS_KEY_REF unset -> exit 2 naming the variable, no signing" bash -c "[ \"\$(cat '$work/rc')\" = 2 ] && grep -q 'RELEASE_KMS_KEY_REF is unset' '$work/log' && ! grep -q '^aws kms' '$work/ra.calls'"
 ( cd "$work/ra" && run_s "${RK[@]}" GITHUB_REF_NAME=v0.3.0-rc1 bash bin/release-apks.sh ); cp "$CALLS" "$work/ra.calls"
@@ -1340,10 +1341,16 @@ sr "rule 22" "release signing: a directory symlink inside Build is refused (exit
 
 mk4 "$work/r4A"; mk4 "$work/r4B"
 run_s "${RK[@]}" "$RS" --build-dir "$work/r4A"
-t "rule 22" "release signing: after signing, every apk's signer is release.rsa.pub" bash -c "test \"\$(cat '$work/rc')\" = 0 && cd '$work/r4A' && for f in \$(find . -name '*.apk' | sort); do test \"\$(python3 '$AT' signer \$f)\" = release.rsa.pub || exit 1; done"
+t "rule 22" "release signing: after signing, every apk's signer is release.rsa.pub" \
+  bash -c "test \"\$(cat '$work/rc')\" = 0 && cd '$work/r4A' \
+  && find . -name '*.apk' -print0 | sort -z \
+  | while IFS= read -r -d '' f; do test \"\$(python3 '$AT' signer \"\$f\")\" = release.rsa.pub || exit 1; done"
 mk4 "$work/r4A"; mk4 "$work/r4B"
 run_s "${RK[@]}" STUB_AWS_FAIL_AT=3 "$RS" --build-dir "$work/r4A"
-t "rule 22" "release signing: when the third of four signatures fails the run fails (exit 1) and NO apk in Build was changed (no mixed directory)" bash -c "test \"\$(cat '$work/rc')\" = 1 && cd '$work/r4A' && for f in \$(find . -name '*.apk' | sort); do test \"\$(python3 '$AT' signer \$f)\" = assembly.rsa.pub || exit 1; done"
+t "rule 22" "release signing: when the third of four signatures fails, exit 1 and no apk in Build changed (no mixed directory)" \
+  bash -c "test \"\$(cat '$work/rc')\" = 1 && cd '$work/r4A' \
+  && find . -name '*.apk' -print0 | sort -z \
+  | while IFS= read -r -d '' f; do test \"\$(python3 '$AT' signer \"\$f\")\" = assembly.rsa.pub || exit 1; done"
 # a directory or a FIFO named *.apk is not skipped silently
 mkdir -p "$work/rsM/x86_64" "$work/rsN/x86_64"; cp "$fx/pair/a.apk" "$work/rsM/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/b.apk" "$work/rsN/x86_64/fscache-0.3.0-r0.apk"; mkdir "$work/rsM/x86_64/dir.apk"
 sr "rule 22" "release signing: a directory named x.apk in Build is refused (exit 2)" 'regular file' "${RK[@]}" "$RS" --build-dir "$work/rsM"
