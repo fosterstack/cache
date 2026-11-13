@@ -3,8 +3,8 @@
 # Scanner-panel rule 10 (owner RATIFIED Oct 2; advisor 0076/0077): every release publishes our VEX three ways, all
 # generated from the one OpenVEX file. AC2: the CSAF file carries every OpenVEX statement about this release's images,
 # less a Go standard library subcomponent at a version the build does not ship (build/melange.yaml pins it); the
-# Inspector file carries one rule per suppressible statement that names a package (not_affected, fixed; none for
-# affected or under_investigation), with the same exception; the generator names each one left out. Offline: no network.
+# Inspector file carries one rule for each product scope and package that a suppressible statement (not_affected, fixed)
+# names (none for affected or under_investigation), with the same exception; the generator names each one left out. Offline: no network.
 # AC5-AC8 (advisor step 5, Oct 11, handoff 0389): the digest file holds exactly production and fips (v0.3.0 ships no
 # :debug image), is checked for shape and key set only, any other file is refused with nothing written, the same inputs
 # give the same bytes, and this test proves the generator alone: it reads no workflow's step names or step order
@@ -48,7 +48,7 @@ check("the CSAF file carries every OpenVEX statement", cves(v["cve"] for v in cs
       [v["cve"] for v in csaf["vulnerabilities"]])
 rules = insp["filters"]
 rcves = cves(r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in rules)
-check("the Inspector file carries one rule per suppressible statement (not_affected, fixed)", rcves == ["CVE-2099-1", "CVE-2099-2", "CVE-2099-5"], rcves)
+check("the Inspector file carries one rule for each product scope and package of a suppressible statement (not_affected, fixed)", rcves == ["CVE-2099-1", "CVE-2099-2", "CVE-2099-5"], rcves)
 check("…and none for affected or under_investigation", not set(rcves) & {"CVE-2099-3", "CVE-2099-4"}, rcves)
 check("each CVE has exactly one rule", len(rcves) == len(set(rcves)), rcves)
 # statuses map one to one
@@ -596,6 +596,11 @@ check("H the Inspector rule of a variant-scoped statement carries the digests of
       len(ir) == 1 and {c["value"] for c in ir[0]["filterCriteria"]["ecrImageHash"]} == digs(lambda v, p: v == "production"), ir)
 cs = V.csaf({"statements": [scoped("CVE-H3", "not_affected", [{"@id": OURS_Q + "&arch=arm64", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])]}, IMAGES, "v0.3.0")
 rel = cs["product_tree"].get("relationships", [])
+two_ = V.inspector({"statements": [scoped("CVE-H7", "not_affected", [{"@id": OURS_Q + "&variant=" + v, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}
+                                                                    for v in ("production", "fips")])]}, IMAGES, "v0.3.0")["filters"]
+check("H one statement naming two product scopes that each give a rule gives two rules: disjoint digests, the second name suffixed -2",
+      [r["name"] for r in two_] == ["fosterstack-cache-v0.3.0-CVE-H7", "fosterstack-cache-v0.3.0-CVE-H7-2"]
+      and not {c["value"] for c in two_[0]["filterCriteria"]["ecrImageHash"]} & {c["value"] for c in two_[1]["filterCriteria"]["ecrImageHash"]}, two_)
 check("H the CSAF relationships of an arch-scoped statement sit on the arm64 children only", len(rel) == 2, rel)
 # the grammar table, through every reader: accepted by all or by none
 import importlib.util as _iu
@@ -778,7 +783,7 @@ check("AC-B2-3 …and in the CSAF (component-stdlib@go1.28.0 only)",
 r_, got_, o_ = run_in_tree(MEL, two)
 check(f"AC-B2-3 the copied tree with the real melange.yaml keeps {BUILD_GO} and drops 1.28.0",
       r_.returncode == 0 and [f["filterCriteria"]["vulnerabilityId"][0]["value"] for f in got_[FORMS[0]]["filters"]] == ["CVE-B2"], (r_.returncode, r_.stderr[-300:]))
-# AC-B2-3b: a .sig or .sha256 line is not a Go version, even when it names another one
+# AC-B2-3: only a name that ends at .tar.gz is a Go version
 r_, got_, o_ = run_in_tree(MEL + "\n      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sig\n" % OTHER_GO
                            + "      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sha256\n" % OTHER_GO, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
 kept_ = [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"] for f in got_.get(FORMS[0], {}).get("filters", [])]
