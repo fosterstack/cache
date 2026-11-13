@@ -1041,7 +1041,12 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"$SUDO" mkdir -p "$workdir" || { echo "assemble-image.sh: cannot create $workdir" >&2; exit 2; }',
         '"$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" "(could not take '
         '$lock)" >&2; exit 2; }',
-        'trap \'{ "$SUDO" rm -f "${made[@]}"; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true\' EXIT',
+        'cleanup() {',
+        '  "$SUDO" rm -f "${made[@]}"',
+        '  "$SUDO" rmdir "$lock"',
+        '  rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"',
+        '}',
+        'trap \'cleanup || true\' EXIT',
         '"$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link '
         '$workdir/archive" "(it exists: another assembly?); stopping" >&2; exit 2; }',
         'made+=("$workdir/archive")',
