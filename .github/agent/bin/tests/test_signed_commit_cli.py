@@ -17,6 +17,23 @@ BASE, OID, REPO = "1" * 40, "2" * 40, "o/r"
 BR = "patch-notes/v0.2.9"
 
 
+_LOCALE_VARS = ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG")
+
+
+def setUpModule():
+    """argparse looks up translations in the system's locale directory when any locale variable is set, and the guard refuses that read of a
+    real system path: this module runs with none set, and puts the environment back exactly as it was."""
+    global _ENV_PATCH
+    _ENV_PATCH = mock.patch.dict(os.environ)
+    _ENV_PATCH.start()
+    for k in _LOCALE_VARS:
+        os.environ.pop(k, None)
+
+
+def tearDownModule():
+    _ENV_PATCH.stop()
+
+
 class Fake(T.Prefixes.Rec):
     pass
 
