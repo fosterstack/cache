@@ -109,8 +109,6 @@ ALLOW_PATTERNS=(
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
   '^bin/scout-selfcheck\.py$'
-  '^bin/patch-decide\.py$'
-  '^bin/patch-decide-test\.sh$'
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'
