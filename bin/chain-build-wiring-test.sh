@@ -3766,7 +3766,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1307
+EXPECT=1315
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
