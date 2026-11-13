@@ -490,6 +490,22 @@ class Main(Base):
         self.assertEqual([a["token_usage"] for a in answers], [15, 10])
         self.assertTrue(all(a["error"].startswith("adjudicator-client:") for a in answers))
 
+    def test_serve_deeply_nested_reply_is_a_failed_answer_not_a_crash(self):
+        deep = "[" * 100000 + "]" * 100000
+        sdk = fake_sdk([Msg(deep, usage=(10, 5)), Msg('{"category": "real_fixable"}', usage=(7, 3))])
+        lines = [json.dumps({"finding_id": "A"}), json.dumps({"finding_id": "B"})]
+        code, out, _err = self.run_main(["--serve"], "\n".join(lines) + "\n", sdk)
+        self.assertIsNone(code)
+        answers = [json.loads(l) for l in out.splitlines()]
+        self.assertEqual(len(answers), 2)
+        self.assertEqual(answers[0]["token_usage"], 15)
+        self.assertTrue(answers[0]["error"].startswith("adjudicator-client:"))
+        self.assertEqual(answers[1]["category"], "real_fixable")
+
+    def test_whole_answer_of_a_deeply_nested_reply_is_none(self):
+        self.assertIsNone(C._whole_answer("[" * 100000 + "]" * 100000))
+        self.assertIsNone(C._whole_answer('{"a": ' * 100000))
+
     def test_serve_malformed_reply_without_usage_costs_zero(self):
         sdk = fake_sdk([Msg("I cannot decide this.", usage=None)])
         code, out, _err = self.run_main(["--serve"], json.dumps({"finding_id": "A"}) + "\n", sdk)
