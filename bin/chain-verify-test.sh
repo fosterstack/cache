@@ -287,8 +287,8 @@ ITEMS = {"image-production": D["image-production"], "image-fips": D["image-fips"
 dj("items.json", ITEMS)
 dj("digests.json", D)
 AC_BUILD = {"image-production": "sha256:" + hashlib.sha256(b"ip").hexdigest(), "image-fips": "sha256:" + hashlib.sha256(b"if").hexdigest()}
-for _v in ("standard", "fips"):
-    for _a in ("amd64", "arm64"): AC_BUILD["apk-%s-%s" % (_v, _a)] = "sha256:" + hashlib.sha256(("data-%s-%s" % (_v, _a)).encode()).hexdigest()
+for _a in ("amd64", "arm64"):
+    for _v in ("standard", "fips"): AC_BUILD["apk-%s-%s" % (_v, _a)] = "sha256:" + hashlib.sha256(("data-%s-%s" % (_v, _a)).encode()).hexdigest()
 dj("acr-build.json", AC_BUILD)
 dj("acr-forged.json", dict(AC_BUILD, **{"apk-fips-arm64": "sha256:" + "9" * 64}))
 dj("digests-other.json", dict(D, apk="sha256:" + "d" * 64))
@@ -2062,7 +2062,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
 
 # ---- apk-compare (the owner's rule of Oct 21 2026: the comparison of Build's and Rebuild's apks runs in a job without a key; Release reads only its small result file) ----
-# bin/release-compare.sh writes apk-compare/apk-compare.json (verdict pass, four pairs with the sha256 and the apk-tool digest of both apks); `apk-compare` checks that file
+# bin/release-compare.sh writes apk-compare/apk-compare.json (verdict pass, four pairs with the apk-tool digest of both apks); `apk-compare` checks that file
 # against Build's attested apk digests (witness-build/digests.json keys apk-<variant>-<amd64|arm64>) and accepts only pass, exactly four pairs, rebuild == build == attested
 python3 - "$work" <<'PY'
 import hashlib, json, sys
@@ -2073,7 +2073,7 @@ pairs = []
 for arch, runner in (("amd64", "x86_64"), ("arm64", "aarch64")):
     for variant, name in (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk")):
         d = h("data-%s-%s" % (variant, arch)); dig["apk-%s-%s" % (variant, arch)] = d
-        pairs.append({"arch": arch, "variant": variant, "name": name, "build_sha256": hashlib.sha256(("b" + d).encode()).hexdigest(), "rebuild_sha256": hashlib.sha256(("r" + d).encode()).hexdigest(), "build_digest": d, "rebuild_digest": d})
+        pairs.append({"arch": arch, "variant": variant, "name": name, "build_digest": d, "rebuild_digest": d})
 json.dump(dig, open(w + "/acd.json", "w"))
 good = {"verdict": "pass", "pairs": pairs}
 def put(name, obj): json.dump(obj, open(w + "/ac_" + name + ".json", "w"))
@@ -2090,10 +2090,7 @@ put("wrongdigest", mod(lambda o: o["pairs"][1].update(build_digest=h("other"), r
 put("rebuilddiffers", mod(lambda o: o["pairs"][2].update(rebuild_digest=h("other"))))
 put("extrakey", mod(lambda o: o["pairs"][0].update(note="x")))
 put("extratop", mod(lambda o: o.update(note="x")))
-put("badhex", mod(lambda o: o["pairs"][0].update(build_sha256="z" * 64)))
-put("upperhex", mod(lambda o: o["pairs"][0].update(rebuild_sha256="A" * 64)))
-put("prefixed", mod(lambda o: o["pairs"][0].update(build_sha256="sha256:" + "a" * 64)))
-put("shorthex", mod(lambda o: o["pairs"][0].update(build_sha256="a" * 63)))
+put("oldsha", mod(lambda o: o["pairs"][0].update(build_sha256="a" * 64)))
 put("badname", mod(lambda o: o["pairs"][0].update(name="fscache-evil.apk")))
 put("badnamefips", mod(lambda o: o["pairs"][1].update(name="fscache-0.3.0-r0.apk")))
 put("badarch", mod(lambda o: o["pairs"][0].update(arch="x86_64")))
@@ -2113,7 +2110,7 @@ expect_refuse "apk-compare: a Build digest that is not the one Build attested is
 expect_refuse "apk-compare: a Rebuild digest that differs from Build's is refused" "apk-compare|rebuild" $(ACV rebuilddiffers)
 expect_refuse "apk-compare: an extra key in a pair is refused" "apk-compare|key" $(ACV extrakey)
 expect_refuse "apk-compare: an extra top-level key is refused" "apk-compare|key" $(ACV extratop)
-for c in badhex upperhex prefixed shorthex; do expect_refuse "apk-compare: a sha256 that is not 64 lowercase hex ($c) is refused" "apk-compare|sha256" $(ACV $c); done
+expect_refuse "apk-compare: the former build_sha256 key in a pair is refused as an unknown key" "keys" $(ACV oldsha)
 expect_refuse "apk-compare: a standard apk named like nothing Build makes is refused" "apk-compare|name" $(ACV badname)
 expect_refuse "apk-compare: a fips apk with the standard name is refused" "apk-compare|name" $(ACV badnamefips)
 expect_refuse "apk-compare: an architecture other than amd64 and arm64 is refused" "apk-compare|arch" $(ACV badarch)
