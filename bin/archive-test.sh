@@ -535,8 +535,10 @@ assert n[0] >= 2, "the injection point was never reached"
 assert not os.path.lexists(out + ".stage"), "a second signal left the stage directory behind"
 assert not os.path.lexists(out), "a partial output was left behind"
 P
-# ===== python -O drops assert: the unpack checks on a malformed layout are explicit and refuse the same way ==================
-unpack_O() {   # unpack_O DESC TEXT MODE (index|layers): a malformed copy of layout-keep; unpack under -O exits 1 saying TEXT
+# ===== python -O drops assert: the unpack checks on a malformed layout are explicit and refuse the same way ======
+# unpack_O DESC TEXT MODE (index|layers): a malformed copy of layout-keep;
+# unpack under -O exits 1 saying TEXT
+unpack_O() {
   local d=$1 text=$2 mal=$3
   rm -rf "${work:?}/mal" "${work:?}/o-mal"; cp -R "$work/layout-keep" "$work/mal"
   python3 - "$work/mal" "$mal" "$work/p-mal.json" "$fx" "$work/lib.py" <<'P'
@@ -554,10 +556,12 @@ else:                  # two manifests in the index
 json.dump(idx, open(l + "/index.json", "w"))
 open(ptr, "w").write(subprocess.check_output(["python3", lib, "pointer", fx, "sha256:" + h]).decode())
 P
-  python3 -I -B -O "$VER" unpack --pointer "$work/p-mal.json" --layout "$work/mal" --out "$work/o-mal" >"$work/o" 2>"$work/e"
+  python3 -I -B -O "$VER" unpack --pointer "$work/p-mal.json" --layout "$work/mal" --out "$work/o-mal" \
+    >"$work/o" 2>"$work/e"
   echo $? >"$work/rc"; cat "$work/o" "$work/e" >"$work/log"
   t AC6 "python -O: $d is refused (exit 1) saying '$text', nothing written" \
-    bash -c "test '$(rc)' = 1 && grep -qF '$text' '$work/log' && ! test -e '$work/o-mal' && ! test -e '$work/o-mal.stage'"
+    bash -c "test '$(rc)' = 1 && grep -qF '$text' '$work/log' && \
+! test -e '$work/o-mal' && ! test -e '$work/o-mal.stage'"
 }
 unpack_O "an index.json with two manifests" "does not name exactly the committed manifest" index
 unpack_O "a manifest whose layers is not a list" "the manifest is not an archive manifest" layers
