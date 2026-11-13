@@ -3978,6 +3978,18 @@ d=$(amfix t2_s2); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"apk":"bi
 d=$(amfix t2_s3); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"a b":"bin/stage-apk.sh"}'; expm caught "$d" 'arg_map' "round-3 (2): an arg_map key that is not a plain word is an error"
 d=$(amfix t2_s4); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={}'; expm caught "$d" 'arg_map' "round-3 (2): an empty arg_map is an error"
 d=$(amfix t2_s5); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_words"]=["zzz"]'; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-3 (2): a row with arg_map uses arg_map (arg_words is ignored)"
+# (2b) arg_extra: a STEP may carry one more plain word after its TARGET; a STEP without an entry takes exactly STEP TARGET
+axfix() { local d; d=$(amfix "$1"); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]={"build":"snap"}'; echo "$d"; }
+ax() { local d; d=$(axfix "$1"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: %s\n' "$2" > "$d/.github/workflows/stage-verify.yml"; expm "$3" "$d" "$4" "arg_extra: $2"; }
+ax t2x_ok 'bash bin/witnessed.sh build bin/build-apk.sh snap' ok -
+ax t2x_ok2 'bash bin/witnessed.sh apk bin/stage-apk.sh' ok -
+ax t2x_wrong 'bash bin/witnessed.sh build bin/build-apk.sh other' caught 'arg_extra'
+ax t2x_missing 'bash bin/witnessed.sh build bin/build-apk.sh' caught 'arg_extra'
+ax t2x_extra 'bash bin/witnessed.sh apk bin/stage-apk.sh snap' caught 'arg_extra'
+ax t2x_two 'bash bin/witnessed.sh build bin/build-apk.sh snap more' caught 'arg_extra'
+d=$(amfix t2x_s1); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]={"bogus":"snap"}'; expm caught "$d" 'arg_extra' "arg_extra: a STEP that is not in arg_map is an error"
+d=$(amfix t2x_s2); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]={"build":"a b"}'; expm caught "$d" 'arg_extra' "arg_extra: a value that is not one plain word is an error"
+d=$(amfix t2x_s3); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_extra"]=["build"]'; expm caught "$d" 'arg_extra' "arg_extra: an arg_extra that is not an object is an error"
 # (3) program-running options are refused as options
 tr3() { local d; d=$(cfix "$1" "$2" "${4:-[\"tar\"]}"); expm caught "$d" 'program-running option' "round-3 (3): $2 is refused"; }
 tr3 t3_a 'tar --to-command=vi -xf a.tar'
@@ -5252,7 +5264,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2138
+EXPECT=2147
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
