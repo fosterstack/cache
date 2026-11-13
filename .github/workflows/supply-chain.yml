@@ -1,7 +1,8 @@
 name: supply-chain
 
 # REQ-SUP-001 (owner ratified Oct 5): the actions supply-chain checks.
-#   pin-age        every pull request: the scan names every version the PR moves and passes only a pin it can read (AC2). It runs the base branch's
+#   pin-age        every pull request: the scan names every version the PR moves and passes only a pin it can
+#                  read (AC2). It runs the base branch's
 #                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
 #   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
 # It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
