@@ -1134,13 +1134,11 @@ bin/build-apk.sh
 bin/build-helpers-test.sh
 bin/dependabot-reviewer.py
 bin/go-module-sbom.py
-bin/patch-decide.py
 bin/vex-forms.py
 bin/check-file-allowlist-test.sh
 bin/check-file-allowlist.sh
 bin/dependabot-reviewer-test.sh
 bin/melange-apko-lib.sh
-bin/patch-decide-test.sh
 bin/sealed-proof.sh
 bin/vendor-check.sh
 bin/vendor-provenance-test.sh
