@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC7, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
 # proves: REQ-CHAIN-004-AC10, REQ-CHAIN-005-AC4 — the Sign job and its signing of the Build and Rebuild records; wording pending the owner's approval where the one-key change makes the approved sentence false
+# proves: REQ-CHAIN-001-AC9
 # The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
 # on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
 #   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
@@ -513,24 +514,33 @@ def judge_tree(base):
     listed_scripts(base, rows, stage_grammars(base, files, frozen, rows, envn, bad), bad)
     return bad
 
+SIGN_GUARD = "inputs.mode!='snapshot'&&github.event_name=='push'&&startsWith(github.ref,'refs/tags/v')&&startsWith(github.workflow_ref,format('{0}/.github/workflows/release.yml@',github.repository))"
 def judge_calls(root):
-    """REQ-CHAIN-003-AC5 (pipeline reading, advisor to confirm): a certificate's SAN is the file that runs the witness step
-    (harness spike (b), case 5: a stage that calls another stage's file gets that file's SAN). So only release.yml may call
-    stage-sign.yml and no stage file may call another stage file; other workflows (scan.yml, main-candidate-rescan.yml) may
-    still call stage-build.yml / stage-image.yml, because the release policy pins the Build Config URI (release.yml at the tag)."""
+    """REQ-CHAIN-003-AC5 (the release is the one file release.yml; owner rule workflow-grouped-by-purpose, Nov 13): no workflow file other than scan.yml and
+    main-candidate-rescan.yml calls release.yml, each only with `with: mode: snapshot`; no workflow calls a stage-*.yml file (by local path or by repository path and digest);
+    and each of sign, sign-rebuild, sign-check, sign-release and release carries the guard S that skips it in snapshot mode and under workflow_call (a called release.yml's token names
+    the caller's file, so the guard, not the file name, keeps every sign job out of a caller's run). One finding per job."""
     bad = []
     wd = os.path.join(root, ".github/workflows")
     for fn in sorted(os.listdir(wd)):
-        if not fn.endswith((".yml", ".yaml")) or fn == "release.yml": continue
+        if not fn.endswith((".yml", ".yaml")): continue
         try: d = yload(open(os.path.join(wd, fn)).read()) or {}
         except Exception as e: bad.append("AC5: %s does not parse (%s)" % (fn, e)); continue
         for jn, j in (d.get("jobs") or {}).items():
             refs = [str(j.get("uses", ""))] + [str(s.get("uses", "")) for s in (j.get("steps") or [])]
             for r in refs:
-                if re.search(r"\.github/workflows/stage-sign\.ya?ml", r):
-                    bad.append("AC5: %s job %s calls %s; only release.yml may call stage-sign.yml" % (fn, jn, r))
-                elif fn.startswith("stage-") and re.search(r"\.github/workflows/stage-[^@\s]*\.ya?ml", r):
-                    bad.append("AC5: %s job %s calls %s; a stage file may not call another stage file" % (fn, jn, r))
+                if re.search(r"\.github/workflows/stage-[^@\s]*\.ya?ml", r):
+                    bad.append("AC5: %s job %s calls %s; no stage-*.yml file exists" % (fn, jn, r))
+                if re.search(r"\.github/workflows/release\.ya?ml", r):
+                    if fn not in ("scan.yml", "main-candidate-rescan.yml"):
+                        bad.append("AC5: %s job %s calls %s; only scan.yml and main-candidate-rescan.yml may call release.yml" % (fn, jn, r))
+                    elif (j.get("with") or {}) != {"mode": "snapshot"}:
+                        bad.append("AC5: %s job %s calls release.yml with %s; only with mode snapshot" % (fn, jn, j.get("with")))
+        if fn == "release.yml":
+            for jn in ("sign", "sign-rebuild", "sign-check", "sign-release", "release"):
+                cond = re.sub(r"\s+", "", str((d.get("jobs") or {}).get(jn, {}).get("if", "")).replace("${{", "").replace("}}", ""))
+                if cond != SIGN_GUARD:
+                    bad.append("AC5: release.yml job %s does not carry the guard that skips it in snapshot mode and under workflow_call" % jn)
     return bad
 
 def run(which, arg):
@@ -2919,21 +2929,42 @@ f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
 j["signers"].append({"file": "stage-sign.yml", "tool": "gitsign", "reason": "stage-sign.yml is left out of this judge"}); json.dump(j, open(f, "w"))
 PY
 expect caught "AC1 a signer row naming stage-sign.yml, which this judge leaves out" tree "$d"
-# 003-AC5: only release.yml calls stage-sign.yml and no stage calls a stage (a stage that calls another stage gets that stage's SAN: spike (b) case 5)
-d=$(mk c_good); printf 'jobs:\n  s:\n    uses: ./.github/workflows/stage-sign.yml\n  b:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/release.yml"
-expect ok "003-AC5 fixture: release.yml calls every stage file" calls "$d"
-d=$(mk c_nested); printf 'jobs:\n  x:\n    uses: ./.github/workflows/stage-sign.yml\n' > "$d/.github/workflows/stage-build.yml"
-expect caught "003-AC5 stage-build.yml calls stage-sign.yml (nested call)" calls "$d"
-d=$(mk c_second); printf 'on: push\njobs:\n  x:\n    uses: ./.github/workflows/stage-sign.yml\n' > "$d/.github/workflows/ci.yml"
-expect caught "003-AC5 a second workflow (ci.yml) calls stage-sign.yml" calls "$d"
-d=$(mk c_remote); printf 'jobs:\n  x:\n    uses: fosterstack/cache/.github/workflows/stage-sign.yml@%s\n' "$sha" > "$d/.github/workflows/auditor.yml"
-expect caught "003-AC5 a second workflow calls stage-sign.yml by repository path and digest" calls "$d"
-d=$(mk c_step); printf 'jobs:\n  x:\n    steps:\n      - uses: ./.github/workflows/stage-verify.yml\n' > "$d/.github/workflows/stage-promote.yml"
-expect caught "003-AC5 a step-level reference to a stage file from another stage" calls "$d"
-d=$(mk c_yaml); printf 'jobs:\n  x:\n    uses: ./.github/workflows/stage-sign.yml\n' > "$d/.github/workflows/other.yaml"
-expect caught "003-AC5 a .yaml workflow calling stage-sign.yml" calls "$d"
-d=$(mk c_scan); printf 'on: push\njobs:\n  x:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/scan.yml"
-expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.yml" calls "$d"
+# 003-AC5: only scan.yml and main-candidate-rescan.yml call release.yml, each only with mode snapshot; no stage-*.yml is called; every sign job and release carries the guard that skips it
+# in snapshot mode and under workflow_call (a called release.yml's token names the caller's file)
+GUARD="\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}"
+rel_fixture() { # rel_fixture DIR [JOB-WITHOUT-GUARD]: release.yml with the five guarded jobs
+  { printf 'jobs:\n'; for j in sign sign-rebuild sign-check sign-release release; do
+      printf '  %s:\n' "$j"; [ "$j" = "${2:-}" ] || printf '    if: %s\n' "$GUARD"; printf '    runs-on: ubuntu-24.04\n'; done; } > "$1/.github/workflows/release.yml"
+}
+snap_caller() { printf 'on: push\njobs:\n  build:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n' > "$1"; }
+d=$(mk c_good); rel_fixture "$d"; snap_caller "$d/.github/workflows/scan.yml"; snap_caller "$d/.github/workflows/main-candidate-rescan.yml"
+expect ok "003-AC5 fixture: scan.yml and main-candidate-rescan.yml call release.yml in snapshot mode, the five jobs carry the guard" calls "$d"
+for j in sign sign-rebuild sign-check sign-release release; do
+  d=$(mk "c_noguard_$j"); rel_fixture "$d" "$j"
+  expect caught "003-AC5 $j without the guard that skips it in snapshot mode and under workflow_call" calls "$d"
+  d=$(mk "c_partguard_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/inputs.mode != 'snapshot' && //" "$d/.github/workflows/release.yml"
+  expect caught "003-AC5 $j with a guard that does not exclude snapshot mode" calls "$d"
+  d=$(mk "c_nopush_$j"); rel_fixture "$d"; sed -i.bak "/^  $j:\$/,/^  [a-z]/ s/github.event_name == 'push' && //" "$d/.github/workflows/release.yml"
+  expect caught "003-AC5 $j with a guard that does not require a push" calls "$d"
+done
+d=$(mk c_second); rel_fixture "$d"; printf 'on: push\njobs:\n  x:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n' > "$d/.github/workflows/ci.yml"
+expect caught "003-AC5 a second workflow (ci.yml) calls release.yml" calls "$d"
+d=$(mk c_remote); rel_fixture "$d"; printf 'jobs:\n  x:\n    uses: fosterstack/cache/.github/workflows/release.yml@%s\n    with:\n      mode: snapshot\n' "$sha" > "$d/.github/workflows/auditor.yml"
+expect caught "003-AC5 a second workflow calls release.yml by repository path and digest" calls "$d"
+d=$(mk c_step); rel_fixture "$d"; printf 'jobs:\n  x:\n    steps:\n      - uses: ./.github/workflows/release.yml\n' > "$d/.github/workflows/ci.yml"
+expect caught "003-AC5 a step-level reference to release.yml from another workflow" calls "$d"
+d=$(mk c_yaml); rel_fixture "$d"; printf 'jobs:\n  x:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n' > "$d/.github/workflows/other.yaml"
+expect caught "003-AC5 a .yaml workflow calling release.yml" calls "$d"
+d=$(mk c_release_mode); rel_fixture "$d"; printf 'on: push\njobs:\n  build:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: release\n' > "$d/.github/workflows/scan.yml"
+expect caught "003-AC5 scan.yml calls release.yml in release mode" calls "$d"
+d=$(mk c_nowith); rel_fixture "$d"; printf 'on: push\njobs:\n  build:\n    uses: ./.github/workflows/release.yml\n' > "$d/.github/workflows/main-candidate-rescan.yml"
+expect caught "003-AC5 main-candidate-rescan.yml calls release.yml with no mode (the default is release)" calls "$d"
+d=$(mk c_stage); rel_fixture "$d"; printf 'on: push\njobs:\n  build:\n    uses: ./.github/workflows/stage-build.yml\n    with:\n      mode: snapshot\n' > "$d/.github/workflows/scan.yml"
+expect caught "003-AC5 scan.yml calls a stage-*.yml file" calls "$d"
+d=$(mk c_stage_remote); rel_fixture "$d"; printf 'jobs:\n  x:\n    uses: fosterstack/cache/.github/workflows/stage-sign.yml@%s\n' "$sha" > "$d/.github/workflows/auditor.yml"
+expect caught "003-AC5 a workflow calls stage-sign.yml by repository path and digest" calls "$d"
+d=$(mk c_stage_step); rel_fixture "$d"; printf 'jobs:\n  x:\n    steps:\n      - uses: ./.github/workflows/stage-verify.yml\n' > "$d/.github/workflows/ci.yml"
+expect caught "003-AC5 a step-level reference to a stage file" calls "$d"
 # ---- the real repository ----------------------------------------------------------------------------------------------------------------
 # Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them), never the working directory, which suites running in
 # parallel may write to (bin/__pycache__).
@@ -2945,9 +2976,8 @@ tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 REAL=$(tracked_copy real)
-CHAIN_ALLOWED="$root/.github/policy/allowed-actions.json" expect ok "the real stage-sign.yml passes the Sign judge" sign "$REAL/.github/workflows/stage-sign.yml"
-expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$REAL/.github/workflows/stage-build.yml"
-expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$REAL"
+expect ok "the real release.yml's signing steps take nothing from a secret (002-AC4: the Build jobs sign with the throwaway key, no stored credential)" build "$REAL/.github/workflows/release.yml"
+expect ok "the real tree: only scan.yml and main-candidate-rescan.yml call release.yml, in snapshot mode; no stage file is called; every sign job and release carries the guard (003-AC5)" calls "$REAL"
 # FROZEN LEGACY FILES (REQ-CHAIN-003 notes): the eleven legacy stage files PRs 2-4 rewrite on chain-v030 are listed with the sha256 of their
 # bytes in .github/policy/legacy-stage-files.json; the tree judge leaves out the findings OF a listed file whose bytes match (it still reads
 # them to see which scripts they run), and judges everything else in full. So the real tree is an ordinary `expect ok`. A file whose bytes
@@ -5015,8 +5045,9 @@ probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secr
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
   "repl .github/workflows/stage-promote.yml '      - name: release-assets under Witness\n' '      - name: release-assets under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
 
-# ---- the release job's federation env (REQ-CHAIN-001-AC1 job keys; REQ-CHAIN-007-AC18): in stage-promote.yml the job `release`, and no other job of any
-# stage file, carries a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of it repeats them; workflow-level env stays refused.
+# ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the four jobs sign, sign-rebuild, sign-check and sign-release, and no other job of any
+# workflow file, carry a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of them repeats the literals; the release job and every
+# other job hold none; workflow-level env stays refused.
 okprobe() {  # okprobe NAME LABEL EDIT(shell, run in the copy): a copy of the real tree with ONE change the tree judge must pass
   local d out rc=0; d=$(tracked_copy "okprobe-$1")
   ( cd "$d" && eval "$3" ) || echo "okprobe $1: the edit did not apply"
@@ -5025,57 +5056,51 @@ okprobe() {  # okprobe NAME LABEL EDIT(shell, run in the copy): a copy of the re
   else failn=$((failn + 1)); echo "FAIL real-tree control refused $2: rc=$rc ${out:0:300}"; fi; }
 # jobenv FILE JOB TEXT: puts TEXT (a job-level env block, \n for newlines) before the steps of job JOB in the copy
 jobenv() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?)(    steps:)",lambda m:m.group(1)+t.replace("\\n","\n")+m.group(2),s,count=1);assert n!=s,"jobenv: no change";open(p,"w").write(n)' "$@"; }
+# jrepl FILE JOB OLD NEW: replaces the first OLD inside job JOB only (the four sign jobs carry the same lines)
+jrepl() { python3 -c 'import re,sys;p,j,a,b=sys.argv[1:5];a=a.replace("\\n","\n");b=b.replace("\\n","\n");s=open(p).read();m=re.search(r"\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*",s);assert m,"jrepl: no job "+j;seg=m.group(0);assert a in seg,"jrepl: not found in "+j+": "+a;open(p,"w").write(s[:m.start()]+seg.replace(a,b,1)+s[m.end():])' "$@"; }
+# jstep FILE JOB TEXT: puts TEXT (a step block, \n for newlines) as the first step of job JOB in the copy
+jstep() { python3 -c 'import re,sys;p,j,t=sys.argv[1:4];s=open(p).read();n=re.sub(r"(\n  "+re.escape(j)+r":\n(?:(?!  \S).*\n)*?    steps:\n)",lambda m:m.group(1)+t.replace("\\n","\n"),s,count=1);assert n!=s,"jstep: no change";open(p,"w").write(n)' "$@"; }
 # wfenv FILE TEXT: puts TEXT (a top-level block) before the top-level permissions: of FILE
 wfenv() { python3 -c 'import re,sys;p,t=sys.argv[1:3];s=open(p).read();n=re.sub(r"^permissions:",lambda m:t.replace("\\n","\n")+"permissions:",s,count=1,flags=re.M);assert n!=s,"wfenv: no change";open(p,"w").write(n)' "$@"; }
-PRM=.github/workflows/stage-promote.yml
+REL=.github/workflows/release.yml
 FED3='      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'
 ROLE_LINE='      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n'
 REGION_LINE='      AWS_REGION: us-east-1\n'
 KEY_LINE='      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'
-# 1. the release job carries that env: the real tree passes (the real-tree case above), and so does the same three keys in another order
-okprobe pje_order "the release job's three federation entries in another order" \
-  "repl $PRM '$ROLE_LINE$REGION_LINE$KEY_LINE' '$KEY_LINE$REGION_LINE$ROLE_LINE'"
-# 2. any job env on any other job of stage-promote.yml, or of another stage-*.yml, is refused (job key env not allowed there)
-probe pje_compare "job key" "a job env on the compare job of stage-promote.yml" "jobenv $PRM compare '    env:\n      X1: y\n'"
-probe pje_verify "job key" "a job env on the verify job of stage-promote.yml" "jobenv $PRM verify '    env:\n      X1: y\n'"
-probe pje_compare_fed "job key" "the three federation entries as the job env of the compare job of stage-promote.yml" "jobenv $PRM compare '    env:\n$FED3'"
-probe pje_verify_fed "job key" "the three federation entries as the job env of the verify job of stage-promote.yml" "jobenv $PRM verify '    env:\n$FED3'"
-probe pje_sign_fed "job key" "the three federation entries as a job env of the sign job of stage-sign.yml" "jobenv .github/workflows/stage-sign.yml sign '    env:\n$FED3'"
-for fj in stage-build:freeze stage-verify:govulncheck-build stage-reproducibility:rapk; do
-  probe "pje_${fj%%:*}" "job key" "a job env on a job of ${fj%%:*}.yml (the three federation entries)" "jobenv .github/workflows/${fj%%:*}.yml '${fj##*:}' '    env:\n$FED3'"
+# 1. each sign job carries that env: the real tree passes (the real-tree case above), and so does the same three keys in another order
+for sj in sign sign-rebuild sign-check sign-release; do
+  okprobe "pje_order_$sj" "the $sj job's three federation entries in another order" "jrepl $REL $sj '$ROLE_LINE$REGION_LINE$KEY_LINE' '$KEY_LINE$REGION_LINE$ROLE_LINE'"
+  probe "pje_noenv_$sj" "env" "the $sj job without the env (all three entries gone)" "jrepl $REL $sj '    env:\n$FED3' ''"
+  probe "pje_fourth_$sj" "env" "a fourth key in the $sj job env" "jrepl $REL $sj '$KEY_LINE' '$KEY_LINE      GH_TOKEN: x\n'"
+  probe "pje_role_name_$sj" "env" "the $sj job env whose role is another role's" "jrepl $REL $sj 'role/fosterstack-cache-release-signing' 'role/other'"
+  probe "pje_region_$sj" "env" "the $sj job env whose region differs" "jrepl $REL $sj 'AWS_REGION: us-east-1' 'AWS_REGION: eu-west-1'"
+  probe "pje_step_role_$sj" "AWS_ROLE_ARN" "a step of $sj that repeats AWS_ROLE_ARN as step env" \
+    "jstep $REL $sj '      - name: repeat\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n        run: echo x\n'"
+  probe "pje_step_region_$sj" "AWS_REGION" "a step of $sj that repeats AWS_REGION as step env" \
+    "jstep $REL $sj '      - name: repeat\n        env:\n          AWS_REGION: us-east-1\n        run: echo x\n'"
+  probe "pje_step_key_$sj" "RELEASE_KMS_KEY_REF" "a step of $sj that repeats RELEASE_KMS_KEY_REF as step env" \
+    "jstep $REL $sj '      - name: repeat\n        env:\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: echo x\n'"
 done
-# 3. on the release job the env is exactly those three keys with exactly those literals
-probe pje_fourth "env" "a fourth key in the release job env" "repl $PRM '$KEY_LINE    steps:' '$KEY_LINE      GH_TOKEN: x\n    steps:'"
-probe pje_fourth_tok "env" "a fourth key in the release job env that takes the run's token" "repl $PRM '$KEY_LINE    steps:' '$KEY_LINE      GH_TOKEN: \${{ github.token }}\n    steps:'"
-probe pje_no_role "env" "a release job env without AWS_ROLE_ARN" "repl $PRM '$ROLE_LINE' ''"
-probe pje_no_region "env" "a release job env without AWS_REGION" "repl $PRM '$REGION_LINE' ''"
-probe pje_no_key "env" "a release job env without RELEASE_KMS_KEY_REF" "repl $PRM '$KEY_LINE' ''"
-probe pje_no_env "env" "a release job without the env (all three entries gone)" "repl $PRM '    env:\n$FED3' ''"
-probe pje_role_acct "env" "a release job env whose role is another account's" "repl $PRM 'arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'arn:aws:iam::111111111111:role/fosterstack-cache-release-signing'"
-probe pje_role_name "env" "a release job env whose role is another role's" "repl $PRM 'role/fosterstack-cache-release-signing' 'role/other'"
-probe pje_region "env" "a release job env whose region differs" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: eu-west-1'"
-probe pje_keyref "env" "a release job env whose key reference differs" "repl $PRM 'awskms:///alias/fosterstack-release-signing' 'awskms:///alias/other'"
-probe pje_expr_region "env" "a release job env whose region is an expression" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: \${{ inputs.region }}'"
-probe pje_expr_lit "env" "a release job env whose region is an expression that evaluates to the literal" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: \${{ \"us-east-1\" }}'"
-probe pje_secret_role "env" "a release job env whose role is a secret lookup" "repl $PRM 'AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'AWS_ROLE_ARN: \${{ secrets.AWS_ROLE_ARN }}'"
-probe pje_var_key "env" "a release job env whose key reference is a variable lookup" "repl $PRM 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing' 'RELEASE_KMS_KEY_REF: \${{ vars.RELEASE_KMS_KEY_REF }}'"
-probe pje_empty_val "env" "a release job env whose region is empty" "repl $PRM 'AWS_REGION: us-east-1' 'AWS_REGION: \"\"'"
-# 4. no step of the release job repeats a federation entry as step env (other step env, DOCKERHUB_* and GH_TOKEN, stays as it is)
-probe pje_step_role "AWS_ROLE_ARN" "a release step that repeats AWS_ROLE_ARN as step env" \
-  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n'"
-probe pje_step_region "AWS_REGION" "a release step that repeats AWS_REGION as step env" \
-  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          AWS_REGION: us-east-1\n'"
-probe pje_step_key "RELEASE_KMS_KEY_REF" "a release step that repeats RELEASE_KMS_KEY_REF as step env" \
-  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'"
-probe pje_step_role_more "AWS_ROLE_ARN" "a release step that adds AWS_ROLE_ARN to the env it already has" \
-  "repl $PRM '      - name: release-assets under Witness\n        env:\n' '      - name: release-assets under Witness\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n'"
-probe pje_step_other_role "AWS_ROLE_ARN" "a release step that sets AWS_ROLE_ARN to another role" \
-  "repl $PRM '      - name: release-apks under Witness\n' '      - name: release-apks under Witness\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::111111111111:role/other\n'"
-# 5. workflow-level env stays refused everywhere
-probe pje_wf_promote "env" "a workflow-level env in stage-promote.yml" "wfenv $PRM 'env:\n  X1: y\n'"
-probe pje_wf_promote_fed "env" "the three federation entries as a workflow-level env of stage-promote.yml" "wfenv $PRM 'env:\n  AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n  AWS_REGION: us-east-1\n  RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'"
-probe pje_wf_sign "env" "a workflow-level env in stage-sign.yml" "wfenv .github/workflows/stage-sign.yml 'env:\n  X1: y\n'"
-probe pje_wf_build "env" "a workflow-level env in stage-build.yml" "wfenv .github/workflows/stage-build.yml 'env:\n  X1: y\n'"
+for sj in sign sign-release; do
+  probe "pje_no_role_$sj" "env" "the $sj job env without AWS_ROLE_ARN" "jrepl $REL $sj '$ROLE_LINE' ''"
+  probe "pje_no_region_$sj" "env" "the $sj job env without AWS_REGION" "jrepl $REL $sj '$REGION_LINE' ''"
+  probe "pje_no_key_$sj" "env" "the $sj job env without RELEASE_KMS_KEY_REF" "jrepl $REL $sj '$KEY_LINE' ''"
+  probe "pje_fourth_tok_$sj" "env" "a fourth key in the $sj job env that takes the run's token" "jrepl $REL $sj '$KEY_LINE' '$KEY_LINE      GH_TOKEN: \${{ github.token }}\n'"
+  probe "pje_role_acct_$sj" "env" "the $sj job env whose role is another account's" "jrepl $REL $sj 'arn:aws:iam::821302803867:role/' 'arn:aws:iam::111111111111:role/'"
+  probe "pje_keyref_$sj" "env" "the $sj job env whose key reference differs" "jrepl $REL $sj 'awskms:///alias/fosterstack-release-signing' 'awskms:///alias/other'"
+  probe "pje_expr_region_$sj" "env" "the $sj job env whose region is an expression" "jrepl $REL $sj 'AWS_REGION: us-east-1' 'AWS_REGION: \${{ inputs.region }}'"
+  probe "pje_secret_role_$sj" "env" "the $sj job env whose role is a secret lookup" "jrepl $REL $sj 'AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing' 'AWS_ROLE_ARN: \${{ secrets.AWS_ROLE_ARN }}'"
+  probe "pje_var_key_$sj" "env" "the $sj job env whose key reference is a variable lookup" "jrepl $REL $sj 'RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing' 'RELEASE_KMS_KEY_REF: \${{ vars.RELEASE_KMS_KEY_REF }}'"
+  probe "pje_empty_val_$sj" "env" "the $sj job env whose region is empty" "jrepl $REL $sj 'AWS_REGION: us-east-1' 'AWS_REGION: \"\"'"
+done
+# 2. any job env on any other job of release.yml, the release job included, is refused (job key env not allowed there), even the three federation entries
+for oj in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check release-compare release-verify release; do
+  probe "pje_other_$oj" "job key" "a job env on the $oj job of release.yml" "jobenv $REL $oj '    env:\n      X1: y\n'"
+  probe "pje_other_fed_$oj" "job key" "the three federation entries as the job env of the $oj job of release.yml" "jobenv $REL $oj '    env:\n$FED3'"
+done
+# 3. workflow-level env stays refused
+probe pje_wf_release "env" "a workflow-level env in release.yml" "wfenv $REL 'env:\n  X1: y\n'"
+probe pje_wf_release_fed "env" "the three federation entries as a workflow-level env of release.yml" "wfenv $REL 'env:\n  AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n  AWS_REGION: us-east-1\n  RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'"
 
 # ---- Codex A r2 blocker 4 / r3 F4 (advisor): NO actions/setup-go anywhere; Go comes from the checksum-pinned `bash bin/install-scanner.sh go` line -------------
 # the stage grammar run on the REAL stage-build.yml (and on edited copies): the installer line is accepted, every use of setup-go is refused
@@ -5279,7 +5304,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2168
+EXPECT=2226
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
