@@ -51,7 +51,6 @@
  "marker-gate-test.sh": 51,
  "panel-test.sh": 92,
  "panel-wiring-test.sh": 148,
- "patch-decide-test.sh": 352,
  "persona-uat-agent-test.sh": 244,
  "persona-uat-test.sh": 618,
  "persona-uat-wiring-test.sh": 918,
