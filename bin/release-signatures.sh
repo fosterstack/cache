@@ -53,9 +53,9 @@ date=$(git log -1 --format=%ct "$GITHUB_SHA")
 [[ "$date" =~ ^[0-9]+$ ]] || { echo "release-signatures: the commit date of $GITHUB_SHA is not epoch seconds: $date" >&2; exit 1; }
 python3 -I -B bin/vendor-provenance.py evidence --out "$out/release-evidence" --provenance dependency-provenance.json --govulncheck "$gv" --date "$date"
 # the dependency list is signed and shipped as dependency-list.json: a signing call that names provenance is read as a provenance signer, which only Sign may be
-cp dependency-provenance.json "$out/release-evidence/dependency-list.json"
+cp dependency-provenance.json release-signed/release-evidence/dependency-list.json
 python3 -I -B bin/release-metadata.py images --digests witness-build/digests.json --images-dir images --items witness-build/items.json --out "$out/release-metadata/vex-images.json"
-cp .vex/fosterstack-cache.openvex.json "$out/release-metadata/"
+cp .vex/fosterstack-cache.openvex.json release-signed/release-metadata/
 python3 -I -B bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images "$out/release-metadata/vex-images.json" --version "$GITHUB_REF_NAME" --out-dir "$out/release-metadata"
 # the baseline is the one admission chose (REQ-CHAIN-007-AC19), read from Build's verified admission-baseline.json
 baseline=$(python3 -I -B bin/release-metadata.py baseline --admission witness-build/admission-baseline.json --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA")
