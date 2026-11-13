@@ -1277,7 +1277,8 @@ def hist():      # the information line for an unmeasured revision is printed on
         items = pa.history_items(sys.argv[2], "HEAD", NOW)
     return " ".join(repr(k) for k in items), err.getvalue()
 '
-CASE="oversize history: a revision with a command line over 4000 characters is unmeasured, never an error: the read completes, holds the readable revisions' pins and not the oversize ones'"
+CASE="oversize history: a revision with a command line over 4000 characters is unmeasured, never an "
+CASE+="error: the read completes, holds the readable revisions' pins and not the oversize ones'"
 check python3 - "$aud" "$r" "$SHA1" "$SHA2" "$SHA4" "$OV_B" "$OV_D" <<PY
 $OVPY
 blob, err = hist()
@@ -1286,7 +1287,8 @@ assert sys.argv[4] not in blob, blob
 for rev in (sys.argv[6], sys.argv[7]):
     assert "revision " + rev[:12] + " is unmeasured" in err, err
 PY
-CASE="oversize history: no other error is swallowed: a revision unreadable for another reason (a broken tree) still stops the read"
+CASE="oversize history: no other error is swallowed: a revision unreadable for another reason (a broken "
+CASE+="tree) still stops the read"
 check python3 - "$aud" "$r" "$OV_B" <<PY
 $OVPY
 orig = pa.inv.load_at
@@ -1303,7 +1305,8 @@ else:
     raise SystemExit("an unrelated error of a revision was swallowed")
 PY
 
-# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key. Both
+# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key.
+# Both
 # revisions of a shared oversize tree are unmeasured, and a readable revision that shares a tree with neither is read.
 r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
@@ -1313,7 +1316,8 @@ oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
 oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
 oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
 oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
-CASE="oversize history, shared tree: two revisions that share an unreadable tree are both unmeasured and their pin is held by neither"
+CASE="oversize history, shared tree: two revisions that share an unreadable tree are both unmeasured and "
+CASE+="their pin is held by neither"
 check python3 - "$aud" "$r" "$SH_X" "$SH_Y" "$SHA2" "$SHA1" <<PY
 $OVPY
 blob, err = hist()
@@ -1325,7 +1329,8 @@ PY
 
 # --- the daily run does not stop at an oversize revision: the tag observations are written and the audit goes on ---
 rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-oversize" --observations-out "$work/obsout4/state.json"
-CASE="oversize history, daily run: an oversize revision does not end the audit (exit other than 2) and is named as unmeasured"
+CASE="oversize history, daily run: an oversize revision does not end the audit (exit other than 2) and is "
+CASE+="named as unmeasured"
 check test "$rc" -ne 2; check grep -q 'is unmeasured' "$work/oversizeobs.out"
 CASE="oversize history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
 check test -s "$work/obsout4/state.json"
@@ -1400,7 +1405,8 @@ gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
 assert [g["id"] for g in gh] == ["GHSA-aaaa-bbbb-cccc"] and gh[0]["affected"], gh
 PY
 
-CASE="proxy: a 200 answer that is not a module info object ([], null, {}, a non-empty array, a missing, null or empty Version) is CouldNotLook, never 'module not found'"
+CASE="proxy: a 200 answer that is not a module info object ([], null, {}, a non-empty array, a missing, "
+CASE+="null or empty Version) is CouldNotLook, never 'module not found'"
 check python3 - "$aud" <<'PY'
 import importlib.util, io, sys, urllib.request
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -1420,7 +1426,9 @@ urllib.request.urlopen = lambda *a, **k: R(b'{"Version": "v1.0.0", "Time": "2020
 mod, info = age._go_module("github.com/o/r/cmd/x", "v1.0.0")
 assert info["Version"] == "v1.0.0", (mod, info)
 PY
-CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is CouldNotLook; a missing Time or a null Time never crashes the go-index proof; a bad answer reaches covered() as CouldNotLook"
+CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is "
+CASE+="CouldNotLook; a missing Time or a null Time never crashes the go-index proof; "
+CASE+="a bad answer reaches covered() as CouldNotLook"
 check python3 - "$aud" <<'PY'
 import http.client, importlib.util, io, sys, urllib.request
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -1575,7 +1583,8 @@ REFUSE = (age.CouldNotLook, pa.Fail)
 tmp = tempfile.mkdtemp()
 
 # ---- 1. no reader has a default: the caller must say what it reads
-for fn, name in ((age._http_dict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"), (age._gh_pages, "rows"), (age._gh_list, "rows")):
+for fn, name in ((age._http_dict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"),
+                  (age._gh_pages, "rows"), (age._gh_list, "rows")):
     assert inspect.signature(fn).parameters[name].default is inspect.Parameter.empty, (fn.__name__, name, "has a default")
 net0 = pa.LiveNet(["false"], ".")
 for kw in ({}, {"need": (), "rows": ()}):
@@ -1606,7 +1615,8 @@ def sites(path):
         # a reader call names what it reads (a shape argument), never a bare read
         if name == "_http_dict": assert len(n.args) + len(n.keywords) >= 2, ("_http_dict without need", n.lineno)
         if name in ("_gh_api", "_gh_pages", "_gh_list"): assert len(n.args) + len(n.keywords) >= 2, (name + " without a shape", n.lineno)
-        if name == "_gh_json" and path == aud: assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
+        if name == "_gh_json" and path == aud:
+            assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
     return found
 actual = sites(chk) + sites(aud)      # a Counter: how many calls of each reader sit in each function
 
@@ -1887,7 +1897,8 @@ revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).spl
 assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src, sorted(i.sums))
                              for k, i in sorted(d.items())}, sort_keys=True)
-def read(r):      # a revision the reader refuses (a command line over its cap) must be refused the same way with the memos
+# a revision the reader refuses (a command line over its cap) must be refused the same way with the memos
+def read(r):
     try:
         return dump(inv.load_at(root, r))
     except RuntimeError as e:
