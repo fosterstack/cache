@@ -1950,8 +1950,8 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "1f15ba4fe25caab419a73077c5c6efbf0b5e7335004b5e839b618a992691d470",
+      "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010; a stdlib version the build does not ship is left out); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
+      "sha256": "38149f0e36039ab8c6aea9244e7d2b10fc124d25c8a98d5cc4faa35cca4e4054",
       "exceptions": [
         {
           "rule": "deny",
@@ -2091,7 +2091,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "494deabe556f7aa2139e61d370b53333a10075fcaa54c2acf9353096ba004c05",
+      "sha256": "5a0394b319504bc4fe99091097dc6253e5df6b9b17247fd16d19c523979aed2d",
       "tools": [
         "at",
         "gh",
@@ -2134,7 +2134,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "ec4c3549b7bece428ea93db4bba00e03a00a2e9b2a242f3675fbc0d445e871e6",
+      "sha256": "53174f51a50d2e6d263bd25a0f20b0ccfb20da8997366c59ed596cfafe2cd6d7",
       "tools": [
         "at",
         "python3"

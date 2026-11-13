@@ -286,6 +286,35 @@ check "live document: ...on jwt/v5 is NOT covered (another module)"        1 "1 
 check "live document: ...on a bare package named v4 is NOT covered (no last-segment match for a module path)" 1 "1 finding" cand-production-amd64 "$w/live-sbom.json" "$w/live-v4.json" "$live"
 check "live document: ...on busybox is NOT covered (scoped to the module, not the image)" 1 "1 finding" cand-production-amd64 "$w/live-sbom.json" "$w/live-bb.json" "$live"
 
+# R1: only the Go standard library loses the go prefix when a finding is matched to a statement's subcomponent; any other package keeps its version as written.
+# A finding is a CycloneDX component with a purl, or (stdlib only) a component with just a name and a version beside one with a purl.
+std_vex() { # statement purl -> file: our image product, subcomponent $1
+  printf '{"statements":[{"vulnerability":{"name":"CVE-2099-0027"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"%s"}]}]}]}' "$1" > "$w/std-vex.json"
+}
+std_sbom() { # component json -> sbom file, plus a finding on it
+  printf '{"bomFormat":"CycloneDX","components":[{"bom-ref":"t0","type":"library","name":"tzdata","purl":"pkg:deb/debian/tzdata@2025b"},%s]}' "$1" > "$w/std-sbom.json"
+  echo '{"id":"CVE-2099-0027","ratings":[{"severity":"low"}],"affects":[{"ref":"s0"}]}' > "$w/std-find.json"
+}
+std_case() { # name want_rc regex finding-component-json statement-purl
+  std_sbom "$4"; std_vex "$5"
+  printf '{"bomFormat":"CycloneDX","vulnerabilities":[%s]}' "$(cat "$w/std-find.json")" > "$w/std-find.json"
+  check "$1" "$2" "$3" cand-production-amd64 "$w/std-sbom.json" "$w/std-find.json" "$w/std-vex.json"
+}
+std_case "R1 a golang stdlib finding at go1.27.2 is covered by the stdlib@1.27.2 statement" 0 "1 covered" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:golang/stdlib@1.27.2"
+std_case "R1 a golang stdlib finding at go1.27.3 is not covered by the stdlib@1.27.2 statement" 1 "1 finding" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.3","purl":"pkg:golang/stdlib@go1.27.3"}' "pkg:golang/stdlib@1.27.2"
+std_case "R1 a stdlib finding with no purl, version go1.27.2, is covered by the stdlib@1.27.2 statement" 0 "1 covered" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2"}' "pkg:golang/stdlib@1.27.2"
+std_case "R1 a stdlib finding with no purl, version go1.27.3, is not covered by the stdlib@1.27.2 statement" 1 "1 finding" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.3"}' "pkg:golang/stdlib@1.27.2"
+std_case "R1 a generic stdlib finding at go1.27.2 is NOT covered by a generic stdlib@1.27.2 statement" 1 "1 finding" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:generic/stdlib@go1.27.2"}' "pkg:generic/stdlib@1.27.2"
+std_case "R1 a generic stdlib finding at go1.27.2 is covered by a generic stdlib@go1.27.2 statement (exact)" 0 "1 covered" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:generic/stdlib@go1.27.2"}' "pkg:generic/stdlib@go1.27.2"
+std_case "R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement" 0 "1 covered" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"1.27.2","purl":"pkg:generic/stdlib@1.27.2"}' "pkg:generic/stdlib@1.27.2"
+
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
