@@ -49,6 +49,22 @@ unmapped:
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
   - ac: REQ-CI-001-AC4
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC1
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC2
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC3
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC4
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC5
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC6
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC7
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+  - ac: REQ-REL-013-AC8
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
   - ac: REQ-REL-013-AC9
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
   - ac: REQ-REL-013-AC10
