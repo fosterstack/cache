@@ -53,7 +53,14 @@
       "runs": [],
       "signs": false,
       "reason": "the apk jobs' host-tools step: unpacks bubblewrap and what it needs from the archive just pulled (the packages build/locks/host-tools.lock names, checked against the datahash of each apk) into host-tools/ and writes the bwrap wrapper melange's bubblewrap runner calls; no network, no package manager, no sudo, no other program (REQ-CHAIN-004-AC17); the listed tools are words in its messages and comments that the text scan over-reports (the script starts no program: the archive format is read with the Python library)",
-      "sha256": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09"
+      "sha256": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "apk-tool.py",
+          "why": "a comment naming the script; prose, never run from here"
+        }
+      ]
     },
     {
       "path": "bin/chain-verify.py",
@@ -384,6 +391,12 @@
         "arm64": "bin/check-phase-arm64.sh",
         "release-verify": "bin/release-verify.sh"
       },
+      "arg_extra": {
+        "build": "apk",
+        "rebuild": "rapk",
+        "snapshot-build": "snapshot-apk",
+        "snapshot-rebuild": "snapshot-rapk"
+      },
       "exceptions": [
         {
           "rule": "witness-target",
@@ -472,7 +485,7 @@
       ],
       "signs": false,
       "reason": "Build and Rebuild, job assemble, release and snapshot: bind the apk records, assemble both images and the archives, write digests.json and items.json, each image's built index carries the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1); Rebuild compares every item with Build's",
-      "sha256": "3f7bcd31c97c5f845c8824e9fb1c9b89d593d21706ba8264278a1689a9faa275"
+      "sha256": "ea348fab3e7c403dbfd3cb9191be0ae874b353b68bf59439980cf118632fc3a0"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -520,6 +533,56 @@
           "name": "PATH",
           "text": "`git show REV:PATH`",
           "why": "a docstring naming the path operand of git show; nothing is set"
+        },
+        {
+          "name": "PATH",
+          "text": "cannot trust a PATH an earlier step set",
+          "why": "a comment naming why the program paths are fixed; nothing is set"
+        },
+        {
+          "name": "PYTHON3",
+          "text": "PYTHON3 = \"/usr/bin/python3\"",
+          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
+        },
+        {
+          "name": "PYTHON3",
+          "text": "subprocess.run([PYTHON3, \"-I\", os.path.join(ctx.policy",
+          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
+        },
+        {
+          "name": "PYTHON3",
+          "text": "subprocess.run([PYTHON3, \"-I\", script_path, \"check-marker\"",
+          "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
+        }
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "GIT = \"/usr/bin/git\"            # TEST-SUBST",
+          "line_sha256": "29eec7ef5b70fce73e331def0ff25e8e718feac1b95e2e341f787a0ce4a91839",
+          "count": 1,
+          "why": "admission runs first, so it runs git at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
+        },
+        {
+          "rule": "deny",
+          "line": "GH = \"/usr/bin/gh\"              # TEST-SUBST",
+          "line_sha256": "62af0712e55d2ef1b97d9f98c5c896831152d14af4addee2676b2c7e6ecdf4b1",
+          "count": 1,
+          "why": "admission runs first, so it runs gh at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
+        },
+        {
+          "rule": "deny",
+          "line": "PYTHON3 = \"/usr/bin/python3\"    # TEST-SUBST",
+          "line_sha256": "a703dca7a8bb4fa52bba8b0cfc6302716039620b7363c4641561a5c90df559ac",
+          "count": 1,
+          "why": "admission runs first, so it runs python3 at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
+        },
+        {
+          "rule": "deny",
+          "line": "BASH = \"/usr/bin/bash\"          # TEST-SUBST",
+          "line_sha256": "78edad5dc6aa9da95bcd6bfcbefa8e57f47dc8b413af1269c9c2af7e503b731b",
+          "count": 1,
+          "why": "admission runs first, so it runs bash at its fixed location and never searches PATH (a path constant, the test suites substitute it)"
         }
       ]
     },
@@ -1000,7 +1063,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "cc4eda67a294fa4078deeca069cfc80253881b67f51eb677126d92acc5bace56",
+      "sha256": "6a991dc1ac668512dc576dfde4ac098239ea919e98ea4fbf82fdf3812a891f3e",
       "tools": [
         "at",
         "awk",
@@ -1013,7 +1076,9 @@
         "task",
         "xargs"
       ],
-      "runs": [],
+      "runs": [
+        "bin/acceptance-gradle-lib.sh"
+      ],
       "signs": false,
       "reason": "the Gradle acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
       "exceptions": [
@@ -1104,19 +1169,29 @@
     },
     {
       "path": "bin/acceptance-gradle-lib.sh",
-      "sha256": "ef60f9742d1b4d3bab8645822a083335c757a2564558ec94d4a85bd787ccef02",
+      "sha256": "def32cbe68bcf59a43dc31649891f3c4dd0b9eff054e43f234e44ad0b57c4c82",
       "tools": [
+        "bash",
         "grep",
         "sed",
         "sha256sum"
       ],
       "runs": [],
       "signs": false,
-      "reason": "the wrapper-jar check both Gradle acceptance scripts source (REQ-SUP-001-AC32)"
+      "reason": "the wrapper-jar check both Gradle acceptance scripts run (REQ-SUP-001-AC32)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "if [ \"$(grep -c '' \"$policy\")\" != 1 ] || [ \"$(sed 's/^[0-9a-f]*//' \"$policy\")\" != \"  $jar\" ] ||",
+          "line_sha256": "dc5a4906f45597140024a18502f0f6be4dc98ecc94dc14cf1c33523b0c979b38",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution: it is a test, not a subscript"
+        }
+      ]
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "e3614e9529ed439e5b7ae64784408c457b0f06323f4614b88094f4c27e82e39f",
+      "sha256": "030834d3c5c89ba22712152d98a449e5bf264b53442562f5bd489bcb03c660da",
       "tools": [
         "awk",
         "bash",
@@ -1125,7 +1200,9 @@
         "sed",
         "task"
       ],
-      "runs": [],
+      "runs": [
+        "bin/acceptance-gradle-lib.sh"
+      ],
       "signs": false,
       "reason": "the Gradle capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
       "exceptions": [
@@ -1385,6 +1462,13 @@
           "line_sha256": "a944589ff39491c9958ff81e5828c6fd9c6266fbe35587058c99f36625c994a4",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(docker network inspect -f '{{.Internal}}' \"$n\")\" = true ] \\",
+          "line_sha256": "88f5c58766dcf0392469c0377affbc4842b4b4b42d7e2a51bda9b4c4622d8eae",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution: it is a test, not a subscript (the line is one command of the denied-network check)"
         }
       ]
     },
@@ -2148,17 +2232,24 @@
         },
         {
           "rule": "deny",
-          "line": "    for p in (\"/usr/bin/openssl\", \"/opt/homebrew/bin/openssl\", \"/usr/local/bin/openssl\"):",
-          "line_sha256": "5fead91decc79ed084017554a36c313c5f4ad61e372c7fc9802f9602c66c8dc3",
-          "count": 1,
-          "why": "the three fixed locations the reader looks for openssl at, each tested with os.access(p, os.X_OK) before any run; never searched on PATH"
-        },
-        {
-          "rule": "deny",
           "line": "    refuse(\"openssl is not installed at a fixed location (/usr/bin/openssl)\")",
           "line_sha256": "a04ec4cd4028105cb7577852900a340cd9b417283ed2c0b464dabe028adafe00",
           "count": 1,
           "why": "the refusal message naming the fixed location; prose, never run"
+        },
+        {
+          "rule": "deny",
+          "line": "    if os.access(\"/usr/bin/openssl\", os.X_OK):",
+          "line_sha256": "0957028b031a4758a7f7347a6a18274b955c0fcddb7e88a92fa632edc873910c",
+          "count": 1,
+          "why": "the fixed location the reader looks for openssl at, tested with os.access before any run; never searched on PATH"
+        },
+        {
+          "rule": "deny",
+          "line": "        return \"/usr/bin/openssl\"",
+          "line_sha256": "4189f99bdc8fa3f6c9624ef6b4e022b22e09acdc826a6c1fe2e9bfdbadae8b5b",
+          "count": 1,
+          "why": "the fixed location the reader runs openssl from; never searched on PATH"
         }
       ],
       "env_mentions": [
@@ -2219,11 +2310,13 @@
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
       "sha256": "a9ebc31e7fe8fe9336f763457c1ffa6cce89808b6c92961e8656904cd531762e",
-      "env_mentions": [
+      "exceptions": [
         {
-          "name": "PATH",
-          "text": "no Go toolchain on PATH in CI",
-          "why": "a refusal message naming where the Go toolchain is looked for; nothing is set"
+          "rule": "deny",
+          "line": "ENV_PATH, UNSHARE_PATH, MELANGE_PATH = \"/usr/bin/env\", \"/usr/bin/unshare\", \"/usr/local/bin/melange\"",
+          "line_sha256": "ff294ce6807ee332c3ee39b714f9535237e9f586fd230871e1266f8c246d7f22",
+          "count": 1,
+          "why": "the fixed env, unshare and melange locations the sealed build is checked against; compared as strings, never searched on PATH"
         }
       ]
     },
@@ -2455,7 +2548,8 @@
       "runs": [
         "bin/apko-lock.sh",
         "bin/oci-digest.py",
-        "bin/net-probe.py"
+        "bin/net-probe.py",
+        "bin/build-apk-helper.py"
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
