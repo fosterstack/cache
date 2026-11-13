@@ -43,7 +43,7 @@ done
 tmp=$(mktemp -d)
 mkdir -p "$out" "$tmp/bin"
 pids=()
-export PATH="/usr/local/bin/fscache-go/bin:$PATH"   # the pinned Go, as check-govulncheck runs it
+GO_TOOL=/usr/local/bin/fscache-go/bin/go   # TEST-SUBST (the chain installs the pinned Go there, as check-govulncheck runs it)
 # stop one of this check's servers and wait until it is gone, so a server never outlives the check (a dying server must not meet a later run)
 stop_pid() { local p=$1 _; kill "$p" > /dev/null 2>&1 || true; for _ in $(seq 40); do kill -0 "$p" > /dev/null 2>&1 || break; sleep 0.25; done; kill -9 "$p" > /dev/null 2>&1 || true; wait "$p" > /dev/null 2>&1 || true; }
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do stop_pid "$p"; done; docker rm -f fscache-art-production fscache-art-fips > /dev/null 2>&1 || true; rm -rf "$tmp"; }
@@ -124,9 +124,9 @@ passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
 # REQ-FIPS-001-AC1: the module selection is read from the binaries' build info, not from a runtime self-report
 fipsmod=$(< build/locks/fips-module.txt)   # the module id the tree pins
 [[ "$fipsmod" =~ ^v[0-9.]+-[0-9a-f]{8}$ ]] || fail "build/locks/fips-module.txt holds no module id (vX.Y.Z-<8 hex>)"
-info_fips=$(go version -m "$tmp/bin/fscache-fips")
+info_fips=$("$GO_TOOL" version -m "$tmp/bin/fscache-fips")
 grep -Eqx "[[:space:]]build[[:space:]]GOFIPS140=${fipsmod//./\\.}" <<< "$info_fips" || fail "fscache-fips does not embed GOFIPS140=$fipsmod: the validated module was not selected into this artifact"
-info_std=$(go version -m "$tmp/bin/fscache")
+info_std=$("$GO_TOOL" version -m "$tmp/bin/fscache")
 if grep -Eq 'build[[:space:]]+GOFIPS140=' <<< "$info_std"; then fail "the standard binary embeds a GOFIPS140 selection: variants are crossed"; fi
 passed REQ-FIPS-001-AC1 "fscache-fips"
 
