@@ -106,8 +106,15 @@ PR_BODY=$'Lowered floors: suite-b\nLowered floors: suite-a' expect 1 "vs-base: o
 PR_BODY=$'Lowered floors: suite-a, suite-b' expect 1 "vs-base: a named suite whose floor is not lowered fails (name exactly what is lowered)" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
 expect 1 "vs-base: --allow-lowered also fails a named suite whose floor is not lowered" "suite-b" -- floors-vs-base --allow-lowered suite-a,suite-b "$base" test-evidence/suite-floors.json
 printf '{"suite-a": 50}\n' > test-evidence/suite-floors.json
-PR_BODY=$'Lowered floors: suite-b' expect 1 "vs-base: a dropped suite fails even when the body names it" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
-expect 1 "vs-base: a dropped suite fails" "suite-b" -- floors-vs-base "$base" test-evidence/suite-floors.json
+PR_BODY=$'Lowered floors: suite-b' expect 0 "REQ-CI-005-AC4 vs-base: a dropped suite the body names, whose file is gone, counts as lowered to 0 and passes" "gone" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
+expect 0 "REQ-CI-005-AC4 vs-base: a dropped suite named by --allow-lowered, whose file is gone, passes saying gone" "gone" -- floors-vs-base --allow-lowered suite-b "$base" test-evidence/suite-floors.json
+expect 1 "REQ-CI-005-AC4 vs-base: a dropped suite that is not named fails even when its file is gone" "suite-b" -- floors-vs-base "$base" test-evidence/suite-floors.json
+# a suite whose file still exists cannot be dropped, named or not (committed so the tracked tree holds it at the head)
+: > suite-b; git add suite-b; git commit -qm 'suite-b file'
+PR_BODY=$'Lowered floors: suite-b' expect 1 "REQ-CI-005-AC4 vs-base: a dropped suite whose file exists fails even when the body names it" "suite-b" -- floors-vs-base --allow-from-body "$base" test-evidence/suite-floors.json
+expect 1 "REQ-CI-005-AC4 vs-base: a dropped suite whose file exists fails even when --allow-lowered names it" "suite-b" -- floors-vs-base --allow-lowered suite-b "$base" test-evidence/suite-floors.json
+expect 1 "REQ-CI-005-AC4 vs-base: a dropped suite whose file exists and is not named fails" "suite-b" -- floors-vs-base "$base" test-evidence/suite-floors.json
+git rm -q suite-b; git commit -qm 'suite-b file gone'
 printf '{"suite-a": 40, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 0 "vs-base: an allowed lowering says so on the ok line, not 'did not fall' alone" "except the named: suite-a 50->40" -- floors-vs-base --allow-lowered suite-a "$base" test-evidence/suite-floors.json
 printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
@@ -145,7 +152,7 @@ printf '{"chatty": 70}\n' > "$work/rc2.json"
 expect 1 "REQ-CI-005-AC3 run: a counted suite that lost cases (below its floor) fails its step" "below its floor" -- run "$work/rc2.json" chatty "$work/s/chatty.sh"
 expect 1 "REQ-CI-005-AC3 run: a counted suite that prints no count fails its step" "no case count" -- run "$work/rc.json" silent "$work/s/silent.sh"
 
-EXPECT=63
+EXPECT=67
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
