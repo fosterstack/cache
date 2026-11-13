@@ -848,10 +848,9 @@ for name, head, verdicts in (
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, slug="github-actions")]})
 check("gate refused: a bump that only another App passed", refused(r, "it has no verdict"), said(r, c))
 
-# the reviewer's version is the sha256 of bin/dependabot-reviewer.py under the checked-out main: a success of any
-# other version,
-# or with none, is a verdict that does not pass (it is not "no verdict", so no clean merge of main carries a pass over
-# it)
+# The reviewer's version is the sha256 of the sha256sum lines of the five files under the checked-out main (AC14). A
+# success of any other version, or with none, is a verdict that does not pass: it is not "no verdict", so no clean
+# merge of main carries a pass over it.
 def stale_refused(r): return r.returncode == 1 and r.stdout.startswith(
       "audit-record: Dependabot pull request #7: ") and "it has no verdict" not in r.stdout
 for name, head, verdicts, asks in (
