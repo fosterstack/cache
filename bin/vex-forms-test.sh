@@ -778,11 +778,11 @@ check("AC-B2-3 …and in the CSAF (component-stdlib@go1.28.0 only)",
 r_, got_, o_ = run_in_tree(MEL, two)
 check(f"AC-B2-3 the copied tree with the real melange.yaml keeps {BUILD_GO} and drops 1.28.0",
       r_.returncode == 0 and [f["filterCriteria"]["vulnerabilityId"][0]["value"] for f in got_[FORMS[0]]["filters"]] == ["CVE-B2"], (r_.returncode, r_.stderr[-300:]))
-# AC-B2-3b: a .sig and a .sha256 line for the same Go version are not a second version
+# AC-B2-3b: a .sig or .sha256 line is not a Go version, even when it names another one
 r_, got_, o_ = run_in_tree(MEL + "\n      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sig\n" % OTHER_GO
                            + "      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sha256\n" % OTHER_GO, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
 kept_ = [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"] for f in got_.get(FORMS[0], {}).get("filters", [])]
-check("AC-B2-3 .tar.gz.sig and .tar.gz.sha256 lines of the same Go version are not refused (still one version)",
+check("AC-B2-3 .tar.gz.sig and .tar.gz.sha256 lines naming another Go version are not a second version",
       r_.returncode == 0 and "refused" not in r_.stderr and kept_ == [f"go{BUILD_GO}"], (r_.returncode, r_.stderr[-300:]))
 BADS = {"a quoted second Go URI": MEL + '\n      uri: "https://go.dev/dl/go%s.linux-amd64.tar.gz"\n' % OTHER_GO,
         "no go.dev Go fetch line": _re.sub(r"https://go\.dev/dl/\S+", "https://example.invalid/x.tar.gz", MEL),
@@ -861,7 +861,6 @@ lv = [l for l in r_.stderr.splitlines() if "left out" in l]
 check("R7 two statements of one CVE naming the same stale stdlib, in production and in fips, give two 'left out' lines, one per product",
       r_.returncode == 0 and len(lv) == 2 and sum("variant=production" in l for l in lv) == 1
       and sum("variant=fips" in l for l in lv) == 1, (r_.returncode, r_.stderr[-400:]))
-# one statement naming two products: the lines differ by product
 sp = {"statements": [scoped("CVE-P", "not_affected", [{"@id": OURS_Q + "&variant=" + v, "subcomponents": [{"@id": stale_a}]} for v in ("production", "fips")])]}
 op = tempfile.mkdtemp(); pp = os.path.join(op, "p.json"); json.dump(sp, open(pp, "w"))
 os.makedirs(os.path.join(op, "out"))
