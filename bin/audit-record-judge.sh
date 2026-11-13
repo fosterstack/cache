@@ -6,9 +6,8 @@
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
 # A head with no passing record is then put to bin/audit-record.py bump (that file's module docstring has the
-# contract), which reads
-# the head's commits from this checkout. --release mode never reaches it. The writer's prepare script also calls this
-# judge without --release for a release commit, and that call does reach it.
+# contract), which reads the head's commits from this checkout. --release mode never reaches it. The writer's
+# prepare script also calls this judge without --release for a release commit, and that call does reach it.
 set -uo pipefail
 # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
 head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}
