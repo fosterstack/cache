@@ -37,6 +37,8 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 DEPENDABOT = ("dependabot[bot]", 49699333)   # GitHub's own Dependabot, the user of a pull request it opened
 REVIEWER_CHECK = "dependabot-reviewer"       # the check run dependabot-reviewer.yml publishes as its verdict on a head
+REVIEWER_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
+                  ".github/workflows/dependabot-reviewer.yml")   # what decides that verdict; their sha256 is its version
 OTHER_VERSION = "a success of another reviewer version"   # reviewer_verdict's answer for a success that does not carry the current version
 NO_RUN = object()                            # reviewer_verdict's answer for a commit the reviewer has not run on; no string a run can carry equals it
 MAX_UPDATES = 50                             # the merges of main followed back from a head
@@ -140,11 +142,20 @@ def bump_pull(head, pulls):
     return same[0] if len(same) == 1 and dependabot_pull(same[0]) else None
 
 
+def _reviewer_version(root):
+    """The sha256 of the files that decide the reviewer's verdict, read in this order (what `cat` of them gives)."""
+    digest = hashlib.sha256()
+    for path in REVIEWER_FILES:
+        with open(os.path.join(root, path), "rb") as f:
+            digest.update(f.read())
+    return digest.hexdigest()
+
+
 def reviewer_verdict(checks, logins, version):
     """The conclusion of the newest dependabot-reviewer check run on a commit that one of the bot logins put there
     (the reviewer publishes as the App that writes the records, so its login is the App's slug plus [bot]):
     NO_RUN when it put none, "unfinished" for one still running, OTHER_VERSION for a success whose external_id is not
-    `version` (the sha256 of the reviewer program on main), None when the answer of
+    `version` (the sha256 of the reviewer's files on main), None when the answer of
     `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&filter=all&per_page=100` is malformed or
     cut, or the completed run has no conclusion."""
     runs = checks.get("check_runs") if isinstance(checks, dict) else None
@@ -324,8 +335,7 @@ def bump(head, repo, root):
     _ApiError when GitHub cannot be asked."""
     allowed = _writers(_load(os.path.join(root, WRITERS_PATH)))
     try:
-        with open(os.path.join(root, "bin", "dependabot-reviewer.py"), "rb") as f:
-            version = hashlib.sha256(f.read()).hexdigest()
+        version = _reviewer_version(root)
     except OSError:
         return None, ""
     if not (isinstance(head, str) and _SHA.fullmatch(head) and allowed is not None
