@@ -212,6 +212,20 @@ class TheReaders(unittest.TestCase):
         self.assertEqual(R._read_reopened(self.w("ok/reopened-expired.json", {"reopened": []})), [])
         self.assertEqual(R._read_reopened(os.path.join(self.d, "none.json")), [])
 
+    def test_deeply_nested_json_is_a_named_refusal_in_both_readers_never_a_recursion_error(self):
+        """reviewed.parse (text) and reviewed.read (a file) both turn 20 KB of "[" into a ReviewedInputInvalid that names
+        the input and says it cannot be read as JSON; neither lets RecursionError out."""
+        for raw in ("[" * 20000, '{"statements": ' + "[" * 20000, '{"a":' * 20000):
+            for as_bytes in (False, True):
+                with self.assertRaisesRegex(reviewed.ReviewedInputInvalid, r"^the input .*cannot be read as JSON") as cm:
+                    reviewed.parse(raw.encode() if as_bytes else raw, "the input")
+                self.assertNotIsInstance(cm.exception, RecursionError)
+            path = os.path.join(self.d, "deep.json")
+            with open(path, "w") as fh:
+                fh.write(raw)
+            with self.assertRaisesRegex(reviewed.ReviewedInputInvalid, r"deep\.json is present but cannot be read as JSON"):
+                reviewed.read(path)
+
     def test_the_consistency_check_exits_non_zero_on_an_empty_or_keyless_vex(self):
         man = self.w("manifest.json", {"panel": {}})
         for bad in ({}, {"statements": None}):
