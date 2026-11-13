@@ -3,7 +3,8 @@
 # Quick checks on each pull request, the full suite at promotion (REQ-CI-001; owner, Nov 10 2026), offline. Reads the real workflows and
 # .github/policy/required-checks.json as data and judges each against the English; every judge is also run over mutated copies, each of which
 # must be caught:
-#   AC1  the required list is exactly eight contexts, none of them skippable by a job-level condition; the promotion list holds the rest
+#   AC1  the required list is exactly eight contexts (dependency-review, pull_request only, among them; auditor-review-gate not), none of them
+#        skippable by a job-level condition; the promotion list holds the rest
 #   AC4  ci.yml's test job vets, builds and tests only the changed packages (no -race, no fips settings); its allowlist job runs, in ONE step,
 #        the lines bin/select-tests.sh prints (the step is run here with a stand-in for the selector), the allowlist of every tracked file
 #        and the action-pin checks
@@ -30,10 +31,11 @@ ci, fs, acc = load(WF + "ci.yml"), None, load(WF + "acceptance.yml")
 fs = load(WF + "full-suite.yml") if os.path.exists(os.path.join(root, WF + "full-suite.yml")) else None
 POLICY = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
 
-REQUIRED = ["test", "lint", "requirements", "allowlist", "vendor", "govulncheck", "pin-age", "auditor-review-gate"]
+REQUIRED = ["test", "lint", "requirements", "allowlist", "vendor", "govulncheck", "pin-age", "dependency-review"]
 PROMOTION = ["coverage", "fips140-only", "gosec", "analyze (go)", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor",
              "acceptance / acceptance-gradle", "acceptance / acceptance-maven (1.2.0)", "acceptance / acceptance-maven (1.2.3)", "reproducibility", "scan"]
-GONE = PROMOTION + ["dependency-review", "acceptance-gradle", "acceptance-maven"]
+GONE = PROMOTION + ["acceptance-gradle", "acceptance-maven"]
+DEPREVIEW_IF = ["${{ github.event_name == 'pull_request' }}", "github.event_name == 'pull_request'"]
 def base(ctx): return ctx.split(" (")[0]
 def mutated(doc, fn):
     d = copy.deepcopy(doc); fn(d); return d
@@ -42,7 +44,10 @@ def verdict(name, problems, want_ok, doc_name=""):
 def mutants(label, judge, doc, cases):
     """each case: (name, fn): the mutated copy must have at least one problem"""
     for name, fn in cases:
-        try: probs = judge(mutated(doc, fn))
+        try: m = mutated(doc, fn)
+        except Exception as e:
+            check("%s: a copy with %s can be made (the thing to mutate exists)" % (label, name), False, repr(e)); continue
+        try: probs = judge(m)
         except Exception as e: probs = ["judge raised %r" % e]
         check("%s: a copy with %s is refused" % (label, name), probs != [], "accepted")
         if os.environ.get("WIRING_SHOW"): print("      why:", str(probs[:2])[:260])
@@ -56,10 +61,13 @@ def policy_problems(doc):
     for key, lst in (("required_checks", rc), ("promotion_checks", pc)):
         for e in lst:
             if not isinstance(e, dict) or set(e) != SHAPE: bad.append("%s entry has not the shape context/integration_id/scope: %s" % (key, e)); continue
-            want_id = 5054756 if e["context"] == "auditor-review-gate" else 15368
-            if e["integration_id"] != want_id: bad.append("%s %r has integration_id %r" % (key, e["context"], e["integration_id"]))
+            if e["integration_id"] != 15368: bad.append("%s %r has integration_id %r" % (key, e["context"], e["integration_id"]))
     if sorted(e.get("context") for e in rc) != sorted(REQUIRED): bad.append("required_checks are not exactly the eight: %s" % [e.get("context") for e in rc])
     if sorted(e.get("context") for e in pc) != sorted(PROMOTION): bad.append("promotion_checks are not exactly the twelve: %s" % [e.get("context") for e in pc])
+    for key, lst in (("required_checks", rc), ("promotion_checks", pc)):
+        if any(isinstance(e, dict) and e.get("context") == "auditor-review-gate" for e in lst): bad.append("auditor-review-gate is listed in %s (REQ-CI-001-AC8)" % key)
+    for e in rc:
+        if isinstance(e, dict) and e.get("context") == "dependency-review" and e.get("scope") != "pull_request": bad.append("dependency-review is not scoped to pull_request: %r" % e.get("scope"))
     for e in pc:
         if isinstance(e, dict) and e.get("scope") != "push": bad.append("promotion check %r is not push-scoped (admission reads the exact tagged commit)" % e.get("context"))
     if set(doc) - {"comment", "required_checks", "promotion_checks"}: bad.append("unknown keys: %s" % sorted(set(doc) - {"comment", "required_checks", "promotion_checks"}))
@@ -67,14 +75,19 @@ def policy_problems(doc):
 verdict("required-checks.json: eight required contexts, twelve promotion contexts, the entry shape of today", policy_problems(POLICY), True)
 mutants("required-checks.json", policy_problems, POLICY, [
     ("gosec back in required_checks", lambda d: d["required_checks"].append({"context": "gosec", "integration_id": 15368, "scope": "push"})),
-    ("dependency-review back in required_checks", lambda d: d["required_checks"].append({"context": "dependency-review", "integration_id": 15368, "scope": "pull_request"})),
+    ("dependency-review dropped from required_checks", lambda d: d.__setitem__("required_checks", [e for e in d["required_checks"] if e["context"] != "dependency-review"])),
+    ("dependency-review scoped to push", lambda d: [e.__setitem__("scope", "push") for e in d["required_checks"] if e["context"] == "dependency-review"]),
+    ("dependency-review with another app", lambda d: [e.__setitem__("integration_id", 5054756) for e in d["required_checks"] if e["context"] == "dependency-review"]),
     ("lint dropped from required_checks", lambda d: d.__setitem__("required_checks", [e for e in d["required_checks"] if e["context"] != "lint"])),
-    ("auditor-review-gate dropped", lambda d: d.__setitem__("required_checks", [e for e in d["required_checks"] if e["context"] != "auditor-review-gate"])),
+    ("auditor-review-gate added back to required_checks", lambda d: d["required_checks"].append({"context": "auditor-review-gate", "integration_id": 5054756, "scope": "pull_request"})),
+    ("auditor-review-gate (Actions app) added to required_checks", lambda d: d["required_checks"].append({"context": "auditor-review-gate", "integration_id": 15368, "scope": "pull_request"})),
+    ("auditor-review-gate added to promotion_checks", lambda d: d["promotion_checks"].append({"context": "auditor-review-gate", "integration_id": 15368, "scope": "push"})),
     ("no promotion_checks", lambda d: d.pop("promotion_checks")),
     ("scan dropped from promotion_checks", lambda d: d.__setitem__("promotion_checks", [e for e in d["promotion_checks"] if e["context"] != "scan"])),
     ("acceptance / acceptance-maven (1.2.3) dropped", lambda d: d.__setitem__("promotion_checks", [e for e in d["promotion_checks"] if e["context"] != "acceptance / acceptance-maven (1.2.3)"])),
     ("an extra promotion context", lambda d: d["promotion_checks"].append({"context": "extra", "integration_id": 15368, "scope": "push"})),
     ("dependency-review in promotion_checks", lambda d: d["promotion_checks"].append({"context": "dependency-review", "integration_id": 15368, "scope": "push"})),
+    ("dependency-review twice in required_checks", lambda d: d["required_checks"].append({"context": "dependency-review", "integration_id": 15368, "scope": "pull_request"})),
     ("a promotion entry with another app", lambda d: d["promotion_checks"][0].__setitem__("integration_id", 1)),
     ("a promotion entry without a scope", lambda d: d["promotion_checks"][0].pop("scope")),
     ("a promotion entry with an extra key", lambda d: d["promotion_checks"][0].__setitem__("x", "y")),
@@ -99,20 +112,28 @@ def ac1_problems(prc):
         if ctx not in prc: bad.append("%s does not run on pull_request" % ctx)
         for fn, jid, j in prc.get(ctx, []):
             if "if" in j: bad.append("%s (%s:%s) has a job-level condition" % (ctx, fn, jid))
+    if "dependency-review" not in prc: bad.append("dependency-review does not run on pull_request")
+    for fn, jid, j in prc.get("dependency-review", []):
+        if j.get("if") not in DEPREVIEW_IF: bad.append("dependency-review (%s:%s) is not conditioned on `github.event_name == 'pull_request'`: %r" % (fn, jid, j.get("if")))
     for ctx in GONE:
         if base(ctx) in prc: bad.append("%s still runs on pull_request in %s" % (ctx, [f for f, _, _ in prc[base(ctx)]]))
     return bad
-verdict("pull requests: the seven job-made required contexts run unconditionally, none of the thirteen removed ones runs", ac1_problems(prc), True)
+verdict("pull requests: seven required contexts run unconditionally, dependency-review runs on pull_request only, none of the removed ones runs", ac1_problems(prc), True)
 for name, fn in (("test skippable", lambda p: p["test"][0][2].__setitem__("if", "${{ false }}")),
                  ("allowlist skippable", lambda p: p["allowlist"][0][2].__setitem__("if", "${{ github.actor != 'x' }}")),
                  ("pin-age skippable", lambda p: p["pin-age"][0][2].__setitem__("if", "${{ true }}")),
                  ("lint gone", lambda p: p.pop("lint")),
                  ("gosec on pull_request", lambda p: p.setdefault("gosec", []).append(("x.yml", "gosec", {}))),
-                 ("dependency-review on pull_request", lambda p: p.setdefault("dependency-review", []).append(("x.yml", "d", {}))),
+                 ("dependency-review gone", lambda p: p.pop("dependency-review")),
+                 ("dependency-review without its condition", lambda p: p["dependency-review"][0][2].pop("if")),
+                 ("dependency-review on another condition", lambda p: p["dependency-review"][0][2].__setitem__("if", "${{ github.actor != 'x' }}")),
                  ("scan on pull_request", lambda p: p.setdefault("scan", []).append(("x.yml", "scan", {}))),
                  ("acceptance-maven on pull_request", lambda p: p.setdefault("acceptance-maven", []).append(("x.yml", "m", {}))),
                  ("analyze on pull_request", lambda p: p.setdefault("analyze", []).append(("x.yml", "analyze", {})))):
-    pp = copy.deepcopy(prc); fn(pp)
+    pp = copy.deepcopy(prc)
+    try: fn(pp)
+    except Exception as e:
+        check("pull requests: %s can be made (the thing to mutate exists)" % name, False, repr(e)); continue
     check("pull requests: %s is refused" % name, ac1_problems(pp) != [], "accepted")
 
 # ------------------------------------------------------------------------------------------------------------------ AC4: ci.yml
@@ -212,6 +233,16 @@ def ci_problems(w):
     for ctx in GONE:
         for jid, j in jobs.items():
             if base(j.get("name") or jid) == base(ctx): bad.append("ci.yml still has the job %s" % ctx)
+    dr = jobs.get("dependency-review")
+    if not isinstance(dr, dict): bad.append("ci.yml has no job dependency-review (REQ-CI-001-AC8)")
+    else:
+        if dr.get("name", "dependency-review") != "dependency-review": bad.append("the dependency-review job is not named dependency-review")
+        if dr.get("if") not in DEPREVIEW_IF: bad.append("the dependency-review job would run on push: its condition is %r, not `github.event_name == 'pull_request'`" % dr.get("if"))
+        if dr.get("runs-on") != "ubuntu-latest": bad.append("the dependency-review job does not run on ubuntu-latest")
+        if dr.get("permissions") != {"contents": "read", "pull-requests": "write"}: bad.append("the dependency-review permissions are not contents read + pull-requests write: %r" % dr.get("permissions"))
+        uses = [str(s.get("uses", "")) for s in dr.get("steps") or []]
+        if len(uses) != 2 or not uses[0].startswith("actions/checkout@") or not uses[1].startswith("actions/dependency-review-action@") or not all(re.fullmatch(r"[0-9a-f]{40}", u.split("@", 1)[1]) for u in uses):
+            bad.append("the dependency-review steps are not actions/checkout and actions/dependency-review-action pinned by digest: %s" % uses)
     bad += test_job_problems(jobs.get("test") or {"steps": []})
     al = jobs.get("allowlist") or {"steps": []}
     bad += allowlist_static(al)
@@ -242,7 +273,12 @@ mutants("ci.yml", ci_problems, ci, [
     ("the test job skippable", lambda d: tj(d).__setitem__("if", "${{ github.actor != 'x' }}")),
     ("gosec back in ci.yml", lambda d: d["jobs"].__setitem__("gosec", {"name": "gosec", "runs-on": "ubuntu-latest", "steps": []})),
     ("coverage back in ci.yml", lambda d: d["jobs"].__setitem__("coverage", {"name": "coverage", "runs-on": "ubuntu-latest", "steps": []})),
-    ("dependency-review back in ci.yml", lambda d: d["jobs"].__setitem__("dependency-review", {"runs-on": "ubuntu-latest", "steps": []})),
+    ("dependency-review removed from ci.yml", lambda d: d["jobs"].pop("dependency-review")),
+    ("dependency-review running on push (its if removed)", lambda d: d["jobs"]["dependency-review"].pop("if")),
+    ("dependency-review on another condition", lambda d: d["jobs"]["dependency-review"].__setitem__("if", "${{ github.actor != 'x' }}")),
+    ("dependency-review renamed", lambda d: d["jobs"]["dependency-review"].__setitem__("name", "dep review")),
+    ("dependency-review without its permissions", lambda d: d["jobs"]["dependency-review"].pop("permissions")),
+    ("dependency-review action pinned by tag", lambda d: d["jobs"]["dependency-review"]["steps"][1].__setitem__("uses", "actions/dependency-review-action@v5")),
     ("allowlist-chain back in ci.yml", lambda d: d["jobs"].__setitem__("allowlist-chain", {"name": "allowlist-chain", "runs-on": "ubuntu-latest", "steps": []})),
     ("no selection step", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if "select-tests.sh" not in (s.get("run") or "")])),
     ("two selection steps", lambda d: add_step(d, "allowlist", {"name": "again", "run": "bash bin/select-tests.sh origin/main HEAD"})),

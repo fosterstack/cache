@@ -95,8 +95,8 @@ case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review runs only on pull requests (the
-# only scope it is required on); every required check in .github/policy/required-checks.json is still produced by a
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review stays in ci.yml and runs only on
+# pull requests (`if: github.event_name == 'pull_request'`, the only scope it is required on; REQ-CI-001-AC8); auditor-review-gate is in neither list; every required check in .github/policy/required-checks.json is still produced by a
 # top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
 # (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
@@ -112,8 +112,21 @@ MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as i
     "requirements": ("requirements", None, None, None, None),
 }
 jobs = d.get("jobs") or {}
-if "dependency-review" in jobs:
-    bad.append("the dependency-review job is back in ci.yml (REQ-CI-001-AC1: deleted)")
+DR_IF = ("${{ github.event_name == 'pull_request' }}", "github.event_name == 'pull_request'")
+dr = jobs.get("dependency-review")
+if not isinstance(dr, dict):
+    bad.append("the dependency-review job is not in ci.yml (REQ-CI-001-AC8)")
+else:
+    if dr.get("name", "dependency-review") != "dependency-review":
+        bad.append("the dependency-review job is not named dependency-review")
+    if dr.get("if") not in DR_IF:
+        bad.append("the dependency-review job would run on push: its condition is %r" % dr.get("if"))
+    if dr.get("runs-on") != "ubuntu-latest" or dr.get("permissions") != {"contents": "read", "pull-requests": "write"}:
+        bad.append("the dependency-review job changed runs-on or permissions: %s %s" % (dr.get("runs-on"), dr.get("permissions")))
+    uses = [str(x.get("uses", "")) for x in dr.get("steps") or []]
+    if [u.split("@")[0] for u in uses] != ["actions/checkout", "actions/dependency-review-action"] or \
+            not all(len(u.split("@")[-1]) == 40 and u.split("@")[-1].strip("0123456789abcdef") == "" for u in uses):
+        bad.append("the dependency-review steps are not checkout and dependency-review-action pinned by digest: %s" % uses)
 for jid, (name, perms, env, needs, cond) in MOVED.items():
     j = jobs.get(jid)
     if j is None:
@@ -144,10 +157,19 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
         if "uses" in j:
             continue
         names.setdefault(j.get("name") or jid, set()).update(events)
-for rc in json.load(open(os.path.join(root, ".github/policy/required-checks.json")))["required_checks"]:
+pol = json.load(open(os.environ.get("CI_POLICY") or os.path.join(root, ".github/policy/required-checks.json")))
+for key in ("required_checks", "promotion_checks"):
+    if any(e["context"] == "auditor-review-gate" for e in pol.get(key) or []):
+        bad.append("auditor-review-gate is listed in %s (REQ-CI-001-AC8)" % key)
+if not any(e["context"] == "dependency-review" and e["integration_id"] == 15368 and e["scope"] == "pull_request" for e in pol["required_checks"]):
+    bad.append("dependency-review is not in required_checks with integration_id 15368 and scope pull_request (REQ-CI-001-AC8)")
+if any(e["context"] == "dependency-review" for e in pol.get("promotion_checks") or []):
+    bad.append("dependency-review is in promotion_checks")
+# the gate's check run is published by the `publish` job of agent-review-gate.yml (`-f name=auditor-review-gate`), not made by a job of that name
+if "-f name=auditor-review-gate" not in json.dumps((yaml.load(open(os.path.join(root, ".github/workflows/agent-review-gate.yml")), Loader=yaml.BaseLoader).get("jobs") or {}).get("publish")):
+    bad.append("agent-review-gate.yml no longer publishes the auditor-review-gate check run (it still judges Dependabot pull requests)")
+for rc in pol["required_checks"]:
     ev = "push" if rc["scope"] == "push" else "pull_request"
-    if rc["integration_id"] != 15368:
-        continue                                    # the review gate's App check, published by the App, not a job
     if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
             not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
         bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
@@ -175,7 +197,32 @@ case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file all
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
 case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
 case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
-case_ci dependency-review-back   bad "d['jobs']['dependency-review'] = {'name': 'dependency-review', 'runs-on': 'ubuntu-latest', 'steps': []}"
+case_ci dependency-review-removed bad "d['jobs'].pop('dependency-review')"
+case_ci dependency-review-on-push bad "d['jobs']['dependency-review'].pop('if')"
+case_ci dependency-review-other-if bad "d['jobs']['dependency-review']['if'] = '\${{ github.actor != \"x\" }}'"
+case_ci dependency-review-renamed bad "d['jobs']['dependency-review']['name'] = 'dep review'"
+case_ci dependency-review-unpinned bad "d['jobs']['dependency-review']['steps'][1]['uses'] = 'actions/dependency-review-action@v5'"
+case_ci dependency-review-widened bad "d['jobs']['dependency-review']['permissions']['contents'] = 'write'"
+# the policy file is judged by the same judge, over a copy edited by python (CI_POLICY)
+case_policy() {
+  local f="$work/pol-$1.json"
+  python3 - "$root/.github/policy/required-checks.json" "$f" "$3" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+exec(sys.argv[3])
+json.dump(d, open(sys.argv[2], "w"))
+PY
+  if out=$(CI_POLICY="$f" judge_ci "$root/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS policy:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL policy:$1 → $got, want $2 ($out)"; fi
+}
+case_policy dependency-review-dropped   bad "d['required_checks'] = [e for e in d['required_checks'] if e['context'] != 'dependency-review']"
+case_policy dependency-review-push      bad "[e.__setitem__('scope', 'push') for e in d['required_checks'] if e['context'] == 'dependency-review']"
+case_policy dependency-review-other-app bad "[e.__setitem__('integration_id', 5054756) for e in d['required_checks'] if e['context'] == 'dependency-review']"
+case_policy dependency-review-promoted  bad "d['promotion_checks'].append({'context': 'dependency-review', 'integration_id': 15368, 'scope': 'push'})"
+case_policy gate-back-in-required       bad "d['required_checks'].append({'context': 'auditor-review-gate', 'integration_id': 5054756, 'scope': 'pull_request'})"
+case_policy gate-back-in-required-15368 bad "d['required_checks'].append({'context': 'auditor-review-gate', 'integration_id': 15368, 'scope': 'pull_request'})"
+case_policy gate-in-promotion           bad "d['promotion_checks'].append({'context': 'auditor-review-gate', 'integration_id': 15368, 'scope': 'push'})"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
@@ -532,7 +579,7 @@ judge_events() {  # $1: a directory of the workflow files
 import os, sys, yaml
 d = sys.argv[1]
 W = {n: yaml.load(open(os.path.join(d, n)), Loader=yaml.BaseLoader) for n in sorted(os.listdir(d)) if n.endswith(".yml")}
-GONE = {"gosec", "analyze", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor", "dependency-review", "fips140-only", "acceptance-gradle",
+GONE = {"gosec", "analyze", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor", "fips140-only", "acceptance-gradle",
         "acceptance-maven", "reproducibility", "coverage", "scan"}
 bad = []
 def events(w):
@@ -547,6 +594,10 @@ for n, w in W.items():
             if nm in GONE or jid in GONE: bad.append("%s runs %s on pull_request" % (n, jid))
             if str(j.get("uses", "")).endswith(("acceptance.yml", "scan.yml")): bad.append("%s calls %s on pull_request" % (n, j["uses"]))
 def on_of(n): return (W.get(n) or {}).get("on")
+dr = ((W.get("ci.yml") or {}).get("jobs") or {}).get("dependency-review")
+if not isinstance(dr, dict): bad.append("ci.yml has no dependency-review job (REQ-CI-001-AC8)")
+elif dr.get("if") not in ("${{ github.event_name == 'pull_request' }}", "github.event_name == 'pull_request'"): bad.append("dependency-review would run on push: its condition is %r" % dr.get("if"))
+if "-f name=auditor-review-gate" not in str(((W.get("agent-review-gate.yml") or {}).get("jobs") or {}).get("publish")): bad.append("agent-review-gate.yml no longer publishes the auditor-review-gate check run (REQ-CI-001-AC8)")
 if on_of("ci.yml") != {"push": {"branches": ["main"]}, "pull_request": ""}: bad.append("ci.yml's events are not push to main and pull_request: %s" % on_of("ci.yml"))
 if list(on_of("acceptance.yml") or []) != ["workflow_call"]: bad.append("acceptance.yml's events are not workflow_call alone: %s" % list(on_of("acceptance.yml") or []))
 c = on_of("codeql.yml") or {}
@@ -574,7 +625,9 @@ PY
 case_events real                 ok  ""
 case_events gosec-in-ci          bad "W['ci.yml']['jobs']['gosec'] = {'name': 'gosec', 'runs-on': 'x', 'steps': []}"
 case_events coverage-in-ci       bad "W['ci.yml']['jobs']['coverage'] = {'name': 'coverage', 'runs-on': 'x', 'steps': []}"
-case_events depreview-in-ci      bad "W['ci.yml']['jobs']['dependency-review'] = {'runs-on': 'x', 'steps': []}"
+case_events depreview-removed    bad "W['ci.yml']['jobs'].pop('dependency-review')"
+case_events depreview-on-push    bad "W['ci.yml']['jobs']['dependency-review'].pop('if')"
+case_events gate-publish-removed bad "W['agent-review-gate.yml']['jobs'].pop('publish')"
 case_events scan-in-supply-chain bad "W['supply-chain.yml']['jobs']['scan'] = {'runs-on': 'x', 'steps': []}"
 case_events analyze-in-supply    bad "W['supply-chain.yml']['jobs']['analyze'] = {'name': 'analyze (go)', 'runs-on': 'x', 'steps': []}"
 case_events repro-in-dependabot  bad "W['dependabot-auto-merge.yml']['jobs']['reproducibility'] = {'runs-on': 'x', 'steps': []}"
