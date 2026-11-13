@@ -5076,7 +5076,7 @@ requirements:
       - id: REQ-CI-005-AC4
         given: "the suite guard's floors"
         when: "a pull request lowers or drops a floor"
-        then: "the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised"
+        then: "the floors-only-rise check fails unless the pull request body's `Lowered floors:` line names the suite: a named suite whose floor is lowered passes; a named suite whose file (a tracked file with the name of its floors key) is gone at the head counts as lowered to 0 and passes; a dropped floor whose suite file still exists fails, named or not; a named suite whose floor is neither lowered nor dropped fails; nothing in the counting step changes how a floor is raised"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC5
