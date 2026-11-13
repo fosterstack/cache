@@ -633,9 +633,13 @@ for w in "${words[@]}"; do
   check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/sub/dir/w.py' "$work/pyword.out"
 done
 RU='https://github.com/o/r/releases/download/v1.2.3/x.tgz'
-for pc in "requests (import)|import requests\nrequests.get('$RU')" "requests (from-import)|from requests import get\nget('$RU')" \
-  "http.client|import http.client\nc = http.client.HTTPSConnection('github.com')\nc.request('GET', '/o/r/releases/download/v1.2.3/x.tgz')   # $RU" \
-  "urllib3|import urllib3\nurllib3.PoolManager().request('GET', '$RU')" "httpx|import httpx\nhttpx.get('$RU')"; do
+pcs=()
+pcs+=("requests (import)|import requests\nrequests.get('$RU')")
+pcs+=("requests (from-import)|from requests import get\nget('$RU')")
+pcs+=("http.client|import http.client\nc = http.client.HTTPSConnection('github.com')\nc.request('GET', '/o/r/releases/download/v1.2.3/x.tgz')   # $RU")
+pcs+=("urllib3|import urllib3\nurllib3.PoolManager().request('GET', '$RU')")
+pcs+=("httpx|import httpx\nhttpx.get('$RU')")
+for pc in "${pcs[@]}"; do
   agentfile pyrel .github/agent/rel.py "$(printf '%b' "${pc#*|}")"$'\n'
   CASE="a .py file fetching a release URL through ${pc%%|*} is a download like a curl line: exit 1, unmeasured, never a plain release download"
   check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyrel.out"
