@@ -95,8 +95,8 @@ def valid_pull(d):
 
 
 class CounterInvalid(ValueError):
-    """the unsettled-run counts in a state file that IS present cannot be trusted: the run stops (never resets the
-    counts to zero)"""
+    """the unsettled-run counts in a state file that IS present cannot be trusted: the run stops
+    (never resets the counts to zero)"""
 
 
 def _valid_unsettled(u, today=None):
@@ -154,7 +154,7 @@ def _read(path):
             return None
         refuse = functools.partial(parsers.refuse_constant, "the state file")
         return json.loads(raw.decode("utf-8"), parse_constant=refuse)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
 
 
@@ -191,11 +191,11 @@ def pull_record(ans):
 
 
 def settle(verdicts, pull, narr, incomplete):
-    """what a run may leave for tomorrow. A run where any attempted model call ended without a cacheable result (a
-    refusal, an error, an answer outside the five categories or one the router cannot read, a token-budget stop, a
-    narrative that was empty or disagreed with the record) is incomplete: it leaves nothing reusable, so the next run
-    repeats its calls instead of treating a partial state as 'nothing to ask' (REQ-AUD-3 AC3, zero calls only on a
-    complete state)."""
+    """what a run may leave for tomorrow. A run where any attempted model call ended without a cacheable result
+    (a refusal, an error, an answer outside the five categories or one the router cannot read, a token-budget
+    stop, a narrative that was empty or disagreed with the record) is incomplete: it leaves nothing reusable, so
+    the next run repeats its calls instead of treating a partial state as 'nothing to ask' (REQ-AUD-3 AC3, zero
+    calls only on a complete state)."""
     return ({}, {}, None) if incomplete else (verdicts, pull, narr)
 
 
