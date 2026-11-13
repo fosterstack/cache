@@ -2180,13 +2180,13 @@ requirements:
       - id: REQ-CI-001-AC1
         given: "a pull request into main"
         when: "the workflows run on the pull_request event"
-        then: "the required contexts that run are exactly test, lint, requirements, allowlist, vendor, govulncheck, pin-age and auditor-review-gate, each with no job-level condition that can skip it, and .github/policy/required-checks.json lists exactly those eight as required_checks; the contexts gosec, analyze (go), allowlist-persona, allowlist-chain, allowlist-pins-auditor, dependency-review, fips140-only, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), reproducibility, coverage and scan are not in it"
+        then: "the required contexts that run are exactly test, lint, requirements, allowlist, vendor, govulncheck, pin-age and dependency-review, each with no job-level condition that can skip it except that dependency-review runs only on pull_request (docs/ratify/2026-10-02-workflow-consolidation.md:20, 23), and .github/policy/required-checks.json lists exactly those eight as required_checks; auditor-review-gate is not in it; the contexts gosec, analyze (go), allowlist-persona, allowlist-chain, allowlist-pins-auditor, fips140-only, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), reproducibility, coverage and scan are not in it"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC2
         given: "every workflow file"
         when: "bin/workflow-consolidation-test.sh judges them"
-        then: "none of the jobs named in AC1 as removed runs on pull_request, in ci.yml, acceptance.yml, scan.yml, codeql.yml or any other workflow; ci.yml triggers only on push to main and pull_request; acceptance.yml triggers only on workflow_call; codeql.yml has no pull_request; scan.yml triggers only on schedule, workflow_dispatch and tags v* and still cannot be called (REQ-SCAN-015); no workflow gains a merge_group trigger"
+        then: "none of the jobs named in AC1 as removed (not dependency-review, which AC1 keeps) runs on pull_request, in ci.yml, acceptance.yml, scan.yml, codeql.yml or any other workflow; ci.yml triggers only on push to main and pull_request; acceptance.yml triggers only on workflow_call; codeql.yml has no pull_request; scan.yml triggers only on schedule, workflow_dispatch and tags v* and still cannot be called (REQ-SCAN-015); no workflow gains a merge_group trigger"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC3
@@ -2217,6 +2217,12 @@ requirements:
         given: "a release-candidate tag reaching stage-admission.yml, and the promotion_checks list in .github/policy/required-checks.json (the contexts of the full suite, with their scope)"
         when: "admission reads the checks of the exact tagged commit"
         then: "it continues only if every context in promotion_checks has a successful run on that commit; a missing, red or older-commit run stops admission and names the context"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC8
+        given: "a pull request into main, and the job auditor-review-gate of agent-review-gate.yml"
+        when: "the workflows run on the pull_request event"
+        then: "the job still runs and judges a Dependabot pull request as before (docs/ratify/2026-11-11-dependabot-reviewer-only.md rule 4), but it is not a required context: .github/policy/required-checks.json does not list it in required_checks or promotion_checks; dependency-review is the job of ci.yml, runs only on pull_request, and reads the queue's commits in the merge queue (docs/ratify/2026-10-22-merge-queue-checks.md:8)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
