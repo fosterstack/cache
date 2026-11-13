@@ -1152,6 +1152,18 @@
       ]
     },
     {
+      "path": "bin/acceptance-gradle-lib.sh",
+      "sha256": "e9009b516111a061339f14fdbb107394ec3a71ad03902210408fdef03f58b093",
+      "tools": [
+        "grep",
+        "sed",
+        "sha256sum"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the wrapper-jar check both Gradle acceptance scripts source (REQ-SUP-001-AC32)"
+    },
+    {
       "path": "bin/acceptance-gradle-capped.sh",
       "sha256": "820e3b79b3c8fdb81e9d4dd5bdd6e8889bc277900b42dbcfe133bb7325c16732",
       "tools": [
