@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # proves: REQ-DEP-002-AC1, REQ-DEP-002-AC2, REQ-DEP-002-AC3
-# Offline suite for bin/required-check-guard.sh (register row 75). Fixtures stand
-# in for the ruleset API response; the list side uses the committed file and
-# edited copies. What must hold: an exact match passes; a missing check, an extra
-# check, or a wrong integration ID is drift (exit 1, with the diff); an unreadable
-# side or a ruleset with no required checks is exit 2, never a pass.
+# Offline suite for bin/required-check-guard.sh (register row 75). A ruleset with every
+# listed check passes, extra checks on main too (every listed check must be enforced).
+# A missing check or wrong integration ID is drift (exit 1). An unreadable side, a
+# ruleset with no required checks, or a list with no checks is exit 2, never a pass.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/.." && pwd)"
 sut="$here/required-check-guard.sh"
@@ -33,6 +32,7 @@ echo '[{"type":"deletion"}]' > "$w/none.json"
 echo 'not json' > "$w/garbage.json"
 jq '.required_checks |= map(if .context=="auditor-review-gate" then .integration_id=0 else . end)' "$list" > "$w/stale-list.json"
 echo '{"comment":["no array"]}' > "$w/nolist.json"
+echo '{"required_checks": []}' > "$w/emptylist.json"
 
 check "ruleset == list passes"                    0 "match \([0-9]+ listed checks"            "$w/match.json"   "$list"
 check "check removed from the ruleset is drift"   1 '^\{"context":"scan"'                     "$w/missing.json" "$list"
@@ -43,6 +43,7 @@ check "no required checks on main = exit 2"       2 "NO required status checks" 
 check "unreadable ruleset response = exit 2"      2 "not the expected JSON"                    "$w/garbage.json" "$list"
 check "missing ruleset file = exit 2"             2 "cannot read"                              "$w/absent.json"  "$list"
 check "list without required_checks = exit 2"     2 "no required_checks array"                 "$w/match.json"   "$w/nolist.json"
+check "list naming no check = exit 2"             2 "could not compare"                        "$w/match.json"   "$w/emptylist.json"
 
 echo "----"
 echo "required-check-guard: ${pass} passed, ${fail} failed"
