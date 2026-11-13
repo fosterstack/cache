@@ -1958,7 +1958,7 @@ requirements:
       escaped spelling) are refused, both named by their source lines; the same line in two release blocks is not a
       collision. In a generated patch tag (heading naming the tag) a
       '-----BEGIN ' anywhere before the tag's last signature is refused (exit 2, the line named); any other tag exits 1 as
-      before. Stage admission accepts a tag only with the owner's SSH signature (REQ-REL-009-AC6): check_tag_signature
+      before. Stage admission accepts a tag only with the maintainer's SSH signature (REQ-REL-009-AC6): check_tag_signature
       (bin/build-admit.py:213-218) lets through only the signer router's 'ssh' answer (:195-196) and verifies it against
       main's allowed signers (:200-209); a keyless, unsigned or PGP signature is refused. Beyond the four forms, a free-text line holding the redaction marker that continues the line above it
       (neither blank nor a heading) is refused in tag notes and changelog inputs (a construct spanning lines could
