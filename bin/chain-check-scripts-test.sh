@@ -42,9 +42,12 @@
 #         dry run on GitHub, and by the review brief which asks the reviewers to read those suites.
 #   [P] bin/check-stage.sh PHASE (scanners|acceptance|runtime): verifies Build's record and Sign's provenance FIRST (every phase), then runs only
 #         that phase's checks in the order of bin/chain-check-shape.py PHASES; an unknown phase exits 2 naming it; a failed verify runs no check.
-#   [P] bin/witnessed.sh STEP SCRIPT [ARGS] (PR 2's helper, rule 68 as amended by the owner Oct 9): fetches the identity token, runs
-#         `witness run --step STEP ... -o witness-records/STEP.json -- bash SCRIPT ARGS`. Fake curl / witness on PATH below.
-#         WHAT IS NOT FIXED: what real `witness run` does with a command that exits non-zero (here: no record is written; the dry run decides).
+#   [P] bin/witnessed-local.sh STEP SCRIPT [ARGS] (Check's helper, rule 68 as amended by the owner Oct 9): fetches no
+#         identity token, makes a throwaway ed25519 key and runs
+#         `witness run --step STEP ... -o witness-STEP/STEP-collection.local.json -- bash SCRIPT ARGS`.
+#         Fake witness and openssl on PATH below; the fake timeout is the probe that the helper adds no wrapper.
+#         WHAT IS NOT FIXED: what real `witness run` does with a command that exits non-zero (here: no record is
+#         written; the dry run decides).
 # SATISFIABLE: the 40 cases were run against a throw-away reference implementation (not committed) and all pass, so no case is unsatisfiable.
 # Modelled on: in-toto-witness docs/tutorials/artifact-policy.md:58-70 (what a product holds), PR 1's fake-cosign approach, the existing
 # stage-verify.yml (what a scanner leg does today).
