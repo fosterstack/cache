@@ -3928,137 +3928,6 @@
       "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "e7cb7c4b8d3c6819618a107fb607afeb7ba6a299274d3b243401970873733e46",
-      "line": "bef44bfc767f2cb1824db5c659476ee6d74f3564394b2443c2a8dae9ac1e31ac",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
-      "line": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "an unpinned package install",
-      "key": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
-      "line": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "1cb11c163bf5eef3bcf7012dbe164f8ea51ac7a511dfb55664e1ae9e0b0d4894"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
-      "line": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "61c92be17bd4924562920226a787d82f8bf01a9f186f6abf3c4433b579b3470b"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
-      "line": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "b58112fba204401f59090e7b20c080eec093d7e626ca57c6a7fc996ff78637dd"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
-      "line": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "b843f7004fa26ec08e125b74814fe1ab865b2717f2f6ddab0f7d4584cc1498e7"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
-      "line": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "a3110950ea889e09a6a202d7898ba862bd2e2fb8953f9673f38a8979f2d79821"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
-      "line": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
-      "line": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 4,
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
-      "line": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
-      "line": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
-      "line": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "a1258b22ad5c96e60eb27d3c8a8641a6d6cd172e090173a768fca31bdbbe2f03"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
-      "line": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "a1258b22ad5c96e60eb27d3c8a8641a6d6cd172e090173a768fca31bdbbe2f03"
-    },
-    {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
       "form": "a download",
       "key": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
@@ -8642,6 +8511,169 @@
       "key": "c4127819c204919c61cf7da84f4757cc691064f05e6a449db9df928252e506e1",
       "line": "b42024f136fa591ee7f20faf7458b41e001667ee7da0db23b728e59800db0f62",
       "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "e7cb7c4b8d3c6819618a107fb607afeb7ba6a299274d3b243401970873733e46",
+      "line": "bef44bfc767f2cb1824db5c659476ee6d74f3564394b2443c2a8dae9ac1e31ac",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
+      "line": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "an unpinned package install",
+      "key": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
+      "line": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1cb11c163bf5eef3bcf7012dbe164f8ea51ac7a511dfb55664e1ae9e0b0d4894"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
+      "line": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "61c92be17bd4924562920226a787d82f8bf01a9f186f6abf3c4433b579b3470b"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
+      "line": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b58112fba204401f59090e7b20c080eec093d7e626ca57c6a7fc996ff78637dd"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
+      "line": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b843f7004fa26ec08e125b74814fe1ab865b2717f2f6ddab0f7d4584cc1498e7"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
+      "line": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a3110950ea889e09a6a202d7898ba862bd2e2fb8953f9673f38a8979f2d79821"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
+      "line": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
+      "line": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 4,
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
+      "line": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
+      "line": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
+      "line": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "0ad955ac9595ffec7a66ccfec211d2a5d0a279c77dcb069f5b9b6e68a47bad5a"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
+      "line": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "0ad955ac9595ffec7a66ccfec211d2a5d0a279c77dcb069f5b9b6e68a47bad5a"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "5e1eefb12e1bbe835f442f4874068406c0d16dad5460798c05e7d434a684b0f5",
+      "line": "5e1eefb12e1bbe835f442f4874068406c0d16dad5460798c05e7d434a684b0f5",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-audit-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
+      "count": 2
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "1456379de420fb9292abc2d3337e0c70094c62e0e1bff217cdbe4eeb0d3075f6",
+      "line": "1456379de420fb9292abc2d3337e0c70094c62e0e1bff217cdbe4eeb0d3075f6",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-audit-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
+      "count": 2
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "4b8dc0db74539264f9b05cf7096c573286cc6b2ac31a5d9efeed9f4d8e5feb13",
+      "line": "4b8dc0db74539264f9b05cf7096c573286cc6b2ac31a5d9efeed9f4d8e5feb13",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-audit-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
+      "count": 2
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "48ff5eedccff602131f8650739fd07194b4764e758919a75506de0ea93823e62",
+      "line": "48ff5eedccff602131f8650739fd07194b4764e758919a75506de0ea93823e62",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-audit-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
+      "count": 5
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
