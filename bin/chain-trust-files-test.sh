@@ -113,7 +113,8 @@ def openssl(*args):
 
 
 def policy_make_with_pin(pin):
-    """Runs `policy make` in a scratch policy folder with a throwaway release key; the Rekor pin is `pin`. Returns (exit code, stderr, policy path)."""
+    """Runs `policy make` in a scratch policy folder with a throwaway release key; the Rekor pin is `pin`.
+    Returns (exit code, stderr, policy path)."""
     with tempfile.TemporaryDirectory() as d:
         def at(name):
             return os.path.join(d, name)
@@ -122,7 +123,9 @@ def policy_make_with_pin(pin):
         openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", at("rel.key"))
         openssl("pkey", "-in", at("rel.key"), "-pubout", "-out", at("rel.pub"))
         key_der = openssl("pkey", "-pubin", "-in", at("rel.pub"), "-outform", "DER")
-        manifest = {"public_key": open(at("rel.pub")).read(), "key_id": hashlib.sha256(key_der).hexdigest(), "valid_from": "2020-01-01T00:00:00Z"}
+        manifest = {"public_key": open(at("rel.pub")).read(),
+                    "key_id": hashlib.sha256(key_der).hexdigest(),
+                    "valid_from": "2020-01-01T00:00:00Z"}
         with open(at("release-key-manifest.json"), "w") as f:
             json.dump(manifest, f, sort_keys=True, indent=1)
             f.write("\n")
@@ -133,7 +136,8 @@ def policy_make_with_pin(pin):
         shutil.copy(os.path.join(pol, "release-policy.template.json"), at("template.json"))
         with open(at("sigstore-trust.json"), "w") as f:
             json.dump({"rekor_sha256": pin}, f)
-        r = subprocess.run([sys.executable, os.path.join(root, "bin", "chain-verify.py"), "policy", "make", "--template", at("template.json"),
+        r = subprocess.run([sys.executable, os.path.join(root, "bin", "chain-verify.py"), "policy", "make",
+                            "--template", at("template.json"),
                             "--tag", "v0.3.0", "--out", at("policy.json")], capture_output=True, text=True)
         return r.returncode, r.stderr, os.path.exists(at("policy.json"))
 
@@ -142,7 +146,8 @@ rekor_hash = hashlib.sha256(der).hexdigest()
 code, _err, written = policy_make_with_pin(rekor_hash)
 check(code == 0 and written, "policy make writes the policy when the trust file's pin is the key file's hash")
 code, err, written = policy_make_with_pin("0" * 64)
-check(code != 0 and "rekor_sha256" in err and not written, "policy make refuses a trust file whose pin differs from the key file's hash, and writes no policy")
+check(code != 0 and "rekor_sha256" in err and not written,
+      "policy make refuses a trust file whose pin differs from the key file's hash, and writes no policy")
 
 print("pass=%d fail=%d" % (passed, failed))
 sys.exit(1 if failed else 0)
