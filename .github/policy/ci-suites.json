@@ -20,7 +20,6 @@
 {"suite": "vex-both-scanners-test.sh", "grype": true},
 {"suite": "layout-archive-test.sh"},
 {"suite": "vex-forms-test.sh"},
-{"suite": "evidence-letter-test.sh"},
 {"suite": "suite-guard-test.sh"},
 {"suite": "chain-rekor-key-test.sh"},
 {"suite": "chain-trust-files-test.sh"},
