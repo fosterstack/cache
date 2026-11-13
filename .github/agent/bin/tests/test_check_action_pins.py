@@ -5,7 +5,7 @@ reach the branches a fixture workflow cannot: the tag verifier (GitHub's API is 
 urllib.request.urlopen — no network), a submodule in a git tree, a missing PyYAML, and the
 command-line errors.
 """
-import contextlib, importlib.util, io, json, os, re, runpy, shutil, subprocess, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, os, re, runpy, shutil, signal, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -396,6 +396,18 @@ class ReaderBranches(unittest.TestCase):
         self.assertEqual(M._build(["-Z", "."])[5], "-Z")
         self.assertEqual(M._build(["--frob", "."])[5], "--frob")
         self.assertEqual(M._build(["-qf", "d/Dockerfile", "ctx"]), ("d/Dockerfile", "ctx", set(), [], [], None))
+
+    def test_token_url_walk_visits_a_shared_or_self_containing_node_once(self):
+        def hang(*_):
+            raise AssertionError("the walk did not end")
+        signal.signal(signal.SIGALRM, hang)
+        name = "ACTIONS_ID_TOKEN_REQUEST_URL"
+        for text in ("a: &m {k: v}\nb: *m\n", "a: &x [*x]\n"):
+            signal.alarm(5)
+            try:
+                self.assertIsNone(M._token_url_breach(text, name, []))
+            finally:
+                signal.alarm(0)
 
 
 class LiteralRunnerMatrix(unittest.TestCase):

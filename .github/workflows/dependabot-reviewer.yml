@@ -216,7 +216,7 @@ jobs:
             if [ "$FORCE" != "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
               echo "PR #$n ${sha:0:7}: verdict already $prior"
               if [ "$prior" = failure ]; then
-                gate_stands "$n" "$sha" failure || { echo "::error::PR #$n ${sha:0:7}: could not make sure the review gate's check is not success over the failure verdict"; lookup_failed=1; }
+                gate_stands "$n" "$sha" failure || { echo "::error::PR #$n ${sha:0:7}: could not confirm the review gate's check is not success over the failure verdict"; lookup_failed=1; }
                 if ! armed_now=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
                   echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
                 fi
@@ -253,7 +253,7 @@ jobs:
               continue
             elif [ "$prior" = none ] || [ "$prior" = neutral ]; then
               if [ "$prior" = neutral ] && ! gate_stands "$n" "$sha" neutral; then
-                echo "::error::PR #$n ${sha:0:7}: could not make sure the review gate's check is not success over the neutral verdict — skipped this hour"; lookup_failed=1; continue
+                echo "::error::PR #$n ${sha:0:7}: could not confirm the review gate's check is not success over the neutral verdict — skipped this hour"; lookup_failed=1; continue
               fi
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
                 echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
