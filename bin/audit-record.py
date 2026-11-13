@@ -25,7 +25,7 @@ import sys
 RECORD_MESSAGE = "audit record"       # the one fixed, neutral line the writer commits; the record names no tool, model or reviewer
 RECORD_FILE = "audit-record"          # the one file the record commit adds (createCommitOnBranch needs a change to make a commit); its content is the head sha
 WEB_FLOW = ("web-flow", 19864447)     # GitHub's own committer for commits it makes and signs on an actor's behalf
-_SHA = re.compile(r"^[0-9a-f]{40}$")
+_SHA = re.compile(r"[0-9a-f]{40}")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 
 
@@ -60,7 +60,7 @@ def verify_record(head, base_ref, ref, commit, writers):
         return False, "the pull request's base branch is unknown"
     if base_ref != "main":
         return True, ""
-    if not isinstance(head, str) or not _SHA.match(head):
+    if not isinstance(head, str) or not _SHA.fullmatch(head):
         return False, "the pull request's head sha is not 40 lower-case hex"
     allowed = _writers(writers)
     if allowed is None:
@@ -69,7 +69,8 @@ def verify_record(head, base_ref, ref, commit, writers):
     if not isinstance(ref, dict) or ref.get("ref") != "refs/heads/" + want:
         return False, "no passed-audit record for this head: there is no branch %s" % want
     obj = ref.get("object")
-    if not isinstance(obj, dict) or obj.get("type") != "commit" or not isinstance(obj.get("sha"), str) or not _SHA.match(obj["sha"]):
+    if not isinstance(obj, dict) or obj.get("type") != "commit" or not (
+            isinstance(obj.get("sha"), str) and _SHA.fullmatch(obj["sha"])):
         return False, "the record branch %s does not point at a commit" % want
     if not isinstance(commit, dict) or commit.get("sha") != obj["sha"]:
         return False, "the record commit answer is not the commit the branch %s points at" % want
@@ -100,7 +101,7 @@ _RELEASE_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-
 # matches v1.2.3, v0.9.10; refuses v1.2.0, v1.2.3-rc.1, v1.2.3-rc1, v01.2.3, v1.2.
 _PATCH_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*")
 # matches "Audit-approved: " plus 40 lower-case hex; refuses upper-case hex, 39 or 41 digits, a trailing space.
-_APPROVED = re.compile(r"^Audit-approved: ([0-9a-f]{40})$")
+_APPROVED = re.compile(r"Audit-approved: ([0-9a-f]{40})")
 _SIG_BEGIN = ("-----BEGIN SSH SIGNATURE-----", "-----BEGIN SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----")
 
 
@@ -122,7 +123,7 @@ def _approval(tag_object):
         if ln in _SIG_BEGIN:
             break
         if ln.strip().lower().startswith("audit-approved"):
-            m = _APPROVED.match(ln)
+            m = _APPROVED.fullmatch(ln)
             if not m:
                 return None
             found.append(m.group(1))
@@ -159,7 +160,7 @@ def plan_release(head, cmp_json, actor=None, policy=None):
         return False, "the audit policy (%s of the default branch) is missing or malformed" % WRITERS_PATH
     if not isinstance(actor, str) or actor not in pol[1]:
         return False, "the dispatching actor is not named as a dispatcher in %s" % WRITERS_PATH
-    if not isinstance(head, str) or not _SHA.match(head):
+    if not isinstance(head, str) or not _SHA.fullmatch(head):
         return False, "the commit sha is not 40 lower-case hex"
     if not isinstance(cmp_json, dict) or cmp_json.get("status") not in ("identical", "ahead"):
         return False, "the commit is not on main (compare main...commit)"
@@ -177,7 +178,7 @@ def plan_record(number, head, pr, actor=None, policy=None):
         return False, "the dispatching actor is not named as a dispatcher in %s" % WRITERS_PATH
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         return False, "the pull request number is not a positive integer"
-    if not isinstance(head, str) or not _SHA.match(head):
+    if not isinstance(head, str) or not _SHA.fullmatch(head):
         return False, "the head sha is not 40 lower-case hex"
     if not isinstance(pr, dict) or pr.get("number") != number:
         return False, "the pull request answer is missing or is another pull request"
