@@ -2191,7 +2191,7 @@ requirements:
         status: approved
       - id: REQ-CI-001-AC3
         given: "bin/select-tests.sh run with a base and a head commit, and the committed map .github/policy/test-paths.json of path globs to suite commands"
-        when: "it reads the changed files from git diff --name-only BASE...HEAD"
+        when: "it reads the changed files from git diff --name-only BASE...HEAD, a renamed file counting as both its old path and its new path"
         then: "it prints, one per line, in the map's order and without repeats, the suite commands of every map entry that a changed file matches; a changed file that matches no entry fails it (exit 1, the path named) so a new directory forces a map entry; an entry may list its paths as covered by no suite (docs), which selects nothing; a base or head that is not a commit fails it"
         verification: { method: unit, release_blocking: false }
         status: approved
