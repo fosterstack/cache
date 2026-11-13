@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The reviewer's version: the sha256 of the sha256sum lines of the files that decide its verdict.
-# Run from a checkout root; --files prints the names instead. A file that cannot be read fails it.
+# The root folder is its argument (default: the current folder); --files prints the names instead. A file that
+# cannot be read fails it.
 set -euo pipefail
 files=(
   bin/dependabot-reviewer.py
@@ -10,4 +11,5 @@ files=(
   bin/required-check-guard.sh
 )
 if [ "${1:-}" = --files ]; then printf '%s\n' "${files[@]}"; exit 0; fi
+cd "${1:-.}"
 sha256sum "${files[@]}" | sha256sum | cut -d' ' -f1
