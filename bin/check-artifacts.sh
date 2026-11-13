@@ -2,7 +2,7 @@
 # bin/check-artifacts.sh [--arch amd64|arm64] --digests FILE --images DIR --archives DIR --out DIR
 # The release-artifact checks of the old stage-acceptance-artifacts.yml, now run by Check against the exact candidates (advisor ruling 0384; rule 55).
 #   REQ-PLAT-001-AC1  each Linux amd64 binary (fscache, fscache-fips) of the archives executes: it starts, answers /healthz and round-trips a key
-#   REQ-FIPS-001-AC1  fscache-fips embeds the module selection GOFIPS140=v1.0.0 in its build info and fscache embeds none
+#   REQ-FIPS-001-AC1  fscache-fips embeds the module selection GOFIPS140=<id of build/locks/fips-module.txt> in its build info and fscache embeds none
 #   REQ-FIPS-002-AC1  three runtime postures read from /statusz: the -fips build names the validated module, the standard build is off, and the
 #                     standard build with GODEBUG=fips140=on reports its true state and never claims the validated module or a certificate
 #   REQ-FIPS-001-AC2  that forced-standard build is not a validated-module build: the module check of AC1 rejects its binary
@@ -40,10 +40,10 @@ for v in production fips; do
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
   is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
-shopt -s nullglob
 tmp=$(mktemp -d)
 mkdir -p "$out" "$tmp/bin"
 pids=()
+export PATH="/usr/local/bin/fscache-go/bin:$PATH"   # the pinned Go, as check-govulncheck runs it
 # stop one of this check's servers and wait until it is gone, so a server never outlives the check (a dying server must not meet a later run)
 stop_pid() { local p=$1 _; kill "$p" > /dev/null 2>&1 || true; for _ in $(seq 40); do kill -0 "$p" > /dev/null 2>&1 || break; sleep 0.25; done; kill -9 "$p" > /dev/null 2>&1 || true; wait "$p" > /dev/null 2>&1 || true; }
 cleanup() { for p in ${pids[@]+"${pids[@]}"}; do stop_pid "$p"; done; docker rm -f fscache-art-production fscache-art-fips > /dev/null 2>&1 || true; rm -rf "$tmp"; }
@@ -67,19 +67,15 @@ roundtrip() { lg -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$
 posture() { lg -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
 stop_last() { stop_pid "${pids[${#pids[@]}-1]}"; }
 
-# the binaries of this architecture out of the archives (REQ-PLAT-001-AC1: each of the four archives must exist; this architecture's are executed)
+# The images and archives are the ones Build recorded (re-derived from digests.json), before anything is extracted, loaded or executed; the bind also
+# lists the files of each layout docker may be given (REQ-SUP-001-AC33).
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
+
+# this architecture's binaries out of the archives: the bind above proved the four Linux archives are there (REQ-PLAT-001-AC1)
 for n in fscache fscache-fips; do
-  for a in amd64 arm64; do
-    found=("$archives"/${n}_*_linux_${a}.tar.gz)
-    [ "${#found[@]}" = 1 ] || fail "the Linux $a archive of $n is missing or not unique in $archives"
-  done
   sel=("$archives"/${n}_*_linux_${arch}.tar.gz)
   tar -xzf "${sel[0]}" -C "$tmp/bin" "$n" || fail "the $arch archive of $n holds no binary named $n"
 done
-
-# Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed; the bind also
-# lists the files of each layout docker may be given (REQ-SUP-001-AC33).
-python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
 
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image
 # Each server asks the kernel for its own port (127.0.0.1:0) and the check reads the port from the server's "starting"
@@ -126,8 +122,10 @@ note_forced=$(posture "$port_forced") || note_forced=""
 passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
 
 # REQ-FIPS-001-AC1: the module selection is read from the binaries' build info, not from a runtime self-report
+fipsmod=$(< build/locks/fips-module.txt)   # the module id the tree pins
+[[ "$fipsmod" =~ ^v[0-9.]+-[0-9a-f]{8}$ ]] || fail "build/locks/fips-module.txt holds no module id (vX.Y.Z-<8 hex>)"
 info_fips=$(go version -m "$tmp/bin/fscache-fips")
-grep -Eqx '[[:space:]]build[[:space:]]GOFIPS140=v1\.0\.0-c2097c7c' <<< "$info_fips" || fail "fscache-fips does not embed GOFIPS140=v1.0.0-c2097c7c: the validated module was not selected into this artifact"
+grep -Eqx "[[:space:]]build[[:space:]]GOFIPS140=${fipsmod//./\\.}" <<< "$info_fips" || fail "fscache-fips does not embed GOFIPS140=$fipsmod: the validated module was not selected into this artifact"
 info_std=$(go version -m "$tmp/bin/fscache")
 if grep -Eq 'build[[:space:]]+GOFIPS140=' <<< "$info_std"; then fail "the standard binary embeds a GOFIPS140 selection: variants are crossed"; fi
 passed REQ-FIPS-001-AC1 "fscache-fips"
@@ -154,11 +152,9 @@ for v in production fips; do
   docker tag "$ref" "localhost/fscache-$v-image"   # a fixed local name per image, run below with --pull=never: no variable image for pin-age to refuse
   for probe in busybox:sh busybox:ash bin:sh bin:ash bin:bash bin:dash usr-bin:sh usr-bin:bash sbin:sh; do
     sh="${probe%%:*}"; sh="${sh//-//}/${probe##*:}"   # the directory (a - stands for /) and the shell name
-    if [ "$v" = fips ]; then
-      if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-fips-image -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
-    else
-      if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-production-image -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
-    fi
+    src=0; docker run --pull=never --rm --entrypoint "/$sh" "localhost/fscache-$v-image" -c true > /dev/null 2>&1 || src=$?
+    [ "$src" != 0 ] || fail "the $v image has a shell at /$sh"
+    case "$src" in 126|127) ;; *) fail "docker could not run /$sh in the $v image (exit $src): only 126 or 127 mean no shell" ;; esac   # not found / not executable
   done
   name="fscache-art-$v"
   if [ "$v" = fips ]; then
