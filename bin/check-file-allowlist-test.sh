@@ -787,6 +787,10 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-mis
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
 
+passfam "feature/x" "REQ-CI-001: the test selector and the two suites that judge the quick/full split" \
+  "bin/select-tests.sh" "bin/select-tests-test.sh" "bin/full-suite-wiring-test.sh"
+runeach fail "feature/x" "REQ-CI-001: near-miss siblings of the selector refused" \
+  "bin/select-tests.py" "bin/select-test.sh" "bin/select-tests.sh.bak"
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
 echo "----"
