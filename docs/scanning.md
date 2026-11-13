@@ -74,9 +74,11 @@ check them against the signed release manifest as described in
 | Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per statement: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
-The three files are generated from the same statements. The OpenVEX and CSAF files
-carry every statement; the Inspector file carries one rule per `not_affected` or
-`fixed` statement and none for `affected` or `under_investigation`. Google applies
+The three files are generated from the same statements. The OpenVEX file carries
+every statement. The CSAF file leaves out a Go standard library version the release
+is not built with and carries every other statement about this release's images; the
+Inspector file leaves out that same version and carries one rule per `not_affected`
+or `fixed` statement, and none for `affected` or `under_investigation`. Google applies
 whole-image statements only. [`.vex/README.md`](../.vex/README.md) has the detail.
 
 ## Suppression rules
