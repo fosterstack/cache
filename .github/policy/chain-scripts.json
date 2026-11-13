@@ -149,7 +149,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "63dda38b5d99a1d1c1dcd5f7cc273fd9bfbe75604e1038cc24f796c50da05a36",
+      "sha256": "c21890f9b96910a61c6dbe4dc644e0d823c46d8d258ca74fbb28f9d6c4c78b6a",
       "tools": [
         "at",
         "bash",
@@ -781,7 +781,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "sha256": "c84468b99271e0b528eeece5b9a2dccdc69c3fe55dd61603b59ed4420a588e8e"
+      "sha256": "45e54a9fc335893bd7c3378ed6a3196484a9dab1c362b38d3a28478024d9dad9"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
