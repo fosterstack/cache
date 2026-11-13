@@ -2387,18 +2387,28 @@ rtrows "$work/r2" "$work/r2new.json" all; edck r2 "$work/r2new.json"
 CASE="AC2 control: a row written for the v1.2.4 line itself rules it (exit 0): the finding is keyed by the URL line"
 check test "$rc" -eq 0; check grep -q 'ruled text' "$work/rt.out"
 
-# --- REQ-SUP-001-AC16, the search for a row's span is fast: a 176 KB file with one reviewed here-document span
-BIGPY='import pathlib
-t = "#!/bin/sh\n" + "".join("echo filler line %d\n" % i for i in range(9000))
-t += "cat >stub <<%sEOF%s\n" % (chr(39), chr(39))
-t += "echo \"curl $*\" >>\"$CALLS\"\nEOF\n"
-pathlib.Path("bin/bh.sh").write_text(t)'
-newcase bhbig "$BIGPY"
-test "$(wc -c <"$work/bhbig/bin/bh.sh")" -gt 176000
-bhrow bhbig "$(bhf "$BHO" EOF "$SP1")"
-CASE="AC16: a 176 KB file with one reviewed span is checked with its row (exit 0, ruled) in under 5 seconds "
-CASE+="(the search itself is under one second; the bound is wide so box load cannot flake it; regression guard)"
-check test "$rc" -eq 0; check test "$bh_ms" -lt 5000; check grep -q 'ruled text' "$work/bh.out"
+# --- REQ-SUP-001-AC16, the search for a row's span hashes only from lines equal to body-first and compares only at
+# lines equal to body-last, with no budget: a file of about 176 KB is searched in under a second
+CASE="AC16: _body_spans finds the one span of a 176 KB text (200 lines equal to first, 200 equal to last) in under one "
+CASE+="second of process time: the search is under one second and that bound is the rule"
+check python3 - "$chk" <<'PY'
+import hashlib, importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+FIRST, LAST = "cat >stub <<'EOF'", "EOF"
+lines = []
+while len("\n".join(lines)) < 176000 or lines.count(LAST) < 200:
+    n = len(lines)
+    lines.append(FIRST if n % 45 == 0 else LAST if n % 45 == 20 else "echo filler line %d" % n)
+assert lines.count(FIRST) >= 200 and lines.count(LAST) >= 200, (lines.count(FIRST), lines.count(LAST))
+a, b = 45 * 7, 45 * 9 + 20
+assert lines[a] == FIRST and lines[b] == LAST
+sha = hashlib.sha256("\n".join(lines[a:b + 1]).encode()).hexdigest()
+t0 = time.process_time(); got = ac._body_spans(lines, FIRST, LAST, sha); dt = time.process_time() - t0
+print(dt)
+assert got == [(a, b)], got
+assert dt < 1.0, dt
+PY
 
 # --- REQ-SUP-001-AC16, a wrapper opener (check python3 - <<'PY'): only a wrapper bound by the hash of its definition
 CKDEF=$(grep -m1 '^check() {' "$here/pin-age-check-test.sh")
