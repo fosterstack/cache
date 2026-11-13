@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21
-# bin/release-metadata.py: the release metadata files and their signed list. It is offline and deterministic (no clock, no network).
-# Tested subcommands: images, manifest, list, gate, tag-notes, checksums. Every refusal exits 1 with a message that names the file or the key.
+# bin/release-metadata.py: the release metadata files and their signed list. It is offline and deterministic
+# (no clock, no network).
+# Tested subcommands: images, manifest, list, gate, tag-notes, checksums. Every refusal exits 1 with a message
+# that names the file or the key.
 # Runs on ubuntu-24.04 or macOS with bash and python3.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -176,7 +178,9 @@ def release_dir():
     open(a + "/checksums.txt.bundle", "w").write("{}")
     open(a + "/production.sbom.json", "w").write("{}"); open(a + "/production.sbom.json.bundle", "w").write("{}")
     open(a + "/policy.json", "w").write("{}"); open(a + "/release-policy.bundle", "w").write("{}")
-    open(a + "/build-collection.json", "w").write("{}"); open(a + "/build-collection.rekor.json", "w").write("{}")      # the entries file Sign keeps beside the record
+    open(a + "/build-collection.json", "w").write("{}")
+    # the entries file Sign keeps beside the record
+    open(a + "/build-collection.rekor.json", "w").write("{}")
     for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"): open(os.path.join(a, n), "w").write("{}")      # Sign's three files (REQ-CHAIN-007-AC9, AC19)
     return a
 def gate(label, mutate, word=None):
@@ -186,7 +190,8 @@ def gate(label, mutate, word=None):
 gate("a complete release directory passes", lambda a: None)
 gate("a Witness record with no entries file beside it is refused, naming the missing file", lambda a: os.remove(a + "/build-collection.rekor.json"), "build-collection.rekor.json")
 gate("an entries file with no record beside it is refused, naming it", lambda a: open(a + "/other-collection.rekor.json", "w").write("{}"), "other-collection.rekor.json")
-# the record/entries pairing is checked for EVERY name, also for a name that checksums.txt or release-files.sha256 already covers
+# the record/entries pairing is checked for EVERY name, also for a name that checksums.txt or
+# release-files.sha256 already covers
 def _sum_add(a, n):
     open(a + "/checksums.txt", "a").write("%s  %s\n" % (hashlib.sha256(open(os.path.join(a, n), "rb").read()).hexdigest(), n))
 def _orphan_checksummed(a):
@@ -207,7 +212,8 @@ def with_module_sbom(a):
     open(a + "/fscache-modules.spdx.json.bundle", "w").write("{}")
 gate("a module SBOM with its bundle passes", with_module_sbom)
 gate("an extra line in release-files.sha256 is refused", lambda a: open(a + "/release-files.sha256", "a").write("%s  extra.json\n" % ("0" * 64)), "extra")
-# the exact four-line format; a blank line anywhere (leading, between entries, or more than the one final newline) is an extra line
+# the exact four-line format; a blank line anywhere (leading, between entries, or more than the one final
+# newline) is an extra line
 def _sums_edit(f):
     def w(a):
         t = open(a + "/release-files.sha256").read(); open(a + "/release-files.sha256", "w").write(f(t))
@@ -243,7 +249,10 @@ for what, raw, tag in cases:
     obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(raw)
     r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag, "--object", obj], capture_output=True, text=True)
     try: pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
-    except ValueError: pd = None          # patch-decide refuses a tag message with a refused form (two signature blocks): the release keeps its fixed text, as for "no notes"
+    except ValueError:
+        # patch-decide refuses a tag message with a refused form (two signature blocks):
+        # the release keeps its fixed text, as for "no notes"
+        pd = None
     same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
     check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
 # ---- requirements.yaml says what the code does ----------------------------------------------------------
@@ -262,13 +271,15 @@ t1 = ac("REQ-CHAIN-007", 1)["then"]
 check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
       "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name")
 check("the release notes are posted here only from the notes carried in the generated patch tag's message (REQ-REL-009-AC8; the changelog is the patch-notes job's)" in t7 and "release notes are not posted here" not in t7,
-      "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 (the notes are posted by release-assets from the generated tag's message)")
+      "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 "
+      "(the notes are posted by release-assets from the generated tag's message)")
 check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
       "text: REQ-CHAIN-007-AC9 attaches Sign's three provenance files")
 check("Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature)" in t19
       and "Build's admission-baseline.json" in t19 and "never a version Release chooses itself" in t19 and "the baseline admission chose for a CI patch)" not in t19,
-      "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance and takes the baseline from Build's verified file")
-# ---- REQ-CHAIN-007-AC21: checksums writes dist/checksums.txt from the four archives Build recorded ----------------------------------
+      "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance "
+      "and takes the baseline from Build's verified file")
+# ---- REQ-CHAIN-007-AC21: checksums writes dist/checksums.txt from the four archives Build recorded
 ARCS = (("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz"),
         ("archive-linux-amd64", "fscache_0.3.0_linux_amd64.tar.gz"), ("archive-linux-arm64", "fscache_0.3.0_linux_arm64.tar.gz"))
 def ck_tree():
@@ -294,7 +305,8 @@ for label, mutate, word in (("a missing archive", lambda d: os.remove(d + "/" + 
 for bad_v in ("0.3.0-rc1", "v0.3.0", "0.3", ""):
     t = ck_tree(); r = ck_run(t, bad_v)
     check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 the version %r is refused: only X.Y.Z, and nothing is written" % bad_v, "rc=%s %s" % (r[0], r[2][:100]))
-# the temporary file is never a path someone else can pre-place: a planted symlink checksums.txt.part must not be written through,
+# the temporary file is never a path someone else can pre-place: a planted symlink checksums.txt.part must not
+# be written through,
 # and a stale regular .part is replaced, never extended or kept
 t = ck_tree(); victim = t + "/dist/" + ARCS[0][1]; before = open(victim, "rb").read()
 os.symlink(victim, t + "/dist/checksums.txt.part"); r = ck_run(t)
