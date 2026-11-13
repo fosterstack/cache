@@ -399,7 +399,7 @@ def scout_form(vex):
     products are the vulnerable PACKAGES (the image is the in-toto subject, so the image purl is not repeated): a product that names the attested image (SUBJECT_NAME, as @id
     or identifiers.purl) and lists subcomponents is replaced by them, in order, once each; every other product stays whole, so a claim about another image is never
     carried onto this one. Scout read our attestation when it held the VEX file as it is (a product = the image purl, the package as its subcomponent) and did not
-    apply it (rescan run 39978435878, Oct 23 2026; the fixture is Scout's own output, held in bin/vex-index-test.sh). The published VEX file itself is not changed;
+    apply it (rescan run 39978435878, Oct 23 2026; the fixture is Scout's own output, held in its test). The published VEX file itself is not changed;
     this is a pure function of its bytes, like everything else here."""
     out = json.loads(json.dumps(vex))
     for statement in out.get("statements", []):
