@@ -15,7 +15,7 @@
  "chain-build-admit-test.sh": 181,
  "chain-build-wiring-test.sh": 1304,
  "chain-check-scripts-test.sh": 310,
- "chain-check-wiring-test.sh": 302,
+ "chain-check-wiring-test.sh": 300,
  "chain-hostile-test.sh": 282,
  "chain-install-crane-test.sh": 7,
  "chain-install-witness-test.sh": 44,
@@ -77,6 +77,6 @@
  "vex-live-pins-test.sh": 3,
  "vex-live-test-test.sh": 397,
  "vex-scope-test.sh": 21,
- "witness-kms-test.sh": 58,
+ "witness-kms-test.sh": 36,
  "workflow-consolidation-test.sh": 128
 }
