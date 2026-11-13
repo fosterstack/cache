@@ -16,7 +16,7 @@ This step, run by auditor.yml right after the rescan, judges them:
   rule 13   every debate is recorded; it settles when the real answer arrives; +1 / -2 scoring per vendor seat;
   rule 14   the primary seat moves at a lead of 3 or more; a move is reported to the owner.
 Public text names the seats ("vendor A", "vendor B", "primary", "second"); vendor and model names live only in the
-environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
+environment's secrets (rule 8(b), rule 14; REQ-AUD-6 AC1 of .github/agent/docs/cve-auditor-matrix.md).
 """
 import argparse, copy, datetime, hashlib, io, json, os, re, subprocess, sys, tarfile, tempfile, time
 import urllib.parse, urllib.request
@@ -56,7 +56,7 @@ SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANT
 
 def public(s):
     """Scrub vendor and model names, and every configured identifier, from text that may be published
-    (rule 8(b), REQ-SCAN-014-AC4, REQ-AUD-6 AC4)."""
+    (rule 8(b); REQ-AUD-6 AC4 of .github/agent/docs/cve-auditor-matrix.md)."""
     if s is None:
         return None
     s = str(s)
@@ -123,9 +123,9 @@ def validate_profiles(doc):
 
 
 def validate_state(doc):
-    """The members of the panel state's lists, which the judge indexes and scores: checked before any seat is asked,
-    so a damaged entry is a named stop and not a crash after the model spend. Extra metadata is allowed. Returns the
-    errors."""
+    """The members of the panel state's lists, which the judge indexes and scores: checked before any seat is
+    asked, so a damaged entry is a named stop and not a crash after the model spend. Extra metadata is
+    allowed. Returns the errors."""
     errs = []
     def text(e, k, where, required=True, empty=False):
         v = e.get(k)
@@ -635,7 +635,7 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             e["vex"] = False
             out["owner"].append("Scanner panel: %s (%s %s) was stated not affected, but %s now contain(s) that "
                                 "version; the statement is turned affected." % (e["id"], e["package"], e["version"],
-                                                                       ", ".join(present)))
+                                                                                ", ".join(present)))
     # (3) a fix shipped: the debated image HAD the debated version when debated, and today that same image is readable,
     # carries another version of the package, and no longer has the debated one
     for d in st["debates"]:
@@ -715,8 +715,8 @@ class _Layout:
         return p
 
     def _bytes(self, name):
-        """The blob's bytes, re-hashed against the sha256 in its file name (fail closed on a mismatch: the digest is the
-        evidence's identity)."""
+        """The blob's bytes, re-hashed against the sha256 in its file name (fail closed on a mismatch: the digest
+        is the evidence's identity)."""
         p = self._path(name)
         with open(p, "rb") as fh:
             data = fh.read()
@@ -935,7 +935,7 @@ class TokenFile:
 
 
 class Budget:
-    """The panel's per-run token budget (REQ-AUD-6 AC2): once spent, no seat is asked again this run; the unasked
+    """The panel's per-run token budget (REQ-AUD-6 AC2 of .github/agent/docs/cve-auditor-matrix.md): once spent, no seat is asked again this run; the unasked
     audits error (no evidence -> false by default, judged again tomorrow) and the run reports the stop."""
 
     def __init__(self, cap):
@@ -1067,7 +1067,7 @@ def make_seats(mode, env=os.environ, a=seat_a, b=seat_b, retries=None):
 
 # The required content of the panel's two persistent inputs read through the shared reader: a PRESENT file without it
 # is a stop, never a fresh start or zero profiles. They live here, not in auditorlib/reviewed.py, because the CVE
-# auditor's library never names the panel's state (REQ-SCAN-014-AC3).
+# auditor's library never names the panel's state.
 SPECS = {
     "panel-state.json": (("version", ("int", 1)), ("false", "objects"), ("real", "objects"), ("debates", "objects"),
                          ("scores", ("ints", ("A", "B"))), ("seat", ("choice", ("A", "B")))),
@@ -1083,7 +1083,7 @@ OLD_OWNER_TITLE = policy.subject("owner-decision: scanner panel")
 
 
 def automerge_allowed(changed, env=os.environ):
-    """REQ-AUD-17 AC3/AC4, as the auditor applies it: only when the owner turned auto-merge on, and never for a day
+    """REQ-AUD-17 AC3/AC4 of .github/agent/docs/cve-auditor-matrix.md, as the auditor applies it: only when the owner turned auto-merge on, and never for a day
     that proposes a scanner-profile entry (rule 7: profile entries are reviewed like any other change)."""
     on = (env.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
     # only the panel's own records may auto-merge: its state and its VEX statements. A profile entry, a prompt, a
@@ -1097,8 +1097,8 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def rescan_binding(path, oci_dir):
-    """(binding, None) or (None, why). The judgment is bound to the rescan it judges (owner RATIFIED Oct 3, item a;
-    advisor 0113/0136): its run, the head it scanned, main's head now, its conclusion (any: a red rescan is judged), and
+    """(binding, None) or (None, why). The judgment is bound to the rescan it judges:
+    its run, the head it scanned, main's head now, its conclusion (any: a red rescan is judged), and
     the image digests of the evidence it left — every archive must name one, else the evidence is not that run's."""
     try:
         b = reviewed.read(path)
@@ -1252,12 +1252,12 @@ def vex_package(purl):
 
 
 def vex_subcomponents(purls, package=None, version=None):
-    """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None when there is none or any purl cannot
-    be written that way: a statement with no subcomponents would cover the whole image, so an empty set is never
-    proposed. With package and version (the finding's own, which the audits judged), every purl's DECODED name and
-    version must equal them: the generators decode the written purl, so a purl naming another package (libstdc%2B%2B6
-    against a finding for libstdc%2B%2B6 that the bundle never matched) would suppress a package the evidence did not
-    cover."""
+    """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None when there is none or any purl
+    cannot be written that way: a statement with no subcomponents would cover the whole image, so an empty set is
+    never proposed. With package and version (the finding's own, which the audits judged), every purl's DECODED name
+    and version must equal them: the generators decode the written purl, so a purl naming another package
+    (libstdc%2B%2B6 against a finding for libstdc%2B%2B6 that the bundle never matched) would suppress a package the
+    evidence did not cover."""
     idents = [_purl_identity(p) for p in purls or []]
     if not idents or None in idents:
         return None
@@ -1268,8 +1268,8 @@ def vex_subcomponents(purls, package=None, version=None):
 
 def statement_id(v):
     """The statement's scope: the repository's product (every image — written only when every image's evidence shows
-    the package absent at that version) narrowed to the exact package purls (REQ-AUD-13 scope ids), as the VEX writes
-    them."""
+    the package absent at that version) narrowed to the exact package purls (REQ-AUD-13 scope ids of
+    .github/agent/docs/cve-auditor-matrix.md), as the VEX writes them."""
     return policy.scope_id(v["id"], policy.VEX_PRODUCT, vex_subcomponents(v.get("purls")) or v.get("purls") or [])
 
 
@@ -1310,7 +1310,7 @@ def validate_day(day):
         if not isinstance(v, dict):
             errs.append("day vex %d: is not an object" % i)
             continue
-        for k in ("id", "impact_statement"):
+        for k in ("id", "package", "version", "impact_statement"):
             if not isinstance(v.get(k), str) or not v[k].strip():
                 errs.append("day vex %d: %r is missing or is not text" % (i, k))
         if v.get("status") not in ("not_affected", "affected"):
@@ -1323,8 +1323,8 @@ def validate_day(day):
 
 
 def _checked_state(doc, label):
-    """The panel's own member checks on a state document that passed the shared rules; returns it, or raises
-    ReviewedInputInvalid."""
+    """The panel's own member checks on a state document that passed the shared rules; returns
+    it, or raises ReviewedInputInvalid."""
     bad = validate_state(doc)
     if bad:
         raise reviewed.ReviewedInputInvalid("%s: %s" % (label, "; ".join(bad)))
@@ -1473,8 +1473,8 @@ def _require_app_tip(repo, tip, plan, real, run):
 
 
 def _checked_state_text(text, where):
-    """A state document read as text (git show): it must be a JSON object that passes the panel's rules; returns the
-    text."""
+    """A state document read as text (git show): it must be a JSON object that passes the
+    panel's rules; returns the text."""
     doc = reviewed.parse(text, "%s of %s" % (STATE, where), spec=SPECS["panel-state.json"])
     _checked_state(doc, "%s of %s" % (STATE, where))
     return text
@@ -1560,8 +1560,8 @@ def _instant(ts):
 
 
 def _later(a, b):
-    """The later of two timestamps by INSTANT (main's 09:00-04:00 is 13:00Z); on a string that is no instant, the
-    first."""
+    """The later of two timestamps by INSTANT (main's 09:00-04:00 is 13:00Z); on a string
+    that is no instant, the first."""
     ia, ib = _instant(a), _instant(b)
     if ia is None or ib is None:
         return a if ia is not None or ib is None else b
@@ -1586,8 +1586,8 @@ def _text_of(path):
 
 
 def _checked_doc(text, path, where, rel):
-    """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of its file; the parsed
-    document."""
+    """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of
+    its file; the parsed document."""
     doc = reviewed.parse(text, "%s of %s" % (path, where), as_name=path,
                          spec=SPECS["scanner-profiles.json"] if rel == PROFILES else None)
     bad = validate_profiles(doc) if rel == PROFILES else validate_vex(doc)
@@ -1666,9 +1666,9 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
             pr_doc, base_doc, cur_doc = (_checked_doc(pr_txt, path, "the open PR's branch", VEX),
                                          _checked_doc(base_txt or '{"statements": []}', path, "the PR's base", VEX),
                                          _checked_doc(cur_txt, path, "main", VEX))
-            # a statement is known by its @id; the hand-written ones in the real file have none, so they are known by
-            # their whole content (never all collapsed onto one key: that once overwrote a published statement with
-            # another CVE's)
+            # a statement is known by its @id; the hand-written ones in the real file have none, so they are
+            # known by their whole content (never all collapsed onto one key: that once overwrote a
+            # published statement with another CVE's)
             ident = lambda x: x.get("@id") or json.dumps(x, sort_keys=True)
             base_by = {ident(x): x for x in base_doc.get("statements", [])}
             cur_by = {ident(x): x for x in cur_doc.get("statements", [])}
@@ -1747,7 +1747,7 @@ def cmd_deliver(a, run=subprocess.run):
     check_delivery_inputs(a.repo, day, st)
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
     plan, branch, notes = [], "auditor/panel", []
-    # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip
+    # the base is ALWAYS the main commit this run is on a branch that builds on the open PR's old tip
     # stays on the day it was first opened, falls further behind, and can never merge under strict up-to-date checks.
     # The open PR's branch is only READ: its files carry forward.
     base = os.environ.get("GITHUB_SHA") or "HEAD"
@@ -1863,7 +1863,7 @@ def cmd_deliver(a, run=subprocess.run):
         hit = [r["number"] for r in rows if r.get("title") in (policy.subject(ISSUE_TITLE), ISSUE_TITLE)]
         if hit:                 # the rescan's tracking issue, when it is open
             _sh(["gh", "issue", "comment", str(hit[0]), "--body", day["issue"]], plan, real, run, env=ienv)
-        else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1)
+        else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1 of .github/agent/docs/cve-auditor-matrix.md)
             # a missing label would lose the issue: create it first (not forced)
             for lab in ("daily-rescan", "security"):
                 _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
@@ -1872,8 +1872,8 @@ def cmd_deliver(a, run=subprocess.run):
     if day["owner"]:
         body = public("Scanner panel, %s:\n\n%s" % (a.today, "\n\n".join(day["owner"])))
         n = ""
-        # one search per title, new then old; the label is also on the per-finding issues, so the title must match
-        # exactly
+        # one search per title, new then old; the label is also on the per-finding issues,
+        # so the title must match exactly
         for t in (OWNER_TITLE, OLD_OWNER_TITLE):
             rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search",
                                     t,
