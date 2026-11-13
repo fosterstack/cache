@@ -586,6 +586,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
   - ac: REQ-DEP-001-AC14
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
