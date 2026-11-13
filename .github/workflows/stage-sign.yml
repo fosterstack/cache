@@ -14,8 +14,8 @@ name: 'Stage: sign'
 #                 nothing built by them (REQ-REL-011-AC1: the Check jobs build tools and run workloads, so they hold no identity token); checks the records against the results and
 #                 against the lists the Check jobs published as job outputs, and signs them.
 # The two signing steps (bin/witness-sign-staged.sh for the records, bin/with-aws-token.sh sign for the provenance) carry exactly three non-secret entries as step env, literals: the AWS role of the release Sign identity,
-# its region and the release key's reference (the verifier's RELEASE_KEY_REF); the identity token itself is requested only inside bin/witness-sign-staged.sh, just before each record is signed. The `sign` job installs cosign
-# (the signing function makes its signatures through the aws CLI and calls no cosign); no job runs Witness. Only those steps and the records commands' env -u (below) mention the token variables.
+# its region and the release key's reference (the verifier's RELEASE_KEY_REF); the identity token itself is requested only inside bin/witness-sign-staged.sh, just before each record is signed. The `sign` job installs the aws CLI
+# (the signing function makes its signatures through it and calls no cosign); no job runs Witness. Only those steps and the records commands' env -u (below) mention the token variables.
 # The records command of each job that reads the building jobs' files runs under `env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL`, so the process that
 # parses those files does not receive the identity-token request variables in its own environment (the step's shell still holds them: the boundary stays the job and its
 # identity, not this command); the sign-wiring judge pins the exact command line.
@@ -105,12 +105,8 @@ jobs:
           name: apk-ubuntu-24.04-arm
           path: artifacts/witness-apk-ubuntu-24.04-arm/out
 
-      - name: install cosign (pinned by checksum)
-        run: bash bin/install-scanner.sh cosign
-
       - name: install the aws CLI (pinned by checksum)
         run: bash bin/install-scanner.sh aws-cli
-
 
       - name: write Build's digest list to a file
         env:
