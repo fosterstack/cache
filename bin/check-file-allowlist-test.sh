@@ -804,7 +804,10 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss ref
 
 # the reviewer's version script is one of the five files' list-keeper: admitted by its exact path only
 passfam "feature/x" "the reviewer's version script" "bin/dependabot-reviewer-version.sh"
-runeach fail "feature/x" "reviewer-version near-miss refused" "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
+runeach fail "feature/x" "reviewer-version near-miss refused" \
+  "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
+  "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
+  "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
