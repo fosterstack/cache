@@ -959,6 +959,20 @@ def stub_verifier(t, extra_source):
     for row in d["scripts"]:
         if row["path"] == "bin/chain-verify.py": row["sha256"] = hashlib.sha256(open(path, "rb").read()).hexdigest()
     json.dump(d, open(listed, "w"))
+def stage_operands(t, rows):
+    """release-postverify refuses before running anything when a file a verify command names as an operand (a --bundle value or a positional blob) is not in release-published/:
+    make each such file there (a few bytes: the fake cosign does not read it) unless the case put it there itself. release.rsa.pub is the script's own; brace, glob and path operands are the cases' own."""
+    import shlex
+    rp = os.path.join(t, "release-published")
+    if not os.path.isdir(rp): return
+    for c in rows or []:
+        try: words = shlex.split(c)
+        except ValueError: continue
+        for i, w in enumerate(words):
+            if w.startswith("--bundle="): w = w[len("--bundle="):]
+            elif not re.fullmatch(r"[\w][\w.-]*\.(json|txt|bundle|sig|pem)", w) and not (i and words[i - 1] == "--bundle"): continue
+            if w == "release.rsa.pub" or "/" in w or any(ch in w for ch in "{}*?[]") or os.path.lexists(os.path.join(rp, w)): continue
+            open(os.path.join(rp, w), "w").write("staged\n")
 def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None, creds=("GH_TOKEN",), seed=None):
     t = tree(); os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     real_verifier(t); seed_manifest(t, **(seed or {}))
@@ -966,6 +980,7 @@ def pv(rows, env=None, raw=None, tag="v0.3.0", digs=None, creds=("GH_TOKEN",), s
     if rows is None and raw is None: os.remove(lp)
     if raw is not None: open(lp, "w").write(raw)
     elif rows is not None: json.dump([{"command": c, "reason": "needs the image in a registry"} for c in rows], open(lp, "w"))
+    if rows is not None and raw is None: stage_operands(t, rows)
     if digs is not None: json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
     e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(env or {})
     rc, so, se = run(t, "release-postverify", env=e, creds=list(creds), tag=tag)
@@ -1080,6 +1095,7 @@ def pva(rows, assets=None, nodir=False, cv=None, links=None, seed=None, **kw):
     seed_manifest(t, **(seed or {}))
     os.makedirs(os.path.join(t, "docs"), exist_ok=True)
     json.dump([{"command": c, "reason": "needs a release file"} for c in rows], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+    if not kw.get("unstaged"): stage_operands(t, rows)      # unstaged=True: the case tests a file absent from release-published/
     e = {"GITHUB_REPOSITORY": "fosterstack/cache"}; e.update(kw.get("env") or {})
     rc, so, se = run(t, "release-postverify", env=e, creds=["GH_TOKEN"])
     return t, rc, so, se
@@ -1091,7 +1107,7 @@ t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": OK})
 cwds = open(os.path.join(t, "calls.log.cwd")).read().split() if os.path.exists(os.path.join(t, "calls.log.cwd")) else []
 check(rc == 0 and cwds and all(os.path.realpath(c) == os.path.realpath(os.path.join(t, "release-published")) for c in cwds), "AC20 post-publish: a listed command runs with release-published/ as its working directory", "rc=%s cwds=%s %s" % (rc, cwds, first(se)))
 t, rc, so, se = pva([PV1], nodir=True); check(rc != 0 and not calls(t) and "release-published" in se, "AC20 post-publish: a missing release-published/ fails the run before anything runs, naming it", "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pva([PBF, PV1], env={"FAKE_NEEDFILES": "1"}); check(rc != 0 and len(calls(t)) == 3 and "post-publish verification failed" in se and "provenance.bundle.json" in se, "AC20 post-publish: a command naming a file absent from release-published/ fails the run, the others still run", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
+t, rc, so, se = pva([PBF, PV1], env={"FAKE_NEEDFILES": "1"}, unstaged=True); check(rc != 0 and not calls(t) and "provenance.bundle.json" in se and "does not hold" in se, "AC20 post-publish: a command naming a file absent from release-published/ refuses before running anything", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OK}); check(rc == 0 and len(calls(t)) == 1, "AC20 post-publish: a jq-only command after a verify of the same file runs and passes (jq read the file)", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, PJX], assets={"provenance.bundle.json": OKF}); check(rc != 0 and "post-publish verification failed" in se and PJX in se, "AC20 post-publish: the jq-only command really runs on the file: a false filter fails the run, naming it", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PJX], assets={"provenance.bundle.json": OK}); check(rc != 0 and not calls(t) and "earlier" in se, "AC20 post-publish: a jq-only command with no earlier verify is refused and nothing runs", "rc=%s %s" % (rc, first(se)))
