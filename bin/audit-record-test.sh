@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7, REQ-REL-012-AC8, REQ-REL-012-AC9, REQ-REL-012-AC10, REQ-REL-012-AC11, REQ-REL-012-AC12
+# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7, REQ-REL-012-AC8, REQ-REL-012-AC9, REQ-REL-012-AC10, REQ-REL-012-AC11, REQ-REL-012-AC12, REQ-DEP-001-AC14
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a
 # pull request into the release carries a passed-audit record for its exact head, or it cannot merge"), offline. The record is the branch
 # audit/<the pull request's head sha>: ONE commit whose only parent is that head, verified by GitHub, authored by the writer the policy file
@@ -560,10 +560,16 @@ for name, pulls in (
     check("bump: the record rule stands when " + name, A.bump_pull(HEAD, pulls) is None, A.bump_pull(HEAD, pulls))
 
 REVIEWER_PY = os.path.join(os.path.dirname(JUDGE_SH), "dependabot-reviewer.py")
-VER = hashlib.sha256(open(REVIEWER_PY, "rb").read()).hexdigest()
+VERSION_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt", ".github/workflows/dependabot-reviewer.yml")
+CHECKED_IN = [open(os.path.join(root_repo, f), "rb").read() for f in VERSION_FILES]
+def version_in(top):   # the sha256 of the program, the prompt and the workflow under `top`, read in that order
+    return hashlib.sha256(b"".join(open(os.path.join(top, f), "rb").read() for f in VERSION_FILES)).hexdigest()
+VER = hashlib.sha256(b"".join(CHECKED_IN)).hexdigest()
+PYVER = hashlib.sha256(CHECKED_IN[0]).hexdigest()
 OLDVER = "0" * 64
 NOVER = object()
-open(root + "/bin/dependabot-reviewer.py", "wb").write(open(REVIEWER_PY, "rb").read())
+os.makedirs(root + "/.github/workflows")
+for f, text in zip(VERSION_FILES, CHECKED_IN): open(os.path.join(root, f), "wb").write(text)
 def run(i, conclusion="success", slug="fosterstack-automation", name="dependabot-reviewer", status="completed", ext=VER):
     r = {"id": i, "name": name, "status": status, "conclusion": conclusion, "app": {"id": 5054756, "slug": slug}}
     if ext is not NOVER: r["external_id"] = ext
@@ -661,12 +667,12 @@ r, c = wrap_rel(ref=None)
 check("bump: --release mode asks for no pull request", r.returncode == 1 and "/pulls" not in c, (r.returncode, r.stdout, c))
 
 # the wrapper over a real repository: main, the bump's commit, heads that bring main in, and heads that carry more
-G = os.path.join(d, "gate"); os.makedirs(G + "/bin"); os.makedirs(G + "/.github/policy")
+G = os.path.join(d, "gate"); os.makedirs(G + "/bin"); os.makedirs(G + "/.github/policy"); os.makedirs(G + "/.github/workflows")
 BIN = os.path.dirname(JUDGE_SH)
 for name in ("audit-record.py", "audit-record-judge.sh", "audit-record-prepare.sh"):
     open(G + "/bin/" + name, "w").write(open(os.path.join(BIN, name)).read())
-GREVIEWER = G + "/bin/dependabot-reviewer.py"
-open(GREVIEWER, "wb").write(open(REVIEWER_PY, "rb").read())
+GREVIEWER, GPROMPT, GWORKFLOW = (os.path.join(G, f) for f in VERSION_FILES)
+for f, text in zip((GREVIEWER, GPROMPT, GWORKFLOW), CHECKED_IN): open(f, "wb").write(text)
 POLICY = G + "/.github/policy/audit-writers.json"
 open(POLICY, "w").write(json.dumps(WRITERS))
 genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t",
@@ -797,7 +803,7 @@ for name, head, verdicts in (
 GOLD = open(GREVIEWER, "rb").read()
 try:
     open(GREVIEWER, "wb").write(GOLD + b"\n# another reviewer\n")
-    NEWVER = hashlib.sha256(open(GREVIEWER, "rb").read()).hexdigest()
+    NEWVER = version_in(G)
     r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
     check("gate refused: the version is read from the checked-out main: a success of the version this main no longer has", stale_refused(r), said(r, c))
     r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=NEWVER)]})
@@ -807,6 +813,25 @@ try:
     check("gate: a version that cannot be read (no program in main): the record rule stands, no verdict asked for", stands(r, c), said(r, c))
 finally:
     open(GREVIEWER, "wb").write(GOLD)
+
+# the version covers the prompt and the workflow too: a change to either makes every earlier success not count, and a file that cannot be read is a version that cannot
+r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=PYVER)]})
+check("gate refused: a success carrying the sha256 of the program alone (the version before the prompt and the workflow counted) is no success", stale_refused(r), said(r, c))
+for what, path in (("prompt", GPROMPT), ("workflow", GWORKFLOW)):
+    OLDTEXT = open(path, "rb").read()
+    try:
+        open(path, "wb").write(OLDTEXT + b"\n# changed\n")
+        r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
+        check("gate refused: a success of the version before main's %s changed does not pass" % what, stale_refused(r), said(r, c))
+        r, c = gate(U1, pulls=[dep(U1)], verdicts={D: [run(1)]})
+        check("gate refused: ... nor is it carried across a clean merge of main", stale_refused(r) and c.count("check-runs") == 2, said(r, c))
+        r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=version_in(G))]})
+        check("gate: ... and a success of the version of the three files as main has them passes", r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+        os.remove(path)
+        r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
+        check("gate: a version that cannot be read (no %s in main): the record rule stands, no verdict asked for" % what, stands(r, c), said(r, c))
+    finally:
+        open(path, "wb").write(OLDTEXT)
 
 # any other commit on the bump needs the reviewer's success on a head that contains it, with only clean merges of main after it
 for name, head in (("carries a writer's commit on top of the passed head", MEND), ("carries a writer's commit and then main merged in", MENDUP),
