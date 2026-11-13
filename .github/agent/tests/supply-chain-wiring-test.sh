@@ -8,14 +8,14 @@
 set -euo pipefail
 export SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - <<'PY'
-import copy, os, re, subprocess, sys, yaml
+import copy, json, os, re, subprocess, sys, yaml
 
 CANON = {}   # job -> the exact normalised run text of its check step (filled below from the shipped workflow's ratified text)
 
 root = os.environ["SC_ROOT"]
 WF = os.path.join(root, ".github/workflows/supply-chain.yml")
 DB = os.path.join(root, ".github/dependabot.yml")
-SUITES = os.path.join(root, ".github/policy/ci-suites.json")
+FLOORS = os.path.join(root, "test-evidence/suite-floors.json")
 ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout",)
@@ -338,10 +338,10 @@ def judge_rest():
     m = re.search(r"PIPELINE_ONLY = frozenset\(\[(.*?)\]\)", src, re.S)
     if not m or "REQ-SUP-001" not in m.group(1):
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
-    suites = open(SUITES).read()
+    floors = json.load(open(FLOORS))
     for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if f'"suite": "{t}"' not in suites:
-            bad.append(f"the CI suite list does not run .github/agent/tests/{t}")
+        if t not in floors:
+            bad.append(f"the suite floors file does not list .github/agent/tests/{t}, so CI does not run it")
     return bad
 
 real_wf, real_db = None, None
