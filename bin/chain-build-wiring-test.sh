@@ -3810,10 +3810,10 @@ if [ "$rc" = 1 ] && grep -Fq "refused at marker" <<< "$out"; then
   ok "AC12 patch-decide rc-proof refuses a marker that does not validate (exit 1)"
 else bad "AC12 patch-decide rc-proof with a missing marker: exit $rc: ${out:0:140}"; fi
 # bin/witness-sign-staged.sh signs each planned record through bin/with-aws-token.sh sign-record
-wss="$work/wss"; mkdir -p "$wss/bin" "$wss/staged/witness-build" "$wss/fake"
+wss="$work/wss"; mkdir -p "$wss/bin" "$wss/staged/witness-build"
 cp "$root/bin/witness-sign-staged.sh" "$wss/bin/"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$FAKE_LOG"' > "$wss/bin/with-aws-token.sh"
-printf '%s\n' 'import sys' > "$wss/bin/chain-verify.py"
+: > "$wss/bin/chain-verify.py"
 printf 'payload' > "$wss/staged/witness-build/build-collection.payload"
 printf '%s\t%s\n' staged/witness-build/build-collection.payload \
   signed/witness-build/build-collection.json > "$wss/staged/plan.txt"
@@ -3841,12 +3841,13 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$FAKE_LOG"' \
 chmod +x "$rp/fake/crane"
 rc=0; out=$(cd "$rp" && PATH="$rp/fake:$PATH" FAKE_LOG="$rp/log" FAKE_STATE="$rp/pushed" WRONG="$DF" \
   DOCKERHUB_USERNAME=u DOCKERHUB_TOKEN=t GH_TOKEN=g GITHUB_REF_NAME=v1.2.3 bash bin/release-publish.sh 2>&1) || rc=$?
+# the regex matches the log line "push ghcr.io/fosterstack/cache:1.2.3" and refuses "auth ghcr.io"; grep -c exits 1 at 0
+pushes=$(grep -c '^push ' "$rp/log" || true)
 if [ "$rc" = 1 ] \
    && grep -Fq "ghcr.io/fosterstack/cache:1.2.3 differs: the registry shows $DF, Build attested $DA" <<< "$out" \
-   && [ "$(grep -c '^push ' "$rp/log")" = 1 ]; then
+   && [ "$pushes" = 1 ]; then
   ok "AC7 release-publish.sh stops at the first pushed tag whose registry digest differs from the attested one"
 else
-  pushes=$(grep -c '^push ' "$rp/log")
   bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
 fi
 EXPECT=1324
