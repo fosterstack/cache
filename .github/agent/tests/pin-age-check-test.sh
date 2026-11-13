@@ -632,6 +632,14 @@ for w in "${words[@]}"; do
   CASE="a .py file under .github/agent/sub/dir/ holding '$w' counts as a download: exit 1, unmeasured"
   check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/sub/dir/w.py' "$work/pyword.out"
 done
+RU='https://github.com/o/r/releases/download/v1.2.3/x.tgz'
+for pc in "requests (import)|import requests\nrequests.get('$RU')" "requests (from-import)|from requests import get\nget('$RU')" \
+  "http.client|import http.client\nc = http.client.HTTPSConnection('github.com')\nc.request('GET', '/o/r/releases/download/v1.2.3/x.tgz')   # $RU" \
+  "urllib3|import urllib3\nurllib3.PoolManager().request('GET', '$RU')" "httpx|import httpx\nhttpx.get('$RU')"; do
+  agentfile pyrel .github/agent/rel.py "$(printf '%b' "${pc#*|}")"$'\n'
+  CASE="a .py file fetching a release URL through ${pc%%|*} is a download like a curl line: exit 1, unmeasured, never a plain release download"
+  check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyrel.out"
+done
 agentfile agentlong .github/agent/l.sh "#!/bin/sh"$'\n'"echo $(printf 'a%.0s' $(seq 4100))"$'\n'
 CASE="a command line of 4100 characters makes the scan stop (exit 2), never read in part"
 check test "$rc" -eq 2; check grep -q 'is longer than the 4000 this check reads' "$work/agentlong.out"
@@ -2148,8 +2156,8 @@ import hashlib, importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); sys.modules["ac"] = ac; spec.loader.exec_module(ac)
 # the oracle is not taken from the checker alone: for each file, the sha256 of each pinned line (whitespace collapsed,
 # as the scan hashes a line) is written here once, so a change, a swap between files, an addition or a removal in the
-# checker's table alone fails this test (REQ-SUP-001-AC24/AC26: the loopback helper line, 1 release download, 1 client
-# image, 14 loopback requests in four acceptance scripts, 3 Go fetches)
+# checker's table alone fails this test (REQ-SUP-001-AC26: twenty pinned lines: the loopback helper line, the release-assets line,
+# the client-image pull, fourteen localhost request lines in four acceptance scripts, 3 Go fetches)
 EXPECTED = {
     "bin/loopback-get.sh": [
         "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd",
@@ -2322,6 +2330,9 @@ SPC=$'# fake <<\'EOF\'\n'"$BHL"$'\n# EOF'
 bhyes "a row without the three fields is a plain per-line row: it rules its line in a heredoc" "$BH1" '{}'
 bhyes "a plain per-line row still rules the line after the heredoc body changed" "$BH2" '{}'
 bhyes "the three fields of the heredoc span (its opener to its EOF) rule its line" "$BH1" "$(bhf "$BHO" EOF "$SP1")"
+BH6=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\necho second\nEOF\n'
+SP6="$BHO"$'\n'"$BHL"$'\nEOF\necho second\nEOF'
+bhyes "a body line equal to body-last does not end the search: the span runs to a LATER line equal to it whose text hashes to body-sha256" "$BH6" "$(bhf "$BHO" EOF "$SP6")"
 bhyes "a span of two body lines is hashed as its lines joined by a newline" "$BH2" "$(bhf "$BHO" EOF "$SP2")"
 bhyes "a one-line body: the span is the line itself" "$BH1" "$(bhf "$BHL" "$BHL" "$BHL")"
 bhyes "the span is the one the row names, never a guess of where a here-document is (a comment that looks like one)" \
@@ -3973,10 +3984,8 @@ CASE="a Go-toolchain row voids when the line is edited (a proxy added): exit 1"
 check test "$rc" -eq 1
 check grep -qF 'FAIL unmeasured:bin/fetch.sh' "$work/rt.out"
 
-# REQ-SUP-001-AC25: the single line of bin/loopback-get.sh that starts the fetch program for a loopback or token
-# request is
-# one entry of the pinned-fetch ruling (its file and the sha256 of its whole line), so any edit, any other file and any
-# other line under the prefix rule nothing.
+# REQ-SUP-001-AC25: the loopback-get.sh line is one of the pinned lines ruled by the PINNED_FETCH ruling prefix (no loopback ruling of its own,
+# no LOOPBACK_RULING): its file and the sha256 of its whole line, so any edit, any other file and any other line under the prefix rule nothing.
 LRP='pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
 LL="curl -q -g --noproxy '*' --proto \"=\$proto\" --max-redirs 0 \"\$@\" \"\$url\" || exit \$?"
 lr_cases=(
@@ -4047,8 +4056,8 @@ CASE="a Go-toolchain line under the pinned-fetch ruling, outside the pinned file
 check test "$rc" -eq 1
 check grep -qF 'FAIL unmeasured:bin/fetch.sh' "$work/rt.out"
 
-# REQ-SUP-001-AC26: nineteen script lines the checker pins by file and by the sha256 of the whole line (the assets of our own release, the pinned client image pull, and the
-# fourteen localhost request lines of the four acceptance scripts), honored under one prefix. Anything else under the prefix, any edit, any other file rules nothing.
+# REQ-SUP-001-AC26: twenty pinned lines the checker pins by file and by the sha256 of the whole line (the loopback helper line, the release-assets line, the client-image pull,
+# fourteen localhost request lines of the four acceptance scripts, three Go fetches), honored under one prefix. Anything else under the prefix, any edit, any other file rules nothing.
 PFP='pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
 mkrowpf() { # OUT FILE LINE PREFIX: like mkrowp, for the gh release form too (its key is the hash of the whole line)
   python3 - "$@" <<'PY'
@@ -4379,9 +4388,13 @@ fpck dup "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)"), $(fprow "$FPFI
 CASE="AC34: two rows for the same file and content: the check stops, it never picks the older (exit 2)"
 check test "$rc" -eq 2
 check grep -qF 'repeats the row' "$work/fp.out"
-fpck naive "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10 | sed 's/Z$//')")]"
-CASE="AC34: a published time without a zone is read as UTC, as the checker reads every time: an old row passes (exit 0)"
-check test "$rc" -eq 0
+for sp in "no Z|2026-10-02T12:00:00" "+00:00 offset|2026-10-02T12:00:00+00:00" "fractional seconds|2026-10-02T12:00:00.000Z" \
+  "a space for the T|2026-10-02 12:00:00Z" "+02:00 offset|2026-10-02T12:00:00+02:00"; do
+  fpck strict "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "${sp#*|}")]"
+  CASE="AC34: a published time with ${sp%%|*} (${sp#*|}) is not the one strict UTC form YYYY-MM-DDTHH:MM:SSZ: the row rules nothing (exit 1)"
+  check test "$rc" -eq 1
+  check grep -qF 'not a pin' "$work/fp.out"
+done
 fpck offset "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2026-10-02T12:00:00+99:99")]"
 CASE="AC34: a published time with an impossible zone offset (+99:99, which would count as over 7 days) lends no age (exit 1)"
 check test "$rc" -eq 1
