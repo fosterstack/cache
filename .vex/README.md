@@ -44,10 +44,10 @@ release's own image digests — never edited by hand:
 | `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. the golang-jwt/jwt/v4 module, or the Go standard library as `pkg:golang/stdlib@<version>`), by that package and version | <!-- pinned: upstream -->
 | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | each OpenVEX statement about this release's images (except a Go standard library version the release is not built with, which it omits), as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
 
-In other words: the OpenVEX file keeps every statement; the CSAF file carries the rest, less a
-Go standard library version the release is not built with; the Inspector file
-carries one rule per suppressible statement (not_affected, fixed) and none for
-affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
+In other words: the OpenVEX file keeps every statement; the CSAF file carries every statement
+about this release's images, less a Go standard library version the release is not built with;
+the Inspector file carries one rule per suppressible statement (not_affected, fixed), less that
+same version, and none for affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
 
 The Google VEX upload is a **preview feature** of Google Cloud
 (`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is
