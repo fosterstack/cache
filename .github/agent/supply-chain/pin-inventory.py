@@ -210,9 +210,8 @@ def _listing(root, rev, agent=True):
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if n and _wanted(n, agent):
-            if n == KERNEL_LOCK and meta.split()[0] == "120000":
-                raise RuntimeError(
-                    f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
+            if n in _PLAIN_FILES and meta.split()[0] == "120000":
+                raise RuntimeError(f"{n} is a symbolic link: it must be a plain file and is not read through a link")
             pairs.append((n, meta.split()[2]))
     if re.fullmatch(r"[0-9a-f]{40}", rev):    # a name like HEAD can move: only a full sha is remembered
         _LISTINGS[(root, rev, agent)] = pairs
@@ -245,9 +244,9 @@ def tree_files(root, rev, agent=True):
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
             if n and _wanted(n, agent):
-                if n == KERNEL_LOCK and os.path.islink(f"{root}/{n}"):
+                if n in _PLAIN_FILES and os.path.islink(f"{root}/{n}"):
                     raise RuntimeError(
-                        f"{n} is a symbolic link: the kernel lock must be a plain file and is not read through a link")
+                        f"{n} is a symbolic link: it must be a plain file and is not read through a link")
                 try:
                     text = _working_text(root, n)
                 except OSError as e:
@@ -291,6 +290,7 @@ r"(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
 # (REQ-SUP-001-AC2)
 PERSONA_TOOLS = "bin/persona-uat-tools.json"
 KERNEL_LOCK = "build/locks/vm-kernel.lock"
+_PLAIN_FILES = (PERSONA_TOOLS, KERNEL_LOCK)
 KERNEL_ROWS_MAX = 500
 
 
@@ -1462,9 +1462,11 @@ _VENDOR_SPELLING = r"(?:[\"'\\]|\*)*".join(_VENDOR_LETTER(c) for c in "vendor")
 _VENDOR_NAMED = re.compile(r"(?:^|[^\w.-])(?:\./)?(?:vendor|" + _VENDOR_SPELLING + r")(?:/|(?![\w-]))")
 _VENDOR_TOOLWORD = re.compile(r"(?<![\w-])go\s+mod\s+vendor(?![\w/.-])|(?<![\w-])-mod=vendor(?![\w/.-])")
 _ESCAPE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2}))")
-# a shell downloader, or Python's urllib or requests
-_DOWNLOADER = re.compile(r"\b(?:curl|wget|urlopen|urlretrieve|urllib\.request|requests\.(?:get|post|put|head|request"
-r"|Session))\b")
+_SHELL_DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")
+_PY_FETCH = re.compile(r"\b(?:urlopen|urlretrieve|urllib\.request|requests\.(?:get|post|put|head|request|Session))\b")
+# these clients also serve plain API calls: they are a fetch only in a file that names a release download URL
+_PY_CLIENT = re.compile(r"\b(?:urllib3|httpx|http\.client|from\s+requests\s+import)\b")
+_RELEASE_URL = re.compile(r"github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/")
 _SURFACE = re.compile(r"(?:\.py|\.mk|(?:^|/)(?:GNU)?[Mm]akefile|(?:^|/)Dockerfile[\w.-]*|\.dockerfile)$")
 
 
@@ -1561,7 +1563,8 @@ def unmeasured_occurrences(files):
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/",
                     u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
-                if _DOWNLOADER.search(seg) and not plain:
+                fetch = _PY_FETCH.search(seg) or (_PY_CLIENT.search(seg) and _RELEASE_URL.search(text))
+                if fetch or (_SHELL_DOWNLOADER.search(seg) and not plain):
                     yield (path, "a download",
                         hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":"
                         + _hide(seg)[:100]), flat, bashlike
