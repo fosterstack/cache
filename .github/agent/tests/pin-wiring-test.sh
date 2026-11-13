@@ -631,6 +631,9 @@ for jid, want_steps in SPLIT_STEPS.items():
 # list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
 # (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
+# the seven contexts the owner took off the per-pull-request list (ratify 2026-11-12-cache-required-checks-trimmed-by-hand)
+RELEASE_ONLY = ["acceptance-gradle", "acceptance-maven (1.2.0)", "acceptance-maven (1.2.3)", "allowlist-chain",
+                "allowlist-persona", "auditor-review-gate", "coverage"]
 try:
     pol = []
     for _name in ("PIN_WIRING_POLICY_FILE", "PIN_WIRING_RELEASE_ONLY_FILE"):
@@ -638,10 +641,13 @@ try:
         if not isinstance(_list, list) or not all(isinstance(c, dict) for c in _list):
             raise ValueError("required_checks is not a list of objects")
         pol += _list
+        release_only = _list
 except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
     bad.append(f"required-checks.json or release-only-checks.json is unreadable or malformed ({type(e).__name__})")
 if pol is not None:
+    if sorted(str(c.get("context")) for c in release_only) != RELEASE_ONLY:
+        bad.append("release-only-checks.json does not hold exactly the seven release-only contexts")
     ctxs = [c.get("context") for c in pol]
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
         bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
