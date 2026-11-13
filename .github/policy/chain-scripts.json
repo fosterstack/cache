@@ -1165,7 +1165,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "820e3b79b3c8fdb81e9d4dd5bdd6e8889bc277900b42dbcfe133bb7325c16732",
+      "sha256": "e3614e9529ed439e5b7ae64784408c457b0f06323f4614b88094f4c27e82e39f",
       "tools": [
         "awk",
         "bash",
