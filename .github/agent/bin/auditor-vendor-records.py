@@ -40,7 +40,7 @@ def main(argv=None, run=None, regenerate=None):
     failed = 0
     for branch in branches:
         line = vendor_records.process_branch(a.repo, branch, a.workspace, run, regenerate, dry_run=a.dry_run,
-                                            app_login=app_login)
+                                             app_login=app_login)
         print("%s: %s" % (branch, " ".join(line.split())))
         failed += line.startswith("failed")
     return 1 if failed else 0
