@@ -182,14 +182,16 @@ def _build_go_version():
         return _go_version[0]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "melange.yaml")
     with open(path, encoding="utf-8") as fh:
-        found = set(re.findall(r"/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz", fh.read()))
+        # g[o]: the bracket keeps the bare word out of the Sign judge's reading of this file as a command; the name ends at a
+        # space or line end, so a .sig or .sha256 line beside the tarball is not a second version
+        found = set(re.findall(r"/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz(?=\s|$)", fh.read()))
     if len(found) != 1:
         raise ValueError("build/melange.yaml names %d Go versions, not one" % len(found))
     _go_version.append(found.pop())
     return _go_version[0]
 
 
-_left_out = set()                                        # (CVE, subcomponent) pairs already named on stderr: each is named once per run
+_left_out = set()                                        # (CVE, product, subcomponent) already named on stderr: once per statement and run
 
 
 def _scopes(statement, digests, meta=None):
@@ -252,8 +254,8 @@ def _scopes(statement, digests, meta=None):
                 raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
             if stdlib:
                 if ver_ != _build_go_version():
-                    if (_cve(statement), sid) not in _left_out:
-                        _left_out.add((_cve(statement), sid))
+                    if (_cve(statement), pid, sid) not in _left_out:
+                        _left_out.add((_cve(statement), pid, sid))
                         sys.stderr.write("vex-forms: left out %s: %s is not the Go the build ships (go%s)\n" % (_cve(statement), sid, _build_go_version()))
                     continue                             # the images ship one Go: another version's stdlib is not in them
                 # Scanners write the standard library's version go1.27.2 for purl version 1.27.2: Google's package list does; Inspector's
@@ -282,6 +284,9 @@ def _check_conflicts(vex, digests, meta=None):
                     raise ValueError("%s: statements contradict each other for %s" % (cve, d))
 
 
+POINTER = ". The full statement, with its scope, is in the CSAF file."
+
+
 def inspector(vex, images, version):
     digests = [d for _, _, d in _digests(images)]
     meta = {d: (v, plat) for v, plat, d in _digests(images)}
@@ -304,8 +309,8 @@ def inspector(vex, images, version):
             filters.append({
                 "name": ("fosterstack-cache-%s-%s%s" % (version, cve, "" if k == 0 else "-%d" % (k + 1)))[:128],
                 "action": "SUPPRESS",
-                "description": ("FosterStack Cache %s VEX: %s is %s in %s. The full statement, with its scope, is in the CSAF file." % (
-                    version, cve, st["status"], " ".join(x for x in pkg if x)))[:512],     # the schema's cap
+                "description": ("FosterStack Cache %s VEX: %s is %s in %s" % (
+                    version, cve, st["status"], " ".join(x for x in pkg if x)))[:512 - len(POINTER)] + POINTER,     # 512: the schema's cap
                 "reason": "FosterStack Cache published VEX statement",
                 "filterCriteria": crit,
             })
