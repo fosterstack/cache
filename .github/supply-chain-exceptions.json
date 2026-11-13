@@ -2970,126 +2970,6 @@
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/system_path_allowlist.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     },
     {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "448ac7aa9a015cec52414dd6c4cb808f88c2f847cf9b8328b30f116d08dee661",
-      "line": "448ac7aa9a015cec52414dd6c4cb808f88c2f847cf9b8328b30f116d08dee661",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "7ccc2125711aaac793c8a6d5476a71d1fdfbde3664cf9dc9948ea368fe6170d0",
-      "line": "5943a091bfae4dc9bd052a61c92e8680f8ec87a9ebd97002f235cf0d62b3af18",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "043586e7117915441b20041cb2c7d45542b1bea446e3f2700cfe367fb37221cf",
-      "line": "043586e7117915441b20041cb2c7d45542b1bea446e3f2700cfe367fb37221cf",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "4d1fc682d65311401b90b345946dfed92a8aaf12d703df7fcb76be0d35848d70",
-      "line": "4d1fc682d65311401b90b345946dfed92a8aaf12d703df7fcb76be0d35848d70",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "c1549a7900c2d7004dfceb949ada0ed9b9904aea45577eb7b92c4281e03b302e",
-      "line": "c1549a7900c2d7004dfceb949ada0ed9b9904aea45577eb7b92c4281e03b302e",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "count": 4
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "c06e0b528016ab8ac4c7409e97fd0451233207ab89fdfbc44993ec0d175befd3",
-      "line": "c06e0b528016ab8ac4c7409e97fd0451233207ab89fdfbc44993ec0d175befd3",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "cc690801cabef2288e59e0174e97028895927ee8af213ea88f4d54841ae09112",
-      "line": "cc690801cabef2288e59e0174e97028895927ee8af213ea88f4d54841ae09112",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "9cc1fadb03d89a83bf73c0688d69e9b8baed55718934c49431765a481a2612e8",
-      "line": "9cc1fadb03d89a83bf73c0688d69e9b8baed55718934c49431765a481a2612e8",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "4b9a6d1fd7a8377f97547c85f05a0c17a05ddda4174a35e47fd05a4ffffcf086",
-      "line": "4b9a6d1fd7a8377f97547c85f05a0c17a05ddda4174a35e47fd05a4ffffcf086",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "1cf521cced7a3a9078b1cc1570583b6a20808c8af845032747f4e7b7c712078b",
-      "line": "1cf521cced7a3a9078b1cc1570583b6a20808c8af845032747f4e7b7c712078b",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "21835f95a0d0cfd78128431c5863226f800ea1fca04b6edf286104591d13fc4f",
-      "line": "21835f95a0d0cfd78128431c5863226f800ea1fca04b6edf286104591d13fc4f",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "1c2ceb26ed95cdc916a8e7456ea71b2c5339b502876b09c1f70315cfd8be875e",
-      "line": "1c2ceb26ed95cdc916a8e7456ea71b2c5339b502876b09c1f70315cfd8be875e",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "4cf1e4e8850d0b450a02b1c960337df2980e06379524b5ce2c87daa58998e631",
-      "line": "4cf1e4e8850d0b450a02b1c960337df2980e06379524b5ce2c87daa58998e631",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "2462d7b2d825ae967c3cfe9df112fef985c1832826574216f55d416efc189aa6",
-      "line": "2462d7b2d825ae967c3cfe9df112fef985c1832826574216f55d416efc189aa6",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "453b9946ffa40958778d1a29388a8619c93acad6f6f78d4125f63c6febb29812",
-      "line": "453b9946ffa40958778d1a29388a8619c93acad6f6f78d4125f63c6febb29812",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/tests/test_check_action_pins.py",
-      "form": "a download",
-      "key": "589beb5b35f6942c7122461b8cd8fca64a349a08abba9459aec539f2409bcde7",
-      "line": "9f2bc535bb20fe9722c5be4d0814ed3eb7e1ddf2b68ce727ea91c566ffccb3aa",
-      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
       "file": ".github/agent/bin/tests/test_cov_manifest.py",
       "form": "a download",
       "key": "cf30a58a6443e26c1c94fc0220d9b0ed63270b0be44bb03e829f824b7c5294cf",
@@ -5870,6 +5750,133 @@
       "key": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
       "line": "fdeeb7f4a16b6dbb1d96b042ffc3d944a83b2153ca3a6cf569202aa3e5b73b7e",
       "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "448ac7aa9a015cec52414dd6c4cb808f88c2f847cf9b8328b30f116d08dee661",
+      "line": "448ac7aa9a015cec52414dd6c4cb808f88c2f847cf9b8328b30f116d08dee661",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "7ccc2125711aaac793c8a6d5476a71d1fdfbde3664cf9dc9948ea368fe6170d0",
+      "line": "5943a091bfae4dc9bd052a61c92e8680f8ec87a9ebd97002f235cf0d62b3af18",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "043586e7117915441b20041cb2c7d45542b1bea446e3f2700cfe367fb37221cf",
+      "line": "043586e7117915441b20041cb2c7d45542b1bea446e3f2700cfe367fb37221cf",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "4d1fc682d65311401b90b345946dfed92a8aaf12d703df7fcb76be0d35848d70",
+      "line": "4d1fc682d65311401b90b345946dfed92a8aaf12d703df7fcb76be0d35848d70",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "c1549a7900c2d7004dfceb949ada0ed9b9904aea45577eb7b92c4281e03b302e",
+      "line": "c1549a7900c2d7004dfceb949ada0ed9b9904aea45577eb7b92c4281e03b302e",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
+      "count": 4
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "c06e0b528016ab8ac4c7409e97fd0451233207ab89fdfbc44993ec0d175befd3",
+      "line": "c06e0b528016ab8ac4c7409e97fd0451233207ab89fdfbc44993ec0d175befd3",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "cc690801cabef2288e59e0174e97028895927ee8af213ea88f4d54841ae09112",
+      "line": "cc690801cabef2288e59e0174e97028895927ee8af213ea88f4d54841ae09112",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "9cc1fadb03d89a83bf73c0688d69e9b8baed55718934c49431765a481a2612e8",
+      "line": "9cc1fadb03d89a83bf73c0688d69e9b8baed55718934c49431765a481a2612e8",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "4b9a6d1fd7a8377f97547c85f05a0c17a05ddda4174a35e47fd05a4ffffcf086",
+      "line": "4b9a6d1fd7a8377f97547c85f05a0c17a05ddda4174a35e47fd05a4ffffcf086",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "1cf521cced7a3a9078b1cc1570583b6a20808c8af845032747f4e7b7c712078b",
+      "line": "1cf521cced7a3a9078b1cc1570583b6a20808c8af845032747f4e7b7c712078b",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "21835f95a0d0cfd78128431c5863226f800ea1fca04b6edf286104591d13fc4f",
+      "line": "21835f95a0d0cfd78128431c5863226f800ea1fca04b6edf286104591d13fc4f",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "1c2ceb26ed95cdc916a8e7456ea71b2c5339b502876b09c1f70315cfd8be875e",
+      "line": "1c2ceb26ed95cdc916a8e7456ea71b2c5339b502876b09c1f70315cfd8be875e",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "4cf1e4e8850d0b450a02b1c960337df2980e06379524b5ce2c87daa58998e631",
+      "line": "4cf1e4e8850d0b450a02b1c960337df2980e06379524b5ce2c87daa58998e631",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "2462d7b2d825ae967c3cfe9df112fef985c1832826574216f55d416efc189aa6",
+      "line": "2462d7b2d825ae967c3cfe9df112fef985c1832826574216f55d416efc189aa6",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "453b9946ffa40958778d1a29388a8619c93acad6f6f78d4125f63c6febb29812",
+      "line": "453b9946ffa40958778d1a29388a8619c93acad6f6f78d4125f63c6febb29812",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "589beb5b35f6942c7122461b8cd8fca64a349a08abba9459aec539f2409bcde7",
+      "line": "9f2bc535bb20fe9722c5be4d0814ed3eb7e1ddf2b68ce727ea91c566ffccb3aa",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/tests/test_check_action_pins.py",
+      "form": "a download",
+      "key": "c7cc0b3a9d7993c8a4fb5879430c9694fd3fd452bd3daacfe454685e3acad008",
+      "line": "c7cc0b3a9d7993c8a4fb5879430c9694fd3fd452bd3daacfe454685e3acad008",
+      "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
