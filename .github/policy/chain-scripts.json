@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "6ea032f9e8e5d0fed3539447bc2b007c28ba6b2cafb59ad7abc2c4676aeeef56",
+      "sha256": "8ccdcad3da863f7e52613debc778e6de1d64845e05e9e9b34bd3c05975fb0f73",
       "tools": [
         "make",
         "at",
@@ -290,7 +290,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "537961d7a3d028ad0f3c1e96da85d44ba4ec91ee8cef0b31e17b85546974047b"
+      "sha256": "c8e3b57e1c813647410f39e1ba9a7d041290339efd0845dfe3c9295357dbe023"
     },
     {
       "path": "bin/witnessed.sh",
@@ -407,7 +407,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
-      "sha256": "daf4972acb9638a4a4c4365d62498de75b3f17770b143b2d196e626de3bddaca",
+      "sha256": "f807f28c0117a6950876269289f894d8b096a556cf303550e734d14ade9da2e8",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
@@ -661,7 +661,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "1725f6cc8888600b56f54323fbe005806f929e3c8dde57b399bf48f16f63776f"
+      "sha256": "a787fc1acdffa6d5670eca13881a0777dccdf13987b9b97fe4b4cbd52a5efe99"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -816,7 +816,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "60c0004ed9b1d7ed22fa5cb1c7c1dc1f649cd2f2f3bde02660e367b621d4277c",
+      "sha256": "0618c6d0676e458405f053f7fc1ba4c251088342f783452b3899c77d795d630f",
       "tools": [
         "env",
         "go",
@@ -1493,7 +1493,8 @@
         "command",
         "cosign",
         "go",
-        "jq"
+        "jq",
+        "sh"
       ],
       "runs": [
         "bin/check-guide-plan.py",
@@ -1931,10 +1932,12 @@
         "aws",
         "gcloud"
       ],
-      "runs": [],
+      "runs": [
+        "bin/inspector-gate.py"
+      ],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "a52dbeb8801b2933e4b8692b298cd39a51f484cdaa6f7dfe352c56695b1c26b6",
+      "sha256": "bc6624f65f40d000fd5c3a5cee02fac8ce45644cb404b134d69fefc29d2fba33",
       "exceptions": [
         {
           "rule": "deny",
@@ -1983,7 +1986,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "1219f4ff0eb084847b2f57dbb832cb33203dab66589a897973dcaeddd97b0bde",
+      "sha256": "b1f62c0772335ddcfd3003c58172a66cd18ce4feab6bee8d2a92e40958dd62d9",
       "tools": [
         "at",
         "curl",
@@ -2034,13 +2037,10 @@
       "path": "bin/check-phase-arm64.sh",
       "sha256": "91d3d0420e934f6d9d4c57c9f491d02dbbd975c9ed8d1400e8f3420cbb2e2c30",
       "tools": [
-        "bash",
-        "make",
-        "python3"
+        "bash"
       ],
       "runs": [
-        "bin/chain-verify.py",
-        "bin/check-artifacts.sh"
+        "bin/check-stage.sh"
       ],
       "signs": false,
       "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)"
