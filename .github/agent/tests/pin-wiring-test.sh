@@ -231,6 +231,14 @@ if pol is not None:
     for jid in PROTECTED:
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
             bad.append(f"required-checks.json does not have exactly one entry {jid} (integration 15368, scope push)")
+# a promotion context (the full suite's, read by stage-admission) is made by one job: no job of ci.yml takes its name, and no workflow has two
+# jobs with it (a called workflow's job reports as "<calling job> / <job>", so the calling job's name counts). A job of another workflow with
+# that name does not satisfy admission: it reads the workflow file that made the check run.
+try:
+    PROMO = sorted({c["context"].split(" / ")[0]: c["context"] for c in json.load(open(os.environ["PIN_WIRING_POLICY_FILE"]))["promotion_checks"]}.items())
+except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+    PROMO = []
+    bad.append(f"required-checks.json has no readable promotion_checks ({type(e).__name__})")
 # the protected check name belongs to its job alone: no other job of this workflow may produce a check run with such a name (a job named
 # `allowlist` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression or come from a matrix (its rendered name cannot be judged).
@@ -250,6 +258,9 @@ for jid_, j_ in d.get("jobs", {}).items():
         bad.append(f"the job {jid_} produces the protected check name {nm}")
     if jid_ not in PROTECTED and not name_disjoint(nm):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
+    for _base, _ctx in PROMO:
+        if _base in (nm, jid_):
+            bad.append(f"the job {jid_} produces the promotion check name {_ctx}, which the full suite's workflows make")
     if writes_checks(j_.get("permissions")):
         bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
 if writes_checks(d.get("permissions")):
@@ -270,6 +281,10 @@ for _f in sorted(os.listdir(_wdir)):
         continue
     if "permissions" not in (_w or {}):   # omitted permissions inherit the repository default, which may include checks: write
         bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
+    for _base, _ctx in PROMO:
+        _made = [_jid for _jid, _j in _jobs.items() if _base in (_jid, _j.get("name", _jid) if isinstance(_j, dict) else _jid)]
+        if len(_made) > 1:
+            bad.append(f"{_f}: {len(_made)} jobs produce the promotion check name {_ctx}")
     for _jid, _j in _jobs.items():
         _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
         if _jid in PROTECTED or _nm in PROTECTED:
