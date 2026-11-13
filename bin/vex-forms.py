@@ -26,7 +26,7 @@ import argparse, importlib.util, json, os, re, sys, urllib.parse
 
 # the gate's superseded(): the one reading of which statement a later one replaces (the rescan uses it too)
 _spec = importlib.util.spec_from_file_location(
-    "inspector_gate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "inspector-gate.py"))
+    "inspector_gate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin/inspector-gate.py"))
 _gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_gate)
 
