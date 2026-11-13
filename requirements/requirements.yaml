@@ -5005,10 +5005,10 @@ requirements:
       The branch protection requires the check `allowlist-chain` of .github/workflows/ci.yml. It is a gate job that needs the `suites` job (one matrix leg per suite
       that no counting step of ci.yml runs, REQ-CI-005) and fails unless the result of that job is exactly `success`, so a failed, skipped, cancelled or missing
       suite cannot pass the required check.
-    source: [ci-speed read-back of Oct 23 (advisor)]
+    source: [ci-speed read-back of Oct 23]
     tier: community
     introduced: v0.3.0
-    origin: advisor Oct 23 2026 (CI speed, under the rules that no check is dropped and every test runs exactly once); the gate keeps the name the branch protection requires
+    origin: CI speed, Oct 23 2026, under the rules that no check is dropped and every test runs exactly once; the gate keeps the name the branch protection requires
     confidence: documented
     notes: >
       The gate fails on a missing or empty result as on a failed, skipped or cancelled one. The legs of the matrix come from the floors file, so a suite added to
@@ -5058,7 +5058,7 @@ requirements:
       - id: REQ-CI-005-AC1
         given: "a suite named in the floors file and a counting step of ci.yml for it (`suite-guard-run.py run FLOORS NAME PATH`, NAME the file name of PATH)"
         when: "the workflow runs"
-        then: "the suite is run once, by that step, which requires exit 0 and a case count at or above its floor, and the suites matrix has no leg for it"
+        then: "the suite is run once, by that step, which requires exit 0 and a case count at or above its floor, carries no `if` and no `continue-on-error` (a skipped step would drop the suite from the matrix and from the run), and the suites matrix has no leg for it"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC2
