@@ -34,7 +34,7 @@ the SBOM and the provenance rather than having to take the scan result on faith.
 
 ## The same statements, three ways
 
-From v0.3.0, every release also carries two files <!-- pinned: historical -->
+From v0.2.2, every release also carries two files <!-- pinned: historical -->
 generated at release time from this one OpenVEX file (`bin/vex-forms.py`) and the
 release's own image digests — never edited by hand:
 
