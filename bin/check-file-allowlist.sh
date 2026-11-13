@@ -105,6 +105,7 @@ ALLOW_PATTERNS=(
   '^bin/required-check-guard\.sh$'
   '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
+  '^bin/dependabot-reviewer-version\.sh$'
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
