@@ -36,10 +36,9 @@ a list of at most 20 objects with exactly scanner, finding_id and purl; package,
 text is ASCII only and at most 2000 characters, and names no vendor or model; a proposal that
 breaks any of this is dropped and counted. A proposal is delivered in the draft PR and takes
 effect only after the owner merges it - never assume it is already in force.
-A proposal's evidence is a path relative to the repository root (no leading / and no .. part) that names a
-regular file present in the checked-out repository; a file written after adjudication cannot be named.
-The path is in git's normal form, as `git ls-files` and git diff print it: no leading ./, no backslashes, no ..
-segments and no duplicate slashes.
+A proposal's evidence is the path of a regular file present in the checked-out repository, relative to the
+repository root and in git's normal form, as `git ls-files` prints it: no leading / or ./, no backslashes, no ..
+segments and no duplicate slashes. A file written after adjudication cannot be named.
 
 Finding:
 {context}
@@ -62,8 +61,8 @@ and component_min_version (its fixed version, e.g. 3.0.13): "carrier >= min_vers
 component >= component_min_version"). The daily recheck compares the SBOM's carrier version with min_version. A NEW
 proposal in free text or any other shape is discarded and the finding stays visible; a trigger an earlier run
 already carried stays through the rechecks. Also give repo_version and base_release when policy-held; evidence
-(object: how it is carried, and the source). Do NOT produce exploit
-code.
+(object: how it is carried, and the source). Do NOT produce
+exploit code.
 
 {context}
 
