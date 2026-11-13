@@ -3,17 +3,22 @@
 # Quick checks on each pull request, the full suite at promotion (REQ-CI-001; owner, Nov 10 2026), offline. Reads the real workflows and
 # .github/policy/required-checks.json as data and judges each against the English; every judge is also run over mutated copies, each of which
 # must be caught:
-#   AC1  the required list is exactly eight contexts (dependency-review, pull_request only, among them; auditor-review-gate not), none of them
-#        skippable by a job-level condition; the promotion list holds the rest
+#   AC1  the required list is exactly seven contexts (auditor-review-gate, gosec and dependency-review not among them,
+#        and no job makes gosec or dependency-review), none of them skippable by a job-level condition;
+#        the promotion list holds the eleven of the full suite
 #   AC4  ci.yml's test job vets, builds and tests only the changed packages (no -race, no fips settings); its allowlist job runs, in ONE step,
 #        the lines bin/select-tests.sh prints (the step is run here with a stand-in for the selector), the allowlist of every tracked file
-#        and the action-pin checks
-#   AC5  full-suite.yml: a daily schedule, workflow_dispatch and workflow_call only; the six moved jobs under their old names, each running
-#        its whole suite; one call of acceptance.yml
+#        and the action-pin checks; the pinned grype is installed first when the vex suite is selected;
+#        the test job's package step is run in a throwaway git repository (testdata, renames, tools/requirements)
+#   AC5  full-suite.yml: a daily schedule, workflow_dispatch and workflow_call only; the five moved jobs under their
+#        old names, each running its whole suite; one call of acceptance.yml; the whole wiring and selection
+#        suites run in it too
 #   AC6  full-suite.yml, scan.yml and codeql.yml end with a report-failure job for a failed scheduled run; its script is run here with a stand-in
 #        for gh: it opens one issue with a fixed title and label, or comments on the open one, naming the run
 #   AC7  stage-admission's check step, run here against a stand-in for gh: for a release-candidate tag every promotion_checks context must
-#        have a successful run, by its app, on the exact tagged commit; a missing, red, wrong-app or older-commit run stops it, naming the context
+#        have a successful run, by its app, on the exact tagged commit, from the one workflow file that produces it;
+#        a missing, red, wrong-app, older-commit or wrong-source run stops it, naming the context;
+#        full-suite.yml, scan.yml and codeql.yml each can run before the tag
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -31,11 +36,16 @@ ci, fs, acc = load(WF + "ci.yml"), None, load(WF + "acceptance.yml")
 fs = load(WF + "full-suite.yml") if os.path.exists(os.path.join(root, WF + "full-suite.yml")) else None
 POLICY = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
 
-REQUIRED = ["test", "lint", "requirements", "allowlist", "vendor", "govulncheck", "pin-age", "dependency-review"]
-PROMOTION = ["coverage", "fips140-only", "gosec", "analyze (go)", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor",
-             "acceptance / acceptance-gradle", "acceptance / acceptance-maven (1.2.0)", "acceptance / acceptance-maven (1.2.3)", "reproducibility", "scan"]
-GONE = PROMOTION + ["acceptance-gradle", "acceptance-maven"]
-DEPREVIEW_IF = ["${{ github.event_name == 'pull_request' }}", "github.event_name == 'pull_request'"]
+REQUIRED = ["test", "lint", "requirements", "allowlist", "vendor", "govulncheck", "pin-age"]
+PROMOTION = ["coverage", "fips140-only", "analyze (go)", "allowlist-persona", "allowlist-chain",
+             "allowlist-pins-auditor",
+             "acceptance / acceptance-gradle", "acceptance / acceptance-maven (1.2.0)",
+             "acceptance / acceptance-maven (1.2.3)", "reproducibility", "scan"]
+# deleted from the repository (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md)
+REMOVED = ["gosec", "dependency-review"]
+def job_stub(name): return {"name": name, "runs-on": "ubuntu-latest", "steps": []}
+def pol_entry(ctx, scope="push"): return {"context": ctx, "integration_id": 15368, "scope": scope}
+GONE = PROMOTION + REMOVED + ["acceptance-gradle", "acceptance-maven"]
 def base(ctx): return ctx.split(" (")[0]
 def mutated(doc, fn):
     d = copy.deepcopy(doc); fn(d); return d
@@ -62,22 +72,26 @@ def policy_problems(doc):
         for e in lst:
             if not isinstance(e, dict) or set(e) != SHAPE: bad.append("%s entry has not the shape context/integration_id/scope: %s" % (key, e)); continue
             if e["integration_id"] != 15368: bad.append("%s %r has integration_id %r" % (key, e["context"], e["integration_id"]))
-    if sorted(e.get("context") for e in rc) != sorted(REQUIRED): bad.append("required_checks are not exactly the eight: %s" % [e.get("context") for e in rc])
-    if sorted(e.get("context") for e in pc) != sorted(PROMOTION): bad.append("promotion_checks are not exactly the twelve: %s" % [e.get("context") for e in pc])
+    rc_names, pc_names = [e.get("context") for e in rc], [e.get("context") for e in pc]
+    if sorted(rc_names) != sorted(REQUIRED): bad.append("required_checks are not exactly the seven: %s" % rc_names)
+    if sorted(pc_names) != sorted(PROMOTION): bad.append("promotion_checks are not exactly the eleven: %s" % pc_names)
     for key, lst in (("required_checks", rc), ("promotion_checks", pc)):
         if any(isinstance(e, dict) and e.get("context") == "auditor-review-gate" for e in lst): bad.append("auditor-review-gate is listed in %s (REQ-CI-001-AC8)" % key)
-    for e in rc:
-        if isinstance(e, dict) and e.get("context") == "dependency-review" and e.get("scope") != "pull_request": bad.append("dependency-review is not scoped to pull_request: %r" % e.get("scope"))
+    for key, lst in (("required_checks", rc), ("promotion_checks", pc)):
+        for e in lst:
+            if isinstance(e, dict) and e.get("context") in REMOVED:
+                bad.append("%s lists %s, which no workflow makes" % (key, e["context"]))
     for e in pc:
         if isinstance(e, dict) and e.get("scope") != "push": bad.append("promotion check %r is not push-scoped (admission reads the exact tagged commit)" % e.get("context"))
     if set(doc) - {"comment", "required_checks", "promotion_checks"}: bad.append("unknown keys: %s" % sorted(set(doc) - {"comment", "required_checks", "promotion_checks"}))
     return bad
-verdict("required-checks.json: eight required contexts, twelve promotion contexts, the entry shape of today", policy_problems(POLICY), True)
+verdict("required-checks.json: seven required contexts, eleven promotion contexts, the entry shape of today",
+        policy_problems(POLICY), True)
 mutants("required-checks.json", policy_problems, POLICY, [
     ("gosec back in required_checks", lambda d: d["required_checks"].append({"context": "gosec", "integration_id": 15368, "scope": "push"})),
-    ("dependency-review dropped from required_checks", lambda d: d.__setitem__("required_checks", [e for e in d["required_checks"] if e["context"] != "dependency-review"])),
-    ("dependency-review scoped to push", lambda d: [e.__setitem__("scope", "push") for e in d["required_checks"] if e["context"] == "dependency-review"]),
-    ("dependency-review with another app", lambda d: [e.__setitem__("integration_id", 5054756) for e in d["required_checks"] if e["context"] == "dependency-review"]),
+    ("dependency-review back in required_checks",
+     lambda d: d["required_checks"].append(pol_entry("dependency-review", "pull_request"))),
+    ("gosec back in promotion_checks", lambda d: d["promotion_checks"].append(pol_entry("gosec"))),
     ("lint dropped from required_checks", lambda d: d.__setitem__("required_checks", [e for e in d["required_checks"] if e["context"] != "lint"])),
     ("auditor-review-gate added back to required_checks", lambda d: d["required_checks"].append({"context": "auditor-review-gate", "integration_id": 5054756, "scope": "pull_request"})),
     ("auditor-review-gate (Actions app) added to required_checks", lambda d: d["required_checks"].append({"context": "auditor-review-gate", "integration_id": 15368, "scope": "pull_request"})),
@@ -87,7 +101,6 @@ mutants("required-checks.json", policy_problems, POLICY, [
     ("acceptance / acceptance-maven (1.2.3) dropped", lambda d: d.__setitem__("promotion_checks", [e for e in d["promotion_checks"] if e["context"] != "acceptance / acceptance-maven (1.2.3)"])),
     ("an extra promotion context", lambda d: d["promotion_checks"].append({"context": "extra", "integration_id": 15368, "scope": "push"})),
     ("dependency-review in promotion_checks", lambda d: d["promotion_checks"].append({"context": "dependency-review", "integration_id": 15368, "scope": "push"})),
-    ("dependency-review twice in required_checks", lambda d: d["required_checks"].append({"context": "dependency-review", "integration_id": 15368, "scope": "pull_request"})),
     ("a promotion entry with another app", lambda d: d["promotion_checks"][0].__setitem__("integration_id", 1)),
     ("a promotion entry without a scope", lambda d: d["promotion_checks"][0].pop("scope")),
     ("a promotion entry with an extra key", lambda d: d["promotion_checks"][0].__setitem__("x", "y")),
@@ -112,21 +125,37 @@ def ac1_problems(prc):
         if ctx not in prc: bad.append("%s does not run on pull_request" % ctx)
         for fn, jid, j in prc.get(ctx, []):
             if "if" in j: bad.append("%s (%s:%s) has a job-level condition" % (ctx, fn, jid))
-    if "dependency-review" not in prc: bad.append("dependency-review does not run on pull_request")
-    for fn, jid, j in prc.get("dependency-review", []):
-        if j.get("if") not in DEPREVIEW_IF: bad.append("dependency-review (%s:%s) is not conditioned on `github.event_name == 'pull_request'`: %r" % (fn, jid, j.get("if")))
     for ctx in GONE:
         if base(ctx) in prc: bad.append("%s still runs on pull_request in %s" % (ctx, [f for f, _, _ in prc[base(ctx)]]))
     return bad
-verdict("pull requests: seven required contexts run unconditionally, dependency-review runs on pull_request only, none of the removed ones runs", ac1_problems(prc), True)
+verdict("pull requests: seven required contexts run unconditionally, none of the removed ones runs",
+        ac1_problems(prc), True)
+
+# no workflow has a job that makes gosec or dependency-review, on any event (their contexts are in neither list)
+def removed_job_problems(wfs):
+    bad = []
+    for fn, w in sorted(wfs.items()):
+        for jid, j in (w.get("jobs") or {}).items():
+            if jid in REMOVED or base(j.get("name") or jid) in REMOVED: bad.append("%s has the job %s" % (fn, jid))
+    return bad
+ALL = {fn: load(WF + fn) for fn in sorted(os.listdir(os.path.join(root, WF)))}
+verdict("no workflow has a job named gosec or dependency-review", removed_job_problems(ALL), True)
+for name, fn in (("gosec back in full-suite.yml",
+                  lambda a: a["full-suite.yml"]["jobs"].__setitem__("gosec", job_stub("gosec"))),
+                 ("dependency-review back in ci.yml",
+                  lambda a: a["ci.yml"]["jobs"].__setitem__("dependency-review", job_stub("dependency-review"))),
+                 ("a job of another id named gosec",
+                  lambda a: a["scan.yml"]["jobs"].__setitem__("sec", job_stub("gosec")))):
+    aa = copy.deepcopy(ALL); fn(aa)
+    check("removed jobs: %s is refused" % name, removed_job_problems(aa) != [], "accepted")
+
 for name, fn in (("test skippable", lambda p: p["test"][0][2].__setitem__("if", "${{ false }}")),
                  ("allowlist skippable", lambda p: p["allowlist"][0][2].__setitem__("if", "${{ github.actor != 'x' }}")),
                  ("pin-age skippable", lambda p: p["pin-age"][0][2].__setitem__("if", "${{ true }}")),
                  ("lint gone", lambda p: p.pop("lint")),
                  ("gosec on pull_request", lambda p: p.setdefault("gosec", []).append(("x.yml", "gosec", {}))),
-                 ("dependency-review gone", lambda p: p.pop("dependency-review")),
-                 ("dependency-review without its condition", lambda p: p["dependency-review"][0][2].pop("if")),
-                 ("dependency-review on another condition", lambda p: p["dependency-review"][0][2].__setitem__("if", "${{ github.actor != 'x' }}")),
+                 ("dependency-review on pull_request",
+                  lambda p: p.setdefault("dependency-review", []).append(("x.yml", "dependency-review", {}))),
                  ("scan on pull_request", lambda p: p.setdefault("scan", []).append(("x.yml", "scan", {}))),
                  ("acceptance-maven on pull_request", lambda p: p.setdefault("acceptance-maven", []).append(("x.yml", "m", {}))),
                  ("analyze on pull_request", lambda p: p.setdefault("analyze", []).append(("x.yml", "analyze", {})))):
@@ -154,6 +183,12 @@ def test_job_problems(job):
     for need in (r"go\\?\.mod", r"go\\?\.sum", r"vendor/"):
         if not re.search(need, text): bad.append("the package step does not mention %s (every package when it changes)" % need)
     if "if" in job: bad.append("the test job has a job-level condition")
+    # tools/requirements is its own Go module: vetted from inside it, never as a package of the root module
+    if "go -C tools/requirements vet ./..." not in " ".join(text.split()):
+        bad.append("the test job does not run go -C tools/requirements vet ./...")
+    for l in cmd_lines(text, r"\bgo vet\b"):
+        if "tools/requirements" in l:
+            bad.append("tools/requirements is vetted as a package of the root module: %s" % l.strip())
     return bad
 ALLOW_CHECK = "git ls-files | ./bin/check-file-allowlist.sh"
 AGENT = ".github/" + "agent/"
@@ -225,6 +260,25 @@ def selection_problems(job):
         r, log, args = scenario("printf '%s\\n' 'echo ran >> \"$LOG\"'", ctx=pctx, event="push")
         if r.returncode != 0 or log != "": bad.append("on a push the step runs suites or fails: rc=%s log=%r" % (r.returncode, log))
     return bad
+def vex_install_problems(job):
+    """the vex suite needs grype: when the selection names it, bin/install-scanner.sh grype runs before it"""
+    ss = sel_steps(job)
+    if len(ss) != 1: return ["no single selection step"]
+    ctx = {"github.base_ref": "main", "github.event_name": "pull_request"}
+    cwd = os.path.join(work, "vex%d" % len(os.listdir(work))); os.makedirs(cwd + "/bin")
+    commit = "git -c user.name=t -c user.email=t@t commit -q --allow-empty -m c"
+    subprocess.run("git init -q && %s && git update-ref refs/remotes/origin/main HEAD" % commit,
+                   shell=True, cwd=cwd, check=True, capture_output=True)
+    log = cwd + "/log"; open(log, "w").close()
+    mkexec(cwd + "/bin/select-tests.sh", "#!/usr/bin/env bash\necho 'bash bin/vex-both-scanners-test.sh'\n")
+    mkexec(cwd + "/bin/install-scanner.sh", "#!/usr/bin/env bash\necho \"install $*\" >> \"$LOG\"\n")
+    mkexec(cwd + "/bin/vex-both-scanners-test.sh", "#!/usr/bin/env bash\necho suite >> \"$LOG\"\n")
+    r = run_step(ss[0], {"LOG": log, "GITHUB_EVENT_NAME": "pull_request", "GITHUB_BASE_REF": "main"}, ctx, cwd, job)
+    got = open(log).read()
+    if r.returncode != 0 or got != "install grype\nsuite\n":
+        return ["grype is not installed before the vex suite: rc=%s log=%r err=%r"
+                % (r.returncode, got, r.stderr[-200:])]
+    return []
 def ci_problems(w):
     jobs = w.get("jobs") or {}
     bad = []
@@ -233,22 +287,84 @@ def ci_problems(w):
     for ctx in GONE:
         for jid, j in jobs.items():
             if base(j.get("name") or jid) == base(ctx): bad.append("ci.yml still has the job %s" % ctx)
-    dr = jobs.get("dependency-review")
-    if not isinstance(dr, dict): bad.append("ci.yml has no job dependency-review (REQ-CI-001-AC8)")
-    else:
-        if dr.get("name", "dependency-review") != "dependency-review": bad.append("the dependency-review job is not named dependency-review")
-        if dr.get("if") not in DEPREVIEW_IF: bad.append("the dependency-review job would run on push: its condition is %r, not `github.event_name == 'pull_request'`" % dr.get("if"))
-        if dr.get("runs-on") != "ubuntu-latest": bad.append("the dependency-review job does not run on ubuntu-latest")
-        if dr.get("permissions") != {"contents": "read", "pull-requests": "write"}: bad.append("the dependency-review permissions are not contents read + pull-requests write: %r" % dr.get("permissions"))
-        uses = [str(s.get("uses", "")) for s in dr.get("steps") or []]
-        if len(uses) != 2 or not uses[0].startswith("actions/checkout@") or not uses[1].startswith("actions/dependency-review-action@") or not all(re.fullmatch(r"[0-9a-f]{40}", u.split("@", 1)[1]) for u in uses):
-            bad.append("the dependency-review steps are not actions/checkout and actions/dependency-review-action pinned by digest: %s" % uses)
+    for jid, j in jobs.items():
+        if str(j.get("uses", "")).endswith("full-suite.yml"):
+            bad.append("ci.yml calls the full suite from the job %s (it never runs on a pull request)" % jid)
     bad += test_job_problems(jobs.get("test") or {"steps": []})
     al = jobs.get("allowlist") or {"steps": []}
     bad += allowlist_static(al)
     if not bad or all("exactly one step" not in b for b in bad): bad += selection_problems(al)
     return bad
-verdict("ci.yml: the eight-context layout, the changed-packages test job, the one-step selection in the allowlist job", ci_problems(ci), True)
+verdict("ci.yml: the seven-context layout, the changed-packages test job, the one-step selection in the allowlist job",
+        ci_problems(ci), True)
+verdict("ci.yml: the vex suite is run after the pinned grype is installed",
+        vex_install_problems(ci["jobs"]["allowlist"]), True)
+def vex_edit(d, fn):
+    for s in d["jobs"]["allowlist"]["steps"]:
+        if "install-scanner.sh" in (s.get("run") or ""): s["run"] = fn(s["run"])
+mutants("vex install", lambda d: vex_install_problems(d["jobs"]["allowlist"]), ci, [
+    ("the grype install gone", lambda d: vex_edit(d, lambda r: re.sub(r"\S*install-scanner\.sh\s+grype", "true", r))),
+    ("another scanner installed",
+     lambda d: vex_edit(d, lambda r: re.sub(r"(install-scanner\.sh\s+)grype", r"\1trivy", r))),
+])
+
+# the test job's package step, run in a throwaway git repository:
+# the base commit holds FILES, then CHANGE(sh) makes the second commit
+GO_SRC = "package p\n\nfunc One() int {\n\treturn 1\n}\n\nfunc Two() int {\n\treturn 2\n}\n"
+def pkg_step(job):
+    hit = [s for s in job.get("steps") or [] if s.get("name") == "the packages the change touches"]
+    return hit[0] if len(hit) == 1 else None
+def pkg_list(step, files, change):
+    d = os.path.join(work, "pkgs%d" % len(os.listdir(work))); os.makedirs(d)
+    def sh(cmd): subprocess.run(cmd, shell=True, cwd=d, check=True, capture_output=True)
+    commit = "git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m c"
+    sh("git init -q")
+    for path, text in files.items():
+        os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True); open(os.path.join(d, path), "w").write(text)
+    sh("git add -A && " + commit)
+    change(sh)
+    sh("git add -A && " + commit)
+    out = os.path.join(d, "out"); open(out, "w").close()
+    r = run_step(step, {"GITHUB_OUTPUT": out}, {}, d)
+    lines = [l for l in open(out).read().splitlines() if l.startswith("list=")]
+    return r.returncode, (sorted(lines[-1][5:].split()) if lines else None), r.stderr[-200:]
+PKG_CASES = [
+    ("a change in a package selects that package only", {"pkg/a/a.go": GO_SRC, "pkg/b/b.go": GO_SRC},
+     lambda sh: sh("echo x >> pkg/a/a.go"), ["./pkg/a"]),
+    ("a change under testdata/ selects the package that owns it (a .go file in testdata is no package)",
+     {"pkg/a/a.go": GO_SRC},
+     lambda sh: sh("mkdir -p pkg/a/testdata/src && echo 'package x' > pkg/a/testdata/src/x.go"), ["./pkg/a"]),
+    ("a renamed Go file selects its old and its new package", {"pkg/old/old.go": GO_SRC, "pkg/old/keep.go": GO_SRC},
+     lambda sh: sh("mkdir pkg/new && git mv pkg/old/old.go pkg/new/new.go"), ["./pkg/new", "./pkg/old"]),
+    ("a change under tools/requirements is not a package of the root module",
+     {"pkg/a/a.go": GO_SRC, "tools/requirements/main.go": GO_SRC},
+     lambda sh: sh("echo x >> tools/requirements/main.go && echo x >> pkg/a/a.go"), ["./pkg/a"]),
+]
+def pkg_problems(step):
+    bad = []
+    for name, files, change, want in PKG_CASES:
+        rc, got, err = pkg_list(step, files, change)
+        if rc != 0 or got != want: bad.append("%s: rc=%s list=%s want %s %s" % (name, rc, got, want, err))
+    return bad
+pstep = pkg_step(ci["jobs"]["test"])
+for name, files, change, want in PKG_CASES:
+    if pstep is None:
+        check("ci.yml test job: " + name, False, "no step named 'the packages the change touches'"); continue
+    rc, got, err = pkg_list(pstep, files, change)
+    check("ci.yml test job: " + name, rc == 0 and got == want, "rc=%s list=%s want %s %s" % (rc, got, want, err))
+OLD_PKGS = r"""set -euo pipefail
+changed=$(git diff --name-only HEAD^1 HEAD)
+dirs=$(grep -v '^vendor/' <<< "${changed}" | grep -v '/testdata/' | xargs -r -d '\n' -n1 dirname |
+  sort -u | while read -r d; do
+  compgen -G "${d}/*.go" >/dev/null && echo "./${d}"
+done || true)
+echo "list=$(echo ${dirs})" >> "$GITHUB_OUTPUT"
+"""
+for name, text in (("the earlier script (testdata skipped, renames and tools/requirements not judged)", OLD_PKGS),
+                   ("a step that always selects every package", 'echo "list=./..." >> "$GITHUB_OUTPUT"'),
+                   ("a step that selects nothing", 'echo "list=" >> "$GITHUB_OUTPUT"')):
+    check("package step: %s is refused" % name, pkg_problems({"run": text}) != [], "accepted")
+
 def edit_steps(d, job, fn):
     for s in d["jobs"][job]["steps"]: fn(s)
 def add_step(d, job, step): d["jobs"][job]["steps"].append(step)
@@ -259,6 +375,10 @@ def subst_in(d, job, a, b):
 def swap_all_go(d, repl):
     for s in tj(d)["steps"]:
         if s.get("run"): s["run"] = repl(s["run"])
+def wrong_base(step):
+    new = re.sub(r"\"?origin/\$\{?BASE\}?\"?", "HEAD~1", step["run"])
+    if new == step["run"]: raise ValueError("the step does not diff against origin/${BASE}")
+    step["run"] = new
 def sel_edit(d, fn):
     for s in d["jobs"]["allowlist"]["steps"]:
         if "select-tests.sh" in (s.get("run") or ""): fn(s)
@@ -273,12 +393,14 @@ mutants("ci.yml", ci_problems, ci, [
     ("the test job skippable", lambda d: tj(d).__setitem__("if", "${{ github.actor != 'x' }}")),
     ("gosec back in ci.yml", lambda d: d["jobs"].__setitem__("gosec", {"name": "gosec", "runs-on": "ubuntu-latest", "steps": []})),
     ("coverage back in ci.yml", lambda d: d["jobs"].__setitem__("coverage", {"name": "coverage", "runs-on": "ubuntu-latest", "steps": []})),
-    ("dependency-review removed from ci.yml", lambda d: d["jobs"].pop("dependency-review")),
-    ("dependency-review running on push (its if removed)", lambda d: d["jobs"]["dependency-review"].pop("if")),
-    ("dependency-review on another condition", lambda d: d["jobs"]["dependency-review"].__setitem__("if", "${{ github.actor != 'x' }}")),
-    ("dependency-review renamed", lambda d: d["jobs"]["dependency-review"].__setitem__("name", "dep review")),
-    ("dependency-review without its permissions", lambda d: d["jobs"]["dependency-review"].pop("permissions")),
-    ("dependency-review action pinned by tag", lambda d: d["jobs"]["dependency-review"]["steps"][1].__setitem__("uses", "actions/dependency-review-action@v5")),
+    ("dependency-review back in ci.yml",
+     lambda d: d["jobs"].__setitem__("dependency-review", job_stub("dependency-review"))),
+    ("the full suite called from ci.yml",
+     lambda d: d["jobs"].__setitem__("full", {"uses": "./.github/workflows/full-suite.yml"})),
+    ("tools/requirements vetted from the root",
+     lambda d: add_step(d, "test", {"name": "vet", "run": "go vet ./tools/requirements"})),
+    ("no vet inside tools/requirements",
+     lambda d: swap_all_go(d, lambda r: re.sub(r"[^\n]*go -C tools/requirements vet[^\n]*", ":", r))),
     ("allowlist-chain back in ci.yml", lambda d: d["jobs"].__setitem__("allowlist-chain", {"name": "allowlist-chain", "runs-on": "ubuntu-latest", "steps": []})),
     ("no selection step", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if "select-tests.sh" not in (s.get("run") or "")])),
     ("two selection steps", lambda d: add_step(d, "allowlist", {"name": "again", "run": "bash bin/select-tests.sh origin/main HEAD"})),
@@ -294,13 +416,12 @@ mutants("ci.yml", ci_problems, ci, [
     ("the selection discarded", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "bash bin/select-tests.sh origin/${{ github.base_ref }} HEAD >/dev/null"))),
     ("the selection run with its failures swallowed", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "set +e\n" + re.sub(r"set -[euo]+( pipefail)?", "set +e", s["run"]) + "\nexit 0"))),
     ("the selection run word by word", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "bash bin/select-tests.sh origin/${{ github.base_ref }} HEAD | xargs -n1 echo"))),
-    ("the selection against the wrong base", lambda d: sel_edit(d, lambda s: s.__setitem__("run", re.sub(r"\S*base\S*", "HEAD~1", s["run"]).replace("HEAD~1 HEAD", "HEAD~1 HEAD") if "base" in s["run"] else s["run"] + " x"))),
+    ("the selection against the parent commit, not the pull request's base", lambda d: sel_edit(d, wrong_base)),
 ])
 
 # ------------------------------------------------------------------------------------------------------------------ AC5: full-suite.yml
 MOVED = {"coverage": [r"go test .*-covermode=atomic.*\./\.\.\.", r"coverage-gate"],
          "fips140-only": [r"GODEBUG=fips140=only go test .*\./\.\.\."],
-         "gosec": [r"gosec .*\./\.\.\."],
          "allowlist-persona": [r"bin/persona-uat-agent-test\.sh", r"bin/persona-uat-wiring-test\.sh", r"bin/persona-uat-test\.sh"],
          "allowlist-chain": [r"bin/build-helpers-test\.sh", r"bin/vendoring-test\.sh", r"bin/assemble-image-test\.sh", r"bin/install-scanner-test\.sh", r"bin/go-bump-open-pr-test\.sh"],
          "allowlist-pins-auditor": [r"bin/audit-record-test\.sh", r"bin/panel-test\.sh", r"bin/patch-decide-test\.sh", r"bin/job-isolation-test\.sh", r"bin/dependabot-reviewer-test\.sh"]}
@@ -322,13 +443,25 @@ def full_problems(w):
         for rx in rxs:
             if not re.search(rx, text): bad.append("%s does not run its whole suite (no %s)" % (jid, rx))
         if "select-tests" in text: bad.append("%s runs a selection and not its whole suite" % jid)
+    # the two long wiring suites are run whole by some job of this workflow
+    all_runs = "\n".join(r for j in jobs.values() for _, r in runs(j))
+    for suite in ("bin/full-suite-wiring-test.sh", "bin/select-tests-test.sh"):
+        lines = cmd_lines(all_runs, re.escape(suite))
+        if not any(re.search(r"\bbash\s+(\./)?%s\s*$" % re.escape(suite), l.strip()) for l in lines):
+            bad.append("no job runs %s whole" % suite)
     calls = [jid for jid, j in jobs.items() if j.get("uses") == "./.github/workflows/acceptance.yml"]
     if calls != ["acceptance"] or jobs["acceptance"].get("name", "acceptance") != "acceptance": bad.append("acceptance.yml is not called by exactly one job, id and name acceptance: %s" % calls)
     for jid, j in jobs.items():
-        if str(j.get("uses", "")).endswith(("scan.yml", "codeql.yml")) or base(j.get("name") or jid) in ("scan", "analyze", "dependency-review"):
+        other_workflow = str(j.get("uses", "")).endswith(("scan.yml", "codeql.yml"))
+        if other_workflow or base(j.get("name") or jid) in ("scan", "analyze") + tuple(REMOVED):
             bad.append("%s belongs to another workflow (scan and CodeQL keep their own)" % jid)
     return bad
-verdict("full-suite.yml: a daily schedule, dispatch and call; the six moved jobs whole; acceptance called", full_problems(fs), True)
+verdict("full-suite.yml: a daily schedule, dispatch and call; the five moved jobs whole; the two wiring suites; "
+        "acceptance called; no gosec", full_problems(fs), True)
+def turn_off(d, suite):
+    hit = [s for j in d["jobs"].values() for s in j.get("steps") or [] if suite in (s.get("run") or "")]
+    if not hit: raise ValueError("no step runs " + suite)
+    for s in hit: s["run"] = "true"
 if fs is not None:
     mutants("full-suite.yml", full_problems, fs, [
         ("a pull_request trigger", lambda d: d["on"].__setitem__("pull_request", "")),
@@ -340,11 +473,17 @@ if fs is not None:
         ("two crons", lambda d: d["on"]["schedule"].append({"cron": "5 5 * * *"})),
         ("an hourly cron", lambda d: d["on"].__setitem__("schedule", [{"cron": "17 * * * *"}])),
         ("a weekly cron", lambda d: d["on"].__setitem__("schedule", [{"cron": "17 6 * * 1"}])),
-        ("gosec renamed", lambda d: d["jobs"]["gosec"].__setitem__("name", "gosec scan")),
+        ("coverage renamed", lambda d: d["jobs"]["coverage"].__setitem__("name", "coverage run")),
+        ("a gosec job back in the full suite", lambda d: d["jobs"].__setitem__("gosec", job_stub("gosec"))),
+        ("a dependency-review job in the full suite",
+         lambda d: d["jobs"].__setitem__("dependency-review", job_stub("dependency-review"))),
+        ("the wiring suite turned off", lambda d: turn_off(d, "full-suite-wiring-test.sh")),
+        ("the selection suite turned off", lambda d: turn_off(d, "select-tests-test.sh")),
         ("coverage dropped", lambda d: d["jobs"].pop("coverage")),
         ("fips140-only dropped", lambda d: d["jobs"].pop("fips140-only")),
         ("allowlist-chain dropped", lambda d: d["jobs"].pop("allowlist-chain")),
-        ("gosec skippable", lambda d: d["jobs"]["gosec"].__setitem__("if", "${{ github.event_name == 'workflow_dispatch' }}")),
+        ("coverage skippable",
+         lambda d: d["jobs"]["coverage"].__setitem__("if", "${{ github.event_name == 'workflow_dispatch' }}")),
         ("fips140-only over a selection", lambda d: d["jobs"]["fips140-only"]["steps"].append({"run": "bash bin/select-tests.sh a b"}) or [s.__setitem__("run", s["run"].replace("./...", "$PKGS")) for s in d["jobs"]["fips140-only"]["steps"] if s.get("run")]),
         ("allowlist-persona running one suite", lambda d: [s.__setitem__("run", "true") for s in d["jobs"]["allowlist-persona"]["steps"] if "persona-uat-test.sh" in (s.get("run") or "")]),
         ("allowlist-pins-auditor without the audit record suite", lambda d: [s.__setitem__("run", "true") for s in d["jobs"]["allowlist-pins-auditor"]["steps"] if "audit-record-test.sh" in (s.get("run") or "")]),
@@ -481,7 +620,27 @@ for n in ("full-suite.yml", "scan.yml", "codeql.yml"):
         ("no run in the text", lambda d: [s.__setitem__("run", s["run"].replace("GITHUB_RUN_ID", "GITHUB_SHA").replace("github.run_id", "github.sha")) for s in rf(d)["steps"] if s.get("run")]),
     ])
 
-# ------------------------------------------------------------------------------------------------------------------ AC7: admission
+# ---------------------------------------------------------------------------------- AC7: a run before the tag
+# the tag push alone is too late: admission reads runs on the tagged commit, so each workflow of the full suite
+# must also start from a schedule, a manual dispatch or a push to main (workflow_call and a tag push do not count)
+def early_run_problems(w, name):
+    on = w.get("on") or {}
+    if not isinstance(on, dict): return ["%s has no trigger that can run before its tag: %s" % (name, on)]
+    push = on.get("push")
+    on_main = isinstance(push, dict) and "main" in (push.get("branches") or [])
+    if "schedule" in on or "workflow_dispatch" in on or on_main: return []
+    return ["%s starts only from %s: no run on a commit exists before its release-candidate tag" % (name, sorted(on))]
+for n in ("full-suite.yml", "scan.yml", "codeql.yml"):
+    if n not in WFS: check("%s can run before the tag" % n, False, "no such workflow"); continue
+    verdict("%s: a schedule, workflow_dispatch or push to main lets a run exist before its release-candidate tag" % n,
+            early_run_problems(WFS[n], n), True)
+    mutants(n, lambda d, n=n: early_run_problems(d, n), WFS[n], [
+        ("only a tag push", lambda d: d.__setitem__("on", {"push": {"tags": ["v*"]}})),
+        ("only workflow_call", lambda d: d.__setitem__("on", {"workflow_call": ""})),
+        ("a push of other branches", lambda d: d.__setitem__("on", {"push": {"branches": ["release/*"]}})),
+    ])
+
+# ---------------------------------------------------------------------------------- AC7: admission
 adm = load(WF + "stage-admission.yml")
 STEP = "every required check green, app-pinned, per its scope"
 hit = [s for s in adm["jobs"]["admit"]["steps"] if s.get("name") == STEP]
@@ -501,20 +660,38 @@ else: data = json.load(open(f))
 filt = [a[i + 1] for i, x in enumerate(a) if x in ("--jq", "-q") and i + 1 < len(a)]
 if filt:
     r = subprocess.run(["jq", "-c", filt[0]], input=json.dumps(data), capture_output=True, text=True)
-    sys.stdout.write(r.stdout); sys.stderr.write(r.stderr); sys.exit(r.returncode)
+    # gh prints a string result without its quotes; every other result stays one compact JSON value per line
+    for line in r.stdout.splitlines(): print(json.loads(line) if line.startswith('"') else line)
+    sys.stderr.write(r.stderr); sys.exit(r.returncode)
 print(json.dumps(data))
 '''
 T, O, P = "1" * 40, "2" * 40, "3" * 40          # the tagged commit, an older commit, the head of the merged pull request
-def admission(policy, mutate=None, tag="v0.3.0-rc.1", script=None):
-    """run the admission check step; mutate(runs) edits {sha: [check runs]}; returns (rc, stderr+stdout)"""
+# the workflow file that produces each context: the full suite's contexts come from full-suite.yml,
+# but analyze (go) from codeql.yml and reproducibility and scan from scan.yml; the quick checks come from ci.yml
+SOURCE = {"analyze (go)": "codeql.yml", "reproducibility": "scan.yml", "scan": "scan.yml"}
+def source_of(policy, key, ctx):
+    return SOURCE.get(ctx, "full-suite.yml") if key == "promotion_checks" else "ci.yml"
+def admission(policy, mutate=None, tag="v0.3.0-rc.1", script=None, paths=None, no_details=(), no_run=()):
+    """run the admission check step; mutate(runs) edits {sha: [check runs]}; returns (rc, stderr+stdout)
+    paths {context: workflow file}: whose run backs a check; no_details: contexts whose check run names no workflow run;
+    no_run: contexts whose workflow run answers 404"""
     d = os.path.join(work, "adm%d" % len(os.listdir(work))); os.makedirs(d + "/fake"); os.makedirs(d + "/fx"); os.makedirs(d + "/policy")
     mkexec(d + "/fake/gh", FAKE_ADM)
     json.dump(policy, open(d + "/policy/required-checks.json", "w"))
-    runs_by_sha = {T: [], P: [], O: []}; n = [100]
+    runs_by_sha = {T: [], P: [], O: []}; n = [100]; workflow_runs = {}
     for key in ("required_checks", "promotion_checks"):
         for e in policy.get(key, []):
             sha = P if e["scope"] == "pull_request" else T
-            n[0] += 1; runs_by_sha[sha].append({"name": e["context"], "conclusion": "success", "app": {"id": e["integration_id"]}, "id": n[0], "head_sha": sha})
+            ctx = e["context"]; n[0] += 1
+            run_id = 9000 + n[0]
+            url = "https://github.com/o/r/actions/runs/%d/job/%d" % (run_id, n[0])
+            if ctx in no_details: url = "https://example.com/checks/%d" % n[0]
+            runs_by_sha[sha].append({"name": ctx, "conclusion": "success", "app": {"id": e["integration_id"]},
+                                     "id": n[0], "head_sha": sha, "details_url": url})
+            if ctx not in no_run:
+                workflow_runs[run_id] = ".github/workflows/" + (paths or {}).get(ctx, source_of(policy, key, ctx))
+    for run_id, path in workflow_runs.items():
+        json.dump({"id": run_id, "path": path}, open(d + "/fx/repos_o_r_actions_runs_%d.json" % run_id, "w"))
     if mutate: mutate(runs_by_sha)
     for sha, rs in runs_by_sha.items(): json.dump({"check_runs": rs}, open(d + "/fx/repos_o_r_commits_%s_check-runs.json" % sha, "w"))
     json.dump([{"number": 5, "merge_commit_sha": T, "base": {"ref": "main"}, "merged_at": "2026-11-12T00:00:00Z", "head": {"sha": P}}], open(d + "/fx/repos_o_r_commits_%s_pulls.json" % T, "w"))
@@ -545,6 +722,25 @@ if len(hit) == 1:
                 check("admission (%s): a release candidate whose promotion check %r %s is stopped, naming it" % (pol_name, c, why), rc != 0 and c in out, (rc, out[-300:]))
     for e in SYN["required_checks"]:
         rc, out = admission(SYN, drop(e["context"])); check("admission: a required check %r with no run is still stopped, naming it" % e["context"], rc != 0 and e["context"] in out, (rc, out[-200:]))
+    # a promotion context is taken only from the workflow file that produces it (REQ-CI-001-AC7)
+    def stopped(what, ctx, res): check("admission: %s is stopped, naming it" % what, res[0] != 0 and ctx in res[1], res)
+    for e in POLICY.get("promotion_checks", []):
+        c = e["context"]
+        stopped("the promotion check %r backed by a run of ci.yml" % c, c, admission(POLICY, paths={c: "ci.yml"}))
+    for c, wrong in (("scan", "full-suite.yml"), ("reproducibility", "full-suite.yml"), ("analyze (go)", "scan.yml"),
+                     ("coverage", "codeql.yml"), ("acceptance / acceptance-gradle", "scan.yml")):
+        stopped("%r backed by a run of %s, not its own workflow file" % (c, wrong), c,
+                admission(POLICY, paths={c: wrong}))
+    for c in ("coverage", "scan"):
+        stopped("%r whose check run points at no workflow run" % c, c, admission(POLICY, no_details=(c,)))
+        stopped("%r whose workflow run cannot be read" % c, c, admission(POLICY, no_run=(c,)))
+    def on_pr_head(ctx):
+        def move(R):
+            R[P] += [dict(r, head_sha=P) for r in R[T] if r["name"] == ctx]
+            R[T][:] = [r for r in R[T] if r["name"] != ctx]
+        return move
+    stopped("'coverage' green only on the merged pull request's head, not the tagged commit", "coverage",
+            admission(POLICY, on_pr_head("coverage")))
     rc, out = admission(SYN, tag="v0.3.0-rc.2", mutate=drop("scan")); check("admission: the second candidate of a line is held to the same rule", rc != 0 and "scan" in out, (rc, out[-200:]))
 else:
     check("admission cases not run: the step is missing", False)
