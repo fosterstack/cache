@@ -17,10 +17,10 @@
 #       (Sign's bundle) and `check-results`/`witness-check` (Check's), the five script names and command lines of bin/check-stage.sh, the guide
 #       file docs/verify-release.md (the www lane's customer guide), the results file names.
 #
-# RULE 68 AS AMENDED BY THE OWNER (Oct 9, 16:47 EDT): every command run under Witness is limited to 9 minutes (`timeout 540`), because Fulcio's
-# certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time (harness spike (d): a 13-minute command yields a record that never
-# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (PR 2 defines it; judge `helper` below is its seam and is kept identical to
-# PR 2's). Check is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap. The owner also asked
+# RULE 68 AS AMENDED BY THE OWNER (Oct 9, 16:47 EDT): Fulcio's certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time
+# (harness spike (d): a 13-minute command yields a record that never verifies). The audit removed the 540 s cap: the job-level timeout bounds a
+# hung command. The Witness flags live in ONE place, the helper bin/witnessed.sh (PR 2 defines it; judge `helper` below is its seam and is kept
+# identical to PR 2's). Check is split into three plainly named witnessed steps (scanners / acceptance / runtime) to keep each short. The owner also asked
 # for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the judges accept the plain form
 # and reject variants instead of growing clever.
 #
