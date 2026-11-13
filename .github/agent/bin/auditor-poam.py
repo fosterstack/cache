@@ -41,9 +41,9 @@ def _apply_removal(path, d, kept):
 
 
 def _remove_ignores(root, aliases):
-    """Remove the finding's statements from every OpenVEX file under root (the VEX is the only exception there is).
-    Every file is read and checked first, then written: a file that cannot be read stops the run with
-    nothing changed."""
+    """Remove the finding's statements from every OpenVEX file under root (the VEX is the only
+    exception there is). Every file is read and checked first, then written: a file that cannot be read
+    stops the run with nothing changed."""
     plans = []
     for dp, _, fs in os.walk(root):
         for fn in fs:
