@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2
+# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC2
 # The owner's ruling of Nov 11 2026 removed the release-age hold: a pull request never waits for a version to age, and the pin scan measures no time. Proved on the
 # tracked files, with nothing run: (a) pin-age-check.py and (b) pin-audit.py hold none of the words of the removed hold, (c) the tag observer is gone and no tracked
 # file refers to it, (d) Dependabot carries no cooldown and one entry per ecosystem and directory, the context and the job pin-age stay, the pin-age job runs no
@@ -52,6 +52,18 @@ for u in d["updates"]:
     for x in dirs: c[(u["package-ecosystem"], x)] += 1
 dup = sorted(k for k, n in c.items() if n > 1)
 if dup: sys.exit("more than one entry for %r" % (dup,))
+PY
+
+# d (REQ-SUP-001-AC1): the github-actions, pip and tools/govulncheck gomod entries are there (the last weekly), the root gomod entry keeps its weekly schedule and its one minor-patch group, no docker entry
+py .github/dependabot.yml >"$work/ac1" 2>&1 <<'PY' && ok "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry" || { bad "dependabot.yml: github-actions, pip and govulncheck entries present, root gomod unchanged, no docker entry"; sed 's/^/     /' "$work/ac1"; }
+import sys, yaml
+u = {(e["package-ecosystem"], e["directory"]): e for e in yaml.safe_load(open(sys.argv[1]))["updates"]}
+for k in [("github-actions", "/"), ("pip", "/.github/agent"), ("gomod", "/tools/govulncheck")]:
+    if k not in u: sys.exit("no entry for %r" % (k,))
+if u[("gomod", "/tools/govulncheck")]["schedule"] != {"interval": "weekly"}: sys.exit("govulncheck entry is not weekly")
+r = u.get(("gomod", "/"))
+if not r or r["schedule"] != {"interval": "weekly"} or r.get("groups") != {"gomod-minor-patch": {"patterns": ["*"], "update-types": ["minor", "patch"]}}: sys.exit("root gomod entry changed")
+if any(k[0] == "docker" for k in u): sys.exit("a docker entry exists")
 PY
 
 # d: the context pin-age and the job pin-age stay
