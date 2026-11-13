@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7, REQ-REL-012-AC8, REQ-REL-012-AC9, REQ-REL-012-AC10, REQ-REL-012-AC11, REQ-REL-012-AC12, REQ-DEP-001-AC14
+# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC7
+# proves: REQ-REL-012-AC8, REQ-REL-012-AC9, REQ-REL-012-AC10, REQ-REL-012-AC11, REQ-REL-012-AC12
+# proves: REQ-DEP-001-AC14
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a
 # pull request into the release carries a passed-audit record for its exact head, or it cannot merge"), offline. The record is the branch
 # audit/<the pull request's head sha>: ONE commit whose only parent is that head, verified by GitHub, authored by the writer the policy file
@@ -151,7 +153,9 @@ r, calls = wrap(ref_err="gh: HTTP 502: Bad Gateway"); check("wrapper: a GitHub A
 r, calls = wrap(commit_err="gh: HTTP 403: rate limit exceeded"); check("wrapper: a GitHub API error on the commit exits 3 as an API error", r.returncode == 3 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=None); check("wrapper: a commit that is not found exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("wrapper: an unverified record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and "commits/not-a-sha" not in calls, (r.returncode, r.stdout, calls))
+r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}})
+check("wrapper: a ref whose object is not a sha exits 1 without a commit request",
+      r.returncode == 1 and "commits/not-a-sha" not in calls, (r.returncode, r.stdout, calls))
 r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/name exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stderr, calls))
 
 # the writer's own checks: the pull request must be open, into main, with exactly this head, before anything is written
@@ -512,8 +516,10 @@ for name, fn, frag in (
 # record its head passes on the reviewer's success and nothing else; no verdict is no pass, on a patch as on a major.
 OURS = {"id": 11, "full_name": "o/r"}
 DEP = {"number": 7, "state": "open", "merged": False, "title": "Bump left-pad from 1.2.3 to 1.2.4",
-       "body": "Bumps left-pad from 1.2.3 to 1.2.4.", "user": {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"},
-       "head": {"sha": HEAD, "ref": "dependabot/pip/left-pad-1.2.4", "repo": OURS}, "base": {"ref": "main", "repo": OURS}}
+       "body": "Bumps left-pad from 1.2.3 to 1.2.4.",
+       "user": {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"},
+       "head": {"sha": HEAD, "ref": "dependabot/pip/left-pad-1.2.4", "repo": OURS},
+       "base": {"ref": "main", "repo": OURS}}
 check("bump: an open pull request into main that Dependabot opened from its own branch of the repository is one",
       A.dependabot_pull(DEP) is True, A.dependabot_pull(DEP))
 for name, pr in (
@@ -535,12 +541,18 @@ for name, pr in (
 ):
     check("bump: not a Dependabot pull request: " + name, A.dependabot_pull(pr) is False, A.dependabot_pull(pr))
 
-# whose head it is: exactly one open pull request, Dependabot's (the check run is the commit's, so every pull request on it would pass)
-HUMAN = mut(mut(mut(DEP, ["user"], {"login": "fosterstack-admin", "id": 9, "type": "User"}), ["head", "ref"], "feat/x"), ["number"], 8)
+# whose head it is: exactly one open pull request, Dependabot's (the check run is the commit's, so every pull request
+# on it would pass)
+HUMAN = mut(
+      mut(mut(DEP, ["user"], {"login": "fosterstack-admin", "id": 9, "type": "User"}), ["head", "ref"], "feat/x"),
+      ["number"], 8)
 check("bump: the one open pull request on the head, Dependabot's, is the one judged", A.bump_pull(HEAD, [DEP]) == DEP)
-check("bump: a closed pull request on the same head changes nothing", A.bump_pull(HEAD, [DEP, mut(HUMAN, ["state"], "closed")]) == DEP)
-check("bump: a closed pull request whose head sha cannot be read changes nothing", A.bump_pull(HEAD, [DEP, mut(mut(HUMAN, ["state"], "closed"), ["head", "sha"], None)]) == DEP)
-check("bump: a pull request on another head changes nothing", A.bump_pull(HEAD, [DEP, mut(HUMAN, ["head", "sha"], "c" * 40)]) == DEP)
+check("bump: a closed pull request on the same head changes nothing",
+      A.bump_pull(HEAD, [DEP, mut(HUMAN, ["state"], "closed")]) == DEP)
+check("bump: a closed pull request whose head sha cannot be read changes nothing",
+      A.bump_pull(HEAD, [DEP, mut(mut(HUMAN, ["state"], "closed"), ["head", "sha"], None)]) == DEP)
+check("bump: a pull request on another head changes nothing",
+      A.bump_pull(HEAD, [DEP, mut(HUMAN, ["head", "sha"], "c" * 40)]) == DEP)
 for name, pulls in (
     ("a human pull request shares the head with Dependabot's", [DEP, HUMAN]),
     ("a human pull request into another base shares the head", [DEP, mut(HUMAN, ["base", "ref"], "chain-v030")]),
@@ -553,24 +565,40 @@ for name, pulls in (
     ("an item has an empty head", [DEP, mut(HUMAN, ["head"], {})]),
     ("an item's head sha is null", [DEP, mut(HUMAN, ["head", "sha"], None)]),
     ("an item's head sha is not 40 lower-case hex", [DEP, mut(HUMAN, ["head", "sha"], HEAD.upper())]),
-    ("another open pull request's head sha is this head and a newline", [DEP, mut(HUMAN, ["head", "sha"], HEAD + "\n")]),
+    ("another open pull request's head sha is this head and a newline",
+    [DEP, mut(HUMAN, ["head", "sha"], HEAD + "\n")]),
     ("an item's state is neither open nor closed", [DEP, mut(HUMAN, ["state"], "OPEN")]),
     ("no pull request at all", []), ("the answer is not a list", DEP), ("no answer", None),
 ):
     check("bump: the record rule stands when " + name, A.bump_pull(HEAD, pulls) is None, A.bump_pull(HEAD, pulls))
 
 REVIEWER_PY = os.path.join(os.path.dirname(JUDGE_SH), "dependabot-reviewer.py")
-VERSION_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt", ".github/workflows/dependabot-reviewer.yml")
+VERSION_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
+      ".github/workflows/dependabot-reviewer.yml",
+                 ".github/policy/required-checks.json", "bin/required-check-guard.sh")
+VERSION_SCRIPT = "bin/dependabot-reviewer-version.sh"   # the code author's: copied into the fixtures where it exists
 CHECKED_IN = [open(os.path.join(root_repo, f), "rb").read() for f in VERSION_FILES]
-def version_in(top):   # the sha256 of the program, the prompt and the workflow under `top`, read in that order
-    return hashlib.sha256(b"".join(open(os.path.join(top, f), "rb").read() for f in VERSION_FILES)).hexdigest()
-VER = hashlib.sha256(b"".join(CHECKED_IN)).hexdigest()
+def sum_lines(files):   # what `sha256sum` prints over the files, in this order
+    return "".join("%s  %s\n" % (hashlib.sha256(text).hexdigest(), f) for f, text in files)
+# REQ-DEP-001-AC14, computed here: the sha256 of the output of sha256sum over the five files under `top`
+def version_in(top):
+    return hashlib.sha256(
+          sum_lines((f, open(os.path.join(top, f), "rb").read()) for f in VERSION_FILES).encode()).hexdigest()
+def install_version_script(top):
+    if os.path.exists(os.path.join(root_repo, VERSION_SCRIPT)): open(os.path.join(top, VERSION_SCRIPT),
+          "w").write(open(os.path.join(root_repo, VERSION_SCRIPT)).read())
+VER = hashlib.sha256(sum_lines(zip(VERSION_FILES, CHECKED_IN)).encode()).hexdigest()
 PYVER = hashlib.sha256(CHECKED_IN[0]).hexdigest()
+# the versions before this definition: the three files joined, and their sha256sum lines
+OLD3 = hashlib.sha256(b"".join(CHECKED_IN[:3])).hexdigest()
+OLD3S = hashlib.sha256(sum_lines(zip(VERSION_FILES[:3], CHECKED_IN[:3])).encode()).hexdigest()
 OLDVER = "0" * 64
 NOVER = object()
 os.makedirs(root + "/.github/workflows")
 for f, text in zip(VERSION_FILES, CHECKED_IN): open(os.path.join(root, f), "wb").write(text)
-def run(i, conclusion="success", slug="fosterstack-automation", name="dependabot-reviewer", status="completed", ext=VER):
+install_version_script(root)
+def run(i, conclusion="success", slug="fosterstack-automation", name="dependabot-reviewer", status="completed",
+      ext=VER):
     r = {"id": i, "name": name, "status": status, "conclusion": conclusion, "app": {"id": 5054756, "slug": slug}}
     if ext is not NOVER: r["external_id"] = ext
     return r
@@ -614,13 +642,17 @@ for name, answer in (
     ("a success whose external_id is null", runs(run(1, ext=None))),
     ("a success whose external_id is empty", runs(run(1, ext=""))),
     ("a success whose external_id is the current version in upper case", runs(run(1, ext=VER.upper()))),
-    ("a success of another version finishing after the current one (the newest by id)", runs(run(1), run(2, ext=OLDVER))),
+    ("a success of another version finishing after the current one (the newest by id)",
+    runs(run(1), run(2, ext=OLDVER))),
     ("a success with no external_id finishing after the current one", runs(run(1), run(2, ext=NOVER))),
 ):
-    check("bump: the reviewer's verdict: %s is a verdict that does not pass, and not NO_RUN" % name, no_pass(verdict(answer)), verdict(answer))
+    check("bump: the reviewer's verdict: %s is a verdict that does not pass, and not NO_RUN" % name,
+          no_pass(verdict(answer)), verdict(answer))
 for name, answer, want in (
-    ("a success of the current version after one of another version: the newest replaces it", runs(run(1, ext=OLDVER), run(2)), "success"),
-    ("another App's stale success after the reviewer's current one", runs(run(1), run(2, slug="github-actions", ext=OLDVER)), "success"),
+    ("a success of the current version after one of another version: the newest replaces it",
+    runs(run(1, ext=OLDVER), run(2)), "success"),
+    ("another App's stale success after the reviewer's current one",
+    runs(run(1), run(2, slug="github-actions", ext=OLDVER)), "success"),
     ("a failure of another version", runs(run(1, "failure", ext=OLDVER)), "failure"),
     ("a failure with no external_id", runs(run(1, "failure", ext=NOVER)), "failure"),
     ("a neutral check of another version", runs(run(1, "neutral", ext=OLDVER)), "neutral"),
@@ -630,7 +662,8 @@ for name, answer, want in (
     check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
 
 # the walk: success on the head, or on a head it only merges main into; nothing else passes, and no verdict is no pass
-CHAIN = {"h2": "h1", "h1": "h0"}      # h2 is h1 with main merged in, h1 is h0 with main merged in, h0 is more than a merge
+# h2 is h1 with main merged in, h1 is h0 with main merged in, h0 is more than a merge
+CHAIN = {"h2": "h1", "h1": "h0"}
 def passes(head="h2", verdicts=None, parents=CHAIN):
     asked = []
     def verdict_of(c):
@@ -638,17 +671,21 @@ def passes(head="h2", verdicts=None, parents=CHAIN):
     ok, said = A.bump_passes(head, verdict_of, lambda c: (parents or {}).get(c))
     return ok, said, asked
 ok, said, asked = passes()
-check("bump: no verdict on the head or on any head it only updates is no pass; each was asked", (not ok) and asked == ["h2", "h1", "h0"] and "no verdict" in said, (ok, said, asked))
+check("bump: no verdict on the head or on any head it only updates is no pass; each was asked",
+      (not ok) and asked == ["h2", "h1", "h0"] and "no verdict" in said, (ok, said, asked))
 for name, kw, want in (
     ("the reviewer's success on the head", dict(verdicts={"h2": "success"}), True),
     ("no verdict on the head, success on the head it only updates", dict(verdicts={"h1": "success"}), True),
     ("success two updates back", dict(verdicts={"h0": "success"}), True),
-    ("success on the parent, but the head is not only an update of it", dict(verdicts={"h1": "success"}, parents={}), False),
-    ("the reviewer's failure on the head, success on its parent", dict(verdicts={"h2": "failure", "h1": "success"}), False),
+    ("success on the parent, but the head is not only an update of it", dict(verdicts={"h1": "success"}, parents={}),
+    False),
+    ("the reviewer's failure on the head, success on its parent", dict(verdicts={"h2": "failure", "h1": "success"}),
+    False),
     ("a neutral check on the head, success on its parent", dict(verdicts={"h2": "neutral", "h1": "success"}), False),
     ("an unfinished check on the head", dict(verdicts={"h2": "unfinished", "h1": "success"}), False),
     ("an unreadable verdict on the head", dict(verdicts={"h2": None, "h1": "success"}), False),
-    ("no verdict on the head, failure on its parent, success before that", dict(verdicts={"h1": "failure", "h0": "success"}), False),
+    ("no verdict on the head, failure on its parent, success before that",
+    dict(verdicts={"h1": "failure", "h0": "success"}), False),
     ("no verdict on the head, a neutral check on its parent", dict(verdicts={"h1": "neutral"}), False),
 ):
     ok, said, asked = passes(**kw)
@@ -657,22 +694,29 @@ LONG = {"u%d" % i: "u%d" % (i + 1) for i in range(A.MAX_UPDATES + 5)}
 ok, said, asked = passes(head="u0", verdicts={"u%d" % A.MAX_UPDATES: "success"}, parents=LONG)
 check("bump: a success exactly %d updates back still counts" % A.MAX_UPDATES, ok, (ok, said, len(asked)))
 ok, said, asked = passes(head="u0", verdicts={"u%d" % (A.MAX_UPDATES + 1): "success"}, parents=LONG)
-check("bump: the judge follows at most %d updates back" % A.MAX_UPDATES, (not ok) and len(asked) == A.MAX_UPDATES + 1, (ok, said, len(asked)))
+check("bump: the judge follows at most %d updates back" % A.MAX_UPDATES, (not ok) and len(asked) == A.MAX_UPDATES + 1,
+      (ok, said, len(asked)))
 
 ok, why = plan(pr=DEP)
-check("plan refused: no record is written for a pull request Dependabot opened", (not ok) and "Dependabot" in why, (ok, why))
+check("plan refused: no record is written for a pull request Dependabot opened", (not ok) and "Dependabot" in why,
+      (ok, why))
 ok, why = plan(pr=mut(DEP, ["user", "login"], "fosterstack-admin"))
 check("plan: the same pull request opened by anyone else may be recorded", ok, (ok, why))
 r, c = wrap_rel(ref=None)
-check("bump: --release mode asks for no pull request", r.returncode == 1 and "/pulls" not in c, (r.returncode, r.stdout, c))
+check("bump: --release mode asks for no pull request", r.returncode == 1 and "/pulls" not in c,
+      (r.returncode, r.stdout, c))
 
 # the wrapper over a real repository: main, the bump's commit, heads that bring main in, and heads that carry more
-G = os.path.join(d, "gate"); os.makedirs(G + "/bin"); os.makedirs(G + "/.github/policy"); os.makedirs(G + "/.github/workflows")
+G = os.path.join(d, "gate")
+os.makedirs(G + "/bin")
+os.makedirs(G + "/.github/policy")
+os.makedirs(G + "/.github/workflows")
 BIN = os.path.dirname(JUDGE_SH)
 for name in ("audit-record.py", "audit-record-judge.sh", "audit-record-prepare.sh"):
     open(G + "/bin/" + name, "w").write(open(os.path.join(BIN, name)).read())
-GREVIEWER, GPROMPT, GWORKFLOW = (os.path.join(G, f) for f in VERSION_FILES)
-for f, text in zip((GREVIEWER, GPROMPT, GWORKFLOW), CHECKED_IN): open(f, "wb").write(text)
+GREVIEWER, GPROMPT, GWORKFLOW, GCHECKS, GGUARD = (os.path.join(G, f) for f in VERSION_FILES)
+for f, text in zip((GREVIEWER, GPROMPT, GWORKFLOW, GCHECKS, GGUARD), CHECKED_IN): open(f, "wb").write(text)
+install_version_script(G)
 POLICY = G + "/.github/policy/audit-writers.json"
 open(POLICY, "w").write(json.dumps(WRITERS))
 genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t",
@@ -687,36 +731,48 @@ commit("ours.txt", "one\n", "main")
 git("checkout", "-q", "-b", "side"); SIDE = commit("side.txt", "not on main\n", "a commit main does not have")
 git("checkout", "-q", "-b", "bump", "main"); D = commit("pins.txt", "left-pad==1.2.4\n", "Bump left-pad")
 git("checkout", "-q", "main"); M1 = commit("ours.txt", "two\n", "main moves")
-git("checkout", "-q", "bump"); git("merge", "-q", "--no-ff", "-m", "Merge branch 'main' into bump", "main"); U1 = git("rev-parse", "HEAD")
+git("checkout", "-q", "bump")
+git("merge", "-q", "--no-ff", "-m", "Merge branch 'main' into bump", "main")
+U1 = git("rev-parse", "HEAD")
 git("checkout", "-q", "main"); commit("ours.txt", "three\n", "main moves again")
-git("checkout", "-q", "bump"); git("merge", "-q", "--no-ff", "-m", "Merge branch 'main' into bump", "main"); U2 = git("rev-parse", "HEAD")
-git("checkout", "-q", "--detach", D); MEND = commit("mend.txt", "ours, mended for 1.2.4\n", "a writer's commit on the bump")
+git("checkout", "-q", "bump")
+git("merge", "-q", "--no-ff", "-m", "Merge branch 'main' into bump", "main")
+U2 = git("rev-parse", "HEAD")
+git("checkout", "-q", "--detach", D)
+MEND = commit("mend.txt", "ours, mended for 1.2.4\n", "a writer's commit on the bump")
 git("merge", "-q", "--no-ff", "-m", "Merge branch 'main' into bump", "main"); MENDUP = git("rev-parse", "HEAD")
 git("checkout", "-q", "--detach", D); git("merge", "-q", "--no-ff", "--no-commit", M1)
 EVIL = commit("extra.txt", "rides along\n", "Merge branch 'main' into bump")
-git("checkout", "-q", "--detach", D); git("merge", "-q", "--no-ff", "-m", "Merge branch 'side' into bump", SIDE); OFF = git("rev-parse", "HEAD")
+git("checkout", "-q", "--detach", D)
+git("merge", "-q", "--no-ff", "-m", "Merge branch 'side' into bump", SIDE)
+OFF = git("rev-parse", "HEAD")
 git("checkout", "-q", "main")
 check("bump fixture: the update heads have two parents, the bump and the mend one",
-      [len(git("rev-list", "--parents", "-n", "1", c).split()) for c in (D, U1, U2, MEND, MENDUP, EVIL, OFF)] == [2, 3, 3, 2, 3, 3, 3])
+      [len(git("rev-list", "--parents", "-n", "1", c).split()) for c in (D, U1, U2, MEND, MENDUP, EVIL, OFF)]
+      == [2, 3, 3, 2, 3, 3, 3])
 open(fake + "/gh", "w").write('''#!/usr/bin/env bash
 echo "gh $*" >> "$CALLS"
 sha=${2#repos/o/r/commits/}; sha=${sha%%[/?]*}
 case "$2" in
   repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; none="" ;;
   repos/o/r/commits/*/pulls\\?per_page=100) f="$FAKE/pulls-$sha"; none="[]" ;;
-  repos/o/r/commits/*/check-runs\\?check_name=dependabot-reviewer\\&filter=all\\&per_page=100) f="$FAKE/checks-$sha"; none='{"total_count": 0, "check_runs": []}' ;;
+  repos/o/r/commits/*/check-runs\\?check_name=dependabot-reviewer\\&filter=all\\&per_page=100)
+    f="$FAKE/checks-$sha"; none='{"total_count": 0, "check_runs": []}' ;;
   repos/o/r/commits/*) f="$FAKE/commit"; none="" ;;
   repos/o/r/pulls/*) f="$FAKE/pr"; none="" ;;
   *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
 esac
 if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
-if [ -f "$f.json" ]; then cat "$f.json"; elif [ -n "$none" ]; then echo "$none"; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+if [ -f "$f.json" ]; then cat "$f.json"
+elif [ -n "$none" ]; then echo "$none"
+else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
 ''')
 def dep(head, **kw):
     pr = mut(DEP, ["head", "sha"], head)
     for k, v in kw.items(): pr[k] = v
     return pr
-def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, root=G, base_ref="main", policy=WRITERS, more=None):
+def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, root=G, base_ref="main", policy=WRITERS,
+      more=None):
     fk = tempfile.mkdtemp(dir=d)
     def put(name, obj): open(os.path.join(fk, name), "w").write(obj if isinstance(obj, str) else json.dumps(obj))
     if pulls is not None: put("pulls-%s.json" % head, pulls)
@@ -724,10 +780,12 @@ def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, ro
     for name, obj in (files or {}).items(): put(name + ".json", obj)
     for name, text in (errs or {}).items(): put(name + ".err", text)
     calls = os.path.join(fk, "calls"); open(calls, "w").close()
-    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r", GH_TOKEN="x", AUDIT_ACTOR="fosterstack-admin")
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r",
+          GH_TOKEN="x", AUDIT_ACTOR="fosterstack-admin")
     env.update(more or {})
     cwd = tempfile.mkdtemp(dir=d)
-    cmd = ["bash", root + "/bin/audit-record-judge.sh", head, base_ref] if script is None else ["bash", root + "/bin/" + script, "7", head]
+    cmd = ["bash", root + "/bin/audit-record-judge.sh", head, base_ref] if script is None else ["bash",
+          root + "/bin/" + script, "7", head]
     if policy is None: os.remove(POLICY)
     else: open(POLICY, "w").write(policy if isinstance(policy, str) else json.dumps(policy))
     try:
@@ -736,21 +794,32 @@ def gate(head, pulls=None, verdicts=None, files=None, errs=None, script=None, ro
         open(POLICY, "w").write(json.dumps(WRITERS))
     return r, open(calls).read()
 def said(r, c): return (r.returncode, r.stdout, r.stderr, c)
-def refused(r, why): return r.returncode == 1 and r.stdout.startswith("audit-record: Dependabot pull request #7: ") and why in r.stdout
-def stands(r, c): return r.returncode == 1 and "no passed-audit record for this head" in r.stdout and "check-runs" not in c
+def refused(r,
+      why): return r.returncode == 1 and r.stdout.startswith(
+      "audit-record: Dependabot pull request #7: ") and why in r.stdout
+def stands(r,
+      c): return r.returncode == 1 and "no passed-audit record for this head" in r.stdout and "check-runs" not in c
 
 # the reviewer's success passes; no verdict does not, whatever the bump is
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
-check("gate: a bump the reviewer passed on this head passes with no record; GitHub is asked for the record, the pull request and the verdict, and nothing else",
-      r.returncode == 0 and "Dependabot pull request #7 needs no passed-audit record: the Dependabot reviewer passed this head" in r.stdout
-      and c.count("gh api") == 3 and "check-runs?check_name=dependabot-reviewer&filter=all&per_page=100" in c, said(r, c))
+check(
+      "gate: a bump the reviewer passed on this head passes with no record; GitHub is asked for the record, the pull "
+      "request and the verdict, and nothing else",
+      r.returncode == 0
+      and "Dependabot pull request #7 needs no passed-audit record: the Dependabot reviewer passed this head" in
+      r.stdout
+      and c.count("gh api") == 3 and "check-runs?check_name=dependabot-reviewer&filter=all&per_page=100" in c,
+      said(r, c))
 r, c = gate(D, pulls=[dep(D)])
-check("gate refused: a plain patch bump the reviewer has not read (no verdict is no pass)", refused(r, "it has no verdict") and c.count("gh api") == 3, said(r, c))
+check("gate refused: a plain patch bump the reviewer has not read (no verdict is no pass)",
+      refused(r, "it has no verdict") and c.count("gh api") == 3, said(r, c))
 r, c = gate(U2, pulls=[dep(U2)])
-check("gate refused: the same bump with main merged in twice and no verdict on any head; each was asked", refused(r, "it has no verdict") and c.count("check-runs") == 3, said(r, c))
+check("gate refused: the same bump with main merged in twice and no verdict on any head; each was asked",
+      refused(r, "it has no verdict") and c.count("check-runs") == 3, said(r, c))
 r, c = gate(U1, pulls=[dep(U1)], verdicts={D: [run(1)]})
 check("gate: a head that is the passed head with main merged in passes at once, with no verdict of its own",
-      r.returncode == 0 and ("the Dependabot reviewer passed %s, and this head only merges main into it" % D) in r.stdout, said(r, c))
+      r.returncode == 0
+      and ("the Dependabot reviewer passed %s, and this head only merges main into it" % D) in r.stdout, said(r, c))
 r, c = gate(U2, pulls=[dep(U2)], verdicts={D: [run(1)]})
 check("gate: ... and so does a head two such updates on", r.returncode == 0 and c.count("check-runs") == 3, said(r, c))
 
@@ -761,27 +830,38 @@ for name, head, verdicts in (
     ("the reviewer failed the head this one only updates", U1, {D: [run(1, "failure")]}),
     ("the reviewer failed this head, though it passed the one before", U1, {U1: [run(2, "failure")], D: [run(1)]}),
     ("the head before was passed and then failed", U1, {D: [run(1), run(2, "failure")]}),
-    ("a check entry on the head has no name, though the head before was passed", U1, {U1: runs({k: v for k, v in run(3).items() if k != "name"}), D: [run(1)]}),
-    ("a failure on the head has an empty name, though the head before was passed", U1, {U1: [run(3, "failure", name="")], D: [run(1)]}),
-    ("a failure on the head has an empty App slug, though the head before was passed", U1, {U1: [run(3, "failure", slug="")], D: [run(1)]}),
-    ("a check entry on the head has no App, though the head before was passed", U1, {U1: runs(dict(run(3), app=None)), D: [run(1)]}),
-    ("the list of check runs on the head is cut", U1, {U1: {"total_count": 2, "check_runs": [run(3, slug="github-actions")]}, D: [run(1)]}),
-    ("the reviewer's completed run on the head has the conclusion none, though the head before was passed", U1, {U1: [run(3, "none")], D: [run(1)]}),
+    ("a check entry on the head has no name, though the head before was passed", U1,
+    {U1: runs({k: v for k, v in run(3).items() if k != "name"}), D: [run(1)]}),
+    ("a failure on the head has an empty name, though the head before was passed", U1,
+    {U1: [run(3, "failure", name="")], D: [run(1)]}),
+    ("a failure on the head has an empty App slug, though the head before was passed", U1,
+    {U1: [run(3, "failure", slug="")], D: [run(1)]}),
+    ("a check entry on the head has no App, though the head before was passed", U1,
+    {U1: runs(dict(run(3), app=None)), D: [run(1)]}),
+    ("the list of check runs on the head is cut", U1,
+    {U1: {"total_count": 2, "check_runs": [run(3, slug="github-actions")]}, D: [run(1)]}),
+    ("the reviewer's completed run on the head has the conclusion none, though the head before was passed", U1,
+    {U1: [run(3, "none")], D: [run(1)]}),
 ):
     r, c = gate(head, pulls=[dep(head)], verdicts=verdicts)
     check("gate refused: " + name, refused(r, "newest verdict on") and "not success" in r.stdout, said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, slug="github-actions")]})
 check("gate refused: a bump that only another App passed", refused(r, "it has no verdict"), said(r, c))
 
-# the reviewer's version is the sha256 of bin/dependabot-reviewer.py under the checked-out main: a success of any other version,
-# or with none, is a verdict that does not pass (it is not "no verdict", so no clean merge of main carries a pass over it)
-def stale_refused(r): return r.returncode == 1 and r.stdout.startswith("audit-record: Dependabot pull request #7: ") and "it has no verdict" not in r.stdout
+# the reviewer's version is the sha256 of bin/dependabot-reviewer.py under the checked-out main: a success of any
+# other version,
+# or with none, is a verdict that does not pass (it is not "no verdict", so no clean merge of main carries a pass over
+# it)
+def stale_refused(r): return r.returncode == 1 and r.stdout.startswith(
+      "audit-record: Dependabot pull request #7: ") and "it has no verdict" not in r.stdout
 for name, head, verdicts, asks in (
-    ("a success of another version finishing after the current one (the newest by id)", D, {D: [run(1), run(2, ext=OLDVER)]}, 1),
+    ("a success of another version finishing after the current one (the newest by id)", D,
+    {D: [run(1), run(2, ext=OLDVER)]}, 1),
     ("a success from before the change, with no external_id", D, {D: [run(1, ext=NOVER)]}, 1),
     ("a success whose external_id is null", D, {D: [run(1, ext=None)]}, 1),
     ("a success whose external_id is empty", D, {D: [run(1, ext="")]}, 1),
-    ("a success of another version on the head, though the head before was passed with the current one", U1, {U1: [run(3, ext=OLDVER)], D: [run(1)]}, 1),
+    ("a success of another version on the head, though the head before was passed with the current one", U1,
+    {U1: [run(3, ext=OLDVER)], D: [run(1)]}, 1),
     ("a success of another version on the head this one only merges main into", U1, {D: [run(1, ext=OLDVER)]}, 2),
     ("a success with no external_id on the head this one only merges main into", U1, {D: [run(1, ext=NOVER)]}, 2),
     ("a success of another version two merges of main back", U2, {D: [run(1, ext=OLDVER)]}, 3),
@@ -789,112 +869,153 @@ for name, head, verdicts, asks in (
     r, c = gate(head, pulls=[dep(head)], verdicts=verdicts)
     check("gate refused: " + name, stale_refused(r) and c.count("check-runs") == asks, said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=OLDVER), run(2)]})
-check("gate: a success of the current version replaces an older one of another version", r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+check("gate: a success of the current version replaces an older one of another version",
+      r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
 r, c = gate(U1, pulls=[dep(U1)], verdicts={D: [run(1, ext=OLDVER), run(2)]})
 check("gate: ... and is carried across a clean merge of main", r.returncode == 0, said(r, c))
 for name, head, verdicts in (
     ("a failure of another version", D, {D: [run(1, "failure", ext=OLDVER)]}),
     ("a failure with no external_id", D, {D: [run(1, "failure", ext=NOVER)]}),
     ("a neutral check of another version", D, {D: [run(1, "neutral", ext=OLDVER)]}),
-    ("a failure of another version on the head this one only merges main into", U1, {D: [run(1, "failure", ext=OLDVER)]}),
+    ("a failure of another version on the head this one only merges main into", U1,
+    {D: [run(1, "failure", ext=OLDVER)]}),
 ):
     r, c = gate(head, pulls=[dep(head)], verdicts=verdicts)
-    check("gate refused: %s still counts as that verdict" % name, refused(r, "newest verdict on") and "not success" in r.stdout, said(r, c))
+    check("gate refused: %s still counts as that verdict" % name,
+          refused(r, "newest verdict on") and "not success" in r.stdout, said(r, c))
 GOLD = open(GREVIEWER, "rb").read()
 try:
     open(GREVIEWER, "wb").write(GOLD + b"\n# another reviewer\n")
     NEWVER = version_in(G)
     r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
-    check("gate refused: the version is read from the checked-out main: a success of the version this main no longer has", stale_refused(r), said(r, c))
+    check(
+          "gate refused: the version is read from the checked-out main: a success of the version this main no longer "
+          "has", stale_refused(r), said(r, c))
     r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=NEWVER)]})
-    check("gate: ... and a success of the version this main has passes", r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+    check("gate: ... and a success of the version this main has passes",
+          r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
     os.remove(GREVIEWER)
     r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
-    check("gate: a version that cannot be read (no program in main): the record rule stands, no verdict asked for", stands(r, c), said(r, c))
+    check("gate: a version that cannot be read (no program in main): the record rule stands, no verdict asked for",
+          stands(r, c), said(r, c))
 finally:
     open(GREVIEWER, "wb").write(GOLD)
 
-# the version covers the prompt and the workflow too: a change to either makes every earlier success not count, and a file that cannot be read is a version that cannot
+# the version covers the prompt and the workflow too: a change to either makes every earlier success not count, and a
+# file that cannot be read is a version that cannot
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=PYVER)]})
-check("gate refused: a success carrying the sha256 of the program alone (the version before the prompt and the workflow counted) is no success", stale_refused(r), said(r, c))
-for what, path in (("prompt", GPROMPT), ("workflow", GWORKFLOW)):
+check(
+      "gate refused: a success carrying the sha256 of the program alone (the version before the prompt and the "
+      "workflow counted) is no success", stale_refused(r), said(r, c))
+for what, old in (("the three files joined", OLD3), ("the sha256sum lines of the three files", OLD3S)):
+    r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=old)]})
+    check("gate refused: a success carrying the version of %s (before the five files and sha256sum) is no success"
+          % what, stale_refused(r), said(r, c))
+for what, path in (("prompt", GPROMPT), ("workflow", GWORKFLOW), ("required-checks list", GCHECKS),
+      ("required-check guard", GGUARD)):
     OLDTEXT = open(path, "rb").read()
     try:
         open(path, "wb").write(OLDTEXT + b"\n# changed\n")
         r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
-        check("gate refused: a success of the version before main's %s changed does not pass" % what, stale_refused(r), said(r, c))
+        check("gate refused: a success of the version before main's %s changed does not pass" % what,
+              stale_refused(r), said(r, c))
         r, c = gate(U1, pulls=[dep(U1)], verdicts={D: [run(1)]})
-        check("gate refused: ... nor is it carried across a clean merge of main", stale_refused(r) and c.count("check-runs") == 2, said(r, c))
+        check("gate refused: ... nor is it carried across a clean merge of main",
+              stale_refused(r) and c.count("check-runs") == 2, said(r, c))
         r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, ext=version_in(G))]})
-        check("gate: ... and a success of the version of the three files as main has them passes", r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+        check("gate: ... and a success of the version of the five files as main has them passes",
+              r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
         os.remove(path)
         r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]})
-        check("gate: a version that cannot be read (no %s in main): the record rule stands, no verdict asked for" % what, stands(r, c), said(r, c))
+        check("gate: a version that cannot be read (no %s in main): the record rule stands, no verdict asked for"
+              % what, stands(r, c), said(r, c))
     finally:
         open(path, "wb").write(OLDTEXT)
 
-# any other commit on the bump needs the reviewer's success on a head that contains it, with only clean merges of main after it
-for name, head in (("carries a writer's commit on top of the passed head", MEND), ("carries a writer's commit and then main merged in", MENDUP),
-                   ("is a merge with main that carries a file of its own", EVIL), ("merges in a commit that main does not have", OFF)):
+# any other commit on the bump needs the reviewer's success on a head that contains it, with only clean merges of main
+# after it
+for name, head in (("carries a writer's commit on top of the passed head", MEND),
+      ("carries a writer's commit and then main merged in", MENDUP),
+                   ("is a merge with main that carries a file of its own", EVIL),
+                   ("merges in a commit that main does not have", OFF)):
     r, c = gate(head, pulls=[dep(head)], verdicts={D: [run(1)]})
-    check("gate refused: a head that %s, though the reviewer passed the bump under it" % name, refused(r, "it has no verdict"), said(r, c))
+    check("gate refused: a head that %s, though the reviewer passed the bump under it" % name,
+          refused(r, "it has no verdict"), said(r, c))
 r, c = gate(MEND, pulls=[dep(MEND)], verdicts={MEND: [run(2)]})
-check("gate: the head with a writer's commit passes once the reviewer has passed that very head", r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+check("gate: the head with a writer's commit passes once the reviewer has passed that very head",
+      r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
 r, c = gate(MENDUP, pulls=[dep(MENDUP)], verdicts={MEND: [run(2)]})
 check("gate: ... and so does that head with main merged in", r.returncode == 0, said(r, c))
 
 # whose head it is
 OTHER = dict(number=8, user={"login": "x", "id": 9, "type": "User"})
 for name, pulls in (("a human pull request shares the head with Dependabot's", [dep(D), dep(D, **OTHER)]),
-                    ("another open pull request's head sha is this head and a newline", [dep(D), mut(dep(D, **OTHER), ["head", "sha"], D + "\n")]),
+                    ("another open pull request's head sha is this head and a newline",
+                    [dep(D), mut(dep(D, **OTHER), ["head", "sha"], D + "\n")]),
                     ("another entry has an empty head", [dep(D), mut(dep(D, **OTHER), ["head"], {})]),
                     ("another entry's head sha is null", [dep(D), mut(dep(D, **OTHER), ["head", "sha"], None)]),
                     ("another entry's state is unknown", [dep(D), dep(U1, number=8, state="draft")]),
-                    ("somebody else opened it", [dep(D, user={"login": "fosterstack-harness[bot]", "id": 7, "type": "Bot"})]),
+                    ("somebody else opened it",
+                    [dep(D, user={"login": "fosterstack-harness[bot]", "id": 7, "type": "Bot"})]),
                     ("it comes from a fork", [mut(dep(D), ["head", "repo"], {"id": 12, "full_name": "x/r"})]),
                     ("its branch is not dependabot/", [mut(dep(D), ["head", "ref"], "feat/bump")]),
-                    ("it is closed", [dep(D, state="closed")]), ("it is into another branch", [mut(dep(D), ["base", "ref"], "chain-v030")]),
+                    ("it is closed", [dep(D, state="closed")]),
+                    ("it is into another branch", [mut(dep(D), ["base", "ref"], "chain-v030")]),
                     ("the Dependabot pull request GitHub names has another head", [dep(U1)]),
                     ("two Dependabot pull requests have the head", [dep(D), dep(D, number=8)]),
                     ("GitHub answers a full page of 100 pull requests", [dep(D)] + [dep(D, state="closed")] * 99),
                     ("no pull request has the head", [])):
     r, c = gate(D, pulls=pulls, verdicts={D: [run(1)]})
-    check("gate: %s: the record rule stands (exit 1, no record, no verdict asked for)" % name, stands(r, c) and c.count("gh api") == 2, said(r, c))
-r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, "failure")]}, files={"ref": mut(REF, ["ref"], "refs/heads/audit/" + D), "commit": mut(COMMIT, ["parents"], [{"sha": D}])})
+    check("gate: %s: the record rule stands (exit 1, no record, no verdict asked for)" % name,
+          stands(r, c) and c.count("gh api") == 2, said(r, c))
+r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, "failure")]},
+      files={"ref": mut(REF, ["ref"], "refs/heads/audit/" + D), "commit": mut(COMMIT, ["parents"], [{"sha": D}])})
 check("gate: a passed-audit record on the exact head also passes the gate, and nothing more is asked",
-      r.returncode == 0 and "passed-audit record found" in r.stdout and c.count("gh api") == 2 and "/pulls" not in c, said(r, c))
+      r.returncode == 0 and "passed-audit record found" in r.stdout and c.count("gh api") == 2 and "/pulls" not in c,
+      said(r, c))
 
 # the writers policy comes first: without it nothing is exempt, and GitHub is not asked whose head it is
-for name, policy in (("missing", None), ("malformed", "{not json"), ("without writers", {"schema": 1, "writers": [], "dispatchers": ["fosterstack-admin"]})):
+for name, policy in (("missing", None), ("malformed", "{not json"),
+      ("without writers", {"schema": 1, "writers": [], "dispatchers": ["fosterstack-admin"]})):
     r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]}, policy=policy)
     check("gate refused: a writers policy that is %s exempts nothing, and no pull request is asked for" % name,
           r.returncode == 1 and "audit writers policy" in r.stdout and "/pulls" not in c, said(r, c))
 
 # doubts and errors
 r, c = gate(U1, pulls=[dep(U1)], verdicts={D: [run(1)]}, root=root)
-check("gate refused: where the head's commits cannot be read (no git objects), a parent's success is not taken", refused(r, "it has no verdict"), said(r, c))
-for name, errs in (("the pull request", {"pulls-" + D: "gh: HTTP 502: Bad Gateway"}), ("the reviewer's verdict", {"checks-" + D: "gh: HTTP 403: rate limit exceeded"})):
+check("gate refused: where the head's commits cannot be read (no git objects), a parent's success is not taken",
+      refused(r, "it has no verdict"), said(r, c))
+for name, errs in (("the pull request", {"pulls-" + D: "gh: HTTP 502: Bad Gateway"}),
+      ("the reviewer's verdict", {"checks-" + D: "gh: HTTP 403: rate limit exceeded"})):
     r, c = gate(D, pulls=[dep(D)], errs=errs)
-    check("gate: a GitHub API error asking for %s exits 3 and says it is an API error" % name, r.returncode == 3 and "GitHub API error" in r.stderr and r.stdout == "", said(r, c))
+    check("gate: a GitHub API error asking for %s exits 3 and says it is an API error" % name,
+          r.returncode == 3 and "GitHub API error" in r.stderr and r.stdout == "", said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]}, base_ref="chain-v030")
 check("gate: a base that is not main still passes without asking anything", r.returncode == 0 and c == "", said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1)]}, base_ref="", more={"repo": "o/r"})
-check("gate: a repo variable inherited from the caller is not used: an empty base exits 1 and asks nothing", r.returncode == 1 and c == "", said(r, c))
+check("gate: a repo variable inherited from the caller is not used: an empty base exits 1 and asks nothing",
+      r.returncode == 1 and c == "", said(r, c))
 
 fk = tempfile.mkdtemp(dir=d); open(fk + "/calls", "w").close()
-r = subprocess.run([sys.executable, "-I", G + "/bin/audit-record.py", "bump", "--head", D + "\n", "--repo", "o/r", "--base-root", G], capture_output=True, text=True,
+r = subprocess.run(
+      [sys.executable, "-I", G + "/bin/audit-record.py", "bump", "--head", D + "\n", "--repo", "o/r", "--base-root",
+      G], capture_output=True, text=True,
                    env=dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=fk + "/calls"))
-check("bump cli: a head that is 40 hex and a newline exits 1 with no line and asks nothing", r.returncode == 1 and r.stdout == "" and open(fk + "/calls").read() == "", (r.returncode, r.stdout, r.stderr))
+check("bump cli: a head that is 40 hex and a newline exits 1 with no line and asks nothing",
+      r.returncode == 1 and r.stdout == "" and open(fk + "/calls").read() == "", (r.returncode, r.stdout, r.stderr))
 
 # the writer: no record for a pull request Dependabot opened, whatever the reviewer says of it
 for name, verdicts in (("passed by the reviewer", {D: [run(1)]}), ("not read by the reviewer yet", {})):
     r, c = gate(D, pulls=[dep(D)], verdicts=verdicts, files={"pr": dep(D)}, script="audit-record-prepare.sh")
     check("prepare refused: no record is written for a Dependabot pull request %s (exit 1, nothing written)" % name,
-          r.returncode == 1 and "proceed" not in r.stdout and "Dependabot opened the pull request" in r.stderr and not os.path.exists(G + "/audit-record"), said(r, c))
-r, c = gate(D, files={"pr": dep(D, user={"login": "fosterstack-admin", "id": 9, "type": "User"})}, script="audit-record-prepare.sh")
+          r.returncode == 1 and "proceed" not in r.stdout and "Dependabot opened the pull request" in r.stderr
+          and not os.path.exists(G + "/audit-record"), said(r, c))
+r, c = gate(D, files={"pr": dep(D, user={"login": "fosterstack-admin", "id": 9, "type": "User"})},
+      script="audit-record-prepare.sh")
 wrote = os.path.exists(G + "/audit-record")
 if wrote: os.remove(G + "/audit-record")
-check("prepare: the same pull request opened by anyone else is recorded as before (proceed)", r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and wrote, said(r, c))
+check("prepare: the same pull request opened by anyone else is recorded as before (proceed)",
+      r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and wrote, said(r, c))
 
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
