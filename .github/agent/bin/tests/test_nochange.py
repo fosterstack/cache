@@ -100,7 +100,8 @@ class Load(unittest.TestCase):
         objects) is not a usable state for either: each answers as it does for any unreadable file, and neither lets the
         interpreter's RecursionError out."""
         for label, raw in (("arrays", "[" * 20000), ("closed arrays", "[" * 20000 + "]" * 20000),
-                           ("objects", '{"a":' * 20000), ("a state key holding arrays", '{"schema": "x", "verdicts": ' + "[" * 20000)):
+                           ("objects", '{"a":' * 20000),
+                           ("a state key holding arrays", '{"schema": "x", "verdicts": ' + "[" * 20000)):
             path = self.write(None, raw=raw)
             raised = []
             real = json.loads
