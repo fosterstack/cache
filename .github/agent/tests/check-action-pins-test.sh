@@ -3085,10 +3085,11 @@ done
 case3_ ac3-unreadable-bad "$(dlj "bash bin/x-test.sh
 curl -fsSL \"unterminated $U")" "$DLS"
 
-# the exact exclusions (auditor.yml's catalog download; the reviewer's identity-token request in its two steps): a copy anywhere else, an edit, or a broken condition is a finding again
+# the exact exclusions (auditor.yml's catalog download; the reviewer's identity-token request in its two steps): a copy
+# anywhere else, an edit, or a broken condition is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
-import ast, importlib.util, os, re, sys
+import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import yaml
 wf = open(sys.argv[2]).read()
@@ -3115,8 +3116,10 @@ assert judge(F, "audit", 9, run + "\n# edited"), "an edited step is a finding"
 assert judge(F, "audit", 9, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
 assert judge(F, "audit", 9, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
 D = ".github/workflows/dependabot-reviewer.yml"
-TOKEN_STEP = next(k[3] for k in m.DOWNLOAD_EXCLUSIONS if k[:3] == (D, "review", 4))   # step 4: the identity-token request, as the checker accepts it
-NEW_LOOP = next(k[3] for k in m.DOWNLOAD_EXCLUSIONS if k[:3] == (D, "review", 8))     # step 8, the decision loop of the reviewer that reads every bump
+# step 4: the identity-token request, as the checker accepts it
+TOKEN_STEP = next(k[3] for k in m.DOWNLOAD_EXCLUSIONS if k[:3] == (D, "review", 4))
+# step 8, the decision loop of the reviewer that reads every bump
+NEW_LOOP = next(k[3] for k in m.DOWNLOAD_EXCLUSIONS if k[:3] == (D, "review", 8))
 URL = "ACTIONS_ID_TOKEN_REQUEST_URL"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
@@ -3129,17 +3132,24 @@ def judge_job(steps, files, file=D, job="review", shells={}):
     scripts = [(f"{file}.jobs.{job}.steps[{i}].run", text, shells.get(i)) for i, text in sorted(steps.items())]
     m.check_runs(file, scripts + [(f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files))
     return sorted({int(b.split(".steps[")[1].split("]")[0]) for b in bad if "REQ-REL-005-AC3" in b})
-assert m.hashlib.sha256(real[4].encode("utf-8", "replace")).hexdigest() == TOKEN_STEP, "the repository's identity-token step is not the accepted text"
+assert m.hashlib.sha256(real[4].encode("utf-8", "replace")).hexdigest() == TOKEN_STEP, \
+        "the repository's identity-token step is not the accepted text"
 assert judge_job(real, {D: dwf}) == [], "the two exact identity-token steps are excluded"
-assert judge_job({5: real[4], 8: real[8]}, {D: dwf}) == [5, 8], "the same text at another step index is a finding (and the name is then outside the excluded steps)"
+assert judge_job({5: real[4], 8: real[8]}, {D: dwf}) == [5, 8], \
+        "the same text at another step index is a finding (and the name is then outside the excluded steps)"
 assert judge_job(real, {D: dwf}, job="other") == [4, 8], "the same texts in another job are findings"
-assert judge_job(real, {".github/workflows/x.yml": dwf}, file=".github/workflows/x.yml") == [4, 8], "the same texts in another file are findings"
-assert judge_job({4: real[4], 8: real[8] + "\n# edited"}, {D: dwf}) == [4, 8], "an edited step is a finding, and the other step with it: the name now stands outside the excluded steps"
-assert judge_job({4: real[8], 8: real[8]}, {D: dwf}) == [4, 8], "one excluded step's key does not exclude the other's text"
-# a `shell:` on the step (or a default shell) can set the variable before the script runs: such a step is never excluded, whatever its text
+assert judge_job(real, {".github/workflows/x.yml": dwf}, file=".github/workflows/x.yml") == [4, 8], \
+        "the same texts in another file are findings"
+assert judge_job({4: real[4], 8: real[8] + "\n# edited"}, {D: dwf}) == [4, 8], \
+        "an edited step is a finding, and the other step with it: the name now stands outside the excluded steps"
+assert judge_job({4: real[8], 8: real[8]}, {D: dwf}) == [4, 8], \
+        "one excluded step's key does not exclude the other's text"
+# a `shell:` on the step (or a default shell) can set the variable before the script runs: such a step is never
+# excluded, whatever its text
 for shell in ("bash", "bash -c 'export %s=file:///x; exec bash -e {0}'" % URL, ""):
     assert 8 in judge_job(real, {D: dwf}, shells={8: shell}), "the decision loop with shell: %r is a finding" % shell
-    assert 4 in judge_job(real, {D: dwf}, shells={4: shell}), "the identity-token step with shell: %r is a finding" % shell
+    assert 4 in judge_job(real, {D: dwf}, shells={4: shell}), \
+            "the identity-token step with shell: %r is a finding" % shell
 for what, more in (("a flow-style env", "\n        env: {%s: 'file:///x'}\n" % URL),
                    ("a GITHUB_ENV line elsewhere", "\n      - run: echo '%s=file:///x' >> \"$GITHUB_ENV\"\n" % URL)):
     assert judge_job(real, {D: dwf + more}) == [4, 8], "%s that names the URL variable is a finding" % what
@@ -3149,9 +3159,11 @@ assert judge_job({2: env_step, **real}, {D: with_env_step}) == [4, 8], "a step w
 assert judge_job(real, {D: dwf.replace(URL, "OTHER_URL", 1)}) == [4, 8], "fewer mentions than the steps hold"
 assert judge_job(real, {}) == [4, 8], "a workflow file the tree cannot read keeps the findings"
 assert judge_job(real, {D: dwf + "\n  - [unclosed\n"}) == [4, 8], "a file that does not parse keeps the findings"
-# an env that holds itself, by an alias to its own anchor, is not the mapping the checker holds: the walk over the parsed file ends and the finding stands
+# an env that holds itself, by an alias to its own anchor, is not the mapping the checker holds: the walk over the
+# parsed file ends and the finding stands
 looped = dwf.replace("permissions: {}\n", "permissions: {}\nenv: &again [*again, {BASH_ENV: /tmp/hook}]\n", 1)
-assert judge_job(real, {D: looped}) == [4, 8], "a workflow env that is a list holding itself is found, and the read ends"
+assert judge_job(real, {D: looped}) == [4, 8], \
+        "a workflow env that is a list holding itself is found, and the read ends"
 looped = dwf.replace("    environment: agent\n", "    environment: agent\n    env: &again {X: *again}\n", 1)
 assert judge_job(real, {D: looped}) == [4, 8], "a job env whose value holds the env itself is found, and the read ends"
 
@@ -3228,20 +3240,25 @@ for what, text in (("the job's defaults.run.shell", put(JOB, "    defaults:\n   
                    ("the workflow's defaults.run.shell",
                     put("permissions: {}\n", "defaults:\n  run:\n    shell: bash\n"))):
     assert whole(text) == [4, 8], "%s is a finding: a step without its own shell: takes it" % what
-assert [k for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D and k[1] != "review"] == [], "an excluded step of the reviewer outside its review job"
-assert {m.DOWNLOAD_EXCLUSIONS[k][1:3] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D} == {(URL, None)}, "an entry of the reviewer with another condition than the URL variable's"
-assert sorted((k[2], k[3]) for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [(4, TOKEN_STEP), (8, NEW_LOOP)], "the reviewer's excluded steps are not exactly these two"
+assert [k for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D and k[1] != "review"] == [], \
+        "an excluded step of the reviewer outside its review job"
+assert {m.DOWNLOAD_EXCLUSIONS[k][1:3] for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D} == {(URL, None)}, \
+        "an entry of the reviewer with another condition than the URL variable's"
+assert sorted((k[2], k[3]) for k in m.DOWNLOAD_EXCLUSIONS if k[0] == D) == [(4, TOKEN_STEP), (8, NEW_LOOP)], \
+        "the reviewer's excluded steps are not exactly these two"
 assert loop_hash == NEW_LOOP, "the repository's decision loop is not the accepted text"
 missed = []
-# the word curlrc anywhere in the workflow outside the excluded steps' run text: curl reads $HOME/.curlrc before any option
+# the word curlrc anywhere in the workflow outside the excluded steps' run text: curl reads $HOME/.curlrc before any
+# option
 for what, text in (
         ("a step 3 that writes $HOME/.curlrc", put(STEP3, '          printf \'silent\\n\' > "$HOME/.curlrc"\n')),
         ("a step 3 that names curlrc in a variable", put(STEP3, '          rc=.curlrc\n')),
         ("an env value that names curlrc", put(JOB, "    env:\n      X: ~/.curlrc\n")),
         ("a step env value that names curlrc", put("        id: act\n        env:\n", "          X: ~/.curlrc\n"))):
     missed.append("%s is a finding" % what) if whole(text) != [4, 8] else None
-# the env of an excluded step, of its job and of the workflow is exactly the mapping the checker holds: none for the workflow, the job and step 4, the committed keys and
-# values for step 8; a key added, removed or changed, and a value changed, is a finding, whatever the name. A step's own env is a finding for that step at least.
+# the env of an excluded step, of its job and of the workflow is exactly the mapping the checker holds: none for the
+# workflow, the job and step 4, the committed keys and values for step 8; a key added, removed or changed, and a value
+# changed, is a finding, whatever the name. A step's own env is a finding for that step at least.
 STEP8_ENV = "        id: act\n        env:\n"
 def replaced(old, new):
     assert dwf.count(old) >= 1, old
@@ -3250,28 +3267,52 @@ def found(where, text):
     got = whole(text)
     return (where in got) if isinstance(where, int) else got == [4, 8]
 FED = "ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.REVIEWER_FEDERATION_RULE_ID }}"
-assert dwf.count("          CHECKS_TOKEN: ${{ steps.app-checks.outputs.token }}\n") == 1 and dwf.index(FED) < dwf.index("id: mask")
+assert dwf.count("          CHECKS_TOKEN: ${{ steps.app-checks.outputs.token }}\n") == 1 \
+        and dwf.index(FED) < dwf.index("id: mask")
 for what, where, text in (
-        ("ANTHROPIC_BASE_URL added to step 8's env", 8, put(STEP8_ENV, "          ANTHROPIC_BASE_URL: https://api.example.invalid\n")),
-        ("CHECKS_TOKEN deleted from step 8's env", 8, replaced("          CHECKS_TOKEN: ${{ steps.app-checks.outputs.token }}\n", "")),
-        ("the federation rule's value changed in step 8's env", 8, replaced(FED, "ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.OTHER_RULE_ID }}")),
-        ("another key's value changed in step 8's env", 8, replaced("DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}", "DISPATCH_TOKEN: ${{ steps.app-merge.outputs.token }}")),
-        ("a key renamed in step 8's env", 8, replaced("MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}\n          DISPATCH_TOKEN", "MERGE_TOKEN2: ${{ steps.app-merge.outputs.token }}\n          DISPATCH_TOKEN")),
+        ("ANTHROPIC_BASE_URL added to step 8's env", 8, put(STEP8_ENV,
+            "          ANTHROPIC_BASE_URL: https://api.example.invalid\n")),
+        ("CHECKS_TOKEN deleted from step 8's env", 8, replaced("          CHECKS_TOKEN: ${{ "
+            "steps.app-checks.outputs.token }}\n", "")),
+        ("the federation rule's value changed in step 8's env", 8, replaced(FED,
+            "ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.OTHER_RULE_ID }}")),
+        ("another key's value changed in step 8's env", 8,
+            replaced("DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}",
+            "DISPATCH_TOKEN: ${{ steps.app-merge.outputs.token }}")),
+        ("a key renamed in step 8's env", 8, replaced("MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}\n          "
+            "DISPATCH_TOKEN", "MERGE_TOKEN2: ${{ steps.app-merge.outputs.token }}\n          DISPATCH_TOKEN")),
         ("OPENSSL_CONF in step 8's env", 8, put(STEP8_ENV, "          OPENSSL_CONF: /tmp/openssl.cnf\n")),
         ("OPENSSL_CONF in the job's env", "both", put(JOB, "    env:\n      OPENSSL_CONF: /tmp/openssl.cnf\n")),
-        ("OPENSSL_CONF in the workflow's env", "both", put("permissions: {}\n", "env:\n  OPENSSL_CONF: /tmp/openssl.cnf\n")),
+        ("OPENSSL_CONF in the workflow's env", "both", put("permissions: {}\n",
+            "env:\n  OPENSSL_CONF: /tmp/openssl.cnf\n")),
         ("an env on step 4, which has none", 4, put("        id: mint\n", "        env:\n          X: y\n")),
-        ("OPENSSL_CONF in step 4's env", 4, put("        id: mint\n", "        env:\n          OPENSSL_CONF: /tmp/openssl.cnf\n"))):
+        ("OPENSSL_CONF in step 4's env", 4, put("        id: mint\n",
+            "        env:\n          OPENSSL_CONF: /tmp/openssl.cnf\n"))):
     missed.append("%s is a finding" % what) if not found(where, text) else None
-# an env of the step, the job or the workflow that sets a name curl or the token's reader takes its files, proxies or key log from, in any letter case
-for env_name in ("CURL_HOME", "SSLKEYLOGFILE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "http_proxy", "https_proxy", "HTTPS_PROXY",
+# an env of the step, the job or the workflow that sets a name curl or the token's reader takes its files, proxies or
+# key log from, in any letter case
+for env_name in ("CURL_HOME", "SSLKEYLOGFILE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "http_proxy",
+        "https_proxy", "HTTPS_PROXY",
                  "ALL_PROXY", "NO_PROXY", "ANTHROPIC_IDENTITY_TOKEN_FILE"):
     for spelled, where, text in (
             (env_name, "the job's env", put(JOB, "    env:\n      %s: /tmp/x\n" % env_name)),
             (env_name, "the workflow's env", put("permissions: {}\n", "env:\n  %s: /tmp/x\n" % env_name)),
             (env_name, "step 8's env", put("        id: act\n        env:\n", "          %s: /tmp/x\n" % env_name)),
             (env_name.swapcase(), "the job's env", put(JOB, "    env:\n      %s: /tmp/x\n" % env_name.swapcase()))):
-        missed.append("%s in %s is a finding" % (spelled, where)) if not found(8 if where == "step 8's env" else "both", text) else None
+        missed.append("%s in %s is a finding" % (spelled, where)) if not found(8 if where == "step 8's env" else "both",
+                text) else None
+# a job with container: or services: is refused the exclusion: their env (a proxy, a CA bundle) reaches its steps and
+# the checker does not read it
+IMG = "ghcr.io/o/i@sha256:" + "0" * 64
+for what, text in (
+        ("a job container whose env sets a proxy", put(JOB,
+            "    container:\n      image: %s\n      env:\n        http_proxy: http://proxy.invalid:3128\n" % IMG)),
+        ("a job container with no env", put(JOB, "    container: %s\n" % IMG)),
+        ("a job service whose env sets a proxy", put(
+            JOB, "    services:\n      side:\n        image: %s\n        env:\n"
+            "          https_proxy: http://proxy.invalid:3128\n" % IMG)),
+        ("a job service with no env", put(JOB, "    services:\n      side:\n        image: %s\n" % IMG))):
+    missed.append("%s is a finding" % what) if whole(text) != [4, 8] else None
 assert not missed, missed
 PY
 fi
