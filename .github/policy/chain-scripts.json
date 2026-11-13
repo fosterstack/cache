@@ -1636,7 +1636,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "e995f192774ffc01eda3570ffccaaea880f0b6752a90482242c59b08bf4bc0d4",
+      "sha256": "d25c70ad39832c88af6b89d384f52125d463c9b13de0ecbd4e91ab1221c3e420",
       "exceptions": [
         {
           "rule": "deny",
