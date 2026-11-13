@@ -8,7 +8,7 @@
 # Needs: bash, OpenSSL 3 (macOS: brew install openssl@3, found automatically), python3 with PyYAML (apt: python3-yaml).
 # Offline: an offline root key, a release key, a throwaway ed25519 key and every record are made at test time with openssl; no key is
 # committed. Every verify case runs with the network genuinely cut (macOS sandbox-exec, Linux unshare -rn or sudo unshare -n) and a control
-# demonstrates the cut; if no way exists the run says so loudly (CHAIN_TEST_REQUIRE_NETCUT=1 makes that a failure; the CI wiring MUST set it, and on
+# demonstrates the cut; if no way exists the run says so loudly (with GITHUB_ACTIONS=true that is a failure, and on
 # ubuntu-24.04 the `sudo -n unshare -n` fallback runs the verifier as root: files it leaves in the work dir are removed by the exit trap with
 # sudo). Every refusal case is judged by exit code 1 (0 accepted; anything else, such as a missing script or a Python traceback, is an ERROR and
 # fails the case) AND by words the message must contain. The key manifest itself is tested in bin/chain-manifest-test.sh.
@@ -117,7 +117,7 @@ if [ "${#netcut[@]}" -gt 0 ]; then
   if "${netcut[@]}" python3 -c "$probe" 2> /dev/null; then bad "network cut control: a connection got out"; else ok "network cut control: an outbound connection fails inside the cut"; fi
 else
   echo "NOTE no way to cut the network here (no sandbox-exec, unshare -rn or sudo unshare -n): verify cases run WITHOUT a cut"
-  if [ "${CHAIN_TEST_REQUIRE_NETCUT:-0}" = 1 ]; then bad "network cut required (CHAIN_TEST_REQUIRE_NETCUT=1) but unavailable"; else ok "network cut: unavailable here, noted above (the case count stays constant)"; fi
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then bad "network cut required (GITHUB_ACTIONS=true) but unavailable"; else ok "network cut: unavailable here, noted above (the case count stays constant)"; fi
 fi
 
 # ---- fixtures ---------------------------------------------------------------------------------------------------
