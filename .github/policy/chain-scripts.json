@@ -297,7 +297,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
+      "sha256": "537961d7a3d028ad0f3c1e96da85d44ba4ec91ee8cef0b31e17b85546974047b"
     },
     {
       "path": "bin/witnessed.sh",
@@ -414,7 +414,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
-      "sha256": "42eeef9bbeb1a49b89227578ff7be9e679e8a35e7ee97ec9826087d6c56cc318",
+      "sha256": "daf4972acb9638a4a4c4365d62498de75b3f17770b143b2d196e626de3bddaca",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
@@ -576,7 +576,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing",
-      "sha256": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f"
+      "sha256": "fc5490a027697c66a00f015dc9f1744c104da5d5de5b99378dd9070d41238344"
     },
     {
       "path": "bin/build-freeze.sh",
@@ -781,7 +781,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names git verify-tag, verifies and signs nothing",
-      "sha256": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7"
+      "sha256": "45e54a9fc335893bd7c3378ed6a3196484a9dab1c362b38d3a28478024d9dad9"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",
@@ -802,7 +802,7 @@
     },
     {
       "path": "bin/check-stage.sh",
-      "sha256": "34d873b931d5d67789643114af9a81b1a8d5e1ba24b212a176c1fb8d2f0af0e7",
+      "sha256": "a5e8ffd77bb76cd6ddb13fc561d0daf833300374b73f41f3e6387dd2a8eb648d",
       "tools": [
         "bash",
         "make",
@@ -823,7 +823,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "79c4dd3a911d3063721bf27d41bd7fc67253a22976df9d290144c4bc8ebf7898",
+      "sha256": "60c0004ed9b1d7ed22fa5cb1c7c1dc1f649cd2f2f3bde02660e367b621d4277c",
       "tools": [
         "env",
         "go",
@@ -842,7 +842,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "fc0300fd53f7bcf2376d4759217e59512495dcd3500aabf84f925d2ffd7b6dea",
+      "sha256": "ce97351fbccce6c3993d717a295fec0b6e273ab535853f581134438d25e4320e",
       "tools": [
         "bash",
         "find",
@@ -885,13 +885,6 @@
         },
         {
           "rule": "deny",
-          "line": "[ -n \"$ver\" ] && [ \"$got\" = \"$(sed \"s/VER/$ver/\" <<< \"$want\" | sort)\" ] \\",
-          "line_sha256": "1a348019a0c22b103b5c8a0678a1875564bdb3bc083a3592b5728293a294989d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
           "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change\"",
           "line_sha256": "2ae0c195e21d2471ef18a310f97cc1229add47c0aeda6b64cad761bdda07bc7b",
           "count": 1,
@@ -917,13 +910,6 @@
           "line_sha256": "99605e4749c17588361408279d11f42de45e6a04308f759148ab4efc15f19005",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
-        },
-        {
-          "rule": "deny",
-          "line": "  case \"${f,,}\" in *darwin*|*windows*) fail \"a darwin or windows file exists in $archives ($(basename \"$f\")): REQ-PLAT-001 ships Linux only\" ;; esac",
-          "line_sha256": "c48e01c93cc8d1767c5710b51b6a5db9ac6ce9a1befb18a655904b162574154a",
-          "count": 1,
-          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
         },
         {
           "rule": "deny",
@@ -1491,22 +1477,48 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "b423e7d6634e9c4bfc0abaf4912fcff11aebebde961e37e36d925881ef53cbbe",
+      "sha256": "cc05bc34dff6b98cc112d4f531ca543a81bb79d927addd315b0884bbcea7bef3",
       "tools": [
         "at",
         "command",
         "gh",
+        "jq",
         "sh"
       ],
       "runs": [
-        "bin/check-guide.sh"
+        "bin/check-guide.sh",
+        "bin/guide_plan_judge.py"
       ],
       "signs": false,
       "reason": "the planner of bin/check-guide.sh: reads the customer guide and the cannot-run list, judges and substitutes every command (REQ-CHAIN-006-AC7)"
     },
     {
+      "path": "bin/guide_plan_judge.py",
+      "sha256": "b92689fb7e7b92f48bb8e71c9653d13ad5a68de9a50daeedfd60db5da51986c9",
+      "tools": [
+        "bash",
+        "command",
+        "cosign",
+        "go",
+        "jq"
+      ],
+      "runs": [
+        "bin/check-guide-plan.py",
+        "bin/release-postverify.py"
+      ],
+      "signs": false,
+      "reason": "imported by check-guide-plan.py and release-postverify.py: the one judge of a customer-guide command (REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC20); it runs nothing; the listed words are the commands of a guide command it judges (prose and strings), which the text scan over-reports",
+      "env_mentions": [
+        {
+          "name": "ENV",
+          "text": "m.group(1) == \"ENV\"",
+          "why": "REQ-CHAIN-007-AC20: the jq filter grammar REFUSES the variable named ENV (a jq-only command may not read the environment); the literal is the refusal test, and no environment is read or set"
+        }
+      ]
+    },
+    {
       "path": "bin/check-osv-db.py",
-      "sha256": "5c76cb9a4fb513345d2db6eb0cd80f50aa7e5b1a13640c2c167336729a8cebcd",
+      "sha256": "af99f51c46d0d70cd43acdf2505d1f593fff214cd0815e3a50aad289e6c84028",
       "tools": [],
       "runs": [
         "bin/check-scan.sh"
@@ -1902,41 +1914,12 @@
         "just"
       ],
       "runs": [
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/guide_plan_judge.py"
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "a60cfe1b566e72caaf84319c47930978881acf76266e900de42298e90adbde81",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "            return \"a # outside quotes (a shell comment would hide what follows from this check and not from bash)\"",
-          "line_sha256": "4f0ed76b7e3308c8638ba6e3ed8d151699a3f12ba6fb7f3f220b2db554f3dd21",
-          "count": 1,
-          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
-        },
-        {
-          "rule": "deny",
-          "line": "            return \"a newline outside quotes (bash runs what follows as another command)\"",
-          "line_sha256": "ec500fdb894446743911ba889f98f65e95ee666f8d3ed91280d3b3688979895e",
-          "count": 2,
-          "why": "the text of an answer of the command judge, unchanged from before this pair (owner rule 6: the judge answers the same on 11759 commands); it names the shell the check guards against and runs nothing"
-        },
-        {
-          "rule": "deny",
-          "line": "        # A backslash before a newline or CR is refused first: shlex keeps that newline in the next word, bash removes",
-          "line_sha256": "4187b4aac0472556c3601c4a0a242c00f3cd15bb9886d648c07df651a3d53a5e",
-          "count": 1,
-          "why": "a comment of the quote walk that says why a backslash before a newline is refused first (shlex keeps the newline, bash removes it); it names the shell the check guards against and runs nothing"
-        }
-      ],
-      "env_mentions": [
-        {
-          "name": "ENV",
-          "text": "m.group(1) == \"ENV\"",
-          "why": "REQ-CHAIN-007-AC20: the jq filter grammar REFUSES the variable named ENV (a jq-only command may not read the environment); the literal is the refusal test, and no environment is read or set"
-        }
-      ]
+      "sha256": "2d0e68cbf8916b459990c0428b4c3c0400a74bab4b982ebf5c0450cbaa55fda2"
     },
     {
       "path": "bin/release-metadata.py",
@@ -1958,7 +1941,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "1f15ba4fe25caab419a73077c5c6efbf0b5e7335004b5e839b618a992691d470",
+      "sha256": "a52dbeb8801b2933e4b8692b298cd39a51f484cdaa6f7dfe352c56695b1c26b6",
       "exceptions": [
         {
           "rule": "deny",
@@ -2007,7 +1990,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "6a40993c22bf4ab912f3eaea4f6412fe381c5b4d889a1e6e74ba55c59e22e6ac",
+      "sha256": "1219f4ff0eb084847b2f57dbb832cb33203dab66589a897973dcaeddd97b0bde",
       "tools": [
         "at",
         "curl",
@@ -2041,13 +2024,6 @@
           "line_sha256": "68441c2c86a64fda99911aeb674d1c322c2d2e17a7f943b1e0e107ebdca53c5b",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    [ \"${#found[@]}\" = 1 ] || fail \"the Linux $a archive of $n is missing or not unique in $archives\"",
-          "line_sha256": "ffa64d6fb077b354e7d898758f1af225085aad344350cb7f0b06c5bb577a28d7",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -2063,7 +2039,7 @@
     },
     {
       "path": "bin/check-phase-arm64.sh",
-      "sha256": "6065475e20aac72ccd9ab6f0845e29fe7dc4a67c9dab194cfcdf33a5e8cb2711",
+      "sha256": "91d3d0420e934f6d9d4c57c9f491d02dbbd975c9ed8d1400e8f3420cbb2e2c30",
       "tools": [
         "bash",
         "make",
@@ -2098,7 +2074,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "494deabe556f7aa2139e61d370b53333a10075fcaa54c2acf9353096ba004c05",
+      "sha256": "5046f185118328675594d4a64ebd19e488927ae732753df7771c3b75a2f7bcdc",
       "tools": [
         "at",
         "gh",
@@ -2141,7 +2117,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "ec4c3549b7bece428ea93db4bba00e03a00a2e9b2a242f3675fbc0d445e871e6",
+      "sha256": "009897c9b25c48aaede5c28a25c37c6f7a259612cedd998532810df9e822c927",
       "tools": [
         "at",
         "python3"
@@ -2671,7 +2647,7 @@
     },
     {
       "path": "bin/check-records-digests.sh",
-      "sha256": "c688699f949e46cfe8e4613754161f519e4b12c3dadb7b8f791097159a3feb49",
+      "sha256": "8cd3d20e2e09c52dd5182dec56b51a29b54af6f46bb0f841b13121408cb2b769",
       "tools": [
         "basename",
         "jq",
