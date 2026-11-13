@@ -7562,7 +7562,7 @@
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-age-check-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
       "body-first": "BHO=\"cat >stub <<'EOF'\"",
       "body-last": "EOF",
-      "body-sha256": "0e023f4ed0dce20615ef86616a329eebaf05cdd04b02c86da7f921ed46b623c0"
+      "body-sha256": "a1dd1a4f62c17094b46da9b0b97e11f34f1f290b329d68047b1b240d5876bd7c"
     },
     {
       "file": ".github/agent/tests/pin-age-check-test.sh",
@@ -8775,6 +8775,41 @@
       "body-first": "python3 - \"$@\" <<'PY'",
       "body-last": "PY",
       "body-sha256": "a94764f8b74cceb1e7b4a6233fa48d0c453bcca71d7801d411c63e2b767dbaa6"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "76ec00a66e2971e72159dfcf9cf3124e06a62c70400a85091e9ee4190eaf24f5",
+      "line": "7cf3212ea47053757a7854a701fbaa41f6a10f27bc91823068dc738e5a0be06d",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "978cda0b3fce7ad398ace74fc0bf20b0eff65eb1ea4c4d36c7dfe6e62816a87f",
+      "line": "7cf3212ea47053757a7854a701fbaa41f6a10f27bc91823068dc738e5a0be06d",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "81eff2c5564d98e4947d26d56a47244221ceff0b250a028a6ce5243fe60cff38",
+      "line": "93aea1a3f1161c6b93c583a2692d436bd3c959dbccc7c7a72e2cfbc019938c76",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "98d9a21b68e2c35dca77923d7caa4abbf2b212f836d648619f3d392929181b12",
+      "line": "93aea1a3f1161c6b93c583a2692d436bd3c959dbccc7c7a72e2cfbc019938c76",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "4ee48f109eadeabe47bd9d9b18b6d9631d288823984013d91292a2c74c810dce",
+      "line": "4ee48f109eadeabe47bd9d9b18b6d9631d288823984013d91292a2c74c810dce",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
