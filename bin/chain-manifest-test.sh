@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-002-AC2, REQ-CHAIN-008-AC1
-# Tests for the key manifest of the v0.3.0 release chain (handoff 0713, row P1): `chain-verify.py policy make` reads the manifest first.
+# Tests for the key manifest of the release chain: `chain-verify.py policy make` reads the manifest first.
 # Offline: the root key, the release key and every manifest are made here with openssl; nothing is committed and no AWS is used.
 #
 # The manifest, in .github/policy/ beside the template:
@@ -11,7 +11,7 @@
 # `policy make --template T --tag vX.Y.Z --out P` checks the manifest BEFORE it writes anything, and a failure
 # is `refused at manifest: <reason>`, exit 1, no policy file. The policy it writes holds the release key (public_key, key_id) and no
 # certificate root, timestamp authority or OIDC issuer. No time inside a record is trusted: a manifest whose revoked_at is at or
-# before the verification time is refused (ruling R3).
+# before the verification time is refused.
 set -uo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cv="$root/bin/chain-verify.py"
@@ -30,6 +30,8 @@ import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys
 W = sys.argv[1]
 T0 = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
 def at(days): return (T0 + dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")      # the window is judged by the real clock
+FROZEN = dt.datetime(2026, 6, 1, 12, 0, 0, tzinfo=dt.timezone.utc)        # the clock of the boundary cases (chain-manifest-test.sh freezes it)
+def fz(sec): return (FROZEN + dt.timedelta(seconds=sec)).strftime("%Y-%m-%dT%H:%M:%SZ")
 def p(n): return os.path.join(W, n)
 def sh(*a):
     r = subprocess.run(a, capture_output=True)
@@ -69,10 +71,14 @@ write_set("good", good())
 write_set("window", good(valid_to=at(30)))
 write_set("future-revoke", good(revoked_at=at(30)))
 write_set("revoked", good(revoked_at=at(-30)))
-write_set("revoked-now", good(revoked_at=at(0)))
 write_set("notyet", good(valid_from=at(1)))
 write_set("expired", good(valid_to=at(-30)))
-write_set("expired-now", good(valid_to=at(0)))
+for _name, _over in (("from-before", {"valid_from": fz(-1)}), ("from-equal", {"valid_from": fz(0)}), ("from-after", {"valid_from": fz(1)}),
+                     ("to-before", {"valid_to": fz(-1)}), ("to-after", {"valid_to": fz(1)}),
+                     ("revoked-before", {"revoked_at": fz(-1)}), ("revoked-equal", {"revoked_at": fz(0)}), ("revoked-after", {"revoked_at": fz(1)})):
+    write_set("fz-" + _name, good(**_over))
+write_set("rekor-mismatch", good())
+json.dump({"rekor_sha256": "0" * 64}, open(p("rekor-mismatch/sigstore-trust.json"), "w"))
 write_set("unknown-field", good(note="x"))
 write_set("no-key", good(public_key=None))
 write_set("no-id", good(key_id=None))
@@ -137,6 +143,27 @@ expect_refuse() { local l=$1 w=$2 d=$3 rc=0 miss=0 l1 x; shift 3; mk "$d" "$@" |
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! grep -q Traceback "$work/err" && [ ! -e "$work/policy.json" ]; then ok "$l"
   else bad "$l (exit $rc, wanted 1 with 'refused at manifest: ...' and '$w', no policy file; got: $(head -c 200 "$work/err" | tr '\n' ' '); policy $([ -e "$work/policy.json" ] && echo WRITTEN || echo absent))"; fi; }
 
+# frozen_check DIR: check_manifest with the clock fixed at 2026-06-01T12:00:00Z; prints "accepted" or the refusal text
+cat > "$work/frozen.py" <<'PY'
+import datetime as dt, importlib.util, sys, types
+cv, keys_dir = sys.argv[1:3]
+class Frozen(dt.datetime):
+    @classmethod
+    def now(cls, tz=None): return cls(2026, 6, 1, 12, 0, 0, tzinfo=tz)
+spec = importlib.util.spec_from_file_location("chain_verify", cv)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.dt = types.SimpleNamespace(datetime=Frozen, timezone=dt.timezone)
+try:
+    mod.check_manifest(keys_dir)
+    print("accepted")
+except mod.Refuse as ex:
+    print("refused: %s" % ex)
+PY
+# expect_frozen LABEL DIR WORD: WORD is "accepted" or a word of the refusal
+expect_frozen() { local out; out=$(python3 -I "$work/frozen.py" "$cv" "$work/$2" 2>&1)
+  case $out in *"$3"*) ok "$1" ;; *) bad "$1 (wanted $3, got: ${out:0:200})" ;; esac; }
+
 # ---- the good manifest and what the policy holds ---------------------------------------------------------------------------------------
 expect_ok "a signed manifest inside its window makes the policy" good
 python3 - "$work/policy.json" "$KID" "$work/rel.pub" "$work/rekor.pub" > "$work/shape.out" 2>&1 <<'PY' && ok "the policy holds the release key, its key_id and the pinned Rekor key, and no certificate, timestamp or issuer field" || bad "policy shape: $(head -c 300 "$work/shape.out")"
@@ -193,13 +220,24 @@ expect_refuse "an ECDSA P-256 key" "public_key|rsa-4096" p256-key
 # ---- time: the clock of the run against the manifest's window, never a time inside a record --------------------------------
 expect_refuse "valid_from after the verification time" "not yet valid" notyet
 expect_refuse "valid_to before the verification time" "expired" expired
-expect_refuse "valid_to equal to the verification time (the window is half open)" "expired" expired-now
 expect_refuse "revoked_at before the verification time" "revoked" revoked
-expect_refuse "revoked_at equal to the verification time" "revoked" revoked-now
+expect_frozen "valid_from one second before the verification time is accepted" fz-from-before accepted
+expect_frozen "valid_from equal to the verification time is accepted" fz-from-equal accepted
+expect_frozen "valid_from one second after the verification time is refused" fz-from-after "not yet valid"
+expect_frozen "valid_to one second after the verification time is accepted" fz-to-after accepted
+expect_frozen "valid_to one second before the verification time is refused" fz-to-before "expired"
+expect_frozen "revoked_at one second after the verification time is accepted" fz-revoked-after accepted
+expect_frozen "revoked_at equal to the verification time is refused" fz-revoked-equal "revoked"
+expect_frozen "revoked_at one second before the verification time is refused" fz-revoked-before "revoked"
 expect_refuse "a date without a time" "valid_from|date" bad-date
 expect_refuse "a date that does not exist" "valid_from|date" bad-date2
 expect_refuse "a valid_to that is not a date" "valid_to|date" bad-date3
 expect_refuse "a date that is a number" "valid_from|date" date-number
+
+# ---- the Rekor key is pinned by the hash in the trust file: a different hash refuses and writes nothing ------------------------------------
+rc=0; mk rekor-mismatch || rc=$?
+if [ "$rc" = 1 ] && grep -q "rekor_sha256" "$work/err" && [ ! -e "$work/policy.json" ]; then ok "a Rekor pin that does not match rekor.pub refuses and writes no policy"
+else bad "Rekor pin mismatch (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '); policy $([ -e "$work/policy.json" ] && echo WRITTEN || echo absent))"; fi
 
 # ---- the manifest is read before the template's tag rules write anything -----------------------------------------------------------------
 rm -f "$work/policy.json"; rc=0; run policy make --template "$work/edited/template.json" --tag v0.3.0 --out "$work/policy.json" || rc=$?
