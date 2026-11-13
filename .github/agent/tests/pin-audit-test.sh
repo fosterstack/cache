@@ -289,7 +289,7 @@ d = json.loads(sys.argv[1]); del d["live_ranges"]; json.dump(d, open(sys.argv[2]
 PY
 run nolive "$(cat "$work/dispute-nolive.json")" "$work/r-cur" --exceptions "$work/exc.json"
 CASE="when the live authoritative ranges cannot be read the exception does not apply (fail closed)"
-check test "$rc" -eq 1
+check test "$rc" -eq 1; check grep -qi 'disputed' "$work/nolive.gh.bodies"
 python3 - "$work/exc.json" "$work/exc-inrange.json" <<'PY'
 import json, sys
 e = json.load(open(sys.argv[1])); e["exceptions"][0]["authoritative"]["ranges"] = [">= 0.70.0, < 0.80.0"]; json.dump(e, open(sys.argv[2], "w"))
@@ -321,11 +321,11 @@ e = json.load(open(sys.argv[1])); del e["exceptions"][0]["modified"]["GHSA-69fq-
 PY
 run nomod "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-nomod.json"
 CASE="an exception with no recorded last-modified time for one of its ids is malformed: exit 2, never applied (it could not be shown unchanged)"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'cannot do its job.*malformed' "$work/nomod.err"
 echo '{"not": "a list"}' >"$work/exc-bad.json"
 run badexc "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-bad.json"
 CASE="an unreadable exceptions file fails the run loudly (exit 2), never as 'no exceptions'"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'cannot do its job.*exceptions is not a list' "$work/badexc.err"
 CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds the advisor rulings in the shared shape: trivy (GO-2026-4919 and GHSA-69fq-xp46-6x23, GitHub authoritative, range 0.69.4 only) and codeql-action (GHSA-vqf5-2xx6-9wfm, GitHub two ranges), each with evidence, a date and last-modified times"
 check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
 import json, sys
@@ -341,7 +341,8 @@ PY
 # a plain hit is NOT a dispute: when both lists agree it is affected, an exception for another advisory changes nothing
 run agree "{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-x\", \"incident\": \"INC-A\", \"affected\": true, \"modified\": \"2026-09-01T00:00:00Z\"}], \"osv\": [{\"id\": \"GO-x\", \"incident\": \"INC-A\", \"affected\": true, \"modified\": \"2026-09-02T00:00:00Z\"}]}}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": []}" "$work/r-cur" --exceptions "$work/exc.json"
 CASE="when BOTH lists say affected it is a plain hit (rollback advice allowed), not a dispute, and an unrelated exception does not hide it"
-check test "$rc" -eq 1; check bash -c "! grep -qi 'disputed' '$work/agree.gh.bodies'"
+check test "$rc" -eq 1; check grep -q 'GHSA-x' "$work/agree.gh.bodies"
+check bash -c "! grep -qi 'disputed' '$work/agree.gh.bodies'"
 
 # disputes of one package and incident across several versions (the 90-day history can hold many) are ONE issue listing every version, never one issue per version
 mkrepo "$work/r-twin" "120:$SHA1"
@@ -433,6 +434,34 @@ else:
     raise AssertionError("an upstream check swallowed a rate limit")
 PY
 
+printf '#!/bin/sh\nprintf "%%s\\n" "$GH_ERR" >&2\nexit 1\n' >"$work/gh-err"; chmod +x "$work/gh-err"
+CASE="live gh status: upstream and a strict record read take only gh's exact status token: HTTP 404 is not there, "
+CASE+="a 403 whose URL holds 404 and a 500 are Fail with gh's text (the run stops)"
+check python3 - "$aud" "$work/gh-err" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+net = pa.LiveNet([sys.argv[2]], ".")
+it = pa.inv.Item("action", "o/r", "a" * 40, "")
+def fails(call):
+    try:
+        call()
+    except pa.Fail as e:
+        return str(e)
+os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
+assert net.upstream(it) is False
+assert net._gh_json("repos/o/r/git/ref/tags/v1", need=(("object", dict),), strict=True) is None
+for err in ("gh: Forbidden (HTTP 403)  https://api.github.com/repos/o/404/compare/x...main",
+            "gh: Server Error (HTTP 500)"):
+    os.environ["GH_ERR"] = err
+    msg = fails(lambda: net.upstream(it))
+    assert msg is not None and "could not check" in msg and err[-10:-1] in msg, (err, msg)
+    msg = fails(lambda: net._gh_json("repos/o/404/git/ref/tags/v1", need=(("object", dict),), strict=True))
+    assert msg is not None and err[-10:-1] in msg, (err, msg)
+os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
+msg = fails(lambda: net._gh_json("repos/o/r/releases?per_page=100", rows=(("tag_name", str),), strict=True))
+assert msg is not None and "failed" in msg, msg
+PY
+
 # --- the live source against a gh stub (no network): reachability direction, GitHub-only advisories, rollback rules ---------------------------------------------------------------
 cp "$here/gh-map-stub.py" "$work/ghmap"
 chmod +x "$work/ghmap"
@@ -483,7 +512,7 @@ PY
 printf '{"exceptions": [{"version": "1.0.0", "ids": ["A"], "package": "p", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "ruling": "r", "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
 run noev "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-noev.json"
 CASE="an exception without evidence links and a date is malformed: exit 2, never applied"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'cannot do its job.*malformed' "$work/noev.err"
 
 CASE="version order: a pre-release is BEFORE its release (1.0.0-rc.1, 1.0.0rc1 < 1.0.0), 1.2 equals 1.2.0, an unreadable range is never read as safe"
 check python3 - "$aud" <<'PY'
@@ -543,7 +572,7 @@ PY
 )
 rm -rf "$work/obsout2"; run obs2 "$HIT_OBS" "$work/r-cur" --observations-out "$work/obsout2/state.json"
 CASE="the observations are written BEFORE anything is judged: a run that finds a hit (exit 1) has still recorded them"
-check test "$rc" -eq 1; check test -s "$work/obsout2/state.json"
+check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/obs2.gh"; check test -s "$work/obsout2/state.json"
 rm -rf "$work/obsout3"; run obs3 "$OBS_FX" "$work/r-pr" --base HEAD~1 --observations-out "$work/obsout3/state.json"
 CASE="a pull request run (--base) never writes observations: only the scheduled run on main does"
 check test ! -e "$work/obsout3/state.json"
@@ -960,10 +989,11 @@ PY
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"
-check test "$rc" -eq 2
-echo 'not json' >"$work/broken.fx.json"; rc=0; ( cd "$work" && GH_LOG="$work/broken.gh" python3 "$aud" --root "$work/r-clean" --fixtures "$work/broken.fx.json" --now "$NOW" --gh "$work/gh" >/dev/null 2>&1 ) || rc=$?
+check test "$rc" -eq 2; check grep -q 'gh issue create failed' "$work/ghfail.err"
+echo 'not json' >"$work/broken.fx.json"; rc=0; ( cd "$work" && GH_LOG="$work/broken.gh" python3 "$aud" --root "$work/r-clean" --fixtures "$work/broken.fx.json" --now "$NOW" --gh "$work/gh" >"$work/broken.out" 2>"$work/broken.err" ) || rc=$?
 CASE="unreadable input fails the run (exit 2), it never reports a clean day"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'unreadable fixtures' "$work/broken.err"
+check none_match 'no known-compromised' "$work/broken.out"
 # --- AC5 (round 1 of cache#393, both seats): an image named only in bin/persona-uat-tools.json is in the daily history too: a revision that changed only that file, and was replaced within 90 days, is still read ---
 r="$work/r-ptools"; mkrepo "$r" "100:$CLEANSHA"
 PTD1=sha256:$(printf 'a%.0s' $(seq 64)); PTD2=sha256:$(printf 'b%.0s' $(seq 64))
@@ -1053,6 +1083,29 @@ t = time.time()
 pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
 print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
 assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
+PY
+
+CASE="history read: a script under .github/agent/ with an install at an old revision is not an item of the history; "
+CASE+="the same script at the tip is"
+check python3 - "$aud" "$work/r-agent-tip" <<'PY'
+import datetime as dt, importlib.util, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+repo, script = sys.argv[2], ".github/agent/tests/t.sh"
+os.makedirs(os.path.join(repo, os.path.dirname(script)))
+def commit(version, when):
+    with open(os.path.join(repo, script), "w") as f:
+        f.write("#!/bin/sh\ngo install github.com/securego/gosec/v2/cmd/gosec@%s\n" % version)
+    env = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+    subprocess.run(["git", "-C", repo, "add", "-A"], check=True)
+    subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "-m", version],
+                   check=True, env=env)
+subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+commit("v2.29.0", "2026-09-20T00:00:00Z")
+commit("v2.30.0", "2026-10-01T00:00:00Z")
+got = pa.history_items(repo, "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+gosec = "gotool:github.com/securego/gosec/v2/cmd/gosec@"
+assert gosec + "v2.30.0" in got, sorted(got)
+assert gosec + "v2.29.0" not in got, sorted(got)
 PY
 
 # --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
@@ -1292,10 +1345,10 @@ CASE+="tree) still stops the read"
 check python3 - "$aud" "$r" "$OV_B" <<PY
 $OVPY
 orig = pa.inv.load_at
-def boom(root, rev):
+def boom(root, rev, agent=True):
     if rev == sys.argv[3]:
         raise RuntimeError("some other failure of the reader")
-    return orig(root, rev)
+    return orig(root, rev, agent)
 pa.inv.load_at = boom
 try:
     hist()
@@ -1540,7 +1593,7 @@ for nxt in (7, "http://evil.example/x", "https://evil.example/x", ["a"]):
     must_refuse(("hub next", nxt), lambda: age._registry_push(img))
 PY
 CASE="structural closure: an unexpected AttributeError/KeyError/TypeError/IndexError/ValueError while reading an answer ends the daily audit with exit 2, 'cannot do its job' and no 'as of' sentence"
-check_bg python3 - "$aud" "$root" "$work" <<'PY'
+check_bg python3 - "$aud" "$work/r-clean" "$work" <<'PY'
 import contextlib, importlib.util, io, json, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 fx = sys.argv[3] + "/struct-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
@@ -1551,6 +1604,20 @@ for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"),
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
     assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
+CASE="fixtures that are not a JSON object (not JSON, null, a list) end both programs in exit 2 on a readable "
+CASE+="repository, with a 'cannot' line on stderr"
+check python3 - "$aud" "$work/r-clean" "$work" <<'PY'
+import subprocess, sys
+aud, repo, work = sys.argv[1:4]
+age = aud.replace("pin-audit.py", "pin-age-check.py")
+for body in ("not json", "null", "[]"):
+    fx = work + "/notobj.fx.json"; open(fx, "w").write(body)
+    for argv in ([aud, "--root", repo, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"],
+                 [age, "--root", repo, "--base", "HEAD", "--head", "HEAD", "--fixtures", fx,
+                  "--now", "2026-10-05T12:00:00Z"]):
+        r = subprocess.run([sys.executable, *argv], capture_output=True, text=True)
+        assert r.returncode == 2 and "cannot" in r.stderr, (argv[0], body, r.returncode, r.stderr[-200:])
 PY
 CASE="error lines: a path with line breaks, escapes or ##[ in an error prints as one stderr line, no workflow command"
 check python3 - "$aud" "$root" "$work" <<'PY'
@@ -1722,7 +1789,7 @@ def c_main_fixtures():
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
                 rc = main(args)
-            assert rc == 2, (main.__module__, body, rc, out.getvalue()[:160])
+            assert rc == 2 and "cannot" in out.getvalue(), (main.__module__, body, rc, out.getvalue()[:160])
 def c_local_files():
     f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
     refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
@@ -2031,6 +2098,11 @@ for bad in 0 -3 86401 9223372037 abc 1.5 "$BIGDIGITS"; do
   rc=0; ( cd "$work" && python3 "$aud" --root "$work/r-clean" --now "$NOW" --gh "$work/gh" --fixtures "$work/clean.fx.json" --deadline "$bad" >"$work/dl.out" 2>"$work/dl.err" ) || rc=$?
   CASE="deadline: --deadline ${bad:0:12} is refused with exit 2, nothing is audited, and nothing is a traceback"
   check test "$rc" -eq 2 -a ! -s "$work/dl.out" -a -s "$work/dl.err" -a "$(grep -c Traceback "$work/dl.err")" -eq 0
+  case $bad in
+    abc|1.5|"$BIGDIGITS") reason="invalid int value" ;;
+    *) reason='cannot do its job: --deadline must be from 1 to 86400 seconds' ;;
+  esac
+  check grep -qF "$reason" "$work/dl.err"
 done
 CASE="deadline: the values 1 and 86400 (one day, the largest) are accepted and the run is audited as before"
 check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
@@ -2042,7 +2114,8 @@ for v in ("1", "86400"):
 PY
 # a run that finishes cannot also report the deadline: cancel() does not stop a callback that has already started, so the end of main waits for it (join)
 CASE="deadline: a callback already running when the run finishes decides the exit: 2, not a 0 that carries the deadline line"
-rc=0; python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" >/dev/null 2>&1 <<'PY' || rc=$?
+rc=0
+python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" >/dev/null 2>"$work/cbrun.err" <<'PY' || rc=$?
 import importlib.util, sys, threading, time
 aud, repo, fx, now, gh = sys.argv[1:6]
 spec = importlib.util.spec_from_file_location("pa", aud); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -2055,7 +2128,7 @@ pa._deadline_passed = slow_callback
 pa.FixtureNet.prs = lambda self: (started.wait(10), [])[1]   # the run finishes only after the callback has started
 sys.exit(pa.main(["--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--rerun-held", "--deadline", "1"]))
 PY
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'audit: could not finish: still in' "$work/cbrun.err"
 # a deadline in the middle of the observations write must not leave a half-written state.json at the published path
 CASE="observations: a deadline during the write leaves no partial file at the published path (a temp file, then os.replace)"
 check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" "$work/obs-partial" <<'PY'
