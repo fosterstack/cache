@@ -1392,7 +1392,7 @@ given = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC
 assert "a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)" in given, "AC5 given does not name the signed rc-tag run"
 when = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["when"]
 # the accepted text of Oct 12 (cutover prep, advisor): five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every final or patch tag
-for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls stage-sign.yml, is not a runtime case: no second workflow file exists; it is judged by Sign's caller check in the static judge and by the offline hostile test, which is a stated limit of this proof)"):
+for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls release.yml, is not a runtime case: scan.yml and main-candidate-rescan.yml call it only in snapshot mode, where every sign job is guarded off, and a called release.yml's token names the caller's file; it is judged by the guard cases of the static judge and by the offline hostile test, which is a stated limit of this proof)"):
     assert words in when, "AC5 when lacks: " + words
 assert "six separate cases" not in when and "throwaway commit" not in when, "AC5 when still has the six-case wording"
 for words in ("is cut on main after the cutover pull request has merged, must be green and its run linked before any final or patch tag is cut on main",
