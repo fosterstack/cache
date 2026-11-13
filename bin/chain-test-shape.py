@@ -263,7 +263,7 @@ SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Re
 SNAP = "snapshot-"
 CASE = 'case "$step" in'
 ASSEMBLE_LINES = (
-    [H, "step=$1", "version=$2", "dir=${step#%s}" % SNAP, CASE, "  rapk)", "    " + POLICY, "    " + START + " ;;", "esac"]
+    [H, "step=$1", "dir=${step#%s}" % SNAP, "version=${GITHUB_REF_NAME#v}", CASE, "  %s*) version=%s ;;" % (SNAP, SNAPSHOT_VERSION), "esac", CASE, "  rapk)", "    " + POLICY, "    " + START + " ;;", "esac"]
     + ['python3 -I bin/chain-verify.py bind --local --step "$step" --record "rec-$dir/%s/$step-collection.local.json" '
        '--dir "$dir/%s" --as out' % (r, r) for r, a in RUNNERS]
     + [CASE, "  apk)", "    " + ADMISSION_BASELINE + " ;;", "esac", "mkdir -p melange-repo"]
@@ -301,7 +301,7 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
     ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="freeze",
     down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True, probe=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", args="apk " + VER, snap_args="snapshot-apk " + SNAPSHOT_VERSION, perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
+    ("build", "assemble"): dict(kind="assemble", step="build", args="apk", snap_args="snapshot-apk", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
     ("rebuild", "rapk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
@@ -310,7 +310,7 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
     ("rebuild", "rapk-arm"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04-arm", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
         up=[("rapk-ubuntu-24.04-arm", "out"), ("witness-rapk-ubuntu-24.04-arm", "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="assemble", step="rebuild", args="rapk " + VER, snap_args="snapshot-rapk " + SNAPSHOT_VERSION, perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
+    ("rebuild", "assemble"): dict(kind="assemble", step="rebuild", args="rapk", snap_args="snapshot-rapk", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
