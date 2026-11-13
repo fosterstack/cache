@@ -78,7 +78,8 @@ The three files are generated from the same statements. The OpenVEX file carries
 every statement. The CSAF file leaves out a Go standard library version the release
 is not built with and carries every other statement about this release's images; the
 Inspector file leaves out that same version and carries one rule per `not_affected`
-or `fixed` statement, and none for `affected` or `under_investigation`. Google applies
+or `fixed` statement that names a package, and none for `affected`, `under_investigation`
+or a statement that names no package. Google applies
 whole-image statements only. [`.vex/README.md`](../.vex/README.md) has the detail.
 
 ## Suppression rules
