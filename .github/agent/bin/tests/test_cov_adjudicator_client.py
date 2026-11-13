@@ -351,7 +351,41 @@ class Handle(Base):
                 C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
 
     def test_the_duplicate_key_check_is_the_shared_one(self):
-        self.assertFalse(hasattr(C, "_no_dup"))
+        """The client imports parsers.no_dup_pairs (auditorlib) and keeps no private copy: its duplicate-pair check IS the
+        same function object, and the whole-answer reader calls whatever parsers.no_dup_pairs is."""
+        sys.path.insert(0, os.path.abspath(BIN))
+        try:
+            from auditorlib import parsers
+        finally:
+            sys.path.pop(0)
+        self.assertIs(C.parsers.no_dup_pairs, parsers.no_dup_pairs)
+        seen, real = [], parsers.no_dup_pairs
+        def spy(pairs):
+            seen.append(list(pairs)); return real(pairs)
+        with mock.patch.object(parsers, "no_dup_pairs", spy):
+            self.assertEqual(C._whole_answer('{"category": "real_fixable"}'), {"category": "real_fixable"})
+            self.assertIsNone(C._whole_answer('{"category": "a", "category": "b"}'))
+        self.assertEqual(seen[0], [("category", "real_fixable")])
+        self.assertEqual(len(seen), 2)
+        # the same function refuses the same repeated key, here and through the client
+        with self.assertRaises(ValueError):
+            parsers.no_dup_pairs([("k", 1), ("k", 2)])
+        self.assertEqual(parsers.no_dup_pairs([("k", 1), ("j", 2)]), {"k": 1, "j": 2})
+        own = [n for n, v in vars(C).items() if callable(v) and getattr(v, "__module__", None) == C.__name__]
+        self.assertFalse([n for n in own if "dup" in n.lower()], own)          # no private copy of the check under any name
+
+    def test_the_client_puts_the_bin_directory_on_sys_path_so_it_loads_where_auditorlib_is_not_importable(self):
+        code = ("import importlib.util, sys\n"
+                "import os\nassert not any(os.path.isdir(os.path.join(p, 'auditorlib')) for p in sys.path if p)\n"
+                "spec = importlib.util.spec_from_file_location('c', %r)\n"
+                "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+                "from auditorlib import parsers\n"
+                "assert m.parsers.no_dup_pairs is parsers.no_dup_pairs\n"
+                "assert m._whole_answer('{\"a\": 1, \"a\": 2}') is None\n"
+                "print('ok')\n") % SRC
+        import subprocess
+        r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=tempfile.gettempdir())
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "ok"), r.stderr)
 
     def test_propose_passthrough_only_when_dict(self):
         text = '{"category": "real_fixable", "propose": {"kind": "defect", "evidence": "a}b"}}'
