@@ -21,13 +21,14 @@ and this tallies the day, mechanically:
   rule 5  seen by two or more -> the tracking issue; seen by one ("unique") -> listed for the auditor.
 Rules 7-9 (profiles, audits, debates, what "false" does) are the auditor's: its daily run reads this run's
 verdict.json right after the rescan (rule 9, owner Oct 3). This judges no unique finding.
-Exit: 0 clean (unique findings alone are not a failure here), 1 something to report, 2 a scanner did not run or an
-image did not count (the run fails visibly; never reported clean).
+Exit: 0 clean (unique findings alone are not a failure here), 1 something to report, 2 a scanner did not run, an
+image did not count, or an input (the artifacts folder, the VEX file) is unreadable (the run fails visibly; never
+reported clean), 3 a crash of this script.
 
 usage: panel.py tally --in DIR --vex F --out DIR
        panel.py google-packages HTTP_LOG   (the package list gcloud sent, from its --log-http output)
 """
-import argparse, importlib.util, json, os, re, sys, urllib.parse
+import argparse, copy, importlib.util, json, os, re, sys, traceback, urllib.parse
 
 _gate_spec = importlib.util.spec_from_file_location(
     "inspector_gate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "inspector-gate.py"))
@@ -55,20 +56,21 @@ def _load(path):
 
 
 def _product_id(p):
-    """A product's identifier as the PR gate's vex_index reads it: @id when the key is present, else identifiers.purl."""
+    """A product's identifier as the PR gate's vex_index reads it: its @id when that is not null (even ""), else identifiers.purl."""
+    if p.get("@id") is not None:
+        return p["@id"]
     ids = p.get("identifiers")
-    return p.get("@id") if p.get("@id") is not None else ((ids.get("purl") if isinstance(ids, dict) else None) or "")   # an @id that is present (even "") is the id, as the rescan reads it
+    return (ids.get("purl") if isinstance(ids, dict) else None) or ""
 
 
 def _covers(product, image):
     """Does a statement's product cover this image? The repository-wide product covers every image; a product scoped
     with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names. The product is
     read by the PR gate's own grammar (inspector-gate.py::scope_of, the rescan's _parse_product): a product it does not
-    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product) covers NO image, and an
-    OCI product must be this image's own repository (pkg:oci/cache, never cache-candidates), as rescan-statement.py::_vex_match requires."""
-    pid = str(product)
-    scope = _gate.scope_of(pid)
-    if scope is None or (pid.startswith("pkg:oci/") and pid.split("?", 1)[0] != "pkg:oci/cache"):
+    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product, cache-candidates)
+    covers NO image."""
+    scope = _gate.scope_of(str(product))
+    if scope is None:
         return False
     variant, _, arch = image.rpartition("-")
     return scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
@@ -76,38 +78,35 @@ def _covers(product, image):
 
 def load_vex(path):
     """Per-image VEX indexes ({image: index}): each image is filtered only by the statements whose product covers it,
-    with purl versions decoded (%2B is +) so a statement matches the version the scanner reports."""
-    doc = _gate.load(path)
+    with subcomponent purls decoded once (%2B is +, %252B is %2B) on a copy, so every image reads the same ids and the
+    statement matches the version the scanner reports. An unreadable file or a statements field that is no list is
+    ValueError or OSError."""
+    doc = copy.deepcopy(_gate.load(path))
+    if not isinstance(doc, dict) or not isinstance(doc.get("statements") or [], list):
+        raise ValueError("%s is not an OpenVEX document (an object with a list of statements)" % path)
+    for st in doc.get("statements") or []:
+        for p in st.get("products") or []:
+            for sub in p.get("subcomponents") or []:
+                if isinstance(sub.get("@id"), str):
+                    base, q, query = sub["@id"].partition("?")
+                    sub["@id"] = urllib.parse.unquote(base) + q + query
     out = {}
     for img in sorted({i for imgs in EXPECTED.values() for i in imgs}):
         stmts = []
         for st in doc.get("statements") or []:
             prods = [p for p in st.get("products") or [] if _covers(_product_id(p), img)]
-            if not prods:
-                continue
-            for p in prods:
-                for sub in p.get("subcomponents") or []:
-                    if "@id" in sub:
-                        sub["@id"] = urllib.parse.unquote(sub["@id"].split("?", 1)[0]) + (
-                            "?" + sub["@id"].split("?", 1)[1] if "?" in sub["@id"] else "")
-            stmts.append(dict(st, products=prods))
+            if prods:
+                stmts.append(dict(st, products=prods))
         out[img] = _gate.vex_index(dict(doc, statements=stmts))
     return out
 
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
-def _is_package_url(purl):   # pkg:deb/debian/glibc@2.36 is one; "not-a-purl", "pkg:" and "pkg:/" are not: a type, a slash, then a name
-    if not isinstance(purl, str) or not purl.startswith("pkg:"):
-        return False
-    slash = purl.find("/", 4)
-    return 4 < slash < len(purl) - 1
-
-
 def _cdx_packages(doc):
     """Rule 3's package count: components that are packages (carry a package URL, pkg:<type>/<name>). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and _is_package_url(c.get("purl"))]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and _gate.is_package_url(c.get("purl"))]
 
 
 def _purl_name_version(purl):
@@ -226,7 +225,7 @@ def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
     arts = [a for a in sbom.get("artifacts") or []
-            if isinstance(a, dict) and a.get("name") and _is_package_url(a.get("purl"))]
+            if isinstance(a, dict) and a.get("name") and _gate.is_package_url(a.get("purl"))]
     if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
         raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
@@ -341,16 +340,18 @@ def scanner_dirs(inp):
     return dirs
 
 
-def tally(root, vexidx, dirs=None):
+def tally(root, vexidx, dirs):
+    """`dirs` is scanner_dirs()'s answer: a scanner it lacks did not run. `root` is only the artifacts folder it was made from."""
     images, findings, covered_log = {}, {}, []
     for s, imgs in EXPECTED.items():
         for img in imgs:
             st = images.setdefault(img, {"counts": {}, "did_not_run": [], "ran": []})
-            d = os.path.join(root, s, img) if dirs is None else os.path.join(dirs[s], img) if s in dirs else None     # no artifact for the scanner: it did not run
-            try:
-                n, found = READ[s](d)
-            except (OSError, ValueError, AttributeError, TypeError):
-                n, found = 0, []
+            n, found = 0, []
+            if s in dirs:               # no artifact for the scanner: it did not run
+                try:
+                    n, found = READ[s](os.path.join(dirs[s], img))
+                except (OSError, ValueError, AttributeError, TypeError):
+                    pass
             if n <= 0:
                 st["did_not_run"].append(s)
                 continue
@@ -432,7 +433,12 @@ def main(argv=None):
     except LayoutError as ex:
         print("::error::scanner panel: %s — a pipeline failure, never a clean result" % ex)
         return 2
-    v = tally(a.inp, load_vex(a.vex), dirs)
+    try:
+        vex = load_vex(a.vex)
+    except (OSError, ValueError) as ex:          # JSON errors are ValueErrors
+        print("::error::scanner panel: the VEX file %s cannot be read (%s) — an input error, never a clean result" % (a.vex, ex))
+        return 2
+    v = tally(a.inp, vex, dirs)
     os.makedirs(a.out, exist_ok=True)
     json.dump(v, open(os.path.join(a.out, "verdict.json"), "w"), indent=1)
     open(os.path.join(a.out, "summary.md"), "w").write(summary(v))
@@ -447,4 +453,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:                  # a crash is never rc 1, which means "findings to report"
+        traceback.print_exc()
+        sys.exit(3)
