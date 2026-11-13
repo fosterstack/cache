@@ -935,8 +935,10 @@ class TokenFile:
 
 
 class Budget:
-    """The panel's per-run token budget (REQ-AUD-6 AC2 of .github/agent/docs/cve-auditor-matrix.md): once spent, no seat is asked again this run; the unasked
-    audits error (no evidence -> false by default, judged again tomorrow) and the run reports the stop."""
+    """The panel's per-run token budget (REQ-AUD-6 AC2 of .github/agent/docs/cve-auditor-matrix.md).
+
+    Once it is spent, no seat is asked again this run. The audits left unasked error (no evidence, so false by
+    default, and judged again tomorrow) and the run reports the stop."""
 
     def __init__(self, cap):
         self.cap, self.used, self.stopped = cap, 0, False
@@ -1078,13 +1080,15 @@ PROFILES = ".github/policy/scanner-profiles.json"
 VEX = ".vex/fosterstack-cache.openvex.json"
 ISSUE_TITLE = "Daily scanner panel: findings on main"           # shared with the rescan's two-or-more issue
 OWNER_TITLE = policy.subject("needs a decision: scanner panel")   # one standing issue, updated, never duplicated
-# OLD_OWNER_TITLE only finds an issue opened before this change; nothing is created with it
+# Finds an issue opened under the previous title; no issue is created with it.
 OLD_OWNER_TITLE = policy.subject("owner-decision: scanner panel")
 
 
 def automerge_allowed(changed, env=os.environ):
-    """REQ-AUD-17 AC3/AC4 of .github/agent/docs/cve-auditor-matrix.md, as the auditor applies it: only when the owner turned auto-merge on, and never for a day
-    that proposes a scanner-profile entry (rule 7: profile entries are reviewed like any other change)."""
+    """REQ-AUD-17 AC3/AC4 of .github/agent/docs/cve-auditor-matrix.md, as the auditor applies it.
+
+    Auto-merge is allowed only when the owner turned it on, and never for a day that proposes a scanner-profile
+    entry (rule 7: profile entries are reviewed like any other change)."""
     on = (env.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
     # only the panel's own records may auto-merge: its state and its VEX statements. A profile entry, a prompt, a
     # workflow or any other path waits for the owner.
@@ -1097,9 +1101,11 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def rescan_binding(path, oci_dir):
-    """(binding, None) or (None, why). The judgment is bound to the rescan it judges:
-    its run, the head it scanned, main's head now, its conclusion (any: a red rescan is judged), and
-    the image digests of the evidence it left — every archive must name one, else the evidence is not that run's."""
+    """(binding, None) or (None, why).
+
+    The judgment is bound to the rescan it judges: its run, the head it scanned, main's head now, its conclusion
+    (any: a red rescan is judged) and the image digests of the evidence it left. Every archive must name one,
+    else the evidence is not that run's."""
     try:
         b = reviewed.read(path)
     except reviewed.ReviewedInputInvalid:
@@ -1252,12 +1258,13 @@ def vex_package(purl):
 
 
 def vex_subcomponents(purls, package=None, version=None):
-    """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None when there is none or any purl
-    cannot be written that way: a statement with no subcomponents would cover the whole image, so an empty set is
-    never proposed. With package and version (the finding's own, which the audits judged), every purl's DECODED name
-    and version must equal them: the generators decode the written purl, so a purl naming another package
-    (libstdc%2B%2B6 against a finding for libstdc%2B%2B6 that the bundle never matched) would suppress a package the
-    evidence did not cover."""
+    """The sorted, de-duplicated pkg:generic subcomponents of a statement, or None.
+
+    None means there is none or any purl cannot be written that way: a statement with no subcomponents would cover
+    the whole image, so an empty set is never proposed. With package and version (the finding's own, which the
+    audits judged), every purl's DECODED name and version must equal them. The generators decode the written purl,
+    so a purl naming another package (libstdc%2B%2B6 against a finding for libstdc%2B%2B6 that the bundle never
+    matched) would suppress a package the evidence did not cover."""
     idents = [_purl_identity(p) for p in purls or []]
     if not idents or None in idents:
         return None
@@ -1747,8 +1754,8 @@ def cmd_deliver(a, run=subprocess.run):
     check_delivery_inputs(a.repo, day, st)
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
     plan, branch, notes = [], "auditor/panel", []
-    # the base is ALWAYS the main commit this run is on a branch that builds on the open PR's old tip
-    # stays on the day it was first opened, falls further behind, and can never merge under strict up-to-date checks.
+    # The base is ALWAYS the main commit this run is on: a branch that builds on the open PR's old tip stays on
+    # the day it was first opened, falls further behind, and can never merge under strict up-to-date checks.
     # The open PR's branch is only READ: its files carry forward.
     base = os.environ.get("GITHUB_SHA") or "HEAD"
     existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json",
@@ -1863,7 +1870,7 @@ def cmd_deliver(a, run=subprocess.run):
         hit = [r["number"] for r in rows if r.get("title") in (policy.subject(ISSUE_TITLE), ISSUE_TITLE)]
         if hit:                 # the rescan's tracking issue, when it is open
             _sh(["gh", "issue", "comment", str(hit[0]), "--body", day["issue"]], plan, real, run, env=ienv)
-        else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1 of .github/agent/docs/cve-auditor-matrix.md)
+        else:                   # an issue the auditor opens carries its subject prefix (REQ-AUD-17 AC1, see the matrix)
             # a missing label would lose the issue: create it first (not forced)
             for lab in ("daily-rescan", "security"):
                 _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
