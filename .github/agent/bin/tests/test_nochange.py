@@ -94,6 +94,21 @@ class Load(unittest.TestCase):
         self.assertIsNone(N.load(self.write(None, raw=b"\xff\xfe".decode("latin-1"))))
         self.assertIsNone(N.load(self.write(None, raw=json.dumps(good()) + " " * N.MAX_BYTES)))     # over the size bound
 
+    def test_deeply_nested_json_is_refused_by_both_readers_never_a_recursion_error(self):
+        """The state file is read by two functions (load and load_unsettled); a file of 20 KB of "[" (or of nested
+        objects) is not a usable state for either: each answers as it does for any unreadable file, and neither lets the
+        interpreter's RecursionError out."""
+        for label, raw in (("arrays", "[" * 20000), ("closed arrays", "[" * 20000 + "]" * 20000),
+                           ("objects", '{"a":' * 20000), ("a state key holding arrays", '{"schema": "x", "verdicts": ' + "[" * 20000)):
+            path = self.write(None, raw=raw)
+            try:
+                loaded = N.load(path)
+                unsettled = N.load_unsettled(path, "2026-10-24")
+            except RecursionError:
+                self.fail("RecursionError escaped a reader: %s" % label)
+            self.assertIsNone(loaded, label)
+            self.assertEqual(unsettled, ("missing", {}), label)
+
     def test_the_narrative_date_must_be_on_the_calendar(self):      # row 25
         for bad in ("2026-02-30", "2026-13-01", "2026-00-10"):
             d = good(); d["narrative"]["date"] = bad
