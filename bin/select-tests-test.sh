@@ -94,6 +94,23 @@ change "$d" -tools/gone.sh
 sel "$d" "$b" "$(cd "$d" && git rev-parse HEAD)"
 expect "a deleted file counts as changed and matches its entry" 0 "s-tools${nl}s-shared"
 
+# a rename counts as both its old path and its new path (BASE...HEAD, so the old path must not be dropped by rename detection)
+rename_change() {  # rename_change NAME OLD NEW -> sets out/err/rc; OLD is committed in the base, renamed to NEW in the head
+  local d; d=$(mkrepo "$1"); mkdir -p "$d/$(dirname "$2")"; seq 1 40 > "$d/$2"
+  ( cd "$d" && git add -- "$2" && g commit -qm old ) >/dev/null 2>&1
+  local b; b=$(cd "$d" && git rev-parse HEAD)
+  ( cd "$d" && mkdir -p "$(dirname "$3")" && git mv "$2" "$3" && g commit -qm rename ) >/dev/null 2>&1
+  sel "$d" "$b" "$(cd "$d" && git rev-parse HEAD)"
+}
+rename_change rename-across tools/a.sh bin/a.sh
+expect "a rename from a path of one entry to a path of another selects the suites of both, in map order, without repeats" 0 "s-tools${nl}s-shared${nl}s-bin"
+rename_change rename-to-other-suites cfg/a.json tools/a.json
+expect "a rename from the cfg entry to the tools entry selects the suites of both, in map order" 0 "s-tools${nl}s-shared${nl}s-cfg"
+rename_change rename-to-no-suite tools/a.sh docs/a.txt
+expect "a rename from a path with suites to a path whose entry has none still selects the old path's suites" 0 "s-tools${nl}s-shared"
+rename_change rename-inside tools/a.sh tools/b.sh
+expect "a rename inside one entry selects that entry once, no repeat" 0 "s-tools${nl}s-shared"
+
 run_change unmatched newdir/f.txt
 if [ "$rc" = 1 ] && printf '%s\n%s' "$out" "$err" | grep -qF "newdir/f.txt"; then ok "a changed file that matches no entry: exit 1 naming the path"; else no "unmatched path" "rc=$rc out=[$out] err=[$err]"; fi
 
