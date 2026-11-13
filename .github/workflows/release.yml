@@ -218,7 +218,10 @@ jobs:
           while [ "$SECONDS" -lt "$end" ]; do
             # re-read each time: a policy change on main during the wait applies, as it will at admission (pin pass B02)
             git fetch -q --no-tags origin main
-            git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
+            git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/ruleset-checks.json"
+            git show origin/main:.github/policy/release-only-checks.json > "$RUNNER_TEMP/release-only-checks.json"
+            jq -s '.[0].required_checks += .[1].required_checks | .[0]' \
+              "$RUNNER_TEMP/ruleset-checks.json" "$RUNNER_TEMP/release-only-checks.json" > "$RUNNER_TEMP/required-checks.json"
             gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
               --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
             v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --check-runs "$RUNNER_TEMP/runs.json")
