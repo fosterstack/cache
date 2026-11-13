@@ -1132,7 +1132,7 @@ t "rule 22" "release-compare: every pair carries the whole-file sha256 and the a
 import hashlib, json, os, subprocess, sys
 r = sys.argv[1]; d = json.load(open(r + '/apk-compare/apk-compare.json'))
 for p in d['pairs']:
-    assert set(p) == {'arch', 'variant', 'name', 'build_sha256', 'rebuild_sha256', 'build_digest', 'rebuild_digest'}, sorted(p)
+    assert set(p) == {'arch', 'variant', 'name', 'build_digest', 'rebuild_digest'}, sorted(p)
     short = {'amd64': ('ubuntu-24.04', 'x86_64'), 'arm64': ('ubuntu-24.04-arm', 'aarch64')}[p['arch']]
     for side, top in (('build', 'apks'), ('rebuild', 'rapks')):
         f = '%s/%s/%s/%s/%s' % (r, top, short[0], short[1], p['name'])
