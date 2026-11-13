@@ -26,7 +26,10 @@ mkdir -p attempts hostile-work
 own_claims() {
   [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || return 1
   local tok
-  tok=$(sh bin/loopback-get.sh -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value) || return 1
+  # the request token goes to curl in a file: its argv is readable in /proc/*/cmdline
+  (umask 077; printf 'Authorization: bearer %s\n' "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" > hostile-work/token-header) || return 1
+  tok=$(sh bin/loopback-get.sh -fsS -H @hostile-work/token-header "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
+  rm -f hostile-work/token-header
   [ -n "$tok" ] || return 1
   printf '%s.%s.\n' "$(printf '%s' "$tok" | cut -d. -f1)" "$(printf '%s' "$tok" | cut -d. -f2)"
 }
