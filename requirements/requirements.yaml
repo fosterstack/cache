@@ -3884,7 +3884,8 @@ requirements:
       plain scripts (bin/acceptance-*.sh) shared with acceptance.yml; Q8 AC14 (the advisor's AC, numbered 14 because AC8 exists): the node image kindest/node:v1.37.0@sha256:a1ed56cf...580ae5 comes from the kind v0.33.0 release notes,
       https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0 (published 2026-08-26). Amended Oct 24 (advisor, rule 13 of the simplest-correct-form rules: a tool that must
       already exist is used where it is): the earlier text pinned kind v0.33.0 and kubectl v1.37.0 by sha256 and installed them; they are now the runner image's own (image 20261012:
-      Kind 0.33.0, Kubectl 1.37.1) and the Check stage has no step for them.
+      Kind 0.33.0, Kubectl 1.37.1) and the Check stage has no step for them. Earlier wording of the AC: "kind and kubectl are installed by a run step from exact versions (kind v0.33.0,
+      kubectl v1.37.0) verified against sha256 values committed in the repository, no action installs them, and the node image is given by digest".
       AC15 (advisor, Oct 10, option 1: fresh databases at scan time from the scanners' own hosts only): grype's database status is read
       from the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json (descriptor.db.status: from, built, valid; host
       grype.anchore.io, digest the sha256 in the download URL's checksum). osv-scanner (advisor, Oct 10, from osv-scanner v2.6.0
