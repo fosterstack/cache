@@ -3405,39 +3405,6 @@
       "body-sha256": "c44960ec0aa21e2e5be06510e165b3f3a9393df23f8e9c3c7f986502f394af41"
     },
     {
-      "file": ".github/agent/tests/pin-wiring-test.sh",
-      "form": "an unpinned package install",
-      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 3,
-      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
-    },
-    {
-      "file": ".github/agent/tests/pin-wiring-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 3,
-      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
-    },
-    {
-      "file": ".github/agent/tests/pin-wiring-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
-      "line": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 3,
-      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
-    },
-    {
       "file": ".github/agent/tests/pip-pin-test.sh",
       "form": "an unpinned package install",
       "key": "9ab6e56f49a14e05344e094ccb0f0930d7ce838dd37d22fc9b068ed63837b004",
@@ -8674,6 +8641,39 @@
       "line": "48ff5eedccff602131f8650739fd07194b4764e758919a75506de0ea93823e62",
       "ruling": "text, not a command: a line of .github/agent/tests/pin-audit-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
       "count": 5
+    },
+    {
+      "file": ".github/agent/tests/pin-wiring-test.sh",
+      "form": "an unpinned package install",
+      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 3,
+      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ba02bd1e1e7ff484a63da02dbf2d2b15ee2910a65f19436c3d60d9393833cc4f"
+    },
+    {
+      "file": ".github/agent/tests/pin-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 3,
+      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ba02bd1e1e7ff484a63da02dbf2d2b15ee2910a65f19436c3d60d9393833cc4f"
+    },
+    {
+      "file": ".github/agent/tests/pin-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
+      "line": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 3,
+      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "ba02bd1e1e7ff484a63da02dbf2d2b15ee2910a65f19436c3d60d9393833cc4f"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
