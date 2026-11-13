@@ -779,12 +779,13 @@ r_, got_, o_ = run_in_tree(MEL, two)
 check(f"AC-B2-3 the copied tree with the real melange.yaml keeps {BUILD_GO} and drops 1.28.0",
       r_.returncode == 0 and [f["filterCriteria"]["vulnerabilityId"][0]["value"] for f in got_[FORMS[0]]["filters"]] == ["CVE-B2"], (r_.returncode, r_.stderr[-300:]))
 # AC-B2-3b: a .sig and a .sha256 line for the same Go version are not a second version
-r_, got_, o_ = run_in_tree(MEL + "\n      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sig\n" % BUILD_GO
-                           + "      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sha256\n" % BUILD_GO, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
+r_, got_, o_ = run_in_tree(MEL + "\n      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sig\n" % OTHER_GO
+                           + "      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sha256\n" % OTHER_GO, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
 kept_ = [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"] for f in got_.get(FORMS[0], {}).get("filters", [])]
 check("AC-B2-3 .tar.gz.sig and .tar.gz.sha256 lines of the same Go version are not refused (still one version)",
       r_.returncode == 0 and "refused" not in r_.stderr and kept_ == [f"go{BUILD_GO}"], (r_.returncode, r_.stderr[-300:]))
-BADS = {"no go.dev Go fetch line": _re.sub(r"https://go\.dev/dl/\S+", "https://example.invalid/x.tar.gz", MEL),
+BADS = {"a quoted second Go URI": MEL + '\n      uri: "https://go.dev/dl/go%s.linux-amd64.tar.gz"\n' % OTHER_GO,
+        "no go.dev Go fetch line": _re.sub(r"https://go\.dev/dl/\S+", "https://example.invalid/x.tar.gz", MEL),
         "a missing file": None,
         "two different Go versions": melange_with(BUILD_GO, OTHER_GO)}
 for what, text in BADS.items():
@@ -850,17 +851,24 @@ check("R7 the build's own stdlib subcomponent is not reported", not any(f"stdlib
 check("R7 stdout still lists just the two files, naming no stdlib", all(n in r_.stdout for n in FORMS) and "stdlib" not in r_.stdout, r_.stdout)
 r_ = run_gen(J(IMAGES), os.path.join(o7, "out2"), openvex=SYN)
 check("R7 a run that leaves nothing out writes nothing about stdlib on stderr", "stdlib" not in r_.stderr, r_.stderr[-200:])
-# two statements (production, fips) naming the same stale stdlib: one 'left out' line each
-sv = {"statements": [scoped("CVE-V-%s" % v, "not_affected",
-                            [{"@id": OURS_Q + "&variant=" + v, "subcomponents": [{"@id": stale_a}]}])
+# two statements, the same CVE and the same stale stdlib, differing only in variant: one 'left out' line each
+sv = {"statements": [scoped("CVE-V", "not_affected", [{"@id": OURS_Q + "&variant=" + v, "subcomponents": [{"@id": stale_a}]}])
                      for v in ("production", "fips")]}
 ov = tempfile.mkdtemp(); pv = os.path.join(ov, "v.json"); json.dump(sv, open(pv, "w"))
 os.makedirs(os.path.join(ov, "out"))
 r_ = run_gen(J(IMAGES), os.path.join(ov, "out"), openvex=pv)
 lv = [l for l in r_.stderr.splitlines() if "left out" in l]
-check("R7 two statements (production, fips) naming the same stale stdlib give two 'left out' lines, one each",
-      r_.returncode == 0 and len(lv) == 2 and sum("CVE-V-production" in l for l in lv) == 1
-      and sum("CVE-V-fips" in l for l in lv) == 1, (r_.returncode, r_.stderr[-400:]))
+check("R7 two statements of one CVE naming the same stale stdlib, in production and in fips, give two 'left out' lines, one per product",
+      r_.returncode == 0 and len(lv) == 2 and sum("variant=production" in l for l in lv) == 1
+      and sum("variant=fips" in l for l in lv) == 1, (r_.returncode, r_.stderr[-400:]))
+# one statement naming two products: the lines differ by product
+sp = {"statements": [scoped("CVE-P", "not_affected", [{"@id": OURS_Q + "&variant=" + v, "subcomponents": [{"@id": stale_a}]} for v in ("production", "fips")])]}
+op = tempfile.mkdtemp(); pp = os.path.join(op, "p.json"); json.dump(sp, open(pp, "w"))
+os.makedirs(os.path.join(op, "out"))
+r_ = run_gen(J(IMAGES), os.path.join(op, "out"), openvex=pp)
+lp = [l for l in r_.stderr.splitlines() if "left out" in l]
+check("R7 one statement naming two products with the same stale stdlib gives two different 'left out' lines",
+      r_.returncode == 0 and len(lp) == 2 and len(set(lp)) == 2, (r_.returncode, r_.stderr[-400:]))
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
