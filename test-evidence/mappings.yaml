@@ -1816,12 +1816,39 @@ mappings:
   - ac: REQ-SCAN-012-AC6
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-CI-001-AC1
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+  - ac: REQ-CI-001-AC2
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+  - ac: REQ-CI-001-AC3
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+  - ac: REQ-CI-001-AC4
+    evidence:
+      - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+  - ac: REQ-CI-005-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
+  - ac: REQ-CI-005-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
   - ac: REQ-CI-005-AC3
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
   - ac: REQ-CI-005-AC4
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+  - ac: REQ-CI-005-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
+  - ac: REQ-CI-005-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
+  - ac: REQ-CI-005-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
   - ac: REQ-CI-006-AC1
     evidence:
       - { type: inspection, ref: "Rule only, not built (owner, Oct 24 2026): the persona suite is not sharded; ops/docs/ratify/2026-10-24-ci-suites-once-and-persona-shard.md item 2." }
