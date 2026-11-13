@@ -82,18 +82,19 @@ attempt_read_sign_token() {
 # The workspace is not searched: it holds this repository, whose test files contain key-shaped text.
 attempt_read_sign_key() {
   # the search roots are the arguments; the call below passes none, which means the four runner locations (the offline test passes its own directories)
-  local f hash roots=("$@")
+  local f hash keyfiles roots=("$@")
   [ "${#roots[@]}" -gt 0 ] || roots=("${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm)
   {
     echo "# transcript: searched HOME, RUNNER_TEMP, /tmp and /dev/shm for private key files and recorded the sha256 of each one's public key"
     echo "searched: $(grep -rIl '' "${roots[@]}" 2> /dev/null | wc -l | tr -d ' ') files"
-    while IFS= read -r -d '' f; do
+    mapfile -d '' -t keyfiles < <(grep -rIlZ -e 'BEGIN [A-Z ]*PRIVATE KEY' "${roots[@]}" 2> /dev/null)
+    for f in "${keyfiles[@]}"; do
       if hash=$(set -o pipefail; openssl pkey -in "$f" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1); then
         printf 'pubkey-sha256: %s\n' "$hash"
       else
         printf 'unreadable-key: %s\n' "$f"
       fi
-    done < <(grep -rIlZ -e 'BEGIN [A-Z ]*PRIVATE KEY' "${roots[@]}" 2> /dev/null)
+    done
   } > attempts/read_sign_key.txt
 }
 
