@@ -576,7 +576,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing",
-      "sha256": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f"
+      "sha256": "1427b34581d6205e8d9ae83e963aabfd615c476052d2a62be2f581d549e6da1b"
     },
     {
       "path": "bin/build-freeze.sh",
