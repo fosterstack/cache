@@ -98,20 +98,16 @@ _FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of",
 _DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited", "purl"))
 _SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
-# no control characters, no backtick (the issue text quotes with it) matches "libc6 2.36"; not text holding a backtick
+# Text with no control character and no backtick, because the issue text quotes with a backtick; "libc6 2.36" matches.
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")
-# CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result; capped, and the same grammar
-# the unsettled-run counter keeps
+# CVE-, GHSA-, DEBIAN-CVE- and GO- ids, and the tally's "?" for an id-less result. Capped, and the same grammar the
+# unsettled-run counter keeps.
 _ID = policy.FINDING_ID
-class _PurlGrammar:
-    """The package-URL grammar the verdict allows: one rule, defined where the tally writes
-    the URLs (bin/panel.py purl_ok)."""
-    @staticmethod
-    def fullmatch(purl):
-        return True if panel_module().purl_ok(purl) else None
 
 
-_PURL = _PurlGrammar
+def _purl_ok(purl):
+    """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs."""
+    return bool(panel_module().purl_ok(purl))
 
 
 def _closed(obj, keys, what):
@@ -193,7 +189,7 @@ def _validate_panel_verdict(d):
                              % (f["id"], f["image"]))
     for f in d["findings"]:                      # a package URL must name the package and version the finding names
         for purl in f["purls"]:
-            if not _PURL.fullmatch(purl):
+            if not _purl_ok(purl):
                 raise ParseError("panel verdict: finding %s on %s has a package URL that is not pkg:TYPE/..."
                                  % (f["id"], f["image"]))
             name, ver = pm.purl_name_version(purl)
@@ -219,7 +215,7 @@ def _validate_panel_verdict(d):
                     or not isinstance(al, list) or len(set(map(str, al))) != len(al)
                     or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
                     or ("aliases" in rec and not al) or not isinstance(rec.get("known_exploited", True), bool)
-                    or ("purl" in rec and not (isinstance(rec["purl"], str) and _PURL.fullmatch(rec["purl"])))):
+                    or ("purl" in rec and not (isinstance(rec["purl"], str) and _purl_ok(rec["purl"])))):
                 raise ParseError("panel verdict: finding %s on %s has a malformed value in %s's details"
                                  % (f["id"], f["image"], sc))
             # that scanner's own package URL names the package and version the finding names
@@ -350,8 +346,9 @@ def parse_govulncheck(path):
     scan_level = None
     module = None
     osv_aliases = {}
-    sbom_ver = {}          # module path -> version, so a trace frame that omits the version
-    saw_any = False        # can still be scoped to the exact version scanned (REQ-AUD-13 AC5)
+    # module path -> version: scopes a trace frame that omits its version (REQ-AUD-13 AC5, see the matrix page)
+    sbom_ver = {}
+    saw_any = False
     for obj in _stream(text):
         if not isinstance(obj, dict):
             raise ParseError("govulncheck: non-object in stream")
@@ -387,8 +384,8 @@ def parse_govulncheck(path):
                  if isinstance(fr, dict) and (fr.get("module") or fr.get("package") or fr.get("function"))]
         called = any(fr.get("function") for fr in trace)
         imported_only = bool(trace) and not called
-        # the (module, version) the trace actually names — a closure may only be scoped to
-        # these, never to a sibling version the evidence does not cover (REQ-AUD-13 AC5).
+        # A closure is scoped only to the (module, version) the trace names, never to a sibling version the evidence
+        # does not cover (REQ-AUD-13 AC5 of .github/agent/docs/cve-auditor-matrix.md).
         modvers = {(fr["module"], fr.get("version") or sbom_ver.get(fr["module"]))
                    for fr in trace if fr.get("module")}
         cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set(), "mods": {}})
