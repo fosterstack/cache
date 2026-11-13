@@ -248,7 +248,7 @@
     },
     {
       "path": "bin/install-build-tools.sh",
-      "sha256": "4703b2ee829fa12247e1abd1c1fcdaeacece6fb495a1a172e100a58505ae4267",
+      "sha256": "2e161723f2311c64a444c9bc2476c712e7369ed586119275c45a13d9e2727f2f",
       "tools": [
         "at",
         "command",
