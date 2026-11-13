@@ -27,6 +27,7 @@ RECORD_FILE = "audit-record"          # the one file the record commit adds (cre
 WEB_FLOW = ("web-flow", 19864447)     # GitHub's own committer for commits it makes and signs on an actor's behalf
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
+ITEMS_PATH = ".auditor/accepted-items.json"
 
 
 def record_branch(head):
@@ -129,15 +130,18 @@ def _approval(tag_object):
     return found[0] if len(found) == 1 else None
 
 
-def verify_release(tag, tag_object, tagged_sha, ref, commit, policy):
+def verify_release(tag, tag_object, tagged_sha, ref, commit, policy, items=None):
     """Gate 7 (release process rule 7): (True, "") for a patch tag or for a release tag whose commit has a
-    passed-audit record that the owner's signed tag message approves; else (False, reason).
+    passed-audit record that the owner's signed tag message approves and no owner-decision item open in `items`
+    (the parsed .auditor/accepted-items.json, REQ-AUD-17 AC5); else (False, reason).
     The tag's signature is verified by the admission step before this runs, so a line in the message is the
     owner's own."""
     if not isinstance(tag, str) or not _RELEASE_TAG.fullmatch(tag):
         return False, "the tag is not a release version"
     if _PATCH_TAG.fullmatch(tag):
         return True, ""
+    if any(i.get("threshold") == "at_or_above" for i in (items or {}).get("accepted_items", [])):
+        return False, "an owner-decision item is still open in %s" % ITEMS_PATH
     approved = _approval(tag_object)
     if approved is None:
         return False, ("the signed tag message does not carry exactly one 'Audit-approved: <40-hex record commit>' "
@@ -239,7 +243,8 @@ def main(argv):
         except OSError:
             obj = None
         ok, why = verify_release(a.tag, obj, a.tagged_sha, _load(a.ref_json), _load(a.commit_json),
-                                 _load(os.path.join(a.base_root, WRITERS_PATH)))
+                                 _load(os.path.join(a.base_root, WRITERS_PATH)),
+                                 _load(os.path.join(a.base_root, ITEMS_PATH)))
         done = ("no whole-release record needed" if is_patch_tag(a.tag)
                 else "the owner's approval matches the passed-audit record")
         print("audit-record: " + ("release %s: %s" % (a.tag, done) if ok else why))
