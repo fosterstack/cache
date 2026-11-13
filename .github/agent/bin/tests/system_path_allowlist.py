@@ -29,7 +29,7 @@ LINK_ROWS = [
 # so the WHOLE FILE is pinned: (sha256 of the file's raw bytes, the literal-bearing lines it may contain, reason). Any edit to one of these files
 # needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
 PINS = {
-    '.github/agent/bin/tests/test_check_action_pins.py': ('3c7c08186905c29d22daaff1f0a8e1ce74d456094afa1e7a58f4a564928ea20d',
+    '.github/agent/bin/tests/test_check_action_pins.py': ('49ad456346c175436658f01be143a40910e138b24f82a149ac6278c407d16191',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
                  'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
                  '"x"})',
