@@ -3148,6 +3148,9 @@ assert judge_job({2: env_step, **real}, {D: with_env_step}) == [4, 8], "a step w
 assert judge_job(real, {D: dwf.replace(URL, "OTHER_URL", 1)}) == [4, 8], "fewer mentions than the steps hold"
 assert judge_job(real, {}) == [4, 8], "a workflow file the tree cannot read keeps the findings"
 assert judge_job(real, {D: dwf + "\n  - [unclosed\n"}) == [4, 8], "a file that does not parse keeps the findings"
+# a list that holds itself, by an alias to its own anchor: the walk over the parsed file ends and sees what it holds
+looped = dwf + "\nagain: &again [*again, {env: {BASH_ENV: /tmp/hook}}]\n"
+assert judge_job(real, {D: looped}) == [4, 8], "a hook inside a list that holds itself is found, and the read ends"
 
 class Changed:
     """the repository as it is, with the reviewer workflow replaced by `text`"""
