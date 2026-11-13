@@ -2164,7 +2164,7 @@ requirements:
       On each pull request the required checks are quick: static checks and only the tests for the files the change
       touched, a few minutes in total (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 1, owner Nov 10 2026:
       "you run a full test suite end to end etc on code promotions not CI"). The full suite (coverage, fips140-only,
-      gosec, the CodeQL analysis, both acceptance suites, reproducibility, the scan and the long wiring suites) never runs on a
+      the CodeQL analysis, both acceptance suites, reproducibility, the scan and the long wiring suites) never runs on a
       pull request; it runs before a release-candidate tag and nightly on main (rule 2). A failed nightly run opens a
       fix item and never blocks a merge (rule 3).
     source: [.github/workflows/ci.yml, .github/workflows/full-suite.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/stage-admission.yml, .github/policy/required-checks.json, .github/policy/test-paths.json, bin/select-tests.sh]
@@ -2180,7 +2180,7 @@ requirements:
       - id: REQ-CI-001-AC1
         given: "a pull request into main"
         when: "the workflows run on the pull_request event"
-        then: "the required contexts that run are exactly test, lint, requirements, allowlist, vendor, govulncheck and pin-age, each with no job-level condition that can skip it, and .github/policy/required-checks.json lists exactly those seven as required_checks; auditor-review-gate, gosec and dependency-review are not in it or in promotion_checks (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md), and neither are the contexts allowlist-persona, allowlist-chain, allowlist-pins-auditor, fips140-only, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), reproducibility, coverage and scan; analyze (go) is in promotion_checks only"
+        then: "the required contexts that run are exactly test, lint, requirements, allowlist, vendor, govulncheck and pin-age, each with no job-level condition that can skip it, and .github/policy/required-checks.json lists exactly those seven as required_checks; auditor-review-gate, gosec and dependency-review are not in it or in promotion_checks (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md), and no workflow has a job that produces gosec or dependency-review, and neither are the contexts allowlist-persona, allowlist-chain, allowlist-pins-auditor, fips140-only, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), reproducibility, coverage and scan; analyze (go) is in promotion_checks only"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC2
@@ -2204,7 +2204,7 @@ requirements:
       - id: REQ-CI-001-AC5
         given: ".github/workflows/full-suite.yml"
         when: "its triggers and jobs are read"
-        then: "it triggers only on a daily schedule, workflow_dispatch and workflow_call; it holds coverage, fips140-only, gosec and the three allowlist shards under their old job names, each running its whole suite, and calls acceptance.yml; the whole suites bin/full-suite-wiring-test.sh and bin/select-tests-test.sh run in it too (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 2: the full suite, whole); the scan and the CodeQL analysis keep their own workflows, whose daily schedule is the nightly run"
+        then: "it triggers only on a daily schedule, workflow_dispatch and workflow_call; it holds coverage, fips140-only and the three allowlist shards under their old job names, each running its whole suite, and calls acceptance.yml; the whole suites bin/full-suite-wiring-test.sh and bin/select-tests-test.sh run in it too (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 2: the full suite, whole); the scan and the CodeQL analysis keep their own workflows, whose daily schedule is the nightly run"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC6
