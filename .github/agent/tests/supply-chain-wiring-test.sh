@@ -163,6 +163,14 @@ def judge_wf(d, real=False):
         bad.append("daily-audit does not run on the schedule")
     if ".github/agent/supply-chain/pin-audit.py" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])) or "--rerun-held" in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("daily-audit must run .github/agent/supply-chain/pin-audit.py without --rerun-held")
+    daily_steps = j.get("steps", [])
+    fetches = [i for i, st in enumerate(daily_steps) if "git fetch" in str(st.get("run", ""))]
+    audits = [i for i, st in enumerate(daily_steps) if "pin-audit.py" in str(st.get("run", ""))]
+    fetch_run = str(daily_steps[fetches[0]].get("run", "")) if len(fetches) == 1 else ""
+    if (len(fetches) != 1 or len(audits) != 1 or fetches[0] > audits[0] or "refs/pull/*/head" not in fetch_run
+            or set(daily_steps[fetches[0]]) - {"name", "run"} or re.search(r"token|authorization", fetch_run, re.I)):
+        bad.append("daily-audit does not fetch refs/pull/*/head with a plain git fetch step (no token, no action) "
+                   "before the audit step")
     # rerun-held
     j = jobs["rerun-held"]
     if j.get("permissions") != {"actions": "write", "contents": "read", "pull-requests": "read", "checks": "read"}:
@@ -644,7 +652,29 @@ mut_wf("the observations expire in a day", "does not keep the tag observations",
 mut_wf("the PR job writes observations", "only daily-audit may write the tag observations", lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("the audit stops writing observations", "does not write the tag observations", lambda d: [x.update(run=x["run"].replace("--observations-out", "--quiet")) for x in J(d, "daily-audit")["steps"] if "run" in x])
 mut_wf("daily-audit re-runs PRs itself", "daily-audit must run .github/agent/supply-chain/pin-audit.py without --rerun-held", lambda d: [x.update(run=x["run"] + " --rerun-held") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
-mut_wf("rerun-held loses actions: write", "rerun-held's permissions are not exactly", lambda d: J(d, "rerun-held")["permissions"].pop("actions"))
+FETCH_REASON = "daily-audit does not fetch refs/pull/*/head with a plain git fetch step"
+mut_wf("daily-audit loses its pull request fetch", FETCH_REASON,
+       lambda d: J(d, "daily-audit").update(
+           steps=[x for x in J(d, "daily-audit")["steps"] if "git fetch" not in str(x.get("run", ""))]))
+def fetch_after_audit(d):
+    steps = J(d, "daily-audit")["steps"]
+    fetch = [x for x in steps if "git fetch" in str(x.get("run", ""))]
+    J(d, "daily-audit")["steps"] = [x for x in steps if x not in fetch] + fetch
+mut_wf("daily-audit fetches only after the audit", FETCH_REASON, fetch_after_audit)
+def fetch_step(d): return [x for x in J(d, "daily-audit")["steps"] if "git fetch" in str(x.get("run", ""))]
+mut_wf("daily-audit fetches another refspec", FETCH_REASON,
+       lambda d: [x.update(run="git fetch --no-tags origin main") for x in fetch_step(d)])
+mut_wf("the pull request fetch gets the token", FETCH_REASON,
+       lambda d: [x.update(env={"GH_TOKEN": "${{ github.token }}"}) for x in fetch_step(d)])
+mut_wf("the pull request fetch puts a token in its command", FETCH_REASON,
+       lambda d: [x.update(run="git fetch https://x-access-token:${{ github.token }}@github.com/o/r "
+                           "'+refs/pull/*/head:refs/pull/*/head'") for x in fetch_step(d)])
+mut_wf("the pull request fetch is an action", FETCH_REASON,
+       lambda d: [(x.pop("run"), x.update(uses="actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"))
+                  for x in fetch_step(d)])
+mut_wf("the pull request fetch is fetched twice", FETCH_REASON,
+       lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'"}))
+mut_wf("rerun-held loses actions: write","rerun-held's permissions are not exactly", lambda d: J(d, "rerun-held")["permissions"].pop("actions"))
 mut_wf("rerun-held gains issues: write", "can write issues", lambda d: J(d, "rerun-held")["permissions"].update(issues="write"))
 mut_wf("rerun-held never re-runs", "does not run .github/agent/supply-chain/pin-audit.py --rerun-held", lambda d: J(d, "rerun-held").update(steps=[s for s in J(d, "rerun-held")["steps"] if "--rerun-held" not in str(s.get("run", ""))]))
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))
