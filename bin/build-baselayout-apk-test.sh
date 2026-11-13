@@ -33,8 +33,10 @@ cp -R "$src" "$work/bsrc"; mkdir -p "$work/bsrc/build"; cp -R "$root/build/basel
 ( cd "$work/bsrc" && git add -A && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.test GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.test \
   GIT_COMMITTER_DATE="$ISO" GIT_AUTHOR_DATE="$ISO" git commit -q -m baselayout ) >/dev/null 2>&1
 export STUB_SRC="$work/bsrc"
-# The helper judges the sealed call against the fixed env, unshare and melange paths. The build-apk copy runs the helper through this PY3 shim, which runs a copy
-# of the helper whose one constants line names the stubs (TEST_UNSHARE and TEST_MELANGE still win); the other helper lines are untouched.
+# The helper judges the sealed call against the fixed env, unshare and melange paths. The build-apk copy runs the helper
+# through this PY3 shim, which runs a copy
+# of the helper whose one constants line names the stubs (TEST_UNSHARE and TEST_MELANGE still win); the other helper
+# lines are untouched.
 python3 - "$root/bin/build-apk-helper.py" "$work/helper-copy.py" "$(command -v env)" "$stubs" <<'PY'
 import sys
 src, out, envbin, stubs = sys.argv[1:5]
@@ -91,7 +93,8 @@ ordered "0710" "sysctl comes before melange" '^sysctl ' '^melange build '
 sd "0710" "aarch64 build on an aarch64 host" '^melange build .*--arch aarch64' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=aarch64 "$BBT" "${bb_args[@]}" --arch aarch64 --out "$(mo)"
 sr "0710" "refuses an arch other than the host's" 'host|native' "${bbe[@]}" "$BBT" "${bb_args[@]}" --arch aarch64 --out "$(mo)"
 sr "0710" "refuses without SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env FAKE_UNAME=x86_64 "$BBT" "${bb_args[@]}" --out "$(mo)"
-sr "0710" "refuses the release key in the environment" 'release|must not' "${bbe[@]}" RELEASE_KMS_KEY_REF=canary "$BBT" "${bb_args[@]}" --out "$(mo)"
+sr "0710" "refuses the release key in the environment" 'release|must not' "${bbe[@]}" RELEASE_KMS_KEY_REF=canary \
+  "$BBT" "${bb_args[@]}" --out "$(mo)"
 sr "0710" "refuses GOPROXY set to a live proxy" GOPROXY "${bbe[@]}" GOPROXY=https://proxy.golang.org "$BBT" "${bb_args[@]}" --out "$(mo)"
 sr "0710" "refuses a proxy in the environment" proxy "${bbe[@]}" HTTPS_PROXY=http://127.0.0.1:3128 "$BBT" "${bb_args[@]}" --out "$(mo)"
 sr "0710" "refuses --signing-key (the apk is signed with the committed assembly key only)" 'signing' "${bbe[@]}" "$BBT" "${bb_args[@]}" --signing-key "$kr" --out "$(mo)"
