@@ -50,6 +50,10 @@ def raises(exc, fn):
     try: fn()
     except exc: return True
     return False
+def caught(exc, fn):
+    try: fn()
+    except exc as e: return str(e)
+    return None
 NOW = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
 def ago(days): return (NOW - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 PY
@@ -73,13 +77,15 @@ CASE="PyPI network outage while dating a package is CouldNotLook, not 'no proof'
 check python3 - "$work/pre.py" <<PY
 import sys; exec(open(sys.argv[1]).read()); $PYPI
 serve(down)
-assert raises(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None)), "outage read as no proof"
+msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
+assert msg and "could not be asked" in msg, ('outage read as no proof', msg)
 PY
 CASE="PyPI answering HTTP 503 is CouldNotLook"
 check python3 - "$work/pre.py" <<PY
 import sys; exec(open(sys.argv[1]).read()); $PYPI
 serve(code(503))
-assert raises(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None)), "503 read as no proof"
+msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
+assert msg and "HTTP 503" in msg, ('503 read as no proof', msg)
 PY
 CASE="PyPI answering 404 stays 'not there': no proof, no exception"
 check python3 - "$work/pre.py" <<PY
@@ -94,13 +100,15 @@ CASE="Go proxy network outage while dating a go install is CouldNotLook"
 check python3 - "$work/pre.py" <<PY
 import sys; exec(open(sys.argv[1]).read()); $GOT
 serve(down)
-assert raises(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None)), "proxy outage read as no proof"
+msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
+assert msg and "could not be asked" in msg, ('proxy outage read as no proof', msg)
 PY
 CASE="Go proxy answering HTTP 502 is CouldNotLook"
 check python3 - "$work/pre.py" <<PY
 import sys; exec(open(sys.argv[1]).read()); $GOT
 serve(code(502))
-assert raises(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None)), "proxy 502 read as no proof"
+msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
+assert msg and "HTTP 502" in msg, ('proxy 502 read as no proof', msg)
 PY
 GOIDX='
 def h(url):
@@ -113,7 +121,8 @@ import sys; exec(open(sys.argv[1]).read()); $GOT
 INDEX = down
 $GOIDX
 serve(h)
-assert raises(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None)), "index outage read as no proof"
+msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
+assert msg and "could not be asked" in msg, ('index outage read as no proof', msg)
 PY
 CASE="Go index answering HTTP 500 is CouldNotLook"
 check python3 - "$work/pre.py" <<PY
@@ -121,7 +130,8 @@ import sys; exec(open(sys.argv[1]).read()); $GOT
 INDEX = code(500)
 $GOIDX
 serve(h)
-assert raises(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None)), "index 500 read as no proof"
+msg = caught(age.CouldNotLook, lambda: age.live_proofs(it, "/nonexistent", None))
+assert msg and "index.golang.org could not be asked" in msg, ('index 500 read as no proof', msg)
 PY
 CASE="Go index that answers with the module's row yields the go-index proof (a working path stays working)"
 check python3 - "$work/pre.py" <<PY
@@ -148,7 +158,8 @@ def h(url):
 serve(h)
 net = aud.LiveNet([sys.argv[2]], "/nonexistent")
 it = aud.inv.Item("package", "pypi/requests", "2.32.0")
-assert raises((aud.Fail, aud.age.CouldNotLook), lambda: net.lists(it)), "PyPI outage ignored by the advisory query"
+msg = caught((aud.Fail, aud.age.CouldNotLook), lambda: net.lists(it))
+assert msg and "could not be asked" in msg, ("PyPI outage ignored by the advisory query", msg)
 PY
 
 # --- (2) gotool is dated by the Go index time -------------------------------------------------------------------------
