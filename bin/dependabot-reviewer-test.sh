@@ -551,15 +551,31 @@ py_rc=$?
 # partial failures, -e aborting the loop, guard drift).
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 pass=0; fail=0
-VER=$(sha256sum "$repo/bin/dependabot-reviewer.py" | cut -d' ' -f1); OLDVER=$(printf '%064d' 0)
+ver3() { # <checkout>: the reviewer's version, the sha256 of its program, prompt and workflow joined in that order
+  cat "$1/bin/dependabot-reviewer.py" "$1/.github/policy/dependabot-reviewer-prompt.txt" "$1/.github/workflows/dependabot-reviewer.yml" | sha256sum | cut -d' ' -f1
+}
+VER=$(ver3 "$repo"); OLDVER=$(printf '%064d' 0); PYVER=$(sha256sum "$repo/bin/dependabot-reviewer.py" | cut -d' ' -f1)
+mkalt() { # <dir> <prompt-changed|workflow-changed|no-prompt|no-workflow>: the files the steps read, with one reviewer file changed or left out
+  local d="$1" f
+  rm -rf "$d"; mkdir -p "$d/.github/policy" "$d/.github/workflows"; ln -s "$repo/bin" "$d/bin"; git init -q "$d"   # git grep reads the usage
+  for f in "$repo"/.github/policy/*; do ln -s "$f" "$d/.github/policy/"; done
+  rm "$d/.github/policy/dependabot-reviewer-prompt.txt"
+  cp "$repo/.github/policy/dependabot-reviewer-prompt.txt" "$d/.github/policy/"; cp "$repo/.github/workflows/dependabot-reviewer.yml" "$d/.github/workflows/"
+  case "$2" in
+    prompt-changed) printf '\nAlso read the lockfile.\n' >> "$d/.github/policy/dependabot-reviewer-prompt.txt" ;;
+    workflow-changed) printf '# changed\n' >> "$d/.github/workflows/dependabot-reviewer.yml" ;;
+    no-prompt) rm "$d/.github/policy/dependabot-reviewer-prompt.txt" ;;
+    no-workflow) rm "$d/.github/workflows/dependabot-reviewer.yml" ;;
+  esac
+}
 verdicts() { # <[[conclusion, external_id (left out: none), app slug], ...]> oldest first, as GitHub lists them
   jq -cn --argjson r "$1" '{check_runs: [$r | to_entries[] | {id: .key, conclusion: .value[0], app: {slug: (.value[2] // "fosterstack-automation")}}
                                          + (if (.value | length) > 1 then {external_id: .value[1]} else {} end)]}'
 }
-ext_on_every_check() { # <name>: every dependabot-reviewer check in the gh log of the last run carries the current version, and there is one
-  local n m
+ext_on_every_check() { # <name> [version]: every dependabot-reviewer check in the gh log of the last run carries the current version, and there is one
+  local n m want="${2:-$VER}"
   n=$(grep -cE 'check-runs -f name=dependabot-reviewer' "$w/gh.log") || true
-  m=$(grep -E 'check-runs -f name=dependabot-reviewer' "$w/gh.log" | grep -cE -- "-f external_id=$VER( |$)") || true
+  m=$(grep -E 'check-runs -f name=dependabot-reviewer' "$w/gh.log" | grep -cE -- "-f external_id=$want( |$)") || true
   if [ "$n" -ge 1 ] && [ "$n" = "$m" ]; then echo "ok: $1"; pass=$((pass+1))
   else echo "FAIL: $1 ($n reviewer checks, $m with the current external_id)"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); fi
 }
@@ -651,7 +667,7 @@ act() { # name; env: A B (answers), PRS, FAIL, ARMED, RULES, UPDATES (the update
     echo "$n $(printf '%040d' "$n") ${PRIOR:-none}" >> "$W/work/candidates.txt"   # a full commit id, as the candidates step writes it
     echo "${UPDATES:-$MAJOR_UPDATE}" > "$W/work/updates-$n.json"
   done
-  (cd "$repo" && env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" LIST="$repo/.github/policy/required-checks.json" \
+  (cd "${ACTDIR:-$repo}" && env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" LIST="$repo/.github/policy/required-checks.json" \
      GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" FAIL="${FAIL:-}" ARMED="${ARMED:-false}" \
      GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" GITHUB_STEP_SUMMARY="$W/summary" GITHUB_OUTPUT="$W/output" \
      RUN_URL=https://example.invalid/run ANTHROPIC_IDENTITY_TOKEN_FILE="$W/token" \
@@ -676,6 +692,9 @@ expect() { # name; then grep -E assertions on the gh log: +regex must appear, -r
   else echo "FAIL: act: $name"; sed 's/^/    gh: /' "$w/gh.log"; tail -15 "$w/act.out" | sed 's/^/    out: /'; fail=$((fail+1)); fi
 }
 CHK='check-runs'; SUCCESS='conclusion=success'; FAILURE='conclusion=failure'
+step_fails() { # <name> <exit status>: the step ended non-zero
+  if [ "$2" != 0 ]; then echo "ok: $1 (exit $2)"; pass=$((pass+1)); else echo "FAIL: $1 (exit 0)"; fail=$((fail+1)); fi
+}
 
 A="$CLEAN" B="$CLEAN" act; expect "both clean -> arm auto-merge, THEN the success check" \
   "+pr merge --auto --squash --match-head-commit [0-9a-f]+ 99" "+$CHK" "ORDER:pr merge --auto>$CHK" ERRORED=0
@@ -726,6 +745,17 @@ A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success FAIL="gate" act; expect "
 A="$CLEAN" B="$CLEAN" act; ext_on_every_check "act: the success check carries the reviewer's version as external_id"
 A="$CLEAN" B="$BREAKS" act; ext_on_every_check "act: the failure check carries the reviewer's version as external_id"
 A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act; ext_on_every_check "act: the neutral check of a forced review that errors carries the reviewer's version as external_id"
+# the version is of the program, the prompt and the workflow as this run checked them out: a change to any of them is a new version
+for what in prompt-changed workflow-changed; do
+  mkalt "$w/alt" "$what"
+  A="$CLEAN" B="$CLEAN" ACTDIR="$w/alt" act; ext_on_every_check "act: with the $what the success check carries the version of the three files as they are" "$(ver3 "$w/alt")"
+done
+# a version that cannot be computed stops the step before any verdict: nothing armed, disarmed or published, not even a neutral
+for what in no-prompt no-workflow; do
+  mkalt "$w/alt" "$what"
+  A="$CLEAN" B="$CLEAN" ARMED=true PRIOR=success ACTDIR="$w/alt" act; expect "act: $what: the version cannot be computed -> no arm, no disarm, no check of any kind" "-pr merge" "-$CHK"
+  step_fails "act: $what: the step fails" "$(cat "$w/act.rc")"
+done
 
 # REQ-DEP-001-AC2, AC9: the verdict is for the commit whose diff was gathered. A head that is another commit when the readers have answered
 # gets nothing: no check, no arm, no disarm, no issue; it is not an error (the new head is a candidate next hour)
@@ -859,7 +889,7 @@ grep -q "name=auditor-review-gate -f head_sha=shaC" "$w/gh.log" && ! grep -q "na
 # REQ-DEP-001-AC14: the cancellation step's lookup counts a success only with the current version
 cancel_one() { # <check runs of shaA> <left-as-is yes|no> <name>
   printf '99 shaA\n' > "$w/cx/work/armed-unpublished.txt"; : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" CANCELA_JSON="$1" RUNNER_TEMP="$w/cx" GITHUB_REPOSITORY=o/r APP_TOKEN=a APP_SLUG=s RUN_URL=https://example.invalid/run \
+  (cd "${CANCELDIR:-$repo}" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" CANCELA_JSON="$1" RUNNER_TEMP="$w/cx" GITHUB_REPOSITORY=o/r APP_TOKEN=a APP_SLUG=s RUN_URL=https://example.invalid/run \
      bash --noprofile --norc -e -o pipefail "$w/cancel.sh") >/dev/null 2>&1
   if grep -q "pr merge --disable-auto 99" "$w/gh.log"; then got=no; else got=yes; fi
   [ "$got" = "$2" ] && { echo "ok: cancellation: $3 (arm left as is: $got)"; pass=$((pass+1)); } || { echo "FAIL: cancellation: $3 (arm left as is: $got, want $2)"; fail=$((fail+1)); }
@@ -871,6 +901,21 @@ cancel_one "$(verdicts '[["success","","s"]]')" no "a success with an empty exte
 cancel_one "$(verdicts '[["success",null,"s"]]' | jq -c '.check_runs[0] |= del(.external_id)')" no "a success with no external_id is no success: the arm comes off"
 cancel_one "$(verdicts "[[\"success\",\"$VER\",\"s\"],[\"success\",\"$OLDVER\",\"s\"]]")" no "a success of another version finishing after the current one (newest by id): the arm comes off"
 cancel_one "$(verdicts "[[\"success\",\"$OLDVER\",\"s\"],[\"success\",\"$VER\",\"s\"]]")" yes "a success of the current version after an older one: the arm is recorded"
+cancel_one "$(verdicts "[[\"success\",\"$PYVER\",\"s\"]]")" no "a success carrying the sha256 of the program alone (the version before the prompt and the workflow counted) is no success: the arm comes off"
+for what in prompt-changed workflow-changed; do
+  mkalt "$w/alt" "$what"
+  CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$VER\",\"s\"]]")" no "with the $what a success of the version of the old text is no success: the arm comes off"
+  CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\",\"s\"]]")" yes "with the $what a success of the version of the three files as they are is recorded"
+done
+for what in no-prompt no-workflow; do
+  mkalt "$w/alt" "$what"
+  printf '99 shaC\n' > "$w/cx/work/armed-unpublished.txt"; : > "$w/gh.log"
+  (cd "$w/alt" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" RUNNER_TEMP="$w/cx" GITHUB_REPOSITORY=o/r APP_TOKEN=a APP_SLUG=s RUN_URL=https://example.invalid/run \
+     bash --noprofile --norc -e -o pipefail "$w/cancel.sh") >/dev/null 2>&1; rc=$?
+  ! grep -q "check-runs -f" "$w/gh.log" && { echo "ok: cancellation: $what: the version cannot be computed -> no check of any kind is published (no version=unknown)"; pass=$((pass+1)); } \
+    || { echo "FAIL: cancellation: $what: a check was published without a version"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
+  step_fails "cancellation: $what: the step fails" "$rc"
+done
 
 # ============================================================================ candidates step
 python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cand.sh" "$w/streak.sh" "$w/settle.sh" <<'PY2'
@@ -909,7 +954,7 @@ case "$1 $2" in
               [ "${LOOKUP99:-}" = fail ] && exit 1; own_check "${PRIOR99_JSON:-}" "${PRIOR99:-none}" "$@" ;;
   "api repos/o/r/commits/p1/check-runs?check_name=dependabot-reviewer")
               [ "${LOOKUPP1:-}" = fail ] && exit 1; own_check "${PRIORP1_JSON:-}" "${PRIORP1:-none}" "$@" ;;
-  "api repos/o/r/commits/sha90/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP90:-}" = fail ] && exit 1; echo "${PRIOR90:-none}" ;;
+  "api repos/o/r/commits/sha90/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP90:-}" = fail ] && exit 1; own_check "${PRIOR90_JSON:-}" "${PRIOR90:-none}" "$@" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
   "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
   # earlier heads of #99 and #90 (the spend guard): p1 is the head's first parent, p0 is p1's
@@ -951,14 +996,14 @@ esac
 EOF
 chmod +x "$w/bin/gh"
 export DIFF_SAME='diff --git a/go.mod b/go.mod\nindex 1111111..2222222 100644\n--- a/go.mod\n+++ b/go.mod\n@@ -1,3 +1,3 @@\n module x\n-require a/b v4.0.0\n+require a/b v7.0.0\n'
-cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
+cand() { # expected-candidates (* = any) expected-rc (nz = any failure); env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
   (cd "${CANDDIR:-$repo}" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-$w/prs.json}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" \
      GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
   local got; got=$(cut -d' ' -f1,3 "$W/work/candidates.txt" 2>/dev/null | tr '\n' ',')
-  if [ "$got" = "$1" ] && [ "$rc" = "$2" ]; then echo "ok: candidates: $3"; pass=$((pass+1))
+  if { [ "$1" = '*' ] || [ "$got" = "$1" ]; } && { [ "$rc" = "$2" ] || { [ "$2" = nz ] && [ "$rc" != 0 ]; }; }; then echo "ok: candidates: $3"; pass=$((pass+1))
   else echo "FAIL: candidates: $3 (got '$got' rc $rc)"; sed 's/^/    /' "$w/cand.out" | tail -8; fail=$((fail+1)); fi
 }
 also() { # <name> then +regex / -regex assertions on the gh log of the last cand, settle or lane run
@@ -1074,6 +1119,30 @@ PRIOR99=success FORCE=true cand "99 neutral,91 none," 0 "force over a success: r
 ext_on_every_check "candidates: the neutral that supersedes a verdict carries the reviewer's version as external_id"
 ONLY=99 CANDDIR="$w/noprog" PRIOR99=success cand "" 1 "the reviewer's version cannot be read (no bin/dependabot-reviewer.py) -> the step fails before any verdict is read"
 also "candidates: nothing is listed, read or published without the version" "-pr list" "-check-runs" "-pr merge"
+# REQ-DEP-001-AC14: the version is of bin/dependabot-reviewer.py, the prompt and the workflow, joined in that order, as this run checked them out
+ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$PYVER\"]]") cand "99 none," 0 "a success carrying the sha256 of the program alone (the version before the prompt and the workflow counted) is read"
+for what in prompt-changed workflow-changed; do
+  mkalt "$w/alt" "$what"
+  CANDDIR="$w/alt" ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$VER\"]]") cand "99 none," 0 "with the $what a success of the version of the old text is read"
+  also "candidates: it is not superseded, forced or published over" "-check-runs -f name=dependabot-reviewer"
+  CANDDIR="$w/alt" ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\"]]") cand "" 0 "with the $what a success of the version of the three files as they are is still a success"
+done
+for what in no-prompt no-workflow; do
+  mkalt "$w/alt" "$what"
+  CANDDIR="$w/alt" PRIOR99=success cand "" 1 "a missing file ($what): the version cannot be computed -> the step fails before any verdict is read"
+  also "candidates: $what: nothing is listed, read or published" "-pr list" "-check-runs" "-pr merge"
+done
+# REQ-DEP-001-AC13: a head whose newest verdict is none (a success of another version or with no version too) never keeps a gate success
+ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK]") GATE99=success cand "99 none," 0 "a success of another version over a gate success"
+also "candidates: the gate's check is failed again over the success of another version" "+$GFAIL"
+ONLY=99 PRIOR99_JSON=$(verdicts '[["success"]]') GATE99=success cand "99 none," 0 "a success with no external_id over a gate success"
+also "candidates: the gate's check is failed again over the unversioned success" "+$GFAIL"
+ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK]") GATE99=failure cand "99 none," 0 "a success of another version over a gate failure"
+also "candidates: a gate failure is left as it is" "-check-runs -f name=auditor-review-gate"
+ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK]") GATE99=success GATEFAIL=1 cand '*' nz "the gate's check cannot be failed again over a success of another version -> the step fails"
+ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK]") GATELOOKUP=fail cand '*' nz "the gate's check cannot be read over a success of another version -> the step fails"
+ONLY=99 GATE99=success GATEFAIL=1 cand '*' nz "the gate's check cannot be failed again over a head with no reviewer check -> the step fails"
+ONLY=99 GATELOOKUP=fail cand '*' nz "the gate's check cannot be read over a head with no reviewer check -> the step fails"
 
 # REQ-DEP-001-AC10: a PR whose update lines cannot be read is read like any other, and is not the lane's: an arm with no verdict comes off first
 jq -n '[{number: 77, title: "An odd title", body: "nothing here names an update", headRefOid: "sha77"}]' > "$w/prs-unparsed.json"
@@ -1084,8 +1153,8 @@ also "candidates: its arm is turned off before the review (it is not the lane's)
   || { echo "FAIL: candidates: unparsed PR"; cat "$w/cand/work/lane-arms.txt" "$w/cand/work/updates-77.json"; fail=$((fail+1)); }
 PRSFILE="$w/prs-unparsed.json" cand "77 none," 0 "an unarmed PR whose updates cannot be read -> a candidate, nothing to turn off"
 also "candidates: no disarm call for it" "-disable-auto"
-GATE99=success cand "99 none,91 none," 0 "a head with no verdict: the gate's check is not touched here (the act step fails it with any verdict that is not success)"
-also "candidates: no gate publish for a head with no verdict" "-check-runs -f name=auditor-review-gate"
+GATE99=success cand "99 none,91 none," 0 "a head with no reviewer check whose gate check says success: failed again, then reviewed"
+also "candidates: the gate's check is failed again over a head with no verdict (none never keeps a gate success)" "+$GFAIL"
 PRIOR99=success FORCE=true DISARMFAIL=1 ARMED99=true cand "" 1 "force: auto-merge cannot be turned off -> skipped, step fails (the stub shows #91 armed too: skipped as well)"
 PRIOR99=success ARMED99=false cand "91 none," 0 "a success verdict whose PR someone disarmed is left alone (no re-arm, round-4 P1)"
 ARMED99=true cand "99 none,91 none," 0 "armed with no verdict (cancelled mid-act) -> disarmed BEFORE review (round-4 P1)"
@@ -1216,7 +1285,7 @@ EVENTS99_JSON=$(ev '[["auto_squash_enabled","fosterstack-automation[bot]"],["aut
 settle() { # <candidates lines> <lane-arms lines> <rc> <name>; env PRIOR99 PRIOR90 ARMED99 ARMED90 RULES REARMFAIL DISARMFAIL LOOKUP90
   local W="$w/settle"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   printf '%b' "$1" > "$W/work/candidates.txt"; printf '%b' "$2" > "$W/work/lane-arms.txt"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" \
+  (cd "${SETTLEDIR:-$repo}" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" \
      GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m GH_TOKEN=job \
      bash --noprofile --norc -e -o pipefail "$w/settle.sh") > "$w/settle.out" 2>&1; local rc=$?
   if [ "$rc" = "$3" ]; then echo "ok: settle: $4"; pass=$((pass+1)); else echo "FAIL: settle: $4 (rc $rc)"; sed 's/^/    /' "$w/settle.out" | tail -6; fail=$((fail+1)); fi
@@ -1251,6 +1320,36 @@ MOVED=90 settle "$BOTH" '90 sha90\n' 0 "the PR's head is no longer the commit th
 also "settle: no arm for a commit that is not the head any more" "-pr merge"
 MOVED=90 PRIOR90=failure ARMED90=true settle "$BOTH" '90 sha90\n' 0 "the failure verdict is on a commit that is not the head any more"
 also "settle: nothing is done to a PR that is not open" "-pr merge"
+# REQ-DEP-001-AC12, AC14: the verdict is read as everywhere else: a success counts only with the current version, a failure or neutral whatever its external_id
+REARM90="+pr merge --auto --squash --match-head-commit sha90 90"
+PRIOR90_JSON=$(verdicts "[$OLD_OK]") settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch whose review did not finish, its newest check a success of another version"
+also "settle: a success of another version is no verdict: the lane's arm is put back, after the guard" "$REARM90" "+required-checks.json\?ref=main"
+PRIOR90_JSON=$(verdicts '[["success"]]') settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch whose review did not finish, its newest check an unversioned success"
+also "settle: an unversioned success is no verdict: the lane's arm is put back" "$REARM90"
+PRIOR90_JSON=$(verdicts "[$CUR_OK,$OLD_OK]") settle "$BOTH" '90 sha90\n' 0 "a success of another version finishing after the current one (the newest by id)"
+also "settle: the newest success is of another version: the lane's arm is put back" "$REARM90"
+PRIOR90_JSON=$(verdicts "[$OLD_OK,$CUR_OK]") settle "$BOTH" '90 sha90\n' 0 "a success of the current version after one of another version"
+also "settle: a success of the current version is left as the act step left it" "-pr merge"
+PRIOR90_JSON=$(verdicts "[$OLD_OK]") ARMED90=true settle "$BOTH" '90 sha90\n' 0 "a success of another version on an armed lane patch"
+also "settle: an armed bump is never disarmed by a success of another version" "-pr merge"
+PRIOR90_JSON=$(verdicts "[[\"failure\",\"$OLDVER\"]]") ARMED90=true settle "$BOTH" '90 sha90\n' 0 "a failure of another version over an arm"
+also "settle: a failure counts whatever its external_id: the arm is turned off" "+pr merge --disable-auto 90"
+PRIOR90_JSON=$(verdicts "[[\"neutral\",\"$OLDVER\"]]") settle "$BOTH" '90 sha90\n' 0 "a neutral check of another version on a lane-armed patch"
+also "settle: a neutral counts whatever its external_id: the lane's arm is put back" "$REARM90"
+PRIOR90_JSON=$(verdicts "[[\"success\",\"$PYVER\"]]") settle "$BOTH" '90 sha90\n' 0 "a success carrying the sha256 of the program alone"
+also "settle: it is no verdict: the lane's arm is put back" "$REARM90"
+for what in prompt-changed workflow-changed; do
+  mkalt "$w/alt" "$what"
+  SETTLEDIR="$w/alt" PRIOR90_JSON=$(verdicts "[$CUR_OK]") settle "$BOTH" '90 sha90\n' 0 "with the $what a success of the version of the old text"
+  also "settle: it is no verdict: the lane's arm is put back" "$REARM90"
+  SETTLEDIR="$w/alt" PRIOR90_JSON=$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\"]]") settle "$BOTH" '90 sha90\n' 0 "with the $what a success of the version of the three files as they are"
+  also "settle: it is a success: left as the act step left it" "-pr merge"
+done
+for what in no-prompt no-workflow; do
+  mkalt "$w/alt" "$what"
+  SETTLEDIR="$w/alt" settle "$BOTH" '90 sha90\n' 1 "a missing file ($what): the version cannot be computed -> the step fails"
+  also "settle: $what: nothing is armed or disarmed blind" "-pr merge"
+done
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name
