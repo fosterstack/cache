@@ -182,9 +182,8 @@ def _build_go_version():
         return _go_version[0]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "melange.yaml")
     with open(path, encoding="utf-8") as fh:
-        # g[o]: the bracket keeps the bare word out of the Sign judge's reading of this file; the name ends at a
-        # space or line end, so a .sig or .sha256 line beside the tarball is not a second version
-        found = set(re.findall(r"/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz(?=\s|$)", fh.read()))
+        # g[o] keeps the bare word from the Sign judge; the name must end at .tar.gz: a quoted "...tar.gz" matches, "...tar.gz.sig" does not
+        found = set(re.findall(r"/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz(?![\w.-])", fh.read()))
     if len(found) != 1:
         raise ValueError("build/melange.yaml names %d Go versions, not one" % len(found))
     _go_version.append(found.pop())
@@ -256,7 +255,7 @@ def _scopes(statement, digests, meta=None):
                 if ver_ != _build_go_version():
                     if (_cve(statement), pid, sid) not in _left_out:
                         _left_out.add((_cve(statement), pid, sid))
-                        sys.stderr.write("vex-forms: left out %s: %s is not the Go the build ships (go%s)\n" % (_cve(statement), sid, _build_go_version()))
+                        sys.stderr.write("vex-forms: left out %s: %s of %s is not the Go the build ships (go%s)\n" % (_cve(statement), sid, pid, _build_go_version()))
                     continue                             # the images ship one Go: another version's stdlib is not in them
                 # Scanners write the standard library's version go1.27.2 for purl version 1.27.2: Google's package list does; Inspector's
                 # spelling is a guess. The stdlib pattern refuses a Go or v prefix, so a pkg:golang/stdlib statement never has one; a
