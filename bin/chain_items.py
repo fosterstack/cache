@@ -23,6 +23,7 @@ from chain_common import b64d, refuse, strict_json
 
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:"
 HERE = os.path.dirname(os.path.abspath(__file__))
+APK_TOOL = os.path.join(HERE, "..", "bin/apk-tool.py")
 ITEM_LIST = os.path.join(HERE, "..", ".github", "policy", "rebuild-items.json")     # the committed list of the 32 items
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architecture name -> the image and archive name
@@ -204,7 +205,7 @@ def read_input(path):
 
 def apk_tool(*args):
     """bin/apk-tool.py beside this file, run by the interpreter that runs this one, not by a path or a name the working directory decides."""
-    return subprocess.run([sys.executable, "-I", "-B", os.path.join(HERE, "apk-tool.py"), *args], capture_output=True)
+    return subprocess.run([sys.executable, "-I", "-B", APK_TOOL, *args], capture_output=True)
 
 
 def cmd_items_apk(a):
