@@ -48,7 +48,7 @@ unmapped:
   - ac: REQ-CI-001-AC3
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
   - ac: REQ-CI-001-AC4
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
+    reason: "the check it named, pin-wiring-test.sh, was deleted by the release audit ruling of Nov 12; the criterion is still in requirements.yaml and is withdrawn in the requirements text change"
   - ac: REQ-REL-013-AC9
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is withdrawn in the requirements text change"
   - ac: REQ-REL-013-AC10
