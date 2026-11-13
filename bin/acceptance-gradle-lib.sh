@@ -1,6 +1,5 @@
 # shellcheck shell=bash
-# bin/acceptance-gradle-lib.sh: the check both Gradle acceptance scripts make before they run the sample's ./gradlew.
-# The wrapper jar is the reviewed one (REQ-SUP-001-AC32) when the policy file is one line naming the jar and it matches.
+# Both acceptance scripts call this before ./gradlew, which runs the wrapper jar: only the reviewed jar may run.
 check_wrapper_jar() {
   local policy=.github/policy/gradle-wrapper-jar-sha256.txt
   local jar=bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar
