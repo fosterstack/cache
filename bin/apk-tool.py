@@ -11,8 +11,11 @@ section (.PKGINFO, .melange.yaml) and the data section (the files).
   apk-tool.py signer APK                  prints the signing key's name (<key file name>.rsa.pub) or
                                           "unsigned"
   apk-tool.py verify APK PUBKEY           cryptographically verifies the apk's signature against the public key file PUBKEY (the signature member
-                                          is an RSA signature over the compressed CONTROL stream: .SIGN.RSA256.<name>, SHA-256 only); prints verified:<name> and exits 0 only when the signature is valid for that key.
-                                          exit 1 if unsigned, the signature does not verify, or the member is not .SIGN.RSA256.<name>; 2 unreadable
+                                          is an RSA signature over the compressed CONTROL stream: .SIGN.RSA256.<name>,
+                                          SHA-256 only); prints verified:<name> and exits 0 only when the signature
+                                          is valid for that key.
+                                          exit 1 if unsigned, the signature does not verify, or the member is not
+                                          .SIGN.RSA256.<name>; 2 unreadable
   apk-tool.py control APK OUT             writes the CONTROL stream of APK to OUT exactly as stored (the gzip bytes the signature covers); OUT must not
                                           exist yet
   apk-tool.py attach-signature APK SIG OUT
