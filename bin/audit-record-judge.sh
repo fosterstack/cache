@@ -4,7 +4,7 @@
 #   audit-record-judge.sh HEAD_SHA BASE_REF       env: GH_TOKEN (read-only), GITHUB_REPOSITORY
 # It reads the record branch audit/<HEAD_SHA> and its commit through the API (only when the base is main and the head is 40 lower-case hex, so nothing odd is ever put in
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
-# A head with no passing record still passes when every commit it adds to main is Dependabot's or the audit writer's (bin/audit-record.py bot_authored).
+# A head with no passing record still passes when it is a Dependabot pull request with Dependabot's commits (bin/audit-record.py bot_authored).
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
 set -uo pipefail
 # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
@@ -52,8 +52,9 @@ cd "$here" || exit 1
 verify() { python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . "${args[@]+"${args[@]}"}" "$@"; }
 said=$(verify); rc=$?
 compare_url="repos/$repo/compare/main...$head?per_page=100"
-if [ "$rc" = 1 ] && [ -n "$repo" ] && gh api "$compare_url" > "$tmp/compare.json" 2> /dev/null; then
-  said=$(verify --compare-json "$tmp/compare.json"); rc=$?
+if [ "$rc" = 1 ] && [ -n "$repo" ] && gh api "$compare_url" > "$tmp/compare.json" 2> /dev/null \
+  && gh api "repos/$repo/commits/$head/pulls" > "$tmp/pulls.json" 2> /dev/null; then
+  said=$(verify --compare-json "$tmp/compare.json" --pulls-json "$tmp/pulls.json"); rc=$?
 fi
 printf '%s\n' "$said"
 exit "$rc"
