@@ -482,6 +482,7 @@ def shown_diff(diff, omit_vendor):
     # one section per file: each starts at a line that begins with "diff --git "
     pieces = diff.split("\ndiff --git ")
     sections = [pieces[0]] + ["diff --git " + piece for piece in pieces[1:]]
+    # the split took the newline that ended every section but the last: put it back
     sections = [section + "\n" for section in sections[:-1]] + sections[-1:]
     for section in sections:
         head, _, body = section.partition("\n")
@@ -512,6 +513,7 @@ def _has_binary(diff):
 def cmd_gather(a):
     updates = json.load(open(a.updates))
     os.makedirs(a.out, exist_ok=True)
+    # a whole commit id: "4c6dc6cd69fdfaac24b46d3227bb2d1208c46115" matches, "4c6dc6cd" and "HEAD" do not
     if not re.fullmatch(r"[0-9a-f]{40}", a.sha):
         sys.stderr.write("gather: --sha is not a full commit id — no bundle, no review\n")
         sys.exit(3)
