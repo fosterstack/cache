@@ -49,6 +49,7 @@ sed -E "s/^(  crane:x86_64\|crane:amd64\) SUM=)[0-9a-f]{64}/\1${ok_sum}/" "$sut"
 if grep -q "crane:x86_64|crane:amd64) SUM=${ok_sum}" "$sut_copy"; then
   echo "ok: the pinned crane sum was replaced in the copy"; pass=$((pass+1))
 else echo "FAIL: the pinned crane sum was not replaced in the copy"; fail=$((fail+1)); fi
+# the regex matches "installed crane (pinned, checksum-verified) to /bin" and refuses "not installed crane"
 check "crane install succeeds on x86_64" 0 "^installed crane " \
   env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/ok-rel" bash "$sut_copy" crane "$work/ok-bin"
 if [ -x "$work/ok-bin/crane" ]; then echo "ok: crane is installed and executable"; pass=$((pass+1))
