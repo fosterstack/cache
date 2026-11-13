@@ -320,7 +320,7 @@ jobs:
       - name: positive control (this run's genuine Sign output must be accepted)
         run: |
           rc=0
-          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=$?
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json 2> /tmp/positive_control.err || rc=$?
           python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
       - name: collect the rows
         run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
