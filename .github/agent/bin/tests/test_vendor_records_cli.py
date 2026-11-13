@@ -7,27 +7,12 @@ from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import vendor_records as V  # noqa: E402
+from locale_cleared import setUpModule, tearDownModule  # noqa: E402,F401
 
 spec = importlib.util.spec_from_file_location("vendor_records_cli", os.path.join(BIN, "auditor-vendor-records.py"))
 CLI = importlib.util.module_from_spec(spec); spec.loader.exec_module(CLI)
-
-
-_LOCALE_VARS = ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG")
-
-
-def setUpModule():
-    """argparse looks up translations in the system's locale directory when any locale variable is set, and the guard refuses that read of a
-    real system path: this module runs with none set, and puts the environment back exactly as it was."""
-    global _ENV_PATCH
-    _ENV_PATCH = mock.patch.dict(os.environ)
-    _ENV_PATCH.start()
-    for k in _LOCALE_VARS:
-        os.environ.pop(k, None)
-
-
-def tearDownModule():
-    _ENV_PATCH.stop()
 
 
 class Cli(unittest.TestCase):
