@@ -8,7 +8,8 @@
 #   floors-vs-base [--allow-lowered A,B | --allow-from-body] REF FLOORS
 #       FLOORS (a path in the working tree) may not lower or drop a floor the file at REF holds, unless the suite is
 #       named in --allow-lowered, or by the body's line with --allow-from-body; no file at REF: passes. A dropped suite
-#       always fails. A named suite must be one whose floor is lowered. --allow-from-body reads the environment variable
+#       fails, unless its file is gone from the tree and it is named: that counts as lowered to 0. A named suite must
+#       be one whose floor is lowered. --allow-from-body reads the environment variable
 #       PR_BODY (the pull request's body, passed by ci.yml through env) and takes the rest of its first line that starts
 #       exactly with "Lowered floors: " (carriage returns removed): the suites' file names, comma-separated, as written
 #       in the floors file. The ok line names each lowering.
@@ -85,8 +86,8 @@ cmd_vs_base() {
   [ -n "$ref" ] && git rev-parse --verify --quiet "$ref^{commit}" > /dev/null 2>&1 || die "the base revision '$ref' cannot be read: the floors cannot be compared with it"
   if ! git cat-file -e "$ref:$file" 2> /dev/null; then echo "suite-guard: no floors file at $ref: nothing to hold"; return 0; fi
   old=$(git show "$ref:$file" 2> /dev/null) || die "the floors file $file at $ref cannot be read"
-  python3 - "$file" "$allow" "$old" <<'PY'
-import json, sys
+  python3 - "$file" "$allow" "$old" "$(git ls-files)" <<'PY'
+import json, os, sys
 try:
     new = json.load(open(sys.argv[1])); old = json.loads(sys.argv[3])
     if not isinstance(new, dict) or not isinstance(old, dict):
@@ -94,13 +95,18 @@ try:
 except (OSError, ValueError) as e:
     print("suite-guard: the floors file or its base version cannot be read as JSON (%s)" % e, file=sys.stderr); sys.exit(1)
 allow = set(x.strip() for x in sys.argv[2].split(",") if x.strip())
+present = set(os.path.basename(f) for f in sys.argv[4].splitlines())
+def floor_now(k):   # a dropped suite whose file is gone from the tree counts as lowered to 0
+    if k in new: return new[k]
+    return 0 if k not in present else None
 bad, lowered = [], []
 for k, v in old.items():
-    if k not in new: bad.append("%s was dropped (floor %s)" % (k, v))
-    elif new[k] < v and k not in allow: bad.append("%s was lowered from %s to %s and the PR does not name it" % (k, v, new[k]))
-    elif new[k] < v: lowered.append("%s %s->%s" % (k, v, new[k]))
+    now = floor_now(k)
+    if now is None: bad.append("%s was dropped (floor %s) but its file is still in the tree" % (k, v))
+    elif now < v and k not in allow: bad.append("%s was lowered from %s to %s and the PR does not name it" % (k, v, now))
+    elif now < v: lowered.append("%s %s->%s" % (k, v, now))
 for k in sorted(allow):
-    if not (k in old and k in new and new[k] < old[k]): bad.append("%s is named as lowered but its floor is not lowered" % k)
+    if not (k in old and floor_now(k) is not None and floor_now(k) < old[k]): bad.append("%s is named as lowered but its floor is not lowered" % k)
 if bad:
     print("suite-guard: floors may only rise: " + "; ".join(bad), file=sys.stderr); sys.exit(1)
 print("ok floors did not fall" + (" except the named: " + ", ".join(lowered) if lowered else ""))
