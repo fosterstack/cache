@@ -41,14 +41,6 @@ unmapped:
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-009-AC10
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-CI-001-AC1
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-CI-001-AC2
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-CI-001-AC3
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-CI-001-AC4
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-013-AC1
     reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
   - ac: REQ-REL-013-AC2
@@ -87,12 +79,6 @@ unmapped:
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
   - ac: REQ-REL-009-AC15
     reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
-  - ac: REQ-CI-005-AC1
-    reason: "the counting step and the suites matrix of ci.yml are not proved by bin/suite-guard-test.sh, which declares AC3 and AC4 only; no test proves this criterion"
-  - ac: REQ-CI-005-AC2
-    reason: "the counting step and the suites matrix of ci.yml are not proved by bin/suite-guard-test.sh, which declares AC3 and AC4 only; no test proves this criterion"
-  - ac: REQ-CI-005-AC5
-    reason: "the matrix legs are the floors file less the suites a counting step names; no test proves it"
   - ac: REQ-SUP-001-AC3
     reason: "the age measurement was removed (owner, Nov 11 2026); the criterion now says the scan reads no time, and no test declares it"
   - ac: REQ-SUP-001-AC6
