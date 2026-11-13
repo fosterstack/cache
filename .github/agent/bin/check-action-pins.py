@@ -242,7 +242,7 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
-    "e6d6eaf0e9dbf9f1734ad1af6048eb658bba1d050a8fc5560886ecfefa18f88f",   # the same file after the change in flight
+    "494e2a7bfe90b26a8f24f631c445d5d8d4da17f1bd8ba5061f1a21b01035a577",   # the same file after the change in flight
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2710,35 +2710,69 @@ _TOKEN_URL_CONDITION = (
     "(this exclusion holds only while the step has no `shell:`, its own or a default; each of "
     "ACTIONS_ID_TOKEN_REQUEST_URL, " + ", ".join(_HELD_WORDS) + " and, in any letter case, "
     + " and ".join(_HELD_WORDS_ANY_CASE) + " stands in the parsed file only as often as in the excluded steps' run "
-    "text; and every env is a mapping whose keys are plain ASCII identifiers, none a bash startup hook, PATH or "
-    "another name the allowlist job's judge refuses, none CURL_HOME or another name curl or the runner reads for its "
-    "certificates, proxies, key log or token file, in any letter case. "
+    "text; and the env of the workflow, of the job and of the step is exactly the mapping this check holds: none, "
+    "except the decision step's, whose keys and values are those of the reviewer workflow. "
     "Not seen: a name or path built at run time, a committed script, an action's own code, or the job's container "
     "image.)")
-# the names pin-wiring-test.sh refuses in the env of the allowlist job: a startup file, a search path, an interpreter's
-# or the runner's own variables. A copy (that list lives in a test's inline program); the checker's suite compares them.
-_RISKY_ENV = frozenset({"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "SHELLOPTS", "BASHOPTS",
-                        "PS4", "IFS", "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"})
-_RISKY_ENV_PREFIX = re.compile(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)")
-_RISKY_ENV_HERE = frozenset({"CURL_HOME"})     # not on that list: where curl looks first for a config file
-_CURL_READS = frozenset({"SSLKEYLOGFILE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "http_proxy", "https_proxy",
-                         "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "ANTHROPIC_IDENTITY_TOKEN_FILE"})   # what curl, or the runner, reads besides
-_RISKY_ENV_ANY_CASE = frozenset(name.lower() for name in _RISKY_ENV_HERE | _CURL_READS)
+# the env an excluded step must have, by (file, job, step index); every other excluded step, job and workflow has none
+_STEP_ENV = {(".github/workflows/dependabot-reviewer.yml", "review", 8): {
+    "ANTHROPIC_FEDERATION_RULE_ID": "${{ secrets.REVIEWER_FEDERATION_RULE_ID }}",
+    "ANTHROPIC_ORGANIZATION_ID": "${{ secrets.ANTHROPIC_ORGANIZATION_ID }}",
+    "ANTHROPIC_SERVICE_ACCOUNT_ID": "${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}",
+    "ANTHROPIC_WORKSPACE_ID": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}",
+    "AUDITOR_MODEL_PRIMARY": "${{ secrets.AUDITOR_MODEL_PRIMARY }}",
+    "AUDITOR_MODEL_FALLBACK": "${{ secrets.AUDITOR_MODEL_FALLBACK }}",
+    "GH_TOKEN": "${{ github.token }}",
+    "CHECKS_TOKEN": "${{ steps.app-checks.outputs.token }}",
+    "MERGE_TOKEN": "${{ steps.app-merge.outputs.token }}",
+    "DISPATCH_TOKEN": "${{ steps.app-ops.outputs.token }}",
+    "RUN_URL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+}}
 
 
-def _risky_env(name):
-    return name in _RISKY_ENV or _RISKY_ENV_PREFIX.match(name) is not None
+def _value(node, name):
+    """The one value under the plain key `name` of a mapping node, or None (absent, repeated, or not a mapping)."""
+    found = [v for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.value == name] \
+        if isinstance(node, yaml.MappingNode) else []
+    return found[0] if len(found) == 1 else None
 
 
-def _token_url_breach(text, name, run_texts):
+def _env_of(node):
+    """The env of a mapping node as {name: value}, {} when none, None when it is not one mapping of plain scalars."""
+    envs = [v for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.value == "env"]
+    if not envs:
+        return {}
+    if len(envs) > 1 or not isinstance(envs[0], yaml.MappingNode):
+        return None
+    pairs = [(k.value, v.value) for k, v in envs[0].value
+             if isinstance(k, yaml.ScalarNode) and isinstance(v, yaml.ScalarNode)]
+    return dict(pairs) if len(pairs) == len(envs[0].value) == len(dict(pairs)) else None
+
+
+def _env_breach(doc, key):
+    """Why the env of the workflow, of the job or of the excluded step `key` is not the one held for it, or None."""
+    job = _value(_value(doc, "jobs"), key[1])
+    steps = _value(job, "steps")
+    if not isinstance(steps, yaml.SequenceNode) or key[2] >= len(steps.value):
+        return "the excluded step cannot be found"
+    for where, node, expected in (("the workflow", doc, {}), ("the job", job, {}),
+                                  ("the step", steps.value[key[2]], _STEP_ENV.get(key[:3], {}))):
+        if _env_of(node) != expected:
+            return f"the env of {where} is not exactly the one this exclusion holds"
+    return None
+
+
+def _token_url_breach(text, name, run_texts, key):
     """Why a workflow file breaks the condition of the entries excluded for `name`, or None. `run_texts` are the
-    excluded steps' run texts. The file is read as GitHub reads it, parsed: a key or a value spelled with YAML escapes
-    or quotes counts as what it decodes to."""
+    excluded steps' run texts, `key` the excluded step's. The file is read as GitHub reads it, parsed: a key or a value
+    spelled with YAML escapes or quotes counts as what it decodes to."""
     try:
-        todo = [d for d in yaml.compose_all(text, Loader=StrLoader) if d is not None]
+        docs = [d for d in yaml.compose_all(text, Loader=StrLoader) if d is not None]
     except yaml.YAMLError:
         return "the file does not parse"
-    scalars, env_keys, seen = [], [], set()
+    if len(docs) != 1:
+        return "the file does not hold exactly one YAML document"
+    todo, scalars, seen = list(docs), [], set()
     while todo:
         node = todo.pop()
         if id(node) in seen:
@@ -2749,24 +2783,15 @@ def _token_url_breach(text, name, run_texts):
         elif isinstance(node, yaml.SequenceNode):
             todo.extend(node.value)
         elif isinstance(node, yaml.MappingNode):
-            for key, value in node.value:
-                todo += [key, value]
-                if isinstance(key, yaml.ScalarNode) and key.value == "env":
-                    if not isinstance(value, yaml.MappingNode):
-                        return "an env that is not a mapping: its keys cannot be read"
-                    env_keys += [k.value if isinstance(k, yaml.ScalarNode) else "" for k, _ in value.value]
+            for k, v in node.value:
+                todo += [k, v]
     for word in (name,) + _HELD_WORDS:
         if sum(v.count(word) for v in scalars) != sum(t.count(word) for t in run_texts):
             return f"{word} stands outside the excluded steps' run text"
     for word in _HELD_WORDS_ANY_CASE:
         if sum(v.lower().count(word) for v in scalars) != sum(t.lower().count(word) for t in run_texts):
             return f"{word} stands outside the excluded steps' run text"
-    for key in env_keys:
-        if not (key.isascii() and key.isidentifier()):
-            return "an env sets a key that is not a plain name"
-        if _risky_env(key) or key.lower() in _RISKY_ENV_ANY_CASE:
-            return f"an env sets {key}"
-    return None
+    return _env_breach(docs[0], key)
 
 
 DOWNLOAD_EXCLUSIONS = {
@@ -2778,7 +2803,7 @@ DOWNLOAD_EXCLUSIONS = {
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 8, "3a4c78d1bec09a935a3013ad310d876854dbab5eb5b126dc3b2023423131d124"): (
+    (".github/workflows/dependabot-reviewer.yml", "review", 8, "b5602620fa07f17d6ad21d63a0d07610997e5be305ab77efbf6385db082c41bf"): (
         "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }
@@ -2847,7 +2872,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                 except Exception:
                     ftext = None                                 # a file that cannot be read keeps the finding
                 if ftext is not None and excl[2] is None:
-                    if _token_url_breach(ftext, excl[1], _excluded_run_texts(scripts, excl[1])) is None:
+                    if _token_url_breach(ftext, excl[1], _excluded_run_texts(scripts, excl[1]), key) is None:
                         continue
                 elif ftext is not None and ftext.count(excl[2]) == 1 and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1:
                     continue
