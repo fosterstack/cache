@@ -4,7 +4,7 @@
 
 This release is rebuilt with **Go 1.27.4**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
 
-The CA certificate bundle is also updated, to Wolfi's `ca-certificates-bundle` 20260909-r3, which removes three eMudhra roots: emSign Root CA C1, emSign ECC Root CA C3 and emSign ECC Root CA G3. This ships in this release too.
+The CA certificate bundle is also updated, to Wolfi's `ca-certificates-bundle` 20261020-r0, which removes three eMudhra roots: emSign Root CA C1, emSign ECC Root CA C3 and emSign ECC Root CA G3. This ships in this release too.
 
 ### What changes for Gradle and Maven users
 
