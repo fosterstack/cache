@@ -86,11 +86,12 @@ def check(label, ok, detail=""):
         print("FAIL %s %s" % (label, detail))
 
 
-def run(args, cwd):
-    if not os.path.exists(CV):
+def run(args, cwd, cv=None):
+    cv = cv or CV
+    if not os.path.exists(cv):
         return 127, "", "bin/chain-verify.py does not exist (RED)"
     try:
-        p = subprocess.run([sys.executable, CV] + args, capture_output=True, text=True, cwd=cwd, timeout=60)
+        p = subprocess.run([sys.executable, cv] + args, capture_output=True, text=True, cwd=cwd, timeout=60)
     except subprocess.TimeoutExpired:
         return 124, "", "timed out after 60 seconds"
     return p.returncode, p.stdout, p.stderr
@@ -281,7 +282,7 @@ def apk_tree(name, tag="v0.3.0", key="assembly", edit=None):
 
 
 def fragment_of(d):
-    rc, out, err = run(["items-apk", "--out-dir", "out/x86_64", "--result", "frag.json"], d)
+    rc, out, err = run(["items-apk", "--out-dir", "out/x86_64", "--result", "frag.json"], d, cv=APK_CV)
     return rc, (json.load(open(d + "/frag.json")) if rc == 0 and os.path.exists(d + "/frag.json") else None), err
 
 
@@ -297,6 +298,26 @@ def add_dotfile(d):
     h.write(d + "/out/.cache/x", b"s")
 
 
+# S2: the apk digests come from the interpreter that runs the verifier and the apk-tool.py beside chain_items.py, not from PATH's python3 and the current directory's bin/
+def verifier_copy(name):
+    """A copy of the verifier's tree whose bin/ holds the fake apk-tool: the one items-apk must use, wherever it is run from."""
+    c = "%s/%s" % (work, name)
+    shutil.rmtree(c, ignore_errors=True)
+    os.makedirs(c + "/bin")
+    shutil.copytree(root + "/.github/policy", c + "/.github/policy")
+    for f in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+        shutil.copy(root + "/bin/" + f, c + "/bin/" + f)
+    h.write(c + "/bin/apk-tool.py", h.FAKE_APKTOOL, 0o755)
+    return c + "/bin/chain-verify.py"
+
+
+def run_items_apk(cv, d, path):
+    p = subprocess.run([sys.executable, cv, "items-apk", "--out-dir", "out/x86_64", "--result", "frag.json"], capture_output=True, text=True, cwd=d,
+                       env=dict(os.environ, PATH=path), timeout=60)
+    return p.returncode, (json.load(open(d + "/frag.json")) if p.returncode == 0 and os.path.exists(d + "/frag.json") else None), p.stderr
+
+
+APK_CV = verifier_copy("cvcopy")
 d1 = apk_tree("apk1")
 rc, frag1, err = fragment_of(d1)
 whole = hashlib.sha256(open(d1 + "/out/x86_64/fscache-0.3.0-r0.apk", "rb").read()).hexdigest()
@@ -346,6 +367,21 @@ check("items-apk: no inputs-manifest-baselayout.json beside the apks is refused,
 check("items-apk: the fragment holds the base-layout apk by apk-tool digest (and no binary item for it)",
       frag1 is not None and frag1["items"].get("apk-baselayout-x86_64") == h.apk_digest(h.apk_bytes("baselayout", "x86_64", "v0.3.0"))
       and not [k for k in frag1["items"] if k.startswith("binary-baselayout")], "")
+
+
+cv2 = APK_CV
+d = apk_tree("apk10")
+os.remove(d + "/bin/apk-tool.py")
+os.rmdir(d + "/bin")
+rc, frag, err = run_items_apk(cv2, d, os.environ["PATH"])
+check("items-apk: apk-tool.py is the one beside chain_items.py, not bin/apk-tool.py of the current directory (none there)",
+      rc == 0 and frag == h.fragment("x86_64", "v0.3.0"), "exit %s %s" % (rc, err[:120]))
+d = apk_tree("apk11")
+h.write(d + "/bin/apk-tool.py", "#!/bin/sh\necho sha256:" + "0" * 64 + "\n", 0o755)
+h.write(d + "/fakepath/python3", "#!/bin/sh\ntouch '%s/fake-python-ran'\nexit 1\n" % d, 0o755)
+rc, frag, err = run_items_apk(cv2, d, d + "/fakepath:" + os.environ["PATH"])
+check("items-apk: python3 of PATH is never run (sys.executable is), and a bin/apk-tool.py of the current directory is not used",
+      rc == 0 and frag == h.fragment("x86_64", "v0.3.0") and not os.path.exists(d + "/fake-python-ran"), "exit %s ran=%s %s" % (rc, os.path.exists(d + "/fake-python-ran"), err[:120]))
 
 
 # ---- items-merge ---------------------------------------------------------------------------------------------------------------------------
@@ -527,6 +563,12 @@ refused("items-merge: the same architecture twice (aarch64 missing) is refused a
         do_merge(d, ["apk/ubuntu-24.04/items-apk.json"] * 2), "arch", "aarch64")
 d = merge_tree("m6b")
 refused("items-merge: one architecture only (aarch64 missing) is refused and named", d, do_merge(d, ["apk/ubuntu-24.04/items-apk.json"]), "arch", "aarch64")
+d = merge_tree("m9")
+os.symlink(d + "/dist", d + "/archive/linked-dir")
+refused("items-merge: a symbolic link to a directory in the pinned upstream archive is refused (it is not skipped)", d, do_merge(d), "symlink")
+d = merge_tree("m10")
+os.symlink(d + "/archive/x86_64/pkg-1.apk", d + "/archive/x86_64/pkg-2.apk")
+refused("items-merge: a symbolic link to a file in the pinned upstream archive is refused (it is not followed)", d, do_merge(d), "symlink")
 d = merge_tree("m8", "v0.0.0-rc.1")
 rc, out, err = do_merge(d, tag="v0.0.0-rc.1")
 check("items-merge: a snapshot build's files (version 0.0.0-rc.1, archives fscache_0.0.0-rc.1_linux_*) merge to the oracle's items",
@@ -1073,7 +1115,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 226
+EXPECT = 230
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
