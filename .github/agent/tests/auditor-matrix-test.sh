@@ -4800,10 +4800,10 @@ ctl="$( [ "$(grep -c '^gh issue create --title ' "$cs1" 2>/dev/null)" = 1 ] \
 [ "$ctl" = yes ] || { m9_ok=no; m9_detail="$m9_detail [the uncut copy does not pass]"; }
 eq "$m9_ok" "yes" && ok || no "every mutant fails the matching case; the uncut copy passes" "$m9_detail"
 
-begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 # rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is
 # listed in the report as "not re-checkable (hidden from all scanners)", never silently kept. A vex_covered entry no carried statement matches is dropped.
+begin "rc5b-5-hidden-carried-statement-is-rejudged" "a carried statement that our own VEX hides from a scanner is re-judged every run"
 r5="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
 import json,os,sys,io,contextlib,importlib.util,glob,tempfile,subprocess as _sp
 FX=sys.argv[1]; W=tempfile.mkdtemp(); ws=W+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
@@ -4866,8 +4866,8 @@ want=['false_positive'and('false_positive',False),'FAILED-ATTEMPT',('under_inves
 print('OK' if got==want else 'BAD %r'%(got,))" 2>/dev/null | tail -1)"
 eq "$r12" "OK" && ok || no "client category and refusal are read from exact JSON keys" "$r12"
 begin "rc5b-12-proposals-validated-by-shape-and-name" \
-  "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap "\
-  "and no vendor/model name; a refused proposal does not stop the run"
+  "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap \
+and no vendor/model name; a refused proposal does not stop the run"
 EVREPO="$WORK/evidence-repo"; rm -rf "$EVREPO"; mkdir -p "$EVREPO/docs" "$WORK/evidence-outside"
 cp README.md "$EVREPO/README.md"; printf 'x\n' > "$EVREPO/LICENSE"; printf 'x\n' > "$EVREPO/docs/a.md"
 printf 'x\n' > "$WORK/evidence-outside/x.md"; ln -s "$WORK/evidence-outside" "$EVREPO/escape"
