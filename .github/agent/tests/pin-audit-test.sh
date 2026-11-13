@@ -1026,6 +1026,19 @@ PY
 else
   ok "$CASE (skipped as root: file modes do not bind)"
 fi
+r="$work/r-ptlink-hist"; mkrepo "$r" "100:$CLEANSHA"
+printf '{}\n' >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 30)" GIT_COMMITTER_DATE="$(dago 30)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
+rm "$r/bin/persona-uat-tools.json"; ln -s elsewhere.json "$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 20)" GIT_COMMITTER_DATE="$(dago 20)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools symlink"
+rm "$r/bin/persona-uat-tools.json"; printf '{}\n' >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular again"
+run ptlinkhist "$CLEAN" "$r"
+CASE="AC5 persona tools: a tools file that is a symbolic link at a revision of the history fails the audit (exit 2), the reason names the file and says symbolic link, never a clean day"
+check test "$rc" -eq 2; check grep -q 'persona-uat-tools.json.*symbolic link' "$work/ptlinkhist.err"; check none_match 'no known-compromised' "$work/ptlinkhist.out"
+r="$work/r-ptlink-wt"; mkrepo "$r" "100:$CLEANSHA"
+printf '{}\n' >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
+rm "$r/bin/persona-uat-tools.json"; ln -s elsewhere.json "$r/bin/persona-uat-tools.json"
+run ptlinkwt "$CLEAN" "$r"
+CASE="AC5 persona tools: a tools file that is a symbolic link in the working tree fails the audit (exit 2), the reason names the file and says symbolic link"
+check test "$rc" -eq 2; check grep -q 'persona-uat-tools.json.*symbolic link' "$work/ptlinkwt.err"; check none_match 'no known-compromised' "$work/ptlinkwt.out"
 # --- cache#455 follow-up (handoff 0496 step 2): the 90-day history reads one inventory per DISTINCT set of files the inventory reads, not one per commit ---
 r="$work/r-histmemo"; mkrepo "$r" "100:$CLEANSHA" "40:$SHA1" "30:$SHA2"
 mkdir -p "$r/.github/agent/tests" "$r/docs"
@@ -1308,7 +1321,7 @@ assert [r["affected"] for r in net.lists(it)[1]] == [False]
 PY
 
 # --- the history reader never stops at a revision with a command line over 4000 characters: the line is never read
-# partially, so that revision counts as unmeasured (one information line on stdout) and the others are read.
+# partially, so that revision makes the audit incomplete (exit 2, the reason on stderr).
 r="$work/r-oversize"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at that sha, with one step whose run line is $2 long
   printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$1" >"$r/.github/workflows/ci.yml"
@@ -1324,22 +1337,20 @@ oversize_ci "$SHA4" 0;    OV_E=$(commit_at 5 "readable E")
 OVPY='import contextlib, datetime as dt, importlib.util, io, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 NOW = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
-def hist():      # the information line for an unmeasured revision is printed on stdout
+def hist():      # kept for the reader-failure case below
     err = io.StringIO()
     with contextlib.redirect_stdout(err):
         items = pa.history_items(sys.argv[2], "HEAD", NOW)
     return " ".join(repr(k) for k in items), err.getvalue()
 '
-CASE="oversize history: a revision with a command line over 4000 characters is unmeasured, never an "
-CASE+="error: the read completes, holds the readable revisions' pins and not the oversize ones'"
-check python3 - "$aud" "$r" "$SHA1" "$SHA2" "$SHA4" "$OV_B" "$OV_D" <<PY
-$OVPY
-blob, err = hist()
-assert sys.argv[3] in blob and sys.argv[5] in blob, blob
-assert sys.argv[4] not in blob, blob
-for rev in (sys.argv[6], sys.argv[7]):
-    assert "revision " + rev[:12] + " is unmeasured" in err, err
-PY
+run oversizeold "$CLEAN" "$work/r-oversize"
+CASE="oversize history: a revision with a command line over 4000 characters makes the audit incomplete: exit 2, the reason on stderr names the revision or the file"
+check test "$rc" -eq 2; check grep -qE "${OV_B:0:12}|ci\\.yml" "$work/oversizeold.err"
+CASE="oversize history: an incomplete audit never says 'no known-compromised versions' on stdout"
+check none_match 'no known-compromised' "$work/oversizeold.out"
+CASE="oversize history: a history of readable revisions only still exits 0 and says there are no known-compromised versions"
+run readableonly "$CLEAN" "$work/r-clean"
+check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/readableonly.out"
 CASE="oversize history: no other error is swallowed: a revision unreadable for another reason (a broken "
 CASE+="tree) still stops the read"
 check python3 - "$aud" "$r" "$OV_B" <<PY
@@ -1360,7 +1371,7 @@ PY
 
 # --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key.
 # Both
-# revisions of a shared oversize tree are unmeasured, and a readable revision that shares a tree with neither is read.
+# revisions of a shared oversize tree make the audit incomplete (exit 2).
 r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
 oversize_ci "$SHA2" 4100; SH_X=$(commit_at 60 "oversize X")
@@ -1369,22 +1380,12 @@ oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
 oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
 oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
 oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
-CASE="oversize history, shared tree: two revisions that share an unreadable tree are both unmeasured and "
-CASE+="their pin is held by neither"
-check python3 - "$aud" "$r" "$SH_X" "$SH_Y" "$SHA2" "$SHA1" <<PY
-$OVPY
-blob, err = hist()
-for rev in (sys.argv[3], sys.argv[4]):
-    assert "revision " + rev[:12] + " is unmeasured" in err, err
-assert sys.argv[5] not in blob and sys.argv[6] in blob, blob
-PY
+run oversizeshared "$CLEAN" "$work/r-oversize-shared"
+CASE="oversize history, shared tree: revisions that share an unreadable tree make the audit incomplete too: exit 2, no 'no known-compromised versions'"
+check test "$rc" -eq 2; check none_match 'no known-compromised' "$work/oversizeshared.out"
 
-
-# --- the daily run does not stop at an oversize revision: the tag observations are written and the audit goes on ---
+# --- the daily run stops at an oversize revision with exit 2, after the tag observations are written ---
 rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-oversize" --observations-out "$work/obsout4/state.json"
-CASE="oversize history, daily run: an oversize revision does not end the audit (exit other than 2) and is "
-CASE+="named as unmeasured"
-check test "$rc" -ne 2; check grep -q 'is unmeasured' "$work/oversizeobs.out"
 CASE="oversize history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
 check test -s "$work/obsout4/state.json"
 CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
