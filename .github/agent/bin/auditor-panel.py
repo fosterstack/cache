@@ -56,7 +56,7 @@ SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANT
 
 def public(s):
     """Scrub vendor and model names, and every configured identifier, from text that may be published
-    (rule 8(b); REQ-AUD-6 AC4 of .github/agent/docs/cve-auditor-matrix.md)."""
+    (REQ-SCAN-014-AC4; REQ-AUD-6 AC4 in .github/agent/docs/cve-auditor-matrix.md)."""
     if s is None:
         return None
     s = str(s)
@@ -1263,8 +1263,8 @@ def vex_subcomponents(purls, package=None, version=None):
     None means there is none or any purl cannot be written that way: a statement with no subcomponents would cover
     the whole image, so an empty set is never proposed. With package and version (the finding's own, which the
     audits judged), every purl's DECODED name and version must equal them. The generators decode the written purl,
-    so a purl naming another package (libstdc%2B%2B6 against a finding for libstdc%2B%2B6 that the bundle never
-    matched) would suppress a package the evidence did not cover."""
+    so a purl naming another package (libssl3 against a finding for libcrypto3) would suppress a package the
+    evidence did not cover."""
     idents = [_purl_identity(p) for p in purls or []]
     if not idents or None in idents:
         return None
@@ -1804,8 +1804,8 @@ def cmd_deliver(a, run=subprocess.run):
             _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)
     if changed:
         # the commit is made THROUGH THE API with the App's token so GitHub signs it (main requires signed commits; a
-        # `git commit` here is unsigned and left the PR BLOCKED). No `git commit`, no `git push`: the branch is created
-        # or force-reset onto `base`, then ONE commit is made on it.
+        # `git commit` here is unsigned and left the PR BLOCKED). No `git commit`, no `git push`: ONE commit is made
+        # on a temporary ref cut from `base`, and the branch is then moved onto it.
         message = "Scanner panel audits, %s" % a.today
         if real:
             if not os.environ.get("GITHUB_REPOSITORY"):
@@ -1870,7 +1870,9 @@ def cmd_deliver(a, run=subprocess.run):
         hit = [r["number"] for r in rows if r.get("title") in (policy.subject(ISSUE_TITLE), ISSUE_TITLE)]
         if hit:                 # the rescan's tracking issue, when it is open
             _sh(["gh", "issue", "comment", str(hit[0]), "--body", day["issue"]], plan, real, run, env=ienv)
-        else:                   # an issue the auditor opens carries its subject prefix (REQ-AUD-17 AC1, see the matrix)
+        else:
+            # an issue the auditor opens carries its subject prefix (REQ-AUD-17 AC1 in
+            # .github/agent/docs/cve-auditor-matrix.md)
             # a missing label would lose the issue: create it first (not forced)
             for lab in ("daily-rescan", "security"):
                 _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
@@ -1883,8 +1885,7 @@ def cmd_deliver(a, run=subprocess.run):
         # so the title must match exactly
         for t in (OWNER_TITLE, OLD_OWNER_TITLE):
             rows = _issue_rows(_sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search",
-                                    t,
-                                    "--limit", "100", "--json", "number,title"], plan, real, run, env=ienv), real)
+                                    t, "--limit", "100", "--json", "number,title"], plan, real, run, env=ienv), real)
             hit = [r["number"] for r in rows if r.get("title") == t]
             if hit:
                 n = str(hit[0]); break
