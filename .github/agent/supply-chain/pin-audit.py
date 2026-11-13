@@ -1354,9 +1354,8 @@ def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
              ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
-    # daily mode: main and the pull request refs, not every branch and tag
-    refs = ["HEAD", "--glob=refs/pull/*/head"] if start == "HEAD" else [start]
-    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
+    # open pull request heads are read by open_pr_items, which continues as incomplete when one cannot be read
+    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", start, "--", *paths).split() if r]
     tip = inv.git(root, "rev-parse", start).strip()
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
     if before:
