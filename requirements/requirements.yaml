@@ -1758,7 +1758,7 @@ requirements:
       The ruleset on main and the committed required-check list shall be
       compared on every pull request and every push to main, so drift is red
       the day it happens, and a refusal shall open one issue.
-    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/policy/release-only-checks.json, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml, .github/agent/tests/pin-wiring-test.sh]
+    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/policy/release-only-checks.json, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
     tier: community
     introduced: v0.3.0
     origin: the release manager's approval (Sep 29 2026), "also approved"
