@@ -301,7 +301,7 @@ def tree():
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
     return t
 KMS = "awskms:///alias/fosterstack-release-signing"      # the value stage-promote.yml gives RELEASE_KMS_KEY_REF; the P3 workflow cases below read it from that file
-def run(t, script, env=None, creds=None, tag="v0.3.0"):
+def run(t, script, env=None, creds=None, tag="v0.3.0", args=()):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
     ver = tag[1:]
@@ -321,7 +321,7 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     e.pop("NO_KMS_REF", None)
     if script in ("release-sign", "release-apks") and not (env or {}).get("NO_RUNNER_TEMP"): e.setdefault("RUNNER_TEMP", os.path.join(t, "rt"))      # KA-2 p4 group 4: the pinned aws CLI is at RUNNER_TEMP/aws-cli/aws (bin/install-scanner.sh aws-cli puts it there)
     e.pop("NO_RUNNER_TEMP", None)
-    r = subprocess.run(["bash", path], cwd=t, env=e, capture_output=True, text=True)
+    r = subprocess.run(["bash", path, *args], cwd=t, env=e, capture_output=True, text=True)
     LAST[0] = r.returncode if r.returncode == 127 else 0
     return r.returncode, r.stdout, r.stderr
 def log(t):
@@ -401,7 +401,7 @@ t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_FAIL": "1"
 check(rc != 0, "AC6 a failing signer fails the script")
 check(not os.path.exists(os.path.join(t, "release-apks")), "AC6 a failing signer leaves nothing in release-apks")
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_TAMPER": "1"})
-check(rc != 0 and "after signing" in se and not os.path.exists(os.path.join(t, "release-apks")),
+check(rc != 0 and "differs from the attested digest" in se and not os.path.exists(os.path.join(t, "release-apks")),
       "AC6 an apk whose digest changed during signing is refused and nothing is laid out", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"SIGN_NOBUNDLE": "1"})
 check(rc != 0 and "bundle" in se.lower() and not os.path.exists(os.path.join(t, "release-apks")), "AC6 a signed apk with no Rekor bundle beside it is refused and nothing is laid out", "rc=%s %s" % (rc, first(se)))
@@ -1633,18 +1633,17 @@ def guide_check(command):
     open(os.path.join(t, "guide.md"), "w").write("# Guide\n\n%s\n```sh\n%s\n```\n" % (names, command))
     open(os.path.join(t, "guide.cannot-run.json"), "w").write("[]")
     open(os.path.join(t, "data.json"), "w").write("{}")
-    env = dict(os.environ, CANDIDATE_REPOSITORY="registry.example/fosterstack/cache", GITHUB_REF_NAME="v0.3.0")
-    args = ["bash", "bin/check-guide.sh", "--guide", "guide.md", "--digests", "digests.json",
-            "--images", "images", "--out", "out"]
-    return t, subprocess.run(args, cwd=t, env=env, capture_output=True, text=True)
-t, r = guide_check("jq -e .ok data.json")
-check(r.returncode == 1 and "exited 1 against the candidate" in r.stderr,
+    args = ["--guide", "guide.md", "--digests", "digests.json", "--images", "images", "--out", "out"]
+    rc, so, se = run(t, "check-guide", env={"CANDIDATE_REPOSITORY": "registry.example/fosterstack/cache"}, args=args)
+    return t, rc, se
+t, rc, se = guide_check("jq -e .ok data.json")
+check(rc == 1 and "exited 1 against the candidate" in se,
       "AC7 check-guide.sh fails when a runnable guide command exits non-zero",
-      "rc=%s %s" % (r.returncode, first(r.stderr)))
-t, r = guide_check("jq -e . data.json")
-check(r.returncode == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
+      "rc=%s %s" % (rc, first(se)))
+t, rc, se = guide_check("jq -e . data.json")
+check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
       "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
-      "rc=%s %s" % (r.returncode, first(r.stderr)))
+      "rc=%s %s" % (rc, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
 EXPECT = int(os.environ.get("EXPECT_CASES", "537"))
 if EXPECT and passn + failn != EXPECT:
