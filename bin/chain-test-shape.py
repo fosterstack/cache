@@ -652,7 +652,7 @@ def witness_seam(run, spec, family):
 
 
 def helper(path):
-    """2/3: bin/witnessed.sh is exactly the canonical helper: the only place the Witness flags and `timeout 540` live."""
+    """2/3: bin/witnessed.sh is exactly the canonical helper: the only place the Witness flags live."""
     raw = read_exact(path)
     commands, faults = commands_of(raw)
     # #822 round 3 (REQ-CHAIN-007-AC12, AC15): the command-run attestor records the wrapped command, and record-env refuses a record that names the AWS role or token-file variables; so no AWS_ name and no
