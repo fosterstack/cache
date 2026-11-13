@@ -7,6 +7,8 @@ compromised or wrong answer cannot itself produce a suppression. Reads one reque
 JSON on stdin, prints one answer on stdout (same contract as the stub). Never used by the
 suite (which passes --adjudicator <stub>); it is the workflow's default."""
 import json, os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auditorlib import parsers
 
 # The identifiers/tokens that must never reach the uploaded report. We surface the REAL error
 # (class, HTTP status, message) so a failure is diagnosable, but with these values redacted.
@@ -157,9 +159,9 @@ def _handle(req, client):
     if refused or cat not in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance"):
         cat = "under_investigation"
     ans = {"refused": refused, "category": cat, "proposed": True, "token_usage": _usage(msg)}
-    # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass
-    # it through under "propose"; the driver delivers it in the draft PR and it takes effect only
-    # after merge. The model never edits its own instructions or the live records here.
+    # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass it through under
+    # "propose"; the driver delivers it in the draft PR and it takes effect only after merge. The model never edits
+    # its own instructions or the live records here.
     if isinstance(p.get("propose"), dict):
         ans["propose"] = p["propose"]
     return ans
@@ -197,15 +199,8 @@ def _whole_answer(text):
     """The model's answer: the WHOLE response must be exactly one JSON object. An object inside
     prose, a second object, an array or any other top-level value is not an answer, so an example
     in the model's wording or an injected leading object can never choose the disposition."""
-    def _no_dup(pairs):   # a copy of parsers.no_dup_pairs: tests load this file where auditorlib is not importable
-        d = {}
-        for k, v in pairs:
-            if k in d:
-                raise ValueError("duplicate key")        # a repeated key would let the last value erase a refusal
-            d[k] = v
-        return d
     try:
-        obj = json.loads(str(text or "").strip(), object_pairs_hook=_no_dup)
+        obj = json.loads(str(text or "").strip(), object_pairs_hook=parsers.no_dup_pairs)
     except ValueError:
         return None
     return obj if isinstance(obj, dict) else None
