@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-003-AC3
-# RED until .github/policy/chain-records.json exists and matches what the workflows sign (tests before implementation).
+# .github/policy/chain-records.json matches what the workflows sign.
 # Rule 66: every signed record type the workflows produce has exactly one row in .github/policy/chain-records.json with a
 # non-empty claim and a consumer that is a real stage; a produced type with no row fails; a row nobody produces, a row
 # whose consumer is not a stage, a row with no claim and two rows with the same claim fail too.
@@ -24,7 +24,7 @@
 # is not in the table is not seen (add it to the table first); signing done by a binary a script downloads at run time or reached
 # through an argv array in script code is not seen.
 # The judge is proven on a known-good fixture tree and mutated copies, then applied to the real repository.
-# Needs python3 (no PyYAML: the scan is by text, comments stripped).
+# Needs python3 with PyYAML (apt: python3-yaml): chain-test-signers.py parses a candidate file's root mapping with it. The scan itself is by text.
 set -euo pipefail
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
   _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
@@ -435,8 +435,7 @@ expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 # ---- the real repository (no known-red allowance) -------------------------------------------------------------------------------------
-# Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them). PR 4 rewrote the last legacy stage file and deleted
-# .github/policy/legacy-stage-files.json, so the whole tree is judged.
+# Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them).
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$root" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
