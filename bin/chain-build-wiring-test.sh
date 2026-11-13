@@ -3357,7 +3357,7 @@ cat > "$work/vi-named.py" <<'PY'
 import glob, hashlib, os, re, yaml
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
-        "bin/check-file-allowlist.sh", ".github/policy/ci-suites.json"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); the CI suite list names its test, checked below
+        "bin/check-file-allowlist.sh"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing)
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
 RESCAN = ".github/workflows/main-candidate-rescan.yml"      # the daily rescan (cache#489, handoff 0521) attaches our OpenVEX to its own SCRATCH copies of the candidates (never a published version; its vex-attach job pushes only candidate and fixture tags to the scratch package, judged by bin/panel-wiring-test.sh): in that one file a line naming vex-index must be, after strip(), one of these reviewed lines (sha256), the call lines of that job and the comment above them
 RESCAN_LINES = frozenset((
@@ -3447,8 +3447,6 @@ exec(open(os.path.join(work, "vi-named.py")).read())
 allowed = BASE
 stray_files = stray(root)
 assert not stray_files, "named outside Build's and Rebuild's assemble scripts: %s" % stray_files       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
-ci = [row.strip() for row in open(root + "/.github/policy/ci-suites.json") if "vex-index" in row]
-assert ci == ['{"suite": "vex-index-test.sh"},'], ci      # CI runs the tool's TEST and nothing else of it (one entry of the suite list)
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 assert runners(rows) == sorted(p for p in allowed if p.startswith("bin/build-stage-")), runners(rows)      # a row may carry no runs list (bin/loopback-get.sh): it runs nothing
 PY
