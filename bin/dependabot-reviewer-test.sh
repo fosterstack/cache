@@ -722,10 +722,14 @@ verdicts() { # <[[conclusion, external_id (left out: none), app slug], ...]> old
                                          + (if (.value | length) > 1 then {external_id: .value[1]} else {} end)]}'
 }
 # verdicts, but GitHub says there are 31 runs and the page holds 30: 29 neutral ones, then <last run>
-verdicts_cut() { verdicts "$(jq -c '. + ['"$1"']' <<<"$(jq -nc '[range(29) | ["neutral"]]')")" | jq -c '.total_count = 31'; }
-# every gh log line that asks for the reviewer's check runs asks for 100 of them, and there is at least one
-per_page_all() {
+verdicts_cut() {
+  verdicts "$(jq -c '. + ['"$1"']' <<<"$(jq -nc '[range(29) | ["neutral"]]')")" | jq -c '.total_count = 31'
+}
+# every gh log line that asks for the reviewer's check runs asks for every run (filter=all) and 100 of them at a time,
+# and there is at least one
+asks_all_runs() {
   if grep -q 'check_name=dependabot-reviewer' "$w/gh.log" \
+      && ! grep 'check_name=dependabot-reviewer' "$w/gh.log" | grep -qv 'filter=all' \
       && ! grep 'check_name=dependabot-reviewer' "$w/gh.log" | grep -qv 'per_page=100'; then
     echo "ok: $1"; pass=$((pass+1))
   else echo "FAIL: $1"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); fi
@@ -1163,7 +1167,7 @@ cancel_one "$(verdicts "[[\"success\",\"$OLD3S\",\"s\"]]")" no \
 # a cut answer (31 runs, 30 read) is no verdict: whatever the newest run read says, the arm comes off
 cancel_one "$(verdicts_cut "[\"success\",\"$VER\",\"s\"]")" no \
   "a success of the current version among 30 of 31 runs is no success: the arm comes off"
-per_page_all "cancellation: the check runs are asked for 100 at a time"
+asks_all_runs "cancellation: the check runs are asked with filter=all, 100 at a time"
 cancel_one "$(verdicts_cut "[\"success\",\"$OLDVER\",\"s\"]")" no \
   "a success of another version among 30 of 31 runs is no success: the arm comes off"
 cancel_one "$(verdicts_cut '["success",null,"s"]')" no \
@@ -1304,7 +1308,8 @@ cand() { # expected-candidates (* = any) expected-rc (nz = any failure); env PRI
   CAND_GOT="$got"; CAND_RC="$rc"
   if { [ "$1" = '*' ] || [ "$got" = "$1" ]; } && { [ "$rc" = "$2" ] || { [ "$2" = nz ] && [ "$rc" != 0 ]; } \
       || [ "$2" = any ]; }; then
-    echo "ok: candidates: $3"; pass=$((pass+1))
+    # rc any: no answer is wrong here, the caller's own check follows, and only that one counts
+    [ "$2" = any ] || { echo "ok: candidates: $3"; pass=$((pass+1)); }
   else echo "FAIL: candidates: $3 (got '$got' rc $rc)"; sed 's/^/    /' "$w/cand.out" | tail -8; fail=$((fail+1)); fi
 }
 also() { # <name> then +regex / -regex assertions on the gh log of the last cand, settle or lane run
@@ -1377,9 +1382,9 @@ for concl in cancelled timed_out action_required; do
   ONLY=99 PRIOR99_JSON=$(verdicts "[[\"$concl\",\"$VER\"]]") GATELOOKUP=fail cand '*' nz \
     "the gate's check cannot be read over a $concl verdict -> the step fails"
 done
-# the other way round: a head the reviewer passed whose gate failure is older than the six hours the gate's sweep
-# looks back never gets
-# judged again; the failure is published anew (never a success), which puts it back in the sweep's window
+# The other way round: a head the reviewer passed whose gate failure is older than the six hours the gate's sweep
+# looks back is never judged again. The failure is published anew (never a success), which puts it back in the sweep's
+# window.
 GREFRESH="$GFAIL .*passed this head, and this check last failed more than six hours ago"
 PRIOR99=success GATE99=stale cand "91 none," 0 "a success verdict over a stale gate failure"
 also "candidates: the stale gate failure is published again, as a failure" "+$GREFRESH" \
@@ -1426,9 +1431,9 @@ PRIOR99=failure GATE99_JSON=$(runs_json "[[\"failure\",\"$OLDER\"],[\"success\",
   "real check runs: a gate success newer than its failure, over a failure verdict"
 also "candidates: the gate success over the failure verdict is failed again" "+$GFAIL .*verdict on this head is failure"
 
-# REQ-DEP-001-AC14: a success counts only if its external_id is the sha256 of bin/dependabot-reviewer.py as this run
-# checked it out.
-# One of another version, or with none, is no verdict: the head is read as a head with none is.
+# REQ-DEP-001-AC14: a success counts only if its external_id is the version of the reviewer as this run checked it out
+# (the sha256 of the sha256sum lines of the five files). A success of another version, or with none, is no verdict:
+# the head is read as a head with none is.
 CUR_OK="[\"success\",\"$VER\"]"; OLD_OK="[\"success\",\"$OLDVER\"]"; OWN99='name=dependabot-reviewer -f head_sha=sha99'
 ONLY=99 ARMED99=true PRIOR99_JSON=$(verdicts "[$CUR_OK,$OLD_OK]") cand "99 none," 0 \
   "a success of another version finishing after the current one (the newest by id) is no verdict: read"
@@ -1456,7 +1461,7 @@ for what in "[\"success\",\"$VER\"]" "[\"success\",\"$OLDVER\"]" '["success"]'; 
     fail=$((fail+1))
   else echo "ok: candidates: 30 of 31 runs read, the newest $what: not counted as a success"; pass=$((pass+1)); fi
 done
-per_page_all "candidates: the check runs are asked for 100 at a time"
+asks_all_runs "candidates: the check runs are asked with filter=all, 100 at a time"
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"failure\",\"$OLDVER\"]]") cand "" 0 \
   "a failure of another version is still a failure verdict"
 ONLY=99 PRIOR99_JSON=$(verdicts '[["failure"]]') cand "" 0 "a failure with no external_id is still a failure verdict"
@@ -1644,8 +1649,7 @@ PRSFILE="$w/prs-patch.json" PRIOR90=failure ARMED90=true DISARMFAIL=1 cand "" 1 
   "a failed patch that is armed and cannot be disarmed -> the step fails (retried next hour)"
 
 # REQ-DEP-001-AC11, the spend guard: a head with no verdict that is a merge commit over a head the readers passed,
-# with byte for byte the
-# same diff against main, gets the success published on it and no reader; anything else is read.
+# with byte for byte the same diff against main, gets the success published on it and no reader. Anything else is read.
 carried() { also "candidates: $1" \
   "+check-runs -f name=dependabot-reviewer -f head_sha=$2 .*conclusion=success .*carried over from that head" \
   "+compare/main\.\.\.$3" "+compare/main\.\.\.$2"; }
@@ -1729,8 +1733,8 @@ EVENTSFAIL=1 heal "$LANE_OFF" 1 no "the events cannot be read -> skipped, the st
 PRIOR99=failure EVENTS99="$LANE_OFF" cand "91 none," 0 "a FAILURE verdict is never re-armed"
 grep -q "pr merge --auto" "$w/gh.log" && { echo "FAIL: candidates: a failure verdict was armed"; fail=$((fail+1)); } || { echo "ok: candidates: no arm for a failure verdict"; pass=$((pass+1)); }
 # The step's own filter over events as GitHub records them (issues/N/events of this repository's bumps, Nov 2026):
-# turning squash
-# auto-merge ON is recorded as auto_squash_enabled, turning it off as auto_merge_disabled. The LAST of them decides.
+# turning squash auto-merge ON is recorded as auto_squash_enabled, turning it off as auto_merge_disabled.
+# The LAST of them decides.
 ev() { jq -cn --argjson e "$1" \
   '[$e[] | {event: .[0], actor: {login: .[1]}}] + [{event: "labeled", actor: {login: "dependabot[bot]"}}]'; }
 EVENTS99_JSON=$(ev \
@@ -1751,11 +1755,10 @@ EVENTS99_JSON=$(ev '[["auto_squash_enabled","fosterstack-automation[bot]"],["aut
 
 # ============================================================================ settle step
 # REQ-DEP-001-AC12: after the act step (and the cancellation cleanup), for every head taken up for review: none is
-# armed over a failure
-# verdict; a plain patch the lane had armed, whose review did not finish, is armed again for that exact head after the
-# guard.
-# <candidates lines> <lane-arms lines> <rc> <name>; env PRIOR99 PRIOR90 ARMED99 ARMED90 RULES REARMFAIL DISARMFAIL
-# LOOKUP90
+# armed over a failure verdict. A plain patch the lane had armed, whose review did not finish, is armed again for that
+# exact head after the guard.
+# settle <candidates lines> <lane-arms lines> <rc> <name>
+# env: PRIOR99 PRIOR90 ARMED99 ARMED90 RULES REARMFAIL DISARMFAIL LOOKUP90
 settle() {
   local W="$w/settle"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   printf '%b' "$1" > "$W/work/candidates.txt"; printf '%b' "$2" > "$W/work/lane-arms.txt"
@@ -1766,8 +1769,12 @@ settle() {
        GH_TOKEN=job \
      bash --noprofile --norc -e -o pipefail "$w/settle.sh") > "$w/settle.out" 2>&1; local rc=$?
   SETTLE_RC="$rc"
-  if [ "$rc" = "$3" ] || [ "$3" = any ]; then echo "ok: settle: $4"; pass=$((pass+1)); else echo "FAIL: settle: $4 (rc $rc)";
-    sed 's/^/    /' "$w/settle.out" | tail -6; fail=$((fail+1)); fi
+  if [ "$3" = any ] || [ "$rc" = "$3" ]; then
+    # rc any: no answer is wrong here, the caller's own check follows, and only that one counts
+    [ "$3" = any ] || { echo "ok: settle: $4"; pass=$((pass+1)); }
+  else
+    echo "FAIL: settle: $4 (rc $rc)"; sed 's/^/    /' "$w/settle.out" | tail -6; fail=$((fail+1))
+  fi
 }
 BOTH='99 sha99 none\n90 sha90 none\n'
 PRIOR90=failure ARMED90=true ARMED99=false settle "$BOTH" '90 sha90\n' 0 \
@@ -1846,7 +1853,7 @@ for what in "[\"success\",\"$VER\"]" "[\"success\",\"$OLDVER\"]" '["success"]'; 
     echo "FAIL: settle: 30 of 31 runs read, the newest $what: left as a success (rc 0, nothing armed)"; fail=$((fail+1))
   else echo "ok: settle: 30 of 31 runs read, the newest $what: not taken for a success"; pass=$((pass+1)); fi
 done
-per_page_all "settle: the check runs are asked for 100 at a time"
+asks_all_runs "settle: the check runs are asked with filter=all, 100 at a time"
 for what in prompt-changed workflow-changed checks-changed guard-changed; do
   mkalt "$w/alt" "$what"
   SETTLEDIR="$w/alt" PRIOR90_JSON=$(verdicts "[$CUR_OK]") settle "$BOTH" '90 sha90\n' 0 \
@@ -1862,6 +1869,21 @@ for what in no-prompt no-workflow no-checks no-guard; do
     "a missing file ($what): the version cannot be computed -> the step fails"
   also "settle: $what: nothing is armed or disarmed blind" "-pr merge"
 done
+
+# the verdict reader is in the reviewer workflow three times (the candidates step, the cancellation cleanup and the
+# settle step): their jq filters are one text once whitespace is collapsed, so they cannot drift apart
+same_filters=$(python3 - "$repo/.github/workflows/dependabot-reviewer.yml" <<'PY'
+import re, sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"]
+code = "\n".join(s.get("run") or "" for s in steps)
+read = r'gh api "\$run_url&filter=all&per_page=100" \\\n\s*--jq "((?:[^"\\]|\\.)*)"'
+filters = {" ".join(f.split()) for f in re.findall(read, code)}
+count = len(re.findall(read, code))
+print("ok" if count == 3 and len(filters) == 1 else "%d readers, %d different filters" % (count, len(filters)))
+PY
+)
+if [ "$same_filters" = ok ]; then echo "ok: the three verdict readers have one jq filter"; pass=$((pass+1))
+else echo "FAIL: the three verdict readers have one jq filter ($same_filters)"; fail=$((fail+1)); fi
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name
