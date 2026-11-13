@@ -5,6 +5,7 @@ per-call key, and the validator of yesterday's state file, which must never let 
 forged or different-hash file change a run (anything unusable = today's behaviour, model calls).
 """
 import json, os, sys, tempfile, unittest
+from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
@@ -101,11 +102,17 @@ class Load(unittest.TestCase):
         for label, raw in (("arrays", "[" * 20000), ("closed arrays", "[" * 20000 + "]" * 20000),
                            ("objects", '{"a":' * 20000), ("a state key holding arrays", '{"schema": "x", "verdicts": ' + "[" * 20000)):
             path = self.write(None, raw=raw)
-            try:
+            raised = []
+            real = json.loads
+            def watch(*a, **k):
+                try:
+                    return real(*a, **k)
+                except RecursionError:
+                    raised.append(1); raise
+            with mock.patch.object(N.json, "loads", watch):
                 loaded = N.load(path)
                 unsettled = N.load_unsettled(path, "2026-10-24")
-            except RecursionError:
-                self.fail("RecursionError escaped a reader: %s" % label)
+            self.assertEqual(len(raised), 2, "json did not reach RecursionError in both readers: %s" % label)
             self.assertIsNone(loaded, label)
             self.assertEqual(unsettled, ("missing", {}), label)
 
