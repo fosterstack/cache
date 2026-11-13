@@ -62,10 +62,10 @@ def name_version(purl_or_id):
 
 def vex_versions(purl, name, ver):
     """The versions a statement may write for a finding. Scanners write the Go standard library's version go1.27.2 where the statement's
-    pkg:golang/stdlib@1.27.2 has no prefix, so that package (a golang stdlib purl, or no purl) also tries the version without go;
+    pkg:golang/stdlib@1.27.2 has no prefix, so that package (a golang stdlib purl, or no purl) also tries the version without its prefix;
     every other package keeps its version as written."""
     go_stdlib = purl.partition("@")[0] == "pkg:golang/stdlib" if purl else name == "stdlib"
-    return [ver, ver[2:]] if go_stdlib and ver[:2] == "go" and ver[2:3].isdigit() else [ver]
+    return [ver, ver[2:]] if go_stdlib and re.match(r"go\d", ver) else [ver]
 
 
 def same_pkg(a, b):
