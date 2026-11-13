@@ -700,7 +700,7 @@ if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-
 fw="$work/fakewit"; mkdir -p "$fw/bin" "$fw/tmp"
 printf '#!/usr/bin/env bash\nprintf "%%s " "$@" > "$FAKE_ARGS"\n' > "$fw/bin/witness"; chmod +x "$fw/bin/witness"
 (cd "$fw" && PATH="$fw/bin:$PATH" RUNNER_TEMP="$fw/tmp" FAKE_ARGS="$fw/args" \
-  bash "$root/bin/witnessed-local.sh" apk x.sh)
+  bash "$root/bin/witnessed-local.sh" apk x.sh) || true
 if grep -Fq -- ' -- timeout -k 20 540 bash x.sh ' "$fw/args"; then
   ok "AC2 witnessed-local.sh bounds the wrapped script by timeout -k 20 540 (9 minutes)"
 else
