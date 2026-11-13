@@ -34,6 +34,10 @@ def raises(exc, fn):
     try: fn()
     except exc: return True
     return False
+def caught(exc, fn):
+    try: fn()
+    except exc as e: return str(e)
+    return None
 PY
 # a gh that prints STDERR text from $GH_ERR and exits 1
 cat >"$work/gh" <<'SH'
@@ -63,8 +67,9 @@ for body in \
 import sys; exec(open(sys.argv[1]).read())
 age = load("pin-age-check")
 err, _, out = sys.argv[2].partition("|")
-assert raises(age.CouldNotLook, lambda: age._gh_failed(res(err, out))), (
-    "digits 404 in a longer text read as 'not there'")
+msg = caught(age.CouldNotLook, lambda: age._gh_failed(res(err, out)))
+assert msg is not None, "digits 404 in a longer text read as 'not there'"
+assert err in msg, msg      # the reason printed is gh's own text
 PY
 done
 CASE="_gh_api: a 403 whose URL contains 404 raises CouldNotLook instead of returning None"
@@ -73,7 +78,17 @@ import sys; exec(open(sys.argv[1]).read())
 age = load("pin-age-check")
 os.environ["PATH"] = os.path.dirname(sys.argv[2]) + ":" + os.environ["PATH"]
 os.environ["GH_ERR"] = "gh: Forbidden (HTTP 403)  https://api.github.com/repos/o/404/releases/tags/v1"
-assert raises(age.CouldNotLook, lambda: age._gh_api("repos/o/404/releases/tags/v1", (("tag_name", str),)))
+msg = caught(age.CouldNotLook, lambda: age._gh_api("repos/o/404/releases/tags/v1", (("tag_name", str),)))
+assert msg is not None and "HTTP 403" in msg, msg
+PY
+CASE="_gh_api: a 500 raises CouldNotLook saying so instead of returning None"
+check python3 - "$work/pre.py" "$work/gh" <<'PY'
+import sys; exec(open(sys.argv[1]).read())
+age = load("pin-age-check")
+os.environ["PATH"] = os.path.dirname(sys.argv[2]) + ":" + os.environ["PATH"]
+os.environ["GH_ERR"] = "gh: Server Error (HTTP 500)"
+msg = caught(age.CouldNotLook, lambda: age._gh_api("repos/o/r/releases/tags/v1", (("tag_name", str),)))
+assert msg is not None and "HTTP 500" in msg, msg
 PY
 CASE="_gh_api: a real 404 still means 'not there' (None)"
 check python3 - "$work/pre.py" "$work/gh" <<'PY'
@@ -90,8 +105,17 @@ check python3 - "$work/pre.py" "$work/gh" <<PY
 import sys; exec(open(sys.argv[1]).read()); $LN
 os.environ["GH_ERR"] = "gh: Forbidden (HTTP 403)  https://api.github.com/repos/o/404/contents/action.yml"
 for strict in (True, False):
-    assert raises(aud.Fail, lambda: net._gh_json("repos/o/404/contents/action.yml",
-                                                    need=(("content", str),), strict=strict)), strict
+    msg = caught(aud.Fail, lambda: net._gh_json("repos/o/404/contents/action.yml",
+                                                   need=(("content", str),), strict=strict))
+    assert msg is not None and "HTTP 403" in msg, (strict, msg)
+PY
+CASE="pin-audit _gh_json: a 500 is Fail saying so, in strict mode and not"
+check python3 - "$work/pre.py" "$work/gh" <<PY
+import sys; exec(open(sys.argv[1]).read()); $LN
+os.environ["GH_ERR"] = "gh: Server Error (HTTP 500)"
+for strict in (True, False):
+    msg = caught(aud.Fail, lambda: net._gh_json("repos/o/r/git/ref/tags/v1", need=(("object", dict),), strict=strict))
+    assert msg is not None and "HTTP 500" in msg, (strict, msg)
 PY
 CASE="pin-audit _gh_json (strict): a 404 on a single record is still absent (None)"
 check python3 - "$work/pre.py" "$work/gh" <<PY
@@ -104,15 +128,17 @@ check python3 - "$work/pre.py" "$work/gh" <<PY
 import sys; exec(open(sys.argv[1]).read()); $LN
 os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
 p = "advisories?ecosystem=pip&affects=requests&per_page=100&page=1"
-assert raises(aud.Fail, lambda: net._gh_json(p, rows=(("ghsa_id", str),), strict=True)), (
-    "list 404 read as an empty list")
+msg = caught(aud.Fail, lambda: net._gh_json(p, rows=(("ghsa_id", str),), strict=True))
+assert msg is not None, "list 404 read as an empty list"
+assert "list" in msg or "404" in msg, msg
 PY
 CASE="pin-audit _gh_json (strict): a 404 on a list endpoint is Fail for a releases list too"
 check python3 - "$work/pre.py" "$work/gh" <<PY
 import sys; exec(open(sys.argv[1]).read()); $LN
 os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
-assert raises(aud.Fail, lambda: net._gh_json("repos/o/r/releases?per_page=100&page=1",
-                                                rows=(("tag_name", str),), strict=True))
+msg = caught(aud.Fail, lambda: net._gh_json("repos/o/r/releases?per_page=100&page=1",
+                                               rows=(("tag_name", str),), strict=True))
+assert msg is not None and ("list" in msg or "404" in msg), msg
 PY
 CASE="pin-audit: the advisory list of a package whose GitHub list answers 404 ends lists() in Fail, not "
 CASE+="in an empty advisory list"
@@ -131,7 +157,9 @@ def fake(req, timeout=None, **kw):
     raise urllib.error.HTTPError(url, 404, "nf", {}, None)
 urllib.request.urlopen = fake
 it = aud.inv.Item("package", "pypi/requests", "2.32.0")
-assert raises(aud.Fail, lambda: net.lists(it)), "a 404 on the advisory list read as no advisories"
+msg = caught(aud.Fail, lambda: net.lists(it))
+assert msg is not None, "a 404 on the advisory list read as no advisories"
+assert "list" in msg or "404" in msg, msg
 PY
 
 echo "s2-p2-gh-404: $pass ok, $failn failed"
