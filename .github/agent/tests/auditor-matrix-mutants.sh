@@ -35,8 +35,9 @@ fails=0
 # a valid workflow exists. Command mutants are graded on the cases they can affect.
 STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-conditional-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry req15-ac8-section6-7-removed r16-exactly-one-gh-token-key-in-driver-env req16-ac4-malformed-proposal-dropped req18-ac1-suites-wired-into-required-allowlist-job req18-suite-leaves-checkout-untouched req18-ac2-python-100pct-coverage-gate req18-ac2-identity-claims-logging-stubbed req18-requirements-resolve-in-required-job req18-ac3-gate-runs-from-base-on-pull-request-target rpt-ac5-lint-catches-the-old-defects rpt-r1-lint-catches-spilled-list-lines"
 # These read only the workflow file or the shared library (kept in the copy), and call no auditor command.
-STATIC="$STATIC req3-ac3-workflow-carries-the-nochange-state req6-ac2-workflow-writes-the-token-budget ol3-3-gvc-module-from-sbom-modules req13-ac2-stable-unique-ids
- req17-ac1-fixed-subject-prefix-family req16-ac3-knowledge-doc-generated req18-ac3-verdict-runs-and-propagates
+STATIC="$STATIC req3-ac3-workflow-carries-the-nochange-state ol3-3-gvc-module-from-sbom-modules req13-ac2-stable-unique-ids
+ req6-ac2-workflow-writes-the-token-budget req17-ac1-fixed-subject-prefix-family
+ req16-ac3-knowledge-doc-generated req18-ac3-verdict-runs-and-propagates
  req-dep-005-publishers-skip-a-live-queue-head req-dep-005-queue-judge-binds-the-ref-to-the-head
  req-rel-012-record-writer-job-shape-and-sweep-stale-path panel-1-parse-panel-reads-one-scanners-findings-from-the-verdict
  panel-5-corroboration-is-kept-per-image rc5b-13-mutating-classifier-lists-allowlist-forms rc5b-13-suite-leaves-checkout-untouched"
