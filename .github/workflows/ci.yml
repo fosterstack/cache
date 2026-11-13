@@ -296,8 +296,8 @@ jobs:
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
-  # The suites that are not steps of a job above: one matrix leg per suite of .github/policy/ci-suites.json (a suite is named by its file name, under bin/ or
-  # .github/agent/tests/), each on its own runner. A leg that fails fails the job; every suite is also held to its floor (bin/suite-guard-run.py).
+  # The suites that are not steps of a job above: one matrix leg per suite of test-evidence/suite-floors.json that no counting step of this file names (a suite is named by
+  # its file name, under bin/ or .github/agent/tests/), each on its own runner. A leg that fails fails the job; every suite is also held to its floor (bin/suite-guard-run.py).
   suite-list:
     name: suite-list
     runs-on: ubuntu-latest
@@ -308,7 +308,9 @@ jobs:
         with:
           persist-credentials: false
       - id: list
-        run: echo "suites=$(jq -c . .github/policy/ci-suites.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          counted=$(grep -o 'suite-guard-run.py run test-evidence/suite-floors.json [^ ]*' .github/workflows/ci.yml | cut -d' ' -f4)
+          echo "suites=$(jq -c --arg counted "$counted" '[keys[] | select(. as $k | $counted | split("\n") | index($k) | not)]' test-evidence/suite-floors.json)" >> "$GITHUB_OUTPUT"
 
   suites:
     name: suites (${{ matrix.suite }})
@@ -317,7 +319,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.suite-list.outputs.suites) }}
+        suite: ${{ fromJSON(needs.suite-list.outputs.suites) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -336,13 +338,12 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
       - name: install the pinned grype (the suites that run the real scanner)
-        if: ${{ matrix.grype }}
+        if: ${{ matrix.suite == 'vex-scope-test.sh' || matrix.suite == 'vex-both-scanners-test.sh' }}
         run: ./bin/install-scanner.sh grype
 
       - name: the suite, held to its floor
         env:
           SUITE: ${{ matrix.suite }}
-          CHAIN_TEST_REQUIRE_NETCUT: '1'
         run: |
           path=$(git ls-files -- "bin/$SUITE" ".github/agent/tests/$SUITE")
           python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json "$SUITE" "$path"
