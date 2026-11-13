@@ -247,6 +247,7 @@ for what, fp, ver, sp, want in (
         ("R1 a golang stdlib finding at go1.27.3 is not covered by the stdlib@1.27.2 statement", "pkg:golang/stdlib@go1.27.3", "go1.27.3", STD, False),
         ("R1 a generic stdlib finding at go1.27.2 is NOT covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@go1.27.2", "go1.27.2", "pkg:generic/stdlib@1.27.2", False),
         ("R1 a generic stdlib finding at go1.27.2 is covered by a generic stdlib@go1.27.2 statement (exact)", "pkg:generic/stdlib@go1.27.2", "go1.27.2", "pkg:generic/stdlib@go1.27.2", True),
+        ("R1 a generic stdlib finding at go1.27.2 whose purl the verdict refuses (a repeated qualifier) keeps its identity: NOT covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@go1.27.2?a=1&a=2", "go1.27.2", "pkg:generic/stdlib@1.27.2", False),
         ("R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@1.27.2", "1.27.2", "pkg:generic/stdlib@1.27.2", True)):
     check(what, purl_covered(fp, "stdlib", ver, sp) == want, purl_covered(fp, "stdlib", ver, sp))
 pub = P.load_vex(VEX)
