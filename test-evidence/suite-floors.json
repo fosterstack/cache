@@ -35,7 +35,7 @@
  "check-customer-words-test.sh": 131,
  "check-file-allowlist-test.sh": 1031,
  "check-no-outbound-test.sh": 135,
- "ci-suites-matrix-test.sh": 28,
+ "ci-suites-matrix-test.sh": 31,
  "dependabot-reviewer-gather-test.sh": 20,
  "dependabot-reviewer-test.sh": 106,
  "dependency-lanes-test.sh": 68,
