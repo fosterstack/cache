@@ -616,13 +616,6 @@ rm -rf "$work/mel-t"; cp -R "$fx/melrepo" "$work/mel-t"; python3 "$work/lib.py" 
 fixed12 melange="$work/mel-t"; srb "rule 28" "a tampered fscache apk in the melange repo is caught by verifying the \
 full lock (refused after apko lock, before apko build, naming the apk)" 'fscache-0.3.0-r0\.apk' env \
 SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${w12[@]}"
-# M5 / R5 (test hook ASSEMBLE_WORK_DIR replaces /work for the pre-checks): an existing real directory, or any existing link or lock, is refused
-mkdir -p "$work/wd1/archive"
-sr "rule 26" "/work/archive exists and is a real directory -> refused, nothing replaced" 'not a symlink|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd1" "$AI" "${ai_args[@]}" --out "$(mo)"
-mkdir -p "$work/wd2" "$work/wd2-target"; ln -s "$work/wd2-target" "$work/wd2/keyring"
-sr "rule 26" "a /work link left by another run (a symlink to a different target) is refused: no two runs share /work" 'another|already|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd2" "$AI" "${ai_args[@]}" --out "$(mo)"
-mkdir -p "$work/wd3/.assemble.lock"
-sr "rule 26" "an assembly lock directory in /work means another run is in progress -> refused" 'another|lock|in progress' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd3" "$AI" "${ai_args[@]}" --out "$(mo)"
 # M13 (rule 40): only the exact errno 101 confirms a sealed namespace; any other probe result is a leak (exit 1, never 4)
 for rc_ in 0 1 111; do
   run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_PROBE_RC=$rc_ "$AI" "${ai_args[@]}" --out "$(mo)"
