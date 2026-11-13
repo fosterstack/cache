@@ -710,20 +710,22 @@ rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      co
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
-# no workflow file is added (REQ-CHAIN-004-AC1): the v0.2.2 set, plus stage-sign.yml and customer-words-edited.yml, minus the two files PR 2 removes
-mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw" "$work/wf-cw-new"
-for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
+# no workflow file is added (REQ-CHAIN-004-AC1, REQ-REL-008-AC1): the release is the one file release.yml, so no stage-*.yml file exists; persona-uat.yml and customer-words-edited.yml are the two other files this set has beyond the v0.2.2 ones
+mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw-new"
+for f in ci.yml release.yml scan.yml persona-uat.yml customer-words-edited.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
 mkdir -p "$work/wf-letter"; cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
-cp "$work/wf-ok"/* "$work/wf-cw/"; : > "$work/wf-cw/customer-words-edited.yml"
-cp "$work/wf-cw"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/stage-extra.yml"
-expect ok     "AC1 fixture: a workflow directory with stage-sign.yml and without stage-image.yml / stage-admission.yml passes" "" workflows "$work/wf-ok"
+cp "$work/wf-ok"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/sprawl.yml"
+expect ok     "AC1 fixture: a workflow directory of release.yml (one file for the release), persona-uat.yml and customer-words-edited.yml, with no stage-*.yml file, passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a new workflow file other than the two named" "was added" workflows "$work/wf-new"
 expect caught "AC1 evidence-letter.yml is gone for good: it is a new file too" "workflow file evidence-letter.yml was added" workflows "$work/wf-letter"
-expect ok     "AC1 customer-words-edited.yml is the one other file allowed (decision 98, Oct 3)" "" workflows "$work/wf-cw"
-expect caught "AC1 customer-words-edited.yml does not admit any other new file" "was added" workflows "$work/wf-cw-new"
-expect caught "AC1 stage-admission.yml still present" "still exists" workflows "$work/wf-old"
+expect caught "AC1 persona-uat.yml and customer-words-edited.yml do not admit any other new file" "was added" workflows "$work/wf-cw-new"
+expect caught "AC1 a stage-*.yml file is back (stage-admission.yml)" "stage-admission.yml" workflows "$work/wf-old"
+for st in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stage-reproducibility.yml; do
+  rm -rf "$work/wf-stage"; mkdir -p "$work/wf-stage"; cp "$work/wf-ok"/* "$work/wf-stage/"; : > "$work/wf-stage/$st"
+  expect caught "AC1 $st is back: the five stage files are gone, the release is the one file release.yml" "$st" workflows "$work/wf-stage"
+done
 # ---- the Witness seam: bin/witnessed.sh is the only place the Witness flags and `timeout 540` live (REQ-CHAIN-004-AC2; rule 68 as amended) ------------
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
@@ -3766,7 +3768,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1315
+EXPECT=1319
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
