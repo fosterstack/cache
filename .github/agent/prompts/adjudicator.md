@@ -38,6 +38,8 @@ breaks any of this is dropped and counted. A proposal is delivered in the draft 
 effect only after the owner merges it - never assume it is already in force.
 A proposal's evidence is a path relative to the repository root (no leading / and no .. part) that names a
 regular file present in the checked-out repository; a file written after adjudication cannot be named.
+The path is in git's normal form, as `git ls-files` and git diff print it: no leading ./, no backslashes, no ..
+segments and no duplicate slashes.
 
 Finding:
 {context}
@@ -57,11 +59,10 @@ carrier/base release that embeds the fix, or null if none exists yet); bump_atte
 carrier (the carrier's or base's name, e.g. nodejs or debian), min_version (the first version of
 that carrier that embeds the fix, e.g. 20.11.0), component (the vulnerable component, e.g. openssl)
 and component_min_version (its fixed version, e.g. 3.0.13): "carrier >= min_version embeds
-component >= component_min_version"; the daily recheck compares the SBOM's carrier version with
-min_version; a NEW proposal in free text or any other shape is discarded and the finding stays visible; a trigger an
-earlier run already carried stays through the rechecks);
-repo_version and base_release
-when policy-held; evidence (object: how it is carried, and the source). Do NOT produce exploit
+component >= component_min_version"). The daily recheck compares the SBOM's carrier version with min_version. A NEW
+proposal in free text or any other shape is discarded and the finding stays visible; a trigger an earlier run
+already carried stays through the rechecks. Also give repo_version and base_release when policy-held; evidence
+(object: how it is carried, and the source). Do NOT produce exploit
 code.
 
 {context}
