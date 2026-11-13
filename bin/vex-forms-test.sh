@@ -596,12 +596,12 @@ check("H the Inspector rule of a variant-scoped statement carries the digests of
       len(ir) == 1 and {c["value"] for c in ir[0]["filterCriteria"]["ecrImageHash"]} == digs(lambda v, p: v == "production"), ir)
 cs = V.csaf({"statements": [scoped("CVE-H3", "not_affected", [{"@id": OURS_Q + "&arch=arm64", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])]}, IMAGES, "v0.3.0")
 rel = cs["product_tree"].get("relationships", [])
+check("H the CSAF relationships of an arch-scoped statement sit on the arm64 children only", len(rel) == 2, rel)
 two_ = V.inspector({"statements": [scoped("CVE-H7", "not_affected", [{"@id": OURS_Q + "&variant=" + v, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}
                                                                     for v in ("production", "fips")])]}, IMAGES, "v0.3.0")["filters"]
-check("H one statement naming two product scopes that each give a rule gives two rules: disjoint digests, the second name suffixed -2",
+check("H one statement whose two product scopes each name a package gives two rules: disjoint digests, the second name suffixed -2",
       [r["name"] for r in two_] == ["fosterstack-cache-v0.3.0-CVE-H7", "fosterstack-cache-v0.3.0-CVE-H7-2"]
       and not {c["value"] for c in two_[0]["filterCriteria"]["ecrImageHash"]} & {c["value"] for c in two_[1]["filterCriteria"]["ecrImageHash"]}, two_)
-check("H the CSAF relationships of an arch-scoped statement sit on the arm64 children only", len(rel) == 2, rel)
 # the grammar table, through every reader: accepted by all or by none
 import importlib.util as _iu
 def _load(n, f):
