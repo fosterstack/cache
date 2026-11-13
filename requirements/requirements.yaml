@@ -1891,10 +1891,9 @@ requirements:
     title: No workflow runs on the merge queue's event
     statement: >
       No workflow of this repository shall take the merge_group event: a pull request is merged on its own head, with the checks the pull request ran, and
-      the slow checks the owner moved out of main's required list on Nov 12 2026 run with the full suite at promotion, not per pull request. The rule
-      this text replaces (every required check also runs in the merge queue, owner RATIFIED Oct 22 2026) was kept by checks this change deleted:
-      nothing checks the merge queue's behaviour per pull request, and the part of it that is now a property of the workflow files is checked by the
-      full suite at promotion once that change lands (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 2).
+      the slow checks moved out of main's required list on Nov 12 2026 run with the full suite at promotion, not per pull request. The earlier
+      rule (every required check also runs in the merge queue) was kept by checks this change deleted: nothing checks the merge queue's behaviour per
+      pull request, and the part that is a property of the workflow files is checked by the full suite at promotion once that change lands.
     source: [.github/workflows/ci.yml, .github/workflows/acceptance.yml, .github/workflows/scan.yml, .github/workflows/supply-chain.yml, .github/policy/required-checks.json, .github/workflows/agent-review-gate.yml]
     tier: community
     introduced: v0.3.0
@@ -1916,7 +1915,7 @@ requirements:
       - id: REQ-DEP-005-AC3
         given: the review gate (auditor-review-gate)
         when: a pull request is opened or pushed, or the schedule fires
-        then: "its verdict for the pull request's head is decided by the default branch's copy of the gate, never by a copy from a pull request, as before; there is no queue run, no queue judge and no step that reads a queue ref, and the owner removed auditor-review-gate from main's required checks on Nov 12 2026 (the box merger merges only after the review seats and a cleared row). Nothing checks the absence of a queue judge per pull request"
+        then: "its verdict for the pull request's head is decided by the default branch's copy of the gate, never by a copy from a pull request, as before; there is no queue run, no queue judge and no step that reads a queue ref, and auditor-review-gate was removed from main's required checks on Nov 12 2026 (a pull request merges after its review seats and a cleared row). Nothing checks the absence of a queue judge per pull request"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2828,7 +2827,7 @@ requirements:
       - id: REQ-SUP-001-AC1
         given: "Dependabot's configuration"
         when: "it is read"
-        then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) carry no cooldown key, the product's gomod entry for the root is unchanged, and no docker entry exists (rule 61: there is no Dockerfile)"
+        then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) carry no cooldown key, the product's gomod entry for the root is unchanged, and no docker entry exists (there is no Dockerfile)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC2
@@ -3009,7 +3008,7 @@ requirements:
       - id: REQ-SUP-001-AC34
         given: "a pull request that adds or changes a checksum file for an upstream artifact (a file whose name says sha256 or checksum, an item whose identity is the file's content) that is no base input"
         when: "the pin check runs"
-        then: "the file is an item named by its content, an exact version the scan reads as a pin; no row dates it and no time is read; a file the base branch's .github/policy/base-inputs.json names is no item (the gradle wrapper jar checksum is listed there). Owner's plain-forms rule: a pin has a version the checker can read. Advisor ruling Oct 23 (fix to an existing coded check that blocks work)"
+        then: "the file is an item named by its content, an exact version the scan reads as a pin; no row dates it and no time is read; a file the base branch's .github/policy/base-inputs.json names is no item (the gradle wrapper jar checksum is listed there)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC35
