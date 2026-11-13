@@ -64,8 +64,8 @@ export PYTHONPATH="$work/pylib${PYTHONPATH:+:$PYTHONPATH}"
 SHA=3d3c42e5aac5ba805825da76410c181273ba90b1
 DIG=sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
-# What a refusal must print. A refusal is exit 1 with a finding line, never a crash or a usage error. The names below say
-# why they are refused, so their finding must say it too; any other bad case is held to the finding line alone.
+# What a refusal must print. A refusal is exit 1 with a finding line, never a crash or a usage error. Every bad case is
+# named below by why it is refused, so a refusal for any other reason fails.
 refusal_reason() {
   case "$1" in
     cache-restore-tag|cache-save-short-sha|docker-tag|tag|branch|short-sha|uppercase-sha|nested-action-tag|action-yml-anywhere \
@@ -115,6 +115,100 @@ refusal_reason() {
     buildx-*) echo "docker/setup-buildx-action" ;;
     qemu-*) echo "docker/setup-qemu-action" ;;
     kind-*) echo "helm/kind-action" ;;
+    sha-in-comment-only|key-whitespace|flow-style|key-case|second-document|job-named-with-uses \
+      |nested-workflow-dir|trailing-newline-ref|unicode-nbsp-ref) echo 'not a full commit digest' ;;
+    folded-scalar|comment-after-other|comment-in-string|tag-with-fragment) echo 'is not followed directly by' ;;
+    local-workflow-step) echo 'local reference' ;;
+    job-named-with-cont|job-named-env-cont|service-named-with|service-scalar-tag|image-trailing-space) \
+      echo 'not pinned by digest' ;;
+    service-expression) echo 'is an expression, not a pin' ;;
+    services-expression) echo 'services is not a mapping' ;;
+    uses-odd-position) echo 'uses at a position GitHub does not read as an action' ;;
+    service-options|container-options|container-volumes|container-ports) \
+      echo 'only image, credentials and env, and ports on a service' ;;
+    service-ports) echo 'only 127.0.0.1:<port>:<port> as plain text is read' ;;
+    container-env-name) echo 'a variable name that is not plain' ;;
+    docker-entrypoint) echo "Docker action input 'entrypoint' is refused" ;;
+    docker-action-entrypoint) echo "Docker action input 'entrypoint' is refused" ;;
+    docker-args) echo "Docker action input 'args' is refused" ;;
+    scorecard-composite-retired) echo 'ossf/scorecard-action is retired' ;;
+    service-name-inject) echo 'a service name that is not a plain identifier' ;;
+    action-path-traversal) echo 'an action path with a `.`/`..`/empty segment is refused' ;;
+    n2-copied-binary) echo 'copies, links or aliases' ;;
+    r3c02-python-generated) echo "with another language's interpreter" ;;
+    x2-setup-py|c04-setup-flag) echo "runs setup.py with another language's interpreter" ;;
+    n11-*) echo 'built by a command substitution' ;;
+    n12-*) echo 'POSIX shell only' ;;
+    n14-*|n15-*|n16-*|n17-*|n19-*|n20-*) echo 'is not a verb this check reads' ;;
+    n18-global-*) echo 'has a global option this check does not know' ;;
+    n18-config-other) echo 'sets DOCKER_CONFIG, which points docker or buildx' ;;
+    n18-buildkit-host) echo 'sets BUILDKIT_HOST, which points docker or buildx' ;;
+    n18-*) echo 'sets DOCKER_HOST, which points docker or buildx' ;;
+    scout-unknown-option|exec-unknown-option-bad|r26-b1-build-unknown-option-bad|r32-b1-*|r31-b1-*) \
+      echo 'has an option this check does not know' ;;
+    n23-*) echo 'a build context is not a local path' ;;
+    n24-working-directory|n24-cd-literal|n25-*|n26-wd-pip-r|n26-cd-pip-r|n28-*|n31-ansi-pushd \
+      |n31-ansi-cd|n31-locale-cd) echo 'working directory this check cannot place' ;;
+    r2c02-cd-in-parent) echo 'working directory this check cannot place' ;;
+    n27-alias-*|n27-expand-aliases|n27-alias-any) echo 'defines an alias' ;;
+    n27-ansi-*) echo 'ANSI-C quoting' ;;
+    r2c02-ansi-in-script) echo 'ANSI-C quoting' ;;
+    n27-cp-split) echo 'copies, links or aliases' ;;
+    n29-*|r3n03-*) echo 'a program is named by a variable with a default' ;;
+    n30-ansi-pip|c05-*|r2c05-*|c04-mpip-attached|c04-pip-main|r2c04-python-cluster \
+      |c02-script-calls-script|exec-inner-pip-bad|run-inner-pip-flags-bad|pkg-pip3-version) echo '--require-hashes' ;;
+    n32-*|n34-*) echo 'reads its script from stdin, a herestring or a process substitution' ;;
+    n33-*|sealed-probe-other-dir|sealed-probe-other-name|r2c02-fake-provenance|r2c02-foreign-repo \
+      |r3c02-git-show-ref|r3c02-api-unrelated|c02-variable-script \
+      |w-runner-temp-copy-then-download-bad) echo 'named by a variable' ;;
+    n35-*) echo 'which the job makes executable (chmod)' ;;
+    n21-*) echo 'not pinned by digest' ;;
+    exec-nested-too-deep-bad) echo 'nests scripts deeper than this check reads' ;;
+    r19-b10-case-in-substitution-bad) echo 'nests scripts deeper than this check reads' ;;
+    cov-scripts-nested-past-the-limit-bad) echo 'scripts nest deeper than this check reads' ;;
+    exec-sh-c-inner-tool-bad) echo 'is not a committed file' ;;
+    c01-glob-*|r2c01-bracket-only) echo 'a program name is a glob' ;;
+    r3c01-posix-class|r3c02-glob-exec) echo 'a glob that names a committed file' ;;
+    c04-uv-option|c04-npm-*|c04-pipx-option) echo 'a package manager this repository does not use' ;;
+    c02-python-c) echo 'inline code in the workflow is not read' ;;
+    c02-ruby-e|c02-node-e|c02-perl-e|r2c02-node-eval-eq|r2c02-perl-attached|r2c02-ruby-attached \
+      |r3c02-env-u-node) echo 'runs inline code from the workflow, which is not read' ;;
+    c02-uncommitted-script|c02-generated-elsewhere) echo 'is not a committed file' ;;
+    r2c02-replaced-script|r3c02-replace-*|sealed-probe-replaced|ac3-tee-bad|w-checkout-* \
+      |w-download-artifact-*|w-cache-*|w-writer-*|w-conditional-writer-bad|w-duplicate-path-keys-*) \
+      echo 'is changed by the job before it runs' ;;
+    c12-hash-p) echo 'binds a command name to a program' ;;
+    c11-*|r2c11-*|r3c11-adjacent-redirect|r3c11-workspace-abs|r3c11-tar-workspace) \
+      echo 'the script writes a file named like its Dockerfile' ;;
+    r3c11-pipmain-req|r3c11-mpip-req) echo 'outside the repository' ;;
+    r24-req-symlink) echo 'which is not a file in the repository' ;;
+    c13-*|r2c13-*|r3c13-*) echo 'sets DOCKER_HOST, which points docker or buildx' ;;
+    c09-buildkit-syntax-arg|r2c09-syntax-from-env) echo 'sets its frontend image by tag or from the environment' ;;
+    r2c09-attest-generator|r2c09-sbom-generator) echo 'a build runs a generator image not pinned by digest' ;;
+    r3c09-attest-sbom|r3c09-sbom-true) echo "a build generates an SBOM with BuildKit's default scanner image" ;;
+    r3c02-env-S) echo '`env` runs a string or moves the working directory' ;;
+    c07-*|c08-*|c09-copy-from-image|c09-syntax-directive|r3c08-from-number|n24-context-dockerfile \
+      |r23-build-with-unpinned-from-bad|r23c-b01-*|r23c-b02-*|r23c-b03-*|r26-b1-build-* \
+      |r4b1-trap-build-still-checked-bad) echo 'builds FROM an image not pinned by digest' ;;
+    r23-var-*|r23-for-loop-literal-pull-bad|r23-removed-local-trust-bypass-by-variable-bad \
+      |r24-literal-assignment-in-committed-script-bad|r24-kubectl-image-through-literal-variable-bad \
+      |r24-kind-image-through-literal-variable-bad|r26-b3-*|r26-b8-*-literal-variable-bad|r27-b3-* \
+      |r31-b2-*|r32-b2-*) echo 'which this script assigns the unpinned name' ;;
+    r25-*|r26-b8-crane-pull-mixed-word-bad|r31-b3-*) echo 'which mixes a variable with a literal name' ;;
+    r24-docker-tag-source-substitution-bad) echo 'takes its source from a command substitution' ;;
+    r26-b5-*) echo 'takes its image from a command substitution' ;;
+    r23c-b05-xargs-supplies-image-bad) echo 'has no image operand' ;;
+    r26-b4-kind-config-bad) echo 'reads its node images from a config file' ;;
+    r26-b6-*) echo 'runs or pulls images through a CLI this check does not read' ;;
+    r24-install-*|r23c-b09-*|r26-b9-*|r31-b4-*|r32-b4-*|r33-b1-*) echo 'which this job downloaded and installed' ;;
+    r23-tag-of-local-name-bad|r23c-b07-image-tag-alias-bad) echo 'not pinned by digest' ;;
+    w-fence-*|a-*) echo 'is not a committed file' ;;
+    w-tmp-copy-*|r20-tmp-copy-*|r21-b10-tmp-copy-*) echo 'is not a committed file' ;;
+    ac3-non-bash-step-bad) echo 'POSIX shell only' ;;
+    run-*|exec-*|create-*|container-create-inner-bad|b1-*|b2-*|b3-*|b4-*|b7-*|b8-* \
+      |n4-inner-still-read|n13-*|n22-*|n30-*|c01-*|c02-*|c03-*|c06-*|c10-*|r2c02-*|r2c10-*|r3c02-* \
+      |r3c10-*|r2r03-*|r2n01-*|r3n01-*|r4b*|r17-*|r18-*|r19-*|r20-*|r21-*|r22-*|r23-*|r24-*|r26-* \
+      |r27-*|scout-registry-unpinned|x1-nerdctl|r3n01-*|b6-*|r23c-*|r28-*) echo 'not pinned by digest' ;;
   esac
 }
 # prints why a refusal is not the wanted one, or nothing
@@ -124,7 +218,8 @@ refusal_problem() {
   ! grep -q Traceback <<<"$out" || { echo "(a crash, not a refusal)"; return; }
   grep -qv '^check-action-pins: ' <<<"$out" || { echo "(no finding line)"; return; }
   want=$(refusal_reason "$name")
-  [ -z "$want" ] || grep -qF -- "$want" <<<"$out" || echo "(the finding does not say: $want)"
+  [ -n "$want" ] || { echo "(no reason is named for this refusal in refusal_reason)"; return; }
+  grep -qF -- "$want" <<<"$out" || echo "(the finding does not say: $want)"
 }
 
 # case_ <name> <expect ok|bad> <workflow text> [setup commands, run in the fixture root]
@@ -727,10 +822,9 @@ case_ unclassified-action  bad "$head
 # --- adversarial round 9 (audits/2026-09-30/pins/round9)
 case_ docker-action-entrypoint bad "$head
     steps:
-      - uses: ossf/scorecard-action@$SHA # v2.4.4
+      - uses: docker://alpine@$DIG
         with:
-          results_file: r.sarif
-          entrypoint: '/bin/echo\" alpine:latest \"'"
+          entrypoint: /bin/echo"
 # advisor 0140, Codex r2 B1: the composite ossf/scorecard-action wrapper is retired — refused outright, by name,
 # whatever its digest/comment; only the direct docker://...@sha256 executor form is accepted
 case_ scorecard-composite-retired bad "$head
@@ -2944,7 +3038,7 @@ case_ w-cache-restore-expression-bad bad "$(uw "$(us actions/cache/restore "    
 # 1. every actions/cache and cache/restore step writes everywhere (the glob and the file-path forms are not parsed)
 n=0
 for p in 'bi*' 'bin?' '[b]in' 'bin/tool.sh' '.github/agent/bi*' '~' '~/work/x/x/bin' '/home/runner/work/x/x/bin' '/tmp/x'; do
-  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: $p
+  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: '$p'
           key: k")")" "$mk_tool"
 done
 case_ w-cache-save-still-ok ok "$(uw "$(us actions/cache/save "          path: bi*
