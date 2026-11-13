@@ -364,6 +364,28 @@ check("cli release: an unreadable tag object exits 1", r.returncode == 1, (r.ret
 r = relcli(tag="v0.3.1", ref=None, commit=None, obj="missing.txt")
 check("cli release: a patch tag exits 0 without reading anything", r.returncode == 0, (r.returncode, r.stdout,
     r.stderr))
+# REQ-AUD-17 AC5: an open owner-decision item (threshold at_or_above) in the base checkout holds the tag
+def owner_items_case(judge):
+    def run(items):
+        b = tempfile.mkdtemp(dir=d); os.makedirs(b + "/.github/policy"); os.makedirs(b + "/.auditor")
+        open(b + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
+        if items is not None:
+            open(b + "/.auditor/accepted-items.json", "w").write(json.dumps({"accepted_items": items}))
+        cmd = [sys.executable, "-I", judge, "release", "--tag", "v0.3.0", "--tag-object", os.path.join(d, "tagobj.txt"),
+            "--tagged-sha", HEAD, "--base-root", b, "--ref-json", w("ref.json", REF),
+            "--commit-json", w("commit.json", COMMIT)]
+        return subprocess.run(cmd, capture_output=True, text=True)
+    item = lambda threshold: {"cve": "CVE-2099-1", "severity": "Critical", "package": "p", "threshold": threshold,
+        "owner_issue": 1, "expiry": "2099-01-01"}
+    held = run([item("at_or_above")])
+    return (held.returncode == 1 and held.stdout.strip() != "" and run([item("below")]).returncode == 0
+        and run([]).returncode == 0 and run(None).returncode == 0)
+check("cli release: an open owner-decision item refuses the tag, a closed or absent record accepts it",
+    owner_items_case(sys.argv[1]))
+# a judge that always succeeds must fail the case above
+always_ok = os.path.join(d, "always-ok.py"); open(always_ok, "w").write("raise SystemExit(0)\n")
+check("cli release: the owner-decision case fails when the judge is replaced by success",
+    not owner_items_case(always_ok))
 def wrap_rel(tag="v0.3.0", ref=REF, commit=COMMIT, ref_err=None, obj_text=APPROVED):
     fk = tempfile.mkdtemp(dir=d)
     for name, o, err in (("ref", ref, ref_err), ("commit", commit, None)):
