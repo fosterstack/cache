@@ -215,6 +215,39 @@ def jq_words(words, may_name_files, files):
     return None if filt is not None else "a jq with no filter"
 
 
+def guide_commands(lines):
+    """(commands, why) of the guide's lines: a command is a line of a ```sh fenced block (a line ending in a backslash joins
+    the next, a pipeline counts once); blank lines and # lines are skipped. why is None or the first fault."""
+    cmds, state, pending = [], None, None
+    for l in lines:
+        s = l.strip()
+        if state is None:
+            state = "sh" if s == "```sh" else "other" if s.startswith("```") else None
+            continue
+        if s == "```":
+            if pending is not None:
+                return cmds, "the command `%s` is refused: it ends in a line continuation" % pending
+            state = None
+            continue
+        if state == "other":
+            continue
+        if pending is not None:
+            s, pending = pending + " " + s, None
+        elif not s or s.startswith("#"):
+            continue
+        if s.endswith("\\"):
+            pending = s[:-1].rstrip()
+            continue
+        cmds.append(s)
+    return cmds, "the guide ends inside a fenced block" if state is not None else None
+
+
+def image_subject(segs):
+    """True when a verify segment of a judged command verifies an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>):
+    it needs a registry image. A jq over a file that only names the placeholder in --arg is a file command."""
+    return any(w in IMAGE_MARKS for s in segs if s[0] != "jq" for w in read_verify(s)[1])
+
+
 def judge(c):
     """(segments, files, why) for a command. segments: the words of each pipe segment, placeholders as markers. files:
     the file operands of a command made only of jq, else None. why: None, or why the command is refused."""
