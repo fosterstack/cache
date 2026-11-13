@@ -121,7 +121,6 @@ ALLOW_PATTERNS=(
   '^bin/persona-uat-tools\.json$'
   '^bin/persona-uat-requirements\.txt$'
   '^\.github/agent/supply-chain/pin-(inventory|age-check|audit)\.py$'
-  '^\.github/agent/supply-chain/tag_observer\.py$'
   '^\.github/supply-chain-exceptions\.json$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
