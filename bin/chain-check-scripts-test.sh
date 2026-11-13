@@ -1757,9 +1757,10 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # github.com/strace/strace release, and the comments never name strace.io
 ae_f="$root/bin/acceptance-egress.sh"
 ae_url='https://github.com/strace/strace/releases/download/v${V}/strace-${V}.tar.xz'
+ae_code=$(grep -v '^[[:space:]]*#' "$ae_f" || true)      # the non-comment lines, so the version test below needs no pipe
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$ae_f" | head -1)
 if [ -n "$sv_" ] && grep -Fq -- '-e V="$STRACE_VER"' "$ae_f" && grep -Fq "\"$ae_url\"" "$ae_f" \
-  && ! grep -v '^[[:space:]]*#' "$ae_f" | grep -Eq 'strace-?[0-9]+\.[0-9]|download/v[0-9]' \
+  && ! grep -Eq 'strace-?[0-9]+\.[0-9]|download/v[0-9]' <<< "$ae_code" \
   && grep -q '^# .*github\.com/strace/strace' "$ae_f" && ! grep -q 'strace\.io' "$ae_f"; then
   ok "acceptance-egress.sh: strace URL uses \${V} from STRACE_VER=$sv_, no literal version, github.com/strace/strace"
 else
