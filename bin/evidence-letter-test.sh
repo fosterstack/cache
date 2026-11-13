@@ -38,8 +38,9 @@ def sha(path):
 def release(root, tag, published, body, statements=(), commit=None, records=RECORDS, vex_hash=None, version=None):
     d = os.path.join(root, tag)
     os.makedirs(d)
-    json.dump({"tag_name": tag, "published_at": published, "html_url": LINK + tag, "body": body},
-              open(d + "/release.json", "w"))
+    # release.json is unsigned: it holds decoys, so a letter that reads it shows the wrong date, link or reason
+    json.dump({"tag_name": tag, "published_at": "2020-01-01T00:00:00Z", "html_url": "https://example.test/" + tag,
+               "body": "## " + tag + " \u2014 patch release"}, open(d + "/release.json", "w"))
     vex = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://fosterstack.com/vex/cache/openvex",
            "version": 1,
            "statements": [{"vulnerability": {"name": n}, "timestamp": ts, "status": "not_affected"}
@@ -49,8 +50,9 @@ def release(root, tag, published, body, statements=(), commit=None, records=RECO
         json.dump({"record": r, "tag": tag}, open(os.path.join(d, r), "w"))
     entry = {"file": "fosterstack-cache.openvex.json", "form": "openvex",
              "sha256": vex_hash or sha(d + "/fosterstack-cache.openvex.json")}
-    json.dump({"version": version or tag[1:], "commit": commit or ("ab" * 20), "vex": [entry]},
-              open(d + "/release-manifest.json", "w"))
+    # the signed release metadata (release-manifest.json) holds the date and the reason
+    json.dump({"version": version or tag[1:], "commit": commit or ("ab" * 20), "vex": [entry],
+               "published_at": published, "reason": body}, open(d + "/release-manifest.json", "w"))
     return d
 
 
@@ -126,9 +128,9 @@ check("AC2: the patch release and its reason, verbatim",
 check("AC2: the minor release is not called a patch", "A new minor release." not in text)
 pp, tp = letter(world([(("v0.3.2", "2026-11-05T12:00:00Z", "\n\n"), {})]))
 check("AC2: a patch release with no notes line refuses", pp.returncode == 1 and tp == "", pp.stderr)
-ph, th = letter(world([(("v0.3.2", "2026-11-05T12:00:00Z", "## Fix: heading marks go."), {})]))
-check("AC2: leading heading marks are dropped from the reason",
-      ph.returncode == 0 and "v0.3.2: Fix: heading marks go." in th, th)
+ph, th = letter(world([(("v0.3.2", "2026-11-05T12:00:00Z", "Fix: the signed reason."), {})]))
+check("AC2: the reason is the signed metadata's, not the em-dash heading of the unsigned notes",
+      ph.returncode == 0 and "v0.3.2: Fix: the signed reason." in th and "patch release" not in th, th)
 
 # AC3: VEX statements of the month
 check("AC3: the November statement is listed with its date", "CVE-2026-1111" in text and "2026-11-03" in text)
@@ -160,12 +162,26 @@ diff = [(a, b) for a, b in zip(text.splitlines(), t2.splitlines()) if a != b]
 check("AC5: a changed commit in an asset changes the letter in that one line and no other",
       len(diff) == 1 and "cd" * 20 in diff[0][1] and len(text.splitlines()) == len(t2.splitlines()), diff)
 r3 = world(NOV)
-rj = r3 + "/rel/v0.3.1/release.json"
-moved = open(rj).read().replace("2026-11-04", "2026-11-05")
-open(rj, "w").write(moved)
+rm = r3 + "/rel/v0.3.1/release-manifest.json"
+moved_manifest = open(rm).read().replace("2026-11-04", "2026-11-05")
+open(rm, "w").write(moved_manifest)
 _p, t3 = letter(r3)
-check("AC5: a changed date in an asset changes the letter where the date is read",
+check("AC5: a changed date in the signed metadata changes the letter where the date is read",
       "published 2026-11-05" in t3 and "published 2026-11-04" not in t3)
+r4 = world(NOV)
+rj = r4 + "/rel/v0.3.1/release.json"
+json.dump({"tag_name": "v0.3.1", "published_at": "2026-11-27T12:00:00Z", "html_url": "https://example.test/x",
+           "body": "Fix: a forged reason."}, open(rj, "w"))
+_p, t4 = letter(r4)
+check("AC5: a tampered release.json (date, link, body) does not change the letter", t4 == text, t4)
+check("AC5: the release link is built from the tag", LINK + "v0.3.1" in text and "example.test" not in text, text)
+r5 = world(NOV)
+os.remove(r5 + "/rel/v0.3.1/release.json")
+_p, t5 = letter(r5)
+check("AC5: release.json is not needed at all", t5 == text, t5)
+pe = letter(world([(("v0.3.2", "2026-11-05T12:00:00Z", ""), {})]))
+check("AC5: a patch release whose signed metadata holds no reason refuses even if release.json has a body",
+      pe[0].returncode == 1 and pe[1] == "", pe[0].stderr)
 pg, tg = letter(world([(("v0.3.5", "2026-11-08T12:00:00Z", "Fix: z."), {"version": "9.9.9"})]))
 check("AC5: a manifest whose version is not the tag refuses", pg.returncode == 1 and tg == "", pg.stderr)
 rj2 = world(NOV)
