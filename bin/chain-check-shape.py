@@ -41,6 +41,8 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
 Modelled on: in-toto-witness docs/attestors/environment.md and docs/commands.md (the flags), docs/tutorials/artifact-policy.md:58-70 (what a
 collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the same token-fetch lines)."""
 import hashlib, importlib.util, json, os, re, shlex, sys, yaml
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import guide_plan_judge   # noqa: E402
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
@@ -523,6 +525,11 @@ def guidelist(guide):
         seen.add(c)
         if not verify_form(c):
             bad.append("the cannot-run entry `%s` is not a verify form" % c)
+        else:
+            segs, _, why = guide_plan_judge.judge(c)
+            if not why and not guide_plan_judge.image_subject(segs):
+                bad.append("the cannot-run entry `%s` is not an image-reference command: a file command is run by "
+                           "postverify before publishing, never listed" % c)
         if re.sub(r"[ \t]+", " ", c) not in text:
             bad.append("the cannot-run entry `%s` is not in the guide" % c)
     return bad
