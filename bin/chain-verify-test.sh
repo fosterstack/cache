@@ -788,6 +788,8 @@ cp "$CB" "$RG/bin/chain-bytes-sha.py" 2> /dev/null || printf 'x\n' > "$RG/bin/ch
 printf '#!/bin/sh\necho b\n' > "$RG/bin/b.sh"; printf '#!/bin/sh\necho other\n' > "$RG/bin/other.sh"
 printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
 printf '{"a":1}\n' > "$RG/.github/policy/x.json"; printf 'readme\n' > "$RG/README.md"
+mkdir -p "$RG/build/locks"
+for f in sealed-env.json archive.json melange.yaml apko.yaml locks/fips-module.txt; do printf 'x\n' > "$RG/build/$f"; done
 rcg add -A > /dev/null; rcg commit -q -m c1; rcg tag v0.3.0-rc1
 C1=$(rcg rev-parse HEAD)
 export RC_COMMIT=$C1
@@ -1844,9 +1846,9 @@ S1b=; cbx sha --commit "$C1" --repo "$RG" && S1b=$(cat "$work/cb.out") || true
 [ -n "$S1" ] && [ "$S1" = "$S1b" ] && ok "AC6 bytes: the same commit gives the same sha twice" || bad "AC6 bytes: not deterministic"
 cbx list --commit "$C1" --repo "$RG" || true
 lst=$(cat "$work/cb.out")
-want_in="bin/b.sh bin/chain-bytes-sha.py .github/policy/chain-scripts.json .github/policy/x.json .github/workflows/release.yml .github/workflows/stage-build.yml .github/workflows/stage-sign.yml .github/workflows/stage-verify.yml"
+want_in="bin/b.sh bin/chain-bytes-sha.py .github/policy/chain-scripts.json .github/policy/x.json .github/workflows/release.yml .github/workflows/stage-build.yml .github/workflows/stage-sign.yml .github/workflows/stage-verify.yml build/sealed-env.json build/archive.json build/melange.yaml build/apko.yaml build/locks/fips-module.txt"
 miss=0; for f in $want_in; do grep -F -q "  $f" <<< "$lst" || miss=1; done
-[ "$miss" = 0 ] && [ "$(grep -c . <<< "$lst")" = 8 ] && ok "AC6 bytes: the set is the release and stage workflows, the listed scripts and the policy files, eight files here" || bad "AC6 bytes: the set is not the eight files: $(tr '\n' ' ' <<< "$lst" | head -c 300)"
+[ "$miss" = 0 ] && [ "$(grep -c . <<< "$lst")" = 13 ] && ok "AC6 bytes: the set is the workflows, the listed scripts, the policy files and the five build inputs, thirteen files here" || bad "AC6 bytes: the set is not the thirteen files: $(tr '\n' ' ' <<< "$lst" | head -c 300)"
 ! grep -E -q 'other\.sh|ci\.yml|README' <<< "$lst" && ok "AC6 bytes: a file the chain does not use (an unlisted script, ci.yml, the README) is not in the set" || bad "AC6 bytes: an unrelated file is in the set"
 shaof() { local o rc=0; o=$(python3 "$CB" sha --commit "$1" --repo "$RG" 2> /dev/null) || rc=$?; [ "$rc" = 0 ] && echo "$o" || echo "ERR$rc"; }
 mutc() { # mutc NAME FILE TEXT : a commit on top of C1 with TEXT appended to FILE; prints its sha
@@ -1887,6 +1889,18 @@ Scl=$(shaof "$CCL")
 for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.sh $AG/bin/pkg/__init__.py $AG/bin/pkg/mod.py $AG/bin/pkg/sibling.py $AG/bin/pkg/sub/deep.py $AG/bin/other/thing.py; do
   rcg checkout -q -b "cl-$(basename "$f")" "$CCL"; printf '# changed\n' >> "$RG/$f"; rcg add -A > /dev/null; rcg commit -q -m cl; c=$(rcg rev-parse HEAD); rcg checkout -q main
   [ "$(shaof "$c")" != "$Scl" ] && [[ "$(shaof "$c")" =~ ^[0-9a-f]{64}$ ]] && ok "AC6 bytes: a changed $f changes the sha" || bad "AC6 bytes: a changed $f did not change the sha"
+done
+# the build inputs the rc proof must cover: one byte changed in each of them changes the sha
+BI="build/sealed-env.json build/archive.json build/melange.yaml build/apko.yaml build/locks/fips-module.txt"
+rcg checkout -q -b buildin "$CCL"; mkdir -p "$RG/build/locks"
+for f in $BI; do cp "$root/$f" "$RG/$f"; done
+rcg add -A > /dev/null; rcg commit -q -m buildin; CBI=$(rcg rev-parse HEAD); rcg checkout -q main
+Sbi=$(shaof "$CBI")
+for f in $BI; do
+  rcg checkout -q -b "bi-$(basename "$f")" "$CBI"; printf '#' >> "$RG/$f"; rcg add -A > /dev/null; rcg commit -q -m bi
+  c=$(rcg rev-parse HEAD); rcg checkout -q main
+  [[ "$(shaof "$c")" =~ ^[0-9a-f]{64}$ ]] && [ "$(shaof "$c")" != "$Sbi" ] && ok "AC6 bytes: a changed build input $f changes the sha" \
+    || bad "AC6 bytes: a changed build input $f did not change the sha"
 done
 # the real tree: the scripts the real release workflow runs are in its set
 cbx list --commit HEAD --repo "$root" || true; rl=$(cat "$work/cb.out")
@@ -2205,7 +2219,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=797
+EXPECT=802
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
