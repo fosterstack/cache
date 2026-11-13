@@ -41,11 +41,13 @@ release's own image digests — never edited by hand:
 | File | For | Statements |
 |---|---|---|
 | `fosterstack-cache.openvex.json` | scanners that read OpenVEX | the source |
-| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule for each package a `not_affected` or `fixed` statement names (e.g. the golang-jwt/jwt/v4 module, or the Go standard library as `pkg:golang/stdlib@<version>`), scoped by its CVE, the released image digests the statement covers and that package and version; no rule for `affected`, `under_investigation` or a statement that names no package | <!-- pinned: upstream -->
-| `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement about this release's images, as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
+| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule for each product scope and package that a suppressible statement (`not_affected`, `fixed`) names, and none for `affected`, `under_investigation` or a statement that names no package, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. the golang-jwt/jwt/v4 module, or the Go standard library as `pkg:golang/stdlib@<version>`), by that package and version | <!-- pinned: upstream -->
+| `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | each OpenVEX statement about this release's images (except a Go standard library version the release is not built with, which it omits), as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
 
-In other words: the CSAF file carries every OpenVEX statement; the Inspector file
-carries one rule for each package a `not_affected` or `fixed` statement names.
+In other words: the OpenVEX file keeps every statement; the CSAF file carries every statement
+about this release's images, less a Go standard library version the release is not built with;
+the Inspector file carries one rule for each product scope and package that a suppressible statement (not_affected, fixed) names,
+less that same version, and none for affected, under_investigation or a statement that names no package.
 
 The Google VEX upload is a **preview feature** of Google Cloud
 (`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is

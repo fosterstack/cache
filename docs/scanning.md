@@ -70,12 +70,15 @@ check them against the signed release manifest as described in
 | Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
 | Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
 | Docker Scout | none | Scout reads the statements attached to the image, not a file (see [Docker Scout](#docker-scout)) |
-| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per package a `not_affected` or `fixed` statement names: `aws inspector2 create-filter`, one rule per call |
+| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule for each product scope and package a `not_affected` or `fixed` statement names: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
-The three files are generated from the same statements. The OpenVEX and CSAF files
-carry every statement; the Inspector file carries a rule only for each `not_affected`
-or `fixed` statement, one rule for each package it names. Google applies
+The three files are generated from the same statements. The OpenVEX file carries
+every statement. The CSAF file leaves out a Go standard library version the release
+is not built with and carries every other statement about this release's images; the
+Inspector file leaves out that same version and carries one rule for each product scope and package
+that a `not_affected` or `fixed` statement names, and none for `affected`, `under_investigation`
+or a statement that names no package. Google applies
 whole-image statements only. [`.vex/README.md`](../.vex/README.md) has the detail.
 
 ## Suppression rules
@@ -89,7 +92,7 @@ statement**.
   ([`.vex/README.md`](../.vex/README.md)), and the Inspector rules above are
   generated from the statements, never written by hand.
 - **Which statements become rules.** A `not_affected` or `fixed` statement
-  becomes one suppression rule for each package it names. `affected` and `under_investigation`
+  becomes one suppression rule for each product scope and package it names. `affected` and `under_investigation`
   statements never do, and neither does a statement that names no package: those
   findings stay visible in your scanner.
 - **Scoped to what we shipped.** Each rule is scoped by the CVE, by the digests

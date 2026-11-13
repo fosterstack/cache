@@ -2497,7 +2497,7 @@ requirements:
   - id: REQ-SCAN-010
     title: VEX in three forms
     statement: >
-      Every release shall publish the VEX three ways, all generated from the one OpenVEX file: OpenVEX, an Amazon Inspector suppression-rule file, and CSAF 2.0, covering exactly the same statements.
+      Every release shall publish the VEX three ways, all generated from the one OpenVEX file: OpenVEX, an Amazon Inspector suppression-rule file, and CSAF 2.0. The Inspector and CSAF files leave out a statement about a Go standard library version other than the one the release is built with, and the generator names each one it leaves out.
     source: [.vex/fosterstack-cache.openvex.json]
     tier: community
     introduced: v0.3.0
@@ -2512,13 +2512,13 @@ requirements:
       - id: REQ-SCAN-010-AC1
         given: "a release"
         when: "it is published"
-        then: "it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement that names a package, scoped by CVE, image digest and that package, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file"
+        then: "it carries the OpenVEX file, an Inspector suppression-rule file (one rule for each product scope and package that a suppressible statement names, scoped by CVE, image digest and that package, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SCAN-010-AC2
         given: "the three VEX forms"
         when: "they are compared"
-        then: "they cover exactly the same statements"
+        then: "the CSAF file carries every OpenVEX statement about this release's images, except that a Go standard library subcomponent at a version other than the one build/melange.yaml pins is left out of both the Inspector and the CSAF file (the OpenVEX file keeps it), and a statement left with nothing is left out whole; the generator names each statement it drops in one line; the Inspector file carries one rule for each product scope and package that a suppressible statement names"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SCAN-010-AC3

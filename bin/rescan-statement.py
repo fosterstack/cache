@@ -266,6 +266,7 @@ def _vex_match(doc, finding, variant, image_repo):
     arch = (finding.get("platform") or "").rpartition("/")[2]
     if not isinstance(finding.get("package") or "", str):
         raise ValueError("a package name that is not a string")
+    versions = _gate.vex_versions(None, *pkg)
     dead = _gate.superseded(doc["statements"])
     for si, st in enumerate(doc["statements"]):
         if st["status"] not in _gate.SUPPRESSING:
@@ -287,7 +288,7 @@ def _vex_match(doc, finding, variant, image_repo):
             subs = [_sub_purl(x["@id"]) for x in p.get("subcomponents", [])]
             if subs and not pkg[0]:
                 continue   # a finding with no package identity never matches a statement that names packages
-            if not subs or any(_same_package(pkg[0], pkg[1], *sub) for sub in subs):
+            if not subs or any(_same_package(pkg[0], ver, *sub) for ver in versions for sub in subs):
                 return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v["name"], "status": st["status"], "product": p.get("@id")}
     return None
 
