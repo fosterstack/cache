@@ -40,12 +40,14 @@ fixture() { # folder: the jar, the policy folder and a gradlew that leaves a mar
   printf '#!/usr/bin/env bash\ntouch "$(dirname "$0")/gradlew-ran"\n' > "$1/bench/gradle-sample/gradlew"
   chmod +x "$1/bench/gradle-sample/gradlew"
 }
-policy_case() { # name, policy file content as printf text (-, no file), want (refuse|accept)
+nl=$'\n'
+zeros=$(head -c 64 /dev/zero | tr '\0' 0)
+policy_case() { # script, name, policy file content as plain data (-, no file), want (refuse|accept)
   local dir="$work/policy-$((++cases))" out rc ok=1
   fixture "$dir"
-  [ "$2" = - ] || printf "$2" > "$dir/.github/policy/gradle-wrapper-jar-sha256.txt"
-  out=$(cd "$dir" && bash "$sut" 2>&1 >/dev/null); rc=$?
-  if [ "$3" = refuse ]; then
+  [ "$3" = - ] || printf '%s' "$3" > "$dir/.github/policy/gradle-wrapper-jar-sha256.txt"
+  out=$(cd "$dir" && bash "$here/$1" 2>&1 >/dev/null); rc=$?
+  if [ "$4" = refuse ]; then
     [ "$rc" -eq 1 ] || ok=0
     grep -qF "$msg" <<<"$out" || ok=0
     [ ! -e "$dir/bench/gradle-sample/gradlew-ran" ] || ok=0
@@ -53,13 +55,17 @@ policy_case() { # name, policy file content as printf text (-, no file), want (r
     ! grep -qF "$msg" <<<"$out" || ok=0
     [ -e "$dir/bench/gradle-sample/gradlew-ran" ] || ok=0
   fi
-  if [ "$ok" -eq 1 ]; then echo "ok: $1"; pass=$((pass+1)); else echo "FAIL: $1 (rc=$rc)"; fail=$((fail+1)); fi
+  if [ "$ok" -eq 1 ]; then echo "ok: $1: $2"; pass=$((pass+1)); else echo "FAIL: $1: $2 (rc=$rc)"; fail=$((fail+1)); fi
 }
 cases=0
-policy_case "a policy hash that is not the jar's hash is refused" "%064d  $jar_path\n" refuse
-policy_case "a second line in the policy file is refused" "$jar_hash  $jar_path\n$jar_hash  $jar_path\n" refuse
-policy_case "a policy line naming another path is refused" "$jar_hash  bench/other/gradle-wrapper.jar\n" refuse
-policy_case "an empty policy file is refused" "" refuse
-policy_case "a missing policy file is refused" - refuse
-policy_case "the correct line without a trailing newline is accepted" "$jar_hash  $jar_path" accept
+for script in acceptance-gradle.sh acceptance-gradle-capped.sh; do
+  policy_case "$script" "a policy hash that is not the jar's hash is refused" "$zeros  $jar_path$nl" refuse
+  policy_case "$script" "a second line in the policy file is refused" \
+    "$jar_hash  $jar_path$nl$jar_hash  $jar_path$nl" refuse
+  policy_case "$script" "a policy line naming another path is refused" \
+    "$jar_hash  bench/other/gradle-wrapper.jar$nl" refuse
+  policy_case "$script" "an empty policy file is refused" "" refuse
+  policy_case "$script" "a missing policy file is refused" - refuse
+done
+policy_case acceptance-gradle.sh "the correct line without a trailing newline is accepted" "$jar_hash  $jar_path" accept
 echo "acceptance-gradle: $pass passed, $fail failed"; [ "$fail" -eq 0 ]
