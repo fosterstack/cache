@@ -8,8 +8,8 @@
 #              "versions": {"owner/repo": [{"version", "sha", "published", "lists": {...}}]}}   with ADV = {"id",
 #              "incident", "affected": bool, "modified": ISO, "malicious"?: bool}
 #   gh calls it may make: issue list / issue create / issue edit / label create, NEVER anything about runs,
-#   environments or
-#   secrets: the private details are produced on the Mac, not by this workflow (advisor 0175 amendment 5).
+#   environments or secrets: the private details are produced on the Mac, not by this workflow (advisor 0175
+#   amendment 5).
 set -euo pipefail
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
 here=$(cd "$(dirname "$0")" && pwd)
