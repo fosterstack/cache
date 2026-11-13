@@ -264,10 +264,10 @@ def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id
 t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
 t19 = ac("REQ-CHAIN-007", 19)["then"]
 # the audit removed the 540 s cap: the command runs plain, and no timeout wrapper wording may be left in these spots
-check("and the command run as plain `bash SCRIPT ARGS` (the job-level timeout bounds a hung command)" in t4 and "timeout -k 20 540" not in t4 and "timeout 540" not in t4,
+check("and the command run as plain `bash SCRIPT ARGS` (GitHub's default job time limit bounds a hung command)" in t4 and "timeout -k 20 540" not in t4 and "timeout 540" not in t4,
       "text: REQ-CHAIN-004-AC2 says the command runs as plain bash SCRIPT ARGS, no timeout -k 20 540 (E item A)")
 n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
-check("Every command run under Witness is plain `bash SCRIPT ARGS`; the job-level timeout bounds a hung command" in n4 and "timeout -k 20 540" not in n4 and "timeout 540" not in n4
+check("Every command run under Witness is plain `bash SCRIPT ARGS`; GitHub's default job time limit bounds a hung command" in n4 and "timeout -k 20 540" not in n4 and "timeout 540" not in n4
       and "with the command run as plain `bash SCRIPT ARGS` inside it" in n7 and "timeout -k 20 540" not in n7 and "timeout 540" not in n7
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
       "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say plain bash SCRIPT ARGS, no timeout 540, and six Release steps (E item B)")
