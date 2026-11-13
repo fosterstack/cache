@@ -334,8 +334,23 @@ check("Build/Rebuild comparison" not in CS["bin/release-apks.sh"]["reason"] and 
 check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read(), "text: melange-apko-lib.sh no longer shows release-sign-apks.sh with --rebuild-dir")
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
+# ---- the policy file of Sign's release step (G1, G2): release-signatures.sh makes policy.json itself, because a stage file's run lines cannot read GITHUB_REF_NAME ----------
+POLICY_MAKE = ('python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json '
+               '--tag "$GITHUB_REF_NAME" --out policy.json')
+SIGS = [l.strip() for l in open(os.path.join(BIN, "release-signatures.sh")).read().split("\n") if l.strip() and not l.strip().startswith("#")]
+def line_of(part): return next((i for i, l in enumerate(SIGS) if part in l), None)
+check(SIGS.count(POLICY_MAKE) == 1 and sum("policy make" in l for l in SIGS) == 1,
+      "G1 release-signatures.sh runs exactly once, as one whole line, the policy make command of release-verify.sh (no `|| true`, no other spelling)")
+at_tag, at_key, at_make, at_sign = line_of("[[ $tag =~"), line_of("chain-verify.py key-ref-check"), line_of("policy make"), line_of("sign_file ")
+check(None not in (at_tag, at_key, at_make, at_sign) and at_tag < at_key < at_make < at_sign,
+      "G1 the policy make line comes after the tag check and the key-reference check and before anything is signed", str((at_tag, at_key, at_make, at_sign)))
+row = CS["bin/release-signatures.sh"]
+check(row["tools"] == ["bash", "git", "jq", "python3", "sha256sum", "trap"] and row["runs"] == ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"],
+      "G2 the chain-scripts.json row of release-signatures.sh keeps its tools and runs (chain-verify.py is already in runs): only the sha256 changes", "%s %s" % (row["tools"], row["runs"]))
+check(row["sha256"] == hashlib.sha256(open(os.path.join(BIN, "release-signatures.sh"), "rb").read()).hexdigest(),
+      "G2 the sha256 of that row is the script's own, after the policy make line was added")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "124"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "128"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
