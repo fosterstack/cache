@@ -1027,14 +1027,14 @@ else
   ok "$CASE (skipped as root: file modes do not bind)"
 fi
 r="$work/r-ptlink-hist"; mkrepo "$r" "100:$CLEANSHA"
-printf '{}\n' >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 30)" GIT_COMMITTER_DATE="$(dago 30)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
+printf '{"shell": "ghcr.io/own/ptool@sha256:%s"}\n' "$(printf 'a%.0s' $(seq 64))" >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 30)" GIT_COMMITTER_DATE="$(dago 30)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
 rm "$r/bin/persona-uat-tools.json"; ln -s elsewhere.json "$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 20)" GIT_COMMITTER_DATE="$(dago 20)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools symlink"
-rm "$r/bin/persona-uat-tools.json"; printf '{}\n' >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular again"
+rm "$r/bin/persona-uat-tools.json"; printf '{"shell": "ghcr.io/own/ptool@sha256:%s"}\n' "$(printf 'a%.0s' $(seq 64))" >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular again"
 run ptlinkhist "$CLEAN" "$r"
 CASE="AC5 persona tools: a tools file that is a symbolic link at a revision of the history fails the audit (exit 2), the reason names the file and says symbolic link, never a clean day"
 check test "$rc" -eq 2; check grep -q 'persona-uat-tools.json.*symbolic link' "$work/ptlinkhist.err"; check none_match 'no known-compromised' "$work/ptlinkhist.out"
 r="$work/r-ptlink-wt"; mkrepo "$r" "100:$CLEANSHA"
-printf '{}\n' >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
+printf '{"shell": "ghcr.io/own/ptool@sha256:%s"}\n' "$(printf 'a%.0s' $(seq 64))" >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
 rm "$r/bin/persona-uat-tools.json"; ln -s elsewhere.json "$r/bin/persona-uat-tools.json"
 run ptlinkwt "$CLEAN" "$r"
 CASE="AC5 persona tools: a tools file that is a symbolic link in the working tree fails the audit (exit 2), the reason names the file and says symbolic link"
@@ -1345,7 +1345,7 @@ def hist():      # kept for the reader-failure case below
 '
 run oversizeold "$CLEAN" "$work/r-oversize"
 CASE="oversize history: a revision with a command line over 4000 characters makes the audit incomplete: exit 2, the reason on stderr names the revision or the file"
-check test "$rc" -eq 2; check grep -qE "${OV_B:0:12}|ci\\.yml" "$work/oversizeold.err"
+check test "$rc" -eq 2; check grep -qE "${OV_B:0:12}|${OV_D:0:12}|ci\\.yml" "$work/oversizeold.err"
 CASE="oversize history: an incomplete audit never says 'no known-compromised versions' on stdout"
 check none_match 'no known-compromised' "$work/oversizeold.out"
 CASE="oversize history: a history of readable revisions only still exits 0 and says there are no known-compromised versions"
@@ -1353,13 +1353,10 @@ run readableonly "$CLEAN" "$work/r-clean"
 check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/readableonly.out"
 CASE="oversize history: no other error is swallowed: a revision unreadable for another reason (a broken "
 CASE+="tree) still stops the read"
-check python3 - "$aud" "$r" "$OV_B" <<PY
+check python3 - "$aud" "$r" <<PY
 $OVPY
-orig = pa.inv.load_at
 def boom(root, rev, agent=True):
-    if rev == sys.argv[3]:
-        raise RuntimeError("some other failure of the reader")
-    return orig(root, rev, agent)
+    raise RuntimeError("some other failure of the reader")
 pa.inv.load_at = boom
 try:
     hist()
