@@ -3,20 +3,9 @@
 main's ruleset requires signed commits, and a commit made by `git commit` in the runner is unsigned. A commit made
 through the GraphQL `createCommitOnBranch` mutation with the App's installation token is created and signed by GitHub.
 
-commit_via_api writes one signed commit on a delivery branch (auditor/, patch-notes/ or audit/). It builds the commit
-on a temporary auditor/tmp-* ref at base_sha, confirms the signature, checks that the live branch has not moved since
-it was first read, and only then points the live branch at the new commit and deletes the temporary ref. A failure at
-any point leaves the live branch, its open PR and the PR's pending additions as they were.
-
-branch_reusable says whether an existing auditor/ branch can stay as it is. Its head must be one signed commit by the
-App with base_sha (today's main) as its only parent and exactly the wanted files, or that commit plus one signed
-records commit by the App on top of it. It returns the head oid, or None when the caller must rebuild the branch.
-
-commit_on_branch writes one signed records commit on the head of a dependency-bump branch (dependabot/go_modules/* or
-auditor/bump-*). The head is both the parent and the lease, so a branch that moved is not written, and only records
-paths may be written.
-
-commits_authored_by says whether every commit between two shas is verified by GitHub and made by given logins.
+Each function says what it proves in its own docstring. commit_via_api builds the commit on a temporary auditor/tmp-*
+ref and only then points the live branch at it; if deleting that temporary ref fails, the ref stays behind, and the live
+branch, its open PR and the PR's pending additions are as they were.
 
 Anything that cannot be proved, such as an API error, a missing oid, an unconfirmed signature, a file over 5 MB or a
 branch outside the allowed prefixes, is a CommitError: the delivery fails closed, and a commit that is not provably
@@ -180,8 +169,8 @@ def _check(repo, branch, base_sha, message, changes, prefixes=(BRANCH_PREFIX,), 
 
 
 def _head(run, repo, branch):
-    """The branch's head sha, or None when it is absent (404). Any other failure, or an answer without a sha, is an
-    error."""
+    """The branch's head sha, or None when it is absent (404). Any other failure, or an answer
+    without a sha, is an error."""
     rc, out, err = _api(run, _get_cmd(repo, branch))
     if rc != 0:
         if "404" in err + out or "Not Found" in err + out:
@@ -195,8 +184,8 @@ def _head(run, repo, branch):
 
 
 def _confirm_signed(run, repo, oid, signature):
-    """The commit must be provably signed: the mutation's own answer when it gave one, else GitHub's verification of
-    the commit."""
+    """The commit must be provably signed: the mutation's own answer when it gave one, else GitHub's
+    verification of the commit."""
     if isinstance(signature, dict):
         if signature.get("isValid") is True and signature.get("state") == "VALID":
             return
@@ -332,9 +321,8 @@ def _login(doc, who):
 
 
 def _by_app(doc, app_login):
-    """The commit was made through the API on the App's behalf: authored by the App (its login, e.g. 'name[bot]') and
-    committed by GitHub itself. The author is only an email anyone can set; the committer GitHub signs is not.
-    Without a login to compare, nothing is by the App."""
+    """The commit was made through the API on the App's behalf: the API's author.login is the App's (e.g. 'name[bot]';
+    null is refused) and GitHub itself is the committer. Without a login to compare, nothing is by the App."""
     return bool(app_login) and _login(doc, "author") == app_login and _login(doc, "committer") == GITHUB_COMMITTER
 
 
@@ -344,19 +332,19 @@ def _is_records_commit(doc, branch):
 
 
 def _only_records_paths(run, repo, sha):
-    """Every file of commit `sha` is a plain add, change or delete of a records path. GitHub pages a commit's files at
-    300 a page and stops at 3000, so a list is complete only when a page comes back short; anything else proves
-    nothing."""
+    """Every file of commit `sha` is a plain add, change or delete of a records path. GitHub pages a commit's
+    files at 100 a page (its cap) and stops at 3000, so a list is complete only when a page comes back short;
+    anything else proves nothing."""
     files = []
-    for page in range(1, 11):
-        rc, out, _ = _api(run, ["gh", "api", "repos/%s/commits/%s?per_page=300&page=%d" % (repo, sha, page)])
+    for page in range(1, 31):
+        rc, out, _ = _api(run, ["gh", "api", "repos/%s/commits/%s?per_page=100&page=%d" % (repo, sha, page)])
         if rc != 0:
             return False
         chunk = _json(out, "the commit lookup").get("files")
         if not isinstance(chunk, list):
             return False
         files += chunk
-        if len(chunk) < 300:
+        if len(chunk) < 100:
             return bool(files) and all(isinstance(f, dict) and is_records_path(f.get("filename"))
                                        and f.get("status") in ("added", "modified", "removed")
                                        and "previous_filename" not in f for f in files)
