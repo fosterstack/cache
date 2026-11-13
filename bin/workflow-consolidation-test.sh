@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
 # The ratified workflow consolidation (owner, Oct 2): go-freshness.yml keeps the freshness check on its daily schedule (and on a
-# dispatch) and the weekly cron of persona-uat. The real workflow must pass; each mutated copy must be caught.
+# dispatch) and nothing else: the weekly persona-uat cron moved to persona-uat.yml (REQ-UAT-001-AC6, owner rule workflow-grouped-by-purpose,
+# Nov 13). The real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -12,9 +13,11 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 crons = [c.get("cron") for c in (d.get("on") or {}).get("schedule") or []]
-daily, weekly = "23 6 * * *", "43 6 * * 1"
-if sorted(crons) != sorted([daily, weekly]):
-    bad.append("schedules are not exactly the daily freshness cron and the weekly persona-uat cron: %s" % crons)
+daily = "23 6 * * *"
+if crons != [daily]:
+    bad.append("the schedule is not exactly the daily freshness cron: %s" % crons)
+if sorted((d.get("jobs") or {}) ) != ["check", "refresh"]:
+    bad.append("go-freshness.yml keeps only its freshness jobs (check, refresh), no persona job: %s" % sorted(d.get("jobs") or {}))
 if "workflow_dispatch" not in (d.get("on") or {}):
     bad.append("no workflow_dispatch")
 c = (d.get("jobs") or {}).get("check")
@@ -45,7 +48,9 @@ PY
 }
 J='d["jobs"]'
 case_ real                    ok  ""
-case_ weekly-cron-gone       bad "d['on']['schedule'] = [{'cron': '23 6 * * *'}]"
+case_ weekly-cron-back       bad "d['on']['schedule'].append({'cron': '43 6 * * 1'})"
+case_ daily-cron-gone        bad "d['on']['schedule'] = []"
+case_ persona-job-back       bad "$J['persona-uat'] = {'runs-on': 'ubuntu-24.04', 'steps': []}"
 case_ check-unguarded         bad "$J['check'].pop('if')"
 case_ no-dispatch             bad "d['on'].pop('workflow_dispatch')"
 
@@ -156,6 +161,18 @@ if not r.get("strategy") or "fromJSON(needs.manifests.outputs.targets)" not in s
 for gone in ("daily-rescan.yml", "rescan-v010.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
         bad.append("%s still exists" % gone)
+# REQ-CHAIN-004-AC14 / REQ-CHAIN-003-AC5: the one build path. Its job build calls release.yml with exactly `with: mode: snapshot` (no other input, secrets, if or needs),
+# under the called file's permission set as a static ceiling; no job calls a stage-*.yml file
+b = jobs.get("build") or {}
+CEILING = {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
+if b.get("uses") != "./.github/workflows/release.yml" or b.get("with") != {"mode": "snapshot"}:
+    bad.append("the build job is not a snapshot call of release.yml: %s" % {k: b.get(k) for k in ("uses", "with")})
+if b.get("permissions") != CEILING:
+    bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % b.get("permissions"))
+if set(b) - {"permissions", "uses", "with"}:
+    bad.append("the build call carries a key beyond permissions, uses and with (secrets, if, needs, continue-on-error): %s" % sorted(set(b) - {"permissions", "uses", "with"}))
+if any(str(v.get("uses", "")).split("/")[-1].startswith("stage-") for v in jobs.values()):
+    bad.append("a job calls a stage-*.yml file (no stage file exists)")
 # Codex #160 pin pass (B78-01): release-manifest data must never become shell source. Every matrix value is checked for
 # its exact shape before the matrix is emitted (the collector's TARGET_SHAPE, run here against hostile targets), and no
 # run: script interpolates ${{ matrix.* }} or ${{ needs.* }} (they arrive through env, quoted)
@@ -211,6 +228,14 @@ case_rescan rescan-unconditional  bad "d['jobs']['rescan'].pop('if')"
 case_rescan matrix-lost           bad "d['jobs']['rescan'].pop('strategy')"
 case_rescan shape-check-dropped   bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('jq -e \"\$TARGET_SHAPE\"', 'true')"
 case_rescan shape-digest-loose    bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('{64}\$', '{64}')"
+case_rescan build-release-mode    bad "d['jobs']['build']['with'] = {'mode': 'release'}"
+case_rescan build-calls-stage     bad "d['jobs']['build']['uses'] = './.github/workflows/stage-build.yml'"
+case_rescan build-extra-input     bad "d['jobs']['build']['with']['hostile'] = 'true'"
+case_rescan build-secrets         bad "d['jobs']['build']['secrets'] = 'inherit'"
+case_rescan build-if              bad "d['jobs']['build']['if'] = \"github.event_name == 'schedule'\""
+case_rescan build-ceiling-short   bad "d['jobs']['build']['permissions'].pop('id-token')"
+case_rescan build-ceiling-wide    bad "d['jobs']['build']['permissions']['actions'] = 'write'"
+case_rescan rebuild-stage-job     bad "d['jobs']['rebuild'] = {'needs': 'build', 'uses': './.github/workflows/stage-reproducibility.yml', 'with': {'mode': 'snapshot'}}"
 case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'] if x.get('name') == 'enumerate platform children'][0]; s['run'] = s['run'] + '\necho \${{ matrix.target.digest }}'"
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -277,7 +302,7 @@ case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
 # assembly (which uploads oci-candidate) is assembly A, a verify-only assembly B uploads nothing (stage-image's artifact
 # name stays unique); the required check `reproducibility` stays a top-level job with its exact name (since PR 2: `if: always()`, see below) and no
-# token beyond contents read; release.yml's own reproducibility stage is untouched and stays the one the release relies on.
+# token beyond contents read; release.yml's own Rebuild jobs are the ones the release relies on (the one build path: scan.yml calls release.yml in snapshot mode).
 judge_scan() { python3 - "$1" "$root" <<'PY'
 import os, subprocess, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
@@ -288,30 +313,34 @@ on = d.get("on") or {}
 if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
     bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags): %s" % on)
 jobs = d.get("jobs") or {}
-builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
+builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/release.yml"]
 if builds != ["build"]:
-    bad.append("not exactly one build feeds both: %s" % builds)
+    bad.append("not exactly one call of release.yml feeds both: %s" % builds)
+if any(str(v.get("uses", "")).split("/")[-1].startswith("stage-") for v in jobs.values()):
+    bad.append("a job still calls a stage-*.yml file (REQ-REL-008-AC1: no stage file exists, the release is one file)")
 # PR 2 of the v0.3.0 chain (REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7): stage-image.yml is gone. The one build runs in SNAPSHOT mode and a snapshot Rebuild rebuilds
 # everything on fresh runners and FAILS on any differing item (rule 31 is kept, in the Rebuild stage); the required check `reproducibility` keeps its exact name and
 # no token beyond contents read, runs under exactly `if: always()` (a job that needs a failed job is SKIPPED, and a skipped required check counts as passing) and
 # its one step fails unless ${{ needs.rebuild.result }} is exactly success. The old inline comparison of two assemblies' digests is replaced by that stage
 # (bin/chain-rebuild-test.sh proves the comparison itself).
-if any(v.get("uses") == "./.github/workflows/stage-image.yml" for v in jobs.values()):
-    bad.append("a job still calls the deleted stage-image.yml")
 if (jobs.get("build") or {}).get("with") != {"mode": "snapshot"}:
-    bad.append("the one build is not a snapshot build: %s" % (jobs.get("build") or {}).get("with"))
-rb = jobs.get("rebuild") or {}
-if rb.get("uses") != "./.github/workflows/stage-reproducibility.yml" or rb.get("needs") != "build" or rb.get("with") != {"mode": "snapshot"}:
-    bad.append("rebuild is not the snapshot Rebuild of the one build: %s" % rb)
+    bad.append("the one build is not a snapshot call: %s" % (jobs.get("build") or {}).get("with"))
+# REQ-CHAIN-004-AC14 (the one build path, docs/ratify/2026-11-13-one-build-path-kvm-postponed.md:7): release.yml in snapshot mode runs its Build AND Rebuild jobs, so scan.yml has no `rebuild` job of its own
+if "rebuild" in jobs:
+    bad.append("scan.yml still has a rebuild job: release.yml's Rebuild jobs run in the one snapshot call")
+# the call's permissions are the STATIC CEILING of the called file's set, in both directions (REQ-CHAIN-004-AC14)
+CEILING = {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "checks": "read", "statuses": "read", "pull-requests": "read"}
+if (jobs.get("build") or {}).get("permissions") != CEILING:
+    bad.append("the build call's permissions are not exactly the called file's set (the ceiling): %s" % (jobs.get("build") or {}).get("permissions"))
 r = jobs.get("reproducibility") or {}
 # `if: always()` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
 # the required check must run in every case and fail unless rebuild succeeded (the pattern of the `scan` aggregate below; step-8 B1, Opus)
-if r.get("name") != "reproducibility" or r.get("if") != "always()" or r.get("needs") != "rebuild":
-    bad.append("reproducibility must be named reproducibility, need rebuild and carry exactly `if: always()`: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+if r.get("name") != "reproducibility" or r.get("if") != "always()" or r.get("needs") != "build":
+    bad.append("reproducibility must be named reproducibility, need build (the one call that holds Build and Rebuild) and carry exactly `if: always()`: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
 # fail closed (continue-on-error also hides a failure): the jobs the check rests on carry exactly the keys reviewed here
-KEYS = {"build": {"permissions", "uses", "with"}, "rebuild": {"needs", "permissions", "uses", "with"},
+KEYS = {"build": {"permissions", "uses", "with"},
         "reproducibility": {"name", "needs", "if", "runs-on", "steps"}}
 for j, keys in KEYS.items():
     if set(jobs.get(j) or {}) - keys:
@@ -324,29 +353,29 @@ if d.get("permissions") != {"contents": "read"} or set(d) - {"concurrency"} != {
 if (jobs.get("reproducibility") or {}).get("runs-on") != "ubuntu-latest":
     bad.append("reproducibility runs elsewhere than a GitHub-hosted ubuntu runner: %s" % (jobs.get("reproducibility") or {}).get("runs-on"))
 steps = r.get("steps") or []
-RESULT = "${{ needs.rebuild.result }}"
+RESULT = "${{ needs.build.result }}"
 if len(steps) != 1 or set(steps[0]) != {"name", "run"}:
     bad.append("the reproducibility job is not one plain step (name + run): %s" % [sorted(st) for st in steps])
 else:
     run = steps[0]["run"]
     if run.count(RESULT) != 1 or "${{" in run.replace(RESULT, ""):
-        bad.append("the reproducibility step must test ${{ needs.rebuild.result }} once and carry no other expression")
+        bad.append("the reproducibility step must test ${{ needs.build.result }} once and carry no other expression")
     else:
         # proven by running it: only the result `success` passes; failure, skipped and cancelled (and an empty result) fail
         def verdict(result):
             return subprocess.run(["bash", "-c", run.replace(RESULT, result)], capture_output=True, text=True).returncode
         if verdict("success") != 0:
-            bad.append("the reproducibility step fails when rebuild succeeded")
+            bad.append("the reproducibility step fails when the build call succeeded")
         for result in ("failure", "skipped", "cancelled", ""):
             if verdict(result) == 0:
-                bad.append("the reproducibility step passes when rebuild's result is %r" % result)
+                bad.append("the reproducibility step passes when the build call's result is %r" % result)
 if "artifact-acceptance" in jobs:
     bad.append("scan.yml still has artifact-acceptance (REQ-CHAIN-006-AC10: its stage is gone; Check checks the Linux-only archive set)")
 if os.path.exists(os.path.join(root, ".github/workflows/release-chain-pr.yml")):
     bad.append("release-chain-pr.yml still exists")
 rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
-if (rel.get("rebuild") or {}).get("uses") != "./.github/workflows/stage-reproducibility.yml":
-    bad.append("release.yml's own Rebuild stage changed (PR 2 renamed its reproducibility job to rebuild)")
+if not {"rebuild-apk", "rebuild-assemble"} <= set(rel) or any(v.get("uses", "./.github/workflows/persona-uat.yml") != "./.github/workflows/persona-uat.yml" for v in rel.values()):
+    bad.append("release.yml's Rebuild jobs (rebuild-apk, rebuild-assemble) are missing or release.yml calls a workflow file other than persona-uat.yml")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -371,23 +400,29 @@ case_scan tags-dropped           bad "d['on']['push'].pop('tags')"
 case_scan event-added            bad "d['on']['workflow_dispatch'] = ''"
 case_scan second-build           bad "d['jobs']['build-b'] = dict(d['jobs']['build'])"
 case_scan build-release-mode     bad "d['jobs']['build']['with'] = {'mode': 'release'}"
+case_scan build-second-input     bad "d['jobs']['build']['with']['hostile'] = 'true'"
+case_scan build-calls-stage      bad "d['jobs']['build']['uses'] = './.github/workflows/stage-build.yml'"
 case_scan stage-image-back       bad "d['jobs']['assemble'] = {'needs': 'build', 'uses': './.github/workflows/stage-image.yml'}"
-case_scan rebuild-release-mode   bad "d['jobs']['rebuild']['with'] = {'mode': 'release'}"
-case_scan rebuild-gone           bad "d['jobs'].pop('rebuild')"
-case_scan rebuild-ungated        bad "d['jobs']['rebuild'].pop('needs')"
-case_scan rebuild-coe            bad "d['jobs']['rebuild']['continue-on-error'] = 'true'"
-case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
+case_scan rebuild-job-back       bad "d['jobs']['rebuild'] = {'needs': 'build', 'uses': './.github/workflows/release.yml', 'with': {'mode': 'snapshot'}}"
+case_scan rebuild-stage-back     bad "d['jobs']['rebuild'] = {'needs': 'build', 'uses': './.github/workflows/stage-reproducibility.yml', 'with': {'mode': 'snapshot'}}"
+case_scan build-ceiling-id-token-gone bad "d['jobs']['build']['permissions'].pop('id-token')"
+case_scan build-ceiling-attestations-gone bad "d['jobs']['build']['permissions'].pop('attestations')"
+case_scan build-ceiling-widened  bad "d['jobs']['build']['permissions']['actions'] = 'write'"
+case_scan build-ceiling-checks-write bad "d['jobs']['build']['permissions']['checks'] = 'write'"
+case_scan build-has-if           bad "d['jobs']['build']['if'] = \"github.event_name == 'pull_request'\""
+case_scan build-has-secrets      bad "d['jobs']['build']['secrets'] = 'inherit'"
+case_scan build-has-needs        bad "d['jobs']['build']['needs'] = 'reproducibility'"
 case_scan repro-if-removed       bad "d['jobs']['reproducibility'].pop('if')"
 case_scan repro-if-success       bad "d['jobs']['reproducibility']['if'] = \"\${{ success() }}\""
 case_scan repro-only-echoes      bad "d['jobs']['reproducibility']['steps'][0]['run'] = 'echo identical'"
-case_scan repro-tests-build      bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('needs.rebuild.result', 'needs.build.result')"
+case_scan repro-tests-rebuild    bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('needs.build.result', 'needs.rebuild.result')"
 case_scan repro-ignores-result   bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] += ' || true'"
 case_scan repro-accepts-skipped  bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('= \"success\" ]', '!= \"failure\" ]')"
-case_scan repro-result-twice     bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] += '; echo \${{ needs.rebuild.result }}'"
+case_scan repro-result-twice     bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] += '; echo \${{ needs.build.result }}'"
 case_scan repro-extra-expression bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] += '; echo \${{ github.sha }}'"
 case_scan repro-renamed          bad "d['jobs']['reproducibility']['name'] = 'reproducible'"
 case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'] = {'contents': 'read', 'packages': 'write'}"
-case_scan repro-not-after-rebuild bad "d['jobs']['reproducibility']['needs'] = 'build'"
+case_scan repro-not-after-build  bad "d['jobs']['reproducibility']['needs'] = 'rebuild'"
 case_scan pr-types-closed        bad "d['on']['pull_request'] = {'types': ['closed']}"
 case_scan pr-branches-ignore     bad "d['on']['pull_request'] = {'branches-ignore': ['main']}"
 case_scan pr-paths               bad "d['on']['pull_request'] = {'paths': ['never/**']}"
@@ -402,26 +437,25 @@ case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/b
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2): the workflow directory holds exactly the ratified files and nothing else, so
-# no workflow sprawls. Today's 19 are the consolidation's "keep" rows, the attestation-signer stages and
-# dependabot-auto-merge.yml. Two files are admitted beyond them: stage-sign.yml (v0.3.0 rule 52, owner Oct 9) and customer-words-edited.yml (decision 98, Oct 3).
-# The history of the count (24, 25, 26, 24, 19) is in the git log of this file.
-ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml dependabot-auto-merge.yml dependabot-reviewer.yml
-go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
-stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
-stage-sign.yml supply-chain.yml customer-words-edited.yml"
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2; amended by the owner rule workflow-grouped-by-purpose, Nov 13): the workflow directory holds exactly the 16 ratified files and
+# nothing else, so no workflow sprawls. The release is the one file release.yml: no stage-*.yml file exists. persona-uat.yml holds the persona UAT jobs (one purpose);
+# codeql.yml stays (owner rule ci-trim-keeps-codeql). evidence-letter.yml is not in the set.
+ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml customer-words-edited.yml dependabot-auto-merge.yml
+dependabot-reviewer.yml go-freshness.yml main-candidate-rescan.yml persona-uat.yml release.yml reserved-branch-guard.yml scan.yml
+scorecard.yml supply-chain.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 19:
-    print("the ratified list is not 19 files (rule 52 and the owner's Oct 3 amendment admit the two new files)")
+if len(want) != 16:
+    print("the ratified list is not 16 files (owner rule workflow-grouped-by-purpose, Nov 13)")
     sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
-if odd or extra or missing or len(got) != len(set(got)):
-    print("extra: %s missing: %s odd names: %s (the list is rule 52 and the owner's Oct 3 amendment: "
-          "stage-sign.yml and customer-words-edited.yml)" % (extra, missing, odd)); sys.exit(1)
+stage = sorted(n for n in got if n.startswith("stage-"))
+if odd or extra or missing or stage or len(got) != len(set(got)):
+    print("extra: %s missing: %s odd names: %s stage files: %s (the list is REQ-REL-008-AC1: 16 files, no stage-*.yml, "
+          "owner rule workflow-grouped-by-purpose of Nov 13)" % (extra, missing, odd, stage)); sys.exit(1)
 print("ok")
 PY
 }
@@ -430,10 +464,10 @@ case_set() {
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS set:$1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL set:$1 → $got, want $2 ($out)"; fi
 }
-case_cites() { # case_cites NAME SET: the refusal names rule 52 and the owner's Oct 3 amendment (the two new files)
+case_cites() { # case_cites NAME SET: the refusal names the owner rule workflow-grouped-by-purpose and its date (Nov 13)
   out=$(judge_set "$2") || true
-  if [[ "$out" == *"rule 52"* && "$out" == *"Oct 3"* ]]; then pass=$((pass+1)); echo "PASS cites:$1 ($out)"
-  else failn=$((failn+1)); echo "FAIL cites:$1 → the refusal does not name rule 52 and the Oct 3 amendment ($out)"; fi
+  if [[ "$out" == *"workflow-grouped-by-purpose"* && "$out" == *"Nov 13"* ]]; then pass=$((pass+1)); echo "PASS cites:$1 ($out)"
+  else failn=$((failn+1)); echo "FAIL cites:$1 → the refusal does not name the owner rule workflow-grouped-by-purpose and Nov 13 ($out)"; fi
 }
 # every entry of the directory, unfiltered: a non-YAML file or a name with a newline is a difference (Codex #162 pin, R78-B3)
 real_set=$(python3 -c 'import json, os, sys; print(json.dumps(sorted(os.listdir(sys.argv[1]))))' "$root/.github/workflows")
@@ -447,8 +481,17 @@ case_cites letter-back "$(edit_set 's.append("evidence-letter.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("go-freshness.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("go-freshness.yml"); s.remove("scorecard.yml"); s.append("go-freshness.yml\nscorecard.yml")')"
-case_set codeql-back   bad "$(edit_set 's.append("codeql.yml")')"
+case_set codeql-missing bad "$(edit_set 's.remove("codeql.yml")')"
+case_set persona-uat-missing bad "$(edit_set 's.remove("persona-uat.yml")')"
 case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
+for stage in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stage-reproducibility.yml; do
+  case_set "$stage-back" bad "$(edit_set "s.append('$stage')")"
+  case_cites "$stage-back" "$(edit_set "s.append('$stage')")"
+done
+# the five stage files are all gone from the real directory
+for stage in stage-build.yml stage-sign.yml stage-verify.yml stage-promote.yml stage-reproducibility.yml; do
+  if [ -e "$root/.github/workflows/$stage" ]; then echo "FAIL: $stage still exists"; failn=$((failn+1)); else pass=$((pass+1)); echo "PASS no $stage"; fi
+done
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR concurrency (advisor, Oct 22: superseded pull-request runs starved the merge train). ci, scan, supply-chain and acceptance each carry ONE
