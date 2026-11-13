@@ -194,7 +194,8 @@ try:
 except Exception as ex:
     bad("Rekor back on the third try -> %s: %s" % (type(ex).__name__, ex))
 
-# the wiring: verify_record asks for the Rekor entry of every record type: the provenance, the release policy and a Witness collection
+# the wiring: verify_record asks for the Rekor entry of every record type:
+# the provenance, the release policy and a Witness collection
 # (the signature and the record-type checks are replaced here by stubs that accept; only the Rekor decision is under test)
 tmpd = os.path.join(work, "vr"); os.makedirs(tmpd)
 real = {n: getattr(cv, n) for n in ("local_records", "read_record", "check_signature", "check_record_type")}
@@ -260,8 +261,13 @@ rm_dir = os.path.join(work, "out-refused"); os.makedirs(rm_dir)
 for name in ("provenance.bundle.json", "provenance.json", "provenance.rekor.json", "foreign.txt"):
     open(os.path.join(rm_dir, name), "w").write("x")
 cv.remove_own_out(rm_dir)
-(ok if sorted(os.listdir(rm_dir)) == ["foreign.txt"] else bad)("Sign removes provenance.rekor.json with its other files on a refusal and leaves a foreign file: %r" % sorted(os.listdir(rm_dir)))
-ok("rc-proof lists the rekor record") if ("rekor", "provenance/provenance.rekor.json") in tuple(cv.RC_RECORDS) else bad("RC_RECORDS has no rekor row: %r" % (cv.RC_RECORDS,))
+(ok if sorted(os.listdir(rm_dir)) == ["foreign.txt"] else bad)(
+    "Sign removes provenance.rekor.json with its other files on a refusal and leaves a foreign file: %r"
+    % sorted(os.listdir(rm_dir)))
+if ("rekor", "provenance/provenance.rekor.json") in tuple(cv.RC_RECORDS):
+    ok("rc-proof lists the rekor record")
+else:
+    bad("RC_RECORDS has no rekor row: %r" % (cv.RC_RECORDS,))
 
 # the policy takes the Rekor key from the committed files, only when sigstore-trust.json pins it by sha256 (policy make reads both)
 pinned = os.path.join(work, "pin"); os.makedirs(pinned)
@@ -485,7 +491,8 @@ ks("kms_sign: the refusal after seven Rekor failures names the last failure", "s
 ks("kms_sign: the refusal says one try and six retries", "one try and six retries", script=[503] * 7)
 calls, posts, slept, out, _ = ks("kms_sign: a network error then an answer succeeds", None, script=["neterr"])
 (ok if slept == [1] and len(posts) == 2 else bad)("kms_sign: a network error is retried after 1 second: %s %d" % (slept, len(posts)))
-# the GET of the entry a 409 names goes through the SAME retry rule as the POST (network error, 429 and 5xx on the waits 1, 2, 4, 8, 16, 32; any other 4xx and 3xx at once), and KMS Sign stays outside it
+# the GET of the entry a 409 names goes through the SAME retry rule as the POST (network error, 429 and 5xx
+# on the waits 1, 2, 4, 8, 16, 32; any other 4xx and 3xx at once), and KMS Sign stays outside it
 def n_sign(c): return sum(x.startswith("kms sign") for x in c)
 calls, posts, slept, out, _ = ks("kms_sign: POST 409, then the existing entry answers 503 once and then 200, succeeds", None, script=["409"], gscript=[503])
 (ok if slept == [1] and len(posts) == 1 and len(RK["gets"]) == 2 and n_sign(calls) == 1 else bad)(
@@ -541,7 +548,8 @@ how, asked, npost, made, etxt, bp = a4("a valid statement with its own spacing",
 (ok if how is None and asked and npost == 1 and made and base64.b64decode(json.load(open(bp))["dsseEnvelope"]["payload"]) == spaced else bad)(
     "kms-sign --dsse-statement: a valid statement is signed verbatim (the payload is the file's own bytes, spacing and all): outcome %s, bundle written %s" % (how, made))
 # KA-2 p4 r2 (C8): every read that can refuse happens before KMS is asked to sign: a public key file that openssl reads but the Rekor request cannot use (no newline after the END line; a space at the end of a base64 line), and a pinned Rekor key
-# that cannot be read, end with 0 KMS Sign calls. (A CRLF file is not such a file: the text read of release_pub_pem turns CRLF into LF, and kms_sign signs and posts with it.)
+# that cannot be read, end with 0 KMS Sign calls. (A CRLF file is not such a file: the text read of release_pub_pem
+# turns CRLF into LF, and kms_sign signs and posts with it.)
 for tag, mk in (("no newline after the END line", lambda t: t.rstrip("\n")), ("a space at the end of a base64 line", lambda t: t.replace("\n", " \n", 2))):
     badpem = os.path.join(work, "kms-release-%s.pub" % tag.split()[0] + tag.split()[-1]); open(badpem, "w").write(mk(kms_pem))
     (ok if sh("openssl", "pkey", "-pubin", "-in", badpem, "-outform", "DER") == kms_der else bad)("C8 fixture: openssl reads the key file with %s as the KMS key" % tag)
@@ -568,7 +576,8 @@ try:
 except cv.Refuse as ex:
     (ok if "exists" in ex.reason and not os.path.exists(os.path.join(d, "aws-calls")) and not RK["posts"] else bad)("kms_sign: an existing record is refused before aws is asked (%s)" % ex.reason)
 
-# ---- sign-record checks the key reference in one place, refuses before KMS when either path exists, writes the entries file first and the record last (the record is the commit point).
+# ---- sign-record checks the key reference in one place, refuses before KMS when either path exists,
+# writes the entries file first and the record last (the record is the commit point).
 # R2: refuse when either path exists (a symlink or a directory counts), before aws is asked
 def kr(label, setup, want):
     d = os.path.join(work, "kr-" + label.replace(" ", "_")[:40]); os.makedirs(os.path.join(d, "rec"), exist_ok=True)
@@ -624,8 +633,10 @@ sr_run("unset", None, 2, False)
 sr_run("another alias", "awskms:///alias/other", 2, False)
 sr_run("not a KMS reference", "alias/fosterstack-release-signing", 2, False)
 sr_run("equal to the pinned key", cv.RELEASE_KEY_REF, 1, False, want_aws=True, text="aws kms sign failed")       # KMS Sign is asked once (the fake refuses it) and cosign is never called
-# KA-0: before KMS is asked to sign, the release key must list RSASSA_PKCS1_V1_5_SHA_256 (kms-sign names the algorithm on every call, so its place in the list does not matter).
-# A key that lists it, in any place, passes the guard and reaches the KMS Sign call (which the fake refuses: exit 1, "aws kms sign failed")
+# KA-0: before KMS is asked to sign, the release key must list RSASSA_PKCS1_V1_5_SHA_256
+# (kms-sign names the algorithm on every call, so its place in the list does not matter).
+# A key that lists it, in any place, passes the guard and reaches the KMS Sign call
+# (which the fake refuses: exit 1, "aws kms sign failed")
 sr_run("KA-0 key lists another algorithm first, PKCS1 second: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed", want_aws=True)
 sr_run("KA-0 key lists PKCS1 second of three: the guard passes", cv.RELEASE_KEY_REF, 1, False, algs=("RSASSA_PKCS1_V1_5_SHA_384", "RSASSA_PSS_SHA_256", PKCS1), text="aws kms sign failed")
 sr_run("KA-0 key does not list PKCS1 at all", cv.RELEASE_KEY_REF, 2, False, algs=("RSASSA_PSS_SHA_256",), text="does not support RSASSA_PKCS1_V1_5_SHA_256")
