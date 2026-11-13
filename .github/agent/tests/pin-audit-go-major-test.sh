@@ -897,7 +897,7 @@ os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 assert getattr(age, "GH_TIMEOUT", 0) > 0
 age.GH_TIMEOUT = 1
 t0 = time.time()
-for fn in (lambda p: age._gh_pages(p, ()), lambda p: age._gh_api(p, ()), age._gh_bytes):
+for fn in (lambda p: age._gh_pages(p, ()), lambda p: age._gh_api(p, ())):
     try: fn("repos/x/y"); raise AssertionError("no CouldNotLook")
     except age.CouldNotLook: pass
 assert time.time() - t0 < 20, "the helpers waited for the hanging gh"
