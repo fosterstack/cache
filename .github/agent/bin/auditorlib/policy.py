@@ -30,10 +30,10 @@ NOTIFY_CHANNEL = "owner-decision-issue"
 OWNER_LABEL = "owner-decision"
 OWNER_LOGIN = "fosterstack-admin"
 
-# The labels the auditor's issues carry. `gh issue create --label X` FAILS when X does not exist, and the first live run
-# (Oct 5) lost its owner report to exactly that, so every delivery path creates the labels it passes first
-# (label_create_cmd). Creation is NOT forced: --force would overwrite the colour and description of a label that already
-# exists (security, daily-rescan).
+# The labels the auditor's issues carry. `gh issue create --label X` FAILS when X does not exist, and the first live
+# run (Oct 5) lost its owner report to exactly that, so every delivery path creates the labels it passes first
+# (label_create_cmd). Creation is NOT forced: --force would overwrite the colour and description of a label that
+# already exists (security, daily-rescan).
 LABELS = {
     "owner-decision": ("Needs an owner decision (auditor lane)", "B60205"),
     "daily-rescan": ("The daily rescan's tracking issue", "0E8A16"),
