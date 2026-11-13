@@ -1,8 +1,9 @@
 """Release's post-publish verification (v0.3.0 rule 79 as amended by the owner, Oct 10; REQ-CHAIN-007-AC20).
 
-Reads docs/verify-release.cannot-run.json (rows {command, reason}, the exact-text list Check also reads) and runs
-each command against what was just published, in BOTH registries (ghcr.io/fosterstack/cache, then
-docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
+Reads the guide docs/verify-release.md and docs/verify-release.cannot-run.json (rows {command, reason}, the exact-text
+list of image-reference commands Check also reads). It runs every file-subject command of the guide on the staged
+copy of the release assets, then the list's image commands, against what was published, in BOTH registries
+(ghcr.io/fosterstack/cache, then docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
 registry, with the image-production / image-fips digest of witness-build/digests.json filled in; any other command
 runs once. <TAG> = $GITHUB_REF_NAME, which must be vX.Y.Z (a release candidate publishes nothing to verify).
 
@@ -27,6 +28,7 @@ sys.path.insert(0, HERE)
 import guide_plan_judge   # noqa: E402
 from guide_plan_judge import JQ_FILE, MARK, PH   # noqa: E402
 
+GUIDE = "docs/verify-release.md"
 LIST = "docs/verify-release.cannot-run.json"
 ASSETS = "release-published"   # gh release download -D release-published: the files a customer downloads
 VERIFIER = "bin/chain-verify.py"   # holds the bundle and manifest checks
@@ -72,6 +74,27 @@ def run_pipe(argvs):
         return 127
     codes = [p.wait() for p in procs]
     return next((rc for rc in codes if rc != 0), 0)
+
+
+def read_guide_file_commands():
+    """The guide's file-subject commands (every command that does not verify an image reference), in guide order:
+    Check does not run them on the candidate and leaves them to this step, on the staged copy."""
+    try:
+        with open(GUIDE) as f:
+            lines = f.read().replace("\r", "").split("\n")
+    except OSError as e:
+        refuse("the guide %s cannot be read: %s" % (GUIDE, e))
+    cmds, why = guide_plan_judge.guide_commands(lines)
+    if why:
+        refuse(why)
+    files = []
+    for c in cmds:
+        segs, _, why = guide_plan_judge.judge(c)
+        if why:
+            refuse("`%s` is not an allowed verify form (%s)" % (c, why))
+        if not guide_plan_judge.image_subject(segs):
+            files.append(c)
+    return files
 
 
 def read_commands():
@@ -256,6 +279,17 @@ def refuse_certificate_bundles(plan, check):
             refuse("%s: %s is not allowed at the top of a bundle (%s)" % (n, key, ", ".join(sorted(BUNDLE_KEYS))))
 
 
+def refuse_missing_files(plan):
+    """Every file a command names (its verify operands, --bundle files and the files a jq reads) must be a plain
+    name that the staged copy holds; a command whose file is missing fails the run before anything is run."""
+    for r in plan:
+        for n in sorted((set(r.names) | set(r.files or [])) - set(guide_plan_judge.IMAGE_MARKS)):
+            if not JQ_FILE.fullmatch(n):
+                refuse("%s: not a plain file name in %s/ (letters, digits, . _ - only)" % (n, ASSETS))
+            if not os.path.lexists(os.path.join(ASSETS, n)):
+                refuse("%s is named by `%s` and the staged copy %s/ does not hold it" % (n, r.command, ASSETS))
+
+
 def copy_keeping_links(src, dst):
     """Copies a file; a link is copied as a link and a directory as an empty directory, so the verifier refuses each
     as it would in place. A missing file is left missing, for the verifier to name."""
@@ -287,11 +321,12 @@ def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
     if not TAG.fullmatch(tag):
         refuse("refused at tag: %r is not vX.Y.Z" % tag)
-    cmds = read_commands()
+    cmds = read_guide_file_commands() + read_commands()
     plan = make_plan(cmds, read_digests(), tag)
     if not os.path.isdir(ASSETS):
-        refuse("%s/ is not a directory: the assets of the published release are not here, so no listed command can "
-               "resolve its files; nothing is run" % ASSETS)
+        refuse("%s/ is not a directory: the staged assets are not here, so no command can resolve its files; "
+               "nothing is run" % ASSETS)
+    refuse_missing_files(plan)
     check = load_verifier()
     refuse_certificate_bundles(plan, check)
     place_release_key(check)
