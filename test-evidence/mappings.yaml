@@ -819,6 +819,10 @@ mappings:
       - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
+  - ac: REQ-UAT-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/persona-uat-file-test.sh" }
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
@@ -1004,6 +1008,13 @@ mappings:
   - ac: REQ-CHAIN-001-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-CHAIN-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/chain-signing-trust-test.sh" }
+  - ac: REQ-CHAIN-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   - ac: REQ-CHAIN-001-AC6
     evidence:
       - { type: shell-test, ref: "bin/marker-gate-test.sh" }
@@ -1040,6 +1051,7 @@ mappings:
   - ac: REQ-CHAIN-003-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC1 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
   # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
   #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier `bin/patch-decide.py` and its test `bin/patch-decide-test.sh`, which name the auditor directory as data and hold no auditor code.
@@ -1067,6 +1079,7 @@ mappings:
   - ac: REQ-CHAIN-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1107,6 +1120,7 @@ mappings:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-bind-test.sh" }
       - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1124,6 +1138,7 @@ mappings:
   - ac: REQ-CHAIN-005-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC6
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1131,6 +1146,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC13
     evidence:
       - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
@@ -1138,6 +1154,7 @@ mappings:
   - ac: REQ-CHAIN-004-AC14
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-004-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
@@ -1150,11 +1167,15 @@ mappings:
   - ac: REQ-CHAIN-004-AC18
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC19
+    evidence:
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
       - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-AUD-019-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
@@ -1290,6 +1311,7 @@ mappings:
   - ac: REQ-CHAIN-006-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/release-workflow-wiring-test.sh" }
   - ac: REQ-CHAIN-006-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
