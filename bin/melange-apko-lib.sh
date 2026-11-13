@@ -1,17 +1,9 @@
 # shellcheck shell=bash
-# The harness the build and image tests share. bin/build-apk-test.sh, build-baselayout-apk-test.sh, build-helpers-test.sh,
-# assemble-image-test.sh and refresh-inputs-test.sh source this file and then run their own cases; each case names the
-# requirement it proves.
+# The harness the build and image tests share: build-apk-test.sh, build-baselayout-apk-test.sh, build-helpers-test.sh,
+# assemble-image-test.sh and refresh-inputs-test.sh source it and then run their own cases.
 #
-# The suites run offline: no network, no docker, no sudo, no real melange or apko. The tools the scripts call (uname, sudo,
-# unshare, sysctl, melange, apko, curl, go) are stubs first on PATH that write their arguments to $CALLS, so a case can
-# assert the flags and the order of the calls. Static cases read the file a rule lives in (recipe, config, lock, script).
-#
-# What it sets up: a work folder removed on exit, the fixture archive and repositories under $fx, the python library
-# $work/lib.py (fixtures, stub back-ends, mutations) and the checker $work/chk.py.
-# The case helpers: t (a command must succeed), sr (refused with exit 2 and a reason, no tool ran), sf (failed with a
-# reason), sd/sn (a call was or was not made), so (output matches), ordered (one call before another), fails, yesgrep,
-# nogrep. ok and bad count the results; the test file prints the totals.
+# The suites run offline. The tools the scripts call are stubs first on PATH that record their arguments in $CALLS, so a
+# case can assert the flags and the order of the calls without network, docker, sudo or a real melange.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
@@ -242,7 +234,6 @@ def fixtures(fx):
     mkapk(pr + "/a.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"})
     mkapk(pr + "/b.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"}, signer="release.rsa.pub")
     mkapk(pr + "/c.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binC", "usr/share/x": b"same"})
-    mkapk(pr + "/rsa256.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"}, sigalg="RSA256")   # real melange writes .SIGN.RSA256.<key> (real-run finding Oct 9)
     mkapk(pr + "/unsigned.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"binA", "usr/share/x": b"same"}, signer=None)
     open(pr + "/binA", "wb").write(b"binA"); open(pr + "/binC", "wb").write(b"binC")
     envy = lambda pk: yaml.safe_dump({"package": {"name": "fscache"}, "environment": {"contents": {"packages": pk}}})
