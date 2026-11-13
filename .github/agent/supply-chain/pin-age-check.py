@@ -1005,12 +1005,14 @@ def _span_hash(lines):
 
 
 def _body_spans(lines, first, last, sha):
-    """The (start, end) of every run from a line `first` to the next line `last` whose text hashes to `sha`."""
+    """The (start, end) of every run from a line `first` to any later line `last` whose text hashes to `sha`."""
     spans = []
     for start, line in enumerate(lines):
-        end = next((j for j in range(start, len(lines)) if lines[j] == last), None) if line == first else None
-        if end is not None and _span_hash(lines[start:end + 1]) == sha:
-            spans.append((start, end))
+        if line != first:
+            continue
+        for end in range(start, len(lines)):
+            if lines[end] == last and _span_hash(lines[start:end + 1]) == sha:
+                spans.append((start, end))
     return spans
 
 
@@ -1244,7 +1246,8 @@ def load_file_pins(path, required=False):
         fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
         if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) \
             or not r["upstream"].startswith("https://") \
-                or parse_time(r["published"]) is None:
+                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", r["published"]) \
+                    or parse_time(r["published"]) is None:
             continue
         out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
     return out
