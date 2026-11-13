@@ -277,7 +277,7 @@ def main(argv):
             if not pkg[0]:
                 pkg = ((c.get("name") or "?").lower(), c.get("version") or "")
             row = f"{vid} {pkg[0]}@{pkg[1]} ({sev})"
-            is_covered = any(covered(idx, vid, (pkg[0], v), image) for v in vex_versions(c.get("purl"), pkg[0], pkg[1]))
+            is_covered = any(covered(idx, vid, (pkg[0], ver), image) for ver in vex_versions(c.get("purl"), pkg[0], pkg[1]))
             (suppressed if is_covered else blocking).append(row)
     print(f"inspector {label}: {n_pkg} packages, {len(blocking)} finding(s), "
           f"{len(suppressed)} covered by the published VEX")
