@@ -373,11 +373,11 @@
         "apk": "bin/build-stage-apk.sh",
         "build": "bin/build-stage-assemble.sh",
         "rapk": "bin/build-stage-rebuild-apk.sh",
-        "rebuild": "bin/build-stage-rebuild-assemble.sh",
+        "rebuild": "bin/build-stage-assemble.sh",
         "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
-        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
+        "snapshot-build": "bin/build-stage-assemble.sh",
         "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
-        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
+        "snapshot-rebuild": "bin/build-stage-assemble.sh",
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
@@ -471,8 +471,8 @@
         "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "089bdcca6de85fde6881dc30faea7f364481ce8ffbbd2fb9004a5da26c94b4b3"
+      "reason": "Build and Rebuild, job assemble, release and snapshot: bind the apk records, assemble both images and the archives, write digests.json and items.json, each image's built index carries the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1); Rebuild compares every item with Build's",
+      "sha256": "3f7bcd31c97c5f845c8824e9fb1c9b89d593d21706ba8264278a1689a9faa275"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -488,23 +488,6 @@
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
       "sha256": "ddfd6e5933efaac90464ea1bd9a3d9948467de7c80deadde698b44ae36c961e9"
-    },
-    {
-      "path": "bin/build-stage-rebuild-assemble.sh",
-      "tools": [
-        "make",
-        "python3"
-      ],
-      "runs": [
-        "bin/chain-verify.py",
-        "bin/build-archives.py",
-        "bin/build-apk.sh",
-        "bin/assemble-image.sh",
-        "bin/vex-index.py"
-      ],
-      "signs": false,
-      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "cb8966d17a831141be2655b319fff4c8db24295af2a7024692396165d1c5891c"
     },
     {
       "path": "bin/build-admit.py",
@@ -704,22 +687,6 @@
       ]
     },
     {
-      "path": "bin/build-stage-snapshot-assemble.sh",
-      "tools": [
-        "python3"
-      ],
-      "runs": [
-        "bin/chain-verify.py",
-        "bin/build-archives.py",
-        "bin/build-apk.sh",
-        "bin/assemble-image.sh",
-        "bin/vex-index.py"
-      ],
-      "signs": false,
-      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "aa701ea7e23c41aefbfb4b7a16298d0beec614a02f37e5a8f715b825582d843c"
-    },
-    {
       "path": "bin/build-stage-snapshot-rebuild-apk.sh",
       "tools": [
         "at",
@@ -752,22 +719,6 @@
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
-    },
-    {
-      "path": "bin/build-stage-snapshot-rebuild-assemble.sh",
-      "tools": [
-        "python3"
-      ],
-      "runs": [
-        "bin/chain-verify.py",
-        "bin/build-archives.py",
-        "bin/build-apk.sh",
-        "bin/assemble-image.sh",
-        "bin/vex-index.py"
-      ],
-      "signs": false,
-      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "fc258d326bc6c958586c78675b55573cb79c14fd8a784d0e35b74a2b73fbf07d"
     },
     {
       "path": "bin/admission-tag-signer.py",
