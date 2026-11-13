@@ -18,7 +18,9 @@
 #
 # RULE 68: every command run under Witness is limited to 9 minutes (`timeout 540`), because Fulcio's
 # certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time (harness spike (d): a 13-minute command yields a record that never
-# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (judge `helper` below is its seam). Check is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap. The owner also asked
+# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (judge `helper` below is its seam). Check
+# is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap.
+# The owner also asked
 # for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the judges accept the plain form
 # and reject variants instead of growing clever.
 #
@@ -179,7 +181,8 @@ os.makedirs(w + "/plain", exist_ok=True)
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
     open(f"{w}/plain/{n}" + (".py" if n == "check-govulncheck" else ".sh"), "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
-cp "$root/bin/witnessed.sh" "$work/witnessed.sh"      # the known-good helper is the canonical text; the cases below break it one property at a time
+# the known-good helper is the canonical text; the cases below break it one property at a time
+cp "$root/bin/witnessed.sh" "$work/witnessed.sh"
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
 printf '{"scanners": ["grype", "osv-scanner"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "inspector"]}\n' > "$work/scanners.json"
@@ -244,7 +247,9 @@ m s_cont   '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    nee
 m s_serv   '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    services: {db: {image: x}}\n' 'job keys'        "AC1 job services"
 m s_env    '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    env: {X: y}\n'       'job keys'          "AC1 job env"
 m s_def    '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    defaults: {run: {shell: sh}}\n' 'job keys'      "AC1 job defaults"
-m s_checkif '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    if: false\n' 'job keys' "AC2 a job-level if: on the Check job (Release could skip Check)"
+m s_checkif '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n' \
+  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    if: false\n' \
+  'job keys' "AC2 a job-level if: on the Check job (Release could skip Check)"
 m s_needs  '    needs: govulncheck-build\n'  '    needs: x\n'  'must need exactly'  "AC1 a needs on another job inside the stage file"
 m s_pkgw   '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      packages: write\n' 'permissions'       "AC1 packages: write"
 m s_pkgr   '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      packages: read\n' 'permissions'       "AC1 packages: read (images travel as files)"
@@ -512,7 +517,8 @@ expect caught "AC7 a cannot-run entry with no reason is refused" "reason" guidel
 expect caught "AC7 a cannot-run entry that is not a command of the guide is refused (stale list)" "not in the guide" guidelist "$work/gl6/docs/verify-release.md"
 expect caught "AC7 a cannot-run entry that is not a verify form is refused (Release would refuse it)" "not a verify form" guidelist "$work/gl7/docs/verify-release.md"
 expect caught "AC7 an unparsable cannot-run list is refused with a named failure" "not JSON" guidelist "$work/gl8/docs/verify-release.md"
-# the structural judge compares the verify form by whole words, as the planner does (cosign verify-evil is not cosign verify)
+# the structural judge compares the verify form by whole words, as the planner does (cosign verify-evil is not
+# cosign verify)
 for n in 9 10; do mkdir -p "$work/gl$n/docs"; done
 printf '# guide\n\n```sh\ncosign verify-evil <IMAGE_REF>\n```\n' > "$work/gl9/docs/verify-release.md"
 printf '[{"command": "cosign verify-evil <IMAGE_REF>", %s}]\n' "$R" > "$work/gl9/docs/verify-release.cannot-run.json"
@@ -631,11 +637,22 @@ for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-pha
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the KMS signer (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, sign, sign-rebuild and sign-check" "" graph "$root/.github/workflows/release.yml"
-job_has_if() { python3 -c 'import sys, yaml; print("if" in yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]])' "$1" "$2"; }
+job_has_if() {
+  python3 -c 'import sys, yaml; print("if" in yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]])' "$1" "$2"
+}
 sed 's/^  check:$/  check:\n    if: false/' "$work/release.yml" > "$work/release-if.yml"
-if [ "$(job_has_if "$work/release-if.yml" check)" = True ] && [ "$(job_has_if "$work/release.yml" check)" = False ]; then ok "AC2 fixture: a job-level if: on release.yml's check job is seen, the known-good file has none"; else bad "AC2 the job-level if: probe cannot tell a skippable check job from a plain one"; fi
+if [ "$(job_has_if "$work/release-if.yml" check)" = True ] \
+   && [ "$(job_has_if "$work/release.yml" check)" = False ]; then
+  ok "AC2 fixture: a job-level if: on release.yml's check job is seen, the known-good file has none"
+else
+  bad "AC2 the job-level if: probe cannot tell a skippable check job from a plain one"
+fi
 for f in release stage-verify; do
-  if [ "$(job_has_if "$root/.github/workflows/$f.yml" check)" = False ]; then ok "AC2 the real $f.yml check job has no job-level if: (Release cannot skip Check)"; else bad "AC2 the real $f.yml check job has a job-level if:"; fi
+  if [ "$(job_has_if "$root/.github/workflows/$f.yml" check)" = False ]; then
+    ok "AC2 the real $f.yml check job has no job-level if: (Release cannot skip Check)"
+  else
+    bad "AC2 the real $f.yml check job has a job-level if:"
+  fi
 done
 expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
@@ -644,7 +661,9 @@ expect ok "the real k8s suite creates its cluster with the node image by digest 
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
 # ---- REQ-REL-011-AC1: Sign's signing helper takes the four Check steps ----
-signstaged() { # signstaged STEP [FINAL]: run bin/witness-sign-staged.sh on a one-record plan; FINAL replaces the signed path in the plan line
+# signstaged STEP [FINAL]: run bin/witness-sign-staged.sh on a one-record plan
+# FINAL replaces the signed path in the plan line
+signstaged() {
   # a plan that passes every plan check stops at the missing AWS_ROLE_ARN, before any token is requested
   local step=$1 d; d=$(mktemp -d)
   local final=${2:-$d/signed/witness-$step/$step-collection.json}
@@ -656,15 +675,39 @@ signstaged() { # signstaged STEP [FINAL]: run bin/witness-sign-staged.sh on a on
 }
 for st in scanners acceptance runtime arm64; do
   out=$(signstaged "$st")
-  if grep -Fq "AWS_ROLE_ARN is missing" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh accepts the Check step $st in the plan (it stops later, at the missing AWS role)"; else bad "REL-011-AC1 witness-sign-staged.sh did not accept the Check step $st: ${out:0:140}"; fi
+  if grep -Fq "AWS_ROLE_ARN is missing" <<< "$out"; then
+    msg="REL-011-AC1 witness-sign-staged.sh accepts the Check step $st in the plan"
+    ok "$msg (it stops later, at the missing AWS role)"
+  else
+    bad "REL-011-AC1 witness-sign-staged.sh did not accept the Check step $st: ${out:0:140}"
+  fi
 done
 out=$(signstaged evil)
-if grep -Fq "unknown step in the plan" <<< "$out" && ! grep -Fq "AWS_ROLE_ARN" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh refuses a step that is not a record step, for that reason"; else bad "REL-011-AC1 witness-sign-staged.sh did not refuse an unknown step for its reason: ${out:0:140}"; fi
+if grep -Fq "unknown step in the plan" <<< "$out" && ! grep -Fq "AWS_ROLE_ARN" <<< "$out"; then
+  ok "REL-011-AC1 witness-sign-staged.sh refuses a step that is not a record step, for that reason"
+else
+  bad "REL-011-AC1 witness-sign-staged.sh did not refuse an unknown step for its reason: ${out:0:140}"
+fi
 out=$(signstaged scanners /elsewhere/scanners-collection.json)
-if grep -Fq "plan line does not match the staged tree" <<< "$out" && ! grep -Fq "AWS_ROLE_ARN" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh refuses a plan line whose signed path is not the fixed one, for that reason"; else bad "REL-011-AC1 witness-sign-staged.sh did not refuse a wrong signed path for its reason: ${out:0:140}"; fi
+if grep -Fq "plan line does not match the staged tree" <<< "$out" && ! grep -Fq "AWS_ROLE_ARN" <<< "$out"; then
+  ok "REL-011-AC1 witness-sign-staged.sh refuses a plan line whose signed path is not the fixed one, for that reason"
+else
+  bad "REL-011-AC1 witness-sign-staged.sh did not refuse a wrong signed path for its reason: ${out:0:140}"
+fi
 if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-EXPECT=314
+# REQ-CHAIN-004-AC2: the wrapped script runs under `timeout -k 20 540`; a fake witness records its arguments
+fw="$work/fakewit"; mkdir -p "$fw/bin" "$fw/tmp"
+printf '#!/usr/bin/env bash\nprintf "%%s " "$@" > "$FAKE_ARGS"\n' > "$fw/bin/witness"; chmod +x "$fw/bin/witness"
+(cd "$fw" && PATH="$fw/bin:$PATH" RUNNER_TEMP="$fw/tmp" FAKE_ARGS="$fw/args" \
+  bash "$root/bin/witnessed-local.sh" apk x.sh)
+if grep -Fq -- ' -- timeout -k 20 540 bash x.sh ' "$fw/args"; then
+  ok "AC2 witnessed-local.sh bounds the wrapped script by timeout -k 20 540 (9 minutes)"
+else
+  bad "AC2 witnessed-local.sh ran the script under: $(grep -o -- ' -- .*' "$fw/args" 2> /dev/null)"
+fi
+
+EXPECT=315
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
