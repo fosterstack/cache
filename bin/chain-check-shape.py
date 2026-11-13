@@ -120,6 +120,7 @@ PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed comman
                 r"bash bin/check-fips\.sh --digests witness-build/digests\.json --images images --out check-results",
                 r"bash bin/check-artifacts\.sh --digests witness-build/digests\.json --images images --archives dist --out check-results",
                 r"bash bin/check-guide\.sh --guide docs/verify-release\.md --digests witness-build/digests\.json --images images --out check-results"],
+    "arm64": [r"bash bin/check-artifacts\.sh --arch arm64 --digests witness-build/digests\.json --images images --archives dist --out check-results"],
 }
 SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-phase-arm64.sh", "bin/check-scan.sh", "bin/check-govulncheck.py", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
            "bin/acceptance-gradle.sh", "bin/acceptance-gradle-capped.sh", "bin/acceptance-maven.sh", "bin/acceptance-maven-capped.sh",
@@ -144,7 +145,6 @@ def load(path):
 
 ARM_STEP = "arm64"
 ARM_TARGET = "bin/check-phase-arm64.sh"
-ARM_LINE = "bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"
 ARM_DOWNLOADS = [("signed-witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
 
 
@@ -369,16 +369,6 @@ def phase(path, step):
     bad = ["control character %s in the target" % c for c in control_chars(raw)]
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
-    if step == ARM_STEP:
-        # rule 58: set -euo pipefail, the policy line, the verification of Build's record (isolated), THEN the artifact checks on the digest file verified
-        want = [("lit", "set -euo pipefail"), ("rx", POLICY)] + [("rx", r) for r in VERIFY] + [("lit", ARM_LINE)]
-        if len(lines) != len(want):
-            bad.append("the arm64 target must be exactly set -euo pipefail, the policy line, the verification of Build's record and the artifact checks (%d lines), found %d" % (len(want), len(lines)))
-        for i, (k, w) in enumerate(want):
-            got = lines[i] if i < len(lines) else "<missing>"
-            if (k == "lit" and got != w) or (k == "rx" and not re.fullmatch(w, got)):
-                bad.append("the arm64 target is not exactly the pinned form at line %d: %s" % (i + 1, got[:100])); break
-        return bad
     one = "bash bin/check-stage.sh %s" % step
     if lines != [one]:
         bad.append("the target must be exactly the one line `%s`, found %s" % (one, [l[:80] for l in lines]))
