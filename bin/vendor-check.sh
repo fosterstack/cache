@@ -31,7 +31,8 @@ esac
 [ -d "$src" ] && [ -r "$src" ] || die "the tree $src is not a readable directory"
 src=$(cd "$src" 2>/dev/null && pwd -P) || die "the tree $src cannot be resolved to a physical directory"
 
-cleanup() { local rc=$?; set +e; [ -z "${scratch:-}" ] || { chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"; }; exit $rc; }
+scratch=""
+cleanup() { local rc=$?; set +e; [ -z "$scratch" ] || { chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"; }; exit $rc; }
 trap cleanup EXIT
 
 if [ ! -d "$src/vendor" ] || [ -L "$src/vendor" ]; then
