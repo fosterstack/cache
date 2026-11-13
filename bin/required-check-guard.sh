@@ -16,7 +16,7 @@
 #   (effective rules aggregated across every ruleset), or from $GUARD_RULES_JSON (a file
 #   holding that API response) when set — the offline test uses it.
 # Exit: 0 every listed check is in the ruleset; 1 a listed check is missing (printed, one JSON entry per line);
-#       2 could not read either side (never a pass).
+#       2 could not read either side, or the list names no check (never a pass).
 set -uo pipefail
 list="${1:?usage: required-check-guard.sh <required-checks.json>}"
 
@@ -35,6 +35,7 @@ actual=$(jq -c '[.[] | select(.type=="required_status_checks")
 expected=$(jq -c '[.required_checks[] | {context, integration_id}] | sort_by(.context)' "$list" 2>/dev/null) \
   || fail2 "${list} is missing or has no required_checks array"
 [ "$(jq length <<<"$actual")" -gt 0 ] || fail2 "main enforces NO required status checks"
+[ "$(jq length <<<"$expected")" -gt 0 ] || fail2 "${list} names no required check"
 echo "expected (${list}): $(jq -c '[.[].context]' <<<"$expected")"
 echo "actual   (ruleset on main): $(jq -c '[.[].context]' <<<"$actual")"
 missing=$(jq -c --argjson have "$actual" '.[] | select(. as $e | any($have[]; . == $e) | not)' <<<"$expected")
