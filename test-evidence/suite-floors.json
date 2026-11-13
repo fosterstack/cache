@@ -1,4 +1,6 @@
 {
+ "acceptance-gradle-test.sh": 15,
+ "acceptance-k8s-manifests-test.sh": 6,
  "acceptance-maven-413-test.sh": 6,
  "admission-tag-signer-test.sh": 61,
  "analyze-egress-trace-test.sh": 11,
