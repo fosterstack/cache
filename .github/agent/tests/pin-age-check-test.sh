@@ -2036,7 +2036,8 @@ for r in rows:
     text = open(os.path.join(sys.argv[1], r["file"]), encoding="utf-8", errors="replace").read()
     flats = (" ".join(l.split()) for l in text.split("\n"))
     segs = lambda f: re.split(r"\s*(?:;|&&|\|\||\|)\s*", f)
-    held = sum(1 for f in flats if f and H(f) == r["line"] and r["key"] in {H(f), *map(H, segs(f))})
+    hits = lambda f: sum(H(s) == r["key"] for s in segs(f)) or int(H(f) == r["key"])
+    held = sum(hits(f) for f in flats if f and H(f) == r["line"])
     if held < r.get("count", 1):
         stale.append((r["file"], r["key"][:12]))
 assert not stale, ("rows that bind no line of their file", stale)
