@@ -14,39 +14,39 @@ staged="$1"
 signed="$2"
 plan="$staged/plan.txt"
 [ -f "$plan" ] && [ ! -L "$plan" ] || { echo "witness-sign-staged: no plan.txt in $staged" >&2; exit 1; }
-n=0
-while read -r line; do
-  payload=$(printf '%s' "$line" | cut -f1)
-  final=$(printf '%s' "$line" | cut -f2 -s)
-  extra=$(printf '%s' "$line" | cut -f3- -s)
+mapfile -t plan_lines < "$plan"   # read once: what is checked below is what is signed
+[ "${#plan_lines[@]}" -gt 0 ] || { echo "witness-sign-staged: the plan is empty" >&2; exit 1; }
+declare -A planned_payload planned_dir
+payloads=() finals=()
+for line in "${plan_lines[@]}"; do
+  IFS=$'\t' read -r payload final extra <<< "$line"
   case "$payload" in "$staged"/*/*-collection.payload) ;; *) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
   rest=${payload#"$staged"/}
   name=${rest%%/*}
   file=${rest#*/}
   step=${file%-collection.payload}
-  printf '%s' "$name" | grep -Eq '^witness-[A-Za-z0-9.-]+$' || { echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1; }
-  case "$file" in *[/]*) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
+  [[ "$name" =~ ^witness-[A-Za-z0-9.-]+$ ]] || { echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1; }
+  case "$file" in */*) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
   case "$step" in apk|build|rapk|rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
-  if [ -n "$extra" ] || [ "$final" != "$signed/$name/$step-collection.json" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
+  if [ -n "${extra:-}" ] || [ "$final" != "$signed/$name/$step-collection.json" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
     echo "witness-sign-staged: plan line does not match the staged tree: $payload" >&2; exit 1
   fi
-  n=$((n + 1))
-done < "$plan"
-[ "$n" -gt 0 ] || { echo "witness-sign-staged: the plan is empty" >&2; exit 1; }
-uniq_n=$(cut -f1 "$plan" | sort -u | wc -l | tr -d ' ')
-[ "$uniq_n" -eq "$n" ] || { echo "witness-sign-staged: the plan lists a payload twice" >&2; exit 1; }
+  [ -z "${planned_payload[$payload]:-}" ] || { echo "witness-sign-staged: the plan lists a payload twice" >&2; exit 1; }
+  planned_payload[$payload]=1 planned_dir[$staged/$name]=1
+  payloads+=("$payload") finals+=("$final")
+done
 seen=0
 dirs=0
 for d in "$staged"/*; do
   [ "$d" = "$plan" ] && continue
   [ -d "$d" ] && [ ! -L "$d" ] || { echo "witness-sign-staged: staged tree holds a non-directory: $d" >&2; exit 1; }
-  cut -f1 "$plan" | grep -Fq -- "$d/" || { echo "witness-sign-staged: staged directory not on the plan: $d" >&2; exit 1; }
+  [ -n "${planned_dir[$d]:-}" ] || { echo "witness-sign-staged: staged directory not on the plan: $d" >&2; exit 1; }
   dirs=$((dirs + 1))
   files=0
   for f in "$d"/*; do
     [ -f "$f" ] && [ ! -L "$f" ] || { echo "witness-sign-staged: staged tree holds a non-file: $f" >&2; exit 1; }
     files=$((files + 1))
-    case "$f" in *.payload) cut -f1 "$plan" | grep -Fxq -- "$f" || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
+    case "$f" in *.payload) [ -n "${planned_payload[$f]:-}" ] || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
   done
   listed=$(ls -A "$d" | wc -l | tr -d ' ')
   [ "$listed" -eq "$files" ] || { echo "witness-sign-staged: staged directory holds a hidden entry: $d" >&2; exit 1; }
@@ -54,7 +54,7 @@ done
 top=$(ls -A "$staged" | wc -l | tr -d ' ')
 want=$((dirs + 1))
 [ "$top" -eq "$want" ] || { echo "witness-sign-staged: the staged root holds an entry that is neither a planned directory nor plan.txt" >&2; exit 1; }
-[ "$seen" -eq "$n" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
+[ "$seen" -eq "${#payloads[@]}" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
 # the AWS role, region and key reference come from the job's step environment; a job that lacks one stops here, before any token is asked for
 : "${AWS_ROLE_ARN:?witness-sign-staged: AWS_ROLE_ARN is missing}"
 : "${AWS_REGION:?witness-sign-staged: AWS_REGION is missing}"
@@ -63,9 +63,8 @@ umask 077
 req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
-while read -r line; do
-  payload=$(printf '%s' "$line" | cut -f1)
-  final=$(printf '%s' "$line" | cut -f2 -s)
+for i in "${!payloads[@]}"; do
+  payload=${payloads[$i]} final=${finals[$i]}
   dir=$(dirname "$payload")
   name=$(basename "$dir")
   base=$(basename "$payload" .payload)
@@ -73,6 +72,6 @@ while read -r line; do
   mkdir -p "$signed/$name"
   for f in "$dir"/*; do case "$f" in *.payload) ;; *) cat "$f" > "$signed/$name/$(basename "$f")" ;; esac; done
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=$req_tok ACTIONS_ID_TOKEN_REQUEST_URL=$req_url bash bin/with-aws-token.sh sign-record --payload "$payload" --out "$final" --template .github/policy/release-policy.template.json
-  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime|arm64) stage=check ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
+  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; *) stage=check ;; esac   # the step names were checked above
   python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$final"
-done < "$plan"
+done
