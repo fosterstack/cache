@@ -28,7 +28,7 @@ mkdir -p "$w/tree/bin" "$w/tree/.vex"; cp "$here/grype-scan.sh" "$w/tree/bin/"; 
 # whose TEST-SUBST line runs SCANNER
 gsc() {
   local f="$w/tree/bin/scan-${1##*/}.sh"
-  sed "s|^scanner=grype   # TEST-SUBST\$|scanner=\"$1\"   # TEST-SUBST|" "$gs" > "$f"
+  sed "s|^scanner=/usr/local/bin/grype   # TEST-SUBST\$|scanner=\"$1\"   # TEST-SUBST|" "$gs" > "$f"
   echo "$f"
 }
 pass=0; fail=0
