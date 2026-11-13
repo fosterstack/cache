@@ -191,6 +191,29 @@ if len(sg) != 1:
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
 
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by check-action-pins --verify-tags, pin-age and the daily audit (a
+    Dependabot bump moves it). The action name and the exact shape of the ref (40 lower-case hex) stay compared; the
+    stand-in is a tuple, which no YAML scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str):
+        name, _, ref = u.partition("@")
+        # matches "0123456789abcdef0123456789abcdef01234567"; refuses "v7"
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            return dict(st, uses=(name, "@40-hex"))
+    return st
+
+
+# each job's actions are judged on their own, so one job cannot borrow another's
+ALLOWLIST_ACTIONS = [_by_shape(st) for st in (
+    {"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "with": {"fetch-depth": "0"}},
+    {"name": "set up Python for the selected suites", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+     "with": {"python-version": "3.12"}})]
+for _i, st in enumerate(steps_):
+    if "uses" in st and _by_shape(st) not in ALLOWLIST_ACTIONS:
+        bad.append(f"the allowlist step {_i + 1} ({st.get('name') or st['uses']}) is not a judged action step")
+
 # the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
 # and exactly one correct entry (integration 15368, scope push) for the protected job (the full suite's contexts are promotion_checks, read by stage-admission, not here). Anything unreadable or malformed is refused (fail closed).
 PROTECTED = ("allowlist",)
@@ -421,8 +444,23 @@ bump() {
 }
 BUMPED=actions/setup-python@abababababababababababababababababababab
 ALL_JOBS="allowlist"
-all_bumped=; for j in $ALL_JOBS; do all_bumped+="$(bump $j $BUMPED); "; done
-case_ uses-digest-bumped       ok  "$all_bumped"
+for j in $ALL_JOBS; do case_ "uses-digest-bumped-$j" ok "$(bump $j $BUMPED)"; done
+
+DIGEST=5fda3b95a4ea91299a34e894583c3862153e4b97
+BAD_TAG=actions/setup-python@v7
+BAD_SHORT=actions/setup-python@${DIGEST:0:39}
+BAD_UPPER=actions/setup-python@${DIGEST^^}
+BAD_NAME=evil/setup-python@$DIGEST
+BAD_MARKER='actions/setup-python@<commit>'
+
+want="the allowlist step 4 (set up Python for the selected suites) is not a judged action step"
+case_msg uses-tag-ref-allowlist           "$(bump allowlist "$BAD_TAG")"    "$want"
+case_msg uses-short-digest-allowlist      "$(bump allowlist "$BAD_SHORT")"  "$want"
+case_msg uses-upper-digest-allowlist      "$(bump allowlist "$BAD_UPPER")"  "$want"
+case_msg uses-other-action-name-allowlist "$(bump allowlist "$BAD_NAME")"   "$want"
+case_msg uses-literal-marker-allowlist    "$(bump allowlist "$BAD_MARKER")" "$want"
+case_msg uses-checkout-tag-ref-allowlist  "d['jobs']['allowlist']['steps'][0]['uses'] = 'actions/checkout@v4'" \
+  "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
 case_ job-name-expr-spaced    ok  "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
