@@ -872,9 +872,10 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"   # main's gate workflow
-GATE_B = "e6d6eaf0e9dbf9f1734ad1af6048eb658bba1d050a8fc5560886ecfefa18f88f"   # the same file after this change
+GATE_B = "494e2a7bfe90b26a8f24f631c445d5d8d4da17f1bd8ba5061f1a21b01035a577"   # the same file after this change
 # this change's edits to the gate workflow (old text, new text): its header, its notice and its sweep summary no
-# longer say that a run Dependabot triggered has no App credentials; either variant is derived from the other
+# longer say that a run Dependabot triggered has no App credentials, and its sweep judges a green Dependabot head again
+# (publishing only when the conclusion differs); either variant is derived from the other
 GATE_HUNKS = (
     ("# - Dependabot-triggered runs get no environment secrets, so a Dependabot PR's publish finds no\n"
      '#   App credentials. The scheduled SWEEP (not Dependabot-triggered) judges every open PR into the\n'
@@ -888,6 +889,13 @@ GATE_HUNKS = (
     ('-f "output[summary]=Judged by the scheduled sweep (the PR\'s own run had no App '
      'credentials)." >/dev/null || fail=1',
      '-f "output[summary]=Judged by the scheduled sweep." >/dev/null || fail=1'),
+    ("            # the App's latest verdict on this head: none -> judge; success -> done; a failure from the\n",
+     "            # the App's latest verdict on this head: none -> judge; success -> done (a Dependabot head is judged again: an\n"
+     "            # old reviewer's success may have bought it, and the judge refuses that); a failure from the\n"),
+    ('            case "$last" in success) continue ;; esac\n',
+     '            [ "$last" != success ] || [[ "$headref" == dependabot/* ]] || continue\n'),
+    ('            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} ${sha:0:7}: still failure"; continue; fi\n',
+     '            if [ "$last" = "$conclusion" ]; then echo "PR #${n} ${sha:0:7}: still ${conclusion}"; continue; fi\n'),
 )
 
 
