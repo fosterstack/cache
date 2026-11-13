@@ -2278,7 +2278,8 @@ done
 PTP="registry.example:5000/team/ptool-p@$DIG1"
 newcase pport "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "%s"\n}\n' "$PTP")")"
 runck pport "{\"times\": {\"image:registry.example:5000/team/ptool-p@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
-CASE="AC2 persona tools: an image on a registry with a port is inventoried and no age is asked of it (exit 0, its signature is checked by cosign-verify)"
+CASE="AC2 persona tools: an image on a registry with a port is inventoried and no age is asked of it "
+CASE+="(exit 0, its signature is checked by cosign-verify)"
 check test "$rc" -eq 0
 rm -rf "$work/pmove2"; cp -R "$base" "$work/pmove2"
 ( cd "$work/pmove2" && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b2 && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG2" >bin/persona-uat-tools.json && git add -A && git commit -q -m h2 )
@@ -4417,7 +4418,8 @@ r = rows[0]
 assert r == {"file": ".github/policy/gradle-wrapper-jar-sha256.txt", "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
              "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "2026-08-19T15:30:28Z"}, r
 PYROW
-CASE="pin age of images: ghcr.io and Docker Hub keep the registry time and the PR clock never dates them; on every other registry no age is asked (its signature is checked by cosign-verify), whatever the proofs"
+CASE="pin age of images: ghcr.io and Docker Hub keep the registry time and the PR clock never dates them; "
+CASE+="on every other registry no age is asked (its signature is checked by cosign-verify), whatever the proofs"
 check python3 - "$chk" <<'PY'
 import datetime, importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -4435,11 +4437,13 @@ for name, host in (("gcr.io/distroless/static-debian12", "gcr.io"), ("registry.k
                    ("localhost/x", "localhost"), ("localhost:5000/x", "localhost:5000"), ("GHCR.IO/o/p", "GHCR.IO"), ("quay.io/o/p", "quay.io")):
     for src in ("registry-push", "pr-clock", "first-seen", "image-config", "none"):
         ok, why, _ = judge(name, [] if src == "none" else [(YOUNG, src)])
-        assert ok and host in why and "cosign-verify" in why and "\n" not in why, (name, src, why)      # no age asked: one plain line naming the registry and the signature check
+        # no age asked: one plain line naming the registry and the signature check
+        assert ok and host in why and "cosign-verify" in why and "\n" not in why, (name, src, why)
 ok, why, _ = judge("a/b/c", [(OLD, "registry-push")])
 assert ok and "cosign-verify" in why, why        # three parts and no host: not a Docker Hub name, so no age asked of it
 PY
-CASE="pin age of images: the live lookup asks only the registry the name has for ghcr.io and Docker Hub, and nothing at all (no registry, no log, no PR clock) for any other registry"
+CASE="pin age of images: the live lookup asks only the registry the name has for ghcr.io and Docker Hub, "
+CASE+="and nothing at all (no registry, no log, no PR clock) for any other registry"
 check python3 - "$chk" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -4464,7 +4468,8 @@ for name, url in (("alpine", "library/alpine"), ("library/alpine", "library/alpi
 for name in ("registry.k8s.io/kubectl", "gcr.io/distroless/static-debian12", "gcr.io/projectsigstore/cosign", "localhost:5000/x", "registry.example:5000/team/p", "a/b/c"):
     del gets[:]
     who, got = asked(name)
-    assert who == [] and got == [] and gets == [], (name, who, got, gets)      # no Docker Hub or GitHub call, no PR clock, no registry or log read: its signature is cosign-verify's
+    # no Docker Hub or GitHub call, no PR clock, no registry or log read: its signature is cosign-verify's
+    assert who == [] and got == [] and gets == [], (name, who, got, gets)
 PY
 CASE="pin age of images (CI cosign job): cosign-verify runs only 'cosign verify' (never sign or attest) from the pinned cosign image, once per pinned identity of each pinned image in the tree, passes an image when any one pinned identity verifies and fails it when none does"
 check python3 - "$chk" "$here/../../.." <<'PY'
@@ -4546,7 +4551,8 @@ for tools in ([], {}, "x", {"cosign": 7}, {"cosign": "latest"}):
 del ran[:]; rc, out, err = go(GOOD, TOOLS)                                  # valid, but nothing in the tree is pinned
 assert rc == 0 and not ran and out.count("\n") == 1 and "no pinned image" in out and err == "", (rc, out, err)
 PY
-CASE="pin age of images (timeouts): the docker call has a timeout, and a call that hangs stops the run (exit 2 'cannot run'), never a refusal of the image or a traceback"
+CASE="pin age of images (timeouts): the docker call has a timeout, and a call that hangs stops the run "
+CASE+="(exit 2 'cannot run'), never a refusal of the image or a traceback"
 check python3 - "$chk" "$here/../../.." <<'PY'
 import contextlib, importlib.util, io, subprocess, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -5003,7 +5009,8 @@ CASE="kernel row G6b the SAME row with the version x in base AND head (unchanged
 #   return _sumid(self.sums)                                                    (pin-inventory.py, Item.sum)
 #   if age + 1e-9 < min_days:                                                   (pin-age-check.py, judge_item)
 #           if not is_pin(m.group(2)):                                   (pin-inventory.py, _kernel_lock_items: the version of a row must be a pin)
-#           if not m:                                                    (pin-inventory.py, _kernel_lock_items: a row that does not parse is an error)
+#           if not m:                                                    (pin-inventory.py, _kernel_lock_items: a row
+#           that does not parse is an error)
 #   return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]    (pin-inventory.py, moved)
 mutate() {   # NAME FILE OLD NEW -> $work/mut/NAME/.github/agent/supply-chain, rc 3 when OLD is not found exactly once
   local m="$work/mut/$1"; rm -rf "${m:?}"; mkdir -p "$m/.github/agent" "$m/.github/policy"
@@ -5036,20 +5043,20 @@ else
   mutant apk-judged-old-enough pin-age-check.py 'if age + 1e-9 < min_days:' 'if item.kind != "apk" and age + 1e-9 < min_days:'
   mutant reorder-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum or (k.startswith("apk:") and list(base_items).index(k) != list(head_items).index(k))]'
   mutant removal-counts-as-move pin-inventory.py 'return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]' 'return [base_items[k] for k in sorted(base_items) if k.startswith("apk:") and k not in head_items] + [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]'
-  mutant row-error-skipped pin-inventory.py '        if not m:' $'        if not m:\n            continue\n        if False:' "$G5IDS"
+  mutant_new=$'        if not m:\n            continue\n        if False:'
+  mutant row-error-skipped pin-inventory.py '        if not m:' "$mutant_new" "$G5IDS"
   # mutant row-version-passthrough: the version check of the row parser (the call of the predicate shared with is_pin) replaced by pass-through; the row cases must see it.
   mutant row-version-passthrough pin-inventory.py '        if not is_pin(m.group(2)):' '        if False:' "rv$RPIDS"
 fi
 
 # --- HLF-BEGIN: REQ-SUP-001-AC35, the hash-locked fetch ruling kind (orchestrator ruling Nov 5, cache#840) ---
-# The one kernel fetch line of bin/refresh-inputs.sh is ruled by a row that starts with the hash-locked fetch
-# prefix, and
-# only when the line is the fixed shape, the file holds it once, and build/locks/vm-kernel.lock at the HEAD tree is a
-# regular file of 1 to 500 pinned rows. The host, the path prefix, the file and the lock file are constants of the
-# checker. A row carries its five usual fields and two of its own: `verifier` {file, function}, the function of
-# that file
-# that checks a download's sha256 against the lock, and `verifier-sha256`, the sha256 of that function's whole text (its
-# def line to its last line, joined by newlines, no newline at the end). Everything here needs only the base repository.
+# The one kernel fetch line of bin/refresh-inputs.sh is ruled by a row that starts with the hash-locked fetch prefix,
+# and only when the line is the fixed shape, the file holds it once, and build/locks/vm-kernel.lock at the HEAD tree
+# is a regular file of 1 to 500 pinned rows. The host, the path prefix, the file and the lock file are constants of
+# the checker. A row carries its five usual fields and two of its own: `verifier` {file, function}, the function of
+# that file that checks a download's sha256 against the lock, and `verifier-sha256`, the sha256 of that function's
+# whole text (its def line to its last line, joined by newlines, no newline at the end). Everything here needs only
+# the base repository.
 HLP='hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): '
 HLUR='https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f'
 HLKA='        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f"'

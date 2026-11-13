@@ -3880,6 +3880,697 @@
       "body-sha256": "b1e33e0c529bb4d9466201c515f694c8a5b7f2ac09f6ce45bc6371e096f90456"
     },
     {
+      "file": ".github/agent/tests/pin-audit-go-major-test.sh",
+      "form": "a download",
+      "key": "07e08f1cc164dd84a55f3ada2c90b8e79e3e02a4d5bf1bfd3d03cf8241783098",
+      "line": "07e08f1cc164dd84a55f3ada2c90b8e79e3e02a4d5bf1bfd3d03cf8241783098",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-go-major-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "py \"B17: every gh, git and curl subprocess has a timeout, and a timeout stops the run (a Fail, never a clean day)\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "c44960ec0aa21e2e5be06510e165b3f3a9393df23f8e9c3c7f986502f394af41"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "e7cb7c4b8d3c6819618a107fb607afeb7ba6a299274d3b243401970873733e46",
+      "line": "bef44bfc767f2cb1824db5c659476ee6d74f3564394b2443c2a8dae9ac1e31ac",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
+      "line": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "an unpinned package install",
+      "key": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
+      "line": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "1cb11c163bf5eef3bcf7012dbe164f8ea51ac7a511dfb55664e1ae9e0b0d4894"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
+      "line": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "61c92be17bd4924562920226a787d82f8bf01a9f186f6abf3c4433b579b3470b"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
+      "line": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b58112fba204401f59090e7b20c080eec093d7e626ca57c6a7fc996ff78637dd"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
+      "line": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "b843f7004fa26ec08e125b74814fe1ab865b2717f2f6ddab0f7d4584cc1498e7"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
+      "line": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a3110950ea889e09a6a202d7898ba862bd2e2fb8953f9673f38a8979f2d79821"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
+      "line": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
+      "line": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 4,
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
+      "line": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
+      "line": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
+      "line": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a1258b22ad5c96e60eb27d3c8a8641a6d6cd172e090173a768fca31bdbbe2f03"
+    },
+    {
+      "file": ".github/agent/tests/pin-audit-test.sh",
+      "form": "a download",
+      "key": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
+      "line": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "check python3 - \"$aud\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "a1258b22ad5c96e60eb27d3c8a8641a6d6cd172e090173a768fca31bdbbe2f03"
+    },
+    {
+      "file": ".github/agent/tests/pin-wiring-test.sh",
+      "form": "an unpinned package install",
+      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 3,
+      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
+    },
+    {
+      "file": ".github/agent/tests/pin-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 3,
+      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
+    },
+    {
+      "file": ".github/agent/tests/pin-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
+      "line": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "count": 3,
+      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "9ab6e56f49a14e05344e094ccb0f0930d7ce838dd37d22fc9b068ed63837b004",
+      "line": "9ab6e56f49a14e05344e094ccb0f0930d7ce838dd37d22fc9b068ed63837b004",
+      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
+      "line": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
+      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
+      "line": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
+      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "a package-manager install",
+      "key": "af33bb27d34c1c282b1a71721ab1c5842e00049f5c985269a42baff6e9f6c891",
+      "line": "af33bb27d34c1c282b1a71721ab1c5842e00049f5c985269a42baff6e9f6c891",
+      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
+      "line": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
+      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "a package-manager install",
+      "key": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
+      "line": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
+      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "a package-manager install",
+      "key": "c30c334313037c2a5f58f4f297f434f488e5c84d7bf4e79b819323dd2516324f",
+      "line": "c30c334313037c2a5f58f4f297f434f488e5c84d7bf4e79b819323dd2516324f",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "850c03c508cac78556c58a1d00e6c01da4e829f4332ded9431dde556554b46db",
+      "line": "850c03c508cac78556c58a1d00e6c01da4e829f4332ded9431dde556554b46db",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "1505a4562f609e77c7514ffa09aa7680f7bc5823f6db0b2808c916eb98ceaee4",
+      "line": "1505a4562f609e77c7514ffa09aa7680f7bc5823f6db0b2808c916eb98ceaee4",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "b937f9a6b170a345e1b5b0b32bc65a607a5d90178f78bcfcd152f7fd5818eded",
+      "line": "b937f9a6b170a345e1b5b0b32bc65a607a5d90178f78bcfcd152f7fd5818eded",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "a pip install from a URL",
+      "key": "fd3b72e6e49e48b4d5b1bce4c08e8d6b66feef2305a2efe6d2228fc07deeba4e",
+      "line": "fd3b72e6e49e48b4d5b1bce4c08e8d6b66feef2305a2efe6d2228fc07deeba4e",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "84ef81f19299fae74515f0d8c907fc8a5b6cd7975da6b988d1e9e8c95fbc62c0",
+      "line": "84ef81f19299fae74515f0d8c907fc8a5b6cd7975da6b988d1e9e8c95fbc62c0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "0d44e5550671e20f35dfcf1c3fff10e9aa8b72d6a812796bf064b08b91b7e7db",
+      "line": "0d44e5550671e20f35dfcf1c3fff10e9aa8b72d6a812796bf064b08b91b7e7db",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
+      "line": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "a package-manager install",
+      "key": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
+      "line": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "an unpinned package install",
+      "key": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
+      "line": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/pip-pin-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
+      "line": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "python3 - <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "b484483e631d98b6c01ee75b78147dcdcd35d815fc208d82028bceb8a4b66600",
+      "line": "b484483e631d98b6c01ee75b78147dcdcd35d815fc208d82028bceb8a4b66600",
+      "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
+      "line": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat >\"$work/pre.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
+    },
+    {
+      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
+      "form": "a download",
+      "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
+      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
+      "body-first": "cat >\"$work/pre.py\" <<'PY'",
+      "body-last": "PY",
+      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
+    },
+    {
+      "file": "bin/acceptance-k8s-smoke.py",
+      "form": "a download",
+      "key": "5b37492aaf0af6aac6004983ae31a3118c928a8006fb479126f2d30168dfccdd",
+      "line": "5b37492aaf0af6aac6004983ae31a3118c928a8006fb479126f2d30168dfccdd",
+      "ruling": "text, not a command: a comment in bin/acceptance-k8s-smoke.py that names the tool"
+    },
+    {
+      "file": "bin/acceptance-k8s-smoke.py",
+      "form": "a download",
+      "key": "aa3cb50cbe0c61e8f6f9a3318c376799f17de847ffb9cfd258da49d582a70570",
+      "line": "aa3cb50cbe0c61e8f6f9a3318c376799f17de847ffb9cfd258da49d582a70570",
+      "ruling": "text, not a command: Python source of bin/acceptance-k8s-smoke.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/acceptance-k8s-smoke.py",
+      "form": "a download",
+      "key": "40cec43c9725ded12eaf68beec35d4c2af9c72b3481c228601c8eceb9faf64f6",
+      "line": "819e4c03f9aaca11f326e8e9cd44deeb269e77df04b27b128eafb95f41902cbb",
+      "ruling": "text, not a command: Python source of bin/acceptance-k8s-smoke.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/chain-release-shape.py",
+      "form": "a download",
+      "key": "67298e837dbbf72d20da22a7474de3818f1ae60c9543a2742b44b5d955cf5d28",
+      "line": "67298e837dbbf72d20da22a7474de3818f1ae60c9543a2742b44b5d955cf5d28",
+      "ruling": "text, not a command: Python source of bin/chain-release-shape.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/chain-test-signers.py",
+      "form": "a download",
+      "key": "da8dd839537543b0f6c929b2ec4d9e390c30fa25c3d595539621083b46748a82",
+      "line": "da8dd839537543b0f6c929b2ec4d9e390c30fa25c3d595539621083b46748a82",
+      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool"
+    },
+    {
+      "file": "bin/chain-test-signers.py",
+      "form": "a download",
+      "key": "3ee0e690ba10286651564a49c9f8f466d405427315d939115c54bbbbd17b23cb",
+      "line": "59a08741fc420785d95a3311022a7c2b5fd4983eeec4bfcb76997ff6a1e6976b",
+      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool"
+    },
+    {
+      "file": "bin/chain-test-signers.py",
+      "form": "a download",
+      "key": "145c549441cfb14f4e6b561a7a782392bbd068738dc1e26f1c22fe1810fe21bf",
+      "line": "2067152a0ed100861f6304f307986fca3dea91b95626172dc291a4fe5a2919d3",
+      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool"
+    },
+    {
+      "file": "bin/chain-test-signers.py",
+      "form": "a download",
+      "key": "947b80beb8bb298ec7003ee2a729aecd40444cf1baef58f5270a3875be0449cf",
+      "line": "8b6f05e84aaa197e317acc6f7117211758acd207d8264577d3ec33c93067965e",
+      "ruling": "text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/chain-test-signers.py",
+      "form": "a download",
+      "key": "4a51d32c41a4442970ab168d1a1211754a44062d153497dcf7942cecb5649762",
+      "line": "4a51d32c41a4442970ab168d1a1211754a44062d153497dcf7942cecb5649762",
+      "ruling": "text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/chain-test-signers.py",
+      "form": "a download",
+      "key": "34bf5abc8e560caade584ced1dfc099f81f334f3011e842746b1f9644bd453b3",
+      "line": "34bf5abc8e560caade584ced1dfc099f81f334f3011e842746b1f9644bd453b3",
+      "ruling": "text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/chain-verify.py",
+      "form": "a download",
+      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log",
+      "count": 3
+    },
+    {
+      "file": "bin/chain-verify.py",
+      "form": "a download",
+      "key": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
+      "line": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
+      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
+    },
+    {
+      "file": "bin/chain-verify.py",
+      "form": "a download",
+      "key": "26d1c0f02d43a36cedd48804769e38f294a05ca12d2998c0190d425273514fdc",
+      "line": "26d1c0f02d43a36cedd48804769e38f294a05ca12d2998c0190d425273514fdc",
+      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
+    },
+    {
+      "file": "bin/chain-verify.py",
+      "form": "a download",
+      "key": "967a463017a044955e832dda12a7e4a9a349f474f9319f46df8077d8f8b9adc7",
+      "line": "967a463017a044955e832dda12a7e4a9a349f474f9319f46df8077d8f8b9adc7",
+      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
+    },
+    {
+      "file": "bin/chain-verify.py",
+      "form": "a download",
+      "key": "fb02119002d2f97b37e16144744e1b3af41deffea062fcc99826569f8cabae15",
+      "line": "fb02119002d2f97b37e16144744e1b3af41deffea062fcc99826569f8cabae15",
+      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "f7f148916f4d09aa8e7ab70030fb241fd9e8ca150165e138d548ea3fb31adbd0",
+      "line": "f7f148916f4d09aa8e7ab70030fb241fd9e8ca150165e138d548ea3fb31adbd0",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "e884acd683dae2c5400b2e5b109607e53b2f703e5ac0f017a18e906f74b4b6c6",
+      "line": "e884acd683dae2c5400b2e5b109607e53b2f703e5ac0f017a18e906f74b4b6c6",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "84f80617a1f4f367e426495aa58a93cd0bcd8ff4f6e717d388cca144c2337719",
+      "line": "84f80617a1f4f367e426495aa58a93cd0bcd8ff4f6e717d388cca144c2337719",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "c646d469b6393d4ce3288ec6bc0b1de8fd6275456729182787c2fba8d28fd8fa",
+      "line": "c646d469b6393d4ce3288ec6bc0b1de8fd6275456729182787c2fba8d28fd8fa",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "ef0935b90683bbf08f57878c0af8966fdfaf71b45d5bb5922882e2effd51ea9a",
+      "line": "ef0935b90683bbf08f57878c0af8966fdfaf71b45d5bb5922882e2effd51ea9a",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "71547875620b35e9a5c10db3c9ec4abc82ce52770f776a31dd50d3fe7c403220",
+      "line": "71547875620b35e9a5c10db3c9ec4abc82ce52770f776a31dd50d3fe7c403220",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "7e9ce6da045ea7faf90273f2685b86993b4f39c2a3d3ccd917063a52604ec468",
+      "line": "7e9ce6da045ea7faf90273f2685b86993b4f39c2a3d3ccd917063a52604ec468",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "a5f1fa45dffddec6779efac2e3c852c500c995b832e0ca96e509e24c206eaf32",
+      "line": "a5f1fa45dffddec6779efac2e3c852c500c995b832e0ca96e509e24c206eaf32",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "93746c67814e72ca08d120ecb4bbd0d38b8d7346327f0699322c2575bf8314d8",
+      "line": "93746c67814e72ca08d120ecb4bbd0d38b8d7346327f0699322c2575bf8314d8",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "2d86993570ea20ee037f98bf36c7a6e067f2da1c871b2424dbc45bc6027d1450",
+      "line": "2d86993570ea20ee037f98bf36c7a6e067f2da1c871b2424dbc45bc6027d1450",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "cb25dc34769f4419460099ac249b2a719c91b81ecb886700899aaba0a4a9a225",
+      "line": "cb25dc34769f4419460099ac249b2a719c91b81ecb886700899aaba0a4a9a225",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "96be3d672d4632eb14d21bdfa887a046bc3b771090862743427ab00d68fcb66b",
+      "line": "96be3d672d4632eb14d21bdfa887a046bc3b771090862743427ab00d68fcb66b",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "ba356d1bfaf3cb045179282f0dc96d7645dbbc17411da0cd4b1909ca164c16b6",
+      "line": "ba356d1bfaf3cb045179282f0dc96d7645dbbc17411da0cd4b1909ca164c16b6",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "df19adf0473241eda0ea980a0baf6dda6977464b99bf866450e41dfceb140665",
+      "line": "df19adf0473241eda0ea980a0baf6dda6977464b99bf866450e41dfceb140665",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "e1a3c1da3559f47bd1b44f98a03ae583c860af90b5f3e9bc8ea6bdc0b5c60286",
+      "line": "a354063e21fa74adaaafb61e0ce45487f23595f431d36f6747193ec68c4f42ad",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "2659c04cd54f078c7e0d2a03fe51273e139250baae1b1c1da00102b7302e806f",
+      "line": "a354063e21fa74adaaafb61e0ce45487f23595f431d36f6747193ec68c4f42ad",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
+      "line": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a git clone or remote fetch",
+      "key": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
+      "line": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "b2f038578fb66606036b59953839b05a1ae8cf0b8dfbb86c956becf9f3751962",
+      "line": "b2f038578fb66606036b59953839b05a1ae8cf0b8dfbb86c956becf9f3751962",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "29aaf881b106a019cebde439d21c9ff80fb279c6930e6a1e8ac2d2e6fe9d418c",
+      "line": "29aaf881b106a019cebde439d21c9ff80fb279c6930e6a1e8ac2d2e6fe9d418c",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "9aac0b7ed9c9bd94ee3ca374c7a12f830b18e1d12c6d2978b1b46190e5df080c",
+      "line": "9aac0b7ed9c9bd94ee3ca374c7a12f830b18e1d12c6d2978b1b46190e5df080c",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
+    },
+    {
+      "file": "bin/persona-uat.py",
+      "form": "a download",
+      "key": "31f963de0c0bb648a91937877d8dc9aa92d24a6a39013022be036505adcef790",
+      "line": "31f963de0c0bb648a91937877d8dc9aa92d24a6a39013022be036505adcef790",
+      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
+    },
+    {
+      "file": "bin/release-postverify.py",
+      "form": "a gh release or extension download",
+      "key": "90268c66412f8ce9703bd2e7f232366e01eb6d71ad6aad50e3d750f5759674e0",
+      "line": "90268c66412f8ce9703bd2e7f232366e01eb6d71ad6aad50e3d750f5759674e0",
+      "ruling": "text, not a command: Python source of bin/release-postverify.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/vex-live-test.py",
+      "form": "a download",
+      "key": "f2156598d795aa55d3c8b2093bfcfa22f91a2b32ab39065d44f36c67333c1daf",
+      "line": "f2156598d795aa55d3c8b2093bfcfa22f91a2b32ab39065d44f36c67333c1daf",
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/vex-live-test.py",
+      "form": "a download",
+      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/vex-live-test.py",
+      "form": "a download",
+      "key": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
+      "line": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/vex-live-test.py",
+      "form": "a download",
+      "key": "3ba59646e3f5aab40e489e2fd2bb3c2d4077f765de7f1e704281248e7e25703c",
+      "line": "3ba59646e3f5aab40e489e2fd2bb3c2d4077f765de7f1e704281248e7e25703c",
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/vex-live-test.py",
+      "form": "a download",
+      "key": "aee1eafa61e81fd3ec6e6228a4cb60ea7a5fab596ff1edc0436a8a34031ae04e",
+      "line": "aee1eafa61e81fd3ec6e6228a4cb60ea7a5fab596ff1edc0436a8a34031ae04e",
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
+      "count": 2
+    },
+    {
+      "file": "bin/vex-live-test.py",
+      "form": "a download",
+      "key": "8994a1352c7ce291aa2332b4f62290ee4d8cd131a16cf4f8ff0cdbd461d09abc",
+      "line": "8994a1352c7ce291aa2332b4f62290ee4d8cd131a16cf4f8ff0cdbd461d09abc",
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": "bin/vex-live-test.py",
+      "form": "a download",
+      "key": "529dbec1ffa0bf62575ab9ca4f67e4fb3c5d74e8beb3275b52dc6ac6a9672288",
+      "line": "529dbec1ffa0bf62575ab9ca4f67e4fb3c5d74e8beb3275b52dc6ac6a9672288",
+      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/check-action-pins.py",
+      "form": "a download",
+      "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
+      "line": "0a79a0b49572685c21b44db52dd29749c6643cc84d420afddd0df788cb856c48",
+      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
+      "file": ".github/agent/bin/check-action-pins.py",
+      "form": "a download",
+      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "line": "0a79a0b49572685c21b44db52dd29749c6643cc84d420afddd0df788cb856c48",
+      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
+    },
+    {
       "file": ".github/agent/tests/pin-age-check-test.sh",
       "form": "a download",
       "key": "aca92134bf5cb8a24368d7e9b66e0efbec7f31ab0f9b57232ef7f85286fbc325",
@@ -5179,697 +5870,6 @@
       "key": "fcc870a03a8f4f556d6045fb7e29179c8ddf97013a17f21d6bfd3bbf8fc2b98f",
       "line": "fcc870a03a8f4f556d6045fb7e29179c8ddf97013a17f21d6bfd3bbf8fc2b98f",
       "ruling": "text, not a command: a comment in .github/agent/tests/pin-age-check-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-go-major-test.sh",
-      "form": "a download",
-      "key": "07e08f1cc164dd84a55f3ada2c90b8e79e3e02a4d5bf1bfd3d03cf8241783098",
-      "line": "07e08f1cc164dd84a55f3ada2c90b8e79e3e02a4d5bf1bfd3d03cf8241783098",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-go-major-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "py \"B17: every gh, git and curl subprocess has a timeout, and a timeout stops the run (a Fail, never a clean day)\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "c44960ec0aa21e2e5be06510e165b3f3a9393df23f8e9c3c7f986502f394af41"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "e7cb7c4b8d3c6819618a107fb607afeb7ba6a299274d3b243401970873733e46",
-      "line": "bef44bfc767f2cb1824db5c659476ee6d74f3564394b2443c2a8dae9ac1e31ac",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
-      "line": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "032c3f45925e3b1c02e7dc2aeb3486d74627f128e3552927ffdf5e027fe5b74e"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "an unpinned package install",
-      "key": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
-      "line": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "1cb11c163bf5eef3bcf7012dbe164f8ea51ac7a511dfb55664e1ae9e0b0d4894"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
-      "line": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "61c92be17bd4924562920226a787d82f8bf01a9f186f6abf3c4433b579b3470b"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
-      "line": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "b58112fba204401f59090e7b20c080eec093d7e626ca57c6a7fc996ff78637dd"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
-      "line": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "b843f7004fa26ec08e125b74814fe1ab865b2717f2f6ddab0f7d4584cc1498e7"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
-      "line": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "a3110950ea889e09a6a202d7898ba862bd2e2fb8953f9673f38a8979f2d79821"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
-      "line": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
-      "line": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 4,
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "e8d2a8e5818d3023eb472001767d5932fc7a4a23fd53191e17c651b29475194d"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
-      "line": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
-      "line": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5a849fb4dcea293ee3668f5d78332f7b9433a5b5405e3ca32d39940a6f19d435"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
-      "line": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "a1258b22ad5c96e60eb27d3c8a8641a6d6cd172e090173a768fca31bdbbe2f03"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "form": "a download",
-      "key": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
-      "line": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "check python3 - \"$aud\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "a1258b22ad5c96e60eb27d3c8a8641a6d6cd172e090173a768fca31bdbbe2f03"
-    },
-    {
-      "file": ".github/agent/tests/pin-wiring-test.sh",
-      "form": "an unpinned package install",
-      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 3,
-      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
-    },
-    {
-      "file": ".github/agent/tests/pin-wiring-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "line": "0ad96db0551becd5248e9ee6051f5c9218b1de3c75075d38db5aa76e92f71d60",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 3,
-      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
-    },
-    {
-      "file": ".github/agent/tests/pin-wiring-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
-      "line": "5e3a044fe70101926adc8682367a7a177c1961c1968260ae4bc8641bdbbe4cee",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "count": 3,
-      "body-first": "judge() { PIN_WIRING_WORKFLOWS_DIR=\"${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}\" PIN_WIRING_FLOORS_FILE=\"${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}\" PIN_WIRING_POLICY_FILE=\"${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}\" python3 - \"$1\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "5490aaa31aa784f3c729d54d820a7838a51af728eb4b75b71524264458f2f9ed"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "9ab6e56f49a14e05344e094ccb0f0930d7ce838dd37d22fc9b068ed63837b004",
-      "line": "9ab6e56f49a14e05344e094ccb0f0930d7ce838dd37d22fc9b068ed63837b004",
-      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
-      "line": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
-      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
-      "line": "238c3b2af34d6d9683b87af6b3e794fc0f70e204e11d27adb486baf0e90b66bf",
-      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "a package-manager install",
-      "key": "af33bb27d34c1c282b1a71721ab1c5842e00049f5c985269a42baff6e9f6c891",
-      "line": "af33bb27d34c1c282b1a71721ab1c5842e00049f5c985269a42baff6e9f6c891",
-      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
-      "line": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
-      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "a package-manager install",
-      "key": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
-      "line": "2e889853d7c386bd5f50fc70ae31bc90f612ea24633db7b80a37e20bedf738bd",
-      "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "a package-manager install",
-      "key": "c30c334313037c2a5f58f4f297f434f488e5c84d7bf4e79b819323dd2516324f",
-      "line": "c30c334313037c2a5f58f4f297f434f488e5c84d7bf4e79b819323dd2516324f",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "850c03c508cac78556c58a1d00e6c01da4e829f4332ded9431dde556554b46db",
-      "line": "850c03c508cac78556c58a1d00e6c01da4e829f4332ded9431dde556554b46db",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "1505a4562f609e77c7514ffa09aa7680f7bc5823f6db0b2808c916eb98ceaee4",
-      "line": "1505a4562f609e77c7514ffa09aa7680f7bc5823f6db0b2808c916eb98ceaee4",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "b937f9a6b170a345e1b5b0b32bc65a607a5d90178f78bcfcd152f7fd5818eded",
-      "line": "b937f9a6b170a345e1b5b0b32bc65a607a5d90178f78bcfcd152f7fd5818eded",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "a pip install from a URL",
-      "key": "fd3b72e6e49e48b4d5b1bce4c08e8d6b66feef2305a2efe6d2228fc07deeba4e",
-      "line": "fd3b72e6e49e48b4d5b1bce4c08e8d6b66feef2305a2efe6d2228fc07deeba4e",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "84ef81f19299fae74515f0d8c907fc8a5b6cd7975da6b988d1e9e8c95fbc62c0",
-      "line": "84ef81f19299fae74515f0d8c907fc8a5b6cd7975da6b988d1e9e8c95fbc62c0",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "0d44e5550671e20f35dfcf1c3fff10e9aa8b72d6a812796bf064b08b91b7e7db",
-      "line": "0d44e5550671e20f35dfcf1c3fff10e9aa8b72d6a812796bf064b08b91b7e7db",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
-      "line": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "a package-manager install",
-      "key": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
-      "line": "7439ee92d82179987d2da75732b7d84287b220932fabc9f9492ab7b63fe87035",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "an unpinned package install",
-      "key": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
-      "line": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/pip-pin-test.sh",
-      "form": "a pip requirements file not named requirements*.txt",
-      "key": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
-      "line": "2ee02b4699dd4086063be5069214087ced4f3887893e4688646edc87d2ff6464",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "python3 - <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "2cf6b4e04d1f535c910bcdfbd0429244e551938f220cf86a5aa614588c4a7102"
-    },
-    {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "b484483e631d98b6c01ee75b78147dcdcd35d815fc208d82028bceb8a4b66600",
-      "line": "b484483e631d98b6c01ee75b78147dcdcd35d815fc208d82028bceb8a4b66600",
-      "ruling": "text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool"
-    },
-    {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
-      "line": "403dea533a101c5f6ae4aaa27ac4cabe72058e966e83716a9fc7e646e7994b62",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat >\"$work/pre.py\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
-    },
-    {
-      "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
-      "form": "a download",
-      "key": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
-      "line": "3de6bc2583ccca55afc10a34020af97692020f79f24c7dcfe63b2c23690b20b0",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-first": "cat >\"$work/pre.py\" <<'PY'",
-      "body-last": "PY",
-      "body-sha256": "7cc7813f54e73370e3767ef75522e95feaafd1411a700cf52bd5c8a16bafead1"
-    },
-    {
-      "file": "bin/acceptance-k8s-smoke.py",
-      "form": "a download",
-      "key": "5b37492aaf0af6aac6004983ae31a3118c928a8006fb479126f2d30168dfccdd",
-      "line": "5b37492aaf0af6aac6004983ae31a3118c928a8006fb479126f2d30168dfccdd",
-      "ruling": "text, not a command: a comment in bin/acceptance-k8s-smoke.py that names the tool"
-    },
-    {
-      "file": "bin/acceptance-k8s-smoke.py",
-      "form": "a download",
-      "key": "aa3cb50cbe0c61e8f6f9a3318c376799f17de847ffb9cfd258da49d582a70570",
-      "line": "aa3cb50cbe0c61e8f6f9a3318c376799f17de847ffb9cfd258da49d582a70570",
-      "ruling": "text, not a command: Python source of bin/acceptance-k8s-smoke.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/acceptance-k8s-smoke.py",
-      "form": "a download",
-      "key": "40cec43c9725ded12eaf68beec35d4c2af9c72b3481c228601c8eceb9faf64f6",
-      "line": "819e4c03f9aaca11f326e8e9cd44deeb269e77df04b27b128eafb95f41902cbb",
-      "ruling": "text, not a command: Python source of bin/acceptance-k8s-smoke.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/chain-release-shape.py",
-      "form": "a download",
-      "key": "67298e837dbbf72d20da22a7474de3818f1ae60c9543a2742b44b5d955cf5d28",
-      "line": "67298e837dbbf72d20da22a7474de3818f1ae60c9543a2742b44b5d955cf5d28",
-      "ruling": "text, not a command: Python source of bin/chain-release-shape.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/chain-test-signers.py",
-      "form": "a download",
-      "key": "da8dd839537543b0f6c929b2ec4d9e390c30fa25c3d595539621083b46748a82",
-      "line": "da8dd839537543b0f6c929b2ec4d9e390c30fa25c3d595539621083b46748a82",
-      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool"
-    },
-    {
-      "file": "bin/chain-test-signers.py",
-      "form": "a download",
-      "key": "3ee0e690ba10286651564a49c9f8f466d405427315d939115c54bbbbd17b23cb",
-      "line": "59a08741fc420785d95a3311022a7c2b5fd4983eeec4bfcb76997ff6a1e6976b",
-      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool"
-    },
-    {
-      "file": "bin/chain-test-signers.py",
-      "form": "a download",
-      "key": "145c549441cfb14f4e6b561a7a782392bbd068738dc1e26f1c22fe1810fe21bf",
-      "line": "2067152a0ed100861f6304f307986fca3dea91b95626172dc291a4fe5a2919d3",
-      "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool"
-    },
-    {
-      "file": "bin/chain-test-signers.py",
-      "form": "a download",
-      "key": "947b80beb8bb298ec7003ee2a729aecd40444cf1baef58f5270a3875be0449cf",
-      "line": "8b6f05e84aaa197e317acc6f7117211758acd207d8264577d3ec33c93067965e",
-      "ruling": "text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/chain-test-signers.py",
-      "form": "a download",
-      "key": "4a51d32c41a4442970ab168d1a1211754a44062d153497dcf7942cecb5649762",
-      "line": "4a51d32c41a4442970ab168d1a1211754a44062d153497dcf7942cecb5649762",
-      "ruling": "text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/chain-test-signers.py",
-      "form": "a download",
-      "key": "34bf5abc8e560caade584ced1dfc099f81f334f3011e842746b1f9644bd453b3",
-      "line": "34bf5abc8e560caade584ced1dfc099f81f334f3011e842746b1f9644bd453b3",
-      "ruling": "text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/chain-verify.py",
-      "form": "a download",
-      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log",
-      "count": 3
-    },
-    {
-      "file": "bin/chain-verify.py",
-      "form": "a download",
-      "key": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
-      "line": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
-      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
-    },
-    {
-      "file": "bin/chain-verify.py",
-      "form": "a download",
-      "key": "26d1c0f02d43a36cedd48804769e38f294a05ca12d2998c0190d425273514fdc",
-      "line": "26d1c0f02d43a36cedd48804769e38f294a05ca12d2998c0190d425273514fdc",
-      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
-    },
-    {
-      "file": "bin/chain-verify.py",
-      "form": "a download",
-      "key": "967a463017a044955e832dda12a7e4a9a349f474f9319f46df8077d8f8b9adc7",
-      "line": "967a463017a044955e832dda12a7e4a9a349f474f9319f46df8077d8f8b9adc7",
-      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
-    },
-    {
-      "file": "bin/chain-verify.py",
-      "form": "a download",
-      "key": "fb02119002d2f97b37e16144744e1b3af41deffea062fcc99826569f8cabae15",
-      "line": "fb02119002d2f97b37e16144744e1b3af41deffea062fcc99826569f8cabae15",
-      "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "f7f148916f4d09aa8e7ab70030fb241fd9e8ca150165e138d548ea3fb31adbd0",
-      "line": "f7f148916f4d09aa8e7ab70030fb241fd9e8ca150165e138d548ea3fb31adbd0",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "e884acd683dae2c5400b2e5b109607e53b2f703e5ac0f017a18e906f74b4b6c6",
-      "line": "e884acd683dae2c5400b2e5b109607e53b2f703e5ac0f017a18e906f74b4b6c6",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "84f80617a1f4f367e426495aa58a93cd0bcd8ff4f6e717d388cca144c2337719",
-      "line": "84f80617a1f4f367e426495aa58a93cd0bcd8ff4f6e717d388cca144c2337719",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "c646d469b6393d4ce3288ec6bc0b1de8fd6275456729182787c2fba8d28fd8fa",
-      "line": "c646d469b6393d4ce3288ec6bc0b1de8fd6275456729182787c2fba8d28fd8fa",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "ef0935b90683bbf08f57878c0af8966fdfaf71b45d5bb5922882e2effd51ea9a",
-      "line": "ef0935b90683bbf08f57878c0af8966fdfaf71b45d5bb5922882e2effd51ea9a",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "71547875620b35e9a5c10db3c9ec4abc82ce52770f776a31dd50d3fe7c403220",
-      "line": "71547875620b35e9a5c10db3c9ec4abc82ce52770f776a31dd50d3fe7c403220",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "7e9ce6da045ea7faf90273f2685b86993b4f39c2a3d3ccd917063a52604ec468",
-      "line": "7e9ce6da045ea7faf90273f2685b86993b4f39c2a3d3ccd917063a52604ec468",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "a5f1fa45dffddec6779efac2e3c852c500c995b832e0ca96e509e24c206eaf32",
-      "line": "a5f1fa45dffddec6779efac2e3c852c500c995b832e0ca96e509e24c206eaf32",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "93746c67814e72ca08d120ecb4bbd0d38b8d7346327f0699322c2575bf8314d8",
-      "line": "93746c67814e72ca08d120ecb4bbd0d38b8d7346327f0699322c2575bf8314d8",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "2d86993570ea20ee037f98bf36c7a6e067f2da1c871b2424dbc45bc6027d1450",
-      "line": "2d86993570ea20ee037f98bf36c7a6e067f2da1c871b2424dbc45bc6027d1450",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "cb25dc34769f4419460099ac249b2a719c91b81ecb886700899aaba0a4a9a225",
-      "line": "cb25dc34769f4419460099ac249b2a719c91b81ecb886700899aaba0a4a9a225",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "96be3d672d4632eb14d21bdfa887a046bc3b771090862743427ab00d68fcb66b",
-      "line": "96be3d672d4632eb14d21bdfa887a046bc3b771090862743427ab00d68fcb66b",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "ba356d1bfaf3cb045179282f0dc96d7645dbbc17411da0cd4b1909ca164c16b6",
-      "line": "ba356d1bfaf3cb045179282f0dc96d7645dbbc17411da0cd4b1909ca164c16b6",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "df19adf0473241eda0ea980a0baf6dda6977464b99bf866450e41dfceb140665",
-      "line": "df19adf0473241eda0ea980a0baf6dda6977464b99bf866450e41dfceb140665",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "e1a3c1da3559f47bd1b44f98a03ae583c860af90b5f3e9bc8ea6bdc0b5c60286",
-      "line": "a354063e21fa74adaaafb61e0ce45487f23595f431d36f6747193ec68c4f42ad",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "2659c04cd54f078c7e0d2a03fe51273e139250baae1b1c1da00102b7302e806f",
-      "line": "a354063e21fa74adaaafb61e0ce45487f23595f431d36f6747193ec68c4f42ad",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
-      "line": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a git clone or remote fetch",
-      "key": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
-      "line": "49201897923f186e53d6e007d898b76c4a70a99e502eab77df69a68abea8eda5",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "b2f038578fb66606036b59953839b05a1ae8cf0b8dfbb86c956becf9f3751962",
-      "line": "b2f038578fb66606036b59953839b05a1ae8cf0b8dfbb86c956becf9f3751962",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "29aaf881b106a019cebde439d21c9ff80fb279c6930e6a1e8ac2d2e6fe9d418c",
-      "line": "29aaf881b106a019cebde439d21c9ff80fb279c6930e6a1e8ac2d2e6fe9d418c",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "9aac0b7ed9c9bd94ee3ca374c7a12f830b18e1d12c6d2978b1b46190e5df080c",
-      "line": "9aac0b7ed9c9bd94ee3ca374c7a12f830b18e1d12c6d2978b1b46190e5df080c",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
-    },
-    {
-      "file": "bin/persona-uat.py",
-      "form": "a download",
-      "key": "31f963de0c0bb648a91937877d8dc9aa92d24a6a39013022be036505adcef790",
-      "line": "31f963de0c0bb648a91937877d8dc9aa92d24a6a39013022be036505adcef790",
-      "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint"
-    },
-    {
-      "file": "bin/release-postverify.py",
-      "form": "a gh release or extension download",
-      "key": "90268c66412f8ce9703bd2e7f232366e01eb6d71ad6aad50e3d750f5759674e0",
-      "line": "90268c66412f8ce9703bd2e7f232366e01eb6d71ad6aad50e3d750f5759674e0",
-      "ruling": "text, not a command: Python source of bin/release-postverify.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/vex-live-test.py",
-      "form": "a download",
-      "key": "f2156598d795aa55d3c8b2093bfcfa22f91a2b32ab39065d44f36c67333c1daf",
-      "line": "f2156598d795aa55d3c8b2093bfcfa22f91a2b32ab39065d44f36c67333c1daf",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/vex-live-test.py",
-      "form": "a download",
-      "key": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "line": "84cdb92b47ddeda39504b1df0be4a17879c2cde3a21c65ab4215ec590e051270",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/vex-live-test.py",
-      "form": "a download",
-      "key": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
-      "line": "9ebf5cec864e0ce5f2033645a85e303779e63039d536f885e9afdd40263f67bb",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/vex-live-test.py",
-      "form": "a download",
-      "key": "3ba59646e3f5aab40e489e2fd2bb3c2d4077f765de7f1e704281248e7e25703c",
-      "line": "3ba59646e3f5aab40e489e2fd2bb3c2d4077f765de7f1e704281248e7e25703c",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/vex-live-test.py",
-      "form": "a download",
-      "key": "aee1eafa61e81fd3ec6e6228a4cb60ea7a5fab596ff1edc0436a8a34031ae04e",
-      "line": "aee1eafa61e81fd3ec6e6228a4cb60ea7a5fab596ff1edc0436a8a34031ae04e",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "count": 2
-    },
-    {
-      "file": "bin/vex-live-test.py",
-      "form": "a download",
-      "key": "8994a1352c7ce291aa2332b4f62290ee4d8cd131a16cf4f8ff0cdbd461d09abc",
-      "line": "8994a1352c7ce291aa2332b4f62290ee4d8cd131a16cf4f8ff0cdbd461d09abc",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": "bin/vex-live-test.py",
-      "form": "a download",
-      "key": "529dbec1ffa0bf62575ab9ca4f67e4fb3c5d74e8beb3275b52dc6ac6a9672288",
-      "line": "529dbec1ffa0bf62575ab9ca4f67e4fb3c5d74e8beb3275b52dc6ac6a9672288",
-      "ruling": "text, not a command: Python source of bin/vex-live-test.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/check-action-pins.py",
-      "form": "a download",
-      "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
-      "line": "0a79a0b49572685c21b44db52dd29749c6643cc84d420afddd0df788cb856c48",
-      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
-    },
-    {
-      "file": ".github/agent/bin/check-action-pins.py",
-      "form": "a download",
-      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
-      "line": "0a79a0b49572685c21b44db52dd29749c6643cc84d420afddd0df788cb856c48",
-      "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
