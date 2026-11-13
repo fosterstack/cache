@@ -69,7 +69,7 @@ check them against the signed release manifest as described in
 |---|---|---|
 | Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
 | Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
-| Docker Scout | none | Scout reads the statements attached to the image, not a file (see [Docker Scout](#docker-scout)) |
+| Docker Scout | none yet | Our statements are attached to the image, not a file, and are not yet confirmed on a published release (see [Docker Scout](#docker-scout)) |
 | Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule for each product scope and package a `not_affected` or `fixed` statement names: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
