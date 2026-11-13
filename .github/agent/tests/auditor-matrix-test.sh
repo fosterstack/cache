@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC6
+# proves: REQ-DEP-001-AC13
 # Matrix-first EFFECT-OBSERVING failing suite for the daily CVE auditor
 # (.github/agent/docs/cve-auditor-matrix.md). Round-7 hardening after the second review
 # pass. Fixtures are inputs only, in neutral files with no prose; the mapping from
@@ -3278,7 +3279,10 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
-begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging script is gone, and the trusted verdict (judge and sweep) runs the action-pin checker, the allowlist guard, the pin-wiring judge and the scanner guard and nothing else over the head"
+begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging \
+script is gone, the passed-audit judge occurs 4 times in the workflow (the verdict job, the sweep, the reviewer-gate \
+sweep and the record writer's last step), and the trusted verdict (judge and sweep) runs the action-pin checker, the \
+allowlist guard, the pin-wiring judge and the scanner guard and nothing else over the head"
 nr="$(python3 - <<'NR'
 import os,re
 gate=".github/agent/bin/auditor-review-gate.py"
@@ -3286,7 +3290,9 @@ src=open(".github/workflows/agent-review-gate.yml").read()
 tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","pin-wiring-test.sh","bin/scan-no-workflow-call-test.sh")
 code="\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 ok=(not os.path.exists(gate) and "auditor-review-gate.py" not in src and "--subs-rev" not in src
-    and all(code.count(t)==2 for t in tools) and code.count("bin/audit-record-judge.sh")==3 and "reviews/" not in src)    # the audit-record judge: the verdict job, the sweep and the record writer's last step
+    and all(code.count(t)==2 for t in tools) and code.count("bin/audit-record-judge.sh")==4 and "reviews/" not in src)
+# the audit-record judge occurs 4 times: the verdict job, the sweep, the reviewer-gate sweep and the record writer's
+# last step
 print("OK" if ok else "BAD")
 NR
 )"
@@ -3369,6 +3375,110 @@ finally:
 VP
 )"
 eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all five checks exit 0" "$vp"
+
+begin "dep001-ac13-sweep-skips-a-green-head-except-dependabot" "the gate's sweep skips a green head, except a \
+Dependabot head (head branch dependabot/...): that one is judged again for the reviewer's verdict only, and a check \
+goes up only when the conclusion differs from the one there"
+# REQ-DEP-001-AC13: the gate's sweep skips a green head, except a Dependabot head (head branch dependabot/...): that one
+# is judged again, and a check goes up only when the conclusion differs from the one there. The sweep runs as written,
+# over stand-ins for the five checks and a gh that serves the pull request list and the App's gate checks.
+sw="$(python3 - "$repo" "$WORK" <<'SW'
+import datetime, json, os, subprocess, sys
+sys.path.insert(0, ".github/agent/fixtures/testlib")
+import pyyaml as yaml
+root, work = sys.argv[1], sys.argv[2]
+steps = yaml.safe_load(open(os.path.join(root, ".github/workflows/agent-review-gate.yml")))["jobs"]["sweep"]["steps"]
+(sweep,) = [s["run"] for s in steps if "judge and publish every open PR" in s.get("name", "")]
+def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
+genv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+        GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+base = os.path.join(work, "ac13-sweep"); src, fx, stub = (os.path.join(base, x) for x in ("src", "fx", "stub"))
+os.makedirs(src); os.makedirs(stub)
+subprocess.run(["git", "init", "-q", src], check=True, env=genv)
+open(os.path.join(src, "f"), "w").write("x")
+subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=genv)
+subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=genv, capture_output=True)
+sha = sh("git", "-C", src, "rev-parse", "HEAD")
+sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
+sh("git", "clone", "-q", src, fx)
+for rel, body in {
+    ".github/agent/bin/check-action-pins.py": "import os\nopen(os.environ['CALLS'], 'a').write('pins\\n')\n",
+    "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\n",
+    ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\n",
+    "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\n",
+    "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\nexit \"$STUB_AUDIT\"\n",
+}.items():
+    f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
+    open(f, "w").write(body)
+os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
+open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list") echo "7 %s $HEADREF owner/repo" ;;
+  "api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate")
+      f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" "$GATE_JSON" ;;
+  "api repos/o/r/check-runs") [ "${PUBFAIL:-}" = 1 ] && exit 1
+      for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$PUBLISHED" ;; esac; done ;;
+  *) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;
+esac
+""" % (sha, sha))
+os.chmod(os.path.join(stub, "gh"), 0o755)
+def sweep_over(headref, gate, audit, pubfail=False):
+    """(exit status, what was published, the checks called) for one open pull request"""
+    calls, published, gate_json = (os.path.join(base, x) for x in ("calls", "published", "gate.json"))
+    for f in (calls, published): open(f, "w").close()
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    json.dump({"check_runs": [] if gate == "none" else [{"conclusion": gate, "completed_at": now,
+            "app": {"slug": "app"}}]}, open(gate_json, "w"))
+    env = dict(os.environ, CALLS=calls, PUBLISHED=published, GATE_JSON=gate_json, HEADREF=headref,
+            RUNNER_TEMP=os.path.join(base, "tmp"),
+               GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
+               STUB_AUDIT=str(audit),
+               PUBFAIL="1" if pubfail else "", PATH=stub + ":" + os.environ["PATH"])
+    os.makedirs(env["RUNNER_TEMP"], exist_ok=True)
+    r = subprocess.run(["bash", "-c", sweep], cwd=fx, env=env, capture_output=True, text=True)
+    return r.returncode, open(published).read().split(), open(calls).read().split()
+bad = []
+dep = "dependabot/pip/requests-2.0"
+def want(name, got, rc, published, judged):
+    code, pub, calls = got
+    if code != rc or pub != published or ("audit" in calls) != judged or any("unexpected" in c for c in calls):
+        bad.append("%s: exit %s (want %s), published %s (want %s), judged %s (want %s)" % (name, code, rc, pub,
+                published, "audit" in calls, judged))
+want("a Dependabot head with a gate success whose judge now fails", sweep_over(dep, "success", 1), 0,
+     ["conclusion=failure"], True)
+want("a Dependabot head with a gate success whose judge still passes", sweep_over(dep, "success", 0), 0, [], True)
+want("a Dependabot head with a gate success, judge failing, the failure cannot be published", sweep_over(dep, "success",
+        1, pubfail=True), 1, [], True)
+for headref in ("feature/bump", "dependabot", "dependabot-pip/x", "xdependabot/pip/x", "feature/dependabot/pip/x",
+        "Dependabot/pip/x"):
+    for audit in (0, 1):
+        want("a head %r with a gate success is skipped (judge %d)" % (headref, audit), sweep_over(headref, "success",
+                audit), 0, [], False)
+# REQ-DEP-001-AC13: a green Dependabot head did not change, so it is judged only for the reviewer's verdict (the
+# passed-audit judge, which refuses a success of an old version of the reviewer): the pin, allowlist, wiring and scanner
+# checks are never called on it
+def only_the_judge(name, got, rc, published):
+    code, pub, calls = got
+    if code != rc or pub != published or calls != ["audit"]:
+        bad.append("%s: exit %s (want %s), published %s (want %s), checks called %s (want only the judge)" % (name,
+                code, rc, pub, published, calls))
+only_the_judge("a green Dependabot head whose reviewer success is of an old version (the judge fails): it loses its "
+        "green, with no pin check", sweep_over(dep, "success", 1), 0, ["conclusion=failure"])
+only_the_judge("a green Dependabot head whose judge passes: nothing published, no pin check", sweep_over(dep, "success",
+        0), 0, [])
+only_the_judge("a green Dependabot head, judge failing, the failure cannot be published: the run fails, no pin check",
+        sweep_over(dep, "success", 1, pubfail=True), 1, [])
+want("a Dependabot head with no gate check is judged and published as before", sweep_over(dep, "none", 0), 0,
+        ["conclusion=success"], True)
+if sweep_over(dep, "none", 0)[2] != ["pins", "allow", "wiring", "scan", "audit"]:
+    bad.append("a head with no gate check runs every check, in order: %s" % sweep_over(dep, "none", 0)[2])
+want("a Dependabot head with a recent gate failure that still fails publishes nothing", sweep_over(dep, "failure", 1),
+        0, [], True)
+print("OK" if not bad else "BAD " + "; ".join(bad))
+SW
+)"
+eq "$sw" "OK" && ok || no "a green head is skipped, a green Dependabot head is judged for the verdict only, and only \
+a changed conclusion is published" "$sw"
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'
