@@ -17,6 +17,7 @@
     "means it only ever runs on PRs, so admission requires it green on",
     "the head of the merged PR that produced the tagged commit (F02).",
     "required_checks are the eight quick checks of every pull request (REQ-CI-001-AC1); the ruleset on main lists exactly these.",
+    "auditor-review-gate is not listed: its job still judges Dependabot pull requests (REQ-CI-001-AC8).",
     "promotion_checks are the full suite (REQ-CI-001-AC5): they run nightly and before a release-candidate tag, never on a pull request,",
     "and stage-admission requires every one green on the exact tagged commit for a release-candidate tag; the ruleset does not list them."
   ],
@@ -57,8 +58,8 @@
       "scope": "pull_request"
     },
     {
-      "context": "auditor-review-gate",
-      "integration_id": 5054756,
+      "context": "dependency-review",
+      "integration_id": 15368,
       "scope": "pull_request"
     }
   ],
