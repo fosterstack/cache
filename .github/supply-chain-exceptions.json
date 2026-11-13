@@ -8489,6 +8489,55 @@
       "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
     },
     {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "0802138f96f1166e497abba8df9c22e2b6948bd5d4c159e9acbdd419fd059283",
+      "line": "5b28ba871a6042b363caa961406806349f1606cff60dd08f7136e25fd1322eca",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "b7eadc9c5934fedbe7cfd1e02b45b767ef697754874811ed730479f0cf3f5bdb",
+      "line": "d8329e2ccbb01cddf4fd3813203649a65efd694733cd129a9aeb81cc0d47fb7a",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "245d4bab56f6f5b434ceaf7f85a4e8d5eb4907956edfb0668d9a0941a2e95215",
+      "line": "d8329e2ccbb01cddf4fd3813203649a65efd694733cd129a9aeb81cc0d47fb7a",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "40b36fc6c00b886707b42a7bc61f0e347a477bb5d61de9251b163e2cf676705d",
+      "line": "7a22862b9ceee6ba8152419df4318cca8db827c501ee95958eea2df8d4c29511",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "97739480089c7e4791de38486e9dbc9e72bee9d9c32822d065a9a98646831d91",
+      "line": "7a22862b9ceee6ba8152419df4318cca8db827c501ee95958eea2df8d4c29511",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "cbe7eb15dd6c97acda91e2ac02754c6bc0d48d9e08b5a1d20ce065cea08271cd",
+      "line": "8595fb6230918ed3321cff23d5f6d5b855aa724d295ceba5122e573db01bd6e1",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
+      "file": ".github/agent/tests/pin-age-check-test.sh",
+      "form": "a download",
+      "key": "dad914a5f52321208de11dd938261f0202f2766f9f47970af4001df6f99d4b98",
+      "line": "8595fb6230918ed3321cff23d5f6d5b855aa724d295ceba5122e573db01bd6e1",
+      "ruling": "text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)"
+    },
+    {
       "file": ".github/agent/tests/pin-audit-test.sh",
       "form": "a download",
       "key": "e7cb7c4b8d3c6819618a107fb607afeb7ba6a299274d3b243401970873733e46",
