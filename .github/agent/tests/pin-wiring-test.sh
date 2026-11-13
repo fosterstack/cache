@@ -276,7 +276,8 @@ GUARD_STEPS = [
 CHAIN_SHARD_IDS = ["allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowlist-chain-4"]
 CHAIN_GROUPS = [
     ["bash bin/chain-sign-wiring-test.sh"],
-    ["bash bin/assemble-image-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+    ["bash bin/assemble-image-test.sh", "bash bin/acceptance-gradle-test.sh", "bash bin/acceptance-k8s-manifests-test.sh", "bash bin/inspector-reuse-test.sh",
+     "bash bin/go-bump-open-pr-test.sh"],
     ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh", "bash bin/build-apk-test.sh"],
 ]
 # Installed state does not cross jobs (each shard is a fresh runner): the one step that installs a tool for later steps, `./bin/install-scanner.sh grype` (with the
@@ -425,6 +426,14 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "image assembly, lock proof and sealed proof regressions",
    "run": "bash bin/assemble-image-test.sh"
+  },
+  {
+   "name": "Gradle acceptance script regressions",
+   "run": "bash bin/acceptance-gradle-test.sh"
+  },
+  {
+   "name": "Kubernetes manifest acceptance regressions",
+   "run": "bash bin/acceptance-k8s-manifests-test.sh"
   },
   {
    "name": "privacy candidate-trace analyzer regressions (B03)",
@@ -1227,7 +1236,8 @@ case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append(
 # the five setup steps open every shard, the groups below name steps of the old job by run text (the first is the Sign boundary's wiring suite, the long one).
 cat > "$work/split.py" <<'PYS'
 import copy
-GROUPS = [["bash bin/chain-sign-wiring-test.sh"], ["bash bin/assemble-image-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+GROUPS = [["bash bin/chain-sign-wiring-test.sh"], ["bash bin/assemble-image-test.sh", "bash bin/acceptance-gradle-test.sh", "bash bin/acceptance-k8s-manifests-test.sh", "bash bin/inspector-reuse-test.sh",
+           "bash bin/go-bump-open-pr-test.sh"],
           ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh", "bash bin/build-apk-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
 def split_chain(d):
     if "allowlist-chain-1" in d["jobs"]:   # ci.yml is already split: the cases then mutate the real shards and gate
