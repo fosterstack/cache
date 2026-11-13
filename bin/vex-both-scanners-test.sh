@@ -24,8 +24,13 @@ have_ver="$("$grype" version 2>/dev/null | sed -n 's/^Version:[[:space:]]*//p' |
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 # grype-scan.sh reads only the published .vex/fosterstack-cache.openvex.json, with no override (a security boundary): it runs from a temp tree whose .vex file is the fixture.
 mkdir -p "$w/tree/bin" "$w/tree/.vex"; cp "$here/grype-scan.sh" "$w/tree/bin/"; cp "$vex" "$w/tree/.vex/fosterstack-cache.openvex.json"; gs="$w/tree/bin/grype-scan.sh"
-# the scanner is not set by the environment: gsc SCANNER prints the path of a copy of grype-scan.sh whose TEST-SUBST line runs SCANNER
-gsc() { local f="$w/tree/bin/scan-${1##*/}.sh"; sed "s|^scanner=grype   # TEST-SUBST\$|scanner=\"$1\"   # TEST-SUBST|" "$gs" > "$f"; echo "$f"; }
+# the scanner is not set by the environment: gsc SCANNER prints the path of a copy of grype-scan.sh
+# whose TEST-SUBST line runs SCANNER
+gsc() {
+  local f="$w/tree/bin/scan-${1##*/}.sh"
+  sed "s|^scanner=grype   # TEST-SUBST\$|scanner=\"$1\"   # TEST-SUBST|" "$gs" > "$f"
+  echo "$f"
+}
 pass=0; fail=0
 CVE=CVE-2025-60876
 
@@ -256,10 +261,12 @@ out="$(bash "$(gsc "$w/grype-filesandone")" "sbom:$w/does-not-matter.json" files
 
 # GRYPE in the environment has no effect: the scanner is fixed in the script, so the fake it names is never run
 fake_grype grype-ok "$OKCDX" "$OKJSON"
-printf '#!/bin/sh\ntouch "%s/named-by-env-ran"\nexit 0\n' "$w" > "$w/grype-named-by-env"; chmod +x "$w/grype-named-by-env"
+printf '#!/bin/sh\ntouch "%s/named-by-env-ran"\nexit 0\n' "$w" > "$w/grype-named-by-env"
+chmod +x "$w/grype-named-by-env"
 out="$(GRYPE="$w/grype-named-by-env" bash "$(gsc "$w/grype-ok")" "sbom:$w/g-unc.json" env-ignored 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && [ ! -e "$w/named-by-env-ran" ] && grep -q "env-ignored: 1 packages, 0 finding" <<<"$out" \
-  && ok "grype: GRYPE in the environment has no effect (the fake it names is never run)" || bad "grype: GRYPE in the environment (rc $rc)" "$out"
+  && ok "grype: GRYPE in the environment has no effect (the fake it names is never run)" \
+  || bad "grype: GRYPE in the environment (rc $rc)" "$out"
 
 echo "----"
 echo "vex-both-scanners: ${pass} passed, ${fail} failed"

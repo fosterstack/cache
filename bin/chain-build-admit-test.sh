@@ -397,9 +397,11 @@ echo "gitsign $*" >> "${FAKE_LOG:-/dev/null}"
 exit "${FAKE_GITSIGN_RC:-0}"
 EOF
 chmod +x "$FB/gh" "$FB/gitsign"
-# build-admit.py finds its programs at fixed paths, not on PATH: the cases run a copy whose TEST-SUBST lines hold the real tools and the fake gh
+# build-admit.py finds its programs at fixed paths, not on PATH: the cases run a copy whose TEST-SUBST lines
+# hold the real tools and the fake gh
 BAPROD=$BA
-mkba() { # mkba OUT [NAME=PATH...] : the copy, with the given paths in place of the defaults; every TEST-SUBST line must get one
+mkba() { # mkba OUT [NAME=PATH...] : the copy, with the given paths in place of the defaults;
+  # every TEST-SUBST line must get one
   python3 - "$BAPROD" "$1" GIT="$(command -v git)" GH="$FB/gh" GPG="$(command -v gpg)" GPGCONF="$(command -v gpgconf)" \
     SSH_KEYGEN="$(command -v ssh-keygen)" PYTHON3="$(command -v python3)" BASH="$(command -v bash)" "${@:2}" <<'PY'
 import re, sys
@@ -417,7 +419,9 @@ if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % so
 open(out, "w").write("\n".join(res))
 PY
 }
-if [ -f "$BAPROD" ]; then mkba "$W/build-admit.py" && BA="$W/build-admit.py" || { echo "FAIL the build-admit copy"; exit 1; }; fi
+if [ -f "$BAPROD" ]; then
+  mkba "$W/build-admit.py" && BA="$W/build-admit.py" || { echo "FAIL the build-admit copy"; exit 1; }
+fi
 # case DIR runner: each case gets a fresh copy of the base repo
 n_cases=0
 fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origin.git"; git init -q "$W/c/repo"; git -C "$W/c/repo" remote add origin "$W/c/origin.git"
@@ -555,14 +559,20 @@ for c in GIT GH GPG GPGCONF SSH_KEYGEN PYTHON3 BASH; do
 done
 [ -z "$badpath" ] && ok "AC4 build-admit.py holds an absolute path for every program it runs (none is found on PATH)" \
   || bad "AC4 build-admit.py holds no absolute path for:$badpath"
-mkdir -p "$W/fakegit"; printf '#!/bin/sh\necho used >> "%s/fakegit.log"\nexit 1\n' "$W" > "$W/fakegit/git"; chmod +x "$W/fakegit/git"
-fresh; BA_COPY=$BA; BA=$BAPROD; run_admit GITHUB_SHA=0000000000000000000000000000000000000000 PATH="$W/fakegit:$PATH"; BA=$BA_COPY
-expect_refuse "AC4 the real file run with a fake git first on PATH uses the real git (the fake would say the tag does not exist)" tag-ref moved
+mkdir -p "$W/fakegit"
+printf '#!/bin/sh\necho used >> "%s/fakegit.log"\nexit 1\n' "$W" > "$W/fakegit/git"
+chmod +x "$W/fakegit/git"
+fresh; BA_COPY=$BA; BA=$BAPROD
+run_admit GITHUB_SHA=0000000000000000000000000000000000000000 PATH="$W/fakegit:$PATH"; BA=$BA_COPY
+expect_refuse "AC4 the real file run with a fake git first on PATH uses the real git \
+(the fake would say the tag does not exist)" tag-ref moved
 [ ! -e "$W/fakegit.log" ] && ok "AC4 the fake git on PATH was never run" || bad "AC4 the fake git on PATH was run"
 # ---- tag-ref, tag-syntax ---------------------------------------------------------------------------------------------------------
 fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4 a branch ref is refused (tag pushes only)" tag-ref
 fresh; run_admit GITHUB_REF= GITHUB_REF_NAME=;                 expect_refuse "AC4 an empty ref is refused" tag-ref
-for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 v01.2.3 v1.02.3 v0.3.0-rc0 v0.3.0-rc01 "v0.3.0
+for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " \
+    v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 \
+    v01.2.3 v1.02.3 v0.3.0-rc0 v0.3.0-rc01 "v0.3.0
 x"; do
   fresh;
   run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
@@ -647,12 +657,17 @@ expect_ok "AC4 a commit signed by the pinned web-flow GPG key is admitted"
 printf '#!/bin/sh\necho "[GNUPG:] GOODSIG 0123456789ABCDEF other"\necho "[GNUPG:] VALIDSIG %s x 1 0 4 0 22 8 00 %s"\n' \
   "$SHA" "$SHA" > "$W/fakegpg"; chmod +x "$W/fakegpg"
 fresh; commit_move other "other gpg"; retag owner; run_admit GNUPGHOME="$W/gpg-other"
-expect_refuse "AC4 a commit signed by a GPG key of the runner's own GNUPGHOME is refused: only the pinned web-flow key counts" commit-signature
+expect_refuse "AC4 a commit signed by a GPG key of the runner's own GNUPGHOME \
+is refused: only the pinned web-flow key counts" commit-signature
 fresh; commit_move other "other gpg"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; BA_COPY=$BA
-mkba "$W/ba-fakegpg.py" GPG="$W/fakegpg"; BA="$W/ba-fakegpg.py"; run_admit GNUPGHOME="$W/gpg-other"; BA=$BA_COPY; n_cases=$((n_cases + 1))
-if [ "$RC" = 1 ] || { [ -f "$W/c/repo/admission.json" ] && jq -e '.commit_signature != "owner-ssh"' "$W/c/repo/admission.json" > /dev/null; }; then
+mkba "$W/ba-fakegpg.py" GPG="$W/fakegpg"; BA="$W/ba-fakegpg.py"
+run_admit GNUPGHOME="$W/gpg-other"; BA=$BA_COPY; n_cases=$((n_cases + 1))
+if [ "$RC" = 1 ] ||
+  { [ -f "$W/c/repo/admission.json" ] &&
+    jq -e '.commit_signature != "owner-ssh"' "$W/c/repo/admission.json" > /dev/null; }; then
   ok "AC4 an OpenPGP signature that gpg calls Good is never recorded as owner-ssh"
-else bad "AC4 an OpenPGP signature was recorded as owner-ssh: $(head -c 200 "$W/c/repo/admission.json" 2> /dev/null)"; fi
+else bad "AC4 an OpenPGP signature was recorded as owner-ssh: $(head -c 200 "$W/c/repo/admission.json" 2> /dev/null)"
+fi
 # ---- ancestor-of-main ----------------------------------------------------------------------------------------------------------------
 fresh;
 G checkout -q -b side v0.3.0 2> /dev/null;

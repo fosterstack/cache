@@ -17,7 +17,8 @@
 #   module than build/melange-fips.yaml builds, move the recipe to it and open a PR. A missing, empty or unreadable file
 #   fails closed.
 #
-# The checks and the files are made by bin/refresh-inputs.py; this script runs the tools, the downloads and the git and gh calls.
+# The checks and the files are made by bin/refresh-inputs.py; this script runs the tools,
+# the downloads and the git and gh calls.
 #
 # Exit codes: 0 ok (changed or not), 1 verification failed, 2 refused (bad input), 3 the Wolfi signing key changed.
 # The git identity is the caller's (the workflow job sets it); this script never sets one and never skips a hook.
@@ -32,8 +33,10 @@ SELF=refresh-inputs.sh
 # each replaced one for one by a dispatcher.
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # this script's directory, without dirname
 dir_empty() { local e; for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do { [ -e "$e" ] || [ -L "$e" ]; } && return 1; done; return 0; }   # no ls
-PY=$HERE/refresh-inputs.py   # every check and every file the job makes is in this program (python3 -I -B "$PY" MODE REPO ...)
-slug=${GITHUB_REPOSITORY:-fosterstack/cache}   # the one repository identity: the commit is created on it and its verification is asked of it
+# every check and every file the job makes is in this program (python3 -I -B "$PY" MODE REPO ...)
+PY=$HERE/refresh-inputs.py
+# the one repository identity: the commit is created on it and its verification is asked of it
+slug=${GITHUB_REPOSITORY:-fosterstack/cache}
 
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 
@@ -49,13 +52,14 @@ usage() {
 }
 
 # open_pr BRANCH TITLE BODY PATH...: branch, commit, push the branch (never main), open the PR (never merge it)
-# REQ-REFRESH-001-AC34: every planned path must be a regular file of the repository, checked before any branch is pushed; the commit builder and the
-# restoration after the commit rely on this one check
+# REQ-REFRESH-001-AC34: every planned path must be a regular file of the repository, checked before
+# any branch is pushed; the commit builder and the restoration after the commit rely on this one check
 check_paths() { /usr/bin/python3 -I -B "$PY" check-paths "$repo" "$@"; }
 # REQ-REFRESH-001-AC34: the pull request's commit through the API. $1 branch (already pushed), $2 the commit it points at, $3 headline, $4 body, then the repository paths.
 signed_commit() {
   local branch=$1 base=$2 headline=$3 cbody=$4 oid ver; shift 4
-  /usr/bin/python3 -I -B "$PY" commit-input "$repo" "$slug" "$tmp/commit-input.json" "$branch" "$base" "$headline" "$cbody" "$@" || return 1
+  /usr/bin/python3 -I -B "$PY" commit-input "$repo" "$slug" "$tmp/commit-input.json" \
+    "$branch" "$base" "$headline" "$cbody" "$@" || return 1
   oid=$(cd "$repo" && /usr/bin/gh api graphql --input "$tmp/commit-input.json" -q '.data.createCommitOnBranch.commit.oid') \
     || { echo "refresh-inputs.sh: the API could not create the commit on $branch; opening no pull request" >&2; return 1; }
   case $oid in *[!0-9a-f]*|'') echo "refresh-inputs.sh: the API returned no commit id; opening no pull request" >&2; return 1;; esac
@@ -146,7 +150,8 @@ drop_branch() { /usr/bin/git -C "$repo" push -q origin --delete "$1" >/dev/null 
 # open pull requests of the branch cannot be read the branch is kept too (a leftover branch is harmless, a closed pull request is not)
 drop_unless_pr() {
   local n
-  n=$(cd "$repo" && /usr/bin/gh pr list --state open --head "$1" --limit 1000 --json number -q length 2>/dev/null) || n=unknown
+  n=$(cd "$repo" && /usr/bin/gh pr list --state open --head "$1" --limit 1000 --json number -q length \
+    2>/dev/null) || n=unknown
   if [ "$n" = 0 ]; then drop_branch "$1"; else echo "refresh-inputs.sh: kept the branch $1: it has an open pull request, or its pull requests could not be read ($n)" >&2; fi
 }
 cleanup() { local rc=$?; set +e; [ -z "$PENDING_BRANCH" ] || drop_unless_pr "$PENDING_BRANCH"; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status; a branch pushed for a pull request that was not opened (an interrupted run) is removed
@@ -247,7 +252,8 @@ refresh)
   lock_x86 "$tmp/vm-host/vm-host-env.yaml" "$tmp/vm-host.lock.json"
   lock_x86 "$tmp/vm-guest/vm-guest-env.yaml" "$tmp/vm-guest.lock.json"
 
-  # The refresh program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
+  # The refresh program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per
+  # line); the shell fetches them with the
   # ruled download lines below and runs the program again (it starts from the same state each time, up to five passes:
   # packages, kernel, Go, index, the rest).
   for _pass in 1 2 3 4 5; do

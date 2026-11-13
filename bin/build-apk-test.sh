@@ -61,8 +61,10 @@ python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy.sh" \
   'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'AWS=${TEST_AWS:-'"$stubs"'/aws}' 'SIGNING_CONFIG=${TEST_SIGNING_CONFIG:-'"$work"'/signing-config-test.json}' 'KMSSIGN=${TEST_KMSSIGN:-bin/chain-verify.py}' 'KEYS_DIR='"$work"'/keysfx' \
   || { echo "FIXTURE SETUP FAILED: release-sign copy"; exit 1; }
 chmod +x "$work/rs-copy.sh" "$work/ba-copy.sh"
-# The helper judges the sealed call against the fixed env, unshare and melange paths. ba-copy.sh runs the helper through this PY3 shim, which runs a copy
-# of the helper whose one constants line names the stubs (TEST_UNSHARE and TEST_MELANGE still win, as in the copy); the other helper lines are untouched.
+# The helper judges the sealed call against the fixed env, unshare and melange paths. ba-copy.sh runs the helper through
+# this PY3 shim, which runs a copy
+# of the helper whose one constants line names the stubs (TEST_UNSHARE and TEST_MELANGE still win, as in the copy); the
+# other helper lines are untouched.
 python3 - "$root/bin/build-apk-helper.py" "$work/helper-copy.py" "$(command -v env)" "$stubs" <<'PY'
 import sys
 src, out, envbin, stubs = sys.argv[1:5]
@@ -78,6 +80,27 @@ printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then exec "%s" -
   "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)" >"$work/py3-shim"
 chmod +x "$work/py3-shim"
 # ---- begin verbatim sections ----
+# A Go toolchain is now always required (the cross-check cannot be skipped), so every run that must succeed needs the go
+# stub to answer. STUB_GOVM_FILE=auto
+# makes the stub print what the packaged binary's own go version -m prints: the buildinfo the stub melange wrote
+# (STUB_BUILDINFO, else its default text,
+# with the fips line for a -fips binary). A case that names its own STUB_GOVM_FILE, or removes it (env -u
+# STUB_GOVM_FILE: no Go on PATH), overrides this.
+cat >"$stubs/go" <<EOF
+#!/bin/bash
+echo "go \$*" >>"\$CALLS"
+echo "GOTOOLCHAIN=\${GOTOOLCHAIN:-} GOFLAGS=\${GOFLAGS-unset} GOENV=\${GOENV:-}" >>"\$CALLS.goenv"
+[ -z "\${STUB_GO_FAILS:-}" ] || { echo "go: not a Go binary" >&2; exit 1; }
+[ -n "\${STUB_GOVM_FILE:-}" ] || exit 127
+[ "\$1 \$2" = "version -m" ] || exit 2
+[ "\$STUB_GOVM_FILE" = auto ] || { cat "\$STUB_GOVM_FILE"; exit 0; }
+if [ -n "\${STUB_BUILDINFO:-}" ]; then cat "\$STUB_BUILDINFO"; exit 0; fi
+printf '%s\n' "\$3: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0" "	dep	github.com/example/x	v1.0.0" "	dep	golang.org/x/sys	v0.30.0" "	build	-trimpath=true" "	build	vcs.revision=\$(git -C "\${STUB_SRC:-$src}" rev-parse HEAD)" "	build	vcs.modified=false"
+grep -q 'fscache-fips' "\$3" && printf '\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n'
+exit 0
+EOF
+chmod +x "$stubs/go"
+export STUB_GOVM_FILE=auto
 # ---- P4 review round 1 (Opus): setup added after the mechanical split --------------------------------------------------------------
 rev=$(git -C "$src" rev-parse HEAD)
 sb=$(mktemp -d "$work/sbom-rev.XXXXXX")   # this file's own scratch, made by mktemp: each fixture SBOM gains its revision line in a copy, then replaces the original
@@ -1362,10 +1385,19 @@ sd "REQ-BUILDAPK-001-AC4" "the fips variant passes when the binary records the m
 sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when the binary records the old module and the file names a newer one" 'GOFIPS140|fips-module' env TEST_FIPS_MODULE="$work/fm-new.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-cur.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
 sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when the binary records the newer module and the file still names the old one" 'GOFIPS140|fips-module' env TEST_FIPS_MODULE="$work/fm-cur.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
 for f in fm-nonl fm-two fm-crlf fm-empty fm-bad fm-upper fm-lead0 fm-space; do
-  sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is malformed ($f: not exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> and a plain newline)" 'must hold exactly one line' env TEST_FIPS_MODULE="$work/$f.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"; done
-sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is missing" 'must hold exactly one line' env TEST_FIPS_MODULE="$work/no-such-file.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+  sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is malformed ($f: not \
+exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> and a plain newline)" 'must hold exactly one line' env \
+  TEST_FIPS_MODULE="$work/$f.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" \
+  "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"; done
+sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is missing" \
+  'must hold exactly one line' env TEST_FIPS_MODULE="$work/no-such-file.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 \
+  STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out \
+  "$(mo)"
 ln -sf "$work/fm-new.txt" "$work/fm-link.txt"
-sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is a symlink" 'must hold exactly one line' env TEST_FIPS_MODULE="$work/fm-link.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is a symlink" \
+  'must hold exactly one line' env TEST_FIPS_MODULE="$work/fm-link.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 \
+  STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out \
+  "$(mo)"
 t "REQ-BUILDAPK-001-AC4" "check-revision refuses a symlinked lock and a directory as the fips module (it tests the \
 path, then opens with O_NOFOLLOW and reads the handle it checked)" bash -c 'printf \
 "\tbuild\tvcs.revision=abc\n\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n" > "$3/bi-fm.txt"; ! "$0" -I -B \
@@ -1385,10 +1417,15 @@ printf '%s\n' "/some/path/usr/bin/fscache: go1.27.2" >"$work/govm-ok.txt"; tail 
 sd "rule 20" "the packaged binary's go version -m equals buildinfo.txt (first line aside) -> accepted, and go was asked about the binary" '^go version -m ' "${bae[@]}" STUB_BUILDINFO="$fx/sbom/ok.txt" STUB_GOVM_FILE="$work/govm-ok.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 { cat "$work/govm-ok.txt"; printf '\tdep\texample.org/smuggled\tv1.0.0\n'; } >"$work/govm-bad.txt"
 sf "rule 20" "a buildinfo.txt that differs from go version -m of the packaged binary is refused, naming buildinfo" 'buildinfo' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/ok.txt" STUB_GOVM_FILE="$work/govm-bad.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
-sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS unset the build is refused, naming the missing toolchain" 'no Go toolchain found' env -u GITHUB_ACTIONS SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
-sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS empty the build is refused" 'no Go toolchain found' env GITHUB_ACTIONS= SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
-sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS set the build is refused the same way" 'no Go toolchain found' env GITHUB_ACTIONS=true SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
-t "rule 20" "the missing-toolchain refusal does not say the toolchain is looked up on PATH" bash -c "! grep -q 'on PATH' '$work/log'"
+sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS unset the build is refused, naming the missing toolchain" \
+  'no Go toolchain found' env -u STUB_GOVM_FILE -u GITHUB_ACTIONS SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" \
+  "${ba_args[@]}" --out "$(mo)"
+sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS empty the build is refused" 'no Go toolchain found' env -u \
+  STUB_GOVM_FILE GITHUB_ACTIONS= SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
+sf "rule 20" "with no Go toolchain and GITHUB_ACTIONS set the build is refused the same way" 'no Go toolchain found' \
+  env -u STUB_GOVM_FILE GITHUB_ACTIONS=true SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
+t "rule 20" "the missing-toolchain refusal does not say the toolchain is looked up on PATH" bash -c \
+  "! grep -q 'on PATH' '$work/log'"
 
 sr "rule 31" "build-apk refuses a SOURCE_DATE_EPOCH too large to be a date (exit 2)" SOURCE_DATE_EPOCH env SOURCE_DATE_EPOCH=99999999999999999999 FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
 # ---- P4 round 3 (Sonnet): the replace phase fails CLOSED, the post-sign signer check, a failing go, probe exit codes --------------------------------
@@ -1709,7 +1746,8 @@ P
 t "chain" "the entry mentions none of the protected names outside a pure \$NAME read (comments and strings included)" python3 - "$BA_PROD" <<'P'
 import re, sys
 t = open(sys.argv[1]).read()
-assert t.count("no Go toolchain") == 0, "build-apk.sh holds no mention of the missing-toolchain message (go-verdict has it)"
+assert t.count("no Go toolchain") == 0, \
+    "build-apk.sh holds no mention of the missing-toolchain message (go-verdict has it)"
 rx = re.compile(r"(?<![A-Za-z0-9_])(PATH|BASH_ENV|ENV|LD_[A-Za-z0-9_]+|PYTHON[A-Za-z0-9_]*|NODE_OPTIONS|IFS|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|PS4|PROMPT_COMMAND)(?![A-Za-z0-9_])")
 bad = [m.group(1) for m in rx.finditer(t) if not (t[max(0, m.start() - 1):m.start()] == "$" or (t[max(0, m.start() - 2):m.start()] == "${" and t[m.end():m.end() + 1] == "}"))]
 sys.exit("mentions %s" % sorted(set(bad)) if bad else 0)
@@ -1775,14 +1813,18 @@ import sys
 sys.path.insert(0, sys.argv[1]); import lib
 w, akey, okey = sys.argv[1:4]
 f = {"usr/bin/fscache": b"bin"}
-lib.mkapk(w + "/v/good.apk", "fscache", "0.3.0-r0", f, sigalg="RSA256", signkey=akey)      # signed with the committed assembly key
-lib.mkapk(w + "/v/sha1.apk", "fscache", "0.3.0-r0", f, sigalg="RSA", signkey=akey)         # a real SHA-1 signature in a .SIGN.RSA member
+# signed with the committed assembly key
+lib.mkapk(w + "/v/good.apk", "fscache", "0.3.0-r0", f, sigalg="RSA256", signkey=akey)
+# a real SHA-1 signature in a .SIGN.RSA member
+lib.mkapk(w + "/v/sha1.apk", "fscache", "0.3.0-r0", f, sigalg="RSA", signkey=akey)
 lib.mkapk(w + "/v/rsa512.apk", "fscache", "0.3.0-r0", f, sigalg="RSA512", signkey=akey)    # a .SIGN.RSA512 member
-lib.mkapk(w + "/v/other.apk", "fscache", "0.3.0-r0", f, sigalg="RSA256", signkey=okey)     # signed by ANOTHER key but named assembly.rsa.pub
+# signed by ANOTHER key but named assembly.rsa.pub
+lib.mkapk(w + "/v/other.apk", "fscache", "0.3.0-r0", f, sigalg="RSA256", signkey=okey)
 lib.mkapk(w + "/v/unsigned.apk", "fscache", "0.3.0-r0", f, signer=None)
 import os
 os.environ["STUB_FAKE_SIG"] = "1"
-lib.mkapk(w + "/v/fake.apk", "fscache", "0.3.0-r0", f, sigalg="RSA256")                    # the member name is right, the bytes are text
+# the member name is right, the bytes are text
+lib.mkapk(w + "/v/fake.apk", "fscache", "0.3.0-r0", f, sigalg="RSA256")
 # a good signature over a DIFFERENT control section: the signature stream of good.apk in front of the control and data of another package
 g = open(w + "/v/good.apk", "rb").read()
 os.environ.pop("STUB_FAKE_SIG")
@@ -1794,14 +1836,22 @@ def first_stream_len(b):
 open(w + "/v/swapped.apk", "wb").write(g[:first_stream_len(g)] + e)
 P
 vf() { python3 "$root/bin/apk-tool.py" verify "$@"; }
-t "rule 22" "apk-tool verify: an apk signed with the committed assembly key verifies against assembly.rsa.pub (.SIGN.RSA256) and prints the name" bash -c "test \"\$(python3 '$root/bin/apk-tool.py' verify '$work/v/good.apk' '$APUB')\" = verified:assembly.rsa.pub"
-fails "rule 22" "apk-tool verify: a .SIGN.RSA.assembly.rsa.pub member (SHA-1), though its signature is real, is refused by name (exit 1)" 'not \.SIGN\.RSA256' python3 "$root/bin/apk-tool.py" verify "$work/v/sha1.apk" "$APUB"
-fails "rule 22" "apk-tool verify: a .SIGN.RSA512.assembly.rsa.pub member is refused by name (exit 1)" 'not \.SIGN\.RSA256' python3 "$root/bin/apk-tool.py" verify "$work/v/rsa512.apk" "$APUB"
-fails "rule 22" "apk-tool signer: a .SIGN.RSA.assembly.rsa.pub member is refused (the signer and verify accept one name set)" 'unrecognised signature member' python3 "$root/bin/apk-tool.py" signer "$work/v/sha1.apk"
-fails "rule 22" "apk-tool signer: a .SIGN.RSA512.assembly.rsa.pub member is refused" 'unrecognised signature member' python3 "$root/bin/apk-tool.py" signer "$work/v/rsa512.apk"
-t "rule 22" "apk-tool signer: a .SIGN.RSA256.assembly.rsa.pub member is the signer assembly.rsa.pub" bash -c "test \"\$(python3 '$root/bin/apk-tool.py' signer '$work/v/good.apk')\" = assembly.rsa.pub"
+t "rule 22" "apk-tool verify: an apk signed with the committed assembly key verifies against assembly.rsa.pub \
+(.SIGN.RSA256) and prints the name" bash -c "test \"\$(python3 '$root/bin/apk-tool.py' verify '$work/v/good.apk' \
+'$APUB')\" = verified:assembly.rsa.pub"
+fails "rule 22" "apk-tool verify: a .SIGN.RSA.assembly.rsa.pub member (SHA-1), though its signature is real, is \
+refused by name (exit 1)" 'not \.SIGN\.RSA256' python3 "$root/bin/apk-tool.py" verify "$work/v/sha1.apk" "$APUB"
+fails "rule 22" "apk-tool verify: a .SIGN.RSA512.assembly.rsa.pub member is refused by name (exit 1)" \
+  'not \.SIGN\.RSA256' python3 "$root/bin/apk-tool.py" verify "$work/v/rsa512.apk" "$APUB"
+fails "rule 22" "apk-tool signer: a .SIGN.RSA.assembly.rsa.pub member is refused (the signer and verify accept one \
+name set)" 'unrecognised signature member' python3 "$root/bin/apk-tool.py" signer "$work/v/sha1.apk"
+fails "rule 22" "apk-tool signer: a .SIGN.RSA512.assembly.rsa.pub member is refused" 'unrecognised signature member' \
+  python3 "$root/bin/apk-tool.py" signer "$work/v/rsa512.apk"
+t "rule 22" "apk-tool signer: a .SIGN.RSA256.assembly.rsa.pub member is the signer assembly.rsa.pub" bash -c \
+  "test \"\$(python3 '$root/bin/apk-tool.py' signer '$work/v/good.apk')\" = assembly.rsa.pub"
 fails "rule 22" "apk-tool verify: an apk signed by another key under the assembly key's NAME does not verify (exit 1)" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/other.apk" "$APUB"
-fails "rule 22" "apk-tool verify: a member named .SIGN.RSA256.assembly.rsa.pub holding text is not a signature (exit 1)" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/fake.apk" "$APUB"
+fails "rule 22" "apk-tool verify: a member named .SIGN.RSA256.assembly.rsa.pub holding text is not a signature (exit \
+1)" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/fake.apk" "$APUB"
 fails "rule 22" "apk-tool verify: a good signature in front of another package's control section does not verify" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/swapped.apk" "$APUB"
 fails "rule 22" "apk-tool verify: an unsigned apk has nothing to verify (exit 1)" 'unsigned|nothing to verify' python3 "$root/bin/apk-tool.py" verify "$work/v/unsigned.apk" "$APUB"
 fails "rule 22" "apk-tool verify: the right apk against the wrong public key does not verify" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/good.apk" "$work/other.rsa.pub"
@@ -1834,7 +1884,8 @@ sub = re.compile(r"#\s*TEST-SUBST")
 diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
 assert diff and all(sub.search(a[i]) and sub.search(b[i]) for i in diff), [a[i] for i in diff if not sub.search(a[i])]
 P
-t "rule 11" "the helper copy the build copy runs differs from build-apk-helper.py in the one line that names the fixed tool paths" python3 - \
+t "rule 11" "the helper copy the build copy runs differs from build-apk-helper.py in the one line that names the fixed \
+tool paths" python3 - \
   "$root/bin/build-apk-helper.py" "$work/helper-copy.py" <<'P'
 import sys
 a, b = open(sys.argv[1]).read().split("\n"), open(sys.argv[2]).read().split("\n")
@@ -1863,7 +1914,8 @@ hp="$work/hostile-bin"; mkdir -p "$hp"
 printf '#!/bin/sh\necho "Verified OK"; exit 0\n' >"$hp/openssl"; chmod +x "$hp/openssl"
 t "rule 22" "apk-tool verify: an openssl placed first on the caller's search path that answers 'Verified OK' is never run: a fake signature still does not verify" bash -c "
   ! env PATH='$hp':\$PATH python3 '$root/bin/apk-tool.py' verify '$work/v/fake.apk' '$APUB' >/dev/null 2>&1"
-t "REQ-BUILDAPK-001-AC4" "apk-tool.py names one openssl path, /usr/bin/openssl, and no Homebrew, /usr/local or /opt path" python3 - "$root/bin/apk-tool.py" <<'P'
+t "REQ-BUILDAPK-001-AC4" "apk-tool.py names one openssl path, /usr/bin/openssl, and no Homebrew, /usr/local or /opt \
+path" python3 - "$root/bin/apk-tool.py" <<'P'
 import re, sys
 text = open(sys.argv[1]).read()
 paths = set(re.findall(r"/[\w/.-]*openssl", text))
@@ -2234,9 +2286,11 @@ t "AC9" "sealed-call accepts exactly the sealed shape (env -i, NAME=value items,
 t "AC9" "sealed-call refuses an empty environment list followed by a command that is not unshare" bash -c \
   "! python3 -I -B '$H' sealed-call /usr/bin/env -i /usr/local/bin/melange build x --runner bubblewrap --arch x86_64 \
 2>/dev/null"
-for bad in "/tmp/x/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange" "/usr/bin/env -i A=1 /tmp/x/unshare -n /usr/local/bin/melange" \
+for bad in "/tmp/x/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange" \
+  "/usr/bin/env -i A=1 /tmp/x/unshare -n /usr/local/bin/melange" \
   "/usr/bin/env -i A=1 /usr/bin/unshare -n /tmp/x/melange"; do
-  t "AC9" "sealed-call refuses a program that is not the fixed path: $bad" bash -c "! python3 -I -B '$H' sealed-call $bad build x.yaml \
+  t "AC9" "sealed-call refuses a program that is not the fixed path: $bad" bash -c \
+  "! python3 -I -B '$H' sealed-call $bad build x.yaml \
 --runner bubblewrap --namespace fosterstack --arch x86_64 2>/dev/null"
 done
 t "AC9" "sealed-call refuses a call that is too short to be the sealed one" bash -c "! python3 -I -B '$H' sealed-call \
@@ -2246,14 +2300,18 @@ t "AC9" "sealed-call refuses a flag that follows a loose --runner value (the run
 --runner --arch bubblewrap 2>/dev/null"
 t "AC9" "sealed-call refuses a runner given last with no value" bash -c "! python3 -I -B '$H' sealed-call \
 /usr/bin/env -i A=1 /usr/bin/unshare -n /usr/local/bin/melange build x.yaml --runner 2>/dev/null"
-# go and env at the go call site: the production line treats a missing go tool as exit 127, which is always fatal: the stub go is never reached
+# go and env at the go call site: the production line treats a missing go tool as exit 127, which is always fatal: the
+# stub go is never reached
 # and the run is not the control's.
 for m in ba-go ba-env-go; do
   t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
   rp_extra=(GITHUB_ACTIONS=true "${RP_GO[@]}"); o=$(mo); rp_build "$rpm/$m.sh" "$o"
-  t "AC9" "$m: with GITHUB_ACTIONS set the run fails saying no Go toolchain was found, and the go stub was never called" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -q 'no Go toolchain found' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
+  t "AC9" "$m: with GITHUB_ACTIONS set the run fails saying no Go toolchain was found, and the go stub was never \
+called" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -q 'no Go toolchain found' '$work/rp.log' && ! grep -q '^go ' \
+'$CALLS'"
   rp_extra=("${RP_GO[@]}"); o=$(mo); rp_build "$rpm/$m.sh" "$o"
-  t "AC9" "$m: with GITHUB_ACTIONS unset the run fails the same way, and the go stub was never called" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -q 'no Go toolchain found' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
+  t "AC9" "$m: with GITHUB_ACTIONS unset the run fails the same way, and the go stub was never called" bash -c \
+  "[ '$(cat "$work/rp.rc")' != 0 ] && grep -q 'no Go toolchain found' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
 done
 # the restriction is what bites: the same four direct-call mutants COMPLETE when the search path also holds sudo, sha256sum, python3 and git
 restricted_path_dir "$work/rp-open" $RP_COREUTILS python3 git && ln -s "$stubs/uname" "$work/rp-open/uname" && ln -s "$rpw/sudo" "$work/rp-open/sudo" && ln -s "$rpw/sha256sum" "$work/rp-open/sha256sum" \

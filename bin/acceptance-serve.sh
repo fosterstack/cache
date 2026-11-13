@@ -12,7 +12,9 @@ case "$suite:$what" in
   gradle:main) name=fscache-acc port=18095 envs=() ;;
   gradle:capped) name=fscache-capped port=18096 envs=(FSCACHE_MAX_BYTES=49152) ;;
   maven:main) name=fscache-mvn-acc port=18098 envs=(FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret) ;;
-  maven:capped) name=fscache-mvn-capped port=18099 envs=(FSCACHE_MAX_BYTES=262144 FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret) ;;
+  maven:capped)
+    name=fscache-mvn-capped port=18099
+    envs=(FSCACHE_MAX_BYTES=262144 FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret) ;;
   gradle:stop|maven:stop) docker rm -f fscache-acc fscache-capped fscache-mvn-acc fscache-mvn-capped > /dev/null 2>&1 || true; exit 0 ;;
   *) echo "acceptance-serve: unknown suite or action: $suite $what" >&2; exit 2 ;;
 esac
@@ -33,7 +35,9 @@ id=$(docker image inspect --format '{{.Id}}' "$IMAGE_REF") || { echo "acceptance
 [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'acceptance-serve: docker named no image ID for %q\n' "$IMAGE_REF" >&2; exit 2; }
 docker tag "$id" localhost/fscache-serve-candidate
 docker image inspect --format '{{.Id}}' localhost/fscache-serve-candidate | grep -qxF "$id" || { echo "acceptance-serve: localhost/fscache-serve-candidate no longer resolves to $id (re-tagged); nothing is started" >&2; exit 1; }
-docker run --pull=never -d --name "$name" --env-file /dev/stdin -p "127.0.0.1:$port:8080" localhost/fscache-serve-candidate <<< "$(printf '%s\n' "${envs[@]}")"   # the suite's NAME=value words, one per line
+# the suite's NAME=value words, one per line
+docker run --pull=never -d --name "$name" --env-file /dev/stdin -p "127.0.0.1:$port:8080" \
+  localhost/fscache-serve-candidate <<< "$(printf '%s\n' "${envs[@]}")"
 for _ in $(seq 1 20); do
   lg -sf "http://localhost:$port/healthz" && exit 0
   sleep 0.5

@@ -1752,9 +1752,19 @@ if [ "$rc" != 0 ] && [ "$rc" != 127 ] && [ ! -s "$work/gvlog" ] && [ ! -e "$gvt/
 mv "$gvt/vendor.hide" "$gvt/vendor"
 if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
 else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
-# the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
-sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
-if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
+# the static strace of the egress suite is built from a pinned source: STRACE_VER is the only place the
+# version is written (passed into the builder container as V, used as ${V} in the URL), the URL is the
+# github.com/strace/strace release, and the comments never name strace.io
+ae_f="$root/bin/acceptance-egress.sh"
+ae_url='https://github.com/strace/strace/releases/download/v${V}/strace-${V}.tar.xz'
+sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$ae_f" | head -1)
+if [ -n "$sv_" ] && grep -Fq -- '-e V="$STRACE_VER"' "$ae_f" && grep -Fq "\"$ae_url\"" "$ae_f" \
+  && ! grep -v '^[[:space:]]*#' "$ae_f" | grep -Eq 'strace-?[0-9]+\.[0-9]|download/v[0-9]' \
+  && grep -q '^# .*github\.com/strace/strace' "$ae_f" && ! grep -q 'strace\.io' "$ae_f"; then
+  ok "acceptance-egress.sh: strace URL uses \${V} from STRACE_VER=$sv_, no literal version, github.com/strace/strace"
+else
+  bad "acceptance-egress.sh: strace not pinned via STRACE_VER/V, or a literal version, or strace.io named"
+fi
 # the egress suite's strace target is the image's real entrypoint (release review V1, Oct 22: it pointed at /usr/local/bin/fscache while the recipes install and
 # apko runs /usr/bin/fscache, so the tracer could not start the cache): the path in the script equals both apko entrypoints and the path the recipes install to
 ce_=$(sed -n 's/^CANDIDATE_ENTRYPOINT=\(.*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)

@@ -898,13 +898,13 @@ NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
     "bin/apk-tool.py": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
-    "bin/archive-pull.sh": "a5799f46e362f45600f3c052358c51cbc618494d371ea34a9ec7414c9a0d83bf",
+    "bin/archive-pull.sh": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
     "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485",
     "bin/audit-record.py": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f",
-    "bin/build-admit.py": "d18d4672579a35f45b244a62b95f94f680e2e3de73a928b9e7640bd1f5c5c711",
+    "bin/build-admit.py": "4ebdf86843bb66bcf53e26c0e751fe2a27d2ba4385712e3e8fb94069bfaceeae",
     "bin/build-apk-helper.py": "a9ebc31e7fe8fe9336f763457c1ffa6cce89808b6c92961e8656904cd531762e",
-    "bin/build-archives.py": "982d1e6e31ee00c6e270b27805a964ce05a0d1d560985da9ce579f752192727d",
+    "bin/build-archives.py": "7f5680fa99c677d6ccb051d03c1497814b0407a068ec4dff6c369d455b47ca81",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
@@ -1041,8 +1041,7 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"$SUDO" mkdir -p "$workdir" || { echo "assemble-image.sh: cannot create $workdir" >&2; exit 2; }',
         '"$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" "(could not take '
         '$lock)" >&2; exit 2; }',
-        'trap \'{ "$SUDO" rm -f "${made[@]}"; "$SUDO" rmdir "$lock";',
-        'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true\' EXIT',
+        'trap \'{ "$SUDO" rm -f "${made[@]}"; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true\' EXIT',
         '"$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link '
         '$workdir/archive" "(it exists: another assembly?); stopping" >&2; exit 2; }',
         'made+=("$workdir/archive")',

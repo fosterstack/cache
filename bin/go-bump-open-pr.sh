@@ -22,15 +22,21 @@ for v in "$CURRENT" "$LATEST"; do
 done
 branch="chore/go-${LATEST}"
 
-# only this repository's pull requests by the App count, and only the App's comments: a fork's PR or anyone's comment must not stop the bump
+# only this repository's pull requests by the App count, and only the App's comments:
+# a fork's PR or anyone's comment must not stop the bump
 app="${AUDITOR_APP_SLUG:?AUDITOR_APP_SLUG is not set}"
 norm='def norm: ascii_downcase | ltrimstr("app/") | rtrimstr("[bot]");'
-prs="$(gh pr list --head "$branch" --base main --state all --json number,state,mergedAt,comments,author,isCrossRepository \
-  | jq -c --arg app "$app" "$norm"' [.[] | select((.isCrossRepository | not) and ((.author.login // "") | norm) == ($app | norm))]')"
+prs="$(gh pr list --head "$branch" --base main --state all \
+  --json number,state,mergedAt,comments,author,isCrossRepository \
+  | jq -c --arg app "$app" "$norm"' [.[] | select((.isCrossRepository | not)
+    and ((.author.login // "") | norm) == ($app | norm))]')"
 open_num="$(jq -r '[.[] | select(.state=="OPEN")] | .[0].number // empty' <<<"$prs")"
 merged_num="$(jq -r '[.[] | select(.mergedAt != null)] | .[0].number // empty' <<<"$prs")"
 # a pull request this script closed itself (its branch moved after verification) is not a human's decline: recovery may go on
-closed_num="$(jq -r --arg app "$app" "$norm"' [.[] | select(.state=="CLOSED" and .mergedAt==null and ([.comments[]? | select(((.author.login // "") | norm) == ($app | norm)) | .body | startswith("closed by go-bump-open-pr.sh:")] | any | not))] | .[0].number // empty' <<<"$prs")"
+closed_num="$(jq -r --arg app "$app" "$norm"' [.[] | select(.state=="CLOSED" and .mergedAt==null
+  and ([.comments[]? | select(((.author.login // "") | norm) == ($app | norm))
+    | .body | startswith("closed by go-bump-open-pr.sh:")] | any | not))]
+  | .[0].number // empty' <<<"$prs")"
 
 if [ -n "$open_num" ]; then
   echo "PR #${open_num} already open for ${branch} — nothing to do"; exit 0
@@ -62,14 +68,16 @@ if [ "$fresh" = 1 ]; then
   die() { echo "::error::$1" >&2; exit "${2:-1}"; }
   dl="$(mktemp -d)"; trap 'rm -rf "$dl"' EXIT
   jsonq='?mode=json&include=all'
-  curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1
+  curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" \
+    || die "go.dev is unreachable: cannot read the published checksums" 1
   published="$(cat "${dl}/published.json")"
   sum_amd64=""; sum_arm64=""
   for arch in amd64 arm64; do
     tarball="go${LATEST}.linux-${arch}.tar.gz"
     want="$(jq -r --arg v "go${LATEST}" --arg f "$tarball" '.[] | select(.version==$v) | .files[] | select(.filename==$f) | .sha256' <<<"$published" 2>/dev/null | head -1)"
     [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::go.dev publishes no valid sha256 for ${tarball}" >&2; exit 1; }
-    curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1
+    curl -q -fsSL -g --proto =https --tlsv1.2 -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" \
+      || die "cannot download the Go tarball from go.dev" 1
     got="$(sha256sum "${dl}/${tarball}" | cut -d' ' -f1)"
     [ "$got" = "$want" ] || { echo "::error::${tarball} is ${got}, go.dev publishes ${want}" >&2; exit 1; }
     printf -v "sum_${arch}" '%s' "$got"
@@ -115,7 +123,9 @@ PY
     local f=bin/install-scanner.sh
     [ "$(grep -c '^GO_VER=' "$f")" = 1 ] && [ "$(grep -c 'go:x86_64|go:amd64) SUM=' "$f")" = 1 ] && [ "$(grep -c 'go:aarch64|go:arm64) SUM=' "$f")" = 1 ] \
       || { echo "::error::${f} does not have exactly one Go pin (GO_VER and the two per-arch sums)" >&2; exit 1; }
-    sed -i -E "s/^GO_VER=[0-9.]+/GO_VER=${LATEST}/; s/(go:x86_64[|]go:amd64[)] SUM=)[0-9a-f]{64}/\1${sum_amd64}/; s/(go:aarch64[|]go:arm64[)] SUM=)[0-9a-f]{64}/\1${sum_arm64}/" "$f"
+    sed -i -E "s/^GO_VER=[0-9.]+/GO_VER=${LATEST}/; \
+      s/(go:x86_64[|]go:amd64[)] SUM=)[0-9a-f]{64}/\1${sum_amd64}/; \
+      s/(go:aarch64[|]go:arm64[)] SUM=)[0-9a-f]{64}/\1${sum_arm64}/" "$f"
     # the installer is a listed script of the release chain: its sha256 row in the policy follows its bytes, in the same commit (the policy validator
     # refuses a row that differs from the file)
     env -u GH_TOKEN /usr/bin/python3 -I -B - "$f" .github/policy/chain-scripts.json <<'PY' || { echo "::error::failed to update the installer's sha256 row in .github/policy/chain-scripts.json" >&2; exit 1; }

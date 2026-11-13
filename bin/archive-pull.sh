@@ -20,7 +20,9 @@ while [ $# -gt 0 ]; do
   case $1 in
     --pointer) [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"; pointer=$2; shift 2;;
     --out) [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"; out=$2; shift 2;;
-    --digest) [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"; want=$2; have_digest=1; shift 2;;
+    --digest)
+      [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"
+      want=$2; have_digest=1; shift 2;;
     *) die "unknown argument: $1";;
   esac
 done

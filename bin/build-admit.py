@@ -41,7 +41,8 @@ SSH_KEYGEN = "/usr/bin/ssh-keygen"  # TEST-SUBST
 PYTHON3 = "/usr/bin/python3"    # TEST-SUBST
 BASH = "/usr/bin/bash"          # TEST-SUBST
 
-# The one tag grammar: no leading zeros, an rc number of at least 1. v1.2.3 and v1.2.3-rc1 match; v01.2.3 and v1.2.3-rc0 do not.
+# The one tag grammar: no leading zeros, an rc number of at least 1.
+# v1.2.3 and v1.2.3-rc1 match; v01.2.3 and v1.2.3-rc0 do not.
 TAG_PATTERN = r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-rc[1-9][0-9]*)?"
 TAG_SYNTAX = re.compile(TAG_PATTERN)  # fullmatch: no trailing newline slips through
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
@@ -222,7 +223,8 @@ def verify_tag_ssh(ctx):
     """The owner's SSH signature against main's allowed signers. Returns (principal, fingerprint)."""
     signer = verify_ssh(ctx, "verify-tag", "refs/tags/" + ctx.tag)
     if not signer:
-        raise Refusal("tag-signature", "the signature of %s is not a Good git signature of main's allowed signers" % ctx.tag)
+        raise Refusal("tag-signature",
+                      "the signature of %s is not a Good git signature of main's allowed signers" % ctx.tag)
     return signer
 
 
