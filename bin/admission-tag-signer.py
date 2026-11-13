@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 """Which verifier source admission runs for a release tag (REQ-REL-009-AC6; handoff 0713 P8).
 
-Read by stage-admission.yml from protected main (never from the tagged commit). It only ROUTES: the chosen verifier
-must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on any tag (a patch tag
-included: the owner's own key still signs minor, major and patch tags). Everything else is refused: an unsigned tag, a
-PGP signature, two signature blocks, and a keyless (x509) signature, because the release chain signs with the release
-key and no keyless signer is left (KMS rule 2).
+Read by build-admit.py and release.yml from protected main (never from the tagged commit). It only ROUTES: the
+chosen verifier must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on
+any tag (a patch tag included: the owner's own key signs minor, major and patch tags). Everything else is refused:
+an unsigned tag, a PGP signature, two signature blocks, and a keyless (x509) signature, because the release chain
+signs with the release key and no keyless signer is left (KMS rule 2).
 """
-import argparse, datetime, hashlib, os, re, subprocess, sys
+import argparse, datetime, os, re, subprocess, sys
 
 BLOCKS = {"SSH SIGNATURE": "ssh", "SIGNED MESSAGE": "x509", "PGP SIGNATURE": "pgp"}
 PATCH = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.([1-9][0-9]*)$")
 
 
 def kind(tag_object):
-    """The signature format of an annotated tag object: ssh, x509 (a keyless signature), pgp, none, or ambiguous. A
-    signature is a
-    PEM-style block with a signature label (BLOCKS) that git appends at the END of the object; any other PEM-style block
-    (a key or certificate quoted in the notes) is message text (Codex #163 r1, B03). Two signature-labelled blocks, or one
-    that is not at the end, are ambiguous."""
+    """The signature format of an annotated tag object: ssh, x509 (a keyless signature), pgp, none, or ambiguous.
+    A signature is a PEM-style block with a signature label (BLOCKS) that git appends at the END of the object; any
+    other PEM-style block (a key or certificate quoted in the notes) is message text. Two signature-labelled blocks,
+    or one that is not at the end, are ambiguous."""
     lines = tag_object.rstrip("\n").split("\n")
     begins = [i for i, ln in enumerate(lines)
               if re.fullmatch(r"-----BEGIN [A-Z0-9 ]+-----", ln) and ln[len("-----BEGIN "):-len("-----")] in BLOCKS]
@@ -34,8 +33,7 @@ def kind(tag_object):
 
 def route(tag_object):
     """(route, why) with route in ssh / refuse. Only the owner's key is routed, so nothing but the tag object's
-    signature is read:
-    no rule about the tag's name, its kind or the previous patch is left here."""
+    signature is read: no rule about the tag's name, its kind or the previous patch is left here."""
     k = kind(tag_object)
     if k == "ssh":
         return "ssh", "an SSH signature: the owner's allowed-signers list decides"
@@ -97,7 +95,7 @@ def _parse_requirements(raw):
 
 
 def baseline(tag, baselines, baseline_requirements, requirements):
-    """REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + 0126/0150: the approved ACs baseline a CI-signed
+    """REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + 0126/0150: the approved ACs baseline an automatic
     patch tag uses. baselines: {version: the parsed requirements/releases/<version>.yaml} as owner_baselines()
     collects them — each read from an owner-SSH-signed release tag's own tree, never from the tagged commit
     (Codex #163 r1, B01); baseline_requirements: {version: requirements/requirements.yaml bytes at that SAME
@@ -160,12 +158,16 @@ def baseline(tag, baselines, baseline_requirements, requirements):
     return v, "%s's approved ACs baseline; blocking set unchanged, every other change is pipeline-only" % v
 
 
+def git(repo, *args):
+    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+
+
 def owner_baselines(tag, repo, allowed_signers, out):
     """Write <out>/<v>.yaml and <out>/<v>.requirements.yaml for every release tag v of the tag's X.Y line below
     it that is an annotated tag carrying the owner's SSH signature, verified by git verify-tag against
     allowed_signers (main's copy), each file read from THAT tag's own tree (git show
     v:requirements/releases/v.yaml and v:requirements/requirements.yaml — the second lets baseline() compare
-    the full AC set, not just its blocking subset, advisor 0150). A CI-signed, unsigned, lightweight or
+    the full AC set, not just its blocking subset, advisor 0150). An unsigned, lightweight or
     other-key tag, and the tagged commit itself, never supply a baseline (Codex #163 r1, B01)."""
     m = PATCH.match(tag)
     os.makedirs(out, exist_ok=True)
@@ -173,36 +175,25 @@ def owner_baselines(tag, repo, allowed_signers, out):
         return []
 
     got = []
-    tag_list = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "tag", "-l",
-        "v%s.%s.*" % m.group(1, 2)], capture_output=True, text=True)
-    for v in tag_list.stdout.split():
+    for v in git(repo, "tag", "-l", "v%s.%s.*" % m.group(1, 2)).stdout.split():
         b = PATCH.match(v) or re.match(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0)$", v)
         if not b or b.group(1, 2) != m.group(1, 2) or int(b.group(3)) >= int(m.group(3)):
             continue
-        tag_kind = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "cat-file",
-            "-t", "refs/tags/" + v], capture_output=True, text=True)
-        if tag_kind.stdout.strip() != "tag":
+        if git(repo, "cat-file", "-t", "refs/tags/" + v).stdout.strip() != "tag":
             continue
-        tag_object = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers,
-            "cat-file", "tag", "refs/tags/" + v], capture_output=True, text=True)
-        if kind(tag_object.stdout) != "ssh":
+        if kind(git(repo, "cat-file", "tag", "refs/tags/" + v).stdout) != "ssh":
             continue
-        if subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "verify-tag", v],
-            capture_output=True, text=True).returncode != 0:
+        if git(repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "verify-tag", v).returncode != 0:
             continue
-        f = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show",
-            "%s:requirements/releases/%s.yaml" % (v, v)], capture_output=True, text=True)
+        f = git(repo, "show", "%s:requirements/releases/%s.yaml" % (v, v))
         if f.returncode != 0:
             continue
         with open(os.path.join(out, v + ".yaml"), "w") as fh:
             fh.write(f.stdout)
         got.append(v)
-        # the requirements.yaml write is independent (Codex #163 r1, B03): if IT fails while the freeze file
-        # itself reads fine, this version must still appear as a candidate -- so baseline(), if it picks this
-        # as the latest approved one, correctly refuses outright (no requirements to compare) rather than
-        # silently falling back to an older, fully-readable baseline instead
-        req = subprocess.run(["git", "-C", repo, "-c", "gpg.ssh.allowedSignersFile=" + allowed_signers, "show",
-            "%s:requirements/requirements.yaml" % v], capture_output=True, text=True)
+        # the requirements.yaml write is independent: if IT fails while the freeze file reads fine, this version
+        # still appears, so baseline() refuses outright rather than falling back to an older baseline
+        req = git(repo, "show", "%s:requirements/requirements.yaml" % v)
         if req.returncode == 0:
             with open(os.path.join(out, v + ".requirements.yaml"), "w") as fh:
                 fh.write(req.stdout)
@@ -226,7 +217,7 @@ def _load_baselines(directory):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="admission-tag-signer")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("route", allow_abbrev=False)      # `--tag` must not be read as a short `--tag-object`
+    r = sub.add_parser("route")
     r.add_argument("--tag-object", required=True, help="file holding `git cat-file tag <tag>`")
     # Older tagged callers (the workflow at v0.2.2 and the chain's earlier admission caller) still pass these two;
     # admission runs the tagged commit's caller against this router from main. Accepted, never read.
