@@ -1063,7 +1063,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "6a991dc1ac668512dc576dfde4ac098239ea919e98ea4fbf82fdf3812a891f3e",
+      "sha256": "cc4eda67a294fa4078deeca069cfc80253881b67f51eb677126d92acc5bace56",
       "tools": [
         "at",
         "awk",
@@ -1076,9 +1076,7 @@
         "task",
         "xargs"
       ],
-      "runs": [
-        "bin/acceptance-gradle-lib.sh"
-      ],
+      "runs": [],
       "signs": false,
       "reason": "the Gradle acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
       "exceptions": [
@@ -1169,29 +1167,19 @@
     },
     {
       "path": "bin/acceptance-gradle-lib.sh",
-      "sha256": "def32cbe68bcf59a43dc31649891f3c4dd0b9eff054e43f234e44ad0b57c4c82",
+      "sha256": "ef60f9742d1b4d3bab8645822a083335c757a2564558ec94d4a85bd787ccef02",
       "tools": [
-        "bash",
         "grep",
         "sed",
         "sha256sum"
       ],
       "runs": [],
       "signs": false,
-      "reason": "the wrapper-jar check both Gradle acceptance scripts run (REQ-SUP-001-AC32)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "if [ \"$(grep -c '' \"$policy\")\" != 1 ] || [ \"$(sed 's/^[0-9a-f]*//' \"$policy\")\" != \"  $jar\" ] ||",
-          "line_sha256": "dc5a4906f45597140024a18502f0f6be4dc98ecc94dc14cf1c33523b0c979b38",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution: it is a test, not a subscript"
-        }
-      ]
+      "reason": "the wrapper-jar check both Gradle acceptance scripts source (REQ-SUP-001-AC32)"
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "030834d3c5c89ba22712152d98a449e5bf264b53442562f5bd489bcb03c660da",
+      "sha256": "e3614e9529ed439e5b7ae64784408c457b0f06323f4614b88094f4c27e82e39f",
       "tools": [
         "awk",
         "bash",
@@ -1200,9 +1188,7 @@
         "sed",
         "task"
       ],
-      "runs": [
-        "bin/acceptance-gradle-lib.sh"
-      ],
+      "runs": [],
       "signs": false,
       "reason": "the Gradle capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
       "exceptions": [
