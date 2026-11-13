@@ -2423,7 +2423,7 @@ done
 # The one assemble script derives its version from its STEP (REQ-CHAIN-004-AC3): the tag minus v for apk and rapk, 0.0.0-rc.1 for the snapshot steps
 # whatever GITHUB_REF_NAME is; a tag named v9.9.9 shows which one reaches both image builds and the archives
 for kind in assemble rebuild-assemble snapshot-assemble snapshot-rebuild-assemble; do
-  vd="$work/ver-$kind"; vtag=v0.3.0; want=9.9.9; case "$kind" in snapshot-*) vtag=$SNAP_TAG; want=0.0.0-rc.1;; esac
+  vd="$work/ver-$kind"; vtag=v9.9.9; want=9.9.9; case "$kind" in snapshot-*) vtag=$SNAP_TAG; want=0.0.0-rc.1;; esac
   mk "$vd" "$kind" "$(script_of real "$kind")" oracle "$vtag"; REF_NAME=v9.9.9 run_stage "$vd" "$kind" oracle "$vtag" > /dev/null
   if [ "$(n_calls "^image .*--version $want " "$vd")" = 2 ] && [ "$(n_calls "^archives .*--version $want " "$vd")" = 1 ]; then
     ok "AC3 $kind: with GITHUB_REF_NAME v9.9.9 both image builds and the archives get version $want (STEP $(step_of "$kind"))"
