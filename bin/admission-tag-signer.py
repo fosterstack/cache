@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Which verifier source admission runs for a release tag (REQ-REL-009-AC6; handoff 0713 P8).
 
-Read by build-admit.py and release.yml from protected main (never from the tagged commit). It only ROUTES: the
+Read by the admission step and release.yml from protected main (never from the tagged commit). It only ROUTES: the
 chosen verifier must still pass. "ssh": the owner's signature, checked against .github/policy/allowed_signers, on
 any tag (a patch tag included: the owner's own key signs minor, major and patch tags). Everything else is refused:
 an unsigned tag, a PGP signature, two signature blocks, and a keyless (x509) signature, because the release chain
