@@ -897,16 +897,16 @@ def ns_shell(path, name):
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
-    "bin/apk-tool.py": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
+    "bin/apk-tool.py": "3e50007b042ddfd5214c828902e48c8008484641c72f087e13b431526c3d5280",
     "bin/archive-pull.sh": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
     "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485",
     "bin/audit-record.py": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f",
-    "bin/build-admit.py": "4ebdf86843bb66bcf53e26c0e751fe2a27d2ba4385712e3e8fb94069bfaceeae",
-    "bin/build-apk-helper.py": "a9ebc31e7fe8fe9336f763457c1ffa6cce89808b6c92961e8656904cd531762e",
-    "bin/build-archives.py": "7f5680fa99c677d6ccb051d03c1497814b0407a068ec4dff6c369d455b47ca81",
+    "bin/build-admit.py": "a74f9b827f23c5debae0a6e71db45711f4be1bdd04313691f51f9f89a3e218ed",
+    "bin/build-apk-helper.py": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
+    "bin/build-archives.py": "c2edc1df7c843dc4fe4a830c011e3c64940b2b36fef913031d953e7e666130b5",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
-    "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
+    "bin/chain-bytes-sha.py": "405eed3d61856a9d4a27c6fcc51c8adf25c6651f0d5fb62e46bbe6c5491aace0",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
     "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
     "bin/chain-verify.py": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
@@ -973,7 +973,6 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'APKO=/usr/local/bin/apko             # TEST-SUBST (the chain installs it there)',
         'ENVBIN=/usr/bin/env                  # TEST-SUBST',
         'WORKDIR=/work                        # TEST-SUBST (the fixed path the config and the locks name, rule 31)',
-        'RENDER_DIR=                          # TEST-SUBST (empty: a private temporary directory)',
         'here_=${BASH_SOURCE[0]%/*}; [ "$here_" != "${BASH_SOURCE[0]}" ] || here_=.   # the script\'s own directory, '
         'no tool',
         'start_=$PWD',
@@ -987,7 +986,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '[ $# -eq 12 ] && [ "$1" = --variant ] && [ "$3" = --version ] && [ "$5" = --archive ] && [ "$7" = '
         '--melange-repo ] && [ "$9" = --keyring-dir ] && [ "${11}" = --out ] || { echo "assemble-image.sh: unknown '
         'argument or missing value" >&2; exit 2; }',
-        'variant=$2; version=$4; archive=$6; melrepo=$8; keydir=${10}; out=${12}; render=$RENDER_DIR',
+        'variant=$2; version=$4; archive=$6; melrepo=$8; keydir=${10}; out=${12}',
+        'render=   # empty: a private temporary directory (the test copy sets its own)',
         '[ "$variant" = production ] || [ "$variant" = fips ] || { echo "assemble-image.sh: --variant must be '
         'production or fips" >&2; exit 2; }',
         '[[ $version =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version = '
@@ -1010,7 +1010,6 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"assemble-image.sh: SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date" >&2; exit 2; }',
         '"$PY3" -I -B bin/oci-digest.py check-inputs "$archive" "$melrepo" "$keydir" "$out" "$config" "$baselock"',
         '"$PY3" -I -B bin/oci-digest.py check-config "$config" || exit 2',
-        '"$PY3" -I -B bin/oci-digest.py check-keydir "$keydir"',
         'keyrec=build/locks/archive-keys.sha256',
         '[ -f "$keyrec" ] || { echo "assemble-image.sh: the key record $keyrec is missing:" "cannot tell which keys '
         'the keyring directory must hold" >&2; exit 2; }',
@@ -1026,9 +1025,6 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         '"$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" fscache-baselayout "$apkver"',
         'workdir=$WORKDIR',
         'lock=$workdir/.assemble.lock',
-        '[ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" '
-        '"wait for it or remove the lock if no run is active" >&2; exit 2; }',
-        '"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"',
         'tmp=$(mktemp -d)',
         'made=()',
         'trap \'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true\' EXIT',
@@ -1061,6 +1057,8 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
         'made+=("$workdir/keyring")',
         'mkdir -p "$tmp/apko-cache"',
         'mapfile -d \'\' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env build/sealed-env.json)',
+        '[ "${#sealed[@]}" -ge 4 ] || { echo "assemble-image.sh: the sealed environment could not be made" '
+        '"(build/sealed-env.json, SOURCE_DATE_EPOCH)" >&2; exit 1; }',
         'full=$tmp/$variant.full.lock.json',
         'cd "$rdir"',
         '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$APKO" lock "$(basename '
