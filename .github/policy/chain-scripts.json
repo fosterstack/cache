@@ -73,7 +73,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "dc85ffcd9d6c3d9d87c5c3279c8502900d3ebb74b3dfd53f03997859ecd9f7c6",
+      "sha256": "b8efa3eefd286d6dcfd3e53e824fdc261418d096ae0b7f20a3af752e964a9e17",
       "tools": [
         "at",
         "aws",
@@ -1951,7 +1951,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "efbd2bb935a223d4abb4b26ff6ac78f72a3758c1f1f959a9ac7798bcbb19881f",
+      "sha256": "1f15ba4fe25caab419a73077c5c6efbf0b5e7335004b5e839b618a992691d470",
       "exceptions": [
         {
           "rule": "deny",
