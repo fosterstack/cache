@@ -1372,11 +1372,7 @@ def history_items(root, start, now):
             try:
                 memo[key] = inv.load_at(root, r, agent)
             except RuntimeError as e:
-                if r == tip or "refusing to read it partially" not in str(e):
-                    raise
-                # an old revision with a very long line is counted, not fatal
-                print(f"information: revision {r[:12]} is unmeasured: {clean(e)}")
-                continue
+                raise RuntimeError(f"revision {r[:12]} cannot be read whole: {e}") from None
         items.update(memo[key])
     return items
 
