@@ -53,7 +53,6 @@ BASHBIN=/bin/bash                    # TEST-SUBST
 APKO=/usr/local/bin/apko             # TEST-SUBST (the chain installs it there)
 ENVBIN=/usr/bin/env                  # TEST-SUBST
 WORKDIR=/work                        # TEST-SUBST (the fixed path the config and the locks name, rule 31)
-RENDER_DIR=                          # TEST-SUBST (empty: a private temporary directory)
 
 # ---- 1. refusals: the shell alone first (no tool runs before the host, the directory and the version are judged) ----
 here_=${BASH_SOURCE[0]%/*}; [ "$here_" != "${BASH_SOURCE[0]}" ] || here_=.   # the script's own directory, no tool
@@ -68,7 +67,8 @@ root=$PWD
 [ $# -eq 12 ] && [ "$1" = --variant ] && [ "$3" = --version ] && [ "$5" = --archive ] && [ "$7" = --melange-repo ] \
   && [ "$9" = --keyring-dir ] && [ "${11}" = --out ] \
   || { echo "assemble-image.sh: unknown argument or missing value" >&2; exit 2; }
-variant=$2; version=$4; archive=$6; melrepo=$8; keydir=${10}; out=${12}; render=$RENDER_DIR
+variant=$2; version=$4; archive=$6; melrepo=$8; keydir=${10}; out=${12}
+render=   # empty: a private temporary directory (the test copy sets its own)
 [ "$variant" = production ] || [ "$variant" = fips ] \
   || { echo "assemble-image.sh: --variant must be production or fips" >&2; exit 2; }
 # the version grammar first, with the shell alone: a bad --version is refused before any tool, python included
@@ -98,7 +98,6 @@ build_date=$("$PY3" -I -B bin/oci-digest.py render-date "$SOURCE_DATE_EPOCH" 2>/
   || { echo "assemble-image.sh: SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date" >&2; exit 2; }
 "$PY3" -I -B bin/oci-digest.py check-inputs "$archive" "$melrepo" "$keydir" "$out" "$config" "$baselock"
 "$PY3" -I -B bin/oci-digest.py check-config "$config" || exit 2
-"$PY3" -I -B bin/oci-digest.py check-keydir "$keydir"
 # the keyring directory is pinned by digest: exactly the two recorded keys, with the recorded bytes
 keyrec=build/locks/archive-keys.sha256
 [ -f "$keyrec" ] || { echo "assemble-image.sh: the key record $keyrec is missing:" \
@@ -116,9 +115,6 @@ idxrec=build/locks/archive-index.sha256
 "$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" fscache-baselayout "$apkver"
 workdir=$WORKDIR
 lock=$workdir/.assemble.lock
-[ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" \
-  "wait for it or remove the lock if no run is active" >&2; exit 2; }
-"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"
 
 # ---- 2. render ----
 tmp=$(mktemp -d)
@@ -154,6 +150,8 @@ made+=("$workdir/keyring")
 mkdir -p "$tmp/apko-cache"
 # the apko calls get the same closed environment as the melange call (build/sealed-env.json), nothing inherited
 mapfile -d '' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env build/sealed-env.json)
+[ "${#sealed[@]}" -ge 4 ] || { echo "assemble-image.sh: the sealed environment could not be made" \
+  "(build/sealed-env.json, SOURCE_DATE_EPOCH)" >&2; exit 1; }
 
 # ---- 3. the full lock ----
 # A sealed apko call: network cut with unshare -n, the render directory as the working directory (apko records the
