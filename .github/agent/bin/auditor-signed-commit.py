@@ -9,10 +9,9 @@ auditorlib.signed_commit.commit_via_api (temporary ref, signature check, lease).
       --message TEXT --path P [--path P ...]
 
 --prefix: the lanes B may be in; only `auditor/`, `patch-notes/` and `audit/` (the passed-audit record, REQ-REL-012:
-audit/<sha> on top of that sha only) are accepted. --path: read from the CURRENT directory; a path that does not
-exist there is a DELETION. Prints the new commit's oid on stdout. Exit 0 = made and confirmed signed; 1 = refused or
-failed (plain message on stderr, nothing on stdout); 2 = bad arguments. stdlib only; no git credentials are needed
-or used.
+audit/<sha> on top of that sha only) are accepted. --path: read from the CURRENT directory; a path that does not exist
+there is a DELETION. Prints the new commit's oid on stdout. Exit 0 = made and confirmed signed; 1 = refused or failed
+(plain message on stderr, nothing on stdout); 2 = bad arguments. stdlib only; no git credentials are needed or used.
 """
 import argparse, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,8 +21,8 @@ PREFIXES = signed_commit.ALLOWED_PREFIXES
 
 
 def _refuse_path(path):
-    """A reason this path may not be read from the working directory, else None. (Symlinks in any component are
-    refused by read_changes.)"""
+    """A reason this path may not be read from the working directory, else None. (Symlinks in any component
+    are refused by read_changes.)"""
     parts = path.split("/")
     if path.startswith("/") or any(p in ("", ".", "..") for p in parts):
         return "refusing path %r (not a plain relative path)" % path
