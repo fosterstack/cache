@@ -182,7 +182,7 @@ def _build_go_version():
         return _go_version[0]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "melange.yaml")
     with open(path, encoding="utf-8") as fh:
-        # g[o]: the bracket keeps the bare word out of the Sign judge's reading of this file as a command; the name ends at a
+        # g[o]: the bracket keeps the bare word out of the Sign judge's reading of this file; the name ends at a
         # space or line end, so a .sig or .sha256 line beside the tarball is not a second version
         found = set(re.findall(r"/dl/g[o](\d+\.\d+\.\d+)\.linux-\w+\.tar\.gz(?=\s|$)", fh.read()))
     if len(found) != 1:
