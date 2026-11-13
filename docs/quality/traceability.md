@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 91 |
-| Acceptance criteria | 389 |
+| Acceptance criteria | 390 |
 | Release-blocking ACs | 54 |
-| ACs with mapped evidence | 369 |
+| ACs with mapped evidence | 370 |
 | Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -702,12 +702,13 @@ A Dependabot major version bump shall be judged by the Dependabot reviewer, not 
 
 The ruleset on main and the committed required-check list shall be compared on every pull request and every push to main, so drift is red the day it happens, and a refusal shall open one issue.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/required-check-guard.sh; .github/policy/required-checks.json; .github/workflows/ci.yml*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/required-check-guard.sh; .github/policy/required-checks.json; .github/policy/release-only-checks.json; .github/workflows/ci.yml; .github/workflows/stage-admission.yml; .github/workflows/release.yml; .github/agent/tests/pin-wiring-test.sh*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-DEP-002-AC1 | Given any pull request and any push to main; when hygiene runs; then the required-check guard compares main's ruleset with .github/policy/required-checks.json, contexts and integration IDs; any difference fails, and an unreadable side fails, never passes | ci-workflow |  | approved | 2 item(s) |
 | REQ-DEP-002-AC2 | Given the guard refusing main's list; when hygiene runs; then it opens, or updates, one "required-check drift" issue | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-002-AC3 | Given the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green; when stage admission and the patch release's ready step read the required checks from main, and the pin-wiring judge runs over a head; then admission and the ready step require the lists of required-checks.json and release-only-checks.json together and refuse unless both files are objects whose required_checks is a non-empty array, so a missing, empty or malformed release-only list never lowers the requirement; the judge refuses a head whose release-only-checks.json does not hold exactly those seven contexts or is missing (the landing form is judged by its own copy); the required-check guard does not read release-only-checks.json | ci-workflow |  | approved | 4 item(s) |
 
 ### REQ-DEP-003 — Patch and minor bumps merge on green
 
@@ -804,7 +805,7 @@ A pull request into the release carries a passed-audit record for its exact head
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; bin/audit-record-judge.sh; bin/audit-record.py; .github/policy/audit-writers.json*
 
-> No new required check: auditor-review-gate is already required on main, so once this lands every pull request into main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes something.
+> No new required check: auditor-review-gate is not required per pull request on main (the owner took it off the ruleset on Nov 12 2026; release-only-checks.json still has release admission require it), so a missing record blocks the box merger's clearance, not GitHub's merge button. It therefore lands only after the writer (a later pull request) and the dispatch that calls it exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes something.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
