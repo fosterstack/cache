@@ -4,7 +4,7 @@
 ONE schema, written here and validated by the driver on load. Every key the driver reads
 is produced, or set explicitly to null with a recorded reason in `scanner_status`.
 
-The auditor runs NO scanner of its own (0600 option A, scanner-panel rules): the four panel
+The auditor runs NO scanner of its own (scanner-panel rules): the four panel
 scanners' results are read from the rescan's verdict.json (`--panel-dir`), and a scanner that
 did not run is recorded "did not run" with its reason, never clean. What this program still
 produces itself: the candidate's SBOM carriers and base OS (syft), govulncheck over the source,
@@ -114,9 +114,9 @@ _CARRY_RELS = {"contains": "bundled"}
 
 
 def _carriers(path):
-    """Candidate carrier relationships from the syft SBOM (REQ-AUD-14 AC2 of
-    .github/agent/docs/cve-auditor-matrix.md): a vulnerable-capable component (a package with a purl) that is CARRIED inside another artifact — the parent artifact
-    `contains` (bundles) the child. This is a SAFE over-approximation: it only decides which findings
+    """Candidate carrier relationships from the syft SBOM (REQ-AUD-14 AC2 of .github/agent/docs/cve-auditor-matrix.md):
+    a vulnerable-capable component (a package with a purl) that is CARRIED inside another artifact — the parent
+    artifact `contains` (bundles) the child. This is a SAFE over-approximation: it only decides which findings
     get a pullability model call — a wrong candidate returns pullable and falls through to normal
     routing, so a false carrier costs one call, never a wrong disposition. The model does the
     authoritative carrier analysis."""
@@ -288,9 +288,9 @@ def _archives(rescan_dir, test_image, oci, tar):
         return None, "no production OCI layout directory (images/production) in the rescan artifacts"
     if len(named) > 1:
         return None, "%d production OCI layout directories in the rescan artifacts, expected one" % len(named)
-    # every blob of the layout is re-hashed against its file name before skopeo reads it (fail closed).
-    # The digest taken later is that of the single-arch archive skopeo writes, so it is not Build's
-    # index digest and is not compared to it.
+    # every blob of the layout is re-hashed against its file name before skopeo reads it (fail closed). The
+    # digest taken later is that of the single-arch archive skopeo writes, so it is not Build's index
+    # digest and is not compared to it.
     blobs = os.path.join(named[0], "blobs", "sha256")
     try:
         for n in os.listdir(blobs):
@@ -396,9 +396,9 @@ def main():
         "scanner_reports": scanner_reports, "scanner_status": status,
         "govulncheck": gvc, "known_defect_log": kdl if os.path.exists(kdl) else None,
         "kev_catalog": cli.opt("--kev"),
-        # SBOM carrier relationships (candidate not-pullable carriers) + the
-        # endoflife.date maintenance flags (carriers/base on LTS/EOL lines) and the base pin-lag
-        # block. `eol`/`base` are best-effort (empty when endoflife.date is unreachable).
+        # SBOM carrier relationships (candidate not-pullable carriers) + the endoflife.date maintenance flags
+        # (carriers/base on LTS/EOL lines) and the base pin-lag block. `eol`/`base` are best-effort (empty when
+        # endoflife.date is unreachable).
         "carriers": carriers, "eol": _eol_list, "base": _base_block,
         "panel": pblock,                                  # the scanner panel's four, from the rescan's verdict.json
         "scanner_set": "panel",
