@@ -98,16 +98,12 @@ _FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of",
 _DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited", "purl"))
 _SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
-# Text with no control character and no backtick, because the issue text quotes with a backtick; "libc6 2.36" matches.
+# Text with no control character and no backtick, because the issue text quotes with a backtick; "libc6 2.36"
+# matches, "libc6\n2.36" and "`libc6`" are refused.
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")
 # CVE-, GHSA-, DEBIAN-CVE- and GO- ids, and the tally's "?" for an id-less result. Capped, and the same grammar the
 # unsettled-run counter keeps.
 _ID = policy.FINDING_ID
-
-
-def _purl_ok(purl):
-    """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs."""
-    return bool(panel_module().purl_ok(purl))
 
 
 def _closed(obj, keys, what):
@@ -189,7 +185,7 @@ def _validate_panel_verdict(d):
                              % (f["id"], f["image"]))
     for f in d["findings"]:                      # a package URL must name the package and version the finding names
         for purl in f["purls"]:
-            if not _purl_ok(purl):
+            if not pm.purl_ok(purl):
                 raise ParseError("panel verdict: finding %s on %s has a package URL that is not pkg:TYPE/..."
                                  % (f["id"], f["image"]))
             name, ver = pm.purl_name_version(purl)
@@ -215,7 +211,7 @@ def _validate_panel_verdict(d):
                     or not isinstance(al, list) or len(set(map(str, al))) != len(al)
                     or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
                     or ("aliases" in rec and not al) or not isinstance(rec.get("known_exploited", True), bool)
-                    or ("purl" in rec and not (isinstance(rec["purl"], str) and _purl_ok(rec["purl"])))):
+                    or ("purl" in rec and not (isinstance(rec["purl"], str) and pm.purl_ok(rec["purl"])))):
                 raise ParseError("panel verdict: finding %s on %s has a malformed value in %s's details"
                                  % (f["id"], f["image"], sc))
             # that scanner's own package URL names the package and version the finding names
@@ -346,7 +342,8 @@ def parse_govulncheck(path):
     scan_level = None
     module = None
     osv_aliases = {}
-    # module path -> version: scopes a trace frame that omits its version (REQ-AUD-13 AC5, see the matrix page)
+    # module path -> version: scopes a trace frame that omits its version (REQ-AUD-13 AC5 in
+    # .github/agent/docs/cve-auditor-matrix.md)
     sbom_ver = {}
     saw_any = False
     for obj in _stream(text):
