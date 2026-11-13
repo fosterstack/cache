@@ -2012,7 +2012,7 @@ requirements:
       - id: REQ-REL-009-AC1
         given: "the commits on main since the latest release tag"
         when: "release.yml's decide job classifies them"
-        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, a change of a base input listed in .github/policy/base-inputs.json (the apko base locks, the melange lock and the archive records of the image build; an executable, symlinked or deleted one never counts), or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why; the decide job prints the listed base inputs that changed since the latest release (bin/patch-decide.py base-moved); no base image is scanned (none exists), so no distribution-package finding counts as removed"
+        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, a change of a base input listed in .github/policy/base-inputs.json (the apko base locks, the melange lock and the archive records of the image build; an executable, symlinked or deleted one never counts), or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why; no base image is scanned (none exists), so no distribution-package finding counts as removed"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC2
@@ -2054,7 +2054,7 @@ requirements:
       - id: REQ-REL-009-AC8
         given: "a patch release"
         when: "its notes are generated"
-        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (patch-decide.py tag-notes; any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
+        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC9
@@ -2089,7 +2089,7 @@ requirements:
         status: approved
       - id: REQ-REL-009-AC14
         given: "the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md)"
-        when: "the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog)"
+        when: "the notes are generated or the changelog is written"
         then: "a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog)"
         verification: { method: unit, release_blocking: false }
         status: approved
@@ -3349,7 +3349,7 @@ requirements:
       - Closed lists (.github/policy/): id-token-jobs.json, the jobs that may hold id-token: write, a reason each (any other holder, matched case-insensitively, a stale entry, or an unparsable workflow fails; a merge key, `<<` or `!!merge`, at any depth of any workflow or composite action is refused, and one that does not parse as a single YAML document is a finding; composite actions are found anywhere in the repository, any case); legacy-stage-files.json, the eleven legacy stage files PRs 2-4 rewrite, pinned by sha256 (the wiring and records judges leave out their own findings but follow the LISTED scripts they run and what they produce; an UNLISTED file they run is never scanned; a changed one is judged in full; the list goes with the last of them); build-config-files.json, the build configuration outside bin/ and .github/ pinned by sha256, with .goreleaser.yaml held to a closed key set, its two hooks, and each build (no repeated id) with env, flags and ldflags exactly as today; chain-signers.json, every non-provenance signing call with a reason; chain-scripts.json, the scripts a stage may run by sha256 (only bin/chain-verify.py may sign provenance).
       - The id-token list is per job: it closes unlisted jobs, including remote reusable workflows, in-process libraries, files outside bin/ and .github/, and tools missing from the signer table. A signer step added to a listed job is seen when the shared signer table names it (@actions/attest is in it); otherwise review and the pin checker see it.
       - Python puts a script's directory first on sys.path, so a file in bin/ named after a standard-library module would replace that module inside the Sign job, whose SAN really is stage-sign.yml (the SAN pin cannot see it). Closed structurally: the Sign step runs `python3 -I -B` and every python3 line of a stage file runs with -I; chain-verify.py compiles its two helper modules from their bytes after checking each against its sha256 in chain-scripts.json (no bytecode cache is consulted; tests prove a bin/fractions.py and an unchecked-hash __pycache__ copy are not run, and changed helper bytes are refused). The judge refuses any file or directory under bin/ or .github/ named after a standard-library module, and any __pycache__ directory or .pyc/.pyo/.so/.pyd/.dll file there (names matched case-insensitively). The -I rule covers stage-file lines only; a third-party name (bin/yaml.py) on a job without -I is backed by the file allowlist for bin/ and Release's SAN pin. Release's own `policy make` in stage-promote.yml runs with -I too.
-      - Information, not a gap in Release: an unlisted file run by a frozen id-token job (bin/vex-forms.py, bin/patch-decide.py and the like) is not scanned by these suites; keyed signing is outside the keyless model (the only signing-like secret, AUDITOR_APP_PRIVATE_KEY, mints App tokens); neither can pass Release's SAN pin. Obfuscated signers are out of scope (owner, Oct 3); `docker buildx --attest type=provenance` writes unsigned provenance.
+      - Information, not a gap in Release: an unlisted file run by a frozen id-token job (bin/vex-forms.py and the like) is not scanned by these suites; keyed signing is outside the keyless model (the only signing-like secret, AUDITOR_APP_PRIVATE_KEY, mints App tokens); neither can pass Release's SAN pin. Obfuscated signers are out of scope (owner, Oct 3); `docker buildx --attest type=provenance` writes unsigned provenance.
       Decisions:
       - AC3: no known-red allowance; the real tree is an ordinary `expect ok` with the frozen files' own findings left out.
       - AC4 is narrow on purpose: `actions` rejects today's release.yml, stage-build.yml and stage-promote.yml until PRs 2-4 rewrite them; it refuses repeated keys (trimmed, case-folded) and malformed shapes by name. The pin checker's repeated-key rule is its own pull request (pin-check-repeated-keys).
@@ -3693,18 +3693,18 @@ requirements:
     source: [auditor directory bin/auditor-layout-check.py, auditor directory tests/coverage-gate.sh, .github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
-    origin: AC1 to AC3 are the matrix page's REQ-AUD-18 rows (the auditor matrix page in the auditor directory, lines 91 to 93), release-manager-approved in #113 (commit 731f2d1, Sep 25 2026, matrix: approval REQ-AUD-14..18); the AC3 mechanism is option C (Sep 27 2026); AC1 carries two release-manager amendments: the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml (Oct 2 2026) and the patch-release classifier bin/patch-decide.py with its test bin/patch-decide-test.sh (Oct 3 2026, "I approval b."). AC4 (the recorded second-seat substitute) is retired: the release manager decided on Oct 12 2026 that CI does not attest the second review ("yes drop the gate and close #302").
+    origin: AC1 to AC3 are the matrix page's REQ-AUD-18 rows (the auditor matrix page in the auditor directory, lines 91 to 93), release-manager-approved in #113 (commit 731f2d1, Sep 25 2026, matrix: approval REQ-AUD-14..18); the AC3 mechanism is option C (Sep 27 2026); AC1 carries one release-manager amendment: the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml (Oct 2 2026). AC4 (the recorded second-seat substitute) is retired: the release manager decided on Oct 12 2026 that CI does not attest the second review ("yes drop the gate and close #302").
     confidence: implementation-only
     notes: >
       The `then` text of AC1, AC2 and AC3 is a PARAPHRASE of the ratified sentences with the literal auditor path replaced by 'the auditor directory' (the layout check forbids that literal in this file); the VERBATIM ratified sentences are quoted in the comments above the three entries in test-evidence/mappings.yaml, which is exempt from the layout check.
       The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's action-pin checker, allowlist guard, pin-wiring judge and scanner guard over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the owner's settings.
-      AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (owner, Oct 2) and bin/patch-decide.py with its test (owner, Oct 3). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements.
+      AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (owner, Oct 2). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements.
       Gate-workflow digest (the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly one digest, 699abb31 (the gate workflow of #316), taken by its gate_digest (action pins masked). The bootstrap digest adcfd54f (the gate workflow on main before #316) was removed in the release-candidate review (rc-5b B1), so a revert of the gate workflow to it is refused. A different digest fails with a message naming the accepted one.
     acceptance_criteria:
       - id: REQ-AUD-018-AC1
         given: "any tracked file in the repository"
         when: "the layout check (auditor-layout-check.py, run by the allowlist job in ci.yml) reads the file list"
-        then: "All auditor code, prompts, fixtures and tests live under the auditor directory and nowhere else; the only auditor-related files outside it are the workflow files (.github/workflows/), the allowlist entries, the auditor's generated outputs, and (amendment, the release manager Oct 2) the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml, which name test paths as metadata; and (amendment, the release manager Oct 3) the patch-release classifier bin/patch-decide.py and its test bin/patch-decide-test.sh, which name the auditor directory as data and hold no auditor code."
+        then: "All auditor code, prompts, fixtures and tests live under the auditor directory and nowhere else; the only auditor-related files outside it are the workflow files (.github/workflows/), the allowlist entries, the auditor's generated outputs, and (amendment, the release manager Oct 2) the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml, which name test paths as metadata."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-AUD-018-AC2
@@ -5123,21 +5123,21 @@ requirements:
       about published evidence and makes no promise beyond them. It lists the releases published that month, the patch
       releases and why, the VEX statements added, the Check records of each release, any advisory, and one line binding it
       to the version of the controls document in force. It is made by a template, never by a model.
-    source: [bin/evidence-letter.py, bin/evidence-letter-test.sh]
+    source: [ops/docs/ratify/2026-10-27-monthly-evidence-letter.md]
     tier: compliance
     introduced: v0.3.0
     origin: monthly evidence letter (owner Oct 27 2026, with the Oct 27 23:20 amendment); advisor read-back acknowledged Oct 29 (handoffs/acks/2026-10-29-ack-cache3-readback-monthly-letter.md)
     confidence: documented
     notes: >
       The site publication and the email to Compliance customers are other lanes' work (www; payments compliance-send).
-      The signatory (the owner's typed name and title) and the closing words are committed in docs/evidence-letter-signatory.txt.
+      The signatory (the owner's typed name and title) and the closing words are committed in the repository.
       The job refuses to make a letter until docs/controls.md (the controls document, ratified rules 6 to 8) exists: the
       letter quotes it. Round 2 (Nov 1) reworded the statement and AC5 to what the code does (the read-back was removed
       in round 1, F14); wording pending the owner's approval.
     acceptance_criteria:
       - id: REQ-REL-013-AC1
         given: "a month and the assets of the releases published in it (release.json and the files of each release)"
-        when: "bin/evidence-letter.py runs for that month"
+        when: "the letter is drafted for that month"
         then: "the letter lists exactly those releases, each with its tag, date, release page link and commit, and no other release; a month with no release still gets a letter, which says none was published and carries the Check records of the latest release; before any release exists there is no letter and the script says so"
         verification: { method: unit, release_blocking: false }
         status: approved
@@ -5191,7 +5191,7 @@ requirements:
         status: approved
       - id: REQ-REL-013-AC10
         given: "a signed letter and its bundle"
-        when: "bin/evidence-letter-publish.sh attaches them"
+        when: "the letter and its bundle are attached to the release"
         then: "they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed"
         verification: { method: unit, release_blocking: false }
         status: approved
