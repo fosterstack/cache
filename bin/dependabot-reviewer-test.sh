@@ -717,9 +717,18 @@ mkalt() {
 }
 verdicts() { # <[[conclusion, external_id (left out: none), app slug], ...]> oldest first, as GitHub lists them
   jq -cn --argjson r "$1" \
-    '{check_runs: [$r | to_entries[] | {id: .key, conclusion: .value[0],
+    '{total_count: ($r | length), check_runs: [$r | to_entries[] | {id: .key, conclusion: .value[0],
                                          app: {slug: (.value[2] // "fosterstack-automation")}}
                                          + (if (.value | length) > 1 then {external_id: .value[1]} else {} end)]}'
+}
+# verdicts, but GitHub says there are 31 runs and the page holds 30: 29 neutral ones, then <last run>
+verdicts_cut() { verdicts "$(jq -c '. + ['"$1"']' <<<"$(jq -nc '[range(29) | ["neutral"]]')")" | jq -c '.total_count = 31'; }
+# every gh log line that asks for the reviewer's check runs asks for 100 of them, and there is at least one
+per_page_all() {
+  if grep -q 'check_name=dependabot-reviewer' "$w/gh.log" \
+      && ! grep 'check_name=dependabot-reviewer' "$w/gh.log" | grep -qv 'per_page=100'; then
+    echo "ok: $1"; pass=$((pass+1))
+  else echo "FAIL: $1"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); fi
 }
 # <name> [version]: every dependabot-reviewer check in the gh log of the last run carries the current version, and
 # there is one
@@ -750,11 +759,11 @@ case "$1 $2" in
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) fails gate ;; *) fails check ;; esac ;;
   "api repos/fosterstack/ops/dispatches") fails dispatch ;;
   # cancellation cleanup lookups: success, or CANCELA_JSON through the step's own filter
-  "api repos/o/r/commits/shaA/check-runs?check_name=dependabot-reviewer")
+  "api repos/o/r/commits/shaA/check-runs?check_name=dependabot-reviewer"*)
               if [ -n "${CANCELA_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done;
                 jq -r "$f" <<<"$CANCELA_JSON"
               else echo success; fi ;;
-  "api repos/o/r/commits/shaB/check-runs?check_name=dependabot-reviewer") echo none ;;
+  "api repos/o/r/commits/shaB/check-runs?check_name=dependabot-reviewer"*) echo none ;;
   "api repos/a/b/releases"*) fails notes; echo '[]' ;;      # upstream releases: a successful read, none published
   # the PR's commits: Dependabot's own, then one a writer pushed, which is the head (COMMITS_HEAD: another last
   # commit, a head that moved)
@@ -1151,6 +1160,14 @@ cancel_one "$(verdicts "[[\"success\",\"$OLD3\",\"s\"]]")" no \
   "a success carrying the version of the three files joined is no success: the arm comes off"
 cancel_one "$(verdicts "[[\"success\",\"$OLD3S\",\"s\"]]")" no \
   "a success carrying the version of the three files' sha256sum lines is no success: the arm comes off"
+# a cut answer (31 runs, 30 read) is no verdict: whatever the newest run read says, the arm comes off
+cancel_one "$(verdicts_cut "[\"success\",\"$VER\",\"s\"]")" no \
+  "a success of the current version among 30 of 31 runs is no success: the arm comes off"
+per_page_all "cancellation: the check runs are asked for 100 at a time"
+cancel_one "$(verdicts_cut "[\"success\",\"$OLDVER\",\"s\"]")" no \
+  "a success of another version among 30 of 31 runs is no success: the arm comes off"
+cancel_one "$(verdicts_cut '["success",null,"s"]')" no \
+  "a plain success among 30 of 31 runs is no success: the arm comes off"
 for what in prompt-changed workflow-changed checks-changed guard-changed; do
   mkalt "$w/alt" "$what"
   CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$VER\",\"s\"]]")" no \
@@ -1211,16 +1228,16 @@ own_check() { # <check runs as JSON, or empty> <the answer otherwise> <the call'
 case "$1 $2" in
   "pr list") cat "$PRS_JSON" ;;
   # the reviewer's own check on a head: PRIOR99 as the answer, or PRIOR99_JSON through the step's own filter
-  "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer")
+  "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer"*)
               [ "${LOOKUP99:-}" = fail ] && exit 1; own_check "${PRIOR99_JSON:-}" "${PRIOR99:-none}" "$@" ;;
-  "api repos/o/r/commits/p1/check-runs?check_name=dependabot-reviewer")
+  "api repos/o/r/commits/p1/check-runs?check_name=dependabot-reviewer"*)
               [ "${LOOKUPP1:-}" = fail ] && exit 1; own_check "${PRIORP1_JSON:-}" "${PRIORP1:-none}" "$@" ;;
-  "api repos/o/r/commits/sha90/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP90:-}" = fail ] && exit 1;
+  "api repos/o/r/commits/sha90/check-runs?check_name=dependabot-reviewer"*) [ "${LOOKUP90:-}" = fail ] && exit 1;
     own_check "${PRIOR90_JSON:-}" "${PRIOR90:-none}" "$@" ;;
-  "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
-  "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
+  "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer"*) echo "${PRIOR91:-none}" ;;
+  "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer"*) echo "${PRIOR400:-none}" ;;
   # earlier heads of #99 and #90 (the spend guard): p1 is the head's first parent, p0 is p1's
-  "api repos/o/r/commits/p0/check-runs?check_name=dependabot-reviewer") echo "${PRIORP0:-none}" ;;
+  "api repos/o/r/commits/p0/check-runs?check_name=dependabot-reviewer"*) echo "${PRIORP0:-none}" ;;
   # a commit as GitHub gives it, read by the step's own filter: PARENT=x makes the head a merge commit (first parent
   # x, second on main);
   # ONEPARENT=x makes it an ordinary commit on top of x; neither: an ordinary commit on main
@@ -1252,7 +1269,7 @@ case "$1 $2" in
               else echo "${GATE99:-none}"; fi ;;
   "api repos/o/r/commits/"*"/check-runs?check_name=auditor-review-gate") echo none ;;
   # #77: a PR whose title and body name no update that can be read
-  "api repos/o/r/commits/sha77/check-runs?check_name=dependabot-reviewer") echo "${PRIOR77:-none}" ;;
+  "api repos/o/r/commits/sha77/check-runs?check_name=dependabot-reviewer"*) echo "${PRIOR77:-none}" ;;
   # the PR as GitHub gives it, read by the step's own filter
   "pr view") case "$3" in 90) v="${ARMED90:-${ARMED99:-false}}" ;; 77) v="${ARMED77:-false}" ;; *)
     v="${ARMED99:-false}" ;; esac
@@ -1284,7 +1301,9 @@ cand() { # expected-candidates (* = any) expected-rc (nz = any failure); env PRI
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
   local got; got=$(cut -d' ' -f1,3 "$W/work/candidates.txt" 2>/dev/null | tr '\n' ',')
-  if { [ "$1" = '*' ] || [ "$got" = "$1" ]; } && { [ "$rc" = "$2" ] || { [ "$2" = nz ] && [ "$rc" != 0 ]; }; }; then
+  CAND_GOT="$got"; CAND_RC="$rc"
+  if { [ "$1" = '*' ] || [ "$got" = "$1" ]; } && { [ "$rc" = "$2" ] || { [ "$2" = nz ] && [ "$rc" != 0 ]; } \
+      || [ "$2" = any ]; }; then
     echo "ok: candidates: $3"; pass=$((pass+1))
   else echo "FAIL: candidates: $3 (got '$got' rc $rc)"; sed 's/^/    /' "$w/cand.out" | tail -8; fail=$((fail+1)); fi
 }
@@ -1428,6 +1447,16 @@ ONLY=99 PRIOR99_JSON=$(verdicts "[$CUR_OK]") cand "" 0 \
 also "candidates: nothing is published over a current success" "-check-runs -f name=dependabot-reviewer"
 ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK,$CUR_OK]") cand "" 0 \
   "a success of another version replaced by a newer one of the current version is a success"
+# a cut answer (total_count 31, 30 runs read) is no verdict: the head is not passed over as a success; the lookup fails
+# (skipped, the step fails) or reads none (the head is taken up)
+for what in "[\"success\",\"$VER\"]" "[\"success\",\"$OLDVER\"]" '["success"]'; do
+  ONLY=99 PRIOR99_JSON=$(verdicts_cut "$what") cand '*' any "30 of 31 runs read, the newest $what"
+  if [ -z "$CAND_GOT" ] && [ "$CAND_RC" = 0 ]; then
+    echo "FAIL: candidates: 30 of 31 runs read, the newest $what: counted as a success (nothing taken up, no failure)"
+    fail=$((fail+1))
+  else echo "ok: candidates: 30 of 31 runs read, the newest $what: not counted as a success"; pass=$((pass+1)); fi
+done
+per_page_all "candidates: the check runs are asked for 100 at a time"
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"failure\",\"$OLDVER\"]]") cand "" 0 \
   "a failure of another version is still a failure verdict"
 ONLY=99 PRIOR99_JSON=$(verdicts '[["failure"]]') cand "" 0 "a failure with no external_id is still a failure verdict"
@@ -1736,7 +1765,8 @@ settle() {
      GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m \
        GH_TOKEN=job \
      bash --noprofile --norc -e -o pipefail "$w/settle.sh") > "$w/settle.out" 2>&1; local rc=$?
-  if [ "$rc" = "$3" ]; then echo "ok: settle: $4"; pass=$((pass+1)); else echo "FAIL: settle: $4 (rc $rc)";
+  SETTLE_RC="$rc"
+  if [ "$rc" = "$3" ] || [ "$3" = any ]; then echo "ok: settle: $4"; pass=$((pass+1)); else echo "FAIL: settle: $4 (rc $rc)";
     sed 's/^/    /' "$w/settle.out" | tail -6; fail=$((fail+1)); fi
 }
 BOTH='99 sha99 none\n90 sha90 none\n'
@@ -1809,6 +1839,14 @@ PRIOR90_JSON=$(verdicts "[[\"success\",\"$OLD3\"]]") settle "$BOTH" '90 sha90\n'
 PRIOR90_JSON=$(verdicts "[[\"success\",\"$OLD3S\"]]") settle "$BOTH" '90 sha90\n' 0 \
   "a success carrying the version of the three files' sha256sum lines"
 also "settle: it is no verdict: the lane's arm is put back" "$REARM90"
+# a cut answer is no verdict: a lane-armed patch is not left as "passed" on 30 of 31 runs; the step fails or re-arms
+for what in "[\"success\",\"$VER\"]" "[\"success\",\"$OLDVER\"]" '["success"]'; do
+  PRIOR90_JSON=$(verdicts_cut "$what") settle "$BOTH" '90 sha90\n' any "30 of 31 runs read, the newest $what"
+  if [ "$SETTLE_RC" = 0 ] && ! grep -q "pr merge --auto" "$w/gh.log"; then
+    echo "FAIL: settle: 30 of 31 runs read, the newest $what: left as a success (rc 0, nothing armed)"; fail=$((fail+1))
+  else echo "ok: settle: 30 of 31 runs read, the newest $what: not taken for a success"; pass=$((pass+1)); fi
+done
+per_page_all "settle: the check runs are asked for 100 at a time"
 for what in prompt-changed workflow-changed checks-changed guard-changed; do
   mkalt "$w/alt" "$what"
   SETTLEDIR="$w/alt" PRIOR90_JSON=$(verdicts "[$CUR_OK]") settle "$BOTH" '90 sha90\n' 0 \
