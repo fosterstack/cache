@@ -4,9 +4,9 @@
 # Build's first action: bin/build-admit.py keeps every check the old stage-admission.yml made, none dropped.
 # Needs: bash, git >= 2.34, ssh-keygen, gpg, jq, openssl, python3 + PyYAML. Offline: the git repos, the
 # owner/attacker SSH keys and the web-flow GPG key are made at test time (nothing committed, no network); GitHub is faked by a `gh` on PATH
-# that serves JSON files, `gitsign` and `go` are fakes that log their argv. A real keyless tag is proven only by the dry run
-# (stated gap); the CI patch-baseline path is covered by bin/admission-tag-signer-test.sh, so here only the owner route and the
-# missing-baseline cases run.
+# that serves JSON files, `gitsign` and `go` are fakes that log their argv. A real keyless tag is proven only
+# by the dry run (stated gap); the CI patch-baseline path is covered by bin/admission-tag-signer-test.sh, so
+# here only the owner route and the missing-baseline cases run.
 #
 # THE CLI THIS TEST ASSUMES:
 #   python3 bin/build-admit.py run [--out admission.json]     run from the repo root (the checkout of the tagged commit)
@@ -18,8 +18,9 @@
 #         repos/R/commits/SHA/check-runs?filter=latest   (and the same for the merged PR's head sha)
 #         repos/R/commits/SHA/status
 #         repos/R/commits/SHA/pulls
-#       the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok COMMIT BASE`; no Go runs here); `gitsign verify-tag`
-#       with the exact identity flags for a patch route. Exit 0: wrote admission.json. Exit 1: the first line of stderr is
+#       the freeze file freeze/freeze.txt (the `freeze` job's result: `freeze-ok COMMIT BASE`; no Go runs
+#       here); `gitsign verify-tag` with the exact identity flags for a patch route. Exit 0: wrote
+#       admission.json. Exit 1: the first line of stderr is
 #       `admission refused at <check>: <reason>` and NO admission.json is left. Exit 2: usage or environment error.
 #   python3 bin/build-admit.py list-checks                    one check name per line, in order (below)
 #   python3 bin/build-version-check.py (--binary PATH | --apk-dir DIR --variant standard|fips) --tag TAG --sha SHA
@@ -156,8 +157,12 @@ if n != 1:
 open(out, "w").write("\n".join(res))
 PY
 }
-if mkvcopy "$W/bvc.py" "$VCGO" 2> "$W/mkvcopy.err"; then BVR=$BV; BV="$W/bvc.py"; ok "AC7 the version check holds its go as one TEST-SUBST line (the cases run a copy that differs in that line only)"
-else bad "AC7 the version check holds its go as one TEST-SUBST line: $(head -c 150 "$W/mkvcopy.err" 2> /dev/null)"; BVR=$BV; fi
+if mkvcopy "$W/bvc.py" "$VCGO" 2> "$W/mkvcopy.err"; then
+  BVR=$BV; BV="$W/bvc.py"
+  ok "AC7 the version check holds its go as one TEST-SUBST line (the cases run a copy that differs in that line only)"
+else
+  bad "AC7 the version check holds its go as one TEST-SUBST line: $(head -c 150 "$W/mkvcopy.err" 2> /dev/null)"; BVR=$BV
+fi
 hostile() { # env settings a hostile or sloppy runner could carry into the check
   GOTOOLCHAIN=go1.99.9 GOFLAGS=-mod=mod GOENV=/nonexistent/env GOROOT=/nonexistent/goroot GOPROXY=https://evil.invalid GOPATH=/nonexistent/gopath \
     GOMODCACHE=/nonexistent/mod GOEXPERIMENT=evil "$@"
@@ -180,7 +185,8 @@ vc refuse "AC7 a pseudo-version is refused" version v0.3.1-0.20261009120000-0123
 vc refuse "AC7 the tag with a prefix of the version is refused (v0.3.0-rc.1 vs v0.3.0)" version v0.3.0-rc.1 "$SHA" false
 vc ok     "AC7 a release candidate tag matches its own version" "" v0.3.1-rc.2 "$SHA" false v0.3.1-rc.2
 vc refuse "AC7 an upper-case revision of the same commit is not accepted as equal" revision v0.3.0 "$(printf '%s' "$SHA" | tr a-f A-F)" false
-# buildinfo shapes `go version -m` really prints: a dep line carrying the tag, no vcs lines at all (-buildvcs=false), a second mod line
+# buildinfo shapes `go version -m` really prints: a dep line carrying the tag, no vcs lines at all
+# (-buildvcs=false), a second mod line
 vcf() { # vcf ok|refuse LABEL WORD  (buildinfo text on stdin)
   local want=$1 label=$2 word=$3 rc=0
   cat > "$W/buildinfo.txt"; : > "$W/fscache"
@@ -189,20 +195,29 @@ vcf() { # vcf ok|refuse LABEL WORD  (buildinfo text on stdin)
   if [ "$want" = ok ]; then [ "$rc" = 0 ] && ok "$label" || bad "$label -> exit $rc: $(head -c 150 "$W/vc.err")"
   else [ "$rc" = 1 ] && grep -Fqi -- "$word" "$W/vc.err" && ok "$label" || bad "$label -> exit $rc, wanted 1 naming '$word': $(head -c 150 "$W/vc.err")"; fi
 }
-vcf refuse "AC7 a DEP line carrying the tag does not make the module version the tag (only the main module's mod line counts)" version < <(
-  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.1	" \
+vcf refuse \
+  "AC7 a DEP line carrying the tag does not make the module version the tag (only the main module's mod line counts)" \
+  version < <(
+  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" \
+    "	mod	github.com/fosterstack/cache	v0.3.1	" \
     "	dep	example.com/other	v0.3.0	h1:abc=" "	build	vcs.revision=$SHA" "	build	vcs.modified=false")
-vcf refuse "AC7 no vcs lines at all (built with -buildvcs=false) is refused: the revision cannot be proven" revision < <(
-  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" \
+vcf refuse \
+  "AC7 no vcs lines at all (built with -buildvcs=false) is refused: the revision cannot be proven" revision < <(
+  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" \
+    "	mod	github.com/fosterstack/cache	v0.3.0	" \
     "	build	-buildvcs=false")
 vcf refuse "AC7 a second mod line is ambiguous and refused" mod < <(
-  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" \
+  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" \
+    "	mod	github.com/fosterstack/cache	v0.3.0	" \
     "	mod	github.com/evil/cache	v0.3.0	" "	build	vcs.revision=$SHA" "	build	vcs.modified=false")
 vcf refuse "AC7 two vcs.revision lines are ambiguous and refused" revision < <(
-  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" \
-    "	build	vcs.revision=$SHA" "	build	vcs.modified=false" "	build	vcs.revision=fedcba9876543210fedcba9876543210fedcba98")
+  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" \
+    "	mod	github.com/fosterstack/cache	v0.3.0	" \
+    "	build	vcs.revision=$SHA" "	build	vcs.modified=false" \
+    "	build	vcs.revision=fedcba9876543210fedcba9876543210fedcba98")
 vcf ok "AC7 a dep line that also says v0.3.0 is not an obstacle when the main module and the revision are right" "" < <(
-  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" \
+  printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" \
+    "	mod	github.com/fosterstack/cache	v0.3.0	" \
     "	build	vcs.revision=$SHA" "	build	vcs.modified=false" "	dep	example.com/other	v0.3.0	h1:abc=")
 # the apk directory form: the checker finds the variant's apk itself, extracts the binary with apk-tool, then checks as --binary does
 mkdir -p "$W/vcwd/bin";
@@ -235,7 +250,11 @@ vca refuse "AC7 apk directory: a binary whose version is not the tag is refused 
 rc=0
 (cd "$W/vcwd" && PATH="$FB:$PATH" python3 "$BV" --apk-dir "$W/apkd" --binary "$W/fscache" --variant standard --tag v0.3.0 --sha "$SHA" > /dev/null 2> \
     "$W/vc.err") || rc=$?
-[ "$rc" = 2 ] && ok "AC7 both --binary and --apk-dir is a usage error (exit 2)" || bad "AC7 both options -> exit $rc, wanted 2"
+if [ "$rc" = 2 ]; then
+  ok "AC7 both --binary and --apk-dir is a usage error (exit 2)"
+else
+  bad "AC7 both options -> exit $rc, wanted 2"
+fi
 # the fixed path and the closed environment (the cases above ran through the wrapper at the substituted path, with a runner `go` on PATH)
 bi out/fscache v0.3.0 "$SHA" false > "$W/buildinfo.txt"; : > "$W/fscache"; : > "$W/vcgo.log"; rc=0
 hostile env PATH="$FB:$PATH" python3 "$BV" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
@@ -246,11 +265,17 @@ for want in GOTOOLCHAIN=local GOFLAGS= GOENV=off GOROOT=unset GOPROXY=unset GOPA
   grep -qxF "ENV $want" "$W/vcgo.log" && ok "AC7 the go call's environment has $want (closed: nothing inherited)" || bad "AC7 the go call's environment lacks $want: $(grep '^ENV' "$W/vcgo.log" | tr '\n' ' ')"
 done
 mkvcopy "$W/bvc-absent.py" "$W/no-such-go"; rc=0; : > "$W/vcgo.log"
-PATH="$FB:$PATH" python3 "$W/bvc-absent.py" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
-[ "$rc" = 1 ] && grep -Fq "buildinfo" "$W/vc.err" && ! grep -q 'runner-path' "$W/vcgo.log" && ok "AC7 an absent go at the fixed path is a refusal, and PATH is not consulted" \
+PATH="$FB:$PATH" python3 "$W/bvc-absent.py" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" \
+  > /dev/null 2> "$W/vc.err" || rc=$?
+[ "$rc" = 1 ] && grep -Fq "buildinfo" "$W/vc.err" && ! grep -q 'runner-path' "$W/vcgo.log" \
+  && ok "AC7 an absent go at the fixed path is a refusal, and PATH is not consulted" \
   || bad "AC7 absent go -> exit $rc, stderr $(head -c 150 "$W/vc.err"), log $(head -c 100 "$W/vcgo.log")"
-grep -Eq '^GO_TOOL = "/usr/local/bin/fscache-go/bin/go"  # TEST-SUBST$' "$BVR" && ok "AC7 the production file names the pinned toolchain's fixed path" || bad "AC7 the production file does not name /usr/local/bin/fscache-go/bin/go"
-! grep -Eq 'subprocess\.run\(\[ *"go"' "$BVR" && ok "AC7 the production file never runs go by its bare name" || bad "AC7 the production file runs go by its bare name"
+grep -Eq '^GO_TOOL = "/usr/local/bin/fscache-go/bin/go"  # TEST-SUBST$' "$BVR" \
+  && ok "AC7 the production file names the pinned toolchain's fixed path" \
+  || bad "AC7 the production file does not name /usr/local/bin/fscache-go/bin/go"
+! grep -Eq 'subprocess\.run\(\[ *"go"' "$BVR" \
+  && ok "AC7 the production file never runs go by its bare name" \
+  || bad "AC7 the production file runs go by its bare name"
 # ---- the admission fixtures ----------------------------------------------------------------------------------------------
 mkkeys() { mkdir -p "$W/keys"; for k in owner attacker; do ssh-keygen -q -t ed25519 -N "" -C "$k@example.com" -f "$W/keys/$k"; done
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/keys/ci.key" -out "$W/keys/ci.crt" -subj "/CN=release-workflow" -days 2 2> /dev/null
@@ -487,8 +512,13 @@ if [ -f "$W/c/repo/admission.json" ]; then
       "AC4 every GitHub call is a GET of the commits API (at least the four reads: checks and statuses and pulls of the tagged commit, checks of the PR head)" \
       || bad \
       "AC4 gh calls are not exactly GETs of the commits API (count $(grep -c '^gh api' "$W/c/calls.log")): $(grep NON-GET "$W/c/calls.log" | head -1)"
-else for l in "canonical" "content" "sources" "token" "deterministic" "GET only"; do bad "AC4 admission.json $l (no admission.json)"; done; fi
-! grep -Eq '\b(curl|wget)\b|api\.github\.com' "$BA" && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
+else
+  for l in "canonical" "content" "sources" "token" "deterministic" "GET only"; do
+    bad "AC4 admission.json $l (no admission.json)"
+  done
+fi
+! grep -Eq '\b(curl|wget)\b|api\.github\.com' "$BA" \
+  && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
     "AC4 build-admit.py calls the network itself"
 # ---- tag-ref, tag-syntax ---------------------------------------------------------------------------------------------------------
 fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4 a branch ref is refused (tag pushes only)" tag-ref
@@ -550,8 +580,8 @@ expect_refuse \
 fresh; retag light; run_admit;   expect_refuse "AC4 a lightweight tag is refused" tag-annotated
 fresh; retag none; run_admit;    expect_refuse "AC4 an unsigned annotated tag is refused" tag-signature
 fresh; retag attacker; run_admit; expect_refuse "AC4 a tag signed by a key that is not in main's allowed signers is refused" tag-signature
-# a keyless patch tag and a keyless minor tag are refused at tag-signature, and gitsign is never run; an owner-signed patch tag passes
-# this check and meets the later ones (the rc-proof cases below)
+# a keyless patch tag and a keyless minor tag are refused at tag-signature, and gitsign is never run; an
+# owner-signed patch tag passes this check and meets the later ones (the rc-proof cases below)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC4 a keyless patch tag is refused at tag-signature: no keyless route is left" tag-signature keyless
 grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a keyless patch tag" || ok "AC4 gitsign is never run, not even to look at a keyless patch tag"
@@ -776,10 +806,10 @@ expect_refuse "AC4 a baseline whose approved is the string 'true' is refused" ba
 fresh; base_edit 'd["version"] = "v0.2.9"'; run_admit;             expect_refuse "AC4 a baseline for another version is refused" baseline version
 fresh; base_edit 'd["approved_on"] = "soon"'; run_admit;           expect_refuse "AC4 a baseline with no real approval date is refused" baseline approved_on
 fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse "AC4 an empty required set is not a baseline" baseline release_blocking_acs
-# REQ-CHAIN-004-AC4: the requirements tool is Go code of the tagged commit, so it does not run inside Build. The `freeze` job
-# runs verify-freeze for every baseline file and writes freeze/freeze.txt, one `freeze-ok COMMIT BASE` line for each that passed.
-# Admission starts no Go: it reads that file, requires the line for the tagged commit and its base, and prints the file's sha256
-# and that line.
+# REQ-CHAIN-004-AC4: the requirements tool is Go code of the tagged commit, so it does not run inside Build.
+# The `freeze` job runs verify-freeze for every baseline file and writes freeze/freeze.txt, one `freeze-ok
+# COMMIT BASE` line for each that passed. Admission starts no Go: it reads that file, requires the line for
+# the tagged commit and its base, and prints the file's sha256 and that line.
 fresh; run_admit
 expect_ok "AC4 the freeze file lists freeze-ok for the base admission computed (the default file lists every baseline \
 file of the tagged commit): admitted"
@@ -806,8 +836,9 @@ fresh; head -c 70000 /dev/zero | tr '\0' 'a' > "$W/c/repo/freeze/freeze.txt"; ru
 expect_refuse "AC4 an oversized freeze file is refused" baseline freeze
 fresh; : > "$W/c/repo/freeze/freeze.txt"; run_admit
 expect_refuse "AC4 an empty freeze file is refused" baseline v0.3.0
-# bin/build-freeze.sh decides which baselines get a line: a stub go (its pinned path substituted in a copy) fails the bases named
-# in STUB_FAIL. The repo has two baseline files; the line carries the checked-out commit.
+# bin/build-freeze.sh decides which baselines get a line: a stub go (its pinned path substituted in a copy)
+# fails the bases named in STUB_FAIL. The repo has two baseline files; the line carries the checked-out
+# commit.
 BF="$W/bf"; mkdir -p "$BF/bin"
 printf '#!/usr/bin/env bash\ncase " $STUB_FAIL " in *" ${@: -1} "*) exit 1 ;; esac\nexit 0\n' > "$BF/go-stub"; chmod \
   +x "$BF/go-stub"
@@ -846,7 +877,7 @@ else bad "AC4 build-admit.py still names the Go freeze check"; fi
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC4 a patch tag cannot reach the baseline check with fabricated signer evidence (it stops earlier)" tag-signature
-# ---- required-checks: duplicates, another sha, pagination ----------------------------------------------------------------------
+# ---- required-checks: duplicates, another sha, pagination
 ckf() { echo "$W/c/gh/repos_fosterstack_cache_commits_$1_check-runs.json"; }
 fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
 import json, sys
@@ -873,7 +904,7 @@ elif grep -Eq '^gh api .*check-runs' "$W/c/calls.log";
 then ok "AC4 every check-runs call carries --paginate (in either argument order: the fake gh accepts both)";
 else bad "AC4 no check-runs call was made";
 fi
-# ---- policy comes from main for the signer-routing script and the gitsign installer too; the re-tag race -------------------------
+# ---- policy comes from main for the signer-routing script and the gitsign installer too; the re-tag race
 # pkcs7_tag NAME SHA : an annotated tag object whose signature block is a REAL PKCS7 signature (openssl) over the tag payload, labelled as gitsign labels it
 pkcs7_tag() {
   local name=$1 sha=$2
@@ -903,8 +934,8 @@ else bad "AC4 policy from main: a script of the tagged commit ran on the patch r
 fi
 fresh; commit_move owner "newer"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit GITHUB_SHA="$SHAC"
 expect_refuse "AC4 the re-tag race: a tag that was moved after the event (it no longer points at GITHUB_SHA) is refused" tag-ref sha
-# ---- a patch tag with a REAL PKCS7 (keyless) signature is refused: the router refuses a keyless signature on every tag. The baseline
-# subcommands have their own tests in bin/admission-tag-signer-test.sh. -----------------------------------------------------------
+# ---- a patch tag with a REAL PKCS7 (keyless) signature is refused: the router refuses a keyless signature on
+# every tag. The baseline subcommands have their own tests in bin/admission-tag-signer-test.sh.
 patch_setup() { # patch_setup : a signed commit on main and the patch tag v0.3.1 on it, signed as gitsign signs (a real PKCS7 block)
   fresh
   G checkout -q main 2> /dev/null
@@ -917,7 +948,8 @@ patch_setup; run_patch
 expect_refuse "AC4 a patch tag with a real PKCS7 signature and an owner-approved baseline is refused at tag-signature: gitsign is out" tag-signature keyless
 grep -q 'gitsign' "$W/c/calls.log" 2> /dev/null && bad "AC4 gitsign was run for a real-PKCS7 patch tag" || ok "AC4 gitsign is not run for a real-PKCS7 patch tag either"
 [ ! -e "$W/c/repo/admission.json" ] && ok "AC4 no admission.json for a refused patch tag" || bad "AC4 admission.json exists after a patch tag was refused"
-# ---- rc-proof (REQ-CHAIN-001-AC6): a final or patch tag needs the committed marker of origin/main; an rc tag is exempt ----------------
+# ---- rc-proof (REQ-CHAIN-001-AC6): a final or patch tag needs the committed marker of origin/main; an rc tag
+# is exempt
 mainfix() { # mainfix DESCRIPTION CMD : on main, run CMD in the clone (the file edit), commit it owner-signed, push, retag v0.3.0 at it, serve green checks for it
   fresh; G checkout -q main; (cd "$W/c/repo" && eval "$2"); G add -A
   G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "$1"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
@@ -938,7 +970,8 @@ expect_refuse "AC6 a marker naming an rc tag that does not exist is refused" rc-
 fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; G -c user.signingkey="$W/keys/owner" commit -q -S -m "marker removed"; G push -q origin main 2> /dev/null
 G fetch -q origin 2> /dev/null; G checkout -q --detach v0.3.0; run_admit
 expect_refuse "AC6 the marker is read from origin/main: v0.3.0 (whose own tree has a marker) is refused when main has none" rc-proof marker
-# an owner-signed patch tag is admitted like any owner-signed tag: the marker on main, an approved requirements/releases/v0.3.1.yaml, green checks
+# an owner-signed patch tag is admitted like any owner-signed tag: the marker on main, an approved
+# requirements/releases/v0.3.1.yaml, green checks
 fresh; G checkout -q main
 sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
@@ -977,7 +1010,7 @@ G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/
 mkfreeze
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
-# ---- the committed web-flow keyring: exactly the current GitHub web-flow key, no expired key -------------------------------------------
+# ---- the committed web-flow keyring: exactly the current GitHub web-flow key, no expired key
 wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')
 [ "$wf_keys" = "B5690EEEBB952194:-" ] && ok "the committed github-web-flow.gpg holds only the current web-flow key B5690EEEBB952194, not expired" || bad "github-web-flow.gpg holds: ${wf_keys//$'\n'/ } (want only B5690EEEBB952194, not expired)"
 wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "fpr" { print $10 }')
