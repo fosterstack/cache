@@ -342,9 +342,7 @@
         "script",
         "trap"
       ],
-      "runs": [
-        "bash"
-      ],
+      "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
       "sha256": "f4ed2815275af45958ef3350ffd77e1414f8d7a6abd62aee04d725cbdea7d230",
@@ -369,6 +367,11 @@
         "release-verify": "bin/release-verify.sh"
       },
       "exceptions": [
+        {
+          "rule": "witness-target",
+          "text": "bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2: the wrapped command is `bash STEP-SCRIPT`; the target is one of the arg_map scripts, bound by the stage line"
+        },
         {
           "rule": "script-name",
           "text": "bin/chain-test-shape.py",
