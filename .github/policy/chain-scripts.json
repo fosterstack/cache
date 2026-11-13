@@ -244,7 +244,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
+      "sha256": "405eed3d61856a9d4a27c6fcc51c8adf25c6651f0d5fb62e46bbe6c5491aace0",
       "tools": [
         "at",
         "git"
@@ -528,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "4ebdf86843bb66bcf53e26c0e751fe2a27d2ba4385712e3e8fb94069bfaceeae",
+      "sha256": "a74f9b827f23c5debae0a6e71db45711f4be1bdd04313691f51f9f89a3e218ed",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -653,7 +653,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
-      "sha256": "7f5680fa99c677d6ccb051d03c1497814b0407a068ec4dff6c369d455b47ca81"
+      "sha256": "c2edc1df7c843dc4fe4a830c011e3c64940b2b36fef913031d953e7e666130b5"
     },
     {
       "path": "bin/chain_items.py",
@@ -2174,7 +2174,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
+      "sha256": "3e50007b042ddfd5214c828902e48c8008484641c72f087e13b431526c3d5280",
       "exceptions": [
         {
           "rule": "deny",
@@ -2255,7 +2255,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "a9ebc31e7fe8fe9336f763457c1ffa6cce89808b6c92961e8656904cd531762e",
+      "sha256": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
       "env_mentions": [
         {
           "name": "PATH",
@@ -2496,7 +2496,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "f2a7975cad37d1d4313e249965d16fa4d048526847f24df57ed48c7f94876371",
+      "sha256": "9fe018ae5ae5bf1bc25b23c5d37877347306654cf870f1308b349e045ac1b3c9",
       "exceptions": [
         {
           "rule": "script-name",
