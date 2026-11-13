@@ -8,6 +8,7 @@ sys.path.insert(0, BIN)
 sys.path.insert(0, os.path.dirname(__file__))
 from auditorlib import signed_commit as S  # noqa: E402
 import test_signed_commit as T  # noqa: E402
+from locale_cleared import setUpModule, tearDownModule  # noqa: E402,F401
 
 _spec = importlib.util.spec_from_file_location("auditor_signed_commit_cli", os.path.join(BIN, "auditor-signed-commit.py"))
 C = importlib.util.module_from_spec(_spec)
@@ -15,23 +16,6 @@ _spec.loader.exec_module(C)
 
 BASE, OID, REPO = "1" * 40, "2" * 40, "o/r"
 BR = "patch-notes/v0.2.9"
-
-
-_LOCALE_VARS = ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG")
-
-
-def setUpModule():
-    """argparse looks up translations in the system's locale directory when any locale variable is set, and the guard refuses that read of a
-    real system path: this module runs with none set, and puts the environment back exactly as it was."""
-    global _ENV_PATCH
-    _ENV_PATCH = mock.patch.dict(os.environ)
-    _ENV_PATCH.start()
-    for k in _LOCALE_VARS:
-        os.environ.pop(k, None)
-
-
-def tearDownModule():
-    _ENV_PATCH.stop()
 
 
 class Fake(T.Prefixes.Rec):
