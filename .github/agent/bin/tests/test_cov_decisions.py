@@ -160,6 +160,33 @@ class ClassifyManifestValidation(unittest.TestCase):
         ok = self.man(scanner_status=reasons)
         self.assertIs(classify.validate_manifest(ok), ok)
 
+    PATHS = {k: "/x/%s.json" % k for k in ("grype", "scout", "inspector", "google")}
+
+    def test_a_scanner_status_that_is_a_list_or_null_is_refused_by_name(self):
+        for bad in ([], ["grype"], [{"grype": {"reason": "x"}}], None, "grype", 7):
+            with self.assertRaisesRegex(ValueError, "scanner_status"):
+                classify.validate_manifest(self.man(scanner_reports=dict(self.PATHS), scanner_status=bad))
+            with self.assertRaisesRegex(ValueError, "scanner_status"):       # also when a report is null and its reason is wanted
+                classify.validate_manifest(self.man(scanner_status=bad))
+
+    def test_a_scanner_status_object_is_still_accepted(self):
+        ok = self.man(scanner_reports=dict(self.PATHS), scanner_status={"grype": {"reason": None}})
+        self.assertIs(classify.validate_manifest(ok), ok)
+        ok = self.man(scanner_reports=dict(self.PATHS))                         # absent is the first run's shape
+        self.assertIs(classify.validate_manifest(ok), ok)
+
+    def test_a_manifest_with_a_list_scanner_status_exits_by_name_without_a_traceback(self):
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        for bad in ([], ["grype"], None):
+            path = os.path.join(d, "manifest.json")
+            with open(path, "w") as fh:
+                json.dump(self.man(scanner_reports=dict(self.PATHS), scanner_status=bad), fh)
+            with mock.patch.object(cli, "ARGS", ["--manifest", path, "--out", os.path.join(d, "out")]):
+                with self.assertRaises(SystemExit) as cm:
+                    classify.main()
+            self.assertIsInstance(cm.exception.code, str, bad)               # a message, not a traceback and not a bare status
+            self.assertRegex(cm.exception.code, r"^classify: .*scanner_status", bad)
+
     def test_null_needs_reason_even_without_scanner_status(self):
         # LR-27 (c): a null report with no scanner_status at all used to pass validation
         with self.assertRaisesRegex(ValueError, "grype is null with no scanner_status reason"):
