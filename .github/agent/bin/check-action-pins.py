@@ -242,7 +242,7 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
-    "494e2a7bfe90b26a8f24f631c445d5d8d4da17f1bd8ba5061f1a21b01035a577",   # the same file after the change in flight
+    "97dee114a2bdae12b79e2fcabe925df52f80c4b66881908a48afc2a26cafeb77",   # the same file after the change in flight
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2746,7 +2746,10 @@ def _env_of(node):
         return None
     pairs = [(k.value, v.value) for k, v in envs[0].value
              if isinstance(k, yaml.ScalarNode) and isinstance(v, yaml.ScalarNode)]
-    return dict(pairs) if len(pairs) == len(envs[0].value) == len(dict(pairs)) else None
+    env = dict(pairs)
+    all_plain = len(pairs) == len(envs[0].value)
+    no_repeat = len(env) == len(pairs)
+    return env if all_plain and no_repeat else None
 
 
 def _env_breach(doc, key):
@@ -2755,6 +2758,8 @@ def _env_breach(doc, key):
     steps = _value(job, "steps")
     if not isinstance(steps, yaml.SequenceNode) or key[2] >= len(steps.value):
         return "the excluded step cannot be found"
+    if any(isinstance(k, yaml.ScalarNode) and k.value in ("container", "services") for k, _ in job.value):
+        return "the job has a container or services: their env reaches the step and is not read here"
     for where, node, expected in (("the workflow", doc, {}), ("the job", job, {}),
                                   ("the step", steps.value[key[2]], _STEP_ENV.get(key[:3], {}))):
         if _env_of(node) != expected:
@@ -2799,20 +2804,26 @@ DOWNLOAD_EXCLUSIONS = {
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
-    (".github/workflows/dependabot-reviewer.yml", "review", 4, "f5cd95a72e84a4ac7178afc40303cadfb2e2043f4c49d11de262bdac5c72a27f"): (
-        "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
+    (".github/workflows/dependabot-reviewer.yml", "review", 4,
+     "f5cd95a72e84a4ac7178afc40303cadfb2e2043f4c49d11de262bdac5c72a27f"): (
+        "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} "
+        "(set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
-    (".github/workflows/dependabot-reviewer.yml", "review", 8, "b5602620fa07f17d6ad21d63a0d07610997e5be305ab77efbf6385db082c41bf"): (
-        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
+    (".github/workflows/dependabot-reviewer.yml", "review", 8,
+     "fb8dac20d7728f14f8ba817ce4cb2f92e018cee9dccd90d5d84d1ed8899b02d2"): (
+        "the same identity-token request inside the decision loop's token refresh: "
+        "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }
 
 
 def _exclusion_key(item):
-    """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts: (workflow file, job, step index, sha256 of its run text), or None."""
+    """The DOWNLOAD_EXCLUSIONS key of one step of a job's scripts:
+    (workflow file, job, step index, sha256 of its run text), or None."""
     m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
-    return (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
+    digest = hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()
+    return (m.group(1), m.group(2), int(m.group(3)), digest) if m else None
 
 
 def _excluded_run_texts(scripts, name):
@@ -2866,7 +2877,8 @@ def check_runs(where_job, scripts, bad, tree=None):
                 continue
             key = _exclusion_key(item)
             excl = DOWNLOAD_EXCLUSIONS.get(key)
-            if excl and tree is not None and item[2] is None:    # a `shell:` (the step's or a default) can set the variable before the script runs: never excluded
+            # a `shell:` (the step's or a default) can set the variable before the script runs: never excluded
+            if excl and tree is not None and item[2] is None:
                 try:
                     ftext = tree.read(key[0])
                 except Exception:
@@ -2874,7 +2886,8 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if ftext is not None and excl[2] is None:
                     if _token_url_breach(ftext, excl[1], _excluded_run_texts(scripts, excl[1]), key) is None:
                         continue
-                elif ftext is not None and ftext.count(excl[2]) == 1 and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1:
+                elif (ftext is not None and ftext.count(excl[2]) == 1
+                      and len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext)) == 1):
                     continue
             for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(re.sub(r"\\\n", "", item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
                 bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
