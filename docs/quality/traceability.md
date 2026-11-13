@@ -954,7 +954,7 @@ A unique finding judged false with evidence from the image shall get a not_affec
 
 ### REQ-SCAN-010 — VEX in three forms
 
-Every release shall publish the VEX three ways, all generated from the one OpenVEX file: OpenVEX, an Amazon Inspector suppression-rule file, and CSAF 2.0, covering exactly the same statements.
+Every release shall publish the VEX three ways, all generated from the one OpenVEX file: OpenVEX, an Amazon Inspector suppression-rule file, and CSAF 2.0. The Inspector and CSAF files leave out a statement about a Go standard library version other than the one the release is built with, and the generator names each one it leaves out.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .vex/fosterstack-cache.openvex.json*
 
@@ -963,7 +963,7 @@ Every release shall publish the VEX three ways, all generated from the one OpenV
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement that names a package, scoped by CVE, image digest and that package, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
-| REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | 1 item(s) |
+| REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then the CSAF file carries every OpenVEX statement about this release's images, except that a Go standard library subcomponent at a version other than the one build/melange.yaml pins is left out of both the Inspector and the CSAF file (the OpenVEX file keeps it), and a statement left with nothing is left out whole; the generator names each statement it drops in one line; the Inspector file carries one rule per suppressible statement that names a package | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 2 item(s) |
 | REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC5 | Given a digest file, passed to the generator by its path: a JSON object with exactly two keys, production and fips; each value an object with exactly two keys, index and children; children an object with exactly two keys, linux/amd64 and linux/arm64; every digest a string of sha256: followed by 64 lower-case hexadecimal characters; when the three VEX forms are generated; then the forms name exactly the six digests in that file and no other image digest. The generator checks the file's shape and key set only. It does not check that the digests are the ones Build verified; that check belongs to the release workflow and is tested there. The generator reads no registry and opens no network connection. | unit | yes | approved | 1 item(s) |
