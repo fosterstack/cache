@@ -3,7 +3,8 @@
 # proves: REQ-CHAIN-004-AC10 — a signed Build record is checked against the release key
 # proves: REQ-CHAIN-005-AC4 — apk-compare: the comparison job's result file is accepted only as a pass for Build's attested apk digests
 #
-# Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67). One KMS-backed release key
+# Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63,
+# 67). One KMS-backed release key
 # signs every record: no keyless signing, no certificate, no timestamp authority; every signature keeps its Rekor entry.
 # Needs: bash, OpenSSL 3 (macOS: brew install openssl@3, found automatically), python3 with PyYAML (apt: python3-yaml).
 # Offline: an offline root key, a release key, a throwaway ed25519 key and every record are made at test time with openssl; no key is
@@ -13,7 +14,8 @@
 # sudo). Every refusal case is judged by exit code 1 (0 accepted; anything else, such as a missing script or a Python traceback, is an ERROR and
 # fails the case) AND by words the message must contain. The key manifest itself is tested in bin/chain-manifest-test.sh.
 #
-# A record is a DSSE envelope with exactly one signature {keyid, sig} (keyid optional, a string; Witness 0.12.0 writes the KMS
+# A record is a DSSE envelope with exactly one signature {keyid, sig} (keyid optional, a string; Witness
+# 0.12.0 writes the KMS
 # reference there and the verifier never looks a key up by it) made by the release key over the DSSE PAE (RSASSA-PKCS1-v1_5, SHA-256). The
 # envelope has no certificate, intermediates or timestamps field: a record that still carries one is an old-form record and is refused.
 # A record is bound to its stage by its TYPE and its collection name, never by who signed it (S2: step name, digest chain, and the AWS role's
@@ -45,7 +47,8 @@
 #       ("stage"). Runs the SAME verification as verify for stage PREV, then compares digests exactly: for a SLSA provenance record the
 #       subjects equal D.json's entries; for a Witness collection the product subject file:digests.json has sha256 == the sha256 of D.json's
 #       bytes (equal, not subset or superset); exit 1 with PREV and the cause in the message.
-#   chain-verify.py sign --check --signer cosign --items I.json --digests D.json --public-key PEM --build-record REC.json
+#   chain-verify.py sign --check --signer cosign --items I.json --digests D.json --public-key PEM
+#   --build-record REC.json
 #                   (--template T.json | --policy POLICY.json) --out DIR
 #       exactly ONE of --template (the committed template; the per-tag policy is made here from GITHUB_REF, which must be refs/tags/vX.Y.Z[-rcN]
 #       on a push, or a branch on workflow_dispatch = a dry run) and --policy (a finished policy). Build's record is verified as stage build
@@ -55,8 +58,10 @@
 #       sha256 of the PAE of the statement bytes, then ONE dsse 0.0.1 entry POSTed to the Rekor v1 the signing config <template dir>/cosign-signing-config.json names (no certificate authority, sign-in service or
 #       timestamp authority; the key is named by its alias, never by an ARN, a token or a file), then writes DIR/provenance.bundle.json and DIR/provenance.json (the bundle's DSSE envelope) and checks it
 #       with `verify` under the same policy before it prints ok; any refusal removes DIR. A bundle that carries a certificate is refused.
-#   --rekor-stub ENTRIES.json (verify, stage-start) names the Rekor entries file of a provenance or a release policy. No subcommand takes a
-#   trust root or a clock. check-build-record, bind-items, bind-check, check-list, sign-records, rc-proof, apk-compare, actions, record-env
+#   --rekor-stub ENTRIES.json (verify, stage-start) names the Rekor entries file of a provenance or a release
+#   policy. No subcommand takes a
+#   trust root or a clock. check-build-record, bind-items, bind-check, check-list, sign-records, rc-proof,
+#   apk-compare, actions, record-env
 #   and hostile-* are tested below.
 
 set -euo pipefail
@@ -410,7 +415,8 @@ variant("sign_keyid_num", _with("keyid", 5))
 variant("sign_extra_field", _with("note", "x"))
 # ---- Witness collections (real type, Statement v0.1 as Witness writes it; one in v1 form) and the signed policy
 add("build_coll", COLL, None, stmt="v0.1", coll_file="digests.json")
-# a record with a repeated JSON key, one with two signatures, and a collection whose subject list holds things that are not subjects
+# a record with a repeated JSON key, one with two signatures, and a collection whose subject list holds things
+# that are not subjects
 _t = open(p("sign_prov.json")).read(); open(p("sign_dupkey.json"), "w").write(_t.replace('"payloadType"', '"payloadType": "x", "payloadType"', 1))
 _j = json.load(open(p("sign_prov.json"))); _j["signatures"] = _j["signatures"] * 2; json.dump(_j, open(p("sign_2sig.json"), "w"))
 add("build_badsubj", COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": ["x", 5]}).encode())
@@ -461,7 +467,8 @@ add("release_stmt_policy", "https://in-toto.io/attestation/release/v0.1", D)
 for src in ("build_coll", "sign_prov"):
     open(p(src + "_u16.json"), "wb").write(open(p(src + ".json"), "rb").read().decode().encode("utf-16"))
 open(p("digests-u16.json"), "wb").write(open(p("digests.json"), "rb").read().decode().encode("utf-16"))
-# base64 is standard base64 and nothing else. Junk inside a field, and the URL-safe alphabet, are refused, not dropped/accepted.
+# base64 is standard base64 and nothing else. Junk inside a field, and the URL-safe alphabet, are refused, not
+# dropped/accepted.
 def mutate_field(src, name, fn):
     r = json.load(open(p(src + ".json"))); fn(r); json.dump(r, open(p(name + ".json"), "w"))
 def ins(s, ch, at=6): return s[:at] + ch + s[at:]
@@ -575,7 +582,8 @@ def _stmt(pt, subj, st="v1"): return json.dumps({"_type": STMT[st], "predicateTy
 add("sign_badname", PROV, None, payload=_stmt(PROV, [{"name": [], "digest": {"sha256": "a" * 64}}]))
 add("sign_baddigest", PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
 add("build_baddigest", COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}]}).encode())
-# AC8: a SIGNED collection whose environment record names a token variable is refused by the next stage's verifier (verify and stage-start),
+# AC8: a SIGNED collection whose environment record names a token variable is refused by the next stage's
+# verifier (verify and stage-start),
 # whichever ACTIONS_ID_TOKEN_REQUEST_ name it is, not from a fixed list; the same record without the variable is accepted
 def _envrec(var):
     att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"variables": {"GITHUB_REF": T, var: "x"}}}]
@@ -584,7 +592,8 @@ def _envrec(var):
 add("build_env_custom", COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_ID_TOKEN_REQUEST_CUSTOM"))
 add("build_env_gh", COLL, None, stmt="v0.1", payload=_envrec("GH_TOKEN"))
 add("build_env_runtime", COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_RUNTIME_URL"))
-add("build_env_sigstore", COLL, None, stmt="v0.1", payload=_envrec("SIGSTORE_ID_TOKEN"))   # the one sigstore token release-sign holds
+# the one sigstore token release-sign holds
+add("build_env_sigstore", COLL, None, stmt="v0.1", payload=_envrec("SIGSTORE_ID_TOKEN"))
 add("build_env_awstokfile", COLL, None, stmt="v0.1", payload=_envrec("AWS_WEB_IDENTITY_TOKEN_FILE"))   # handoff 0713 R2: the path of the token file the AWS SDK reads
 add("build_env_awsrole", COLL, None, stmt="v0.1", payload=_envrec("AWS_ROLE_ARN"))                       # handoff 0713 R2: the role the token is exchanged for
 add("build_env_clean", COLL, None, stmt="v0.1", payload=_envrec("HOSTNAME"))
@@ -1264,7 +1273,8 @@ GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 --policy t
 GITHUB_REF=refs/heads/main GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode on a branch (GITHUB_REF is not a tag) is refused" "tag|github_ref" $(TP tpl2)
 GITHUB_REF= GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with no GITHUB_REF is refused" "tag|github_ref" $(TP tpl4)
 
-# ---- production vs dry run: the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
+# ---- production vs dry run: the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch
+# record
 TPR() { echo sign --check --signer cosign --items "$work/items.json" --build-record "$work/$1.json" --template "$work/template.json" \
   --digests "$work/digests.json" --out "$work/sd/$2"; }
 CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --digests "$work/digests.json"; }
@@ -1477,9 +1487,12 @@ expect_ok     "WM a Rebuild record signed by the release key is accepted" verify
 expect_ok     "WM a Check record (collection scanners) signed by the release key is accepted" verify $(V) --stage check $(rec check_coll)
 expect_refuse "WM a Build record (collection build) presented as Check's is refused by its collection name, whoever signed it" "collection name" verify $(V) --stage check $(rec build_coll)
 expect_refuse "WM a Rebuild record (collection rebuild) presented as Check's is refused by its collection name" "collection name" verify $(V) --stage check $(rec rebuild_coll)
-# Build and Rebuild collections are signed by the same key, so only the collection name (apk or build against rapk or rebuild) tells them apart; the accepted cases above are the controls
-expect_refuse "WM a Build record (collection build) presented as Rebuild's is refused by its collection name" "collection name" verify $(V) --stage rebuild $(rec build_coll)
-expect_refuse "WM a Rebuild record (collection rebuild) presented as Build's is refused by its collection name" "collection name" verify $(V) --stage build $(rec rebuild_coll)
+# Build and Rebuild collections are signed by the same key, so only the collection name (apk or build against
+# rapk or rebuild) tells them apart; the accepted cases above are the controls
+expect_refuse "WM a Build record (collection build) presented as Rebuild's is refused by its collection name" \
+  "collection name" verify $(V) --stage rebuild $(rec build_coll)
+expect_refuse "WM a Rebuild record (collection rebuild) presented as Build's is refused by its collection name" \
+  "collection name" verify $(V) --stage build $(rec rebuild_coll)
 
 expect_refuse "N-8 a record written in UTF-16 is refused" "envelope" verify $(V) --stage build --record "$work/build_coll_u16.json"
 expect_refuse "N-8 a digest file in UTF-16 is refused by stage-start" "digest" $(ST release check) $(rec check_coll) --digests "$work/digests-u16.json"
@@ -1647,7 +1660,8 @@ expect_postsign_refuse "S1 Sign's own check: a bundle that reaches disk with an 
 expect_postsign_refuse "S1 a bundle whose signature is by a key the manifest does not name is refused: Sign verifies what it wrote before it says ok" "signature" otherkey
 [ "$POSTSIGN" = 10 ] && ok "S1 control: KMS WAS asked to sign in each of the ten cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 KMS was asked to sign in only $POSTSIGN of the ten bundle cases"
 expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/post-control"
-# 001-AC2: the Rekor entry must be for the statement Sign built; an entry for another statement is refused, naming the mismatch
+# 001-AC2: the Rekor entry must be for the statement Sign built; an entry for another statement is refused,
+# naming the mismatch
 # KA-2 p4 r2 (C6): the stage line always says "statement", so these three name the check that fired: kms-sign's own reason line (where=reason) is the payload-hash refusal
 expect_postsign_refuse "F1 a Rekor entry for a statement with swapped subjects is refused: the entry is not for the statement Sign built" "another payload than the statement signed" swapsubj reason
 expect_postsign_refuse "F1 a Rekor entry for a statement with a changed predicate is refused" "another payload than the statement signed" predicate reason
@@ -1738,7 +1752,8 @@ expect_refuse "R2-4 release <- sign: a subject whose name is a list is refused" 
 expect_refuse "R2-4 release <- sign: a subject whose digest is a list is refused" "sign|subject" $(ST release sign) $(rec sign_baddigest) --digests "$work/digests.json"
 expect_refuse "R2-4 rebuild <- build: a product subject whose digest is a list is refused" "build|subject" $(ST rebuild build) $(rec build_baddigest) --digests "$work/digests.json"
 expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused (at build since r7 B6: the record's own stage, as for its identity)" "build|subject" check-build-record --policy "$work/policy.json" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
-# a missing aws CLI: a refusal, not a traceback, and no output folder Sign made is left (KA-0 asks the aws CLI before the folder is made)
+# a missing aws CLI: a refusal, not a traceback, and no output folder Sign made is left (KA-0 asks the aws CLI
+# before the folder is made)
 WFREF=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
 mkdir -p "$work/noaws"; ln -sf "$(command -v "$OPENSSL")" "$work/noaws/openssl"
 rc=0; env GITHUB_WORKFLOW_REF="$WFREF" PATH="$work/noaws" "$PY3" "$(mkcv noaws "$work/noaws/openssl")" sign --check --signer cosign --public-key "$work/rel.pub" --items "$work/items.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --digests "$work/digests.json" --out "$work/sd/noaws" 2> "$work/err" > "$work/out" || rc=$?
@@ -1871,7 +1886,8 @@ for spec in "other:bin/other.sh" "readme:README.md" "ci:.github/workflows/ci.yml
   [ "$(shaof "$c")" = "$S1" ] && ok "AC6 bytes: a changed $n file ($f) is outside the set and does not change the sha" || bad "AC6 bytes: a changed $f changed the sha"
 done
 AG=".github/ag"ent      # assembled: the layout check refuses a file outside the agent folder that spells it out
-# the set closes over every file the chain files name or import (a script the workflow runs that no row lists, a file under the agent folder a sibling module)
+# the set closes over every file the chain files name or import (a script the workflow runs that no row lists,
+# a file under the agent folder a sibling module)
 rcg checkout -q -b closure "$C1"; mkdir -p "$RG/$AG/bin"
 printf "name: release\njobs:\n  d:\n    steps:\n      - run: python3 bin/decide.py go\n      - run: python3 $AG/bin/sig.py\n      # see bin/x-test.sh\n" > "$RG/.github/workflows/release.yml"
 mkdir -p "$RG/$AG/bin/pkg/sub" "$RG/$AG/bin/other"
@@ -2004,7 +2020,8 @@ m = json.load(open(sys.argv[1])); r = dict(m["records"]); r["sign"] = "f" * 64
 json.dump(dict(m, records=r), open("%s/marker-signdigest.json" % sys.argv[2], "w"))
 PY
 expect_refuse "AC6 rc-proof: a record whose sha256 is not the marker's is refused naming the record" "marker|digest|sign" $(RCP rc_ok "$C2" "$work/marker-signdigest.json")
-# the marker's run id is bound to the records: Sign's provenance (verified under the rc tag's identity) names the run it ran in
+# the marker's run id is bound to the records: Sign's provenance (verified under the rc tag's identity) names
+# the run it ran in
 python3 - "$work/marker-ok.json" "$work" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1])); json.dump(dict(m, run_id="2"), open("%s/marker-run2.json" % sys.argv[2], "w"))
