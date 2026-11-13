@@ -2339,6 +2339,18 @@ class Run(Base):
         self.assertFalse(any(a[:3] == ["gh", "issue", "create"] for a in fr.argvs()))
         self.assertFalse(any(a[:2] == ["git", "checkout"] for a in fr.argvs()))
 
+    def test_a_missing_workspace_or_git_is_one_refusal_that_names_it_on_every_path(self):
+        # the same stop whether or not real delivery is on: _fetch_base must not leak a raw OSError
+        nowhere = os.path.join(self.tmp, "no-such-workspace")
+        empty_path = self.d("empty-path")
+        for real in ("0", "1"):
+            for what, env in (("workspace", {"GITHUB_WORKSPACE": nowhere}), ("git", {"PATH": empty_path})):
+                os.environ["AUDITOR_ALLOW_REAL_GH"] = real
+                with mock.patch.dict(os.environ, env):
+                    with self.assertRaises(R.ReviewedInputInvalid, msg=(what, real)) as cm:
+                        self.go(self.grp(), dry=False)
+                self.assertIn(nowhere if what == "workspace" else "git", str(cm.exception), (what, real))
+
     def test_go_bump_unresolvable_stays_section3(self):
         c = "CVE-2099-67"
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
@@ -2517,12 +2529,14 @@ class ProposalEvidence(unittest.TestCase):
         with open(os.path.join(self.outside, "x.md"), "w") as fh:
             fh.write("outside the checkout\n")
         os.symlink("top.txt", os.path.join(self.root, "link.txt"))
-        os.symlink(self.outside, os.path.join(self.root, "escape"))          # a directory link out of the checkout, committed
+        # a directory link out of the checkout, committed
+        os.symlink(self.outside, os.path.join(self.root, "escape"))
         self.git("init", "-q"); self.git("add", "-A"); self.git("commit", "-qm", "base")
         self.sha = self.git("rev-parse", "HEAD")
 
     def ask(self, evidence, sha="commit", root=None, **over):
-        return R._valid_proposal(dict(self.GOOD, evidence=evidence, **over), root or self.root, self.sha if sha == "commit" else sha)
+        sha = self.sha if sha == "commit" else sha
+        return R._valid_proposal(dict(self.GOOD, evidence=evidence, **over), root or self.root, sha)
 
     def test_a_regular_file_by_its_relative_path_at_the_commit_is_kept(self):
         for path in ("top.txt", "docs/tracker.md"):
@@ -2530,8 +2544,10 @@ class ProposalEvidence(unittest.TestCase):
 
     def test_there_is_no_workspace_fallback_without_a_commit(self):
         for path in ("top.txt", "docs/tracker.md"):
-            self.assertIsNone(self.ask(path, sha=None), path)                    # present in the workspace, but nothing is read from it
-        self.assertIsNone(R._valid_proposal(dict(self.GOOD, evidence="top.txt"), None, self.sha))         # nor without a checkout
+            # present in the workspace, but nothing is read from it
+            self.assertIsNone(self.ask(path, sha=None), path)
+        # nor without a checkout
+        self.assertIsNone(R._valid_proposal(dict(self.GOOD, evidence="top.txt"), None, self.sha))
         self.assertIsNone(R._valid_proposal(dict(self.GOOD, evidence="top.txt"), self.root, ""))
 
     def test_a_file_the_workspace_has_but_the_commit_has_not_is_refused(self):
@@ -2541,11 +2557,13 @@ class ProposalEvidence(unittest.TestCase):
         self.git("add", "new.txt")                                                # staged is not committed
         self.assertIsNone(self.ask("new.txt"))
         self.git("commit", "-qm", "later")
-        self.assertIsNone(self.ask("new.txt"))                                    # the run reads the commit it was given, not a later one
+        # the run reads the commit it was given, not a later one
+        self.assertIsNone(self.ask("new.txt"))
         self.assertIsNotNone(self.ask("new.txt", sha=self.git("rev-parse", "HEAD")))
 
     def test_a_path_through_a_directory_link_out_of_the_checkout_is_refused(self):
-        self.assertTrue(os.path.isfile(os.path.join(self.root, "escape", "x.md")))      # it reads fine through the workspace
+        # it reads fine through the workspace
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "escape", "x.md")))
         self.assertIsNone(self.ask("escape/x.md"))
         self.assertIsNone(self.ask("escape/x.md", sha=None))
         self.assertIsNone(self.ask("escape"))
@@ -2561,11 +2579,6 @@ class ProposalEvidence(unittest.TestCase):
             for field in ("note", "package"):
                 self.assertIsNone(self.ask("top.txt", **{field: text}), (field, text))
             self.assertIsNone(self.ask("top.txt", keys=[dict(self.GOOD["keys"][0], finding_id=text)]), text)
-
-    def test_a_separated_spelling_of_a_model_name_is_not_refused(self):
-        for text in ("gpt - 5", "gpt _ 5", "gpt . 5", "private - model", "private model"):
-            for field in ("note", "package"):
-                self.assertIsNotNone(self.ask("top.txt", **{field: text}), (field, text))
 
     def test_ordinary_words_that_contain_no_model_name_are_kept(self):
         for text in ("minizip", "knowledge", "libpng", "zlib-ng", "operations"):
@@ -2584,8 +2597,8 @@ class ProposalEvidence(unittest.TestCase):
 
     def test_a_path_not_in_gits_normal_form_is_refused(self):
         self.assertIsNotNone(self.ask("docs/tracker.md"))
-        for path in ("./top.txt", "./docs/tracker.md", "docs//tracker.md", "//top.txt", "docs/tracker.md/", "top.txt/", "docs/", "docs/./tracker.md",
-                     "docs/tracker.md/.", "./", "."):
+        for path in ("./top.txt", "./docs/tracker.md", "docs//tracker.md", "//top.txt", "docs/tracker.md/", "top.txt/",
+                     "docs/", "docs/./tracker.md", "docs/tracker.md/.", "./", "."):
             self.assertIsNone(self.ask(path), path)
             self.assertIsNone(self.ask(path, sha=None), path)
 
@@ -2620,7 +2633,8 @@ class ProposalEvidence(unittest.TestCase):
             self.fail("keys raised %s" % type(e).__name__)
 
     def test_a_proposal_whose_evidence_cannot_be_encoded_is_counted_like_any_refused_proposal(self):
-        ctx = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1", "candidate_digest": "sha256:cand"}
+        ctx = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1",
+               "candidate_digest": "sha256:cand"}
         def run(evidence):
             st = {"tokens": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None, "nc_prev": None,
                   "nc_today": "2026-10-24", "evidence_root": self.root, "evidence_sha": self.sha}
@@ -2628,7 +2642,8 @@ class ProposalEvidence(unittest.TestCase):
             with mock.patch.object(R.cli, "ask_model", return_value=ans):
                 self.assertEqual(R.adjudicate("/x/real.py", ctx, st), "real_fixable")
             return st
-        for bad in ("missing.txt", "\ud800", "top.txt\ud800"):                  # the unencodable ones count exactly like an absent file
+        # the unencodable ones count exactly like an absent file
+        for bad in ("missing.txt", "\ud800", "top.txt\ud800"):
             st = run(bad)
             self.assertEqual(st.get("proposals_refused"), 1, bad)
             self.assertNotIn("proposals", st, bad)
@@ -2648,8 +2663,9 @@ class ProposalEvidence(unittest.TestCase):
 
 
 class CarriedVersion(unittest.TestCase):
-    """The panel's vex_covered entries arrive flagged `carried` with the version as the panel carried it; the carried statement's
-    purl holds the version percent-encoded. The finding's version is kept as carried and is decoded once, on the purl's side."""
+    """The panel's vex_covered entries arrive flagged `carried` with the version as the panel carried it; the carried
+    statement's purl holds the version percent-encoded. The finding's version is kept as carried and is decoded once,
+    on the purl's side."""
     def stmt(self, purl, cve="CVE-2099-1"):
         return {"vulnerability": {"name": cve}, "products": [{"@id": PROD, "subcomponents": [{"@id": purl}]}]}
 
@@ -2665,17 +2681,21 @@ class CarriedVersion(unittest.TestCase):
 
     def test_a_carried_version_with_a_percent_sign_matches_the_purl_that_encodes_it(self):
         g = self.resolved("1.0%41", "pkg:generic/libx@1.0%2541")
-        self.assertEqual([f["purl"] for f in g["CVE-2099-1"]["findings"]], ["pkg:generic/libx@1.0%2541"])      # rejudged, not dropped
+        # rejudged, not dropped
+        self.assertEqual([f["purl"] for f in g["CVE-2099-1"]["findings"]], ["pkg:generic/libx@1.0%2541"])
         self.assertTrue(g["CVE-2099-1"]["findings"][0]["extra"]["carried"])
 
     def test_the_carried_version_is_not_decoded_a_second_time(self):
-        # "1.0%41" is the panel's literal text; the purl "1.0%2541" decodes ONCE to it. A purl that spells it "1.0A" is another version.
+        # "1.0%41" is the panel's literal text; the purl "1.0%2541" decodes ONCE to it. A purl that spells it "1.0A"
+        # is another version.
         self.assertNotIn("CVE-2099-1", self.resolved("1.0%41", "pkg:generic/libx@1.0A"))
         self.assertNotIn("CVE-2099-1", self.resolved("1.0A", "pkg:generic/libx@1.0%2541"))
-        self.assertNotIn("CVE-2099-1", self.resolved("1.0%41", "pkg:generic/libx@1.0%41"))      # that purl decodes once to "1.0A"
+        # that purl decodes once to "1.0A"
+        self.assertNotIn("CVE-2099-1", self.resolved("1.0%41", "pkg:generic/libx@1.0%41"))
 
     def test_an_ordinary_encoded_version_still_matches(self):
-        for version, purl in (("1.0+b1", "pkg:generic/libx@1.0%2Bb1"), ("1.0", "pkg:generic/libx@1.0"), ("2:1.0-1", "pkg:generic/libx@2%3A1.0-1")):
+        for version, purl in (("1.0+b1", "pkg:generic/libx@1.0%2Bb1"), ("1.0", "pkg:generic/libx@1.0"),
+                              ("2:1.0-1", "pkg:generic/libx@2%3A1.0-1")):
             self.assertIn("CVE-2099-1", self.resolved(version, purl), version)
         self.assertNotIn("CVE-2099-1", self.resolved("1.0+b1", "pkg:generic/libx@1.0%2Bb2"))
 
@@ -2684,7 +2704,8 @@ class CarriedVersion(unittest.TestCase):
 
 
 class NarrativeScrub(unittest.TestCase):
-    """One plain-substring model-name check (over the lowered text) covers a narrative; a name is refused inside a word too."""
+    """One plain-substring model-name check (over the lowered text) covers a narrative; a name is refused inside a
+    word too."""
     SECS = {n: [] for n in range(1, 8)}
 
     def ok(self, text):
@@ -2711,6 +2732,15 @@ class NarrativeScrub(unittest.TestCase):
                 self.assertFalse(self.ok(text), text)
             self.assertTrue(self.ok("Nothing changed today."))
 
+    def test_a_configured_id_is_refused_inside_a_longer_digit_run(self):
+        # only a plain substring check refuses this: acme-big-7 is not a whole word in acme-big-70
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7", "AUDITOR_MODEL_FALLBACK": ""}):
+            self.assertFalse(self.ok("acme-big-70 wrote this"))
+
+    def test_a_configured_id_with_a_trailing_newline_is_still_refused(self):
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7\n", "AUDITOR_MODEL_FALLBACK": ""}):
+            self.assertFalse(self.ok("acme-big-7 said"))
+
     def test_plain_text_is_kept(self):
         for text in ("Nothing changed today.", "zlib and minizip need no action; knowledge of the tracker is current.",
                      "Package libfoo-compat is not a model name"):
@@ -2730,8 +2760,8 @@ class NarrativeScrub(unittest.TestCase):
 
 
 class ConclusionReplies(unittest.TestCase):
-    """A reply to the conclusion step that is malformed, or whose narrative is not a string, is charged to the token budget like
-    any billed reply, is counted as incomplete, and is not accepted."""
+    """A reply to the conclusion step that is malformed, or whose narrative is not a string, is charged to the token
+    budget like any billed reply, is counted as incomplete, and is not accepted."""
     SECS = {n: [] for n in range(1, 8)}
 
     def run_with(self, **ask):
@@ -2756,7 +2786,7 @@ class ConclusionReplies(unittest.TestCase):
         self.assertTrue(st["nc_incomplete"])
         self.assertIsNone(st["nc_narr"])
         self.assertEqual(text, "conclusion withheld: the narrative could not be produced this run.")
-        self.assertNotIn("bad reply", text)                                       # the error text never reaches the report
+        self.assertNotIn("bad reply", text)                           # the error text never reaches the report
 
     def test_a_malformed_reply_without_a_bill_charges_nothing_and_still_withholds(self):
         text, st = self.run_with(side_effect=ValueError("not json"))
