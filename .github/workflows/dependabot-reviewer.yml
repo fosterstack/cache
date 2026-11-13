@@ -102,11 +102,11 @@ jobs:
         # diff, and its success is no verdict, so the head is read as a head with none is.
         # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same
         # change was read.
-        # A plain patch/minor keeps the auto-merge workflow's arm through the review; any
-        # other arm without a success comes off before the review, so a setup step that fails later cannot leave it
-        # standing. A person's disarm is never undone.
-        # A lookup that fails is never "nothing to do": the PR is skipped and the step fails, so the failure
-        # streak sees it.
+        # A plain patch or minor keeps the auto-merge workflow's arm through the review. Any other arm without a
+        # success comes off before the review, so a setup step that fails later cannot leave it standing. A person's
+        # disarm is never undone.
+        # A lookup that fails is never "nothing to do": the PR is skipped and the step fails, so the failure streak
+        # sees it.
         run: |
           set +e -uo pipefail
           mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
@@ -115,11 +115,12 @@ jobs:
           # <sha>: the App's latest reviewer check on that commit: its conclusion, or none (also for a success of
           # another version)
           verdict_of() {
-            GH_TOKEN="$APP_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer&per_page=100" \
-              --jq "if .total_count != (.check_runs | length) then error else . end
+            local run_url="repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer"
+            GH_TOKEN="$APP_TOKEN" gh api "$run_url&filter=all&per_page=100" \
+              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
                     | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
-                    | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
+                    | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
+                        then \"none\"
                       else .conclusion // \"none\" end"
           }
           # <sha> <why>: the review gate's own check, as the gate publishes it (same name, same App), says failure on
@@ -246,7 +247,8 @@ jobs:
                         --jq '.[] | select(.event | IN("auto_merge_enabled", "auto_merge_disabled",
                               "auto_squash_enabled", "auto_squash_disabled",
                               "auto_rebase_enabled", "auto_rebase_disabled"))
-                              | (.event | sub("^auto_(squash|rebase)_"; "auto_merge_")) + " " + .actor.login' \
+                              | (if (.event | endswith("_disabled")) then "auto_merge_disabled"
+                                 else "auto_merge_enabled" end) + " " + .actor.login' \
                       | tail -n 1; \
                       [ "${PIPESTATUS[0]}" = 0 ]); then
                     echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge events — skipped this hour"; lookup_failed=1; continue
@@ -581,12 +583,13 @@ jobs:
             || { echo "::error::cannot compute the reviewer's version — no verdict is published"; exit 1; }
           while read -r n sha; do
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
-            latest=$(GH_TOKEN="$APP_TOKEN" gh api \
-                     "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer&per_page=100" \
-                       --jq "if .total_count != (.check_runs | length) then error else . end
-                             | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
-                       | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
-                         else .conclusion // \"none\" end") || latest=unknown
+            run_url="repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer"
+            latest=$(GH_TOKEN="$APP_TOKEN" gh api "$run_url&filter=all&per_page=100" \
+              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+                    | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+                    | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
+                        then \"none\"
+                      else .conclusion // \"none\" end") || latest=unknown
             if [ "$latest" = success ]; then echo "PR #$n: success check is on the head — the arm is recorded, left as is"; continue; fi
             if [ "$latest" = unknown ]; then
               # the gate's check first, as with every verdict that is not success; without it the neutral is not
@@ -628,13 +631,13 @@ jobs:
             || { echo "::error::cannot compute the reviewer's version — no arm is settled"; exit 1; }
           while read -r n sha _; do
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
-            if ! latest=$(GH_TOKEN="$APP_TOKEN" gh api \
-                     "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer&per_page=100" \
-                       --jq "if .total_count != (.check_runs | length) then error else . end
-                             | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
-                             | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
-                                 then \"none\"
-                               else .conclusion // \"none\" end") || [ -z "$latest" ]; then
+            run_url="repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer"
+            if ! latest=$(GH_TOKEN="$APP_TOKEN" gh api "$run_url&filter=all&per_page=100" \
+              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+                    | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+                    | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
+                        then \"none\"
+                      else .conclusion // \"none\" end") || [ -z "$latest" ]; then
               echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — its arm is not settled"
               bad=1; continue
             fi
