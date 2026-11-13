@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""The pieces of the apk build driver that were inline Python or a hand-built environment, as one listed file
-(advisor ruling Oct 12, handoff 0393: the release chain's judge admits no inline Python, no assignment of a protected
-variable and no interpreter run on a variable path).
+"""The decisions of the apk and image build scripts (bin/build-apk.sh, bin/build-baselayout-apk.sh and
+bin/assemble-image.sh) that are Python, so the scripts stay straight-line text.
 
   build-apk-helper.py recipe-facts RECIPE GOARCH OUTFILE
       writes name=, file=, sha= (this architecture's toolchain fetch) and one pin= line per pinned build package;
       exit 1 when the recipe cannot be read or has not exactly one such fetch for GOARCH.
   build-apk-helper.py sealed-env DATAFILE
-      prints the closed list of the privileged melange call's variables as NAME=value items, each ended by a NUL
-      byte: the entries of DATAFILE's "closed", then each of its "from_environment" names read from this process
-      (exit 1 when one is missing). Nothing else is ever passed: there is no test mode, no inherited name and no
-      prefix rule (REQ-BUILDAPK-001-AC3). DATAFILE is read as a closed object: any other key or value type is
-      refused (exit 1).
+      prints the closed list of the variables of the privileged melange and apko calls as NAME=value items, each
+      ended by a NUL byte: the entries of DATAFILE's "closed", then each of its "from_environment" names read from
+      this process (exit 1 when one is missing). Nothing else is ever passed: there is no test mode, no inherited
+      name and no prefix rule (REQ-BUILDAPK-001-AC3). DATAFILE is read as a closed object: any other key or value
+      type is refused (exit 1).
 
 
   build-apk-helper.py sealed-call [--sealed-env FILE] ARG...
@@ -502,7 +501,7 @@ def baselayout_arg(name, *args):
     parse_options(args, BASELAYOUT_OPTIONS)   # called for its refusals: an unknown option stops here
     if name in ("goarch", "variant", "go-archive"):
         raise Refused("unknown value name " + name, 2)
-    return arg(name, *(a for a in args))
+    return arg(name, *args)
 
 
 BASELAYOUT_PACKAGE_KEYS = ("name", "version", "epoch", "description", "copyright")
