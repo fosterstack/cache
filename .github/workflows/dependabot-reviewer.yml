@@ -97,12 +97,12 @@ jobs:
           ONLY_PR: ${{ inputs.pr }}
           FORCE: ${{ inputs.force }}
         # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is
-        # read this hour. A success counts only with this reviewer's version as its external_id (the sha256 of its
-        # program, its prompt and this workflow): an older reviewer may have read less than the whole diff, and its
-        # success is no verdict, so the head is read as a head with none is.
+        # read this hour. A success counts only with this reviewer's version as its external_id (the version printed
+        # by bin/dependabot-reviewer-version.sh, over five files): an older reviewer may have read less than the whole
+        # diff, and its success is no verdict, so the head is read as a head with none is.
         # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same
         # change was read.
-        # A plain patch/minor keeps the auto-merge workflow's arm through the review (the gate holds the merge); any
+        # A plain patch/minor keeps the auto-merge workflow's arm through the review; any
         # other arm without a success comes off before the review, so a setup step that fails later cannot leave it
         # standing. A person's disarm is never undone.
         # A lookup that fails is never "nothing to do": the PR is skipped and the step fails, so the failure
@@ -116,8 +116,9 @@ jobs:
           # another version)
           verdict_of() {
             GH_TOKEN="$APP_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+              "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer&per_page=100" \
+              --jq "if .total_count != (.check_runs | length) then error else . end
+                    | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
                     | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
                       else .conclusion // \"none\" end"
           }
@@ -242,7 +243,9 @@ jobs:
                 fi
                 if [ "$armed_now" = false ]; then
                   if ! last_event=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${n}/events" --paginate \
-                        --jq '.[] | select(.event | test("^auto_(merge|squash|rebase)_(enabled|disabled)$"))
+                        --jq '.[] | select(.event | IN("auto_merge_enabled", "auto_merge_disabled",
+                              "auto_squash_enabled", "auto_squash_disabled",
+                              "auto_rebase_enabled", "auto_rebase_disabled"))
                               | (.event | sub("^auto_(squash|rebase)_"; "auto_merge_")) + " " + .actor.login' \
                       | tail -n 1; \
                       [ "${PIPESTATUS[0]}" = 0 ]); then
@@ -397,8 +400,8 @@ jobs:
             echo "::add-mask::$tok"
             printf '%s' "$tok" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
           }
-          # The gate's sweep skips a head whose gate check is green: a gate success must not outlive a verdict
-          # that is not success.
+          # The gate's sweep judges a green Dependabot head only for the verdict: a gate success must not
+          # outlive a verdict that is not success.
           publish() { # <sha> <conclusion> <summary>
             if [ "$2" != success ]; then
               GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate \
@@ -460,9 +463,8 @@ jobs:
             d="$W/pr-$n"; mkdir -p "$d"
             echo "::group::PR #$n ${sha:0:7}"
             # 1. gather (no model): the commits and the whole diff of exactly $sha against main; a missing diff or
-            #    unreadable
-            #    input is an error, never an empty bundle; a PR whose head is no longer $sha (exit 5) is left for
-            #    the next hour
+            #    unreadable input is an error, never an empty bundle; a PR whose head is no longer $sha (exit 5)
+            #    is left for the next hour
             python3 bin/dependabot-reviewer.py gather --pr "$n" --sha "$sha" --updates "$W/updates-$n.json" \
               --out "$d"; rc=$?
             if [ "$rc" = 5 ]; then
@@ -489,8 +491,8 @@ jobs:
             names=$(jq -r '[.[]|"\(.name) \(.from)→\(.to)"]|join(", ")' "$W/updates-$n.json") || names="PR #$n"
             if [ "$decision" = merge ] && [ "$guard_ok" != 1 ]; then decision=guard; fi
             # The verdict is for $sha, the commit whose diff the readers were given. If the PR's head is another
-            # commit by now,
-            # nothing is published and nothing is done to the PR: the new head is a candidate next hour.
+            # commit by now, nothing is published and nothing is done to the PR: the new head is a candidate
+            # next hour.
             if ! head_now=$(gh pr view "$n" --json headRefOid --jq .headRefOid) || [ -z "$head_now" ]; then
               unfinished "$n" "$sha" "$prior" "could not read the PR's head after the review"
               echo "::endgroup::"; continue
@@ -579,8 +581,10 @@ jobs:
             || { echo "::error::cannot compute the reviewer's version — no verdict is published"; exit 1; }
           while read -r n sha; do
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
-            latest=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
-                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+            latest=$(GH_TOKEN="$APP_TOKEN" gh api \
+                     "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer&per_page=100" \
+                       --jq "if .total_count != (.check_runs | length) then error else . end
+                             | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
                        | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\") then \"none\"
                          else .conclusion // \"none\" end") || latest=unknown
             if [ "$latest" = success ]; then echo "PR #$n: success check is on the head — the arm is recorded, left as is"; continue; fi
@@ -625,8 +629,9 @@ jobs:
           while read -r n sha _; do
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
             if ! latest=$(GH_TOKEN="$APP_TOKEN" gh api \
-                       "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
-                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
+                     "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer&per_page=100" \
+                       --jq "if .total_count != (.check_runs | length) then error else . end
+                             | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
                              | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
                                  then \"none\"
                                else .conclusion // \"none\" end") || [ -z "$latest" ]; then
@@ -670,13 +675,12 @@ jobs:
           done < "$W/candidates.txt"
           exit "$bad"
 
-      # The failure streak is the run history itself. This job fails if and only if a review did
-      # not finish (a lookup, the identity token, the SDK, gather, a reader, the guard, an action
-      # or an arm that could not be settled — every one of those paths ends in `unfinished` or a
-      # failed step), and a run with nothing to review succeeds. So "three failed runs in a row" is exactly
-      # "three unfinished
-      # runs in a row": no state of our own to lose or misread. If the history cannot be read,
-      # nothing is decided this hour; the next failed run reads it again.
+      # The failure streak is the run history itself. This job fails if and only if a review did not finish
+      # (a lookup, the identity token, the SDK, gather, a reader, the guard, an action or an arm that could not
+      # be settled — every one of those paths ends in `unfinished` or a failed step), and a run with nothing to
+      # review succeeds. So "three failed runs in a row" is exactly "three unfinished runs in a row": no state of
+      # our own to lose or misread. If the history cannot be read, nothing is decided this hour; the next failed
+      # run reads it again.
       - name: three unfinished runs in a row => one issue for the ccode queue
         if: failure()
         env:
@@ -691,11 +695,12 @@ jobs:
           echo "this run: failure; the two before it: ${prior}"
           [ "$(jq -r 'length == 2 and all(. == "failure")' <<<"$prior")" = true ] || exit 0
           title="dependabot reviewer: reader failures"
-          issue_text='The reviewer could not finish its Dependabot pull requests on three consecutive runs;'
-          issue_text+=' bumps are not being judged.\n\nLatest: %s\n\n'
+          nl=$'\n'
+          issue_text="The reviewer could not finish its Dependabot pull requests on three consecutive runs;"
+          issue_text+=" bumps are not being judged.${nl}${nl}Latest: ${RUN_URL}${nl}${nl}"
           issue_text+='Check the run log: the "OIDC identity claims" line against the federation rule,'
-          issue_text+=' the SDK step, and each PR group.\n'
-          printf "$issue_text" "$RUN_URL" > "$RUNNER_TEMP/streak-issue.md"
+          issue_text+=" the SDK step, and each PR group.${nl}"
+          printf '%s' "$issue_text" > "$RUNNER_TEMP/streak-issue.md"
           list=$(gh issue list --state open --search "\"$title\" in:title" --json number,title) || exit 0
           existing=$(jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty' <<<"$list")
           if [ -n "$existing" ]; then gh issue comment "$existing" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null
