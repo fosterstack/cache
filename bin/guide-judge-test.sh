@@ -4,6 +4,9 @@
 # the same verdict from both scripts. Black box: a one-command plan in, accept or refuse out. Check reads the plan
 # as a guide plus its cannot-run list; Release reads the list alone and stops at its first step after the judge
 # ("release-published/ is not a directory"), so reaching that step is its accept.
+# Rule 79 (Oct 10): a command whose subject is a FILE and that Check cannot run is run by Release's postverify on the
+# staged copy (release-published/), never listed: the cannot-run list keeps image-reference commands only. Release
+# reads the guide (docs/verify-release.md, as Check does) as well as the list.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d -t guide-judge.XXXXXX); trap 'rm -rf "$work"' EXIT
@@ -31,6 +34,7 @@ check_says() {
   local t=$1 tag=${2:-v0.3.0} out rc=0
   out=$(cd "$t" && GITHUB_REF_NAME=$tag python3 -I bin/check-guide-plan.py docs/verify-release.md \
     docs/verify-release.cannot-run.json "sha256:$A" plan.json "sha256:$A" 2>&1) || rc=$?
+  printf '%s' "$out" > "$work/last"
   case $out in *Traceback*) echo crash;; *) [ $rc = 0 ] && echo accept || echo refuse;; esac
 }
 release_says() {
@@ -62,7 +66,8 @@ done
 both "plain image verify" accept "cosign verify <IMAGE_REF> $K"
 both "attestation piped to a closed-grammar jq filter on stdin" accept \
   "cosign verify-attestation $K --type https://slsa.dev/provenance/v1 <IMAGE_REF> | jq -e '.payload'"
-both "check-claims=false on verify-blob-attestation" accept "cosign verify-blob-attestation $K $B --check-claims=false x.txt"
+# a file subject is never listed: unlisted, Check plans it for postverify and accepts
+both "check-claims=false on verify-blob-attestation" accept "cosign verify-blob-attestation $K $B --check-claims=false x.txt" 0
 
 # row 37: shlex reads a # inside a word as a comment
 both "a # inside a word" refuse "cosign verify-blob $K $B a#b"
@@ -75,7 +80,7 @@ both "jq with --rawfile" refuse "$V | jq -e --rawfile a f.json '.ok'"
 both "jq with --slurpfile" refuse "$V | jq -e --slurpfile a f.json '.ok'"
 both "jq with -f" refuse "$V | jq -f prog.jq"
 both "jq with --from-file" refuse "$V | jq --from-file prog.jq"
-both "jq filter on stdin" accept "$V | jq -e '.ok'"
+both "jq filter on stdin" accept "$V | jq -e '.ok'" 0
 
 # row 39: a quoted or backslash-escaped operator character is refused
 for q in "'a|b'" 'a\|b' '"a|b"' "'a;b'" "'a&b'" "'a>b'" 'a\;b' 'a\>b'; do
@@ -127,6 +132,97 @@ for tag in "$NL" "v0.3.0-rc.1"; do
 done
 v=$(release_says "$t" v0.3.0); [ "$v" = accept ] && ok "release-postverify: tag v0.3.0 (accept)" \
   || bad "release-postverify: tag v0.3.0" "got $v"
+
+# ---- rule 79: a file-subject command is run by postverify before publishing, an image reference needs the list ----
+# setlist TREE COMMAND...: the cannot-run list of the tree holds exactly these commands
+setlist() {
+  local t=$1; shift
+  python3 -c 'import json,sys; print(json.dumps([{"command": c, "reason": "needs a registry"} for c in sys.argv[1:]]))' "$@" \
+    > "$t/docs/verify-release.cannot-run.json"
+}
+# plan_says TREE: every row of plan.json is run null with the postverify reason
+plan_says() {
+  jq -e -s 'length > 0 and all(.[]; .run == null and (.reason | contains("run by postverify before publishing")))' \
+    "$1/plan.json" > /dev/null 2>&1 && echo yes || echo no
+}
+for c in "cosign verify-blob $K $B x.txt" \
+         "cosign verify-blob-attestation $K $B --check-claims=false x.txt" \
+         "jq -e '.ok' f.json" \
+         "cosign verify-blob $K $B x.txt | jq -e '.ok'"; do
+  t=$(tree "$c" 0); v=$(check_says "$t")
+  [ "$v" = accept ] && ok "check-guide-plan: unlisted file-subject command, file absent (accept): ${c:0:50}" \
+    || bad "check-guide-plan: unlisted file-subject command, file absent: ${c:0:50}" "got $v: $(head -c 120 "$work/last")"
+  [ "$(plan_says "$t")" = yes ] && ok "check-guide-plan: its plan row says run by postverify before publishing, run null" \
+    || bad "check-guide-plan: plan row of ${c:0:50}" "$(head -c 200 "$t/plan.json" 2>&1)"
+done
+# an image reference is not a file subject: unlisted, it still fails
+for c in "cosign verify <IMAGE_REF> $K" "cosign verify <IMAGE_REF_FIPS> $K" \
+         "cosign verify-attestation $K --type slsa <IMAGE_REF>" "cosign verify oci://ghcr.io/fosterstack/cache@sha256:$A $K" \
+         "cosign verify ghcr.io/fosterstack/cache@sha256:$A $K"; do
+  t=$(tree "$c" 0); v=$(check_says "$t")
+  [ "$v" = refuse ] && ok "check-guide-plan: unlisted image-reference command (refuse): ${c:0:50}" \
+    || bad "check-guide-plan: unlisted image-reference command: ${c:0:50}" "got $v"
+done
+# anything else with a non-local operand fails closed
+for c in "gh release download <TAG> --pattern x.txt" "curl -sSf x.txt" "cosign sign x.txt" \
+         "cosign verify-blob $K $B x.txt | jq -e '.ok' f.json" "cosign verify-blob $K $B --insecure-ignore-tlog x.txt"; do
+  t=$(tree "$c" 0); v=$(check_says "$t")
+  [ "$v" = refuse ] && ok "check-guide-plan: non-local operand of another kind fails closed: ${c:0:50}" \
+    || bad "check-guide-plan: non-local operand of another kind: ${c:0:50}" "got $v"
+done
+# a guide mixing both kinds: the image command is listed, the file command is planned for postverify
+IMG="cosign verify <IMAGE_REF> $K"; FILEC="cosign verify-blob $K $B x.txt"
+t=$(tree "$IMG" 0); printf '%s\n' '```sh' "$FILEC" '```' >> "$t/docs/verify-release.md"; setlist "$t" "$IMG"
+v=$(check_says "$t"); [ "$v" = accept ] && ok "check-guide-plan: listed image command beside a file command (accept)" \
+  || bad "check-guide-plan: listed image command beside a file command" "got $v: $(head -c 120 "$work/last")"
+[ "$(jq -s '[.[] | select(.run == null)] | length' "$t/plan.json" 2>/dev/null)" = 2 ] \
+  && ok "check-guide-plan: both rows of the mixed guide have run null" || bad "check-guide-plan: mixed guide rows" "not two null rows"
+
+# the list keeps image-reference commands only: a file-subject entry is refused, naming the entry (Check and guidelist)
+GL="bin/chain-check-shape.py guidelist docs/verify-release.md"
+VB="cosign verify-blob --key release.rsa.pub --bundle x.bundle x"
+for c in "$VB" "cosign verify-blob-attestation --key release.rsa.pub --bundle x.bundle --check-claims=false" \
+         "jq -e '.ok' x.bundle"; do
+  t=$(tree "$c" 1); v=$(check_says "$t")
+  [ "$v" = refuse ] && [[ $(cat "$work/last") == *"$c"* ]] && ok "check-guide-plan: a file-subject cannot-run entry is refused by name: ${c:0:50}" \
+    || bad "check-guide-plan: a file-subject cannot-run entry: ${c:0:50}" "got $v: $(head -c 160 "$work/last")"
+  rc=0; g=$(cd "$t" && python3 -I $GL 2>&1) || rc=$?
+  [ "$rc" != 0 ] && [[ $g == *"$c"* ]] && ok "guidelist: a file-subject cannot-run entry is refused by name: ${c:0:50}" \
+    || bad "guidelist: a file-subject cannot-run entry: ${c:0:50}" "rc=$rc: ${g:0:160}"
+done
+for c in "cosign verify <IMAGE_REF> $K" "cosign verify <IMAGE_REF_FIPS> $K"; do
+  t=$(tree "$c" 1); rc=0; g=$(cd "$t" && python3 -I $GL 2>&1) || rc=$?
+  [ "$rc" = 0 ] && [ "$g" = ok ] && ok "guidelist: an image-reference cannot-run entry is accepted: ${c:0:50}" \
+    || bad "guidelist: an image-reference cannot-run entry: ${c:0:50}" "rc=$rc: ${g:0:160}"
+done
+
+# the real tree: the real guide with the real list (image-reference commands only) plans with exit 0
+rt=$(mktemp -d "$work/real.XXXXXX"); rc=0
+(cd "$root" && GITHUB_REF_NAME=v0.3.0 python3 -I bin/check-guide-plan.py docs/verify-release.md docs/verify-release.cannot-run.json \
+  "sha256:$A" "$rt/plan.json" "sha256:$A") > "$rt/out" 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "check-guide-plan: the real guide with the real list plans (accept)" \
+  || bad "check-guide-plan: the real guide with the real list" "rc=$rc: $(head -c 200 "$rt/out")"
+rc=0; g=$(cd "$root" && python3 -I $GL 2>&1) || rc=$?
+[ "$rc" = 0 ] && ok "guidelist: the real list is accepted" || bad "guidelist: the real list" "rc=$rc: ${g:0:200}"
+jq -e 'length > 0 and all(.[]; .command | test("<IMAGE_REF(_FIPS)?>"))' "$root/docs/verify-release.cannot-run.json" > /dev/null \
+  && ok "the real list holds only image-reference commands" || bad "the real list holds only image-reference commands" "a file command is listed"
+
+# release-postverify reads the guide too (docs/verify-release.md in the cwd, beside the list; no new argument) and
+# runs EVERY file-subject command of it in the staged copy: a file such a command names that release-published/
+# does not hold fails the run (exit 1), naming the file. The list is empty in these cases: the guide alone decides.
+for pair in "cosign verify-blob $K $B absent.txt:absent.txt" "cosign verify-blob $K --bundle absent.bundle other.txt:absent.bundle" \
+            "jq -e '.ok' absent.json:absent.json"; do
+  cmd=${pair%:*}; file=${pair##*:}
+  t=$(tree "$cmd" 0); mkdir "$t/release-published"; : > "$t/release-published/other.txt"
+  rc=0; out=$(cd "$t" && GITHUB_REF_NAME=v0.3.0 GITHUB_REPOSITORY=fosterstack/cache python3 -I bin/release-postverify.py 2>&1) || rc=$?
+  [ "$rc" = 1 ] && [[ $out == *"$file"* ]] && [[ $out != *Traceback* ]] \
+    && ok "release-postverify: a guide file absent from release-published/ fails naming it: $file" \
+    || bad "release-postverify: absent file $file" "rc=$rc: ${out:0:200}"
+done
+# an image-only guide with an image-only list behaves as before: it reaches the staged-copy step
+t=$(tree "cosign verify <IMAGE_REF> $K" 1); v=$(release_says "$t")
+[ "$v" = accept ] && ok "release-postverify: an image-only guide with an image-only list is judged as before (accept)" \
+  || bad "release-postverify: image-only guide and list" "got $v"
 
 echo "guide-judge-test: $pass passed, $failn failed"
 [ "$failn" = 0 ]
