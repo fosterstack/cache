@@ -181,7 +181,7 @@ expect() { # expect ok|caught LABEL TREE ['text the refusal must contain']
 fixture() { # fixture NAME  -> prints the tree path
   local t="$work/$1"
   mkdir -p "$t/.github/workflows" "$t/.github/actions/x"
-  printf 'name: scan\non:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  scan:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo scan\n' > "$t/.github/workflows/scan.yml"
+  printf 'name: scan\non:\n  schedule:\n    - cron: "17 3 * * *"\n  workflow_dispatch: {}\n  push:\n    tags: ["v*"]\njobs:\n  scan:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo scan\n' > "$t/.github/workflows/scan.yml"
   printf 'name: rescan\non:\n  schedule:\n    - cron: "41 7 * * *"\n  workflow_dispatch: {}\njobs:\n  scan:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo rescan\n' > "$t/.github/workflows/main-candidate-rescan.yml"
   printf 'name: other\non: push\njobs:\n  build:\n    uses: ./.github/workflows/stage-build.yml\n' > "$t/.github/workflows/other.yml"
   printf 'name: x\nruns:\n  using: composite\n  steps:\n    - run: echo x\n      shell: bash\n' > "$t/.github/actions/x/action.yml"
@@ -243,7 +243,8 @@ expect caught "main-candidate-rescan.yml: push is not one of its triggers" "$(mu
 expect caught "scan.yml: no on key at all" "$(mutate a7 .github/workflows/scan.yml $'name: scan\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
 expect caught "scan.yml: empty on:" "$(mutate a8 .github/workflows/scan.yml $'on:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
 expect caught "scan.yml: an anchor elsewhere in the file" "$(mutate a9 .github/workflows/scan.yml $'on:\n  pull_request:\nenv: &e\n  A: b\njobs:\n  s:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: echo')"
-expect ok "scan.yml: pull_request with a branch filter and push with tags stays allowed" "$(mutate a10 .github/workflows/scan.yml $'on:\n  pull_request:\n  push:\n    branches: [main]\n    tags: [\'v*\']\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect ok "scan.yml: schedule (a cron), workflow_dispatch and push with tags v* are its allowed triggers" "$(mutate a10 .github/workflows/scan.yml $'on:\n  schedule:\n    - cron: "17 3 * * *"\n  workflow_dispatch: {}\n  push:\n    tags: [\'v*\']\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: a pull_request trigger is refused (AC2: it never runs on a pull request)" "$(mutate a11 .github/workflows/scan.yml $'on:\n  schedule:\n    - cron: "17 3 * * *"\n  workflow_dispatch: {}\n  pull_request:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')" "pull_request"
 
 # 2d. YAML forms that could hide a declaration from a reader (fail closed, each refusal names its reason)
 GOODJOB=$'jobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
@@ -273,7 +274,7 @@ expect ok "the real repository: neither file is callable and nothing calls them"
 # trusted review gate runs the default branch's copy this way over every pull request head, so a step of the PR's
 # own CI that overwrites the script on disk changes nothing.
 CALL_SCAN=$'name: scan\non:\n  pull_request:\n  workflow_call:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
-CLEAN_SCAN=$'name: scan\non:\n  pull_request:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
+CLEAN_SCAN=$'name: scan\non:\n  schedule:\n    - cron: "17 3 * * *"\n  workflow_dispatch: {}\n  push:\n    tags: [\'v*\']\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
 gitjudge() { # gitjudge ok|caught LABEL NAME 'edit in the repo before the commit' ['edit after the commit'] [revision]
             #          ['command run in the repo that prints the revision'] ['text the refusal must contain']
   local r out rc=0 rev
@@ -324,7 +325,7 @@ gitjudge caught "a blob sha is refused" blobobj ':' '' '' 'git rev-parse HEAD:.g
 gitjudge ok     "a lightweight tag's sha is the commit itself and passes" lighttag ':' "$TAGIT" '' 'git rev-parse lt'
 gitjudge caught "a 64-hex name that is not in the repository is refused" norev64 ':' '' "$(printf '0%.0s' {1..64})" '' 'is not a commit'
 
-EXPECT=73
+EXPECT=74
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
