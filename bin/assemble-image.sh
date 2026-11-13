@@ -140,7 +140,7 @@ view=$rdir/archive-view
 "$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" \
   "(could not take $lock)" >&2; exit 2; }
 # the cleanup now also removes the lock and the links this run made (and only those: made grows as each link is made)
-trap '{ $SUDO rm -f "${made[@]}"; $SUDO rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || $SUDO rm -rf "$tmp"; } || true' EXIT
+trap '{ "$SUDO" rm -f "${made[@]}"; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>&- || "$SUDO" rm -rf "$tmp"; } || true' EXIT
 # no -f: a link that is already there (another run won the race after the pre-checks) is an error
 "$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link $workdir/archive" \
   "(it exists: another assembly?); stopping" >&2; exit 2; }
