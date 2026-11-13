@@ -252,10 +252,8 @@ refresh)
   lock_x86 "$tmp/vm-host/vm-host-env.yaml" "$tmp/vm-host.lock.json"
   lock_x86 "$tmp/vm-guest/vm-guest-env.yaml" "$tmp/vm-guest.lock.json"
 
-  # The refresh program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per
-  # line); the shell fetches them with the
-  # ruled download lines below and runs the program again (it starts from the same state each time, up to five passes:
-  # packages, kernel, Go, index, the rest).
+  # Exit 75 means "download what TMP/want-* lists, then run me again": only the shell downloads, so the program
+  # starts from the same state each pass. Five passes cover packages, kernel, Go and the index.
   for _pass in 1 2 3 4 5; do
     _rc=0; /usr/bin/python3 -I -B "$PY" refresh "$repo" "$pr_author" "$archive" "$tmp" || _rc=$?
     [ "$_rc" = 75 ] || break
@@ -311,9 +309,22 @@ fips-module)
   [ -s "$tmp/new" ] || exit 0
   { IFS= read -r newest; IFS= read -r cur; } <"$tmp/new"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/paths"
+  pr_body="The daily check found $newest in Go's own certified-module file; the FIPS build used $cur. This pull"
+  pr_body+=" request was only opened, not merged. It goes through all the normal checks and the"
+  pr_body+=" rebuild-from-archive test; there is no shortcut. A new certificate number is a human fact that no"
+  pr_body+=" tool can read from Go, so this pull request cannot pass the release checks until a person also"
+  pr_body+=" changes these files: bin/check-artifacts.sh (the GOFIPS140 value it requires), bin/check-fips.sh"
+  pr_body+=" (the certificate note), internal/buildinfo/buildinfo.go (the module it recognises and the"
+  pr_body+=" certificate note), internal/buildinfo/buildinfo_test.go (the certificate it expects),"
+  pr_body+=" .github/workflows/ci.yml (the GOFIPS140 value of the fips140-only job; a workflow file, so its pin"
+  pr_body+=" rules and review apply) and docs/install.md (the certificate it names), bin/check-govulncheck.py"
+  pr_body+=" (the GOFIPS140 value its recipe grammar requires and sets), and the public pages that name the"
+  pr_body+=" module or certificate: SECURITY.md, RELEASING.md, docs/offline-install.md and docs/verify-images.md;"
+  pr_body+=" the requirement text that names the certificate (requirements/requirements.yaml, REQ-FIPS-001) is an"
+  pr_body+=" owner-ratified rule, so a change to its words goes to the owner. Search the tree for the current"
+  pr_body+=" module and certificate number and review every hit."
   open_pr "refresh/fips-module-$newest" "Move the FIPS build to the newer certified Go Cryptographic Module $newest" \
-    "The daily check found $newest in Go's own certified-module file; the FIPS build used $cur. This pull request was only opened, not merged. It goes through all the normal checks and the rebuild-from-archive test; there is no shortcut. A new certificate number is a human fact that no tool can read from Go, so this pull request cannot pass the release checks until a person also changes these files: bin/check-artifacts.sh (the GOFIPS140 value it requires), bin/check-fips.sh (the certificate note), internal/buildinfo/buildinfo.go (the module it recognises and the certificate note), internal/buildinfo/buildinfo_test.go (the certificate it expects), .github/workflows/ci.yml (the GOFIPS140 value of the fips140-only job; a workflow file, so its pin rules and review apply) and docs/install.md (the certificate it names), bin/check-govulncheck.py (the GOFIPS140 value its recipe grammar requires and sets), and the public pages that name the module or certificate: SECURITY.md, RELEASING.md, docs/offline-install.md and docs/verify-images.md; the requirement text that names the certificate (requirements/requirements.yaml, REQ-FIPS-001) is an owner-ratified rule, so a change to its words goes to the owner. Search the tree for the current module and certificate number and review every hit." \
-    "${paths[@]}"
+    "$pr_body" "${paths[@]}"
   ;;
 
 *) usage;;
