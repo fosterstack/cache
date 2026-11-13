@@ -1034,6 +1034,12 @@ _REVIEWED_WRAPPERS = {
     "judge": frozenset(("b5bd68dd1ef9c5be7fe26c3c9d3c970f5f8adc5b0cfc749bd34ff1eb177f5cea",)),
     "py": frozenset(("042c3df4e8b93248712f320b1f47a9a7d3525229710aa44e7828d05012227125",)),
 }
+# Functions that may receive a written file's content as an argument, "$(cat FILE)", by the same hash of the definition.
+_REVIEWED_FUNCS = {"run": frozenset((
+    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-age-check-test.sh fixture
+    "004f644d043348ed9bf307882a5ffe652f7fb62628cf16b2cc1508b957796d46",   # bin/persona-uat-test.sh run()
+))}
+_READ_CAT = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
 _DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum md5sum od"
     .split())
 _DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))")
@@ -1108,8 +1114,8 @@ def _reads_only(seg):
 def _written_file_used_later(lines, start, end):
     """True when a file the opener (line `start`) redirects its output to, or a variable that holds its name, is named
     after the span's last line `end` in any way but: as the argument of a data-reading command that is alone on its
-    line; in a plain assignment. Running, sourcing, copying, a pipe to anything else, a substitution and a program
-    the checker does not know all refuse."""
+    line; in a plain assignment; read through $(cat FILE) by a reviewed function. Running, sourcing, copying, a pipe
+    to anything else, a substitution and a program the checker does not know all refuse."""
     names = {t.strip("'\"") for t in _REDIRECT.findall(lines[start])}
     names -= {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty", ""}
     names = {t for t in names if not t.startswith("&") and not t.startswith("/dev/fd/")}
@@ -1127,19 +1133,28 @@ def _written_file_used_later(lines, start, end):
             spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
     rxs = [re.compile(re.escape(t) if t.startswith("$") else r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])")
         for t in spell if t]
+    bodies, _ = _func_bodies(lines)
+    reviewed = {n for n, body in bodies.items() if _line_hash(body) in _REVIEWED_FUNCS.get(n, ())}
     for ln in lines[end + 1:]:
         ln = _strip_comment(ln)
         if not any(rx.search(ln) for rx in rxs):
             continue
-        if "`" in ln or "$(" in ln:
+        if "`" in ln:
             return True
-        for seg in (sg for sg in re.split(r"\|\||&&|[|;&]", ln) if sg.strip()):
+        stripped = _READ_CAT.sub(" ", ln)
+        content = stripped != ln                  # a mention is a $(cat FILE) read: its content goes to the command
+        if "$(" in stripped:
+            return True
+        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", stripped) if sg.strip()]
+        for seg in segs:
             toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
             if all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
                 continue                      # a plain assignment: the variable rule above follows the name
             words = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*|\d*[<>]+.*", t)]
             cmd = words[0].strip("'\"").split("/")[-1] if words else ""
-            if cmd not in _DATA_CONSUMERS or not _reads_only(seg):
+            if content and len(segs) == 1 and cmd in reviewed and not any(rx.search(stripped) for rx in rxs):
+                continue                          # the content goes to a reviewed function, once, alone on the line
+            if cmd not in _DATA_CONSUMERS or content or not _reads_only(seg):
                 return True
     return False
 
