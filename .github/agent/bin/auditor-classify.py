@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify findings (REQ-AUD-2).
+"""Classify findings (REQ-AUD-2 of .github/agent/docs/cve-auditor-matrix.md).
 
 Two rules hold everywhere:
   * ABSENCE OF EVIDENCE IS NEVER EVIDENCE OF UNREACHABILITY. A finding with no
@@ -113,7 +113,9 @@ def validate_manifest(m):
     r = m.get("scanner_reports")
     if not isinstance(r, dict):
         raise ValueError("manifest: scanner_reports object is missing")
-    status = m.get("scanner_status") or {}
+    status = m.get("scanner_status", {})
+    if not isinstance(status, dict) or not all(v is None or isinstance(v, dict) for v in status.values()):
+        raise ValueError("manifest: scanner_status is not an object of objects")
     if m.get("scanner_set") != "panel":              # the auditor reads the four panel scanners and nothing else
         raise ValueError("manifest: scanner_set %r is not 'panel'" % (m.get("scanner_set"),))
     keys = P.PANEL_SCANNERS
@@ -169,9 +171,9 @@ def manifest_findings(manifest):
         path = vpath
         if path:                                    # a null scanner is skipped, not fatal
             allf += fn(path)
-    # Group by CONNECTED alias sets, not each record's own canonical CVE: two findings the scanners
-    # connect through a shared alias belong to ONE group, so a reachable trace for one is not hidden
-    # from the other. Union-find over every id/alias.
+    # Group by CONNECTED alias sets, not each record's own canonical CVE: two findings the scanners connect
+    # through a shared alias belong to ONE group, so a reachable trace for one is not hidden from the other.
+    # Union-find over every id/alias.
     parent = {}
 
     def _find(x):
