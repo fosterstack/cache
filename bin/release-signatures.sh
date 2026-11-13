@@ -20,6 +20,8 @@ tag=${GITHUB_REF_NAME:-}
 [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-signatures: tag refused: $tag is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 # the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte; exit 2 before anything is made or signed. kms-sign asks the key for its algorithm on every call.
 python3 -I -B bin/chain-verify.py key-ref-check || exit $?
+# the release policy of this tag, made as release-verify makes it for Release: it is signed below, and Release checks the bundle against its own copy
+python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json
 repo="fosterstack/cache"
 cfg=.github/policy/cosign-signing-config.json
 pub=build/keys/release.rsa.pub
