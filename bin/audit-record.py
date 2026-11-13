@@ -305,7 +305,7 @@ def _gh(path):
     any other failure."""
     p = subprocess.run(["gh", "api", path], capture_output=True, text=True)
     if p.returncode != 0:
-        if re.search(r"HTTP 404|Not Found", p.stderr):
+        if "HTTP 404" in p.stderr or "Not Found" in p.stderr:
             return None
         raise _ApiError("%s: %s" % (path, " ".join(p.stderr[-200:].split())))
     try:
@@ -336,6 +336,7 @@ def bump(head, repo, root):
         version = _reviewer_version(root)
     except (OSError, subprocess.CalledProcessError):
         return None, ""
+    # matches "fosterstack/cache"; refuses "fosterstack/cache/x" and "fosterstack cache"
     if not (isinstance(head, str) and _SHA.fullmatch(head) and allowed is not None
             and isinstance(repo, str) and re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo)):
         return None, ""
