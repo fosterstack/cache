@@ -567,7 +567,7 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
       - name: image assembly, lock proof and sealed proof regressions
-        run: bash bin/assemble-image-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json assemble-image-test.sh bin/assemble-image-test.sh
 
       - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json go-bump-open-pr-test.sh bin/go-bump-open-pr-test.sh
