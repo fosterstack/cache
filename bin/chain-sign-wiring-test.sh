@@ -3420,7 +3420,7 @@ PY
 tg caught "$work/rel-nogate.yml" "R8 mutation: a build without the tag gate is caught"
 
 # ---- PR 1b (judge exceptions): (A) reviewed exact-text exceptions, (B) ambient env names, (C) the path-named deny test at command position only.
-# REQ-CHAIN-001-AC1 (listed-script clause), REQ-CHAIN-004-AC2 (timeout 540 around the wrapped command), REQ-CHAIN-004-AC8 (GH_TOKEN through the step's env), REQ-CHAIN-004-AC3 (--go-archive archive/go).
+# REQ-CHAIN-001-AC1 (listed-script clause), REQ-CHAIN-004-AC2 (the wrapped command runs as plain bash SCRIPT ARGS), REQ-CHAIN-004-AC8 (GH_TOKEN through the step's env), REQ-CHAIN-004-AC3 (--go-archive archive/go).
 expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged; a caught case must name FRAGMENT and must not be a traceback
   local out rc=0
   out=$(judge tree "$2" 2>&1) || rc=$?
@@ -3431,13 +3431,13 @@ expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged
 }
 DEF='D=lambda l,c=1,w="x":{"rule":"deny","line":l,"line_sha256":__import__("hashlib").sha256(l.encode()).hexdigest(),"count":c,"why":w};'
 export WT='timeout 540 bash "$@"'
-wfix() { # wfix NAME [more script lines] : bin/witnessed.sh with the AC2 line and its one witness-target exception
+wfix() { # wfix NAME [more script lines] : bin/witnessed.sh with an invented `timeout 540` line and its one witness-target exception
   local d; d=$(mk "$1")
   printf '#!/usr/bin/env bash\nset -euo pipefail\nwitness run -a environment,material -- timeout 540 bash "$@"\n%b' "${2:-}" > "$d/bin/witnessed.sh"
-  edit_spec "$d" 'import os;rows["bin/witnessed.sh"]={"path":"bin/witnessed.sh","tools":["timeout","bash"],"signs":"other","reason":"the Witness wrapper","runs":[],"exceptions":[{"rule":"witness-target","text":os.environ["WT"],"why":"REQ-CHAIN-004-AC2"}]}'
+  edit_spec "$d" 'import os;rows["bin/witnessed.sh"]={"path":"bin/witnessed.sh","tools":["timeout","bash"],"signs":"other","reason":"the Witness wrapper","runs":[],"exceptions":[{"rule":"witness-target","text":os.environ["WT"],"why":"fixture wrapper line"}]}'
   echo "$d"
 }
-d=$(wfix x_ok); expm ok "$d" - "REQ-CHAIN-004-AC2 exception: witness run -- timeout 540 bash \"\$@\" with a witness-target exception for exactly that text and tools timeout, bash"
+d=$(wfix x_ok); expm ok "$d" - "exception: witness run -- timeout 540 bash \"\$@\" with a witness-target exception for exactly that text and tools timeout, bash"
 d=$(wfix x_none); edit_spec "$d" 'del rows["bin/witnessed.sh"]["exceptions"]'; expm caught "$d" 'witness run' "exception: the same script without the exception entry is refused (the finding is real)"
 d=$(wfix x_exec 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec")'; expm caught "$d" 'launches another program' "exception: the same script with exec bash \"\$@\" added stays refused (launcher; the witness-target exception covers its own span only)"
 d=$(wfix x_stale); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"][0]["text"]+="x"'; expm caught "$d" 'stale' "exception: the exception text changed by one character is a stale-entry error"
