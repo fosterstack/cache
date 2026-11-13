@@ -184,10 +184,10 @@ jobs:
         run: bash bin/rebuild-records-digests.sh --check "$RAPK_RECORDS" "$RAPK_ARM_RECORDS"
       - name: rebuild under Witness
         if: ${{ inputs.mode == 'release' }}
-        run: bash bin/witnessed-local.sh rebuild bin/build-stage-rebuild-assemble.sh
+        run: bash bin/witnessed-local.sh rebuild bin/build-stage-assemble.sh rapk "${GITHUB_REF_NAME#v}"
       - name: snapshot-rebuild under Witness
         if: ${{ inputs.mode == 'snapshot' }}
-        run: bash bin/witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
+        run: bash bin/witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh snapshot-rapk 0.0.0-rc.1
       - id: records
         name: expose the record digests as the stage output
         if: ${{ inputs.mode == 'release' }}
