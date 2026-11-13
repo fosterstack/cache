@@ -1238,11 +1238,12 @@ J1 = "jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson
 # REAL one
 J2OLD = ("jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | "
          ".name + \" sha256:\" + .digest.sha256' provenance.bundle.json")
-LIST = json.load(open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.cannot-run.json")))
-# the page's second jq, read from the list, not retyped
-J2 = next(r_["command"] for r_ in LIST if "runDetails.byproducts" in r_["command"])
-check(J2 in open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.md")).read(),
-      "AC20 round 6 J2: the list's second jq is byte for byte on the page", J2[:80])
+PAGE_LINES = [l_ for l_ in open(os.path.join(os.environ["REPO_ROOT"], "docs/verify-release.md")).read().split("\n")
+              if l_.startswith("jq -r") and "runDetails.byproducts" in l_]
+# the page's second jq, read from the page (a file-subject command is not on the cannot-run list), not retyped
+check(len(PAGE_LINES) == 1,
+      "AC20 round 6 J2: the second jq is read from the page, and the page holds exactly one such line", "found %d" % len(PAGE_LINES))
+J2 = PAGE_LINES[0] if PAGE_LINES else ""
 SBOMD = "5b" * 32
 def prov_of(subjects, byproducts=None):
     st = {"predicateType": "https://slsa.dev/provenance/v1", "subject": subjects}
