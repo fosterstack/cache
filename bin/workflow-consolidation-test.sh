@@ -133,7 +133,7 @@ for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
         bad.append("%s still exists" % gone)
 if not os.path.exists(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")):
     bad.append("dependabot-auto-merge.yml was moved, but its events differ from ci.yml's")
-# every required check is produced by a top-level job (name or id) of some workflow, on its scope's event
+# every required or release-only check is produced by a top-level job (name or id) of some workflow, on its scope's event
 names = {}
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
     w = d if os.path.basename(wf) == "ci.yml" else yaml.load(open(wf), Loader=yaml.BaseLoader)
@@ -143,7 +143,9 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
         if "uses" in j:
             continue
         names.setdefault(j.get("name") or jid, set()).update(events)
-for rc in json.load(open(os.path.join(root, ".github/policy/required-checks.json")))["required_checks"]:
+policy = [json.load(open(os.path.join(root, ".github/policy", f)))["required_checks"]
+          for f in ("required-checks.json", "release-only-checks.json")]
+for rc in policy[0] + policy[1]:
     ev = "push" if rc["scope"] == "push" else "pull_request"
     if rc["integration_id"] != 15368:
         continue                                    # the review gate's App check, published by the App, not a job
