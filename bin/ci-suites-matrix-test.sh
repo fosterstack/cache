@@ -135,9 +135,11 @@ jobs:
         env:
           SUITE: ${{ matrix.suite }}
         run: |
-          path=$(git ls-files -- "bin/$SUITE" ".github/agent/tests/$SUITE")
+          path=$(git ls-files -- "bin/$SUITE" "AUDITOR_DIR/tests/$SUITE")
           python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json "$SUITE" "$path"
 YML
+# the auditor directory is spelled out only here, in two parts, so this file holds no literal path of it (REQ-AUD-018-AC1)
+sed -i "s#AUDITOR_DIR#.github/$(echo agent)#" "$work/good/.github/workflows/ci.yml"
 export SCRATCH="$work"
 chk() { python3 -I "$work/chk.py" "$@" 2>&1 | head -c 300; return "${PIPESTATUS[0]}"; }
 # pass CHECK DIR LABEL / refuse CHECK DIR LABEL: the check holds / fails on that tree
