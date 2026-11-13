@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC10, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12, REQ-CHAIN-006-AC13, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC14, REQ-CHAIN-007-AC15, REQ-CHAIN-006-AC4
-# RED until PR 3 is implemented (stage-verify.yml rewritten, bin/check-*.sh, bin/witnessed.sh, release.yml graph, the old acceptance stages removed): step 4.
+# proves: REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC10, REQ-CHAIN-006-AC12, REQ-CHAIN-006-AC13, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC14, REQ-CHAIN-007-AC15, REQ-CHAIN-006-AC4
 #
-# Check, static half (v0.3.0 rules 50, 53, 55, 58, 61, 63, 65, 66, 68, 70, 72, 79; advisor read-back approved Oct 9; PR 3 merges into chain-v030 only).
+# Check, static half (v0.3.0 rules 50, 53, 55, 58, 61, 63, 65, 66, 68, 70, 72, 79).
 # Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml), jq. No network, no secrets, no keys.
 # Every judge lives in bin/chain-check-shape.py and is FIRST proven on a known-good fixture and on mutated copies (a judge that cannot fail
 # is worth nothing), then applied to the real repository, which must pass. Finite grammars and allowlists, no shell analysis.
@@ -17,33 +16,16 @@
 #       (Sign's bundle) and `check-results`/`witness-check` (Check's), the five script names and command lines of bin/check-stage.sh, the guide
 #       file docs/verify-release.md (the www lane's customer guide), the results file names.
 #
-# RULE 68 AS AMENDED BY THE OWNER (Oct 9, 16:47 EDT): every command run under Witness is limited to 9 minutes (`timeout 540`), because Fulcio's
+# RULE 68: every command run under Witness is limited to 9 minutes (`timeout 540`), because Fulcio's
 # certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time (harness spike (d): a 13-minute command yields a record that never
-# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (PR 2 defines it; judge `helper` below is its seam and is kept identical to
-# PR 2's). Check is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap. The owner also asked
+# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (judge `helper` below is its seam). Check is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap. The owner also asked
 # for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the judges accept the plain form
 # and reject variants instead of growing clever.
 #
-# CREDENTIALS (coordinator correction, Oct 9; owner Oct 22): Check holds NO secret, no cloud federation and NO identity token: the release scanners need none, and
+# CREDENTIALS: Check holds NO secret, no cloud federation and NO identity token: the release scanners need none, and
 # its Witness records are made with a throwaway key and signed by Sign (the sign-check job). A test below refuses a secret, a registry login and a packages/attestations permission.
 #
-# STEP-5 REVISIT (advisor rulings Q2-Q8, Oct 10), what changed and why:
-#   Q2 the helper judge is PR 2's accepted bin/witnessed.sh (token by process substitution, witness-STEP/STEP-collection.json, the four
-#      sensitive keys) plus PR 3's three steps in its closed list; witness-check carries the three record directories.
-#   Q3 bin/check-stage.sh is judged by `script` only (its pinned lines name witness-build/), and its verify lines run python3 -I -B (PR 1 r5).
-#   Q4 the Check job downloads the images artifact exactly once. Q7 acceptance.yml runs the shared suite scripts (`suites`).
-#   Q5 (Oct 10, second ruling) bin/check-stage.sh first MAKES policy.json per tag, as PR 2's Rebuild does (`script` judge, POLICY line).
-#   Q9 the last stage's job in release.yml is named release (the ratified rules' name), not promotion; check needs build AND sign.
-#   Q10 bin/check-guide.sh may name exactly the verify-only commands (cosign verify, verify-attestation, verify-blob,
-#      verify-blob-attestation); the `plain` judge keeps refusing every other signing word there, and refuses even
-#      these in every other check script.
-#   Q10 interim (advisor, Oct 10 late): the guide's commands that need a registry image are listed in docs/verify-release.cannot-run.json;
-#      bin/check-guide.sh records them as not-run (it exits 0 for listed entries), but while that list is non-empty AC7 is NOT satisfied:
-#      the `guidelist` case below FAILS with the line "rule 79: N guide commands listed as not-run: <list>" (and fails while the guide is
-#      missing). It passes only for a guide whose cannot-run list is empty or absent.
-#   Graph aligned with PR 2 (3e883b3): the release job needs EXACTLY check, rebuild and sign (build is reached through check); check
-#      needs exactly build and sign.
-#   Q8 REQ-CHAIN-006-AC14 (amended Oct 24, rule 13 of the simplest-correct-form rules): kind and kubectl come from the
+# REQ-CHAIN-006-AC14: kind and kubectl come from the
 #      runner image (no Check step for them; the k8s suite stops at its first use if one is missing), no kind action,
 #      the node image by digest (`stage`, `cluster`); the runtime phase runs the k8s suite.
 set -euo pipefail
@@ -119,7 +101,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\n    outputs:\n      recor
          + "      - id: records\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"\n"
          + f"      - uses: {UPL}\n        with:\n          name: witness-check\n          path: |\n            witness-scanners\n            witness-acceptance\n            witness-runtime\n"
          + up("check-results", "check-results"))
-# REQ-CHAIN-006-AC1 (advisor 0385): the second job, check-arm64, on a hosted arm64 runner, artifact checks only, its own Witness record
+# REQ-CHAIN-006-AC1 the second job, check-arm64, on a hosted arm64 runner, artifact checks only, its own Witness record
 stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n      contents: read\n    outputs:\n      records-arm64: ${{ steps.records-arm64.outputs.records-arm64 }}\n    steps:\n"
           f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
           "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
@@ -197,7 +179,7 @@ os.makedirs(w + "/plain", exist_ok=True)
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
     open(f"{w}/plain/{n}" + (".py" if n == "check-govulncheck" else ".sh"), "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
-cp "$root/bin/witnessed.sh" "$work/witnessed.sh"      # the known-good helper is the canonical text (handoff 0713: KMS signer); the cases below break it one property at a time
+cp "$root/bin/witnessed.sh" "$work/witnessed.sh"      # the known-good helper is the canonical text; the cases below break it one property at a time
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
 printf '{"scanners": ["grype", "osv-scanner"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "inspector"]}\n' > "$work/scanners.json"
@@ -262,6 +244,7 @@ m s_cont   '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    nee
 m s_serv   '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    services: {db: {image: x}}\n' 'job keys'        "AC1 job services"
 m s_env    '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    env: {X: y}\n'       'job keys'          "AC1 job env"
 m s_def    '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    defaults: {run: {shell: sh}}\n' 'job keys'      "AC1 job defaults"
+m s_checkif '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    if: false\n' 'job keys' "AC2 a job-level if: on the Check job (Release could skip Check)"
 m s_needs  '    needs: govulncheck-build\n'  '    needs: x\n'  'must need exactly'  "AC1 a needs on another job inside the stage file"
 m s_pkgw   '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      packages: write\n' 'permissions'       "AC1 packages: write"
 m s_pkgr   '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      packages: read\n' 'permissions'       "AC1 packages: read (images travel as files)"
@@ -342,7 +325,7 @@ m c_error  '(          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.arti
 m c_coe    '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        continue-on-error: true\n\2' 'step keys' "REL-011-AC1 the Check job's download may fail without stopping the job (continue-on-error)"
 m c_dlif   '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        if: always()\n\2' 'step keys' "REL-011-AC1 the Check job's download is conditional"
 m c_inscoe '(        run: bash bin/unpack-govulncheck.sh\n)' '\1        continue-on-error: true\n' 'step keys' "REL-011-AC1 the install step may fail silently"
-# the arm64 job (advisor 0385): exactly this job, this label, these steps, and nothing else
+# the arm64 job: exactly this job, this label, these steps, and nothing else
 m a_name   '  check-arm64:'                                    '  check-arm:'                                              'three jobs'          "AC1 the second job under another name"
 m a_label  'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-24.04'                                  'ubuntu-24.04-arm'  "AC1 the arm64 job on the amd64 label"
 m a_label2 'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-latest-arm'                             'ubuntu-24.04-arm'  "AC1 the arm64 job on another arm label"
@@ -364,8 +347,8 @@ m a_upname 'name: witness-check-arm64'                         'name: check-resu
 m a_uppath 'path: witness-arm64'                               'path: witness-scanners'                                 'check-arm64'       "AC1 the arm64 upload of another directory"
 m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
 m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
-# PR 3 round 1, F6 (Codex B3, A extra): the amd64 job is judged as exactly as the arm64 job: its listed steps in order, each download by name and
-# path and once, the witness-check upload by name and path. Each of these was accepted before.
+# the amd64 job is judged as exactly as the arm64 job: its listed steps in order, each download by name and
+# path and once, the witness-check upload by name and path.
 m s_xnowb '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of witness-build (the record Check verifies)"
 m s_xnodig '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of the digests"
 m s_xnodist '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' '' 'exactly its' "AC1 round 1 F6: no download of dist (the archives the scan and the artifact checks need)"
@@ -506,7 +489,7 @@ PY
 rm_ r_old   'd["records"].append({"type": "https://fosterstack.com/attestations/acceptance/v1", "claim": "x", "consumer": "release"})' 'acceptance' "AC13 the old custom acceptance record is still in the table"
 rm_ r_nocon 'd["records"][0].__setitem__("consumer", "nobody")' 'no row' "AC13 the Witness collection row has no real consumer"
 rm_ r_noclm 'd["records"][0].__setitem__("claim", "what was built")' 'no row' "AC13 the Witness collection row does not name Check"
-# ---- AC7 (rule 79 amended, owner Oct 10): listed guide commands are covered by Release's post-publish verification ------------------
+# ---- AC7 (rule 79): listed guide commands are covered by Release's post-publish verification ------------------
 # The cannot-run list is the single exact-text list Release reads: valid JSON, rows exactly {command, reason}, no duplicate, each
 # command a command of the guide, each one of the verify forms. A valid list satisfies AC7 (the commands run after publishing).
 mkdir -p "$work/gl1/docs" "$work/gl2/docs" "$work/gl3/docs" "$work/gl4/docs" "$work/gl5/docs" "$work/gl6/docs" "$work/gl7/docs" "$work/gl8/docs"
@@ -529,7 +512,7 @@ expect caught "AC7 a cannot-run entry with no reason is refused" "reason" guidel
 expect caught "AC7 a cannot-run entry that is not a command of the guide is refused (stale list)" "not in the guide" guidelist "$work/gl6/docs/verify-release.md"
 expect caught "AC7 a cannot-run entry that is not a verify form is refused (Release would refuse it)" "not a verify form" guidelist "$work/gl7/docs/verify-release.md"
 expect caught "AC7 an unparsable cannot-run list is refused with a named failure" "not JSON" guidelist "$work/gl8/docs/verify-release.md"
-# round 3 (Codex A): the structural judge compares the verify form by whole words, as the planner does (cosign verify-evil is not cosign verify)
+# the structural judge compares the verify form by whole words, as the planner does (cosign verify-evil is not cosign verify)
 for n in 9 10; do mkdir -p "$work/gl$n/docs"; done
 printf '# guide\n\n```sh\ncosign verify-evil <IMAGE_REF>\n```\n' > "$work/gl9/docs/verify-release.md"
 printf '[{"command": "cosign verify-evil <IMAGE_REF>", %s}]\n' "$R" > "$work/gl9/docs/verify-release.cannot-run.json"
@@ -551,7 +534,7 @@ cp -r "$work/r" "$work/r5"; mkdir -p "$work/r5/bin"; : > "$work/r5/bin/authorize
 expect caught "AC10 the custom authorization verifier still exists (rule 65)" "authorize-acceptance-check.py" removed "$work/r5"
 cp -r "$work/r" "$work/r6"; mkdir -p "$work/r6/.github/workflows"; printf 'jobs:\n  t:\n    steps:\n      - run: bash bin/authorize-acceptance-check-test.sh\n' > "$work/r6/.github/workflows/ci.yml"
 expect caught "AC10 ci.yml still runs the custom authorization verifier's test (rule 65)" "ci.yml" removed "$work/r6"
-# rule 61 (advisor Oct 12): the Dockerfile, buildx and goreleaser, their Dependabot entry and every reader
+# rule 61: the Dockerfile, buildx and goreleaser, their Dependabot entry and every reader
 mkr() { rm -rf "$work/$1"; cp -r "$work/r" "$work/$1"; mkdir -p "$work/$1/bin" "$work/$1/.github/policy"; }
 mkr q1; : > "$work/q1/.goreleaser.yaml"
 expect caught "AC10 rule 61: .goreleaser.yaml still exists" ".goreleaser.yaml" removed "$work/q1"
@@ -574,7 +557,7 @@ expect caught "AC10 rule 61: the rescan does not read the candidate index with c
 RSOK='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n'
 mkr q10; printf "$RSOK" > "$work/q10/.github/workflows/main-candidate-rescan.yml"
 expect ok "fixture: a rescan that reads the candidate index with the pinned crane, by digest, passes" "" removed "$work/q10"
-# Codex 4b-4 r1 (B4, B3): the digest reference, the install order, a commented command, and the Scout job's own install
+# the digest reference, the install order, a commented command, and the Scout job's own install
 mkr q12; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q12/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a rescan that reads the candidate by a tag reference is refused" "assigned exactly once" removed "$work/q12"
 mkr q13; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          ./bin/install-scanner.sh crane\n' > "$work/q13/.github/workflows/main-candidate-rescan.yml"
@@ -600,7 +583,6 @@ mkr q22; mkdir -p "$work/q22/$AG/supply-chain"; printf 'import subprocess\nsubpr
 expect caught "AC10 rule 61: a NEW file in the supply-chain judges' directory that names goreleaser is scanned like any other" "supply-chain/helper.py names" removed "$work/q22"
 mkr q23; mkdir -p "$work/q23/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(["docker", "buildx", "build", "."])\n' > "$work/q23/$AG/supply-chain/pin-age-check.py"
 expect caught "AC10 rule 61: a judge file that names buildx beside a way to run a program is a finding (its tables name tools, they never start them)" "starts a program with a removed tool" removed "$work/q23"
-RSX='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then exit 1; fi\n'
 mkr q24; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          command crane manifest "ghcr.io/o/cache:latest" || true\n' > "$work/q24/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a second crane form beside the approved manifest read (command crane manifest ... :latest) is refused" "other than the pinned install" removed "$work/q24"
 mkr q25; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q25/.github/workflows/main-candidate-rescan.yml"
@@ -641,7 +623,7 @@ mkr q34; printf '#!/bin/sh\ndocker buildx version\n' > "$work/q34/bin/retired-bu
 expect caught "AC10 rule 61: an extensionless script that names buildx is a reader" "bin/retired-build names" removed "$work/q34"
 mkr q11; printf 'DENY = "docker buildx goreleaser"\n' > "$work/q11/bin/chain-release-shape.py"
 expect ok "fixture: the deny list of a judge may name the removed tools (it refuses them)" "" removed "$work/q11"
-# ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
+# ---- the real repository ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
 expect ok "AC4 round 1 F2: the real stage-verify.yml installs every scanner .github/policy/scanners.json lists (check-scan.sh runs them)" "" installs "$root/.github/workflows/stage-verify.yml" "$root/.github/policy/scanners.json"
 expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
@@ -649,30 +631,40 @@ for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-pha
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the KMS signer (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, sign, sign-rebuild and sign-check" "" graph "$root/.github/workflows/release.yml"
+job_has_if() { python3 -c 'import sys, yaml; print("if" in yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]])' "$1" "$2"; }
+sed 's/^  check:$/  check:\n    if: false/' "$work/release.yml" > "$work/release-if.yml"
+if [ "$(job_has_if "$work/release-if.yml" check)" = True ] && [ "$(job_has_if "$work/release.yml" check)" = False ]; then ok "AC2 fixture: a job-level if: on release.yml's check job is seen, the known-good file has none"; else bad "AC2 the job-level if: probe cannot tell a skippable check job from a plain one"; fi
+for f in release stage-verify; do
+  if [ "$(job_has_if "$root/.github/workflows/$f.yml" check)" = False ]; then ok "AC2 the real $f.yml check job has no job-level if: (Release cannot skip Check)"; else bad "AC2 the real $f.yml check job has a job-level if:"; fi
+done
 expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-# ---- REQ-REL-011-AC1: Sign's signing helper takes the four Check steps (first look of cache#606: it listed the building steps only, so sign-check would have refused every Check record) ----
-signstaged() { # signstaged STEP: run bin/witness-sign-staged.sh on a one-record plan for STEP; it stops at the token fetch (no ACTIONS_ID_TOKEN_REQUEST_TOKEN here), which is past the plan checks
+# ---- REQ-REL-011-AC1: Sign's signing helper takes the four Check steps ----
+signstaged() { # signstaged STEP [FINAL]: run bin/witness-sign-staged.sh on a one-record plan; FINAL replaces the signed path in the plan line
+  # a plan that passes every plan check stops at the missing AWS_ROLE_ARN, before any token is requested
   local step=$1 d; d=$(mktemp -d)
+  local final=${2:-$d/signed/witness-$step/$step-collection.json}
   mkdir -p "$d/staged/witness-$step" "$d/signed"
   printf 'x' > "$d/staged/witness-$step/$step-collection.payload"
-  printf '%s\t%s\n' "$d/staged/witness-$step/$step-collection.payload" "$d/signed/witness-$step/$step-collection.json" > "$d/staged/plan.txt"
-  (cd "$root" && env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL bash bin/witness-sign-staged.sh "$d/staged" "$d/signed" 2>&1 || true)
+  printf '%s\t%s\n' "$d/staged/witness-$step/$step-collection.payload" "$final" > "$d/staged/plan.txt"
+  (cd "$root" && env -u AWS_ROLE_ARN -u AWS_REGION bash bin/witness-sign-staged.sh "$d/staged" "$d/signed" 2>&1 || true)
   rm -rf "$d"
 }
 for st in scanners acceptance runtime arm64; do
   out=$(signstaged "$st")
-  if grep -Fq "unknown step in the plan" <<< "$out"; then bad "REL-011-AC1 witness-sign-staged.sh refuses the Check step $st at the plan check: ${out:0:140}"; else ok "REL-011-AC1 witness-sign-staged.sh accepts the Check step $st in the plan (it stops later, at the token fetch)"; fi
+  if grep -Fq "AWS_ROLE_ARN is missing" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh accepts the Check step $st in the plan (it stops later, at the missing AWS role)"; else bad "REL-011-AC1 witness-sign-staged.sh did not accept the Check step $st: ${out:0:140}"; fi
 done
 out=$(signstaged evil)
-if grep -Fq "unknown step in the plan" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh still refuses a step that is not a record step"; else bad "REL-011-AC1 witness-sign-staged.sh accepted an unknown step: ${out:0:140}"; fi
+if grep -Fq "unknown step in the plan" <<< "$out" && ! grep -Fq "AWS_ROLE_ARN" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh refuses a step that is not a record step, for that reason"; else bad "REL-011-AC1 witness-sign-staged.sh did not refuse an unknown step for its reason: ${out:0:140}"; fi
+out=$(signstaged scanners /elsewhere/scanners-collection.json)
+if grep -Fq "plan line does not match the staged tree" <<< "$out" && ! grep -Fq "AWS_ROLE_ARN" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh refuses a plan line whose signed path is not the fixed one, for that reason"; else bad "REL-011-AC1 witness-sign-staged.sh did not refuse a wrong signed path for its reason: ${out:0:140}"; fi
 if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-EXPECT=309
+EXPECT=314
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
