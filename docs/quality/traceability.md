@@ -702,7 +702,7 @@ A Dependabot major version bump shall be judged by the Dependabot reviewer, not 
 
 The ruleset on main and the committed required-check list shall be compared on every pull request and every push to main, so drift is red the day it happens, and a refusal shall open one issue.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/required-check-guard.sh; .github/policy/required-checks.json; .github/policy/release-only-checks.json; .github/workflows/ci.yml; .github/workflows/stage-admission.yml; .github/workflows/release.yml; .github/agent/tests/pin-wiring-test.sh*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/required-check-guard.sh; .github/policy/required-checks.json; .github/policy/release-only-checks.json; .github/workflows/ci.yml; .github/workflows/stage-admission.yml; .github/workflows/release.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
