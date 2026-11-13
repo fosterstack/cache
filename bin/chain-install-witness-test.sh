@@ -23,29 +23,7 @@ set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 sut="$root/bin/install-scanner.sh"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-# The installer has no environment hooks: sutc ARCH [NAME=URL...] prints the path of a copy whose TEST-SUBST lines
-# hold the given architecture and base addresses; a base not given points at an empty folder (no network).
-sutc() {
-  local f="$work/copy-$(printf '%s' "$*" | cksum | cut -d' ' -f1).sh"
-  local o="file://$work/offline"
-  python3 - "$sut" "$f" arch="$1" TRIVY_BASE="$o" GRYPE_BASE="$o" SYFT_BASE="$o" SNYK_BASE="$o" OSV_BASE="$o" \
-    SBOMGEN_BASE="$o" SCOUT_BASE="$o" "${@:2}" <<'PY'
-import re, sys
-src, out = sys.argv[1:3]
-subst = dict(a.split("=", 1) for a in sys.argv[3:])
-seen, res = set(), []
-for ln in open(src).read().split("\n"):
-    m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=.*#\s*TEST-SUBST", ln)
-    if m:
-        if m.group(1) not in subst: sys.exit("no substitution given for %s" % m.group(1))
-        seen.add(m.group(1)); res.append("%s=%s   # TEST-SUBST" % (m.group(1), subst[m.group(1)]))
-    else:
-        res.append(ln)
-if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
-open(out, "w").write("\n".join(res))
-PY
-  echo "$f"
-}
+. "$(dirname "$0")/install-scanner-test-lib.sh"   # sutc: a copy of the installer with its TEST-SUBST lines set
 # the download stand-in: the installers fetch from fixed https URLs now, so a curl on PATH serves the local release layout STUB_REL (the part of the URL after /download/ or /dl/), or fails like a refused download
 stubbin="$work/stubbin"; mkdir -p "$stubbin"
 FXD_2="$stubbin/curl"
@@ -85,10 +63,14 @@ else
     if [ -n "$pinned_" ] && [ "$total_" -ge 2 ] && [ "$total_" = "$good_" ]; then ok "$tool_: every release URL ($total_, one per architecture) names the pinned version $pinned_"; else bad "$tool_: $good_ of $total_ release URLs name the pinned version '${pinned_}'"; fi
   done
   check "an unknown tool is still refused" 1 "unknown scanner.*PIPELINE failure" -- bash "$sut" bogus "$work/bin"
-  check "witness checksum mismatch (amd64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc x86_64)" witness "$work/bin"
-  check "witness checksum mismatch (arm64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc aarch64)" witness "$work/bin"
-  check "a failed download is a pipeline failure" 1 "download failed.*PIPELINE failure" -- env PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$(sutc x86_64)" witness "$work/bin"
-  check "an unsupported architecture is a pipeline failure" 1 "unsupported architecture.*PIPELINE failure" -- env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc mips)" witness "$work/bin"
+  check "witness checksum mismatch (amd64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" \
+    -- env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc x86_64)" witness "$work/bin"
+  check "witness checksum mismatch (arm64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" \
+    -- env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc aarch64)" witness "$work/bin"
+  check "a failed download is a pipeline failure" 1 "download failed.*PIPELINE failure" \
+    -- env PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$(sutc x86_64)" witness "$work/bin"
+  check "an unsupported architecture is a pipeline failure" 1 "unsupported architecture.*PIPELINE failure" \
+    -- env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc mips)" witness "$work/bin"
   [ ! -e "$work/bin/witness" ] && ok "a failed install leaves no witness binary" || bad "a failed install left $work/bin/witness"
   amd=$(grep -E 'witness:x86_64\|witness:amd64' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
   arm=$(grep -E 'witness:aarch64\|witness:arm64' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
@@ -125,14 +107,23 @@ else
   if [ "$GOVER" = "$repo_gomod_ver" ] && [[ "$GO_AMD" =~ ^[0-9a-f]{64}$ ]] && [[ "$GO_ARM" =~ ^[0-9a-f]{64}$ ]] && [ "$GO_AMD" != "$GO_ARM" ]; then
     ok "go: the pinned version ($GOVER) is the repo go.mod's and the two sha256 values are 64-hex and different (go.dev's published values are checked by the bump script, which downloads and compares them)"
   else bad "go: pins: version '$GOVER' vs go.mod '$repo_gomod_ver'; amd64/arm64 values"; fi
-  gocheck "go: a wrong checksum (amd64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
-  gocheck "go: a wrong checksum (arm64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" aarch64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
-  gocheck "go: a go.mod version that is not the pinned one is refused" "$gwork/mod-old" "go\\.mod.*(0\\.0\\.1).*pinned|pinned.*go\\.mod" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
-  gocheck "go: the toolchain line wins over the go line (it reaches the checksum, so the version matched)" "$gwork/mod-tool" "checksum mismatch" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
-  gocheck "go: the go line is used when there is no toolchain line (it reaches the checksum)" "$gwork/mod-ok" "checksum mismatch" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
-  gocheck "go: an unknown architecture is refused" "$gwork/mod-ok" "unsupported architecture.*PIPELINE failure" mips PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
-  gocheck "go: a failed download is refused" "$gwork/mod-ok" "download failed.*PIPELINE failure" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/nope"
-  gocheck "go: no go.mod is refused" "$gwork/mod-none" "go\\.mod.*PIPELINE failure|PIPELINE failure.*go\\.mod|no go\\.mod" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: a wrong checksum (amd64) is refused" \
+    "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: a wrong checksum (arm64) is refused" \
+    "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" aarch64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: a go.mod version that is not the pinned one is refused" \
+    "$gwork/mod-old" "go\\.mod.*(0\\.0\\.1).*pinned|pinned.*go\\.mod" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: the toolchain line wins over the go line (it reaches the checksum, so the version matched)" \
+    "$gwork/mod-tool" "checksum mismatch" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: the go line is used when there is no toolchain line (it reaches the checksum)" \
+    "$gwork/mod-ok" "checksum mismatch" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: an unknown architecture is refused" \
+    "$gwork/mod-ok" "unsupported architecture.*PIPELINE failure" mips PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: a failed download is refused" \
+    "$gwork/mod-ok" "download failed.*PIPELINE failure" x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/nope"
+  gocheck "go: no go.mod is refused" \
+    "$gwork/mod-none" "go\\.mod.*PIPELINE failure|PIPELINE failure.*go\\.mod|no go\\.mod" \
+    x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
   [ ! -e "$gwork/bin/fscache-go" ] && ok "go: a failed install leaves no toolchain" || bad "go: a failed install left $gwork/bin/fscache-go"
   if grep -Eq 'GO_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{GO_(SHA256|SUM|CHECKSUM|VER|VERSION):?[-=]|GOVERSION=|GOTOOLCHAIN=auto' "$sut"; then bad "go: the script lets the environment override the checksum or the version"; else ok "go: there is no environment override of a checksum or of the version (the release URL is fixed in the script)"; fi
 fi
