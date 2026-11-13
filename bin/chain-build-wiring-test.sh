@@ -2452,6 +2452,9 @@ ent() { printf '{"id":"%s","suite":"s.sh","case":"c%s","reason":"r","green_by":"
 printf '{"entries":[%s]}\n' "$(ent KR-CUTOVER)" > "$work/kr/only-cutover.json"
 printf '{"entries":[%s,%s]}\n' "$(ent KR-CUTOVER)" "$(ent KR-OTHER)" > "$work/kr/cutover-other.json"
 printf '{"entries":[%s]}\n' "$(ent KR-OTHER)" > "$work/kr/other.json"
+printf '{"entries":[%s,%s]}\n' "$(ent KR-CUTOVER)" "$(ent KR-BASE-LOCKS)" > "$work/kr/cutover-locks.json"
+printf '{"entries":[%s]}\n' "$(ent KR-BASE-LOCKS)" > "$work/kr/only-locks.json"
+printf '{"entries":[%s,%s,%s]}\n' "$(ent KR-CUTOVER)" "$(ent KR-BASE-LOCKS)" "$(ent KR-OTHER)" > "$work/kr/cutover-locks-other.json"
 krx() { # krx WANT LABEL LIST ARGS... : the exit status of chain-known-red.py empty... (and, for a refusal, the word the first line names)
   local want=$1 label=$2 list=$3 rc=0; shift 3
   python3 "$KR" "$@" --list "$list" > "$work/kr/x.out" 2> "$work/kr/x.err" || rc=$?
@@ -2464,7 +2467,15 @@ python3 "$KR" empty-except KR-CUTOVER --list "$work/kr/cutover-other.json" > "$w
 grep -F -q KR-OTHER "$work/kr/x.out" && ok "known-red cutover prep: the refusal names the entry that is still listed" || bad "known-red cutover prep: the refusal does not name KR-OTHER"
 krx 1 "empty (the marker PR) still fails while KR-CUTOVER alone is listed: the list must be fully empty" "$work/kr/only-cutover.json" empty
 krx 2 "empty-except with no entry id is a usage error" "$work/kr/only-cutover.json" empty-except
-krx 2 "empty-except with two ids is a usage error" "$work/kr/only-cutover.json" empty-except KR-CUTOVER KR-OTHER
+krx 0 "empty-except with two ids passes when both are listed" "$work/kr/cutover-locks.json" empty-except KR-CUTOVER KR-BASE-LOCKS
+krx 0 "empty-except with two ids passes when only KR-CUTOVER is listed" "$work/kr/only-cutover.json" empty-except KR-CUTOVER KR-BASE-LOCKS
+krx 0 "empty-except with two ids passes when only KR-BASE-LOCKS is listed" "$work/kr/only-locks.json" empty-except KR-CUTOVER KR-BASE-LOCKS
+krx 0 "empty-except with two ids passes on an empty list" "$work/kr/empty.json" empty-except KR-CUTOVER KR-BASE-LOCKS
+krx 1 "empty-except with two ids fails when a third entry is listed besides both" "$work/kr/cutover-locks-other.json" empty-except KR-CUTOVER KR-BASE-LOCKS
+krx 1 "empty-except with two ids fails when a third entry is listed besides one of them" "$work/kr/cutover-other.json" empty-except KR-CUTOVER KR-BASE-LOCKS
+krx 1 "empty-except with two ids fails when a third entry alone is listed" "$work/kr/other.json" empty-except KR-CUTOVER KR-BASE-LOCKS
+krx 2 "empty-except with no entry id is still a usage error on the two-entry list" "$work/kr/cutover-locks.json" empty-except
+krx 1 "an unreadable list fails closed under empty-except with two ids" "$work/kr/does-not-exist.json" empty-except KR-CUTOVER KR-BASE-LOCKS
 krx 1 "an unreadable list fails closed under empty-except" "$work/kr/does-not-exist.json" empty-except KR-CUTOVER
 python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red cutover prep: KR-CUTOVER carries the accepted reason (every OTHER entry gone, this entry alone stays, removed by the marker PR)" || bad "known-red cutover prep: KR-CUTOVER's reason is not the accepted text"
 import json, sys
@@ -2561,15 +2572,16 @@ rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull re
 for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh bin/chain-records-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
-# the burn-down (cache4, handoff 0475): the vendor-provenance row landed in chain-scripts.json, so the three entries it kept open are gone. Only KR-CUTOVER may remain, and the marker
-# pull request of REQ-CHAIN-001-AC6 removes that one entry too: the committed list is [KR-CUTOVER] now and [] after the marker, nothing else
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: the committed list is exactly [KR-CUTOVER] (or [] after the marker pull request): KR-SIGN-1, KR-SIGN-3 and KR-RECORDS-1 are gone with the bin/vendor-provenance.py row in chain-scripts.json" || bad "known-red: the committed list holds a burned-down entry or another id (only KR-CUTOVER, or nothing after the marker, is allowed)"
+# the burn-down (cache4, handoff 0475): the vendor-provenance row landed in chain-scripts.json, so the three entries it kept open are gone. Only the two cutover entries may remain
+# (KR-BASE-LOCKS is red only until the landing brings .github/policy/gradle-wrapper-jar-sha256.txt to main), and the marker pull request of REQ-CHAIN-001-AC6 removes KR-CUTOVER too:
+# the committed list is [KR-CUTOVER, KR-BASE-LOCKS], [KR-CUTOVER] or [], nothing else
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: the committed list is exactly [KR-CUTOVER, KR-BASE-LOCKS], [KR-CUTOVER] or []: KR-SIGN-1, KR-SIGN-3 and KR-RECORDS-1 are gone with the bin/vendor-provenance.py row in chain-scripts.json" || bad "known-red: the committed list holds a burned-down entry or another id (only [KR-CUTOVER, KR-BASE-LOCKS], [KR-CUTOVER] or [] is allowed)"
 import json, sys
-allowed = lambda ids: ids in ([], ["KR-CUTOVER"])
+allowed = lambda ids: ids in ([], ["KR-CUTOVER"], ["KR-CUTOVER", "KR-BASE-LOCKS"])
 ids = [x["id"] for x in json.load(open(sys.argv[1]))["entries"]]
 assert allowed(ids), ids
-assert allowed([]) and allowed(["KR-CUTOVER"])                     # the marker pull request's list (empty) is as valid as today's
-for bad_ids in (["KR-CUTOVER", "KR-SIGN-1"], ["KR-SIGN-1"], ["KR-RECORDS-1", "KR-CUTOVER"], ["KR-CUTOVER", "KR-CUTOVER"], ["x"]):
+assert allowed([]) and allowed(["KR-CUTOVER"]) and allowed(["KR-CUTOVER", "KR-BASE-LOCKS"])   # the marker pull request's list (empty) is as valid as the two-entry list
+for bad_ids in (["KR-CUTOVER", "KR-BASE-LOCKS", "KR-X"], ["KR-BASE-LOCKS"], ["KR-CUTOVER", "KR-SIGN-1"], ["KR-SIGN-1"], ["KR-RECORDS-1", "KR-CUTOVER"], ["KR-CUTOVER", "KR-CUTOVER"], ["x"]):
     assert not allowed(bad_ids), bad_ids
 PY
 # PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
