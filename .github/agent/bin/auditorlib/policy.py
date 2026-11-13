@@ -87,7 +87,7 @@ def scope_key(product_id, subcomponents):
 def scope_id(vulnerability, product_id=None, subcomponents=None):
     """The statement @id: a DETERMINISTIC function of (vulnerability, scope) (REQ-AUD-13 AC2).
     The default scope (the plain product with no subcomponents) keeps the bare `#stmt-<cve>`
-    id; any other scope appends a stable 8-hex hash of its scope key. The same scope yields the
+    id; any other scope appends a stable 16-hex-character hash of its scope key. The same scope yields the
     same @id on every run and two distinct scopes never collide."""
     import hashlib
     prod, subs = scope_key(product_id, subcomponents)
