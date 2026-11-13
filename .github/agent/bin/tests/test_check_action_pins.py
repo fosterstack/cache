@@ -1014,5 +1014,15 @@ class GateWorkflowDigestSet(unittest.TestCase):
         self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
 
 
+class ExclusionBreachReasons(unittest.TestCase):
+    def test_two_yaml_documents_are_refused(self):
+        why = M._token_url_breach(HEAD + "---\n" + HEAD, "w", [], ("w", "j", 0))
+        self.assertEqual(why, "the file does not hold exactly one YAML document")
+
+    def test_a_step_past_the_end_of_the_job_cannot_be_found(self):
+        doc = M.yaml.compose(HEAD + "    steps:\n      - run: true\n", Loader=M.StrLoader)
+        self.assertEqual(M._env_breach(doc, ("w", "j", 1)), "the excluded step cannot be found")
+
+
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
