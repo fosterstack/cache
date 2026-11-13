@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # proves: REQ-SCAN-010-AC1, REQ-SCAN-010-AC2, REQ-SCAN-010-AC3, REQ-SCAN-010-AC5, REQ-SCAN-010-AC6, REQ-SCAN-010-AC7, REQ-SCAN-010-AC8
 # Scanner-panel rule 10 (owner RATIFIED Oct 2; advisor 0076/0077): every release publishes our VEX three ways, all
-# generated from the one OpenVEX file. "The same statements", in the advisor's exact words: the CSAF file carries every
-# OpenVEX statement; the Inspector file carries one rule per suppressible statement (not_affected, fixed) and none for
-# affected or under_investigation. Offline: no network, no cloud call.
+# generated from the one OpenVEX file. AC2: the CSAF file carries every OpenVEX statement about this release's images,
+# less a Go standard library subcomponent at a version the build does not ship (build/melange.yaml pins it); the
+# Inspector file carries one rule per suppressible statement that names a package (not_affected, fixed; none for
+# affected or under_investigation), with the same exception; the generator names each one left out. Offline: no network.
 # AC5-AC8 (advisor step 5, Oct 11, handoff 0389): the digest file holds exactly production and fips (v0.3.0 ships no
 # :debug image), is checked for shape and key set only, any other file is refused with nothing written, the same inputs
 # give the same bytes, and this test proves the generator alone: it reads no workflow's step names or step order
@@ -413,13 +414,12 @@ check("AC1 CVE-2026-111943 has exactly one product: the cache image (@id, purl) 
 check("AC1 no product of CVE-2026-111943 names cache-candidates", "cache-candidates" not in json.dumps(_p))
 check("AC2 CVE-2026-111943's impact_statement does not name cache-candidates",
       "cache-candidates" not in _s.get("impact_statement", ""))
-from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+from datetime import datetime as _dt, timezone as _tz
 _ts = lambda t: _dt.fromisoformat(t.replace("Z", "+00:00"))
 check("AC3 the document timestamp is not before the newest statement timestamp",
       _ts(real["timestamp"]) >= max(_ts(s["timestamp"]) for s in real["statements"]), real["timestamp"])
-# 10 minutes of slack: a runner's clock can lag the time the file was stamped
 check("AC3 the document timestamp is not in the future",
-      _ts(real["timestamp"]) <= _dt.now(_tz.utc) + _td(minutes=10), real["timestamp"])
+      _ts(real["timestamp"]) <= _dt.now(_tz.utc), real["timestamp"])
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
@@ -778,6 +778,12 @@ check("AC-B2-3 …and in the CSAF (component-stdlib@go1.28.0 only)",
 r_, got_, o_ = run_in_tree(MEL, two)
 check(f"AC-B2-3 the copied tree with the real melange.yaml keeps {BUILD_GO} and drops 1.28.0",
       r_.returncode == 0 and [f["filterCriteria"]["vulnerabilityId"][0]["value"] for f in got_[FORMS[0]]["filters"]] == ["CVE-B2"], (r_.returncode, r_.stderr[-300:]))
+# AC-B2-3b: a .sig and a .sha256 line for the same Go version are not a second version
+r_, got_, o_ = run_in_tree(MEL + "\n      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sig\n" % BUILD_GO
+                           + "      uri: https://go.dev/dl/go%s.linux-amd64.tar.gz.sha256\n" % BUILD_GO, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
+kept_ = [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"] for f in got_.get(FORMS[0], {}).get("filters", [])]
+check("AC-B2-3 .tar.gz.sig and .tar.gz.sha256 lines of the same Go version are not refused (still one version)",
+      r_.returncode == 0 and "refused" not in r_.stderr and kept_ == [f"go{BUILD_GO}"], (r_.returncode, r_.stderr[-300:]))
 BADS = {"no go.dev Go fetch line": _re.sub(r"https://go\.dev/dl/\S+", "https://example.invalid/x.tar.gz", MEL),
         "a missing file": None,
         "two different Go versions": melange_with(BUILD_GO, OTHER_GO)}
@@ -793,10 +799,16 @@ ls_ = scoped("CVE-R2", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": 
 fi_, fc_ = forms_of({"statements": [ls_]})
 check("R2 a 431-character module path is accepted and gives one rule whose description is at most 512 characters",
       len(fi_["filters"]) == 1 and len(fi_["filters"][0]["description"]) <= 512, [len(f["description"]) for f in fi_["filters"]])
+SENT = ". The full statement, with its scope, is in the CSAF file."
+check("R2 …and that description is at most 512 characters and still ends with the whole pointer sentence",
+      len(fi_["filters"]) == 1 and len(fi_["filters"][0]["description"]) <= 512
+      and fi_["filters"][0]["description"].endswith(SENT), [f["description"][-80:] for f in fi_["filters"]])
 check("R2 …the rule still names the whole module path", fi_["filters"] and fi_["filters"][0]["filterCriteria"]["vulnerablePackages"][0]["name"]["value"] == LONGMOD[len("pkg:golang/"):])
 check("R2 …and the CSAF keeps the full statement text", long_impact in json.dumps(fc_), "impact statement missing")
 check("R2 every description of every rule built from a mixed statement list is at most 512 characters",
       all(len(f["description"]) <= 512 for f in V.inspector({"statements": [ls_, scoped("CVE-R2b", "not_affected", BB)]}, IMAGES, "v0.3.0")["filters"]))
+mixed_ = V.inspector({"statements": [ls_, scoped("CVE-R2b", "not_affected", BB)]}, IMAGES, "v0.3.0")["filters"]
+check("R2 …and each of them ends with the whole pointer sentence", all(f["description"].endswith(SENT) for f in mixed_))
 # --- R6: only the exact go.dev/dl/go<ver>.linux-<arch>.tar.gz form names the build's Go; the file is read once per run
 def run_with(melange_text, doc):
     r_, got_, o_ = run_in_tree(melange_text, doc)
@@ -838,6 +850,17 @@ check("R7 the build's own stdlib subcomponent is not reported", not any(f"stdlib
 check("R7 stdout still lists just the two files, naming no stdlib", all(n in r_.stdout for n in FORMS) and "stdlib" not in r_.stdout, r_.stdout)
 r_ = run_gen(J(IMAGES), os.path.join(o7, "out2"), openvex=SYN)
 check("R7 a run that leaves nothing out writes nothing about stdlib on stderr", "stdlib" not in r_.stderr, r_.stderr[-200:])
+# two statements (production, fips) naming the same stale stdlib: one 'left out' line each
+sv = {"statements": [scoped("CVE-V-%s" % v, "not_affected",
+                            [{"@id": OURS_Q + "&variant=" + v, "subcomponents": [{"@id": stale_a}]}])
+                     for v in ("production", "fips")]}
+ov = tempfile.mkdtemp(); pv = os.path.join(ov, "v.json"); json.dump(sv, open(pv, "w"))
+os.makedirs(os.path.join(ov, "out"))
+r_ = run_gen(J(IMAGES), os.path.join(ov, "out"), openvex=pv)
+lv = [l for l in r_.stderr.splitlines() if "left out" in l]
+check("R7 two statements (production, fips) naming the same stale stdlib give two 'left out' lines, one each",
+      r_.returncode == 0 and len(lv) == 2 and sum("CVE-V-production" in l for l in lv) == 1
+      and sum("CVE-V-fips" in l for l in lv) == 1, (r_.returncode, r_.stderr[-400:]))
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
