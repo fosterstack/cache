@@ -11,6 +11,7 @@
 # exist. A bare `grype` run without --vex (a contributor's local scan) does
 # not apply the published disposition; the VEX document is the disposition.
 # History: until Sep 10, 2026 this file carried an analysis that moved into
-# the VEX document; the document today holds one statement (CVE-2024-51744,
-# scoped to the golang-jwt/jwt/v4 module).
+# the VEX document; the document today holds two statements (CVE-2024-51744,
+# scoped to the golang-jwt/jwt/v4 module, and CVE-2026-111943, scoped to the
+# Go standard library 1.27.2).
 ignore: []
