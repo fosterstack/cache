@@ -182,6 +182,7 @@ def judge_sign(path):
     return bad
 
 APK_RUN = "bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
+APK_STEP = "apk under Witness"
 
 def judge_build(path):
     if not os.path.exists(path): return []
@@ -201,13 +202,13 @@ def judge_build(path):
         for s in steps:
             if re.search(r"GITHUB_ENV", str(s.get("run") or "")) and re.search(r"secrets\.|github\.token|toJSON|ACTIONS_ID_TOKEN|\$\{\{", str(s.get("run") or "") + yaml.dump(s.get("env") or {}, width=10**6)):
                 bad.append("002-AC4: job %s writes a secret or token into GITHUB_ENV in a job that signs" % jn)
+        named_once = [x.get("name") for x in steps].count(APK_STEP) == 1
         for s in signs:
             nm = s.get("name") or s.get("uses")
             # the one binding 002-AC4 allows: the run's own read-only token, on job apk's apk step only:
             # the step name occurs once in the job and its run command is the one in stage-build.yml
             env = dict(s.get("env") or {})
-            named_once = [x.get("name") for x in steps].count("apk under Witness") == 1
-            is_apk_step = jn == "apk" and nm == "apk under Witness" and named_once
+            is_apk_step = jn == "apk" and nm == APK_STEP and named_once
             if is_apk_step and str(s.get("run")).strip() == APK_RUN and env.get("GH_TOKEN") == "${{ github.token }}":
                 del env["GH_TOKEN"]
             blob = yaml.dump({**s, "env": env}, width=10**6)
@@ -1042,6 +1043,7 @@ expect caught "002-AC4 the allowed binding plus a second env name with a secret"
 # the allowance is for one step: the real apk command, named once; another command or a repeated name is refused
 RUN_APK='bash bin/witnessed-local.sh apk bin/build-stage-apk.sh'
 run_fix() {  # run_fix FILE RUN : tok-ok.yml with its run command replaced
+  # the regex drops "        run: bash x" (a step's run line) and keeps "          run: bash x" (nested deeper)
   grep -v '^        run: ' "$work/tok-ok.yml" > "$1"; printf '%s\n' "        run: $2" >> "$1"
 }
 run_fix "$work/tok-snapshot-run.yml" 'bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh'
