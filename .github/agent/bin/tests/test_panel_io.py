@@ -881,11 +881,11 @@ class Deliver(Tmp):
                 for dp, _, fs in os.walk(root) for f in fs}
 
     def test_a_delivery_without_a_package_or_a_version_is_refused_by_name_before_any_state_is_written(self):
-        """"package" and "version" of a vex proposal are required inputs: a day lacking either (or holding it as non-text or
-        blank) is a named ::error:: and exit 3 before any call, and no state file is written anywhere (the checkout and the
-        run's folder are byte-identical afterwards)."""
-        full = {"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1", "status": "not_affected",
-                "purls": ["pkg:generic/tzdata@1"], "impact_statement": "x"}
+        """"package" and "version" of a vex proposal are required inputs: a day lacking either (or holding it as
+        non-text or blank) is a named ::error:: and exit 3 before any call, and no state file is written anywhere
+        (the checkout and the run's folder are byte-identical afterwards)."""
+        full = {"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
+                "status": "not_affected", "purls": ["pkg:generic/tzdata@1"], "impact_statement": "x"}
         for key in ("package", "version"):
             for label, value in (("missing", None), ("not text", 5), ("a list", ["x"]), ("blank", "  "), ("empty", "")):
                 entry = {k: v for k, v in full.items() if k != key}
@@ -894,13 +894,14 @@ class Deliver(Tmp):
                 self.day(vex=[entry])
                 before, out_before = self.tree(self.repo), self.tree(self.out)
                 calls, run = self.fake()
-                with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}), \
+                env = {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}
+                with mock.patch.dict(os.environ, env), \
                         mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()) as err:
                     rc = P.cmd_deliver(self.a(), run=run)
                 label = (key, label)
                 self.assertEqual((rc, calls), (3, []), label)
                 self.assertIn("::error::", err.getvalue(), label)
-                self.assertIn(repr(key), err.getvalue(), label)                      # refused by name
+                self.assertIn(repr(key), err.getvalue(), label)                  # refused by name
                 self.assertFalse(os.path.exists(os.path.join(self.repo, P.STATE)), label)
                 self.assertEqual(self.tree(self.repo), before, label)
                 self.assertEqual(self.tree(self.out), out_before, label)
@@ -911,12 +912,13 @@ class Deliver(Tmp):
             self.assertTrue([e for e in bad if repr(key) in e], bad)
 
     def test_invalid_utf8_in_the_checkouts_panel_state_is_a_named_stop_read_through_text_of(self):
-        """The invalid bytes are in .auditor/panel-state.json of the checkout (the file _text_of reads), not in the run's
-        own out/state.json: _text_of names the file and the decoding error, never lets it escape."""
+        """The invalid bytes are in .auditor/panel-state.json of the checkout (the file _text_of reads), not in the
+        run's own out/state.json: _text_of names the file and the decoding error, never lets it escape."""
         path = os.path.join(self.repo, P.STATE)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         for label, raw in (("a lone continuation byte", b"\x80"), ("a BOM-like pair", b"\xff\xfe{}"),
-                           ("cut inside a character", b'{"version": 1, "x": "\xe2\x82'), ("valid JSON then a bad byte", b'{"version": 1}\xc3\x28')):
+                           ("cut inside a character", b'{"version": 1, "x": "\xe2\x82'),
+                           ("valid JSON then a bad byte", b'{"version": 1}\xc3\x28')):
             with open(path, "wb") as fh:
                 fh.write(raw)
             with self.assertRaises(P.reviewed.ReviewedInputInvalid, msg=label) as cm:
