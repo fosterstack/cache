@@ -4,11 +4,10 @@
 ONE schema, written here and validated by the driver on load. Every key the driver reads
 is produced, or set explicitly to null with a recorded reason in `scanner_status`.
 
-The auditor runs NO scanner of its own (scanner-panel rules): the four panel
-scanners' results are read from the rescan's verdict.json (`--panel-dir`), and a scanner that
-did not run is recorded "did not run" with its reason, never clean. What this program still
-produces itself: the candidate's SBOM carriers and base OS (syft), govulncheck over the source,
-the endoflife.date lookups, and the candidate digest, all taken off a CONTAINER ARCHIVE
+The auditor runs NO scanner of its own (scanner-panel rules). The four panel scanners' results are read from the
+rescan's verdict.json (`--panel-dir`), and a scanner that did not run is recorded "did not run" with its reason,
+never clean. What this program still produces itself is the candidate's SBOM carriers and base OS (syft),
+govulncheck over the source, the endoflife.date lookups and the candidate digest, all taken off a CONTAINER ARCHIVE
 converted once with skopeo (no daemon).
 """
 import hashlib, json, os, re, subprocess, sys, glob
