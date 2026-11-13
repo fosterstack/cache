@@ -228,6 +228,26 @@ check("AC4 an Inspector stdlib 1.27.2 finding is covered by the stdlib@1.27.2 st
       go_covered("inspector", "stdlib", "1.27.2", STD) == (["CVE-2099-0027"], []), go_covered("inspector", "stdlib", "1.27.2", STD))
 check("AC4 an Inspector stdlib go1.27.2 finding is covered by the stdlib@1.27.2 statement",
       go_covered("inspector", "stdlib", "go1.27.2", STD) == (["CVE-2099-0027"], []), go_covered("inspector", "stdlib", "go1.27.2", STD))
+# R1: only the Go standard library loses the go prefix; any other package keeps its version as written
+def purl_covered(finding_purl, name, version, stmt_purl):
+    root = tempfile.mkdtemp()
+    d = os.path.join(root, "inspector", "production-amd64")
+    comps = [{"bom-ref": "c0", "name": name, "version": version, "purl": finding_purl}]
+    W(d, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": comps})
+    W(d, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": comps,
+                                "vulnerabilities": [{"id": "CVE-2099-0027", "affects": [{"ref": "c0"}]}]}})
+    f = os.path.join(tempfile.mkdtemp(), "go.json")
+    json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0027"}, "status": "not_affected",
+        "products": [{"@id": R + "&variant=production&arch=amd64", "subcomponents": [{"@id": stmt_purl}]}]}]}, open(f, "w"))
+    v = P.tally(root, P.load_vex(f), {"inspector": os.path.join(root, "inspector")})
+    return bool(v["vex_covered"]) and not v["findings"]
+for what, fp, ver, sp, want in (
+        ("R1 a golang stdlib finding at go1.27.2 is covered by the stdlib@1.27.2 statement", "pkg:golang/stdlib@go1.27.2", "go1.27.2", STD, True),
+        ("R1 a golang stdlib finding at go1.27.3 is not covered by the stdlib@1.27.2 statement", "pkg:golang/stdlib@go1.27.3", "go1.27.3", STD, False),
+        ("R1 a generic stdlib finding at go1.27.2 is NOT covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@go1.27.2", "go1.27.2", "pkg:generic/stdlib@1.27.2", False),
+        ("R1 a generic stdlib finding at go1.27.2 is covered by a generic stdlib@go1.27.2 statement (exact)", "pkg:generic/stdlib@go1.27.2", "go1.27.2", "pkg:generic/stdlib@go1.27.2", True),
+        ("R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@1.27.2", "1.27.2", "pkg:generic/stdlib@1.27.2", True)):
+    check(what, purl_covered(fp, "stdlib", ver, sp) == want, purl_covered(fp, "stdlib", ver, sp))
 pub = P.load_vex(VEX)
 want_ids = ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"]
 check("the published VEX covers the same ids (the four CVEs and their aliases) on every one of the four images as before",
