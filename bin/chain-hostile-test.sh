@@ -73,10 +73,12 @@
 #       `!inputs.dry-run` and no `||`, so a dry run neither tags nor publishes.
 #   No throwaway caller workflow exists any more (the sixth case is not a runtime case); this test makes no exception for one and has no
 #       environment-variable bypass: a hostile step that reads a record named hostile-caller is a finding of the wiring judge.
-#   Token grading (round 6): hostile-material --kind token reads the JWT's payload claims. A token whose job_workflow_ref
-#       names stage-sign.yml means the attempt really obtained Sign's identity (exit 0, graded accepted); a token whose
-#       job_workflow_ref names any other file (Build's own token) is `refused at runner: nothing usable for Sign`; a JWT with no
-#       job_workflow_ref claim is an error (exit 2).
+#   Token grading: hostile-material --kind token reads the JWT's payload claims. release.yml is the one release workflow, so its
+#       job_workflow_ref names every job; Sign's identity is the environment sign. A token whose sub is exactly
+#       repo:<repo>:environment:sign AND whose job_workflow_ref is <repo>/.github/workflows/release.yml@refs/... means the attempt
+#       really obtained Sign's identity (exit 0, graded accepted). Any other token is `refused at runner: nothing usable for Sign`:
+#       another job of release.yml (another environment, or none), environment sign from another workflow, a look-alike file,
+#       repository or environment. A JWT with no job_workflow_ref claim, or no sub claim, is an error (exit 2).
 #   Dry-run gating (round 6): every hostile-* job has `if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}` exactly; every other job that needs Sign
 #       (transitively) has BOTH conjuncts `!inputs.dry-run` and `startsWith(github.ref, 'refs/tags/v')`; Release's policy step
 #       (stage-promote.yml) is `policy make --tag ...` and never `--ref` (the only `--ref` in the tree is hostile-verify's), and
@@ -89,7 +91,7 @@
 #           accepted when N == 0; exit 1 (no row) for a traceback, an empty or unparsable stderr with N != 0, or an unknown attempt.
 #       chain-verify.py hostile-collect DIR --out F      merges the six rows (five attempts + positive_control); exit 1 naming a missing, duplicate or extra one.
 #       chain-verify.py hostile-material --kind token|key --file F [--policy policy.json]
-#           exit 0 when F holds a transcript line and usable material (a token whose claims line says job_workflow_ref is stage-sign.yml; a key file whose public key is the key of Sign's certificate: the step lists `pubkey-sha256: <hex>` per key file found and `searched: <N> files`, N above zero), exit 1 with
+#           exit 0 when F holds a transcript line and usable material (a token whose claims line says sub environment:sign and job_workflow_ref release.yml; a key file whose public key is the key of Sign's certificate: the step lists `pubkey-sha256: <hex>` per key file found and `searched: <N> files`, N above zero), exit 1 with
 #           `refused at runner: nothing usable` when F has the transcript line and no material (the runner VM was isolated, the
 #           attempt got nothing); exit 2 with `error: ...` when F is missing, unreadable, empty or has no transcript line (no
 #           row); an unknown kind exits 2.
@@ -246,13 +248,16 @@ printf '{"attempt":"call_sign_from_other_workflow","outcome":"refused","stage":"
 xexpect refuse "hostile-collect: a row for the dropped sixth case is an extra row, named (G2)" call_sign_from_other_workflow -- hostile-collect "$work/rows8" --out "$work/c8.json"
 b64u() { printf '%s' "$1" | base64 | tr -d '=\n' | tr '+/' '-_'; }
 JH=$(b64u '{"alg":"RS256"}')
-TS=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"}').c2ln
-TB=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-build.yml@refs/tags/v0.3.0"}').c2ln
+RW=fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0
+TS=$JH.$(b64u '{"sub":"repo:fosterstack/cache:environment:sign","job_workflow_ref":"'$RW'"}').c2ln
+TB=$JH.$(b64u '{"sub":"repo:fosterstack/cache:environment:build","job_workflow_ref":"'$RW'"}').c2ln
 TN=$JH.$(b64u '{"sub":"repo"}').c2ln
+TNS=$JH.$(b64u '{"job_workflow_ref":"'$RW'"}').c2ln
 TR='# transcript: curl "$ACTIONS_ID_TOKEN_REQUEST_URL" with the step token and write the response'
 printf '%s\nclaims: %s\n' "$TR" "$TS" > "$work/tok_yes.txt"
 printf '%s\nclaims: %s\n' "$TR" "$TB" > "$work/tok_build.txt"
 printf '%s\nclaims: %s\n' "$TR" "$TN" > "$work/tok_noclaim.txt"
+printf '%s\nclaims: %s\n' "$TR" "$TNS" > "$work/tok_nosub.txt"
 printf '%s\ncurl: (6) could not resolve host\n' "$TR" > "$work/tok_none.txt"
 : > "$work/mat_empty.txt"; printf 'claims: %s\n' "$TS" > "$work/tok_notranscript.txt"
 printf '# transcript: tried\nclaims: %s\n' "$TS" > "$work/tok_shorttr.txt"
@@ -271,15 +276,21 @@ printf '%s\nsearched: 0 files\n' "$KR" > "$work/key_zero.txt"
 printf '%s\npubkey-sha256: %s\n' "$KR" "$H1" > "$work/key_nocount.txt"
 KB="-----BEGIN PRIVATE"; KE="-----END PRIVATE"      # the fixture's key block is assembled here, so that no tracked file holds a private-key block (bin/persona-uat-test.sh judges the tree)
 printf '%s\nsearched: 42 files\n%s KEY-----\nMIIB\n%s KEY-----\n' "$KR" "$KB" "$KE" > "$work/key_text.txt"
-xexpect ok "hostile-material: a token whose job_workflow_ref names stage-sign.yml means the attempt got Sign's identity (exit 0, graded accepted)" - -- hostile-material --kind token --file "$work/tok_yes.txt"
-xexpect refuse "hostile-material: Build's OWN token (job_workflow_ref stage-build.yml) is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_build.txt"
-# the token's job_workflow_ref must be exactly <repo>/.github/workflows/stage-sign.yml@<ref> of THIS repository (GITHUB_REPOSITORY, default fosterstack/cache)
-TX=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/xstage-sign.yml@refs/tags/v0.3.0"}').c2ln
-TO=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"evil/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"}').c2ln
-TD=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-sign.yml.evil@refs/tags/v0.3.0"}').c2ln
-for n in TX:"a file whose name only ends like Sign's (xstage-sign.yml)" TO:"Sign's file name in ANOTHER repository" TD:"stage-sign.yml.evil"; do
+xexpect ok "hostile-material: a token of environment sign from release.yml means the attempt got Sign's identity (exit 0, graded accepted)" - -- hostile-material --kind token --file "$work/tok_yes.txt"
+xexpect refuse "hostile-material: another job of release.yml (environment build) is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_build.txt"
+# Sign's token is exactly sub repo:<repo>:environment:sign AND job_workflow_ref <repo>/.github/workflows/release.yml@<ref> (GITHUB_REPOSITORY, default fosterstack/cache)
+W=fosterstack/cache/.github/workflows
+SG=repo:fosterstack/cache:environment:sign
+TJ=$JH.$(b64u '{"sub":"repo:fosterstack/cache:ref:refs/tags/v0.3.0","job_workflow_ref":"'$RW'"}').c2ln
+TW=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"'$W'/other.yml@refs/tags/v0.3.0"}').c2ln
+TX=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"'$W'/xrelease.yml@refs/tags/v0.3.0"}').c2ln
+TO=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"evil/cache/.github/workflows/release.yml@refs/tags/v0.3.0"}').c2ln
+TD=$JH.$(b64u '{"sub":"'$SG'","job_workflow_ref":"'$W'/release.yml.evil@refs/tags/v0.3.0"}').c2ln
+TG=$JH.$(b64u '{"sub":"'$SG'r","job_workflow_ref":"'$RW'"}').c2ln
+TE=$JH.$(b64u '{"sub":"repo:evil/cache:environment:sign","job_workflow_ref":"'$RW'"}').c2ln
+for n in TJ:"another job of release.yml with no environment (sub names a tag ref)" TW:"environment sign from ANOTHER workflow (other.yml)" TX:"a file whose name only ends like Sign's (xrelease.yml)" TO:"release.yml of ANOTHER repository" TD:"release.yml.evil" TG:"environment signer (a sub that only starts like sign)" TE:"environment sign of ANOTHER repository"; do
   v=${n%%:*}; printf '%s\nclaims: %s\n' "$TR" "${!v}" > "$work/tok_$v.txt"
-  xexpect refuse "hostile-material: a token whose job_workflow_ref is ${n#*:} is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_$v.txt"
+  xexpect refuse "hostile-material: a token with ${n#*:} is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_$v.txt"
 done
 mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
 if [ "$mrc" = 1 ] && grep -F -q "refused at runner" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
@@ -363,9 +374,9 @@ xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's k
 xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --policy "$work/keypol.json"
 xexpect refuse "hostile-material: the TEXT 'PRIVATE KEY' proves nothing: text of a key block with no matching public key hash is refused" "refused at runner" -- hostile-material --kind key --file "$work/key_text.txt" --policy "$work/keypol.json"
 xexpect refuse "hostile-material: an unknown kind" kind -- hostile-material --kind password --file "$work/tok_none.txt"
-for f in mat_empty tok_notranscript tok_noclaim tok_shorttr tok_tronly tok_none; do
+for f in mat_empty tok_notranscript tok_noclaim tok_nosub tok_shorttr tok_tronly tok_none; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (empty, no transcript, a one-word transcript, a transcript with no output, no claims line, or a JWT without job_workflow_ref) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (empty, no transcript, a one-word transcript, a transcript with no output, no claims line, a JWT without job_workflow_ref, or a JWT without sub) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 done
 for f in key_zero key_nocount mat_empty; do
   mrc=0; cvx hostile-material --kind key --file "$work/$f.txt" --policy "$work/keypol.json" || mrc=$?
@@ -1523,7 +1534,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=284
+EXPECT=289
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
