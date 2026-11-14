@@ -4988,7 +4988,7 @@ requirements:
       When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
       twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
       fails unless every new job succeeded.
-    source: [ci-speed read-back of Oct 23 (advisor)]
+    source: [ci-speed read-back of Oct 23]
     tier: community
     introduced: v0.3.0
     origin: advisor Oct 23 2026 (CI speed, under the owner's rules that no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
@@ -5027,7 +5027,7 @@ requirements:
     statement: >
       Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the
       step that re-runs the suites of the floors file runs only those that no counting step runs.
-    source: [ci-speed read-back of Oct 23 (advisor), the suite guard (bin/suite-guard-run.py)]
+    source: [ci-speed read-back of Oct 23, the suite guard (bin/suite-guard-run.py)]
     tier: community
     introduced: v0.3.0
     origin: advisor Oct 23 2026 (CI speed; the floor re-run of every suite took 4876 s on top of the suites themselves; no check is dropped and every test runs exactly once)
