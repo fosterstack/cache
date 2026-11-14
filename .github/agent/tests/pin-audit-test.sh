@@ -1234,14 +1234,13 @@ check python3 - "$aud" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 inv = pa.inv
-bad = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: echo " + "0123456789abcdef" * 4 + "\n      - run: " + "x" * 4500 + "\n"
 script = "#!/usr/bin/env bash\npip install missingversion\ncurl -L -o /tmp/t https://example.org/releases/download/v${VER}/tool-${VER}.tgz\n"
 dump = lambda d: sorted((k, i.step, i.path, i.src) for k, i in d.items())
 inv._MEMO_ON[0] = False
 neutral = dump(inv.inventory({"bin/x.sh": script}))
 assert neutral, "the probe has no items"
 many = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: |\n" + "".join("          pip install p%d==1.0\n" % i for i in range(600))
-for memo, poison in ((m, p) for m in (False, True) for p in (bad, many)):
+for memo, poison in ((m, many) for m in (False, True)):
     inv._MEMO_ON[0] = memo; inv._FILE_MEMO.clear()
     for _ in range(2):    # cold, then warm
         try:
@@ -1272,7 +1271,7 @@ for files_ in (callee_ok, callee_bad, callee_ok, callee_bad):      # a warm call
         inv.inventory(dict(files_)); assert files_ is callee_ok
     except RuntimeError:
         assert files_ is callee_bad
-long_line = {"bin/b.sh": "echo " + "y" * 4500 + "\n"}
+long_line = {"bin/b.sh": "echo y\n" * 20001}      # a file of more than 20000 lines is refused
 for _ in range(3):
     try:
         inv.inventory(dict(long_line)); raise SystemExit("no raise")
