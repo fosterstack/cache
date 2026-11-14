@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-015-AC2, REQ-DEP-002-AC3 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases);
-# the release-only list holds exactly the seven contexts the owner took off the ruleset (the release-only cases)
+# proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases);
+# the seven release-only names belong to the jobs that produce them (the reserved cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -629,34 +629,37 @@ for jid, want_steps in SPLIT_STEPS.items():
             bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
 # the required-check policy (release admission reads it): required-checks.json (the ruleset's list) and release-only-checks.json (admission's extra
 # list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
-# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
+# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The seven release-only entries
+# are pinned whole in bin/required-check-guard.sh, not here.
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
-# the seven contexts the owner took off the per-pull-request list (ratify 2026-11-12-cache-required-checks-trimmed-by-hand)
-RELEASE_ONLY = ["acceptance-gradle", "acceptance-maven (1.2.0)", "acceptance-maven (1.2.3)", "allowlist-chain",
-                "allowlist-persona", "auditor-review-gate", "coverage"]
+def read_checks(env_name):
+    checks = json.load(open(os.environ[env_name]))["required_checks"]
+    if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
+        raise ValueError("required_checks is not a list of objects")
+    return checks
+release_only = []
 try:
-    pol = []
-    for _name in ("PIN_WIRING_POLICY_FILE", "PIN_WIRING_RELEASE_ONLY_FILE"):
-        _list = json.load(open(os.environ[_name]))["required_checks"]
-        if not isinstance(_list, list) or not all(isinstance(c, dict) for c in _list):
-            raise ValueError("required_checks is not a list of objects")
-        pol += _list
-        release_only = _list
+    ruleset = read_checks("PIN_WIRING_POLICY_FILE")
+    release_only = read_checks("PIN_WIRING_RELEASE_ONLY_FILE")
+    pol = ruleset + release_only
 except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
     bad.append(f"required-checks.json or release-only-checks.json is unreadable or malformed ({type(e).__name__})")
 if pol is not None:
-    if sorted(str(c.get("context")) for c in release_only) != RELEASE_ONLY:
-        bad.append("release-only-checks.json does not hold exactly the seven release-only contexts")
     ctxs = [c.get("context") for c in pol]
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
         bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
     for jid in PROTECTED:
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
             bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
-# the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
+# the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
-# name may be an expression or come from a matrix (its rendered name cannot be judged).
+# name may be an expression or come from a matrix (its rendered name cannot be judged). auditor-review-gate is the App's alone: nothing produces it.
+RESERVED = set(PROTECTED) | {n for c in release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
+PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-gradle", "acceptance-maven")}
+def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
+    produces = jid in PRODUCES.get(wf, ()) and nm == jid
+    return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
 def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
     nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
     if "${{" not in nm:
@@ -669,8 +672,8 @@ for jid_, j_ in d.get("jobs", {}).items():
     if not isinstance(j_, dict):
         continue
     nm = j_.get("name", jid_)
-    if jid_ not in PROTECTED and (nm in PROTECTED or jid_ in PROTECTED):
-        bad.append(f"the job {jid_} produces the protected check name {nm}")
+    if takes_reserved("ci.yml", jid_, nm):
+        bad.append(f"the job {jid_} produces the reserved check name {nm}")
     if jid_ not in PROTECTED and not name_disjoint(nm):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
     if writes_checks(j_.get("permissions")):
@@ -695,8 +698,8 @@ for _f in sorted(os.listdir(_wdir)):
         bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
     for _jid, _j in _jobs.items():
         _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
-        if _jid in PROTECTED or _nm in PROTECTED:
-            bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
+        if takes_reserved(_f, _jid, _nm):
+            bad.append(f"{_f}: the job {_jid} takes the reserved check name {_nm}")
         elif not name_disjoint(_nm):
             bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
         if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
