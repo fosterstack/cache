@@ -33,6 +33,10 @@ on:
         description: release or snapshot
         type: string
         default: release
+    outputs:
+      digests:
+        description: the digests.json text Build wrote
+        value: ${{ jobs.build-assemble.outputs.digests }}
 
 permissions: {}
 
