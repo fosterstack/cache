@@ -36,7 +36,7 @@
 #       Checks, any failure exit 1 with the cause on stderr as `refused at <stage>: <reason>`: the envelope (one signature, no certificate
 #       field, canonical base64, strict JSON, UTF-8 only: "envelope"), the signature by the policy's release key ("signature"; a record signed
 #       by another key, by the building job's throwaway key, or unsigned all end here), the record type bound to the stage ("predicate":
-#       Witness collection only for build/rebuild/check, SLSA provenance v1 only for sign, the Witness policy payloadType only for release),
+#       Witness collection only for build/rebuild/check/release (release: the collections release-verify and release-publish, the Witness move of ruling Q-e), SLSA provenance v1 only for sign, the Witness policy payloadType for release too),
 #       for provenance the ref inside it (buildDefinition.externalParameters.ref) equal to the policy's ref ("ref"), and no token in a
 #       Witness collection's environment. Provenance whose predicate says dryRun true is refused under a non-dry policy ("dry"). Dry-run
 #       policies are accepted for stage sign only.
@@ -435,6 +435,15 @@ for k in FMT: add("build_coll_" + k, COLL, None, stmt="v0.1", coll_file="digests
 add("check_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
 add("rebuild_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
 add("rebuild_coll_other", COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
+# the release stage's two signed collections (ruling Q-e: sign-release signs the release job's local records; verify --stage release accepts them as it accepts Check's)
+for _n in ("release-verify", "release-publish"):
+    _k = _n.replace("-", "_")
+    add(_k + "_coll", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_n)
+    add(_k + "_coll_otherref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_n, coll_ref=T2)
+    add(_k + "_coll_rcref", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_n, coll_ref=TRC)
+    add(_k + "_coll_otherkey", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_n, key="other")
+    add(_k + "_coll_throwaway", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_n, key="throwaway")
+    _u = json.load(open(p(_k + "_coll.json"))); _u["signatures"] = []; json.dump(_u, open(p(_k + "_coll_unsigned.json"), "w"))
 # the key binds a Witness collection too: signed by another key, by the building job's throwaway key, and unsigned
 for _s, _name in (("build", "build"), ("rebuild", "rebuild"), ("check", "scanners")):
     add(_s + "_coll_otherkey", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_name, key="other")
@@ -1493,6 +1502,17 @@ expect_refuse "SF-1 a listed local action without --root cannot be read, so it i
 expect_ok     "WM a Build record signed by the release key is accepted" verify $(V) --stage build $(rec build_coll)
 expect_ok     "WM a Rebuild record signed by the release key is accepted" verify $(V) --stage rebuild $(rec rebuild_coll)
 expect_ok     "WM a Check record (collection scanners) signed by the release key is accepted" verify $(V) --stage check $(rec check_coll)
+for _n in release-verify release-publish; do _k=${_n//-/_}
+  expect_ok     "WM a release-stage record ($_n collection) signed by the release key is accepted for stage release" verify $(V) --stage release $(rec ${_k}_coll)
+  expect_refuse "WM a $_n collection of another tag (wrong ref) is refused for stage release" "ref" verify $(V) --stage release $(rec ${_k}_coll_otherref)
+  expect_refuse "WM a $_n collection of the rc tag is refused for stage release" "ref" verify $(V) --stage release $(rec ${_k}_coll_rcref)
+  expect_refuse "WM a $_n collection signed by another key is refused for stage release" "signature" verify $(V) --stage release $(rec ${_k}_coll_otherkey)
+  expect_refuse "WM a $_n collection signed by the building job's throwaway key is refused for stage release" "signature" verify $(V) --stage release $(rec ${_k}_coll_throwaway)
+  expect_refuse "WM an unsigned $_n collection is refused for stage release" "signature" verify $(V) --stage release $(rec ${_k}_coll_unsigned)
+done
+expect_refuse "WM a Build record (collection build) presented as the release stage's is refused by its collection name" "collection name" verify $(V) --stage release $(rec build_coll)
+expect_refuse "WM a Check record (collection scanners) presented as the release stage's is refused by its collection name" "collection name" verify $(V) --stage release $(rec check_coll)
+expect_refuse "WM a release-verify collection presented as Build's is refused by its collection name" "collection name" verify $(V) --stage build $(rec release_verify_coll)
 expect_refuse "WM a Build record (collection build) presented as Check's is refused by its collection name, whoever signed it" "collection name" verify $(V) --stage check $(rec build_coll)
 expect_refuse "WM a Rebuild record (collection rebuild) presented as Check's is refused by its collection name" "collection name" verify $(V) --stage check $(rec rebuild_coll)
 
@@ -2240,7 +2260,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=800
+EXPECT=815
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
