@@ -71,6 +71,7 @@ WRITER = re.compile(r"jq(?: (?:-[cjnr]+|--(?:arg|slurpfile|argjson) \w+ JQ_ARG))
                     r" '(?P<program>[^']*)' > (?P<file>WORD)"
                     .replace("JQ_ARG", JQ_ARG).replace("WORD", WORD))
 KMS_WORD = re.compile(r"(?<![\w-])kms-sign(?![\w-])")
+WRAPPER = "bin/with-aws-token.sh"
 WRAPPER_CASE = ('case "${1:-}" in sign-record|sign|kms-sign) ;; *) echo "with-aws-token: the first argument must be '
                 'sign-record, sign or kms-sign" >&2; exit 2 ;; esac')
 def code_lines(text):
@@ -94,11 +95,16 @@ def resolve_statement(rel, n, lines, file, add, bad):
     other line naming it, the first writer apart, fail (cp, tee, >>, a heredoc body)."""
     name = re.compile(re.escape(bare(file)) + r"(?!\w)")
     others = [(i, x) for i, x in lines if i != n and name.search(bare(x))]
-    writers = [(i, WRITER.fullmatch(x)) for i, x in others if WRITER.fullmatch(x)]
-    m = writers[0][1] if len(others) == 1 and writers and writers[0][1].group("file") == file else None
-    if not m:
-        first = writers[0][0] if writers else None
-        for at in sorted({n} | {i for i, _ in others if i != first}):
+    writers = []
+    for i, x in others:
+        w = WRITER.fullmatch(x)
+        if w: writers.append((i, w))
+    if len(others) == 1 and writers and writers[0][1].group("file") == file:
+        m = writers[0][1]
+    else:
+        failing = {n} | {i for i, _ in others}
+        if writers: failing.discard(writers[0][0])
+        for at in sorted(failing):
             bad.append("%s: line %d: kms-sign --dsse-statement file without exactly one jq writer line (fail closed)"
                        % (rel, at))
         return
@@ -175,12 +181,13 @@ def scan(rel, text, raw=False):
     if raw:
         lines = code_lines(text)
         for n, line in lines:
-            if not KMS_WORD.search(line) or (rel == "bin/with-aws-token.sh" and line == WRAPPER_CASE): continue
+            if not KMS_WORD.search(line) or (rel == WRAPPER and line == WRAPPER_CASE): continue
             m = KMS_CALL.fullmatch(line)
             if not m: bad.append("%s: line %d: kms-sign in a form the scan does not read (fail closed)" % (rel, n))
             elif m.group("digest"): add("urn:cosign:signature")
             else: resolve_statement(rel, n, lines, m.group("file"), add, bad)
-        if any(KMS_WORD.search(line) for _, line in lines):    # a heredoc body could hold the one writer line unseen
+        calls = [x for _, x in lines if KMS_WORD.search(x) and not (rel == WRAPPER and x == WRAPPER_CASE)]
+        if calls:    # a heredoc body could hold the one writer line unseen
             bad += ["%s: line %d: a heredoc in a script that calls kms-sign (fail closed)" % (rel, n)
                     for n, line in lines if "<<" in line]
 BAD = bad
@@ -885,7 +892,14 @@ d=$(mk r10wfcmt)
 printf 'jobs:\n  c:\n    steps:\n      # the sign step runs kms-sign inside bin/ks.sh\n      - run: echo hi\n' \
   > "$d/.github/workflows/stage-verify.yml"
 expect ok "r10 a workflow comment line naming kms-sign is not a finding" "$d"
-EXPECT=168
+d=$(mk r10wraphd); mkdir -p "$d/bin"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case "${1:-}" in sign-record|sign|kms-sign) ;; *) echo "with-aws-token: the first argument must be '\
+'sign-record, sign or kms-sign" >&2; exit 2 ;; esac' \
+  "cat <<'X'" usage X > "$d/bin/with-aws-token.sh"
+listed "$d" bin/with-aws-token.sh jq
+expect ok "r10 a heredoc in bin/with-aws-token.sh beside its accepting line is fine" "$d"
+EXPECT=169
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
