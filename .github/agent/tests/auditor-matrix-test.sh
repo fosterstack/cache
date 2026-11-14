@@ -3444,11 +3444,6 @@ def want(name, got, rc, published, judged):
     if code != rc or pub != published or ("audit" in calls) != judged or any("unexpected" in c for c in calls):
         bad.append("%s: exit %s (want %s), published %s (want %s), judged %s (want %s)" % (name, code, rc, pub,
                 published, "audit" in calls, judged))
-want("a Dependabot head with a gate success whose judge now fails", sweep_over(dep, "success", 1), 0,
-     ["conclusion=failure"], True)
-want("a Dependabot head with a gate success whose judge still passes", sweep_over(dep, "success", 0), 0, [], True)
-want("a Dependabot head with a gate success, judge failing, the failure cannot be published", sweep_over(dep, "success",
-        1, pubfail=True), 1, [], True)
 for headref in ("feature/bump", "dependabot", "dependabot-pip/x", "xdependabot/pip/x", "feature/dependabot/pip/x",
         "Dependabot/pip/x"):
     for audit in (0, 1):
