@@ -181,7 +181,7 @@ PR_BODY=$'Dropped suites: suite-b\r\nmore\r\n' expect 0 "vs-base: a carriage ret
 printf '{"suite-a": 50, "suite-b": 10, "suite-c": 5}\n' > $D
 PR_BODY=$'Dropped suites: suite-b' expect 1 "vs-base: a named suite whose floor is still in the file is not dropped, it fails" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
 printf '{"suite-a": 50}\n' > $D
-PR_BODY=$'Dropped suites: suite-b, suite-c' expect 1 "vs-base: a dropped suite whose file stays is not excused by the body" "suite-c" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'Dropped suites: suite-b, suite-c' expect 1 "vs-base: a dropped suite whose file stays is not excused by the body" "suite-c is named as dropped but its file is not deleted" -- floors-vs-base --allow-from-body "$dbase" $D
 printf '{"suite-a": 50, "suite-c": 5}\n' > $D
 PR_BODY=$' Dropped suites: suite-b' expect 1 "vs-base: a Dropped suites line that does not start with the words is ignored (leading space)" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
 PR_BODY=$'See: Dropped suites: suite-b' expect 1 "vs-base: the Dropped suites words in the middle of a line are ignored" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
@@ -189,6 +189,31 @@ PR_BODY=$'Dropped suites: suite-c\nDropped suites: suite-b' expect 1 "vs-base: o
 printf '{"suite-a": 40, "suite-c": 5}\n' > $D
 PR_BODY=$'Lowered floors: suite-a\nDropped suites: suite-b' expect 0 "vs-base: a Lowered floors line and a Dropped suites line each pass together" "suite-a 50->40" -- floors-vs-base --allow-from-body "$dbase" $D
 git reset -q --hard "$brk"; printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
+# a dropped suite is judged on NUL-delimited git lists (a path git would quote is read as itself) and with rename detection on:
+# a renamed suite file still exists, so it is not dropped
+nrepo() { local r="$work/$1"; shift; mkdir -p "$r/test-evidence" "$r/bin"; cd "$r"; git init -q .; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false; }
+nrepo ren; printf '{"foo-test.sh": 7, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+printf 'echo foo\necho foo two\necho foo three\n' > bin/foo-test.sh; echo keep > bin/keep-test.sh; git add -A; git commit -qm base; rbase=$(git rev-parse HEAD)
+git mv bin/foo-test.sh bin/foo2-test.sh; git commit -qm rename
+printf '{"foo2-test.sh": 1, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY=$'Dropped suites: foo-test.sh' expect 1 "vs-base: a suite file renamed to another basename is not dropped, the body does not excuse it" "foo-test.sh" -- floors-vs-base --allow-from-body "$rbase" test-evidence/suite-floors.json
+nrepo mov; printf '{"foo-test.sh": 7, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+echo foo > bin/foo-test.sh; echo keep > bin/keep-test.sh; git add -A; git commit -qm base; mbase=$(git rev-parse HEAD)
+mkdir "tést"; git mv bin/foo-test.sh "tést/foo-test.sh"; git commit -qm move
+printf '{"keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY=$'Dropped suites: foo-test.sh' expect 1 "vs-base: a suite file moved into a directory git quotes (non-ASCII) still exists, it is not dropped" "foo-test.sh" -- floors-vs-base --allow-from-body "$mbase" test-evidence/suite-floors.json
+nrepo del; printf '{"foo-test.sh": 7, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+echo foo > bin/foo-test.sh; echo keep > bin/keep-test.sh; git add -A; git commit -qm base; xbase=$(git rev-parse HEAD)
+git rm -q bin/foo-test.sh; git commit -qm del
+printf '{"keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY=$'Dropped suites: foo-test.sh' expect 0 "vs-base: a plainly deleted suite file with its floor removed and named in the body passes as dropped" "dropped" -- floors-vs-base --allow-from-body "$xbase" test-evidence/suite-floors.json
+nrepo six; names=""; fl='{"keep-test.sh": 3'
+mkdir -p d1 d2 d3 d4 d5 d6; echo keep > bin/keep-test.sh
+for i in 1 2 3 4 5 6; do echo "suite $i body $i" > "d$i/s$i-test.sh"; fl="$fl, \"s$i-test.sh\": $i"; names="$names${names:+,}s$i-test.sh"; done
+printf '%s}\n' "$fl" > test-evidence/suite-floors.json; git add -A; git commit -qm base; sbase=$(git rev-parse HEAD)
+git rm -q d1/s1-test.sh d2/s2-test.sh d3/s3-test.sh d4/s4-test.sh d5/s5-test.sh d6/s6-test.sh; git commit -qm delall
+printf '{"keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY="Dropped suites: $names" expect 0 "vs-base: six suite files in different directories deleted at once, all named in the body, pass as dropped" "dropped" -- floors-vs-base --allow-from-body "$sbase" test-evidence/suite-floors.json
 cd "$root"
 # the wiring: ci.yml reads the body through the step's env only, never as an expression inside run: (the body is public
 # text a contributor writes: an injection route)
@@ -292,7 +317,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=123
+EXPECT=127
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
