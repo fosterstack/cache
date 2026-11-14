@@ -986,6 +986,13 @@ class RecordsReusable(unittest.TestCase):
             self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
             self.assertEqual(gh.writes(), [], name)
 
+    def test_a_records_commit_over_a_parent_that_is_unsigned_or_not_the_apps_is_not_reusable(self):
+        # the job's own files are records paths, so the parent is the commit judged here
+        for name, bump in (("unsigned", self.doc(BASE, verified=False)), ("another author", self.doc(BASE, login="someone"))):
+            gh = self.gh(job=self.doc(H2, self.RECORDS, JM), bump=bump)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh, app_login=APP), name)
+            self.assertEqual(gh.writes(), [], name)
+
     def test_without_the_apps_login_nothing_is_reusable(self):
         for login in (None, "", "other[bot]"):
             self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=self.gh(), app_login=login), login)
