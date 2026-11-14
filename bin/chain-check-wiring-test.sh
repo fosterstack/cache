@@ -120,7 +120,8 @@ stage = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\npermissions: {}\njobs
          + dn("signed-witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
          + wit("scanners") + wit("acceptance") + wit("runtime")
-         + "      - name: write the record digests of this job to a file\n        run: bash bin/check-records-digests.sh " + RUN + " witness-scanners witness-acceptance witness-runtime > check-records.json\n"
+         + "      - name: write the record digests of this job to a file\n        env:\n          LEG: " + RUN + "\n"
+         "        run: bash bin/check-records-digests.sh \"$LEG\" check-records.json witness-scanners witness-acceptance witness-runtime\n"
          + f"      - uses: {UPL}\n        with:\n          name: witness-check-{RUN}\n          path: |\n            witness-scanners\n            witness-acceptance\n            witness-runtime\n"
          + up("check-results-" + RUN, "check-results") + up("check-records-" + RUN, "check-records.json"))
 open(w + "/stage.yml", "w").write(stage)
@@ -278,7 +279,7 @@ m s_name 'witnessed-local.sh runtime bin/check-phase.sh runtime' 'witnessed-loca
 m s_mism 'witnessed-local.sh acceptance bin/check-phase.sh acceptance' 'witnessed-local.sh acceptance bin/check-phase.sh runtime' 'witnessed-local.sh' "AC11 the step name and the phase differ"
 m s_four '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - name: extra\n        run: bash bin/witnessed-local.sh extra bin/check-phase.sh extra\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'THREE' "AC11 a fourth witnessed step"
 m s_order '      - name: scanners\n        run: bash bin/witnessed-local.sh scanners bin/check-phase.sh scanners\n      - name: acceptance\n        run: bash bin/witnessed-local.sh acceptance bin/check-phase.sh acceptance\n' '      - name: acceptance\n        run: bash bin/witnessed-local.sh acceptance bin/check-phase.sh acceptance\n      - name: scanners\n        run: bash bin/witnessed-local.sh scanners bin/check-phase.sh scanners\n' 'in that order' "AC11 the steps run in another order"
-m s_threeup 'witness-runtime\n' 'elsewhere\n' 'upload-artifact' "AC12 a record directory is not what witness-check uploads"
+m s_threeup '            witness-runtime\n' '            elsewhere\n' 'upload-artifact' "AC12 a record directory is not what witness-check uploads"
 m s_img2 'name: images\n          path: images\n' 'name: images\n          path: images\n      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: images\n          path: images2\n' 'exactly one download of the images' "AC1 a second download of the images artifact (Q4)"
 m s_imgno '      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: images\n          path: images\n' '' 'exactly one download of the images' "AC1 no download of the images artifact (Q4)"
 m s_imgother 'name: images\n          path: images' 'name: image-cache\n          path: images' 'download-artifact' "AC1 another artifact name in place of images (Q4)"
@@ -314,16 +315,19 @@ m g_persist '(  check-govulncheck:.*?persist-credentials: )false' '\1true' 'pers
 m g_unpin '(  check-govulncheck:.*?actions/upload-artifact@)[0-9a-f]{40}' '\1v7' 'digest-pinned' "REL-011-AC1 govulncheck-build's upload is not digest-pinned"
 m g_overw '(          path: govulncheck-out/govulncheck\n)' '\1          overwrite: true\n' 'carrying govulncheck-out/govulncheck only' "REL-011-AC1 govulncheck-build's upload overwrites an existing artifact"
 m g_coe2 '(      - id: upload\n)' '\1        continue-on-error: true\n' 'keys not allowed' "REL-011-AC1 govulncheck-build's upload may fail without stopping the job"
-m r_nostep '      - name: write the record digests[^\n]*\n[^\n]*\n' '' 'exactly its' "REL-011-AC1 the check job without its records step"
-m r_steprun 'witness-acceptance witness-runtime >' 'witness-acceptance witness-runtime witness-extra >' 'check-records.json' "REL-011-AC1 the records step listing another folder"
-m r_runner '(check-records-digests.sh )\$\{\{ matrix.runner \}\}' '\1ubuntu-24.04' 'check-records.json' "REL-011-AC1 the records step keyed by one chip on both chips"
-m r_nofile ' > check-records.json' '' 'check-records.json' "REL-011-AC1 the records step does not write check-records.json"
+m r_nostep '      - name: write the record digests[^\n]*\n        env:\n          LEG: [^\n]*\n[^\n]*\n' '' 'exactly its' "REL-011-AC1 the check job without its records step"
+m r_steprun 'check-records.json witness-scanners witness-acceptance witness-runtime\n' 'check-records.json witness-scanners witness-acceptance witness-runtime witness-extra\n' 'check-records.json' "REL-011-AC1 the records step listing another folder"
+m r_runner '(LEG: )\$\{\{ matrix.runner \}\}(\n        run: bash bin/check-records-digests.sh)' '\1ubuntu-24.04\2' 'LEG' "REL-011-AC1 the records step keyed by one chip on both chips"
+m r_envname 'LEG: \$\{\{ matrix.runner \}\}\n        run: bash bin/check-records-digests.sh "\$LEG"' 'RUNNER: ${{ matrix.runner }}\n        run: bash bin/check-records-digests.sh "$RUNNER"' 'RUNNER' "REL-011-AC1 the records step passes the runner under the env name RUNNER"
+m r_redir 'check-records.json witness-scanners witness-acceptance witness-runtime\n' 'witness-scanners witness-acceptance witness-runtime > check-records.json\n' 'check-records.json' "REL-011-AC1 the records step writes the file by a shell redirect (the script writes it itself)"
+m r_nolegenv '        env:\n          LEG: [^\n]*\n        run: bash bin/check-records-digests.sh "\$LEG"' '        run: bash bin/check-records-digests.sh "$LEG"' 'LEG' "REL-011-AC1 the records step uses LEG with no env LEG"
+m r_nofile '"\$LEG" check-records.json ' '"$LEG" ' 'check-records.json' "REL-011-AC1 the records step does not write check-records.json"
 m r_nores '      - uses: [^\n]*\n        with:\n          name: check-results-\$\{\{ matrix.runner \}\}\n          path: check-results\n' '' 'exactly its' "REL-011-AC1 the check job without the check-results-<runner> upload (Sign could not verify its products)"
 m r_norec '      - uses: [^\n]*\n        with:\n          name: check-records-\$\{\{ matrix.runner \}\}\n          path: check-records.json\n' '' 'exactly its' "REL-011-AC1 the check job without the check-records-<runner> upload (Sign has nothing to compare the folders with)"
 m r_recpath 'name: check-records-\$\{\{ matrix.runner \}\}\n          path: check-records.json' 'name: check-records-${{ matrix.runner }}\n          path: check-results' 'upload-artifact' "REL-011-AC1 the check-records upload carries another path"
 m r_upfixed 'name: witness-check-\$\{\{ matrix.runner \}\}' 'name: witness-check-ubuntu-24.04' 'upload-artifact' "REL-011-AC1 the record folders uploaded under one chip's name on both chips (the artifacts would collide)"
 m r_oldup 'name: witness-check-\$\{\{ matrix.runner \}\}' 'name: witness-check' 'upload-artifact' "REL-011-AC1 the record folders uploaded under the old name witness-check"
-m r_stepbeforew '(      - name: scanners\n)' '      - name: write the record digests of this job to a file\n        run: bash bin/check-records-digests.sh ${{ matrix.runner }} witness-scanners witness-acceptance witness-runtime > check-records.json\n\1' 'steps must be' "REL-011-AC1 the records step before the witnessed steps (it would list records not made yet)"
+m r_stepbeforew '(      - name: scanners\n)' '      - name: write the record digests of this job to a file\n        env:\n          LEG: ${{ matrix.runner }}\n        run: bash bin/check-records-digests.sh "$LEG" check-records.json witness-scanners witness-acceptance witness-runtime\n\1' 'steps must be' "REL-011-AC1 the records step before the witnessed steps (it would list records not made yet)"
 m c_override '(          artifact-ids: \$\{\{ needs.check-govulncheck.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: ignore\n' 'download-artifact' "REL-011-AC1 the Check job's download turns the digest check off (digest-mismatch: ignore)"
 m c_warn '(          artifact-ids: \$\{\{ needs.check-govulncheck.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: warn\n' 'download-artifact' "REL-011-AC1 the Check job's download only warns on a digest mismatch"
 m c_error '(          artifact-ids: \$\{\{ needs.check-govulncheck.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: error\n' 'download-artifact' "REL-011-AC1 even an explicit digest-mismatch input is refused (the default must stand untouched)"
@@ -713,7 +717,7 @@ out=$(signstaged evil)
 if grep -Fq "unknown step in the plan" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh still refuses a step that is not a record step"; else bad "REL-011-AC1 witness-sign-staged.sh accepted an unknown step: ${out:0:140}"; fi
 if grep -Fq 'scanners|acceptance|runtime) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-EXPECT=340
+EXPECT=343
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
