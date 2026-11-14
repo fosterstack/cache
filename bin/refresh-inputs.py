@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The Python half of bin/refresh-inputs.sh (REQ-REFRESH-001): the shell runs the tools and the downloads, this file makes
+"""The Python half of bin/refresh-inputs.sh (REQ-REFRESH-001): the shell runs the tools and the downloads, this file
+makes
 every check and every file. Run as `python3 -I -B refresh-inputs.py MODE REPO ARGS...`; the modes and their arguments:
 
   key-check REPO LIVE_KEY                          the live Wolfi key is the pinned one (prints it)
@@ -12,7 +13,8 @@ every check and every file. Run as `python3 -I -B refresh-inputs.py MODE REPO AR
   open-pr-plan REPO PLAN_DIR ARCHIVE DIGEST TMP    validate the staged plans, write TMP/p<N>.* and TMP/ncount
   prepare REPO TMP                                 read the package lists, locks and kernel row before any network call
   configs REPO TMP                                 write the apko configs that resolve against live Wolfi
-  refresh REPO PR_AUTHOR ARCHIVE TMP               the refresh itself (exit 75: the shell must download what TMP/want-* lists)
+  refresh REPO PR_AUTHOR ARCHIVE TMP               the refresh itself (exit 75: the shell must download what TMP/want-*
+  lists)
   fips-module REPO PR_AUTHOR GOROOT MODFILE TMP STAGED
 
 Exit codes: 0 ok, 1 verification failed, 2 refused (bad input), 3 the Wolfi signing key changed, 4 guard: a pull request
@@ -42,7 +44,8 @@ def stop(msg):
 
 
 def pinned_live_key(live):
-    """The live Wolfi key must be the one pinned in build/locks/archive-keys.sha256, else exit 3. Returns the key's bytes."""
+    """The live Wolfi key must be the one pinned in build/locks/archive-keys.sha256, else exit 3. Returns the key's
+    bytes."""
     try:
         rows = [l
                 for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8",
@@ -86,7 +89,8 @@ def bootstrap(live, archive):
 
 
 def bad_paths(paths, outcome):
-    """REQ-REFRESH-001-AC34: every planned path must be a regular file of the repository (no symlink, nothing real-pathed outside it,
+    """REQ-REFRESH-001-AC34: every planned path must be a regular file of the repository (no symlink, nothing
+    real-pathed outside it,
     not under .git). Prints each refused path with what happens instead; returns how many."""
     root = os.path.realpath(repo)
     bad = 0
@@ -125,7 +129,8 @@ def commit_input(slug, out, branch, base, headline, body, *paths):
 
 
 def norm_login(x):
-    """lower case (GitHub logins are not case-sensitive), then strip the decorations until none is left: app/bot, bot[bot], app/bot[bot]"""
+    """lower case (GitHub logins are not case-sensitive), then strip the decorations until none is left: app/bot,
+    bot[bot], app/bot[bot]"""
     y = x.lower()
     while True:
         z = y[4:] if y.startswith("app/") else (y[:-5] if y.endswith("[bot]") else y)
@@ -135,9 +140,12 @@ def norm_login(x):
 
 
 def find_open_refresh_pr(own_fips):
-    """(number, head) of the first open pull request on a refresh/ branch that is ours (this repository, not a fork, and authored by the
-    job's identity when one is given), else None. If the list cannot be read the job fails (an unknown state is not "no PR").
-    A FIPS-module pull request does not count against an input refresh (REQ-REFRESH-001-AC15); the FIPS-module change itself (own_fips)
+    """(number, head) of the first open pull request on a refresh/ branch that is ours (this repository, not a fork, and
+    authored by the
+    job's identity when one is given), else None. If the list cannot be read the job fails (an unknown state is not "no
+    PR").
+    A FIPS-module pull request does not count against an input refresh (REQ-REFRESH-001-AC15); the FIPS-module change
+    itself (own_fips)
     is held by it, so the daily check opens one such pull request, not one a day."""
     r = subprocess.run(["/usr/bin/gh", "pr", "list", "--state", "open", "--limit", "1000", "--json",
                         "number,headRefName,isCrossRepository,author"],
@@ -160,7 +168,8 @@ def find_open_refresh_pr(own_fips):
 
 
 def open_prs_guard(kind, own_fips=False, code=0):
-    """Looked up before the FIRST archive or repository change: if an earlier pull request is open, nothing more is done (no change, no
+    """Looked up before the FIRST archive or repository change: if an earlier pull request is open, nothing more is done
+    (no change, no
     push, no second PR) and the stall is visible: the log and the job summary name it."""
     found = find_open_refresh_pr(own_fips)
     if found:
@@ -429,7 +438,8 @@ INFLATE_CAP = 128 * 1024 * 1024   # the live index is about 42 MiB decompressed 
 
 
 def inflate(rest, what, cap=None):
-    """one gzip stream from the front of rest, decompressed to at most cap (default 128 MiB): (compressed bytes, data, remaining bytes)"""
+    """one gzip stream from the front of rest, decompressed to at most cap (default 128 MiB): (compressed bytes, data,
+    remaining bytes)"""
     cap = INFLATE_CAP if cap is None else cap
     d = zlib.decompressobj(31)
     data = d.decompress(rest, cap + 1)
@@ -449,8 +459,10 @@ def digest(kind, raw):
 
 
 def verify(path, e):
-    """The bytes must match every checksum the lock records for this package; control and data ranges are REQUIRED (a package with
-    nothing to check is not accepted), and the datahash in the control section must equal the sha256 of the data stream."""
+    """The bytes must match every checksum the lock records for this package; control and data ranges are REQUIRED (a
+    package with
+    nothing to check is not accepted), and the datahash in the control section must equal the sha256 of the data
+    stream."""
     raw = open(path, "rb").read()
     for part in ("signature", "control", "data"):
         p = e.get(part) or {}
@@ -519,7 +531,8 @@ WOLFI_URL = "https://packages.wolfi.dev/os/"
 
 
 def check_entry(e, where):
-    """Names, versions and architectures become archive paths: nothing with a slash, a dot-dot or an unknown architecture gets that far."""
+    """Names, versions and architectures become archive paths: nothing with a slash, a dot-dot or an unknown
+    architecture gets that far."""
     for k, rx in (("name", NAME_RE), ("version", VERSION_RE)):
         if not isinstance(e.get(k), str) or not rx.fullmatch(e[k]) or ".." in e[k]:
             fail("refused: invalid package %s %r in %s" % (k, e.get(k), where), 2)
@@ -588,8 +601,10 @@ stage = tmp + "/dl"
 archived_key = archive + "/keys/wolfi-signing.rsa.pub"
 
 def check_signature(path, arch, what):
-    """an apk index is exactly TWO gzip members (the signature stream, then the index stream), inflated within ONE cumulative limit; a third member is refused
-    before it is inflated. The signature is checked against the ARCHIVED Wolfi key. Returns the two decompressed streams' (compressed, data) parts."""
+    """an apk index is exactly TWO gzip members (the signature stream, then the index stream), inflated within ONE
+    cumulative limit; a third member is refused
+    before it is inflated. The signature is checked against the ARCHIVED Wolfi key. Returns the two decompressed
+    streams' (compressed, data) parts."""
     raw = open(path, "rb").read()
     parts, rest, budget = [], raw, INFLATE_CAP
     try:
@@ -623,8 +638,10 @@ def check_signature(path, arch, what):
 
 
 def verify_integrity(path, what):
-    """For a package that only a committed lock without checksums names (build/locks/melange.lock is name=version): the file must exist and be whole. Every gzip stream
-    inflates (the gzip CRC catches truncation and bit flips), there are two or three streams, and the control section's datahash equals the sha256 of the data stream.
+    """For a package that only a committed lock without checksums names (build/locks/melange.lock is name=version): the
+    file must exist and be whole. Every gzip stream
+    inflates (the gzip CRC catches truncation and bit flips), there are two or three streams, and the control section's
+    datahash equals the sha256 of the data stream.
     (Authenticity against a checksum is the job of the apko locks; this is the integrity floor for what has none.)"""
     raw = open(path, "rb").read()
     parts, rest, budget = [], raw, INFLATE_CAP
@@ -823,8 +840,10 @@ for kind in ("production", "fips"):
 # cannot already hold the versions the committed locks name, so the ones Wolfi still serves are fetched below and
 # verified before they are archived. Any other state keeps the rule: a missing version stops the job.
 def first_fill_state():
-    """exactly the key and nothing else: a real archive directory holding one real keys directory that holds one regular file, the pinned key (any other entry,
-    whatever its type, a symlinked archive or keys directory, or a listing that cannot be read is not the first-fill state)"""
+    """exactly the key and nothing else: a real archive directory holding one real keys directory that holds one regular
+    file, the pinned key (any other entry,
+    whatever its type, a symlinked archive or keys directory, or a listing that cannot be read is not the first-fill
+    state)"""
     if os.path.lexists(repo + "/build/archive.json"):
         return False
     try:
@@ -907,7 +926,8 @@ GO_URL = "https://go.dev/dl/"
 
 
 def go_pins():
-    """{file: sha256} of the Go tarballs pinned by build/melange.yaml and build/melange-fips.yaml; every fetch step must be a go.dev/dl uri with a 64-hex pin, and the two
+    """{file: sha256} of the Go tarballs pinned by build/melange.yaml and build/melange-fips.yaml; every fetch step must
+    be a go.dev/dl uri with a 64-hex pin, and the two
     recipes may not pin one file with two checksums (a pin that is missing, malformed or in conflict stops the job)"""
     pins, seen_in = {}, {}
     for rf in ("melange.yaml", "melange-fips.yaml"):
@@ -990,7 +1010,8 @@ def check_dirs():
 
 
 def writable(path):
-    """every file is written under a temp name in its directory and renamed over its final name: what matters is the DIRECTORY (write and search),
+    """every file is written under a temp name in its directory and renamed over its final name: what matters is the
+    DIRECTORY (write and search),
     not the file (a read-only file is simply replaced). A path that is itself a directory cannot be written."""
     if os.path.isdir(path) and not os.path.islink(path):
         return False
@@ -1074,7 +1095,8 @@ if want_go:
 
 
 def place(src, dest):
-    """copy to an exclusively created temp name (unpredictable, in the destination directory), fsync, then rename: nothing ever appears under
+    """copy to an exclusively created temp name (unpredictable, in the destination directory), fsync, then rename:
+    nothing ever appears under
     a final name half-written, and a planted symlink at the temp name is never followed"""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     t = "%s.tmp-%s" % (dest, secrets.token_hex(8))
@@ -1120,7 +1142,8 @@ index_listed = {}
 
 
 def fetch_indexes():
-    """The live signed index of each architecture, verified against the archived key and the locks; the shell downloads what is missing (exit 75)."""
+    """The live signed index of each architecture, verified against the archived key and the locks; the shell downloads
+    what is missing (exit 75)."""
     want_ix = []
     for arch in ARCHS:
         part = "%s/index/%s/APKINDEX.tar.gz" % (stage, arch)
