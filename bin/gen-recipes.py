@@ -9,8 +9,10 @@ build/locks/melange.lock, build/locks/fips-module.txt (relative to the repositor
 The third recipe (the file-only base layout, 0710) comes from its own template: the only placeholder is @PACKAGES@ (one whole line, the same pins as the other
 recipes) and the template has its own pin, BASELAYOUT_TEMPLATE_SHA256; @VERSION@ is left as written.
 Two DATA files feed the template, and they are the only thing the daily refresh job ever edits: the melange lock (the package pins of the build environment) and the
-FIPS module file (the certified Go Cryptographic Module, vX.Y.Z-<8 hex>). Both have a closed line grammar; anything else is refused. The generator holds no module
-version: the wording of the two FIPS lines (the GOFIPS140 export and the proof) is in generate(), the version in them comes from the FIPS module file.
+FIPS module file (the certified Go Cryptographic Module, vX.Y.Z-<8 hex>). Both have a closed line grammar; anything else
+is refused. The generator holds no module
+version: the wording of the two FIPS lines (the GOFIPS140 export and the proof) is in generate(), the version in them
+comes from the FIPS module file.
 The template is plain text with a CLOSED set of named placeholders and nothing else is substituted or parsed:
   @NAME@          package name (fscache, or fscache-fips)
   @DESCRIPTION@   package description
@@ -18,13 +20,16 @@ The template is plain text with a CLOSED set of named placeholders and nothing e
   @FIPS_EXPORT@   a whole line: the GOFIPS140 setting in the FIPS recipe, the line is dropped in the standard one
   @FIPS_PROOF@    a whole line block: the proof that the binary records the certified module, dropped in the standard one
   @VERSION@       left as written (build-apk.sh replaces it with the apk version)
-The template must hold no GOFIPS140 (the two FIPS lines are written in generate()), no tab, carriage return or NUL, and be UTF-8; each of the five named
-placeholders appears exactly once, FIPS_EXPORT and FIPS_PROOF each alone on a line. Nothing is parsed or compared as YAML, so there is no parser difference to exploit.
+The template must hold no GOFIPS140 (the two FIPS lines are written in generate()), no tab, carriage return or NUL, and
+be UTF-8; each of the five named
+placeholders appears exactly once, FIPS_EXPORT and FIPS_PROOF each alone on a line. Nothing is parsed or compared as
+YAML, so there is no parser difference to exploit.
 What the generator does NOT do: it does not read or judge the shell in the template. Behaviour parity of the two builds rests on the template being reviewed and
 pinned (TEMPLATE_SHA256 below: --check fails if the template changes, naming the pin; a change must update the pin in the same reviewed change), and the final control
 is build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs), which is mandatory in CI.
 --check exits 0 when all three committed files equal the generator's output byte for byte, 1 when a file differs (the diff is printed) or the template breaks a rule,
-2 when a file is missing or unreadable. --write writes the three files. --emit DIR writes the same three contents as melange.yaml, melange-fips.yaml and
+2 when a file is missing or unreadable. --write writes the three files. --emit DIR writes the same three contents as
+melange.yaml, melange-fips.yaml and
 melange-baselayout.yaml in DIR.
 """
 import argparse
