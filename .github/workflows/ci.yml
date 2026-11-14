@@ -624,6 +624,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/required-check-guard.sh .github/policy/required-checks.json
 
+      # The seven release-only entries are pinned in the guard on main, so a pull request cannot change the pin
+      # it is judged by.
+      - name: the release-only list vs the pin in main's guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+            | base64 -d > "${RUNNER_TEMP}/main-guard.sh"
+          bash "${RUNNER_TEMP}/main-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
+
       # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
       # first; one open issue, updated in place, never duplicated. Best effort: a
       # Dependabot or fork run has no issues:write, and the red check above still stands.
