@@ -10,7 +10,8 @@
 # test, not statements[0]); every case pairs a positive with a contrasting input so
 # a constant writer fails one of the pair. The workflow is parsed with vendored
 # PyYAML over the parsed document, never raw text. A strict harness fails a case on
-# any nonzero exit; there is no run2 and no `|| true`.
+# any nonzero exit; there is no run2. The 19 uses of `|| true` are the exceptions: 2 optional fixture copies, 2 grep
+# guards, and 15 auditor-run.py calls whose exit the case does not judge (it reads the files the run wrote).
 #
 # Neutral fixture -> scenario map:
 #   scanners/grype.json trivy.json osv-image.json osv-gomod.json snyk.json  real captures
@@ -4800,7 +4801,6 @@ ctl="$( [ "$(grep -c '^gh issue create --title ' "$cs1" 2>/dev/null)" = 1 ] \
 [ "$ctl" = yes ] || { m9_ok=no; m9_detail="$m9_detail [the uncut copy does not pass]"; }
 eq "$m9_ok" "yes" && ok || no "every mutant fails the matching case; the uncut copy passes" "$m9_detail"
 
-REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 # rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is
 # listed in the report as "not re-checkable (hidden from all scanners)", never silently kept. A vex_covered entry no carried statement matches is dropped.
 begin "rc5b-5-hidden-carried-statement-is-rejudged" "a carried statement that our own VEX hides from a scanner is re-judged every run"
@@ -5091,16 +5091,18 @@ r6="$("$PY" "$WORK/r6main.py" "$FXRUN" items-bad-at-delivery 2>/dev/null | tail 
 case "$r6" in rc=3\ mutating=0*) ok ;; *) no "a reviewed input that stops parsing only in the delivery checkout also stops the run (exit 3), not an ordinary staging error" "$r6" ;; esac
 for variant in vex-empty-list items-empty-list; do   # an empty list is a valid file: the run proceeds (it is not the stop of a missing key)
   r6e="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
-  case "$r6e" in rc=3*|"rc=EXC"*|"") no "a published VEX with statements: [] / accepted-items with accepted_items: [] ($variant) is valid and does not stop the run" "$r6e" ;; *) ok ;; esac
+  case "$r6e" in rc=3*|"rc=EXC"*) proceeded=no ;; rc=*) proceeded=yes ;; *) proceeded=no ;; esac   # only the probe's own "rc=N" line counts
+  [ "$proceeded" = yes ] && ok || no "a published VEX with statements: [] / accepted-items with accepted_items: [] ($variant) is valid and does not stop the run" "$r6e"
 done
 r6m="$("$PY" "$WORK/r6main.py" "$FXRUN" missing 2>/dev/null | tail -1)"
-case "$r6m" in rc=3*|"rc=EXC"*|"") no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m" ;; *) ok ;; esac
+case "$r6m" in rc=3*|"rc=EXC"*) proceeded=no ;; rc=*) proceeded=yes ;; *) proceeded=no ;; esac
+[ "$proceeded" = yes ] && ok || no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m"
 for variant in delivery-base-vex-empty delivery-base-items-keyless; do
   r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r6" "rc=3 mutating=0" && ok || no "a delivery base whose reviewed file is {} or lacks its list ($variant) stops the run (exit 3) BEFORE git checkout: the delivery base is read with git show, the workspace is not touched" "$r6"
 done
 r7="$("$PY" "$WORK/r7main.py" "$FXRUN" control 2>/dev/null | tail -1)"
-case "$r7" in "rc=3 "*|"rc=EXC"*|"") no "control: an owner-escalating finding with intact per-finding VEX runs and opens its owner-decision issue (so the stop cases below are not vacuous)" "$r7" ;; *"issues=0 "*) no "control: no owner-decision issue was opened, the stop cases below prove nothing" "$r7" ;; *) ok ;; esac
+case "$r7" in "rc=3 "*|"rc=EXC"*|"") no "control: an owner-escalating finding with intact per-finding VEX runs and opens its owner-decision issue (so the stop cases below are not vacuous)" "$r7" ;; *"issues=0 "*) no "control: no owner-decision issue was opened, the stop cases below prove nothing" "$r7" ;; "rc="*) ok ;; *) no "control: the probe printed no rc= line" "$r7" ;; esac
 for variant in base-vex-empty base-items-keyless; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding AND a damaged delivery base ($variant) stops the run (exit 3) before the owner-decision issue: the base is fetched and validated once, before the first issue" "$r7"
@@ -5148,6 +5150,7 @@ done <<'LIST'
 0 go get x
 LIST
 begin "rc5b-13-suite-leaves-checkout-untouched" "the suite changes nothing in the checkout"
+REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
