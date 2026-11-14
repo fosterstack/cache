@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# bin/check-records-digests.sh DIR...  --  a Check job's list of the records it made (REQ-REL-011-AC1; the contract of cache#606). It runs after the job's Witness steps and prints one
-# compact, key-sorted JSON object on standard output, keyed by the record-directory names the third call of Sign receives (the folder's own name: witness-scanners, witness-acceptance and
-# witness-runtime for the check job, witness-arm64 for check-arm64), each holding {file name: sha256:<hex>} for every file of that folder. The text leaves the stage as a job output, a
+# bin/check-records-digests.sh RUNNER DIR...  --  a Check job's list of the records it made (REQ-REL-011-AC1; the contract of cache#606). It runs after the job's Witness steps and prints one
+# compact, key-sorted JSON object on standard output, keyed by RUNNER/<the record folder's own name> (ubuntu-24.04/witness-scanners, ...: both runners make the same three folders, so the runner
+# is in the key and the two lists never collide), each holding {file name: sha256:<hex>} for every file of that folder. The text leaves the stage as an artifact of the job, a
 # channel the artifact names cannot reach, and Sign refuses any record folder that differs from it. It reads files and prints; it writes nothing and builds nothing.
 set -euo pipefail
-if [ "$#" -lt 1 ]; then
-  echo "check-records-digests: usage: DIR..." >&2
+if [ "$#" -lt 2 ]; then
+  echo "check-records-digests: usage: RUNNER DIR..." >&2
   exit 2
 fi
+runner="$1"
+shift
+case "$runner" in ubuntu-24.04|ubuntu-24.04-arm) ;; *) echo "check-records-digests: unknown runner $runner" >&2; exit 2 ;; esac
 {
   for d in "$@"; do
     if [ ! -d "$d" ] || [ -L "$d" ]; then
       echo "check-records-digests: not a plain folder: $d" >&2
       exit 1
     fi
-    name=$(basename "$d")
+    name="$runner/$(basename "$d")"
     n=0
     for f in "$d"/*; do
       if [ ! -f "$f" ] || [ -L "$f" ]; then
