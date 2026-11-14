@@ -1320,8 +1320,8 @@ net._version_of = lambda i: "1.27.3"
 assert [r["affected"] for r in net.lists(it)[1]] == [False]
 PY
 
-# --- the history reader never stops at a revision with a command line over 4000 characters: the line is never read
-# partially, so that revision makes the audit incomplete (exit 2, the reason on stderr).
+# --- the history reader reads a command line whole, whatever its length (no 4000 cap): a revision holding a run line of
+# 4529 or over 9000 characters is read, the audit is complete (exit 0), and a download or dependency at the END of the line is found.
 r="$work/r-oversize"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at that sha, with one step whose run line is $2 long
   printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$1" >"$r/.github/workflows/ci.yml"
@@ -1330,10 +1330,23 @@ oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at
 printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
 commit_at() { git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago "$1")" GIT_COMMITTER_DATE="$(dago "$1")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "$2"; git -C "$r" rev-parse HEAD; }
 oversize_ci "$SHA1" 0;    OV_A=$(commit_at 60 "readable A")
-oversize_ci "$SHA2" 4100; OV_B=$(commit_at 40 "oversize B")
+oversize_ci "$SHA2" 4529; OV_B=$(commit_at 40 "long line B (4529 characters)")
 oversize_ci "$SHA4" 0;    OV_C=$(commit_at 20 "readable C")
-oversize_ci "$SHA4" 4300; OV_D=$(commit_at 10 "oversize D (a fourth, never listed)")
+oversize_ci "$SHA4" 9100; OV_D=$(commit_at 10 "long line D (9100 characters)")
 oversize_ci "$SHA4" 0;    OV_E=$(commit_at 5 "readable E")
+# a history in which a revision is unreadable for another reason: bin/big.sh of 1.2 MB (a file too large) in revisions B and D
+r="$work/r-toolarge"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+bigfile_ci() { # <checkout sha> <1 = with bin/big.sh of 1.2 MB>
+  oversize_ci "$1" 0; rm -f "$r/bin/big.sh"
+  [ "$2" -eq 0 ] || python3 -c "open('$r/bin/big.sh', 'w').write('# xxxxxxxxxx\n' * 100000)"
+}
+bigfile_ci "$SHA1" 0; TL_A=$(commit_at 60 "readable A")
+bigfile_ci "$SHA2" 1; TL_B=$(commit_at 40 "too large B")
+bigfile_ci "$SHA4" 0; TL_C=$(commit_at 20 "readable C")
+bigfile_ci "$SHA4" 1; TL_D=$(commit_at 10 "too large D (a fourth, never listed)")
+bigfile_ci "$SHA4" 0; TL_E=$(commit_at 5 "readable E")
+r="$work/r-oversize"
 OVPY='import contextlib, datetime as dt, importlib.util, io, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 NOW = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
@@ -1344,19 +1357,39 @@ def hist():      # kept for the reader-failure case below
     return " ".join(repr(k) for k in items), err.getvalue()
 '
 run oversizeold "$CLEAN" "$work/r-oversize"
-CASE="oversize history: a revision with a command line over 4000 characters makes the audit incomplete: exit 2, the reason on stderr names the revision or the file"
-check test "$rc" -eq 2; check grep -qE "${OV_B:0:12}|${OV_D:0:12}|ci\\.yml" "$work/oversizeold.err"
-CASE="oversize history: an incomplete audit never says 'no known-compromised versions' on stdout"
-check none_match 'no known-compromised' "$work/oversizeold.out"
-CASE="oversize history: a history of readable revisions only still exits 0 and says there are no known-compromised versions"
+CASE="long-line history: a revision with a command line of 4529 or 9100 characters is read whole: exit 0 and the audit says there are no known-compromised versions"
+check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/oversizeold.out"
+CASE="long-line history: no 'cannot be read whole' or 'longer than' reason is written to stderr for a long command line"
+check none_match 'cannot be read whole|longer than' "$work/oversizeold.err"
+run toolargeold "$CLEAN" "$work/r-toolarge"
+CASE="too-large history: a revision holding a file too large to read makes the audit incomplete: exit 2, the reason on stderr names the revision or the file"
+check test "$rc" -eq 2; check grep -qE "${TL_B:0:12}|${TL_D:0:12}|big\\.sh" "$work/toolargeold.err"
+CASE="too-large history: an incomplete audit never says 'no known-compromised versions' on stdout"
+check none_match 'no known-compromised' "$work/toolargeold.out"
+CASE="too-large history: a history of readable revisions only still exits 0 and says there are no known-compromised versions"
 run readableonly "$CLEAN" "$work/r-clean"
 check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/readableonly.out"
 rm -rf "$work/r-pullref"; cp -R "$work/r-clean" "$work/r-pullref"
-git -C "$work/r-pullref" fetch -q "$work/r-oversize" "$OV_B:refs/pull/1/head"
+git -C "$work/r-pullref" fetch -q "$work/r-toolarge" "$TL_B:refs/pull/1/head"
 run pullref "$CLEAN" "$work/r-pullref"
-CASE="AC5: the 90-day history is read from main only, never from refs/pull/*/head: an oversize line on a PR ref "
+CASE="AC5: the 90-day history is read from main only, never from refs/pull/*/head: a too-large file on a PR ref "
 CASE+="leaves the audit complete (exit 0, says no known-compromised versions)"
 check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/pullref.out"
+# a download or a dependency at the END of a long line of an old revision is found
+r="$work/r-longtail"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+oversize_ci "$SHA1" 0; LT_A=$(commit_at 40 "readable A")
+printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n      - name: long\n        run: echo %s && pip install evilpkg==9.9.9 && go install example.org/evil@v9.9.9\n' \
+  "$SHA1" "$(python3 -c "print('x'*9100)")" >"$r/.github/workflows/ci.yml"
+LT_B=$(commit_at 30 "a dependency and a go tool at the end of a line of 9100 characters")
+oversize_ci "$SHA1" 0; LT_C=$(commit_at 5 "readable C")
+CASE="long-line history: a package and a go tool named at the END of a run line over 9000 characters, in a revision replaced within 90 days, are in the history items"
+check python3 - "$aud" "$r" <<PY
+$OVPY
+got, _ = hist()
+assert "package:pypi/evilpkg@9.9.9" in got and "gotool:example.org/evil@v9.9.9" in got, got[:2000]
+PY
+r="$work/r-oversize"
 CASE="oversize history: no other error is swallowed: a revision unreadable for another reason (a broken "
 CASE+="tree) still stops the read"
 check python3 - "$aud" "$r" <<PY
@@ -1374,22 +1407,22 @@ PY
 
 # --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key.
 # Both
-# revisions of a shared oversize tree make the audit incomplete (exit 2).
-r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+# revisions of a shared too-large tree make the audit incomplete (exit 2).
+r="$work/r-toolarge-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
-oversize_ci "$SHA2" 4100; SH_X=$(commit_at 60 "oversize X")
-oversize_ci "$SHA1" 0;    SH_M=$(commit_at 40 "readable M")
-oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
-oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
-oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
-oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
-run oversizeshared "$CLEAN" "$work/r-oversize-shared"
-CASE="oversize history, shared tree: revisions that share an unreadable tree make the audit incomplete too: exit 2, no 'no known-compromised versions'"
+bigfile_ci "$SHA2" 1; SH_X=$(commit_at 60 "too large X")
+bigfile_ci "$SHA1" 0; SH_M=$(commit_at 40 "readable M")
+bigfile_ci "$SHA2" 1; SH_Y=$(commit_at 20 "too large Y (the same tree as X)")
+bigfile_ci "$SHA1" 0; SH_R1=$(commit_at 10 "readable R1")
+bigfile_ci "$SHA4" 0; SH_Q=$(commit_at 8 "readable Q")
+bigfile_ci "$SHA1" 0; SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
+run oversizeshared "$CLEAN" "$work/r-toolarge-shared"
+CASE="too-large history, shared tree: revisions that share an unreadable tree make the audit incomplete too: exit 2, no 'no known-compromised versions'"
 check test "$rc" -eq 2; check none_match 'no known-compromised' "$work/oversizeshared.out"
 
-# --- the daily run stops at an oversize revision with exit 2, after the tag observations are written ---
-rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-oversize" --observations-out "$work/obsout4/state.json"
-CASE="oversize history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
+# --- the daily run stops at an unreadable revision with exit 2, after the tag observations are written ---
+rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-toolarge" --observations-out "$work/obsout4/state.json"
+CASE="too-large history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
 check test -s "$work/obsout4/state.json"
 CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
 check python3 - "$aud" "$work/r-histmemo" <<'PY'
