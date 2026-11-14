@@ -26,7 +26,7 @@ prod=$(jq -r '."image-production" // empty' witness-build/digests.json)
 fips=$(jq -r '."image-fips" // empty' witness-build/digests.json)
 # ruling G (cache-ce's interface): the dependency list is the tag checkout's own file, the govulncheck stream is Check's product (bound to its scanners record by
 # release-verify), and the date is the admitted tag commit's committer date, never a clock; a file or a date that is not usable stops the step before anything is made
-gv=check-results/govulncheck.json
+gv=check-results/ubuntu-24.04/govulncheck.json
 [ -f "$gv" ] && [ ! -L "$gv" ] && [ -s "$gv" ] || { echo "release-sign: $gv (Check's govulncheck stream) is missing, empty or not a regular file" >&2; exit 1; }
 [ -f dependency-provenance.json ] && [ ! -L dependency-provenance.json ] && [ -s dependency-provenance.json ] || { echo "release-sign: dependency-provenance.json of the tag's checkout is missing, empty or not a regular file" >&2; exit 1; }
 date=$(git log -1 --format=%ct "$GITHUB_SHA")
