@@ -528,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "825e869a0f58331e8df4e85ba67c9b950d8098c5655dc1309c45593b250566b2",
+      "sha256": "5ad6446bfd6a64d2a040fa267de90508e3dfc199963547c15a1adb24927e1a45",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -576,7 +576,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing",
-      "sha256": "cbfc7de64db19fa38d1422e4ea89ce721a0c4551e4323c4e6ec341c198556007"
+      "sha256": "ef833b53a82cc984b023672b5ad518665f74e79d10b460299234d129bce8bf9a"
     },
     {
       "path": "bin/build-freeze.sh",
