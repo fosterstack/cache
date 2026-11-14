@@ -4086,7 +4086,7 @@ requirements:
       - id: REQ-CHAIN-007-AC3
         given: "every other workflow file of the release chain and release.yml"
         when: "they are read"
-        then: "none grants packages write, names a secret, the registry token DOCKERHUB_TOKEN or the apk signing key APK_RELEASE_SIGNING_KEY, or uses the release environment; only the release job of release.yml holds them, release.yml grants write only to that job and to the callers' ceiling of REQ-CHAIN-004-AC13, and of the sign jobs only sign-release holds a registry credential and packages write (it attaches the signatures and attestations with bin/release-sign.sh), and the release job holds no AWS role and no id-token (the daily rescan keeps its own read-only Docker Hub Scout token, DOCKERHUB_SCOUT_TOKEN, in the agent environment: a different credential)"
+        then: "none grants packages write, names a secret, the registry token DOCKERHUB_TOKEN or the apk signing key APK_RELEASE_SIGNING_KEY, or uses the release environment; only the release job of release.yml holds them, release.yml grants write only to that job and to the callers' ceiling of REQ-CHAIN-004-AC14, and of the sign jobs only sign-release holds a registry credential and packages write (it attaches the signatures and attestations with bin/release-sign.sh), and the release job holds no AWS role and no id-token (the daily rescan keeps its own read-only Docker Hub Scout token, DOCKERHUB_SCOUT_TOKEN, in the agent environment: a different credential)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC4
