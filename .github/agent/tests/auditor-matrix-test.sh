@@ -3355,7 +3355,7 @@ try:
                        GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
                        STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan), STUB_AUDIT=str(audit),
                        PATH=stubbin + ":" + os.environ["PATH"])
-            r = subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
+            r = subprocess.run(["bash", "-e", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
             c = open(calls).read().split()
             tag = "%s pins=%d allow=%d wiring=%d scan=%d audit=%d" % (which, pins, allow, wiring, scan, audit)
             if which == "judge":
@@ -3400,29 +3400,32 @@ subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=genv)
 subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=genv, capture_output=True)
 sha = sh("git", "-C", src, "rev-parse", "HEAD")
 sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
+sh("git", "-C", src, "update-ref", "refs/pull/8/head", sha)
 sh("git", "clone", "-q", src, fx)
 for rel, body in {
     ".github/agent/bin/check-action-pins.py": "import os\nopen(os.environ['CALLS'], 'a').write('pins\\n')\n",
     "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\n",
     ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\n",
     "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\n",
-    "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\nexit \"$STUB_AUDIT\"\n",
+    "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\n"
+        "[ \"$(grep -c audit \"$CALLS\")\" = 1 ] && exit \"$STUB_AUDIT\"\n"
+        "exit \"${STUB_AUDIT2:-$STUB_AUDIT}\"\n",
 }.items():
     f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
     open(f, "w").write(body)
 os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
 open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
 case "$1 $2" in
-  "pr list") echo "7 %s $HEADREF owner/repo" ;;
+  "pr list") echo "7 %s $HEADREF owner/repo"; [ -z "${SECOND:-}" ] || echo "8 %s $HEADREF owner/repo" ;;
   "api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate&per_page=100")
       f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" "$GATE_JSON" ;;
   "api repos/o/r/check-runs") [ "${PUBFAIL:-}" = 1 ] && exit 1
       for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$PUBLISHED" ;; esac; done ;;
   *) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;
 esac
-""" % (sha, sha))
+""" % (sha, sha, sha))
 os.chmod(os.path.join(stub, "gh"), 0o755)
-def sweep_over(headref, gate, audit, pubfail=False, older=0, total=None):
+def sweep_over(headref, gate, audit, pubfail=False, older=0, total=None, audit2=None):
     """(exit status, what was published, the checks called) for one open pull request.
     older: runs of the gate's check that finished an hour before it; total: the total_count GitHub reports"""
     calls, published, gate_json = (os.path.join(base, x) for x in ("calls", "published", "gate.json"))
@@ -3436,10 +3439,11 @@ def sweep_over(headref, gate, audit, pubfail=False, older=0, total=None):
     env = dict(os.environ, CALLS=calls, PUBLISHED=published, GATE_JSON=gate_json, HEADREF=headref,
             RUNNER_TEMP=os.path.join(base, "tmp"),
                GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-               STUB_AUDIT=str(audit),
+               STUB_AUDIT=str(audit), SECOND="1" if audit2 is not None else "",
                PUBFAIL="1" if pubfail else "", PATH=stub + ":" + os.environ["PATH"])
+    if audit2 is not None: env["STUB_AUDIT2"] = str(audit2)
     os.makedirs(env["RUNNER_TEMP"], exist_ok=True)
-    r = subprocess.run(["bash", "-c", sweep], cwd=fx, env=env, capture_output=True, text=True)
+    r = subprocess.run(["bash", "-e", "-c", sweep], cwd=fx, env=env, capture_output=True, text=True)
     return r.returncode, open(published).read().split(), open(calls).read().split()
 bad = []
 dep = "dependabot/pip/requests-2.0"
@@ -3470,6 +3474,14 @@ only_the_judge("a green Dependabot head, judge failing, the failure cannot be pu
 # the judge's exit 3 is a GitHub API error: nothing is published for the head and the run fails
 only_the_judge("a green Dependabot head whose judge hits a GitHub API error (exit 3): nothing published, the run fails",
         sweep_over(dep, "success", 3), 1, [])
+# GitHub runs a step as bash -e: a judge exit 1 or 3 must not end the sweep before the next pull request
+for first, rc, published in ((1, 0, ["conclusion=failure", "conclusion=failure"]), (3, 1, ["conclusion=failure"])):
+    code, pub, calls = sweep_over(dep, "success", first, audit2=1)
+    if (code, pub, calls) != (rc, published, ["audit", "audit"]):
+        bad.append("two green Dependabot heads, the first judge exits %d under bash -e: both are judged, "
+                "only a failing "
+                "judge's head gets a failure, the run fails only on exit 3: exit %s (want %s), published %s (want %s), "
+                "calls %s" % (first, code, rc, pub, published, calls))
 # a full page of 100 runs may have been cut: the read fails closed, so nothing is judged or published
 want("a full page of 100 gate runs is a failed read: nothing judged or published, the run fails",
         sweep_over(dep, "success", 1, older=99), 1, [], False)
@@ -3506,7 +3518,8 @@ def scoped(t): return len(t)==1 and {k for k in (t[0].get("with") or {}) if k.st
 ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited" in on["pull_request_target"]["types"]
     and d.get("permissions")=={} and set(J)=={"judge","publish","record","sweep"}
     # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
-    and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
+    and j.get("permissions")=={"contents":"read","checks":"read","pull-requests":"read"}
+    and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
     and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
     and "base.sha" not in yaml.safe_dump(j) and "auditor-review-gate.py" not in jr
@@ -3534,6 +3547,24 @@ WG
 # (the required-checks.json entry lands in a follow-up PR once the gate is proven on main:
 #  pull_request_target always runs the DEFAULT branch's workflow, so it cannot be proven earlier)
 eq "$wg" "OK" && ok || no "protected judge/publish/sweep gate; auditor token without checks" "workflow=$wg"
+
+begin "rel012-ac9-judge-jobs-hold-the-read-scopes-of-the-judge's-reader" "the jobs that run \
+bin/audit-record-judge.sh with the read token (judge, sweep) hold checks: read and pull-requests: read, \
+besides contents: read, because the judge's reader calls commits/SHA/pulls and commits/SHA/check-runs"
+rs="$(python3 - <<'RS'
+import sys; sys.path.insert(0, ".github/agent/fixtures/testlib")
+import pyyaml as yaml
+J = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))["jobs"]
+bad = []
+for name in ("judge", "sweep"):
+    run = "\n".join(x.get("run", "") for x in J[name]["steps"])
+    if "bin/audit-record-judge.sh" not in run: bad.append(name + " does not run the judge"); continue
+    if J[name].get("permissions") != {"contents": "read", "checks": "read", "pull-requests": "read"}:
+        bad.append("%s holds %s" % (name, J[name].get("permissions")))
+print("OK" if not bad else "BAD " + "; ".join(bad))
+RS
+)"
+eq "$rs" "OK" && ok || no "the jobs that run the judge hold checks: read and pull-requests: read" "$rs"
 
 begin "req-rel-012-record-writer-job-shape-and-sweep-stale-path" "the passed-audit record writer (REQ-REL-012) is a dispatch-only job of the review gate: agent environment, a contents-only App token, the two inputs only through env, the prepare script then the committed signed-commit CLI on audit/<head> then the judge; the sweep does not run on a record dispatch; and the sweep re-judges an OLD failure when the head has a record branch and skips it when it has none"
 rw="$(python3 - <<'RW'
