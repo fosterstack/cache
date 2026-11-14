@@ -6,7 +6,8 @@
 # case can assert the flags and the order of the calls without network, docker, sudo or a real melange.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-work=$(mktemp -d); trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
+work=$(mktemp -d); export TMPDIR=$work   # the scripts under test make their scratch here, so the trap gives it write back
+trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); }
 bad() { failn=$((failn+1)); echo "FAIL [$1] $2"; [ -n "${MA_DEBUG:-}" ] && { echo "  --- rc=$(cat "$work/rc" 2>/dev/null) log:"; tail -5 "$work/log" 2>/dev/null | sed "s/^/  | /"; echo "  --- calls:"; tail -4 "$CALLS" 2>/dev/null | cut -c1-200 | sed "s/^/  | /"; }; true; }
