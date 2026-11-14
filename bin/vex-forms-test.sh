@@ -810,6 +810,7 @@ def melange_with(ver_amd, ver_arm):
 def run_in_tree(melange_text, doc):
     t_ = tempfile.mkdtemp(); os.makedirs(t_ + "/bin"); os.makedirs(t_ + "/build"); os.makedirs(t_ + "/out")
     open(t_ + "/bin/vex-forms.py", "w").write(open(GEN).read())
+    open(t_ + "/bin/inspector-gate.py", "w").write(open(os.path.join(root, "bin", "inspector-gate.py")).read())   # the generator loads the gate from <tree>/bin
     if melange_text is not None: open(t_ + "/build/melange.yaml", "w").write(melange_text)
     p_ = t_ + "/in.openvex.json"; json.dump(doc, open(p_, "w")); o_ = t_ + "/out"
     f_ = t_ + "/digests.json"; open(f_, "w").write(J(IMAGES))
