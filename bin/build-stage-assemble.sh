@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # Job `assemble` of Build and of Rebuild, release and snapshot (ubuntu-24.04 VM), run under Witness by
 # bin/witnessed-local.sh:  bin/build-stage-assemble.sh STEP
-# STEP is the step of the apk jobs whose apks it assembles: apk or rapk (the version is the tag minus its v),
-# snapshot-apk or snapshot-rapk (the version is 0.0.0-rc.1). The apks are in the directory STEP names, minus snapshot-.
-# It binds every downloaded apk file to its apk record (a local record: Sign checks it again and signs it), assembles
-# the two images and the archives from the melange repository and writes items.json and, for Build, digests.json
-# at the repository root (the Witness record names both as products). Rebuild then compares every item with Build's.
+# STEP is the step of the apk jobs whose apks it assembles: apk, rapk, snapshot-apk or snapshot-rapk.
 set -euo pipefail
 step=$1
 dir=${step#snapshot-}

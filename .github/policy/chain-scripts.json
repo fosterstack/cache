@@ -485,7 +485,7 @@
       ],
       "signs": false,
       "reason": "Build and Rebuild, job assemble, release and snapshot: bind the apk records, assemble both images and the archives, write digests.json and items.json, each image's built index carries the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1); Rebuild compares every item with Build's",
-      "sha256": "ea348fab3e7c403dbfd3cb9191be0ae874b353b68bf59439980cf118632fc3a0"
+      "sha256": "defecc7367db3c52db54359b05e834dbe0e87cfee6e0588236b5424543856af4"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
