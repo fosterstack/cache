@@ -31,7 +31,8 @@ here=$(cd "$here_" && pwd)
 die() { echo "lock-proof.sh: $1" >&2; exit "${2:-2}"; }
 
 [[ $HOST_OS == *linux* ]] ||
-  die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+  die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools,"\
+" which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/lock-proof.sh ...  from there
 [ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] ||
   die "usage: run bin/lock-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
@@ -130,12 +131,14 @@ victim=$("$PY3" -I -B bin/oci-digest.py base-lock-victim "$baselock" lock-proof.
 run control "$archive"
 if [ "$rc" != 0 ]; then
   tail -5 "$tmp/control.log" >&2
-  die "positive control failed: the untouched archive and config did not assemble (exit $rc); a proof that cannot succeed proves nothing" 1
+  die "positive control failed: the untouched archive and config did not assemble (exit $rc);"\
+" a proof that cannot succeed proves nothing" 1
 fi
 
 [ ! -L "$archive/$victim" ] || die "the victim $victim in the archive is a symlink; refusing (the proof must never write through a link)"
 [ -f "$archive/$victim" ] ||
-  die "the base lock's first package $victim is not in the archive (the positive control passed, so this is a bad lock-proof setup)"
+  die "the base lock's first package $victim is not in the archive"\
+" (the positive control passed, so this is a bad lock-proof setup)"
 vname=$(basename "$victim"); arch_dir=$(dirname "$victim")
 vre=$(printf '%s' "$vname" | sed 's/[][\.*^$+?(){}|/]/\\&/g')   # the name as a literal inside a regular expression
 
@@ -169,7 +172,8 @@ expect() { # <name> <archive> <temp config or -> <reason regex>
   [ "$rc" != 0 ] || die "case $name did not fail: the assembly accepted a bad input" 1
   [ "$rc" = 2 ] || die "case $name failed with exit $rc, not the named refusal exit 2 (the exit code must say it was a refusal)" 1
   grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/$name.log" | grep -Eqi -- "$4" ||
-    die "case $name was refused (exit 2) but not for its own reason: no message matches /$4/; got: $(tail -1 "$tmp/$name.log")" 1
+    die "case $name was refused (exit 2) but not for its own reason: no message matches /$4/;"\
+" got: $(tail -1 "$tmp/$name.log")" 1
   results+=("$name|$(grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/$name.log" | grep -Ei -m1 -- "$4" | cut -c1-400)")
 }
 
