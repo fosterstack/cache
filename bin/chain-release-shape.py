@@ -4,13 +4,16 @@ list of scripts and the Witness record. Each judge prints `ok` or the list of fa
 judge on a known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then applies it to the real repository,
 which is RED until PR 4 is implemented. Finite grammars and allowlists only, no shell analysis (final PR 1 design, advisor decision b).
 
-  stage FILE          REQ-CHAIN-007-AC1  stage-promote.yml is an ALLOWLIST: on workflow_call only, ONE job `release`, environment release,
-                      permissions exactly contents/packages/id-token write, steps exactly checkout, three installs, downloads, the five
-                      witnessed steps, uploads.
-  credentials FILE    REQ-CHAIN-007-AC2  no env up to and including release-verify; each credential only in the steps listed in WHO.
-  others ROOT         REQ-CHAIN-007-AC3  nothing outside stage-promote.yml's release job holds packages write, a credential or the environment.
-  graph FILE          REQ-CHAIN-007-AC11 release.yml: the job release needs exactly check, sign, sign-rebuild and sign-check (rule 70 as amended by the Witness move; build through check); rebuild needs build and sign, sign-rebuild build and rebuild; no skip,
-                      no secrets, no tag.
+  stage FILE          REQ-CHAIN-007-AC1  the Release jobs of release.yml are an ALLOWLIST: release-compare, release-verify, release (environment release,
+                      contents and packages write, no id-token, no KMS role), sign-release (environment sign, the KMS role) and release-evidence (contents write
+                      only, the throwaway-key wrapper), each with its own steps in its own order.
+  credentials FILE    REQ-CHAIN-007-AC2  no env up to and including the release job's release-verify; each credential only in the steps listed in WHO; the KMS role's
+                      three entries only in the job env of sign-release.
+  others ROOT         REQ-CHAIN-007-AC3  nothing outside the release job and sign-release holds packages write, a registry credential or the release environment;
+                      the release job holds no id-token.
+  graph FILE          REQ-CHAIN-007-AC11 release.yml: release-compare needs exactly check, sign, sign-rebuild and sign-check, release-verify needs release-compare, release needs both,
+                      sign-release needs release, release-evidence needs sign-release; rebuild-apk needs build-assemble only; the guard S and the candidate rule are the
+                      if of release, sign-release and release-evidence; no skip on a failed predecessor, no secrets, no tag.
   verify FILE         REQ-CHAIN-007-AC4  bin/release-verify.sh is `set -euo pipefail` and then EXACTLY the commands of VERIFY, in order.
   scan FILE JSON      REQ-CHAIN-007-AC6..AC10  a release script is plain: only its listed tools, no other script, no build command, no tag
                       creation, no PATH-like setting, no credential printed (text scan, comments and quotes included; it over-reports).
@@ -27,17 +30,33 @@ import base64, hashlib, json, os, re, sys, yaml
 # a stored secret or the job token read in any expression syntax (dotted or bracket), or a credential name; used by the credential judges (fail closed on the bracket form too)
 CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB", re.I)
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
-INSTALLS = ["witness", "cosign", "crane", "aws-cli"]   # KA-2 p4 group 4: the pinned aws CLI, the fourth install (job-local under RUNNER_TEMP, no destination argument)
+STEPS = ["release-verify", "release-publish", "release-apks", "release-sign", "release-assets", "release-postverify"]   # the six witnessed steps of the Release stage, by the job that runs each
+INSTALLS = ["witness", "cosign", "crane", "aws-cli"]
 RECORD_ENV_VERIFY_LOCAL = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json"      # the verify job runs the local script: its record is unsigned and local
-RECORD_ENV_VERIFY = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json"      # rc-2 R4: the verify job's own record, checked before it is uploaded
-DOWN = {"signed-witness-build", "signed-witness-rebuild", "signed-witness-check", "signed-witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
+CHECK_RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]
+S_GUARD = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
+           "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")   # guard S: a push of a version tag, in release mode, in release.yml itself
+RC_IF = "${{ %s && !contains(github.ref_name, '-') }}" % S_GUARD   # the job if of release, sign-release and release-evidence: S, then the candidate rule (a tag with a hyphen ends after release-verify)
+BUILD_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "signed-witness-rebuild": "witness-rebuild", "provenance": "provenance"}
+CHECK_PAIRS = dict([("signed-witness-check-" + r, "witness-check/" + r) for r in CHECK_RUNNERS] + [("check-results-" + r, "check-results/" + r) for r in CHECK_RUNNERS])   # Check's two chips, each under its runner's name
 COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm", "signed-witness-rapk-ubuntu-24.04": "witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm": "witness-rapk-ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
-VERIFY_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "signed-witness-rebuild": "witness-rebuild",
-                "signed-witness-check": "witness-check", "signed-witness-check-arm64": "witness-check/witness-arm64", "check-results": "check-results", "provenance": "provenance",
-                "apk-compare": "apk-compare"}   # what release-verify reads, and where (the last: the compare job's result file, the only trace of Rebuild's apks that reaches these jobs)
-RELEASE_PAIRS = dict(VERIFY_PAIRS, **{"dist": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm"})   # the release job: the ten above, then what the later steps use; Build's artifacts only
-UP = {"release-evidence", "witness-release", "witness-release-verify"}
+VERIFY_PAIRS = dict(BUILD_PAIRS, **dict(CHECK_PAIRS, **{"apk-compare": "apk-compare"}))   # what release-verify reads, and where (the last: the compare job's result file, the only trace of Rebuild's apks that reaches these jobs)
+RELEASE_PAIRS = dict(VERIFY_PAIRS, **{"dist": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm"})   # release and sign-release: the verified records, then what the later steps use; Build's artifacts only, never a rapk
+EVIDENCE_PAIRS = dict(BUILD_PAIRS, **dict(CHECK_PAIRS, **{"dist": "dist", "release-checksums": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm",
+                                                          "release-apks": "release-apks", "release-metadata": "release-metadata", "release-evidence-signatures": "release-evidence", "release-policy": "."}))   # release-evidence: what sign-release made, and the policy release-verify made
+# the three jobs after release-verify: what each may hold, run and upload (REQ-CHAIN-007-AC1, AC2, AC3; ruling 1 and 2 of cache#921)
+JOBS = {
+    "release": dict(needs={"release-verify", "release-compare"}, environment="release", perm={"contents": "write", "packages": "write"}, installs=["witness", "cosign", "crane"], steps=["release-verify", "release-publish"],
+                    helper="witnessed.sh", local="", pairs=RELEASE_PAIRS, concurrency={"group": "release-publish", "cancel-in-progress": "false"}, env=None,
+                    ups=[("witness-release", "witness-release-verify\nwitness-release-publish")]),
+    "sign-release": dict(needs={"release"}, environment="sign", perm={"contents": "read", "id-token": "write", "packages": "write"}, installs=["witness", "cosign", "crane", "aws-cli"], steps=["release-apks", "release-sign"],
+                         helper="witnessed.sh", local="", pairs=RELEASE_PAIRS, concurrency=None, env="fed",
+                         ups=[("release-evidence-signatures", "release-evidence"), ("witness-release-signatures", "witness-release-apks\nwitness-release-sign"), ("release-apks", "release-apks"), ("release-metadata", "release-metadata"),
+                              ("release-checksums", "dist/checksums.txt")]),
+    "release-evidence": dict(needs={"sign-release"}, environment=None, perm={"contents": "write"}, installs=["witness", "cosign", "crane"], steps=["release-assets", "release-postverify"],
+                             helper="witnessed-local.sh", local=".local", pairs=EVIDENCE_PAIRS, concurrency=None, env=None,
+                             ups=[("witness-release-evidence", "witness-release-assets\nwitness-release-postverify")]),
+}
 COMPARE_UPLOAD = {"name": "apk-compare", "path": "apk-compare", "if-no-files-found": "error"}   # the compare job's one upload: a small result file, and a missing file fails the job
 COMPARE_RUN = "bash bin/release-compare.sh"
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
@@ -60,15 +79,15 @@ def fed_env():
     except OSError:
         m = None
     return {"AWS_ROLE_ARN": FED_ROLE, "AWS_REGION": FED_REGION, "RELEASE_KMS_KEY_REF": m.group(1) if m else "<RELEASE_KEY_REF not found in bin/chain-verify.py>"}
-# the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
-# publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
-GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
-IFS_OF = {"build": GATE_G, "sign": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
-CHAIN_JOBS = ["build", "sign", "rebuild", "sign-rebuild", "check", "sign-check", "release"]   # the last stage is Release (the ratified rules' name; Q9)
+# the jobs of the chain by their needs (REQ-CHAIN-007-AC11; rulings 1, 2 and 8 of cache#921): job -> exactly the jobs it needs
+NEEDS_OF = {"build-apk": {"build-freeze"}, "build-assemble": {"build-apk"}, "sign": {"build-assemble"}, "rebuild-apk": {"build-assemble"}, "rebuild-assemble": {"rebuild-apk"}, "sign-rebuild": {"build-assemble", "rebuild-assemble"},
+            "check": {"check-govulncheck", "build-assemble", "sign"}, "sign-check": {"build-assemble", "check"}, "release-compare": {"check", "sign", "sign-rebuild", "sign-check"}, "release-verify": {"release-compare"},
+            "release": {"release-verify", "release-compare"}, "sign-release": {"release"}, "release-evidence": {"sign-release"}}
+CHAIN_JOBS = ["build-freeze", "check-govulncheck"] + list(NEEDS_OF)
+NEEDS_SKIPPED = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)")   # a status function in an if lets a job run after a failed predecessor
 # the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
 TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\[0-9\]\+\)\?\$ \]\] \|\| '
            r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rcN" >&2; exit 1; \}')
-RC_IF = "${{ !contains(github.ref_name, '-') }}"   # the release job's own if: a release candidate (a tag with a hyphen) ends after the verify job
 VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order, nothing else (PROPOSED: stage-start takes --rekor-stub for provenance)
     TAGLINE,
     r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" --out policy\.json',
@@ -81,8 +100,9 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
     # the owner's rule of Oct 21 2026: Rebuild's apks are compared in the compare job (no key, no token); this job reads only its result file, for Build's attested apk digests
     r"python3 bin/chain-verify\.py apk-compare --file apk-compare/apk-compare\.json --digests witness-build/digests\.json",
     r"python3 bin/chain-verify\.py check-list --policy policy\.json --digests witness-build/digests\.json --dir witness-check",
-    # ruling G (advisor Oct 12): check-results/govulncheck.json, the file release-sign hands the evidence step, is a product of Check's verified scanners record
-    r"python3 bin/chain-verify\.py bind-check --policy policy\.json --record witness-check/witness-scanners/scanners-collection\.json --digests witness-build/digests\.json --file check-results/govulncheck\.json --product check-results/govulncheck\.json",
+    # ruling G (advisor Oct 12) and ruling 7 of cache#921: check-results/ubuntu-24.04/govulncheck.json, the file release-sign hands the evidence step, is a product (named check-results/govulncheck.json) of the scanners record of the
+    # ubuntu-24.04 runner, the only one that runs govulncheck
+    r"python3 bin/chain-verify\.py bind-check --policy policy\.json --record witness-check/ubuntu-24\.04/witness-scanners/scanners-collection\.json --digests witness-build/digests\.json --file check-results/ubuntu-24\.04/govulncheck\.json --product check-results/govulncheck\.json",
 ]
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
@@ -100,6 +120,7 @@ ROWS = {
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
         "python python3 perl ruby node npm yarn pnpm go apko melange cosign crane gh witness jq skopeo oras ko goreleaser tar").split()
+CALLERS = ("scan.yml",)   # the workflow file whose every job calls release.yml (in snapshot mode)
 OLD = ["bin/authorize-acceptance-check.py", "bin/authorize-acceptance-check-test.sh"]
 
 
@@ -147,8 +168,8 @@ def verify_job(j):
     bad = []
     if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}:
         bad.append("verify job: job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}))
-    if j.get("needs") not in ("compare", ["compare"]):
-        bad.append("verify job: must need exactly the compare job (needs: compare), got %r" % j.get("needs"))
+    if j.get("needs") not in ("release-compare", ["release-compare"]):
+        bad.append("verify job: must need exactly the compare job (needs: release-compare), got %r" % j.get("needs"))
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("verify job: must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
     if j.get("permissions") != {"contents": "read"}:
@@ -164,12 +185,12 @@ def verify_job(j):
                 bad.append("verify job: checkout must be digest-pinned with persist-credentials: false only")
         elif u.startswith("actions/download-artifact@"):
             kinds.append("down"); w = s.get("with") or {}
-            if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
+            if not PIN.match(u.split(" ")[0]) or w.get("name") not in VERIFY_PAIRS or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
                 bad.append("verify job: download-artifact must be digest-pinned, name in the allowlist, an explicit path outside bin/ and .github/: %s" % w)
         elif u.startswith("actions/upload-artifact@"):
             kinds.append("up"); w = s.get("with") or {}
-            if not PIN.match(u.split(" ")[0]) or w.get("name") not in UP:
-                bad.append("verify job: upload-artifact must be digest-pinned with a name in %s: %s" % (sorted(UP), w))
+            if not PIN.match(u.split(" ")[0]):
+                bad.append("verify job: upload-artifact must be digest-pinned: %s" % w)
         elif u:
             bad.append("verify job: uses not allowed: %s" % u)
         elif r == "bash bin/install-scanner.sh witness":
@@ -188,7 +209,7 @@ def verify_job(j):
     if len(ws) != 1 or ws[0] != 2 + len(ds):
         bad.append("verify job: exactly one release-verify under Witness must follow the downloads directly: %s" % kinds)
     dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
-    for nm, want in (("signed-witness-check", "witness-check"), ("admission-baseline", "witness-build"), ("check-results", "check-results"), ("signed-witness-check-arm64", "witness-check/witness-arm64")):
+    for nm, want in [("admission-baseline", "witness-build")] + sorted(CHECK_PAIRS.items()):
         if dl.get(nm) != want:
             bad.append("verify job: artifact %s must be downloaded to %s (where release-verify reads it), got %r" % (nm, want, dl.get(nm)))
     res = [i for i, k in enumerate(kinds) if k == "RE"]
@@ -197,11 +218,11 @@ def verify_job(j):
     if not ups or ups != list(range(len(kinds) - len(ups), len(kinds))):
         bad.append("verify job: only uploads may follow the record check, and there must be at least one")
     upl = [(x.get("with") or {}) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/upload-artifact@")]
-    if upl != [{"name": "witness-release-verify", "path": "witness-release-verify", "if-no-files-found": "error"}]:
-        bad.append("verify job: its one upload must be exactly name witness-release-verify, path witness-release-verify and if-no-files-found error (the Witness record of release-verify; a missing record fails the job; the release job's own upload is witness-release): %s" % upl)
+    if upl != [{"name": "witness-release-verify", "path": "witness-release-verify", "if-no-files-found": "error"}, {"name": "release-policy", "path": "policy.json", "if-no-files-found": "error"}]:
+        bad.append("verify job: its uploads must be exactly name witness-release-verify, path witness-release-verify and if-no-files-found error (the Witness record of release-verify; a missing record fails the job; the release job's own upload is witness-release), then release-policy holding policy.json, which release-evidence reads: %s" % upl)
     got = sorted((((x.get("with") or {}).get("name")), ((x.get("with") or {}).get("path"))) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@"))
     if got != sorted(VERIFY_PAIRS.items()):
-        bad.append("verify job: its downloads must be exactly these ten artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, so nothing else may reach the uploaded directory): %s" % got)
+        bad.append("verify job: its downloads must be exactly these eleven artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, so nothing else may reach the uploaded directory): %s" % got)
     if has_expression(j.get("steps")):
         bad.append("verify job: no step may hold an expression (${{ }}): a protected step carries no expression and no explicit credential binding; the checkout action's default token use and Witness's identity token are token uses that no expression or binding in these steps accounts for")
     return bad
@@ -213,9 +234,12 @@ def compare_job(j):
     exactly: the checkout, the six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
     under Witness: a Witness record is signed with the release KMS key, which needs the identity token this job must not hold) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
     bad = []
-    allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes"}
+    allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}
     if set(j) - allowed:
-        bad.append("compare job: job keys not allowed (no environment, no env, no needs, no if, no container): %s" % sorted(set(j) - allowed))
+        bad.append("compare job: job keys not allowed (no environment, no env, no if, no container): %s" % sorted(set(j) - allowed))
+    nd = j.get("needs")
+    if (set([nd]) if isinstance(nd, str) else set(nd or [])) != NEEDS_OF["release-compare"]:
+        bad.append("compare job: must need exactly check, sign, sign-rebuild and sign-check (every signed record it reads exists), got %r" % nd)
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("compare job: must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
     if j.get("permissions") != {"contents": "read"}:
@@ -252,101 +276,102 @@ def compare_job(j):
     return bad
 
 
-def stage(path):
-    d, bad = load(path), []
-    on = d.get("on") or {}
-    if not (isinstance(on, dict) and set(on) == {"workflow_call"}):
-        bad.append("on: must be exactly workflow_call: %s" % on)
-    if set(d) - {"name", "on", "permissions", "jobs"}:
-        bad.append("workflow keys not allowed: %s" % sorted(set(d) - {"name", "on", "permissions", "jobs"}))
-    jobs = d.get("jobs") or {}
-    if list(jobs) != ["compare", "verify", "release"]:
-        return bad + ["exactly three jobs named compare, verify and release (in this order) are required, found %s" % list(jobs)]
-    bad += compare_job(jobs["compare"])
-    bad += verify_job(jobs["verify"])
-    j = jobs["release"]
-    # REQ-CHAIN-007-AC1 (Astra R6): the release job starts only after the verify job passed, and not at all for a release candidate
+def release_job(name, j):
+    """REQ-CHAIN-007-AC1 to AC3 for release, sign-release and release-evidence (rulings 1 and 2 of cache#921): each is an allowlist of steps, in this order: the checkout, its installs, the downloads,
+    its witnessed steps (all through bin/witnessed.sh, or through bin/witnessed-local.sh in release-evidence, which has no KMS role), the check of each record for a token, the uploads."""
+    spec, bad, lab = JOBS[name], [], "the %s job" % name
     nd = j.get("needs")
-    if nd != ["compare", "verify"]:
-        bad.append("the release job must need exactly the compare and the verify job (needs: [compare, verify]), got %r" % nd)
+    if (set([nd]) if isinstance(nd, str) else set(nd or [])) != spec["needs"]:
+        bad.append("%s must need exactly %s (needs), got %r" % (lab, sorted(spec["needs"]), nd))
     if j.get("if") != RC_IF:
-        bad.append("the release job must carry exactly the job-level if %s (a release candidate never enters the release environment), got %r" % (RC_IF, j.get("if")))
-    if set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes", "needs", "if", "env"}:
-        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes", "needs", "if"}))
+        bad.append("%s must carry exactly the job-level if %s (guard S, then the candidate rule: a release candidate never enters it), got %r" % (lab, RC_IF, j.get("if")))
+    allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs", "if"} | ({"environment"} if spec["environment"] else set()) | ({"concurrency"} if spec["concurrency"] else set()) | ({"env"} if spec["env"] else set())
+    if set(j) - allowed:
+        bad.append("%s: job keys not allowed: %s" % (lab, sorted(set(j) - allowed)))
     if j.get("runs-on") != "ubuntu-24.04":
-        bad.append("release must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
-    if j.get("environment") != "release":
-        bad.append("the job must be in the environment named release, got %r" % j.get("environment"))
-    if j.get("permissions") != {"contents": "write", "packages": "write", "id-token": "write"}:
-        bad.append("permissions must be exactly contents, packages and id-token write: %s" % j.get("permissions"))
-    kinds = []
+        bad.append("%s must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % (lab, j.get("runs-on")))
+    if j.get("environment") != spec["environment"]:
+        bad.append("%s must be in the environment %s, got %r" % (lab, spec["environment"] or "(none)", j.get("environment")))
+    if j.get("permissions") != spec["perm"]:
+        bad.append("%s: permissions must be exactly %s: %s" % (lab, spec["perm"], j.get("permissions")))
+    if spec["concurrency"] and j.get("concurrency") != spec["concurrency"]:
+        bad.append("%s must carry exactly the concurrency %s (one publication at a time, never cancelled), got %r" % (lab, spec["concurrency"], j.get("concurrency")))
+    kinds, ups, wrun = [], [], r"bash bin/%s (release-[a-z]+) bin/\1\.sh" % re.escape(spec["helper"])
     for s in j.get("steps") or []:
         nk = len(kinds)
         if set(s) - {"name", "uses", "with", "run", "env", "if"}:
-            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run", "env", "if"}))
-        u, r = s.get("uses", ""), run_of(s)
+            bad.append("%s: step keys not allowed: %s" % (lab, sorted(set(s) - {"name", "uses", "with", "run", "env", "if"})))
+        u, r, w = s.get("uses", ""), run_of(s), s.get("with") or {}
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
-            if not PIN.match(u.split(" ")[0]) or s.get("with") != {"persist-credentials": "false"}:
-                bad.append("checkout must be digest-pinned with persist-credentials: false only")
+            if not PIN.match(u.split(" ")[0]) or w != {"persist-credentials": "false"}:
+                bad.append("%s: checkout must be digest-pinned with persist-credentials: false only" % lab)
         elif u.startswith("actions/download-artifact@"):
-            kinds.append("down"); w = s.get("with") or {}
-            if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or w.get("path", ".") != w.get("path", ".").strip() or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".").strip()):
-                bad.append("download-artifact must be digest-pinned, name in %s, an explicit path with no surrounding whitespace (the action trims it) outside bin/ and .github/: %s" % (sorted(DOWN), w))
+            kinds.append("down")
+            if not PIN.match(u.split(" ")[0]) or w.get("name") not in spec["pairs"] or set(w) != {"name", "path"} or (w.get("path") != w.get("path", ".").strip()) or (
+                    re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".").strip()) and (w.get("name"), w.get("path")) != ("release-policy", ".")):
+                bad.append("%s: download-artifact must be digest-pinned, name in %s, an explicit path with no surrounding whitespace (the action trims it) outside bin/ and .github/: %s" % (lab, sorted(spec["pairs"]), w))
         elif u.startswith("actions/upload-artifact@"):
-            kinds.append("up"); w = s.get("with") or {}
-            if not PIN.match(u.split(" ")[0]) or w.get("name") not in UP:
-                bad.append("upload-artifact must be digest-pinned with a name in %s: %s" % (sorted(UP), w))
+            kinds.append("up"); ups.append((w.get("name"), w.get("path")))
+            if not PIN.match(u.split(" ")[0]) or set(w) != {"name", "path"}:
+                bad.append("%s: upload-artifact must be digest-pinned with a name and a path only: %s" % (lab, w))
         elif u:
-            bad.append("uses not allowed in the Release stage: %s" % u)
+            bad.append("%s: uses not allowed in the Release stage: %s" % (lab, u))
         elif r in ["bash bin/install-scanner.sh " + t for t in INSTALLS]:   # the form the closed stage grammar accepts (bash PATH ARGS), as Build, Sign and Check run it
             kinds.append("install:" + r.split()[-1])
-        elif re.fullmatch(r"bash bin/witnessed\.sh (release-[a-z]+) bin/\1\.sh", r):
+        elif re.fullmatch(wrun, r):
             kinds.append("W:" + r.split()[2])
-        elif re.fullmatch(r"python3 -I bin/chain-verify\.py record-env --record witness-(release-[a-z]+)/\1-collection\.json", r):   # rc-2 R4: the Release job checks its own six Witness records for a token before they are uploaded (REQ-CHAIN-007-AC12)
+        elif re.fullmatch(r"python3 -I bin/chain-verify\.py record-env --record witness-(release-[a-z]+)/\1-collection%s\.json" % re.escape(spec["local"]), r):   # the job checks each of its own Witness records for a token before they are uploaded (REQ-CHAIN-007-AC12)
             kinds.append("RE:" + r.split()[-1].split("/")[0][len("witness-"):])
         else:
-            bad.append("a step that is none of checkout, install, download, witnessed or upload: %r" % (r or s.get("name")))
+            bad.append("%s: a step that is none of checkout, install, download, witnessed (bin/%s) or upload: %r" % (lab, spec["helper"], r or s.get("name")))
         if len(kinds) > nk and "if" in s:   # only a step that was classified is judged; the job-level if skips the whole job for a release candidate
-            bad.append("step %r must carry no if (the job-level if %s ends a release candidate before any step)" % (r or u, RC_IF))
-    want = ["checkout"] + ["install:" + t for t in INSTALLS]
+            bad.append("%s: step %r must carry no if (the job-level if ends a release candidate before any step)" % (lab, r or u))
+    head = ["checkout"] + ["install:" + t for t in spec["installs"]]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
-    ups = [i for i, k in enumerate(kinds) if k == "up"]
-    if kinds[:len(want)] != want:
-        bad.append("steps must start with checkout and the installs of witness, cosign, crane, aws-cli (the release job installs no build tool: the apks are signed through cosign and the pinned aws CLI): got %s" % kinds[:len(want)])
-    if not ds or ds != list(range(len(want), len(want) + len(ds))):
-        bad.append("the downloads must follow the installs directly and all come before Witness starts (rule 68)")
-    # REQ-CHAIN-007-AC16: Check's two uploads meet where bin/chain-verify.py check-list reads them: witness-check/ holds witness-scanners, witness-acceptance and
-    # witness-runtime (artifact witness-check), and the arm64 leg's separate artifact witness-check-arm64 lands in witness-check/witness-arm64/
-    dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
-    rgot = sorted((((x.get("with") or {}).get("name")), ((x.get("with") or {}).get("path"))) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@"))
-    if rgot != sorted(RELEASE_PAIRS.items()):
-        bad.append("the release job: its downloads must be exactly these fourteen artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, and the job's upload holds the Witness record directories): %s" % rgot)
-    if dl.get("signed-witness-check") != "witness-check":
-        bad.append("artifact signed-witness-check must be downloaded to witness-check, got %r" % dl.get("signed-witness-check"))
-    if dl.get("admission-baseline") != "witness-build":
-        bad.append("artifact admission-baseline must be downloaded to witness-build (where release-verify binds it and release-sign reads it), got %r" % dl.get("admission-baseline"))
-    if dl.get("check-results") != "check-results":
-        bad.append("artifact check-results must be downloaded to check-results (where release-verify binds govulncheck.json and release-sign reads it), got %r" % dl.get("check-results"))
-    if dl.get("signed-witness-check-arm64") != "witness-check/witness-arm64":
-        bad.append("artifact signed-witness-check-arm64 must be downloaded to witness-check/witness-arm64 (where check-list reads the arm64 record), got %r" % dl.get("signed-witness-check-arm64"))
-    if ws != ["W:" + s for s in STEPS]:
-        bad.append("the witnessed steps must be exactly %s, in this order, found %s" % (STEPS, [w[2:] for w in ws]))
+    if kinds[:len(head)] != head:
+        bad.append("%s: steps must start with checkout and the installs of %s, in this order: got %s" % (lab, ", ".join(spec["installs"]), kinds[:len(head)]))
+    if not ds or ds != list(range(len(head), len(head) + len(ds))):
+        bad.append("%s: the downloads must follow the installs directly and all come before Witness starts (rule 68)" % lab)
+    pairs = sorted((s["with"].get("name"), s["with"].get("path")) for s in j.get("steps") or [] if str(s.get("uses", "")).startswith("actions/download-artifact@"))
+    if pairs != sorted(spec["pairs"].items()):
+        bad.append("%s: its downloads must be exactly these %d artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, and the uploads hold the Witness record directories): %s" % (lab, len(spec["pairs"]), pairs))
+    if ws != ["W:" + s for s in spec["steps"]]:
+        bad.append("%s: the witnessed steps must be exactly %s, in this order, found %s" % (lab, spec["steps"], [w[2:] for w in ws]))
     last_w = max((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
     first_w = min((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
     if first_w >= 0 and any(not k.startswith("W:") for k in kinds[first_w:last_w + 1]):
-        bad.append("between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % kinds[first_w:last_w + 1])
-    if any(k.startswith("install:") for k in kinds[5:]):
-        bad.append("between the checkout and the downloads exactly the four installs are allowed, and no install after them: %s" % kinds)
+        bad.append("%s: between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % (lab, kinds[first_w:last_w + 1]))
+    if any(k.startswith("install:") for k in kinds[len(head):]):
+        bad.append("%s: between the checkout and the downloads exactly the installs of %s are allowed, and no install after them: %s" % (lab, ", ".join(spec["installs"]), kinds))
     after = kinds[last_w + 1:]
-    if after[:len(STEPS)] != ["RE:" + s for s in STEPS]:
-        bad.append("right after the witnessed steps the Release job must check each of its own six Witness records for a token (python3 -I bin/chain-verify.py record-env --record witness-STEP/STEP-collection.json, REQ-CHAIN-007-AC12), exactly %s in this order, found %s" % (STEPS, [k[3:] for k in after if k.startswith("RE:")]))
-    if any(k != "up" for k in after[len(STEPS):]) or not ups:
-        bad.append("only uploads may follow the witnessed steps and their record checks, and there must be at least one")
-    text = open(path).read()
-    if re.search(r"docker\s+login|build-push|buildx|goreleaser|\bgo build\b", text):
-        bad.append("a registry login or a build command appears in the stage file")
+    if after[:len(spec["steps"])] != ["RE:" + s for s in spec["steps"]]:
+        bad.append("%s: right after the witnessed steps it must check each of its own Witness records for a token (python3 -I bin/chain-verify.py record-env --record witness-STEP/STEP-collection%s.json, REQ-CHAIN-007-AC12), exactly %s in this order, found %s"
+                   % (lab, spec["local"], spec["steps"], [k[3:] for k in after if k.startswith("RE:")]))
+    if any(k != "up" for k in after[len(spec["steps"]):]) or not ups:
+        bad.append("%s: only uploads may follow the witnessed steps and their record checks, and there must be at least one" % lab)
+    if ups != spec["ups"]:
+        bad.append("%s: upload-artifact must upload exactly these names and paths, in this order: %s, got %s" % (lab, spec["ups"], ups))
+    if re.search(r"docker\s+login|build-push|buildx|goreleaser|\bgo build\b", yaml.dump(j)):
+        bad.append("%s: a registry login or a build command appears" % lab)
+    return bad
+
+
+def stage(path):
+    jobs, bad = load(path).get("jobs") or {}, []
+    for n in ("release-compare", "release-verify") + tuple(JOBS):
+        if n not in jobs:
+            bad.append("release.yml has no job %s" % n)
+    if bad:
+        return bad
+    bad += compare_job(jobs["release-compare"])
+    bad += verify_job(jobs["release-verify"])
+    for n in JOBS:
+        bad += release_job(n, jobs[n])
+    for n, j in jobs.items():
+        if n not in JOBS and n != "release-verify" and re.search(r"witnessed(-local)?\.sh release-", yaml.dump(j)):
+            bad.append("job %s runs a release step: only release-verify, release, sign-release and release-evidence do" % n)
     return bad
 
 
@@ -357,47 +382,51 @@ def j_names_credential(j):
 
 def credentials(path):
     jobs = load(path).get("jobs") or {}
-    vj = jobs.get("verify")
-    bad, seen_verify = [], False
+    bad = []
+    vj = jobs.get("release-verify")
     if vj is None:
         bad.append("no verify job found")
     elif j_names_credential(vj) or has_expression(vj.get("steps")):
-        bad.append("a step up to release-verify has an env or names a secret or token: the verify job must hold no credential (it holds contents read and id-token write only)")
-    cj = jobs.get("compare")
+        bad.append("a step up to release-verify has an env or names a secret or token: the verify job must hold no credential (it holds contents read only)")
+    cj = jobs.get("release-compare")
     if cj is None:
         bad.append("no compare job found")
     elif j_names_credential(cj) or has_expression(cj.get("steps")) or (cj.get("permissions") or {}).get("id-token"):
         bad.append("compare job: it must hold no credential, no environment and no identity token (the comparison of Rebuild's apks runs without a key)")
-    j = jobs.get("release") or {}
-    if j.get("env") != fed_env():
-        bad.append("the release job must carry exactly the job env %s as literals (no credential, no expression, no variable lookup), found %s" % (fed_env(), j.get("env")))
-    for s in j.get("steps") or []:
-        r, env = run_of(s), s.get("env")
-        name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
-        blob = yaml.dump(s)
-        if not seen_verify:
-            if name == "release-verify":      # the release job's own re-run: no credential, and no env of its own (the job env holds the federation entries)
-                seen_verify = True
+    for n, spec in JOBS.items():
+        j = jobs.get(n)
+        if j is None:
+            bad.append("no job %s found" % n)
+            continue
+        if j.get("env") != (fed_env() if spec["env"] == "fed" else None):
+            bad.append("the %s job must carry %s as its job env (the KMS role's three entries as literals, in sign-release only; no credential, no expression, no variable lookup), found %s"
+                       % (n, fed_env() if spec["env"] == "fed" else "no env", j.get("env")))
+        seen = False
+        for s in j.get("steps") or []:
+            r, env = run_of(s), s.get("env")
+            m = re.fullmatch(r"bash bin/%s (release-[a-z]+) bin/\1\.sh" % re.escape(spec["helper"]), r)
+            name = m.group(1) if m else None
+            blob = yaml.dump(s)
+            if not seen and name is None:
                 if env is not None or CRED_RE.search(blob) or has_expression(s):
-                    bad.append("release-verify must carry no step env, no credential and no expression, found %s" % env)
+                    bad.append("a step up to %s has an env or names a secret or token: %s" % ("release-verify" if n == "release" else "the first witnessed step of " + n, r or s.get("uses", "")))
                 continue
-            if env is not None or CRED_RE.search(blob) or has_expression(s):
-                bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
-            continue
-        if name is None:
-            if env is not None or CRED_RE.search(blob):
-                bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
-            continue
-        want = WHO.get(name, set())
-        got = set((env or {}).keys())
-        if got != want:
-            bad.append("%s must get exactly the credentials %s as step env (the federation entries are the job's), got %s" % (name, sorted(want), sorted(got)))
-        for k, v in (env or {}).items():
-            ok = v == ("${{ github.token }}" if k == "GH_TOKEN" else "${{ secrets.%s }}" % k)
-            if k in CREDS and not ok:
-                bad.append("%s in %s must be one whole read of its own secret, got %r" % (k, name, v))
-    if not seen_verify:
-        bad.append("no release-verify step found")
+            seen = True
+            if name is None:
+                if env is not None or CRED_RE.search(blob):
+                    bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
+                continue
+            want, got = WHO.get(name, set()), set((env or {}).keys())
+            if got != want:
+                bad.append("%s must get exactly the credentials %s as step env (the KMS role's entries are the job's), got %s" % (name, sorted(want), sorted(got)))
+            if not want and (CRED_RE.search(blob) or has_expression(s)):
+                bad.append("%s must carry no credential and no expression" % name)
+            for k, v in (env or {}).items():
+                ok = v == ("${{ github.token }}" if k == "GH_TOKEN" else "${{ secrets.%s }}" % k)
+                if k in CREDS and not ok:
+                    bad.append("%s in %s must be one whole read of its own secret, got %r" % (k, name, v))
+        if not seen:
+            bad.append("no witnessed step found in %s" % n)
     return bad
 
 
@@ -405,14 +434,17 @@ def others(root):
     bad = []
     wd = os.path.join(root, ".github/workflows")
     for f in sorted(os.listdir(wd)):
-        if not f.endswith((".yml", ".yaml")) or f == "stage-promote.yml":
+        if not f.endswith((".yml", ".yaml")) or f == "release.yml":
             continue
         t = open(os.path.join(wd, f)).read()
-        for pat, what in ((r"DOCKERHUB_TOKEN\b", "a release credential"), (r"environment:\s*release\b", "the release environment")):
+        for pat, what in ((r"DOCKERHUB_TOKEN\b", "a release credential"), (r"APK_RELEASE_SIGNING_KEY\b", "the apk signing key"), (r"environment:\s*release\b", "the release environment")):
             if re.search(pat, t):
                 bad.append("%s names %s" % (f, what))
-        if f.startswith("stage-") and re.search(r"packages:\s*write|secrets\.|secrets:\s*inherit", t):
-            bad.append("%s holds packages write or a secret: only the release job may" % f)
+        if f in CALLERS:   # the callers of release.yml grant packages write only to the call itself: the called file's permission set is the ceiling (REQ-CHAIN-004-AC13)
+            for n, j in (load(os.path.join(wd, f)).get("jobs") or {}).items():
+                p = j.get("permissions")
+                if isinstance(p, dict) and p.get("packages") == "write" and j.get("uses") != "./.github/workflows/release.yml":
+                    bad.append("%s job %s grants packages write: only the release job and sign-release of release.yml may" % (f, n))
     rp = os.path.join(wd, "release.yml")
     if os.path.exists(rp):
         d = load(rp)
@@ -420,46 +452,47 @@ def others(root):
         if isinstance(wp, dict) and any(v == "write" and k in ("packages", "id-token", "contents") for k, v in wp.items()):
             bad.append("release.yml grants write at the workflow level: %s" % wp)
         for n, j in (d.get("jobs") or {}).items():
-            uses = j.get("uses", "")
-            if "stage-" in uses and ("secrets" in j):
-                bad.append("job %s passes secrets to a stage call" % n)
             p = j.get("permissions") or {}
-            if "stage-" in uses and not uses.endswith("stage-promote.yml") and isinstance(p, dict) and p.get("packages") == "write":
-                bad.append("job %s grants packages write: only the release job may" % n)
-        if re.search(r"DOCKERHUB_TOKEN\b", open(rp).read()):
-            bad.append("release.yml names a release credential")
+            p = p if isinstance(p, dict) else {}
+            blob = yaml.dump(j)
+            if "secrets" in j:
+                bad.append("job %s passes secrets to a call" % n)
+            if p.get("packages") == "write" and n not in ("release", "sign-release"):
+                bad.append("job %s grants packages write: only the release job and sign-release may" % n)
+            if p.get("contents") == "write" and n not in ("release", "release-evidence"):
+                bad.append("job %s grants contents write: only the release job and release-evidence may" % n)
+            if p.get("id-token") and n in ("release", "release-evidence", "release-compare", "release-verify"):
+                bad.append("job %s holds an identity token: the release job holds no KMS role and no id-token, and neither do the jobs around it" % n)
+            if re.search(r"DOCKERHUB_TOKEN\b|APK_RELEASE_SIGNING_KEY\b", blob) and n not in ("release", "sign-release"):
+                bad.append("job %s names a release credential: only the release job and sign-release hold it" % n)
+            if j.get("environment") == "release" and n != "release":
+                bad.append("job %s is in the release environment: only the release job is" % n)
     return bad
 
 
 def graph(path):
     d, bad = load(path), []
     jobs = d.get("jobs") or {}
-    if "release" not in jobs:
-        bad.append("release.yml has no job release: the last job is named release (the ratified rules' name, Q9), found %s" % list(jobs))
-    for n in CHAIN_JOBS[:-1]:
+    for n in CHAIN_JOBS:
         if n not in jobs:
             bad.append("release.yml has no job %s" % n)
     if bad:
         return bad
-    p = jobs["release"]
-    needs = p.get("needs", [])
-    needs = {needs} if isinstance(needs, str) else set(needs)
-    if needs != {"check", "sign", "sign-rebuild", "sign-check"}:   # rule 70 as amended by the Witness move: Sign signs Build's records, sign-rebuild Rebuild's, sign-check Check's; build is reached through check
-        bad.append("the release job must need exactly check, sign, sign-rebuild and sign-check (rule 70 as amended by the Witness move; it reaches build through check and rebuild through sign-rebuild), found %s" % sorted(needs))
-    for who, want in (("rebuild", {"build", "sign"}), ("sign-rebuild", {"build", "rebuild"}), ("sign-check", {"build", "check"})):
+    for who, want in NEEDS_OF.items():
         got = jobs[who].get("needs", [])
         got = {got} if isinstance(got, str) else set(got)
         if got != want:
-            bad.append("%s must need exactly %s, found %s" % (who, " and ".join(sorted(want)), sorted(got)))
-    if p.get("uses") != "./.github/workflows/stage-promote.yml":
-        bad.append("the release job must call ./.github/workflows/stage-promote.yml")
-    if p.get("permissions") != {"contents": "write", "packages": "write", "id-token": "write"}:
-        bad.append("the release job's permissions must be exactly contents, packages and id-token write: %s" % p.get("permissions"))
+            bad.append("%s must need exactly %s, found %s (a failed predecessor stops the release)" % (who, ", ".join(sorted(want)), sorted(got)))
     for n in CHAIN_JOBS:
-        j = jobs[n]
-        if str(j.get("if", "")).strip() != IFS_OF.get(n, ""):
-            bad.append("job %s must carry %s, found %r (the one allowed gate: a status function such as always() or !cancelled() lets release run after a failed predecessor)"
-                       % (n, "exactly the if %s" % IFS_OF[n] if n in IFS_OF else "no if", j.get("if")))
+        j, cond = jobs[n], str(jobs[n].get("if", "")).strip()
+        if n in JOBS:
+            if cond != RC_IF:
+                bad.append("job %s must carry exactly the if %s, found %r" % (n, RC_IF, j.get("if")))
+        elif n in ("release-compare", "release-verify"):
+            if cond:
+                bad.append("job %s must carry no if, found %r" % (n, j.get("if")))
+        elif NEEDS_SKIPPED.search(cond):
+            bad.append("job %s has a status function in its if (it would run after a failed predecessor): %r" % (n, j.get("if")))
         if "continue-on-error" in j or "secrets" in j:
             bad.append("job %s has continue-on-error or secrets" % n)
     # no job of release.yml creates a tag or a release, decide included (handoff 0713 P8: nothing here signs a tag, so
@@ -527,7 +560,7 @@ def listed(jsonpath, root):
     if not os.path.exists(jsonpath):
         return ["missing: %s" % jsonpath]
     rows, bad = {r["path"]: r for r in json.load(open(jsonpath)).get("scripts", [])}, []
-    for p, want in list(ROWS.items()) + [("bin/witnessed.sh", None)]:
+    for p, want in list(ROWS.items()) + [("bin/witnessed.sh", None), ("bin/witnessed-local.sh", None)]:
         r = rows.get(p)
         if r is None:
             bad.append("%s is not listed in chain-scripts.json" % p); continue
@@ -621,10 +654,9 @@ def metadata(path):
 
 def removed(root):
     bad = [f"{f} still exists" for f in OLD if os.path.exists(os.path.join(root, f))]
-    pp = os.path.join(root, ".github/workflows/stage-promote.yml")
-    if os.path.exists(pp) and re.search(r"release-authori[sz]ation|authorize-acceptance-check", open(pp).read()):
-        bad.append("stage-promote.yml still reads or writes a release-authorization predicate")
     rp = os.path.join(root, ".github/workflows/release.yml")
+    if os.path.exists(rp) and re.search(r"release-authori[sz]ation|authorize-acceptance-check", open(rp).read()):
+        bad.append("release.yml still reads or writes a release-authorization predicate")
     if os.path.exists(rp) and "authorization" in (load(rp).get("jobs") or {}):
         bad.append("release.yml still has an authorization job")
     return bad
