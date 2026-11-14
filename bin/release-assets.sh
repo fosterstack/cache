@@ -79,7 +79,8 @@ done
 if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; exit 1; fi
 # The release's notes: a generated patch tag's notes (REQ-REL-009-AC8; bin/release-metadata.py tag-notes accepts only the release workflow's own patch tag), else
 # the fixed evidence text. Only a definite "release not found" creates a release; any other failure of the view stops here (round 1 R3).
-notes=(--notes "Evidence: see docs/verify-release.md for the verification commands of this release.")
+fixed="Evidence: see docs/verify-release.md for the verification commands of this release."
+notes=(--notes "$fixed")
 if git cat-file tag "$rel" > release-tag.txt 2> /dev/null && python3 bin/release-metadata.py tag-notes --tag "$rel" --object release-tag.txt > release-notes.md 2> /dev/null && [ -s release-notes.md ]; then
   notes=(--notes-file release-notes.md)
 fi
@@ -98,7 +99,7 @@ if [ -n "$prev" ]; then
   python3 bin/release-metadata.py controls-notice --old "$old" --new "$new" > controls-notice.md
 fi
 if [ -s controls-notice.md ]; then
-  [ "${notes[0]}" = --notes-file ] || printf '%s' "${notes[1]}" > release-notes.md
+  [ -s release-notes.md ] || printf '%s' "$fixed" > release-notes.md
   cat controls-notice.md release-notes.md > release-body.md
   mv release-body.md release-notes.md
   notes=(--notes-file release-notes.md)
