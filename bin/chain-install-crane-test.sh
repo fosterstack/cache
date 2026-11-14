@@ -7,7 +7,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/install-scanner.sh"
 pass=0; fail=0
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-# the installer downloads from fixed https URLs: a curl on PATH serves the local layout STUB_REL
+# the installer downloads from fixed https URLs: a stub on PATH serves the local layout STUB_REL
 # (the URL after /download/ or /dl/), or fails like a refused download
 stubbin="$work/stubbin"; mkdir -p "$stubbin"
 cat > "$stubbin/curl" <<'STUB'
