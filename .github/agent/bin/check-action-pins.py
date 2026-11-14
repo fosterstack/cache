@@ -242,7 +242,7 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
-    "b2a8427209cf9341dfedac1d6c49edf26228ab06172fb5ea37e6e04921f15ff2",   # the same file after the change in flight
+    "f4b7f06c2c2025eb8587521ac974093b3ddf8265d85c259971624ca9ff0f3abe",   # the same file after the change in flight
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2702,7 +2702,8 @@ def _unsafe_downloads(text):
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
 # beside the entry's own name: the ways a step's environment or search path is set for later steps. Each may stand in
-# the parsed file only as often as in the excluded steps' run text.
+# the parsed file only as often as in the excluded steps' run text. curlrc is there to catch a .curlrc the workflow
+# writes before the token fetch.
 _HELD_WORDS = ("GITHUB_ENV", "GITHUB_PATH", "::set-env", "::add-path", "ACTIONS_ALLOW_UNSECURE_COMMANDS",
                "exportVariable", "addPath", "curlrc")
 _HELD_WORDS_ANY_CASE = ("github.env", "github.path")      # expression names: GitHub reads them in any letter case
