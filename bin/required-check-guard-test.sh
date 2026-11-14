@@ -88,46 +88,41 @@ else
   echo "$out" | sed 's/^/    /'; fail=$((fail+1))
 fi
 
-python3 - "$repo/.github/workflows/ci.yml" "$w/pin-step.txt" "$w/pin-run.sh" <<'PY'
+# The pin step, byte for byte: it fetches the guard from main (repository, path, ?ref=main), never the pull request's
+# own copy, and runs that fetch once over both policy files. Any other line, comment or order is refused.
+python3 - "$repo/.github/workflows/ci.yml" "$w/pin-run.sh" "$w/pin-bad.txt" <<'PY'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]["steps"]
 pin = [s for s in steps if "release-only-checks.json" in (s.get("run") or "") and "required-check-guard.sh" in s["run"]]
 assert len(pin) == 1, f"{len(pin)} steps of the required-check guard job run the guard over release-only-checks.json"
-s = pin[0]
-bad = [k for k in ("if", "continue-on-error", "shell", "working-directory") if k in s]
-# the step's last line, as bin/dependency-lanes-test.sh takes it
-open(sys.argv[2], "w").write(s["run"].strip().splitlines()[-1] + "\n---\n" + ",".join(bad))
-open(sys.argv[3], "w").write(s["run"])
+open(sys.argv[2], "w").write(pin[0]["run"])
+open(sys.argv[3], "w").write(",".join(k for k in ("if", "continue-on-error", "shell", "working-directory") if k in pin[0]))
 PY
-# the last line must be exactly the guard call over both files from the fetched copy in RUNNER_TEMP: no tree copy
-# (./bin/..., ;bin/...), no other call
-guard_call='bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json'
-guard_call+=' .github/policy/release-only-checks.json'
-if [ -s "$w/pin-step.txt" ]; then
-  last="$(sed '/^---$/,$d' "$w/pin-step.txt")"
-  extra="$(sed '1,/^---$/d' "$w/pin-step.txt")"
-  if [ "$last" != "$guard_call" ]; then
-    echo "FAIL: the pin step's last line is not exactly: ${guard_call} (it is: ${last})"; fail=$((fail+1))
-  elif [ -n "$extra" ]; then echo "FAIL: the pin step carries ${extra}"; fail=$((fail+1))
-  else echo "ok: the pin step runs main's guard over the tree's two policy files"; pass=$((pass+1)); fi
-else
-  echo "FAIL: ci.yml's required-check guard job has no single step that runs the guard over release-only-checks.json"
-  fail=$((fail+1))
-fi
-
-# The last line only runs RUNNER_TEMP's copy; the fetch above it is what makes that copy main's. A fetch of the
-# pull request's own ref would let a head move its pin, so the step must fetch the guard from main by repo and path.
-fetches_main_guard() { # run_file
-  grep -qF 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main"' "$1"
-}
-check_fetch() { # name run_file want (0 = accepted, 1 = refused)
-  if fetches_main_guard "$2"; then got=0; else got=1; fi
+cat > "$w/pin-want.sh" <<'WANT'
+set -euo pipefail
+gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+  | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
+[ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
+bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
+WANT
+pin_case() { # name run_file want (0 = identical to the pinned text, 1 = differs)
+  if diff -u "$w/pin-want.sh" "$2" > "$w/pin.diff" 2>&1; then got=0; else got=1; fi
   if [ "$got" -eq "$3" ]; then echo "ok: $1"; pass=$((pass+1))
-  else echo "FAIL: $1 (accepted=$((1-got)), want accepted=$((1-$3)))"; fail=$((fail+1)); fi
+  else echo "FAIL: $1 (differs=$got, want differs=$3)"; sed 's/^/    /' "$w/pin.diff"; fail=$((fail+1)); fi
 }
-check_fetch "the pin step fetches the guard from main" "$w/pin-run.sh" 0
+pin_case "the pin step is the pinned text, byte for byte" "$w/pin-run.sh" 0
+if [ -s "$w/pin-bad.txt" ]; then echo "FAIL: the pin step sets $(cat "$w/pin-bad.txt")"; fail=$((fail+1)); fi
 sed 's|guard.sh?ref=main|guard.sh?ref=${GITHUB_HEAD_REF}|' "$w/pin-run.sh" > "$w/pin-run-moved.sh"
-check_fetch "a pin step fetching the guard at the pull request's branch is refused" "$w/pin-run-moved.sh" 1
+pin_case "a pin step fetching the guard at the pull request's branch is refused" "$w/pin-run-moved.sh" 1
+{ echo 'set -euo pipefail'
+  echo '# gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '"'.content'"' \'
+  echo 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=${GITHUB_HEAD_REF}" --jq .content \'
+  echo '  | base64 -d > "$RUNNER_TEMP/other.sh"'
+  echo "printf 'exit 0' > \"\${RUNNER_TEMP}/required-check-guard.sh\""
+  tail -n 1 "$w/pin-want.sh"; } > "$w/pin-run-redirect.sh"
+pin_case "a comment holding the fetch text over a fetch elsewhere is refused" "$w/pin-run-redirect.sh" 1
+sed '$i echo hi' "$w/pin-run.sh" > "$w/pin-run-extra.sh"
+pin_case "an extra line in the pin step is refused" "$w/pin-run-extra.sh" 1
 
 # The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
 # committed under GitHub's default `bash -e` with a recording gh stub (round-1 blocker:
@@ -173,14 +168,6 @@ step "match opens nothing"                            "$w/match.json"   "$w/no-i
 # The pin step, run as GitHub runs a step without `shell:` (bash -e, no pipefail): it must fail when the fetch of main's
 # guard fails or comes back empty, and must run the fetched guard once over both policy files with the ruleset from
 # GUARD_RULES_JSON.
-python3 - "$repo/.github/workflows/ci.yml" "$w/pin-run.sh" <<'PY'
-import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]["steps"]
-pin = [s["run"] for s in steps
-       if "release-only-checks.json" in (s.get("run") or "") and "required-check-guard.sh" in s["run"]]
-assert len(pin) == 1, f"{len(pin)} pin steps"
-open(sys.argv[2], "w").write(pin[0])
-PY
 mkdir -p "$w/pintree/.github/policy" "$w/pinstub"
 cp "$list" "$w/pintree/.github/policy/required-checks.json"
 cp "$ro" "$w/pintree/.github/policy/release-only-checks.json"
