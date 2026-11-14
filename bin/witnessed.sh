@@ -29,7 +29,7 @@
 set -euo pipefail
 step="$1"
 shift
-case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; \
+case "$step" in release-apks|release-sign) ;; \
   *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
 : "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"
