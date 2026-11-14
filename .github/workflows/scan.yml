@@ -45,7 +45,7 @@ concurrency:
 
 # Workflow default: read only. Each job states what it needs. The caller of release.yml (build) grants the
 # called file's permission set as a ceiling, or the run is a startup_failure with zero jobs (GitHub counts every job of the called
-# file, skipped or not): contents, packages, attestations and id-token write, checks, statuses and pull-requests read (REQ-CHAIN-004-AC14).
+# file, skipped or not): contents, packages, attestations, id-token and issues write, checks, statuses and pull-requests read (REQ-CHAIN-004-AC14).
 # Every job of release.yml keeps its own minimal permissions, and every job that requests a write or an id-token is guarded off in snapshot mode,
 # so this grant is a ceiling and nothing runs with it. The inspector job requests id-token: write for the role assumption; the grype job holds no token. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
@@ -62,6 +62,7 @@ jobs:
       packages: write
       attestations: write
       id-token: write
+      issues: write
       checks: read
       statuses: read
       pull-requests: read
