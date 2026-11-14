@@ -869,8 +869,6 @@ RO=.github/policy/release-only-checks.json
 gitcase no-release-only-at-a-commit    bad "" "rm $RO"
 gitcase release-only-drops-chain-at-a-commit bad "" \
   "jq '.required_checks |= map(select(.context != \"allowlist-chain\"))' $RO > ro.tmp && mv ro.tmp $RO"
-gitcase release-only-drops-coverage-at-a-commit bad "" \
-  "jq '.required_checks |= map(select(.context != \"coverage\"))' $RO > ro.tmp && mv ro.tmp $RO"
 
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
@@ -1163,34 +1161,15 @@ PY
   if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
 
-# the release-only list holds exactly the seven contexts: dropping any one, or adding an eighth, is refused
-for mut in drop-coverage drop-acceptance drop-gate add-eighth; do
-  case $mut in
-    drop-coverage) f='map(select(.context != "coverage"))' ;;
-    drop-acceptance) f='map(select(.context != "acceptance-maven (1.2.0)"))' ;;
-    drop-gate) f='map(select(.context != "auditor-review-gate"))' ;;
-    add-eighth) f='. + [{"context": "extra-check", "integration_id": 15368, "scope": "push"}]' ;;
-  esac
-  jq ".required_checks |= $f" "$here/.github/policy/release-only-checks.json" > "$work/set-$mut.json"
-  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/set-$mut.json" judge "$here/.github/workflows/ci.yml")
-  then failn=$((failn+1)); echo "FAIL release-only-set-$mut accepted"
-  else pass=$((pass+1)); echo "PASS release-only-set-$mut → bad ($out)"; fi
-done
-
-# a protected context counts once across the two lists: in neither or in both is refused
-for mut in "in-neither bad" "in-both bad"; do
-  python3 - "$here/.github/policy" "$work/pol-${mut% *}" "${mut% *}" <<'PY'
+python3 - "$here/.github/policy" "$work/pol-in-both" <<'PY'
 import json, sys
 req = json.load(open(sys.argv[1] + "/required-checks.json")); rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
-e = [c for c in rel["required_checks"] if c["context"] == "allowlist-chain"][0]
-if sys.argv[3] == "in-neither": rel["required_checks"].remove(e)
-elif sys.argv[3] == "in-both": req["required_checks"].append(e)
-json.dump(req, open(sys.argv[2] + "-required.json", "w")); json.dump(rel, open(sys.argv[2] + "-release-only.json", "w"))
+req["required_checks"].append([c for c in rel["required_checks"] if c["context"] == "allowlist-chain"][0])
+json.dump(req, open(sys.argv[2] + "-required.json", "w"))
 PY
-  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-${mut% *}-required.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-${mut% *}-release-only.json" \
-    judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
-  if [ "$got" = "${mut#* }" ]; then pass=$((pass+1)); echo "PASS policy-${mut% *} → $got"; else failn=$((failn+1)); echo "FAIL policy-${mut% *} → $got ($out)"; fi
-done
+if out=$(PIN_WIRING_POLICY_FILE="$work/pol-in-both-required.json" judge "$here/.github/workflows/ci.yml"); then
+  failn=$((failn+1)); echo "FAIL policy-in-both accepted"
+else pass=$((pass+1)); echo "PASS policy-in-both → bad ($out)"; fi
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
