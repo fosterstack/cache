@@ -242,7 +242,7 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
     "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # main's gate workflow
-    "97dee114a2bdae12b79e2fcabe925df52f80c4b66881908a48afc2a26cafeb77",   # the same file after the change in flight
+    "b2a8427209cf9341dfedac1d6c49edf26228ab06172fb5ea37e6e04921f15ff2",   # the same file after the change in flight
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
@@ -2805,13 +2805,13 @@ DOWNLOAD_EXCLUSIONS = {
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
     (".github/workflows/dependabot-reviewer.yml", "review", 4,
-     "f5cd95a72e84a4ac7178afc40303cadfb2e2043f4c49d11de262bdac5c72a27f"): (
+     "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
         "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} "
         "(set by the runner, quoted, followed by a literal &audience=) into a "
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
     (".github/workflows/dependabot-reviewer.yml", "review", 8,
-     "0ed503cf555f8cf05ebce6caf14ed38a458e5c710103ee2ac1f91fa4bc2d51e1"): (
+     "ed79b6846c1729e3ffd034f935b130636b5c32502c6daa191323e0ac1c11398a"): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
