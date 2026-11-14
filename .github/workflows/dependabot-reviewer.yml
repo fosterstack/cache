@@ -117,7 +117,7 @@ jobs:
           verdict_of() {
             local run_url="repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=dependabot-reviewer"
             GH_TOKEN="$APP_TOKEN" gh api "$run_url&filter=all&per_page=100" \
-              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+              --jq "if (.check_runs | length) >= 100 then error(\"the check runs are cut\") else . end
                     | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
                     | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
                         then \"none\"
@@ -135,7 +135,7 @@ jobs:
           gate_of() {
             GH_TOKEN="$APP_TOKEN" gh api \
               "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=auditor-review-gate&per_page=100" \
-              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+              --jq "if (.check_runs | length) >= 100 then error(\"the check runs are cut\") else . end
                     | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
                       elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end"
@@ -586,7 +586,7 @@ jobs:
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
             run_url="repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer"
             latest=$(GH_TOKEN="$APP_TOKEN" gh api "$run_url&filter=all&per_page=100" \
-              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+              --jq "if (.check_runs | length) >= 100 then error(\"the check runs are cut\") else . end
                     | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
                     | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
                         then \"none\"
@@ -634,7 +634,7 @@ jobs:
             [ -n "$n" ] && [ -n "${sha:-}" ] || continue
             run_url="repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer"
             if ! latest=$(GH_TOKEN="$APP_TOKEN" gh api "$run_url&filter=all&per_page=100" \
-              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+              --jq "if (.check_runs | length) >= 100 then error(\"the check runs are cut\") else . end
                     | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last
                     | if . == null or (.conclusion == \"success\" and .external_id != \"${version}\")
                         then \"none\"
