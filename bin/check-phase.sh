@@ -14,7 +14,7 @@ python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --r
 case "$1" in
   scanners)
     bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results
-    # govulncheck reads the source, not the chip: it runs once, on the amd64 leg
+    # govulncheck reads the Go code, not the chip: it runs once, on the amd64 leg
     if [ "$arch" = amd64 ]; then
       python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results
     fi
