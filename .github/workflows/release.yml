@@ -220,10 +220,12 @@ jobs:
             git fetch -q --no-tags origin main
             git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/ruleset-checks.json"
             git show origin/main:.github/policy/release-only-checks.json > "$RUNNER_TEMP/release-only-checks.json"
-            jq -s 'if length == 2 and all(.[]; type == "object" and (.required_checks | type) == "array"
-                                      and (.required_checks | length) > 0)
-              then .[0].required_checks += .[1].required_checks | .[0]
-              else error("a required-checks list is missing, empty or malformed") end' \
+            for f in ruleset-checks release-only-checks; do
+              jq -en '[inputs | type == "object" and (.required_checks | type) == "array"
+                and (.required_checks | length) > 0] | length > 0 and all' "$RUNNER_TEMP/$f.json" > /dev/null \
+                || { echo "::error::$f.json is missing, empty or malformed"; exit 1; }
+            done
+            jq -s '{required_checks: (map(.required_checks) | add)}' \
               "$RUNNER_TEMP/ruleset-checks.json" "$RUNNER_TEMP/release-only-checks.json" > "$RUNNER_TEMP/required-checks.json"
             gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
               --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
