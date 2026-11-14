@@ -213,8 +213,9 @@ def vex_index(doc):
             if scope is None:          # not this gate's repository, or a scope the grammar rejects: it covers nothing, with or without an image (covered(.., image=None) trusts the index)
                 continue
             subs = {name_version(s.get("@id")) for s in p.get("subcomponents") or []}
-            subs |= {(n, "go" + v) for s in p.get("subcomponents") or []   # scanners write go1.27.2 for the golang stdlib's 1.27.2
-                     if str(s.get("@id")).startswith("pkg:golang/stdlib@") for n, v in [name_version(s.get("@id"))]}
+            # scanners write go1.27.2 for the golang stdlib's 1.27.2
+            subs |= {("stdlib", "go" + name_version(s["@id"])[1]) for s in p.get("subcomponents") or []
+                     if str(s.get("@id")).startswith("pkg:golang/stdlib@")}
             for i in ids:
                 if i:
                     idx.setdefault(i, []).append((subs, scope))

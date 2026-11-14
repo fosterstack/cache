@@ -315,7 +315,8 @@ std_case "R1 a generic stdlib finding at go1.27.2 is covered by a generic stdlib
 std_case "R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement" 0 "1 covered" \
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"1.27.2","purl":"pkg:generic/stdlib@1.27.2"}' "pkg:generic/stdlib@1.27.2"
 std_case "R1 a golang stdlib finding at go1.27.2 is NOT covered by a generic stdlib@1.27.2 statement" 1 "1 finding" \
-  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:generic/stdlib@1.27.2"
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2",'\
+'"purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:generic/stdlib@1.27.2"
 
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
