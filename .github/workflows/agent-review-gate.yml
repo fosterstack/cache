@@ -63,6 +63,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      checks: read
+      pull-requests: read
     outputs:
       verdict: ${{ steps.gate.outputs.verdict }}
     steps:
@@ -217,6 +219,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -272,7 +275,8 @@ jobs:
             conclusion=failure
             if [ "$last" = success ]; then
               # a green Dependabot head did not change: only the reviewer's verdict can have
-              GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; rc=$?
+              rc=0
+              GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT" || rc=$?
               if [ "$rc" = 0 ]; then continue; fi
               # a GitHub API error is no verdict: publish nothing, fail the run
               if [ "$rc" = 3 ]; then fail=1; continue; fi
