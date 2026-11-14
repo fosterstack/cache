@@ -654,18 +654,19 @@ if pol is not None:
             bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
 # the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
-# name may be an expression or come from a matrix (its rendered name cannot be judged). auditor-review-gate is the App's alone: nothing produces it.
+# name may be an expression that could render as one. auditor-review-gate is the App's alone: nothing produces it.
 RESERVED = set(PROTECTED) | {n for c in release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
 PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-gradle", "acceptance-maven")}
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = jid in PRODUCES.get(wf, ()) and nm == jid
     return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
-def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
-    nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
-    if "${{" not in nm:
+def could_render_reserved(nm):   # each `${{ ... }}` stands for any text; refused when the rest can spell a reserved name (fail closed)
+    parts = re.split(r"\$\{\{.*?\}\}", str(nm))
+    if len(parts) == 1:
+        return False
+    if any("${{" in p or "}}" in p for p in parts):
         return True
-    rest = re.sub(r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}", "", nm)
-    return "${{" not in rest and "}}" not in rest and bool(re.search(r"[ (]", rest))
+    return any(re.fullmatch(".*".join(re.escape(p) for p in parts), r) for r in RESERVED)
 def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
     return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
@@ -674,7 +675,7 @@ for jid_, j_ in d.get("jobs", {}).items():
     nm = j_.get("name", jid_)
     if takes_reserved("ci.yml", jid_, nm):
         bad.append(f"the job {jid_} produces the reserved check name {nm}")
-    if jid_ not in PROTECTED and not name_disjoint(nm):
+    if jid_ not in PROTECTED and could_render_reserved(nm):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
     if writes_checks(j_.get("permissions")):
         bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
@@ -700,7 +701,7 @@ for _f in sorted(os.listdir(_wdir)):
         _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
         if takes_reserved(_f, _jid, _nm):
             bad.append(f"{_f}: the job {_jid} takes the reserved check name {_nm}")
-        elif not name_disjoint(_nm):
+        elif could_render_reserved(_nm):
             bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
         if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
             bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
@@ -1136,13 +1137,32 @@ open(sys.argv[1], "w").write(t.replace("  acceptance-maven:\n    name: acceptanc
 PY
 if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-swapped" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
 if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS reserved-producer-swapped → bad"; else failn=$((failn+1)); echo "FAIL reserved-producer-swapped → $got, want bad ($out)"; fi
-ZZ="{'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]"
-case_ reserved-gate-in-ci          bad "d['jobs']['zz'] = dict($ZZ, 'name': 'auditor-review-gate'})"
-case_ reserved-gate-id-in-ci       bad "d['jobs']['auditor-review-gate'] = $ZZ}"
-case_ reserved-maven-in-ci         bad "d['jobs']['zz'] = dict($ZZ, 'name': 'acceptance-maven'})"
-case_ reserved-maven-expr-in-ci    bad "d['jobs']['zz'] = dict($ZZ, 'name': 'acceptance-maven (\${{ matrix.v }})'})"
-case_ reserved-gradle-id-in-ci     bad "d['jobs']['acceptance-gradle'] = $ZZ}"
+ZZ="{'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+case_ reserved-gate-in-ci          bad "d['jobs']['zz'] = dict($ZZ, name='auditor-review-gate')"
+case_ reserved-gate-id-in-ci       bad "d['jobs']['auditor-review-gate'] = $ZZ"
+case_ reserved-maven-in-ci         bad "d['jobs']['zz'] = dict($ZZ, name='acceptance-maven')"
+case_ reserved-maven-expr-in-ci    bad "d['jobs']['zz'] = dict($ZZ, name='acceptance-maven (\${{ matrix.v }})')"
+case_ reserved-gradle-id-in-ci     bad "d['jobs']['acceptance-gradle'] = $ZZ"
 case_ reserved-coverage-expr-in-ci bad "d['jobs']['lint']['name'] = 'coverage (\${{ matrix.v }})'"
+
+# a name with an expression that could render as a reserved name is refused (REQ-REL-013-AC3), except in the job that produces it
+MX='    strategy:\n      matrix:\n        t: [acceptance-maven]\n'
+for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    strategy:\n      matrix:\n        tool: [acceptance-maven]\n|bad" \
+  "exprname-prefix|  zz:\n    name: 'acceptance-\${{ matrix.t }} (1.2.0)'\n${MX}|bad" \
+  "exprname-version|  zz:\n    name: '\${{ matrix.t }} (1.2.3)'\n${MX}|bad" \
+  "exprname-suffix|  zz:\n    name: 'auditor-review-gate\${{ matrix.s }}'\n    strategy:\n      matrix:\n        s: ['']\n|bad" \
+  "exprname-alone|  zz:\n    name: '\${{ matrix.n }}'\n    strategy:\n      matrix:\n        n: [coverage]\n|bad" \
+  "exprname-ok-os|  zz:\n    name: 'build \${{ matrix.os }} (1.2.0)'\n    strategy:\n      matrix:\n        os: [ubuntu]\n|ok" \
+  "exprname-ok-scan|  zz:\n    name: 'scan (\${{ matrix.scanner }})'\n    strategy:\n      matrix:\n        scanner: [grype]\n|ok" \
+  "exprname-ok-rescan|  zz:\n    name: '\${{ matrix.target.scanner }} \${{ matrix.target.release }} \${{ matrix.target.variant }}'\n    strategy:\n      matrix:\n        target: [{scanner: grype, release: a, variant: b}]\n|ok"; do
+  want="${mut##*|}"; body="${mut%|*}"
+  reserved_wf "${mut%%|*}" "$(printf "${body#*|}${JOB}")"
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS ${mut%%|*} → $got"; else failn=$((failn+1)); echo "FAIL ${mut%%|*} → $got, want $want ($out)"; fi
+done
+# control: the real workflows' own names stay ok
+if out=$(judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+if [ "$got" = ok ]; then pass=$((pass+1)); echo "PASS exprname-real-workflows → ok"; else failn=$((failn+1)); echo "FAIL exprname-real-workflows → $got, want ok ($out)"; fi
 
 # the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them);
 # allowlist-chain is in release-only-checks.json, so these edit that file
