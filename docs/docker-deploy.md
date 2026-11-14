@@ -153,12 +153,11 @@ the image has no shell, no `curl`/`wget`,
 no second binary inside the container to run a healthcheck command with.
 A container-internal `HEALTHCHECK: [...]` directive would have nothing
 valid to execute. Probe `/healthz` from *outside* the container instead —
-your orchestrator's own HTTP healthcheck (Kubernetes `livenessProbe` with
+your container platform's own HTTP healthcheck (Kubernetes `livenessProbe` with
 `httpGet`, an external monitoring check, or `curl -f
 http://localhost:8080/healthz` from the host/CI runner). This is a direct
-consequence of the minimal-image design — see
-[Scanning FosterStack in your compliance pipeline](scanning.md) for why
-there's no shell in the image in the first place.
+consequence of the minimal-image design; see
+[the images have no shell](verify-images.md#the-images-have-no-shell).
 
 `/healthz` is liveness only and never reports disk trouble. To be told about a
 full or read-only data directory, alert on the `fscache_store_writable`,
@@ -221,7 +220,7 @@ connection-refused. Docker has no probe of its own here (the image ships no
 Kubernetes it is the liveness probe that can restart the pod; see
 [Kubernetes](kubernetes.md#startup-and-reconcile).
 
-Configuration is flags and environment only, on purpose. There is no settings
+Configuration is environment variables only, on purpose. There is no settings
 page and no runtime reconfiguration, which means the running server always
 matches the deployment manifest in your git repository — diffable, reviewable,
 and with no drift to reconcile. It also means there is no mutable admin surface

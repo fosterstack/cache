@@ -2,9 +2,7 @@
 
 ## Next release: Go 1.27.4<!-- pinned: upstream -->, optional HTTPS, and building and signing kept apart
 
-This release is rebuilt with **Go 1.27.4**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
-
-The CA certificate bundle is also updated, to Wolfi's `ca-certificates-bundle` 20261020-r0, which removes three eMudhra roots: emSign Root CA C1, emSign ECC Root CA C3 and emSign ECC Root CA G3. This ships in this release too.
+This release is rebuilt with **Go 1.27.4**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: `Certificate.Verify` in crypto/x509 now returns an error for known intermediate certificates that are no longer trusted, which covers systems whose trust store has not been updated. The fix ships in this release; there is no separate patch release for it.
 
 ### What changes for Gradle and Maven users
 
@@ -23,15 +21,14 @@ Upgrade by pulling the new tag or `:latest`.
 
 ### Building and signing, in plain words
 
-Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The key that signs the software packages inside the images (the package-signing key) exists in one place only, the release job's environment, and only one step in it receives the key. That job is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. The signatures on the images, and on the checksum list that covers every release archive, are a different thing: they use short-lived certificates tied to the workflow that made them, so no long-lived key signs them. (The archives are not signed one by one; the signed checksum list covers each of them.)
+Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. Only the Sign job can use the key that signs the software packages inside the images (the package-signing key); builds and pull requests never can. The Sign job is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. The signatures on the images, and on the checksum list that covers every release archive, are made with the release signing key, which is held in a cloud key management service, and each signature is recorded in the public Rekor transparency log. (The archives are not signed one by one; the signed checksum list covers each of them.)
 
-This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5 and Executive Order 14028 with its NIST guidance; we claim no certification. The page `docs/build-and-signing-isolation.md` names the specific controls and lists the known gaps.
+This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5 and Executive Order 14028 with its NIST guidance; we claim no certification. The page [build and signing-key isolation](build-and-signing-isolation.md) names the specific controls and lists the known gaps.
 
 ### Dependency updates
 
 - Go 1.27.4<!-- pinned: upstream --> (above).
 - `github.com/prometheus/client_golang` 1.24.1 to 1.25.0, with its supporting libraries (`prometheus/common` 0.72.0, `prometheus/procfs` 0.22.0, `golang.org/x/sys` 0.48.0). <!-- pinned: upstream -->
-- The CA certificate bundle in the images (above).
 
 ### What this release does not do
 
@@ -39,4 +36,4 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 - The package signing key is not rotated automatically.
 - The release pipeline's own signing tools are not FIPS-validated. (The `-fips` image uses Go's FIPS 140-3 module, which is a different claim.)
 
-See `release-manifest.json` for the evidence bundle: image digests, archive checksums, the requirements baseline, per-AC results and the transparency-log index.
+See `release-manifest.json` for the evidence bundle: the commit and CI run, image, archive and package digests, the module SBOMs, the requirements baseline and test evidence files with their checksums, and the VEX files with their checksums.

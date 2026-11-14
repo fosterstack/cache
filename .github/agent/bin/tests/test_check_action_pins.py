@@ -882,8 +882,8 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 # main's gate workflow (the passed-audit record judge)
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"
-# the gate workflow with the merge queue judge (cache#542)
-GATE_B = "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc"
+# the gate workflow with the merge queue judge
+GATE_B = "c86698e8354dd11ee2727153e641ea6bf59cb2f64dccf09e613d7d473334aaa6"
 # the edits from main's gate workflow to the change's (old text, new text); the repository carries the change's copy,
 # so main's copy is made by undoing them
 QUEUE_HUNKS = (
@@ -900,7 +900,7 @@ on:
         (r'''#   The sweep holds the App token while reading PR data — still as git objects only, never
 #   executed; it runs only the default branch's gate script.
 #
-# THE MERGE QUEUE (REQ-DEP-005-AC3, cache#542). The required check `auditor-review-gate` must also '''
+# THE MERGE QUEUE (REQ-DEP-005-AC3). The required check `auditor-review-gate` must also '''
         r'''be posted on the
 # merge queue's head, by the App. The queue judge is a `workflow_run` job, not a `merge_group` job, '''
         r'''because a

@@ -18,7 +18,7 @@ record of. Scan the exact digest you pull and read the result against
 ## Package-DB asymmetry — expect this, it isn't a bug
 
 Our images have no package manager and only a handful of packages in the
-package database (base layout, CA certificates, time zone data and `fscache`). That has an
+package database (base layout, time zone data and `fscache`). That has an
 asymmetric effect on checks:
 
 - **"Is forbidden package X present?"** checks — pass, as long as X is not one
@@ -45,8 +45,7 @@ threshold" with "could not run at all" in ways that are easy to miss.
 **Read per-rule verdicts from the results document (JSON/SARIF), never
 gate a pipeline purely on the raw exit code** — a broken scan and a clean
 scan can both look like "exit 0" or both look like "exit 1" depending on
-flags, and conflating them ships a green gate that checks nothing. This
-failure mode has been observed in the field.
+flags, and conflating them ships a green gate that checks nothing.
 
 ## There is no debug image from v0.3.0 <!-- pinned: historical -->
 
@@ -70,8 +69,8 @@ check them against the signed release manifest as described in
 |---|---|---|
 | Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
 | Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
-| Docker Scout | none yet | Scout does not apply a VEX file given on the command line (see [Docker Scout](#docker-scout)) |
-| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule for each product scope and package a statement names: `aws inspector2 create-filter`, one rule per call |
+| Docker Scout | none | No file needed: Scout reads our statements from the image itself. From v0.3.0; not yet confirmed on a published release (see [Docker Scout](#docker-scout)). | <!-- pinned: historical -->
+| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule for each product scope and package a `not_affected` or `fixed` statement names: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
 The three files are generated from the same statements. The OpenVEX file carries
@@ -92,12 +91,13 @@ statement**.
   our repository must cite the statement that governs it
   ([`.vex/README.md`](../.vex/README.md)), and the Inspector rules above are
   generated from the statements, never written by hand.
-- **Which statements become rules.** `not_affected` and `fixed` statements become
-  suppression rules. `affected` and `under_investigation` never do: those findings
-  stay visible in your scanner.
-- **Scoped to what we shipped.** Each rule is scoped by the CVE and by the digests
-  of the release it was written for (and by package and version when the statement
-  names one), so it does not hide the same CVE in a different image.
+- **Which statements become rules.** A `not_affected` or `fixed` statement
+  becomes one suppression rule for each product scope and package it names. `affected` and `under_investigation`
+  statements never do, and neither does a statement that names no package: those
+  findings stay visible in your scanner.
+- **Scoped to what we shipped.** Each rule is scoped by the CVE, by the digests
+  of the release it was written for and by the package, plus the version when the statement names one, so it does not
+  hide the same CVE in a different image.
 - **Your own rules.** Put the statement ID in the rule's reason or comment, so a
   reviewer on your side can trace it back to our file the same way.
 
@@ -106,10 +106,11 @@ statement**.
 Docker Scout does not apply a VEX file you give it on the command line. The
 `--vex-location` option is accepted, but our statements are not applied on any Scout
 release we tested, from 1.9.3 through 1.26.0 (Docker's open report is <!-- pinned: upstream -->
-[docker/scout-cli#207](https://github.com/docker/scout-cli/issues/207)). A Scout scan
-of our images therefore still lists the findings our statements cover. Read them
-against the published OpenVEX file ([above](#using-our-vex-files-in-your-scanner)) by
-hand until Scout can apply it; we will say here when it can.
+[docker/scout-cli#207](https://github.com/docker/scout-cli/issues/207)). From v0.3.0 our <!-- pinned: historical -->
+releases attach the statements to each image instead, and
+[Using our VEX files](using-our-vex.md#docker-scout) gives the Scout command. We have not
+yet confirmed on a published release that Scout applies them, so read a Scout scan
+against the published OpenVEX file ([above](#using-our-vex-files-in-your-scanner)) until we do.
 
 ## Reproducing our own gate
 
@@ -125,17 +126,15 @@ policy that the rest of this section does not describe. Pull requests are
 scanned by [`scan.yml`](../.github/workflows/scan.yml) on the candidate images,
 with Grype and Amazon Inspector.
 
-The gate's policy is every severity, with the published VEX applied (a finding
-of unknown severity fails it too), and the example below uses the same policy.
+The gate's policy is every severity, with the published VEX applied, and the
+example below uses the same policy.
 It is a simplified reproduction, not the exact
 invocation: the gate also runs Grype with an empty configuration file and refuses
 `GRYPE_*` and `OSV_SCANNER_*` variables (so a local setting cannot hide a finding),
 scans each platform of the index separately, and checks that every finding
 Grype reports as ignored was ignored by the VEX file. That check does not see
 matches Grype's distro exclusions or OSV-Scanner's `linux` filter drop before any
-report. Read `bin/check-scan.sh` for the full set. Pull requests are scanned by
-[`scan.yml`](../.github/workflows/scan.yml) on the candidate images, with Grype and
-Amazon Inspector. A finding of unknown severity fails the gate too. The VEX document ships with each
+report. Read `bin/check-scan.sh` for the full set. The VEX document ships with each
 release as `fosterstack-cache.openvex.json` and lives in-repo at
 [`.vex/`](../.vex/). A Grype scan of a published image with that VEX applied:
 

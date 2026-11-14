@@ -1,5 +1,5 @@
 {
- "_note": "The command blocks of docs/using-our-vex.md that the live test (bin/vex-live-run.sh) executes with the job's credentials, in order, by section and sha256 of their exact text (scanner-panel rule 12). The live test refuses a plan that is not exactly this list: a block a Markdown reader sees differently than the parser, or any block added or changed, is stopped here. Changing a block of the page means changing its row in the same pull request.",
+ "_note": "The command blocks of docs/using-our-vex.md that the live test executes with the job's credentials, in order, by section and sha256 of their exact text. The live test refuses a plan that is not exactly this list: a block a Markdown reader sees differently than the parser, or any block added or changed, is stopped here. Changing a block of the page means changing its row in the same pull request.",
  "blocks": [
   {
    "section": "settings",

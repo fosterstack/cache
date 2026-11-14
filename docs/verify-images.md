@@ -1,7 +1,7 @@
 # Verify our images
 
-Every FosterStack Cache release is signed and provenance-attested by
-GitHub's own CI — not by us claiming it, by a chain you can check yourself
+Every FosterStack Cache release is signed and provenance-attested — not by
+us claiming it, but by a chain you can check yourself
 in under a minute, with `cosign` and `gh` plus standard tools (`curl`,
 `sed`, `jq`, `base64`, `sha256sum` or `shasum`).
 
@@ -224,11 +224,11 @@ The individual statements, all verifiable with the same command shape
 | `https://fosterstack.com/attestations/scan-trivy/v1` (also `-grype`, `-snyk`) | the verification stage | this digest was scanned clean by that scanner, with its version and database state |
 | `https://fosterstack.com/attestations/acceptance/v1` | the acceptance stage | the per-AC acceptance results for this digest |
 | `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
-| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results (REQ-REL-001/002): the anonymous verification and every-tag anonymous pull passed for this digest |
+| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results: the anonymous verification and every-tag anonymous pull passed for this digest |
 
 **Resolving the deferred release ACs.** Because the release manifest is
 attached BEFORE publication, its `ac_results` shows the two publication
-ACs (`REQ-REL-001-AC1`, `REQ-REL-002-AC1`) as
+ACs (the release is signed and attested; it is available anonymously) as
 `deferred-to-publication`, and its `publication_evidence` field points
 here. Their **pass** outcome lives in the separate publication attestation
 above — verify it (needs a token), pinned to the promotion workflow and
@@ -274,7 +274,7 @@ the Rekor log indexes.
 | `X` / `latest` | — | Floating: move only when the release is the highest released version |
 
 There is no base image from v0.3.0 on: each image holds only the packages named in <!-- pinned: historical -->
-[`build/apko.yaml`](../build/apko.yaml) (base layout, CA certificates, time zone data and `fscache`),
+[`build/apko.yaml`](../build/apko.yaml) (base layout, time zone data and `fscache`),
 pinned by the lock files in `build/locks/`.
 
 Both variants of every release are signed the same way. The `-fips` image has
@@ -285,7 +285,7 @@ not.
 ### The images have no shell
 
 Production and `-fips` contain the `fscache` binary and a few packages
-(base layout, CA certificates, time zone data; see `build/apko.yaml`) — no
+(base layout, time zone data; see `build/apko.yaml`) — no
 shell, no package manager, no coreutils. `docker exec ... sh` into them
 fails, by design. What that buys, stated precisely: no shell and no package
 manager means an attacker who gains code execution has no on-image tooling
@@ -346,7 +346,10 @@ key, as a bundle over that file:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt
 
-sha256sum -c checksums.txt   # verifies every archive you downloaded, transitively
+# Check the archive you downloaded (VER is set at the top of this page; PLATFORM and BIN as in the install page)
+PLATFORM=linux_amd64   # or linux_arm64
+BIN=fscache            # fscache-fips for the FIPS build (Linux only)
+LINE=$(grep -F "${BIN}_${VER}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 ## 5. Enforcing this in your own cluster (Kyverno)
@@ -389,6 +392,6 @@ artifact — review it against your own cluster's admission-control setup.
 
 ## Why this matters more than most vendors' equivalent page
 
-Free and paid tiers pull the exact same bytes (brief §0.2) — there is no
+Free and paid tiers pull the exact same bytes — there is no
 "trust us" tier. Everything on this page works identically whether you're
 paying us anything or not.
