@@ -1,130 +1,1056 @@
 name: Release
 
-# The release chain (release-chain-design.md): build once, verify by digest, publish by digest. Each stage is a reusable
-# workflow with its own OIDC identity; one signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
-# are sha256 digests emitted by the stage that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
-# pushes anything, and Release (the final stage) is the only path that can make anything public, and only after it has verified every earlier
-# stage's record. Releases build ONLY here, by the chain below; nothing else builds or publishes a release.
+# The release chain (release-chain-design.md): ONE workflow file, one job per stage step, each on its own GitHub-hosted runner (owner rule
+# docs/ratify/2026-11-13-workflows-grouped-by-purpose.md; the rulings of cache#921). Build once, verify by digest, publish by digest. Every job asks for what it needs: the
+# workflow-level permissions are empty. One signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
+# are sha256 digests emitted by the job that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
+# pushes anything, and the job release is the only path that can make anything public, and only after it has verified every earlier
+# stage's record. Releases build ONLY here; nothing else builds or publishes a release.
+# The jobs that sign (sign, sign-rebuild, sign-check, sign-release) are the only ones in the environment sign and the only ones that hold the identity token for the release
+# key's KMS federation: the building and checking jobs hold no key, no token and no secret; their records are made under a throwaway key and trusted by nobody until a sign job checks and signs them.
 #
-# build -> sign ; { build, sign } -> { rebuild, check } ; { build, rebuild } -> sign-rebuild ; { build, check } -> sign-check ; { check, sign, sign-rebuild, sign-check } -> release
+# build-freeze -> build-apk -> build-assemble -> sign ; build-assemble -> { rebuild-apk -> rebuild-assemble } ; { build-assemble, sign } -> check (after check-govulncheck)
+# { build-assemble, rebuild-assemble } -> sign-rebuild ; { build-assemble, check } -> sign-check ; { check, sign, sign-rebuild, sign-check } -> release-compare -> release-verify -> release -> sign-release
+#
+# In snapshot mode (workflow_call from scan.yml and main-candidate-rescan.yml) only Build and Rebuild run: the gate G starts Build, and every job that signs, publishes, checks or holds a
+# write or an identity token is guarded off (guard S, and inputs.mode != 'snapshot' on the others).
 
 on:
   push:
     tags:
       - "v*"
-  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch; the hostile Build step and its judges run on a push of a
-  # release-candidate tag, not here; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
+  # The dry run of the chain: a manual run on a branch; Build stops at admission (a branch is refused); it neither tags nor publishes.
   workflow_dispatch:
     inputs:
       dry-run:
-        description: 'run the hostile-step dry run (no tag, no publish)'
+        description: 'run the chain graph on a branch (no tag, no publish)'
         type: boolean
         default: false
+  # Called by scan.yml and main-candidate-rescan.yml in snapshot mode only (REQ-CHAIN-004-AC14); a tag push or a dispatch carries no mode input and runs as release.
+  workflow_call:
+    inputs:
+      mode:
+        description: release or snapshot
+        type: string
+        default: release
 
-# Every job asks for what it needs. The
-# workflow default is read-only; a caller's grants must COVER what the called stage requests, or the run is a startup_failure with zero jobs.
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
-  # The v0.3.0 chain (PR 2: Build and Rebuild; REQ-CHAIN-004, REQ-CHAIN-005). Build, Sign and Rebuild carry the rules of
-  # bin/chain-build-wiring-test.sh (an exact grammar for this graph). The gate G is the same text on build and sign: the chain
-  # starts on a v* tag PUSH, or in a dry-run dispatch on any branch (a manual dispatch on an existing v* tag is not a release
-  # run). Rebuild has no `if`: it runs after Build through `needs`, and a skipped Build skips it.
-  # Check (PR 3) replaced the old scans, acceptance and authorization jobs; Release (PR 4) replaced the old promotion job.
-  build:
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
+  # Build (REQ-CHAIN-004). The gate G is on build-freeze only; the rest of Build and Rebuild run through needs.
+
+  build-freeze:
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode || 'release' }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Go (pinned by checksum)
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/install-scanner.sh go
+      - name: the freeze check of every baseline file
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/build-freeze.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ inputs.mode != 'snapshot' }}
+        with:
+          name: freeze
+          path: freeze
+
+  # the apk legs: one job, a matrix over the two native runners
+  build-apk:
+    needs: build-freeze
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     permissions:
       contents: read
       checks: read
       statuses: read
       pull-requests: read
-    uses: ./.github/workflows/stage-build.yml
-    with:
-      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}   # the hostile Build step runs on a push of a release-candidate tag only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode || 'release' }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
+      - name: install melange (pinned by checksum)
+        run: bash bin/install-build-tools.sh melange
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - name: unpack the host tools from the archive (bubblewrap for melange's runner)
+        run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.mode != 'snapshot' }}
+        with:
+          name: freeze
+          path: freeze
+      - name: apk under Witness
+        if: ${{ inputs.mode != 'snapshot' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh
+      - name: snapshot-apk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh
+      - name: sandbox wall probe
+        run: bash bin/chain-sandbox-probe.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apk-${{ matrix.runner }}
+          path: out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-apk-${{ matrix.runner }}
+          path: witness-apk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ inputs.mode != 'snapshot' && matrix.runner == 'ubuntu-24.04' }}
+        with:
+          name: admission
+          path: admission.json
 
-  # The Sign job of v0.3.0: its own workflow file, called only from here, with the digests.json text Build wrote.
+  build-assemble:
+    needs: build-apk
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      digests: ${{ steps.digests.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode || 'release' }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install apko (pinned by checksum)
+        run: bash bin/install-build-tools.sh apko
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04
+          path: apk/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apk/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-apk-ubuntu-24.04
+          path: rec-apk/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-apk-ubuntu-24.04-arm
+          path: rec-apk/ubuntu-24.04-arm
+      - name: build under Witness
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh
+      - name: snapshot-build under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed-local.sh snapshot-build bin/build-stage-snapshot-assemble.sh
+      - id: digests
+        name: expose digests.json as the job output
+        run: echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"
+      - name: hostile step
+        run: bash bin/chain-hostile-step.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hostile-attempts
+          path: attempts
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-build
+          path: witness-build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests
+          path: digests.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: items
+          path: items.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ inputs.mode != 'snapshot' }}
+        with:
+          name: admission-baseline
+          path: admission-baseline.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images
+          path: out
+
+  # Sign (REQ-CHAIN-001-AC9): receives Build's records and the artifacts they name, checks them (chain-verify.py sign-records), signs the records with the release key in KMS and then the provenance.
+  # The four sign jobs are the only jobs in the environment sign; each runs only on a v* tag push of release.yml itself (guard S).
   sign:
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
-    needs: build
+    needs: build-assemble
+    if: ${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    environment: sign
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/stage-sign.yml
-    with:
-      digests: ${{ needs.build.outputs.digests }}
-      stage: build
+    env:
+      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+      AWS_REGION: us-east-1
+      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-apk-ubuntu-24.04
+          path: witness-apk-ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-apk-ubuntu-24.04-arm
+          path: witness-apk-ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: artifacts/witness-build/out
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: artifacts/witness-build/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04
+          path: artifacts/witness-apk-ubuntu-24.04/out
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: artifacts/witness-apk-ubuntu-24.04-arm/out
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ needs.build-assemble.outputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+      - name: check Build's records against the artifacts, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - name: check Build's record and the digests, then sign the provenance
+        run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: provenance
+          path: provenance
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-build
+          path: signed/witness-build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-apk-ubuntu-24.04
+          path: signed/witness-apk-ubuntu-24.04
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-apk-ubuntu-24.04-arm
+          path: signed/witness-apk-ubuntu-24.04-arm
 
-  # Rebuild: fresh runners rebuild everything Build built and compare every item; its only output is the verdict. It starts from Build's SIGNED records
-  # (the building jobs hold no identity token; Sign signs what they recorded), so it needs Sign.
-  rebuild:
-    needs: [build, sign]
+  # Rebuild (REQ-CHAIN-005): fresh runners rebuild everything Build built and compare every item; its only output is the verdict. The apk legs are one job, a matrix over the two native runners.
+  # It carries no if and needs Build only, so it also runs in snapshot mode, where every sign job is skipped.
+  rebuild-apk:
+    needs: build-assemble
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     permissions:
       contents: read
-    uses: ./.github/workflows/stage-reproducibility.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode || 'release' }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
+      - name: install melange (pinned by checksum)
+        run: bash bin/install-build-tools.sh melange
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - name: unpack the host tools from the archive (bubblewrap for melange's runner)
+        run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.mode == 'snapshot' && 'witness-build' || 'signed-witness-build' }}
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: build-in
+      - name: rapk under Witness
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/witnessed-local.sh rapk bin/build-stage-rebuild-apk.sh
+      - name: snapshot-rapk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
+      - name: write the record digests of this apk job to a file
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/rebuild-records-digests.sh --rapk "${{ matrix.runner }}" witness-rapk > rebuild-records.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rapk-${{ matrix.runner }}
+          path: out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-rapk-${{ matrix.runner }}
+          path: witness-rapk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ inputs.mode != 'snapshot' }}
+        with:
+          name: rebuild-records-${{ matrix.runner }}
+          path: rebuild-records.json
 
-  # Sign's second call: the same file, the stage rebuild: it checks and signs Rebuild's records
-  # and receives no Rebuild apk or image. Its identity is the first call's (one workflow file, release.yml on top).
+  rebuild-assemble:
+    needs: rebuild-apk
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      records: ${{ steps.records.outputs.records }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode || 'release' }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install apko (pinned by checksum)
+        run: bash bin/install-build-tools.sh apko
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.mode == 'snapshot' && 'witness-build' || 'signed-witness-build' }}
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: build-in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: items
+          path: build-in
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rapk-ubuntu-24.04
+          path: rapk/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rapk-ubuntu-24.04-arm
+          path: rapk/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04
+          path: rec-rapk/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04-arm
+          path: rec-rapk/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.mode != 'snapshot' }}
+        with:
+          name: rebuild-records-ubuntu-24.04
+          path: rec-digests/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.mode != 'snapshot' }}
+        with:
+          name: rebuild-records-ubuntu-24.04-arm
+          path: rec-digests/ubuntu-24.04-arm
+      - name: check the rapk records against the digest lists their jobs uploaded
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/rebuild-records-digests.sh --check "$(cat rec-digests/ubuntu-24.04/rebuild-records.json)" "$(cat rec-digests/ubuntu-24.04-arm/rebuild-records.json)"
+      - name: rebuild under Witness
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/witnessed-local.sh rebuild bin/build-stage-rebuild-assemble.sh
+      - name: snapshot-rebuild under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
+      - id: records
+        name: expose the record digests as the job output
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"
+      # always(): the verdict (snapshot-verdict.json in snapshot mode) is the only place the per-image digests and the differing items are readable, failed comparison or not
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: witness-rebuild
+          path: witness-rebuild
+
+  # Sign's second job: checks and signs Rebuild's records; it receives no Rebuild apk or image (Rebuild's outputs never reach a job that signs).
   sign-rebuild:
-    needs: [build, rebuild]
+    needs: [build-assemble, rebuild-assemble]
+    if: ${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    environment: sign
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/stage-sign.yml
-    with:
-      digests: ${{ needs.build.outputs.digests }}
-      stage: rebuild
-      records: ${{ needs.rebuild.outputs.records }}
+    env:
+      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+      AWS_REGION: us-east-1
+      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04
+          path: witness-rapk-ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk-ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-rebuild
+          path: witness-rebuild
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ needs.build-assemble.outputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+      - name: write Rebuild's record digests to a file
+        env:
+          RECORDS: ${{ needs.rebuild-assemble.outputs.records }}
+        run: printf '%s' "$RECORDS" > rebuild-records.json
+      - name: check Rebuild's records, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04
+          path: signed/witness-rapk-ubuntu-24.04
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04-arm
+          path: signed/witness-rapk-ubuntu-24.04-arm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-rebuild
+          path: signed/witness-rebuild
 
-  # Check (REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
-  # digests, as three Witness steps. It needs Build and Sign (it verifies Build's record, signed by Sign, on entry) and runs beside Rebuild, never after it.
+  # Check (REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate digests. govulncheck publishes no release binary, so it is built from the committed
+  # tools/govulncheck module in its own job, which holds no credential; the check job downloads it by artifact id after download-artifact's own digest check.
+  check-govulncheck:
+    if: ${{ inputs.mode != 'snapshot' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
+      - name: build govulncheck (pinned by go.sum)
+        run: bash bin/install-scanner.sh govulncheck
+      - name: place the built govulncheck for upload
+        run: bash bin/pack-govulncheck.sh
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: govulncheck
+          path: govulncheck-out/govulncheck
+
+  # One job over both chips; it holds no identity token (its records are made under a throwaway key and signed by sign-check). Its records leave as one artifact per architecture, never as job outputs.
   check:
-    needs: [build, sign]
+    needs: [check-govulncheck, build-assemble, sign]
+    if: ${{ inputs.mode != 'snapshot' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     permissions:
       contents: read
-    uses: ./.github/workflows/stage-verify.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install grype (pinned by checksum)
+        run: bash bin/install-scanner.sh grype
+      - name: install osv-scanner (pinned by checksum)
+        run: bash bin/install-scanner.sh osv-scanner
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
+          path: govulncheck-dl
+      - name: install govulncheck from its build job (its download was digest-checked)
+        run: bash bin/unpack-govulncheck.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: images
+      - name: scanners under Witness
+        run: bash bin/witnessed-local.sh scanners bin/check-phase.sh scanners
+      - name: acceptance under Witness
+        run: bash bin/witnessed-local.sh acceptance bin/check-phase.sh acceptance
+      - name: runtime under Witness
+        run: bash bin/witnessed-local.sh runtime bin/check-phase.sh runtime
+      - name: write the record digests of this job to a file
+        run: bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime > check-records.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-check-${{ matrix.runner }}
+          path: |-
+            witness-scanners
+            witness-acceptance
+            witness-runtime
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: check-results-${{ matrix.runner }}
+          path: check-results
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: check-records-${{ matrix.runner }}
+          path: check-records.json
 
-  # Sign's third call (REQ-REL-011-AC1, cache#606): the same file, the stage check: it checks and signs the records of the Check jobs, which hold no identity token (their
-  # steps build tools and run workloads), against the results Check uploaded. Its identity is the first call's.
+  # Sign's third job: checks and signs the records of the Check jobs against the results they name and the digest lists they uploaded; it receives nothing built by them.
   sign-check:
-    needs: [build, check]
+    needs: [build-assemble, check]
+    if: ${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    environment: sign
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/stage-sign.yml
-    with:
-      digests: ${{ needs.build.outputs.digests }}
-      stage: check
-      records: ${{ needs.check.outputs.records }}
-      records-arm64: ${{ needs.check.outputs.records-arm64 }}
+    env:
+      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+      AWS_REGION: us-east-1
+      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-check-ubuntu-24.04
+          path: rec-check/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-check-ubuntu-24.04-arm
+          path: rec-check/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results-ubuntu-24.04
+          path: artifacts/check-results-ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results-ubuntu-24.04-arm
+          path: artifacts/check-results-ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-records-ubuntu-24.04
+          path: rec-digests/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-records-ubuntu-24.04-arm
+          path: rec-digests/ubuntu-24.04-arm
+      - name: install the aws CLI (pinned by checksum)
+        run: bash bin/install-scanner.sh aws-cli
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ needs.build-assemble.outputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+      - name: check Check's records against the results, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rec-digests/ubuntu-24.04/check-records.json --expect-digests rec-digests/ubuntu-24.04-arm/check-records.json --artifacts-dir artifacts --out staged --record-dir rec-check/ubuntu-24.04/witness-scanners --record-dir rec-check/ubuntu-24.04/witness-acceptance --record-dir rec-check/ubuntu-24.04/witness-runtime --record-dir rec-check/ubuntu-24.04-arm/witness-scanners --record-dir rec-check/ubuntu-24.04-arm/witness-acceptance --record-dir rec-check/ubuntu-24.04-arm/witness-runtime
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-check-ubuntu-24.04
+          path: signed/ubuntu-24.04
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-check-ubuntu-24.04-arm
+          path: signed/ubuntu-24.04-arm
 
-  # Release (REQ-CHAIN-007): the only job that holds a registry credential, a release-key role or write access to packages and
-  # releases. It needs exactly Check, Sign, Sign-rebuild and Sign-check (it reaches Build and Rebuild through them), has no `if` that survives a failed or skipped predecessor
-  # (a dry run publishes nothing, a branch run is not a release, and a skipped Build skips it through `needs`), passes no secrets to the stage (the environment named release holds them)
-  # and creates no tag.
-  release:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+  # Release (REQ-CHAIN-007). The compare job receives Build's apks and Rebuild's apks, compares them with bin/release-compare.sh and hands on one small result file. It holds contents read ONLY: no environment, no secret, no write token
+  # and no identity token, so it is a plain step and not a Witness step; Rebuild's apks never reach a job that holds a credential.
+  release-compare:
     needs: [check, sign, sign-rebuild, sign-check]
-    # One publication at a time (release review R3, Oct 22): bin/release-publish.sh decides :X and :latest from the registry's tag list, so two
-    # release runs must not interleave. One fixed group for every v* run, release candidates included. A queued run waits and a running one is never
-    # cancelled (cancel-in-progress false). GitHub keeps one pending run per group: a second queued tag run replaces the first pending one, which ends
-    # cancelled; the patch-failed job below then opens an issue saying to publish that tag again (it is not re-run silently or by hand alone).
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rapk-ubuntu-24.04
+          path: rapks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rapk-ubuntu-24.04-arm
+          path: rapks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04
+          path: witness-rapk-ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk-ubuntu-24.04-arm
+      - name: compare Build's and Rebuild's apks
+        run: bash bin/release-compare.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apk-compare
+          path: apk-compare
+          if-no-files-found: error
+
+  # contents read and nothing else: no identity token, no environment, no secret, no write token. It verifies every earlier stage's record (release-verify under the local Witness script, a throwaway key).
+  # The job release needs it, so no job that holds a write token or a secret starts unless the records were verified by an earlier job.
+  release-verify:
+    needs: release-compare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rebuild
+          path: witness-rebuild
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check-ubuntu-24.04
+          path: witness-check/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check-ubuntu-24.04-arm
+          path: witness-check/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results-ubuntu-24.04
+          path: check-results/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results-ubuntu-24.04-arm
+          path: check-results/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: provenance
+          path: provenance
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-compare
+          path: apk-compare
+      - name: release-verify under Witness (a throwaway key, no identity token)
+        run: bash bin/witnessed-local.sh release-verify bin/release-verify.sh
+      - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-release-verify
+          path: witness-release-verify
+          if-no-files-found: error
+
+  # The only job that makes anything public: it holds a registry credential, contents write and packages write, and NO key role and no identity token (the signatures are the job sign-release's). A release candidate (a tag with a hyphen)
+  # ends after release-verify: the steps below carry the condition and the job publishes nothing (REQ-CHAIN-007-AC14); the guard S is the job's own if.
+  # One publication at a time: bin/release-publish.sh decides :X and :latest from the registry's tag list, so two release runs must not interleave. A queued run waits and a running one is never cancelled; GitHub keeps one pending run per group,
+  # so a second queued tag run replaces the first pending one, which ends cancelled; patch-failed then opens an issue saying to publish that tag again.
+  release:
+    needs: [release-verify, release-compare]
+    if: ${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
     concurrency:
       group: release-publish
       cancel-in-progress: false
+    environment: release
     permissions:
       contents: write
       packages: write
-      id-token: write
-    uses: ./.github/workflows/stage-promote.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install witness (pinned by checksum)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/install-scanner.sh witness
+      - name: install cosign (pinned by checksum)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/install-scanner.sh cosign
+      - name: install crane (pinned by checksum)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/install-scanner.sh crane
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-rebuild
+          path: witness-rebuild
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-check-ubuntu-24.04
+          path: witness-check/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-check-ubuntu-24.04-arm
+          path: witness-check/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: check-results-ubuntu-24.04
+          path: check-results/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: check-results-ubuntu-24.04-arm
+          path: check-results/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: provenance
+          path: provenance
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: apk-compare
+          path: apk-compare
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: images
+          path: images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - name: release-verify under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/witnessed.sh release-verify bin/release-verify.sh
+      - name: release-publish under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed.sh release-publish bin/release-publish.sh
+      - name: release-assets under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed.sh release-assets bin/release-assets.sh
+      - name: release-postverify under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
+      - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
+      - name: release-publish record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.json
+      - name: release-assets record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-assets/release-assets-collection.json
+      - name: release-postverify record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-postverify/release-postverify-collection.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: release-evidence
+          path: release-evidence
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: witness-release
+          path: |-
+            witness-release-verify
+            witness-release-publish
+            witness-release-assets
+            witness-release-postverify
 
+  # Sign's fourth job (ruling 7 of cache#921): after release publishes, it alone holds the KMS role and the registry write it needs to attach the signatures and attestations (bin/release-sign.sh) and to sign the apks
+  # (bin/release-apks.sh). Release holds neither the role nor an identity token. The steps carry the release-candidate condition: a candidate signs nothing.
+  sign-release:
+    needs: release
+    if: ${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    environment: sign
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+      AWS_REGION: us-east-1
+      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install witness (pinned by checksum)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/install-scanner.sh witness
+      - name: install cosign (pinned by checksum)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/install-scanner.sh cosign
+      - name: install crane (pinned by checksum)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/install-scanner.sh crane
+      - name: install the aws CLI (pinned by checksum)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/install-scanner.sh aws-cli
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-rebuild
+          path: witness-rebuild
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-check-ubuntu-24.04
+          path: witness-check/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: signed-witness-check-ubuntu-24.04-arm
+          path: witness-check/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: check-results-ubuntu-24.04
+          path: check-results/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: check-results-ubuntu-24.04-arm
+          path: check-results/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: provenance
+          path: provenance
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: apk-compare
+          path: apk-compare
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: images
+          path: images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - name: release-apks under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: bash bin/witnessed.sh release-apks bin/release-apks.sh
+      - name: release-sign under Witness
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed.sh release-sign bin/release-sign.sh
+      - name: release-apks record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-apks/release-apks-collection.json
+      - name: release-sign record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-sign/release-sign-collection.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: release-evidence-signatures
+          path: release-evidence
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          name: witness-release-signatures
+          path: |-
+            witness-release-apks
+            witness-release-sign
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # The live tests and the hostile judges stay here (they test the release); persona UAT is persona-uat.yml.
   # (REQ-SCAN-012): on a release candidate (vX.Y.Z-rcN, nothing is published) the candidate images are pushed by digest
   # from Build's artifacts to the dedicated test repositories and the page's load and removal commands run as written; the blocks that read a release or a
-  # registry run in live-test-release after publishing (docs/using-our-vex.cannot-run.json).
+  # registry run in live-test-release after publishing (docs/using-our-vex.cannot-run.json). Each is in its own environment and holds the identity token for its own federations only, never the KMS role.
   live-test:
     needs: [check]
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}
+    if: ${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}
     runs-on: ubuntu-latest
     concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
       group: vex-live-test
@@ -202,7 +1128,7 @@ jobs:
   # The same live test, right after the final release is published, with every command block of the page as written (including the download, digest and verify blocks).
   live-test-release:
     needs: [release]
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}
+    if: ${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}
     runs-on: ubuntu-latest
     concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
       group: vex-live-test
@@ -346,130 +1272,23 @@ jobs:
       - name: every hostile attempt refused with its own cause, the positive control accepted
         run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
 
-  # Persona UAT, release-candidate leg (REQ-UAT-001-AC1): on a release candidate the three personas
-  # (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator) test the image Build made, BEFORE anything is released, and nothing is published. The job needs Build only.
-  # Build's production OCI layout (artifact images) is pushed with the pinned crane to a registry:2 service pinned by digest and published on the runner's loopback only; the pushed
-  # digest must equal Build's image-production digest. The job holds no registry credential and no write permission (contents read, id-token write for the federated model
-  # token only); the driver is told the registry's port (--allow-listen 5000) so its stray-listener guard accepts that one listener; the personas' containers are never on the host network and the token file is 0600. The image is unverified (no release-verify has run): that is what the personas test.
-  # GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off), on the JOB, so while off the persona-uat environment is never entered and no token is minted.
-  # compliance-reviewer and on-call-engineer run in the weekly job only (go-freshness.yml).
-  persona-uat:
-    needs: [build]
-    if: ${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    environment: persona-uat
+  # Persona UAT, release-candidate leg (REQ-UAT-001-AC1, AC6): the jobs live in persona-uat.yml; this is the one call of that file, in release mode on a release-candidate tag only.
+  # The persona job needs Build only, holds no registry credential and no write permission, and never the KMS role. GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off).
+  persona-uat-rc:
+    needs: build-assemble
+    if: ${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
     permissions:
       contents: read
       id-token: write
-    services:
-      registry:
-        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
-        ports:
-          - 127.0.0.1:5000:5000
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: images
-          path: candidate/images
-
-      - name: install the pinned crane binary
-        run: ./bin/install-scanner.sh crane
-
-      - name: load Build's production image into the registry on this runner, and check its digest
-        env:
-          DIGESTS: ${{ needs.build.outputs.digests }}
-        run: |
-          set -euo pipefail
-          want=$(jq -er '.["image-production"]' <<<"$DIGESTS")
-          crane push candidate/images/production localhost:5000/cache:rc
-          got=$(crane digest localhost:5000/cache:rc)
-          [ "$got" = "$want" ] || { echo "::error::the pushed digest ${got} is not the one Build attested (${want})"; exit 1; }
-
-      - name: kind from the runner image
-        run: kind version || { echo "::error::PIPELINE, no kind"; exit 1; }
-
-      - name: pin pip (hash-checked)
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt
-          python3 -m pip --version
-
-      - name: install the provider SDK (hash-pinned)
-        run: |
-          python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
-
-      - name: mint the federated identity token for the model provider
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const fs = require('fs');
-            const token = await core.getIDToken('https://api.anthropic.com');
-            core.setSecret(token);
-            const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
-            fs.writeFileSync(f, token, { mode: 0o600 });
-            // Print ONLY the identity claims the Anthropic federation rule matches on (never the token, which stays masked): a token-exchange 401 is then diagnosable.
-            try {
-              const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
-              const claims = {};
-              for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
-                claims[k] = payload[k];
-              }
-              core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));
-            } catch (e) {
-              core.warning('could not decode OIDC claims for logging');
-            }
-
-      - name: keep the identity token fresh for the whole job (a detached refresher)
-        # The assertion lives about five minutes, the job up to two hours and every model call is a NEW process. A timer inside
-        # actions/github-script dies with its step, so this is a process of its own: detached (nohup, output redirected, disowned),
-        # it re-mints from the runner's OIDC endpoint into the same 0600 file until the file is removed by the last step.
-        run: |
-          set -euo pipefail
-          f="${RUNNER_TEMP}/anthropic-identity-token"
-          [ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }
-          nohup bash -c '
-            f="$1"; every="$2"
-            while [ -e "$f" ] && sleep "$every"; do
-              [ -e "$f" ] || break
-              python3 bin/persona-uat.py --mint-identity "$f" || { [ "$?" -eq 3 ] && break; continue; }
-            done
-          ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
-          disown
-
-      - name: run the three release-candidate personas against Build's image on the local registry
-        env:
-          PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
-          PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
-          PERSONA_UAT_TOKEN_BUDGET: ${{ vars.PERSONA_UAT_TOKEN_BUDGET }}
-          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
-          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
-          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
-          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
-          PERSONA_UAT_IMAGE: localhost:5000/cache@${{ fromJSON(needs.build.outputs.digests)['image-production'] }}
-        run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py" --allow-listen 5000
-
-      - name: upload the encrypted reports and transcripts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: persona-uat-encrypted
-          path: persona-uat-out/*.cms
-          if-no-files-found: error
-
-      - name: delete the identity token file
-        if: ${{ always() }}
-        run: python3 bin/persona-uat.py --remove-identity "${RUNNER_TEMP}/anthropic-identity-token" || rm -f "${RUNNER_TEMP}/anthropic-identity-token" "${RUNNER_TEMP}/anthropic-identity-token.tmp"
+    uses: ./.github/workflows/persona-uat.yml
+    with:
+      digests: ${{ needs.build-assemble.outputs.digests }}
 
   patch-failed:
     # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run
     # replaces the first pending one, which ends as cancelled, not failed. failure() alone would open no issue; the issue below says to publish the tag again.
-    if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]
+    if: ${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release, sign-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
