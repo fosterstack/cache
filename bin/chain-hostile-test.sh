@@ -417,6 +417,8 @@ PIN = {
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
+WFREF = "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))"
+PUSHCONJ = "github.event_name == 'push'"
 # the hostile proof runs on a PUSH of a release-candidate tag only (advisor 0383: the signed rc-tag run is the proof of REQ-CHAIN-001-AC5): never on a final tag, never on a branch
 RC_IF = "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
 def conj(cond):
@@ -430,7 +432,7 @@ def conj(cond):
     # any other `||` or grouping make the whole condition refused
     GRP = "(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')"
     flat = re.sub(r"\s+", " ", m.group(1)).strip()
-    if re.search(r"TAGCALL|FAILCALL|ALWAYSCALL|RCCALL|FAILGRP", flat): return None   # the placeholder words below are never part of a condition
+    if re.search(r"TAGCALL|FAILCALL|ALWAYSCALL|RCCALL|FAILGRP|WFREFCALL|DASHCALL", flat): return None   # the placeholder words below are never part of a condition
     out = []
     for part in flat.split("&&"):
         part = part.strip()
@@ -445,10 +447,16 @@ def conj(cond):
         body = re.sub(r"(?<![\w.])always\(\)", "ALWAYSCALL", body)
         # the exact rc-tag test (advisor 0383) is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')` conjunct keeps an rc tag out of the old publishing path
         body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
+        # guard S of release.yml (REQ-CHAIN-005-AC5): the exact call that ties a job to release.yml itself, and the candidate rule of the jobs after the signatures
+        body = re.sub(r"startsWith\(\s*github\.workflow_ref\s*,\s*format\(\s*'\{0\}/\.github/workflows/release\.yml@'\s*,\s*github\.repository\s*\)\s*\)", "WFREFCALL", body)
+        body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-'\s*\)", "DASHCALL", body)
         if "(" in body or ")" in body: return None
-        out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')"))
+        out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')").replace("WFREFCALL", WFREF).replace("DASHCALL", "contains(github.ref_name, '-')"))
     return out
-OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "sign-rebuild": "stage-sign.yml", "sign-check": "stage-sign.yml", "check": "stage-verify.yml"}
+# the jobs that may run in a dry run: Build and Rebuild (gate G is on build-freeze), check-govulncheck and the persona leg (its own condition asks for a release-candidate tag); every other job is skipped through its needs or carries its own gate
+OPEN = {"build-freeze", "build-apk", "build-assemble", "rebuild-apk", "rebuild-assemble", "check-govulncheck", "persona-uat-rc"}
+SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")      # the four jobs of the environment sign (ruling 1 of cache#921)
+CHECK_IF = "${{ inputs.mode != 'snapshot' }}"      # the Check jobs carry exactly this and run after Sign through needs (REQ-CHAIN-005-AC5)
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
 import importlib.util as _ilu
@@ -460,48 +468,48 @@ def load(rel):
     try: return _cts.yload(open(p).read())
     except (yaml.YAMLError, _cts.DuplicateKey) as ex:
         print("%s cannot be judged: %s" % (rel, ex)); sys.exit(1)
-sb, rl = load(".github/workflows/stage-build.yml"), load(".github/workflows/release.yml")
+rl = load(".github/workflows/release.yml")
 # Run lines the judge reads are judged as bash reads them (Sonnet #249 continuation; advisor: refuse, never model): a backslash-newline, or
 # any character outside printable ASCII (CR, tab, other controls, NBSP, U+200B, ...), would let str.strip() or a line split see text
-# that bash does not run. Checked on every step this judge reads: the hostile step in stage-build.yml and the hostile-* jobs of release.yml.
+# that bash does not run. Checked on every step this judge reads: the hostile step of release.yml and the hostile-* jobs of release.yml.
 def run_chars(where, steps):
     for st in steps or []:
         r = st.get("run") if isinstance(st, dict) else None
         if not isinstance(r, str): continue
         if "\\\n" in r: bad.append("%s has a run line with a backslash-newline continuation: %r" % (where, r[:80]))
         if re.search(r"[^\x20-\x7e\n]", r): bad.append("%s has a run line with a control, non-ASCII or invisible character: %r" % (where, r[:80]))
-for _jn, _j in ((sb or {}).get("jobs") or {}).items():
-    run_chars("stage-build.yml job " + _jn, [x for x in (_j or {}).get("steps") or [] if isinstance(x, dict) and "chain-hostile-step" in str(x.get("run", ""))])
+for _jn, _j in ((rl or {}).get("jobs") or {}).items():
+    run_chars("release.yml job " + _jn, [x for x in (_j or {}).get("steps") or [] if isinstance(x, dict) and "chain-hostile-step" in str(x.get("run", ""))])
 for _jn in ("hostile-verify", "hostile-verdict"):
     run_chars("release.yml job " + _jn, (((rl or {}).get("jobs") or {}).get(_jn) or {}).get("steps"))
-if sb is None: bad.append("stage-build.yml missing")
-else:
-    found = False
-    for jn, j in (sb.get("jobs") or {}).items():
-        steps = j.get("steps") or []
-        for i, s in enumerate(steps):
-            if (s.get("run") or "").strip() == "bash bin/chain-hostile-step.sh":
-                found = True
-                if str(s.get("if", "")).strip() != "${{ inputs.hostile }}": bad.append("the hostile step's if: must be exactly ${{ inputs.hostile }} (a gate like `inputs.hostile || true` runs it in real releases): %r" % s.get("if"))
-                later = [x for x in steps[i + 1:] if "upload-artifact" in str(x.get("uses", "")) and (x.get("with") or {}).get("name") == "hostile-attempts"]
-                if not later: bad.append("no upload of the artifact hostile-attempts after the hostile step in the same job")
-    if not found: bad.append("no step `bash bin/chain-hostile-step.sh` in the Build job")
-    hin = ((sb.get("on") or {}).get("workflow_call") or {}).get("inputs", {}).get("hostile") or {}
-    if hin.get("type") != "boolean" or str(hin.get("default", "false")).lower() != "false" or hin.get("required") in ("true", True):
-        bad.append("stage-build.yml's workflow_call input `hostile` must be a boolean with default false (a release must never turn it on by default): %s" % hin)
+# REQ-CHAIN-004-AC19: the hostile Build step runs in EVERY build (release candidate, final or patch tag, the pull-request proof build, the nightly build): the one step `bash bin/chain-hostile-step.sh` of the job
+# build-assemble, with no condition of any kind, and an upload of hostile-attempts after it in the same job; the outcome is judged by the verifier (REQ-CHAIN-001-AC5), and release.yml has no input hostile
+found = False
+for jn, j in ((rl or {}).get("jobs") or {}).items():
+    steps = j.get("steps") or []
+    for i, s in enumerate(steps):
+        if (s.get("run") or "").strip() == "bash bin/chain-hostile-step.sh":
+            found = True
+            if jn != "build-assemble": bad.append("the hostile step is in the job %s: it is the one step of the job build-assemble (the job that makes the build's records)" % jn)
+            if "if" in s: bad.append("the hostile step carries an if: (%r): it runs in every build, with no condition (REQ-CHAIN-004-AC19)" % s.get("if"))
+            later = [x for x in steps[i + 1:] if "upload-artifact" in str(x.get("uses", "")) and (x.get("with") or {}).get("name") == "hostile-attempts"]
+            if not later: bad.append("no upload of the artifact hostile-attempts after the hostile step in the same job")
+if rl is not None and not found: bad.append("no step `bash bin/chain-hostile-step.sh` in the job build-assemble")
+if rl is not None and ("hostile" in ((((rl.get("on") or {}).get("workflow_call") or {}).get("inputs")) or {}) or "inputs.hostile" in str(rl)):
+    bad.append("release.yml has an input `hostile` or reads inputs.hostile: the hostile step runs in every build, a switch for it is a way to turn it off")
 if rl is None: bad.append("release.yml missing")
 else:
     jobs = rl.get("jobs") or {}
     if "workflow_dispatch" not in (rl.get("on") or {}): bad.append("release.yml has no workflow_dispatch (the dry run)")
-    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), sign-check (the third call, for Check's records), hostile-verify and hostile-verdict may exist
+    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), sign-check (the third call, for Check's records), sign-release (the fourth, after Release publishes), hostile-verify and hostile-verdict may exist
     for _jn in jobs:
-        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "sign-rebuild", "sign-check", "hostile-verify", "hostile-verdict"):
-            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, hostile-verify and hostile-verdict are allowed" % _jn)
+        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in SIGN_JOBS + ("hostile-verify", "hostile-verdict"):
+            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, sign-check, sign-release, hostile-verify and hostile-verdict are allowed" % _jn)
     hv, hd = jobs.get("hostile-verify"), jobs.get("hostile-verdict")
     if not hv or not hd: bad.append("jobs hostile-verify and hostile-verdict are required")
     else:
         need = lambda j: [j.get("needs")] if isinstance(j.get("needs"), str) else (j.get("needs") or [])
-        sign_jobs = [n for n, j in jobs.items() if "stage-sign.yml" in str(j.get("uses", ""))]
+        sign_jobs = [n for n in jobs if n in SIGN_JOBS]
         if not sign_jobs or not set(need(hv)) & set(sign_jobs): bad.append("hostile-verify must need the Sign job")
         if "hostile-verify" not in need(hd): bad.append("hostile-verdict must need hostile-verify")
         if hv.get("permissions") != {"contents": "read"}: bad.append("hostile-verify permissions must be exactly {contents: read} (no id-token, nothing to write): %s" % hv.get("permissions"))
@@ -598,34 +606,45 @@ else:
             grow = False
             for jn3, j3 in jobs.items():
                 if jn3 not in after_sign and (set(need(j3)) & (set(sign_jobs) | after_sign)): after_sign.add(jn3); grow = True
+        STATUS = re.compile(r"always\(\)|failure\(\)|cancelled\(\)|success\(\)")
+        guarded = set()      # the jobs that cannot run in a dry run or on a branch: their own if carries the push event or the dry-run conjunct and the positive tag conjunct, or they run only after such a job
         for jn, j in jobs.items():
+            if str(j.get("uses", "")).split("/")[-1].startswith("stage-"): bad.append("the job %s calls %s: no stage-*.yml file exists, release.yml is the one file" % (jn, j.get("uses")))
             if jn in OPEN:
-                if not str(j.get("uses", "")).endswith("/" + OPEN[jn]): bad.append("the open job %s must call %s (a job named like a stage that calls anything else is not exempt from the dry-run gate): %r" % (jn, OPEN[jn], j.get("uses")))
+                if j.get("uses") and not (jn == "persona-uat-rc" and j.get("uses") == "./.github/workflows/persona-uat.yml"): bad.append("the open job %s may not call a workflow (a job named like a build job that calls anything else is not exempt from the dry-run gate): %r" % (jn, j.get("uses")))
+                if STATUS.search(str(j.get("if", ""))): bad.append("the open job %s has a status function in its if: it would run after a failed or skipped job" % jn)
                 continue
             if jn.startswith("hostile-"):
                 if str(j.get("if", "")).strip() != RC_IF: bad.append("the job %s is a hostile-* job and must have `if: the rc-tag push condition` exactly (only an rc-tag push makes the hostile attempts: on a final tag its hostile-attempts download fails and blocks every release): %r" % (jn, j.get("if")))
                 if j.get("uses"): bad.append("the job %s is a hostile-* job and may not call a workflow" % jn)
                 if j.get("permissions") != {"contents": "read"}: bad.append("the job %s must have permissions exactly {contents: read}" % jn)
                 continue
-            cond = str(j.get("if", ""))
-            cs = conj(cond)
-            if jn in after_sign and (cs is None or TAGCONJ not in cs): bad.append("the job %s needs Sign (transitively) and its if: must also carry the POSITIVE conjunct startsWith(github.ref, 'refs/tags/v') exactly (not negated, not compared, no ||) so a branch run can never reach it: %r" % (jn, cond))
-            if cs is None or "!inputs.dry-run" not in cs: bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
-        bw = (jobs.get("build") or {}).get("with") or {}
-        HOSTILE_EXPR = RC_IF
-        if bw.get("hostile") != HOSTILE_EXPR: bad.append("release.yml's build call must pass `hostile: %s` (a null dry-run input must not reach the boolean input of the live chain; a dry run dispatched on a TAG must not run the hostile step under the release identity): %s" % (HOSTILE_EXPR, bw))
-        # REACHABILITY (step-8 B-2, amended by PR 2's gate G, advisor ruling): the dry run must be REACHABLE. Admission is gone from the graph (it is the
-        # first step of Build's apk job now), so build, sign and the hostile jobs hang off ONE gate: a v* tag push, or a dry-run dispatch on any branch.
-        bj = jobs.get("build") or {}
-        BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
-        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build job must carry `if: %s` (else a dry run skips it, and with it sign and the hostile jobs, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
-        if need(bj): bad.append("the build job needs nothing (admission is Build's first step, not a job): %r" % need(bj))
-# Release makes its policy in its stage file or, since PR 4 (every Release step is a committed script under Witness), in its first step, bin/release-verify.sh
-cands = [os.path.join(root, ".github/workflows/stage-promote.yml"), os.path.join(root, "bin/release-verify.sh")]
-if not os.path.exists(cands[0]): bad.append("stage-promote.yml missing (Release makes its policy there or in bin/release-verify.sh)")
+        # a job is guarded by its own if (explicit, closed form) or, with no if of its own or exactly the Check condition, by a guarded job it needs
+        pending = [jn for jn in jobs if jn not in OPEN and not jn.startswith("hostile-")]
+        grow = True
+        while grow:
+            grow = False
+            for jn in list(pending):
+                j = jobs[jn]; cond = str(j.get("if", "")); cs = conj(cond) if "if" in j else []
+                own = cs is not None and TAGCONJ in cs and ("!inputs.dry-run" in cs or PUSHCONJ in cs) and "if" in j
+                inherits = ("if" not in j or cond.strip() == CHECK_IF) and bool(set(need(j)) & guarded)
+                if own or inherits: guarded.add(jn); pending.remove(jn); grow = True
+        for jn in pending:
+            j = jobs[jn]; cond = str(j.get("if", "")); cs = conj(cond) if "if" in j else []
+            if "if" not in j: bad.append("the job %s is not skipped in a dry run or on a branch: it has no if: of its own and needs no job that is (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
+            elif jn in after_sign and (cs is None or TAGCONJ not in cs): bad.append("the job %s needs Sign (transitively) and its if: must also carry the POSITIVE conjunct startsWith(github.ref, 'refs/tags/v') exactly (not negated, not compared, no ||) so a branch run can never reach it: %r" % (jn, cond))
+            else: bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
+        # reachability (step-8 B-2, amended by PR 2's gate G, advisor ruling): the dry run must be REACHABLE. Admission is the first step of Build's apk job, so the chain hangs off ONE gate, on build-freeze: a v* tag push, a dry-run dispatch on any branch, or a snapshot call
+        bj = jobs.get("build-freeze") or {}
+        BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"
+        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build-freeze job must carry `if: %s` (else a dry run skips it, and with it everything after it, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
+        if need(bj): bad.append("the build-freeze job needs nothing (admission is the first step of build-apk, not a job): %r" % need(bj))
+# Release makes its policy in its first step, bin/release-verify.sh (every Release step is a committed script under Witness)
+cands = [os.path.join(root, "bin/release-verify.sh")]
+if not os.path.exists(cands[0]): bad.append("bin/release-verify.sh missing (Release makes its policy there)")
 else:
     pm = [l for sp in cands if os.path.exists(sp) for l in open(sp).read().splitlines() if "policy make" in l and not l.lstrip().startswith("#")]
-    if not pm: bad.append("Release (stage-promote.yml or bin/release-verify.sh) never runs `policy make` (it must make its own tag-pinned policy)")
+    if not pm: bad.append("Release (bin/release-verify.sh) never runs `policy make` (it must make its own tag-pinned policy)")
     for l in pm:
         if "--ref" in l or "--tag" not in l: bad.append("Release's `policy make` must use --tag and never --ref (a --ref policy accepts a branch dry-run record): %s" % l.strip())
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.y*ml")):
@@ -657,28 +676,30 @@ wexpect() { local o rc=0; o=$(wire "$3") || rc=$?
 sha=$(printf 'a%.0s' $(seq 40))
 mk() { # a known-good fixture tree
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/bin"
-  cat > "$d/.github/workflows/stage-build.yml" <<EOF
-on: {workflow_call: {inputs: {hostile: {type: boolean, default: false}}}}
+  { cat <<EOF
+on: {workflow_dispatch: {inputs: {dry-run: {type: boolean}}}}
 jobs:
-  build:
+  build-freeze:
+    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo freeze
+  build-assemble:
+    needs: build-freeze
     runs-on: ubuntu-24.04
     steps:
       - name: hostile step
-        if: \${{ inputs.hostile }}
         run: bash bin/chain-hostile-step.sh
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: hostile-attempts
           path: attempts
-EOF
-  { cat <<EOF
-on: {workflow_dispatch: {inputs: {dry-run: {type: boolean}}}}
-jobs:
-  build:
-    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
-    uses: ./.github/workflows/stage-build.yml
-    with: {hostile: "\${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}
-  sign: {needs: build, uses: ./.github/workflows/stage-sign.yml}
+  sign:
+    needs: build-assemble
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo sign
   hostile-verify:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
     needs: sign
@@ -740,11 +761,13 @@ EOF
   promotion:
     if: \${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') }}
     needs: [sign, hostile-verdict]
-    uses: ./.github/workflows/stage-promote.yml
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo publish
 EOF
   } > "$d/.github/workflows/release.yml"
   { echo "# makes five attempts; writes raw material only"; for a in $attempts; do case $a in read_sign_token|read_sign_key) printf "attempt_%s() { printf '# transcript: tried %s by reading the runner environment and the usual paths\\\\ncurl: (6) could not resolve host\\\\n' > attempts/%s.txt; }\\n" "$a" "$a" "$a" ;; *) printf 'attempt_%s() { :; }\n' "$a" ;; esac; done; for a in $attempts; do printf 'attempt_%s\n' "$a"; done; } > "$d/bin/chain-hostile-step.sh"
-  printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json\n' > "$d/.github/workflows/stage-promote.yml"
+  printf 'set -euo pipefail\npython3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json\n' > "$d/bin/release-verify.sh"
   echo "$d"
 }
 wexpect ok "fixture: the known-good wiring passes the judge" "$(mk w_good)"
@@ -755,8 +778,8 @@ t = open(sys.argv[1]).read(); assert sys.argv[2] in t, "mutation target not foun
 open(sys.argv[1], "w").write(t.replace(sys.argv[2], sys.argv[3], 1))
 PY
 }
-d=$(mk w_dupon); printf 'on: push\n' | cat - "$d/.github/workflows/stage-build.yml" > "$d/x" && mv "$d/x" "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: a duplicate top-level on: key in stage-build.yml is refused, never resolved to the last one (Codex #249 r4 B3a)" "$d"
-d=$(mk w_nbsp); pymut "$d/.github/workflows/stage-build.yml" "run: bash bin/chain-hostile-step.sh" "run: bash bin/chain-hostile-step.sh"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the hostile step (str.strip() would drop it; bash keeps it in the path)" "$d"
+d=$(mk w_dupon); printf 'on: push\n' | cat - "$(rel "$d")" > "$d/x" && mv "$d/x" "$(rel "$d")"; wexpect caught "wiring: a duplicate top-level on: key in release.yml is refused, never resolved to the last one (Codex #249 r4 B3a)" "$d"
+d=$(mk w_nbsp); pymut "$(rel "$d")" "run: bash bin/chain-hostile-step.sh" "run: bash bin/chain-hostile-step.sh"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the hostile step (str.strip() would drop it; bash keeps it in the path)" "$d"
 d=$(mk w_collectnbsp); pymut "$(rel "$d")" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the collect step" "$d"
 d=$(mk w_collectcont); pymut "$(rel "$d")" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" 'run: "python3 bin/chain-verify.py hostile-collect results --out hostile-results.json\\\n"'; wexpect caught "wiring: run line: a trailing backslash-newline after the collect step" "$d"
 # (Codex #249 r7 B4, the class closed) every pinned line is matched EXACTLY: the stderr file is /tmp/<attempt>.err, and both hostile jobs are
@@ -1052,9 +1075,36 @@ d=$(mk w_rd_sign2); pymut "$(rel "$d")" "  hostile-verdict:
 d=$(mk w_rd_signrb); pymut "$(rel "$d")" "  hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-rebuild:
     needs: sign
-    uses: ./.github/workflows/stage-sign.yml
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
+  sign-release:
+    needs: sign
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
   hostile-verdict:
-    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect ok "wiring: the job sign-rebuild (Sign's second call, for Rebuild's records) is not refused as an extra sign* job" "$d"
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect ok "wiring: the jobs sign-rebuild (Sign's second call, for Rebuild's records) and sign-release (the fourth) are not refused as extra sign* jobs" "$d"
+d=$(mk w_signrel_notag); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-release:
+    needs: sign
+    if: \${{ inputs.mode != 'snapshot' && github.event_name == 'push' && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: the job sign-release without the tag conjunct (a branch run could reach the fourth sign job)" "$d"
+d=$(mk w_signrel_lax); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-release:
+    if: \${{ startsWith(github.ref, 'refs/tags/v') || true }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: the job sign-release whose if is or-joined with true" "$d"
 d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  SIGN2:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
@@ -1065,9 +1115,36 @@ d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
       - run: echo hi
   hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra SIGN2 job (case-insensitive)" "$d"
-d=$(mk w_nogate); sed -i.bak 's/if: .*inputs.hostile.*/if: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step is not gated by inputs.hostile" "$d"
-d=$(mk w_noup); sed -i.bak 's/hostile-attempts/other/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
-d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
+d=$(mk w_nogate); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh" "      - name: hostile step
+        if: true
+        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step carries an if (REQ-CHAIN-004-AC19: it runs in every build)" "$d"
+d=$(mk w_gaterc); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh" "      - name: hostile step
+        if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step runs on a release-candidate push only (it must run in every build)" "$d"
+d=$(mk w_gatemode); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh" "      - name: hostile step
+        if: \${{ inputs.mode != 'snapshot' }}
+        run: bash bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step is skipped in a snapshot build (the nightly and the pull-request proof build run it too)" "$d"
+d=$(mk w_hostilejob); pymut "$(rel "$d")" "      - name: hostile step
+        run: bash bin/chain-hostile-step.sh
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: hostile-attempts
+          path: attempts
+" "" ; wexpect caught "wiring: the hostile step is gone from build-assemble" "$d"
+d=$(mk w_hostilemoved); pymut "$(rel "$d")" "  sign:
+    needs: build-assemble" "  other:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: bash bin/chain-hostile-step.sh
+  sign:
+    needs: build-assemble"; wexpect caught "wiring: the hostile step is also a step of another job" "$d"
+d=$(mk w_noup); pymut "$(rel "$d")" "          name: hostile-attempts
+          path: attempts" "          name: other
+          path: attempts"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
+d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build-assemble/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
 d=$(mk w_verdictneeds); sed -i.bak 's/needs: hostile-verify/needs: build/' "$(rel "$d")"; wexpect caught "wiring: the verdict does not need the verifying job" "$d"
 d=$(mk w_noverdict); sed -i.bak 's#hostile-verdict hostile-results/hostile-results.json#true#' "$(rel "$d")"; wexpect caught "wiring: the verdict job does not run hostile-verdict" "$d"
 d=$(mk w_verifyidtoken); python3 - "$(rel "$d")" <<'PY'
@@ -1116,18 +1193,19 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: hostile-verify has no checkout (the repo's verifier is not there to run)" "$d"
 d=$(mk w_persist); sed -i.bak 's/{persist-credentials: false}/{persist-credentials: true}/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify checks out with persisted credentials" "$d"
-d=$(mk w_nohostile); sed -i.bak 's/hostile: "[^"]*"//' "$(rel "$d")"; wexpect caught "wiring: the build call does not pass hostile (the hostile step never runs in the dry run)" "$d"
-d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
-    uses: ./.github/workflows/stage-build.yml" "    uses: ./.github/workflows/stage-build.yml"; wexpect caught "wiring: the build job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
-d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build:
-" "  build:
+d=$(mk w_hostileinput); pymut "$(rel "$d")" "on: {workflow_dispatch:" "on: {workflow_call: {inputs: {hostile: {type: boolean, default: false}}}, workflow_dispatch:"; wexpect caught "wiring: release.yml takes an input hostile (a switch that turns the hostile step off)" "$d"
+d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo freeze" "    runs-on: ubuntu-24.04
+    steps:
+      - run: echo freeze"; wexpect caught "wiring: the build-freeze job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
+d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build-freeze:
+" "  build-freeze:
     needs: sign
-"; wexpect caught "wiring: the build job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
+"; wexpect caught "wiring: the build-freeze job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
 d=$(mk w_buildtagonly); pymut "$(rel "$d")" "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true" "startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the build gate is the tag test alone (a dry run on a branch would never run)" "$d"
-d=$(mk w_hostileold); pymut "$(rel "$d")" "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')" "inputs.dry-run"; wexpect caught "wiring: the build call passes the bare dry-run input (null on a tag push; the hostile step must run on an rc-tag push only): step-8 SF-5" "$d"
-d=$(mk w_hostiletag); pymut "$(rel "$d")" " && contains(github.ref_name, '-rc')" ""; wexpect caught "wiring: the hostile input is not limited to an rc tag: a push of a FINAL tag would run the hostile step under the release identity (step-8 SF-4)" "$d"
-d=$(mk w_hostilebranch); pymut "$(rel "$d")" "hostile: \"\${{ github.event_name == 'push'" "hostile: \"\${{ inputs.dry-run == true || github.event_name == 'push'"; wexpect caught "wiring: the hostile input also runs in a dry-run dispatch (a branch never runs the hostile step)" "$d"
-d=$(mk w_hostilepush); pymut "$(rel "$d")" "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}" "startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}\"}"; wexpect caught "wiring: the hostile input without the push event (a dispatch on an rc tag would run it)" "$d"
+d=$(mk w_buildnosnap); pymut "$(rel "$d")" " || inputs.mode == 'snapshot'" ""; wexpect caught "wiring: the build gate leaves out the snapshot call (the callers' snapshot build would never start)" "$d"
 d=$(mk w_nosignrec); pymut "$(rel "$d")" " --policy policy.json" ""; wexpect caught "wiring: the key attempt is graded without Sign's record (a key found on the runner would be judged by its text)" "$d"
 d=$(mk w_handsign); pymut "$(rel "$d")" "check-build-record --digests" "sign --check --signer cosign --digests"; wexpect caught "wiring: the hand-code attempt runs sign --check again (a signer in a job that must hold no signing right)" "$d"
 d=$(mk w_pinstage); pymut "$(rel "$d")" "--stage sign --record attempts/forge_provenance" "--stage build --record attempts/forge_provenance"; wexpect caught "wiring: the forge attempt is verified as stage build, not as the Sign stage (pinned invocation)" "$d"
@@ -1163,10 +1241,10 @@ PY
 wexpect caught "wiring: any other job (extra) without the dry-run gate still runs in a dry run" "$d"
 d=$(mk w_okjobs); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  check:\n    needs: build\n    uses: ./.github/workflows/stage-verify.yml\n"
+t = open(sys.argv[1]).read() + "  rebuild-apk:\n    needs: build-assemble\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n  check-govulncheck:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect ok "wiring: the rebuild and check stages run in a dry run (allowlist: build, sign, rebuild, check, hostile-*)" "$d"
+wexpect ok "wiring: the Rebuild and check-govulncheck jobs run in a dry run (allowlist: build-freeze, build-apk, build-assemble, rebuild-apk, rebuild-assemble, check-govulncheck, persona-uat-rc, hostile-*)" "$d"
 d=$(mk w_tracked); echo '{"attempts":[]}' > "$d/hostile-results.json"; wexpect caught "wiring: a hostile-results.json is checked into the tree" "$d"
 d=$(mk w_nodry); sed -i.bak "s/if: .*!inputs.dry-run && startsWith(github.ref, 'refs\/tags\/v') }}\$/if: true/" "$(rel "$d")"; wexpect caught "wiring: the release job still runs in a dry run" "$d"
 d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run \&\& startsWith/!inputs.dry-run || true \&\& startsWith/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
@@ -1208,17 +1286,16 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: the positive control step is missing" "$d"
 d=$(mk w_ctlrec); pymut "$(rel "$d")" "--record provenance/provenance.json" "--record attempts/forge_provenance.json"; wexpect caught "wiring: the positive control verifies an attempt's file, not this run's genuine provenance" "$d"
-d=$(mk w_iftrue); sed -i.bak 's/if: .*inputs.hostile.*/if: ${{ inputs.hostile || true }}/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step's if is 'inputs.hostile || true' (runs in real releases)" "$d"
-d=$(mk w_indef); sed -i.bak 's/type: boolean, default: false/type: boolean, default: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile input defaults to true" "$d"
+d=$(mk w_indef); pymut "$(rel "$d")" "on: {workflow_dispatch:" "on: {workflow_call: {inputs: {hostile: {type: boolean, default: true}}}, workflow_dispatch:"; wexpect caught "wiring: a hostile input that defaults to true" "$d"
 d=$(mk w_opennm); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  check:\n    needs: build\n    uses: ./.github/workflows/stage-promote.yml\n"
+t = open(sys.argv[1]).read() + "  build-apk:\n    needs: build-freeze\n    uses: ./.github/workflows/stage-promote.yml\n"
 open(sys.argv[1], "w").write(t)
 PY
-wexpect caught "wiring: a job named check that calls the promote workflow is not exempt from the dry-run gate (open names are bound to their uses)" "$d"
+wexpect caught "wiring: a job named build-apk that calls a workflow is not exempt from the dry-run gate (open names may call nothing)" "$d"
 d=$(mk w_hostilename); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read() + "  hostile-publish:\n    uses: ./.github/workflows/stage-promote.yml\n"
+t = open(sys.argv[1]).read() + "  hostile-publish:\n    uses: ./.github/workflows/persona-uat.yml\n"
 open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: a hostile-* named job that calls a workflow runs in a dry run" "$d"
@@ -1374,9 +1451,9 @@ d=$(mk w_pf_literal); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
     steps:
       - run: true
   promotion:"; wexpect caught "wiring: a literal placeholder word stands in for the tag test" "$d"
-d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
-d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
-d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
+d=$(mk w_pmref); pymut "$d/bin/release-verify.sh" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
+d=$(mk w_pmnone); printf 'set -euo pipefail\necho publish\n' > "$d/bin/release-verify.sh"; wexpect caught "wiring: Release never makes a policy" "$d"
+d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/ci.yml"; wexpect caught "wiring: another workflow file makes a policy with --ref" "$d"
 d=$(mk w_rekorstub); pymut "$(rel "$d")" "--policy policy.json 2> /tmp/positive_control.err" "--policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err"; wexpect caught "wiring: the positive control given the Rekor stub is not the pinned three-line shape (the stub is not part of the control)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
@@ -1446,7 +1523,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=282
+EXPECT=284
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
