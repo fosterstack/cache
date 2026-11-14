@@ -924,7 +924,8 @@ GATE_HUNKS = (
      'check-runs?check_name=auditor-review-gate&per_page=100" \\\n'
      '              --jq "if .total_count != (.check_runs | length) then error(\\"the check runs are cut\\") '
      'else . end\n'
-     '                    | [.check_runs[] | select(.app.slug == \\"${APP_SLUG}\\")] | sort_by(.completed_at) | last\n'),
+     '                    | [.check_runs[] | select(.app.slug == \\"${APP_SLUG}\\")] | '
+     'sort_by(.completed_at) | last\n'),
     ('              -f "output[summary]=Judged by the scheduled sweep (the PR\'s own run '
      'had no App credentials)." >/dev/null || fail=1\n',
      '              -f "output[summary]=Judged by the scheduled sweep." >/dev/null || '
