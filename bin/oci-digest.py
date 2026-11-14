@@ -150,7 +150,9 @@ def check_manifest_blob(members, raw, layout, what, platform_arch=None):
         fail("the config blob %s of %s is not JSON" % (cname, what))
     cfg_os = json.loads(members[cname]).get("os")
     if platform_arch is not None and cfg_arch != platform_arch:
-        fail("the config of %s says architecture %r but the index lists the manifest as %r (the config must name its architecture)" % (what, cfg_arch, platform_arch))
+        fail(
+            "the config of %s says architecture %r but the index lists the manifest as %r "
+            "(the config must name its architecture)" % (what, cfg_arch, platform_arch))
     if cfg_os != "linux":
         fail("the config of %s says os %r, not linux" % (what, cfg_os))
     if man.get("schemaVersion") != 2:
@@ -969,7 +971,8 @@ def main():
         print("\n".join(read_digests(a[0])[0]))
     else:
         print("usage: oci-digest.py TAR | unpack TAR DIR DIGEST MANIFESTS | make-view REC ARCHIVE VIEW | "
-            "render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH | base-lock-victim LOCK SCRIPT "
+            "render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH "
+            "| base-lock-victim LOCK SCRIPT "
             "| " + " | ".join(sorted(DECISIONS)) + " ...", file=sys.stderr)
         sys.exit(2)
 
