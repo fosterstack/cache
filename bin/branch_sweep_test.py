@@ -1403,7 +1403,7 @@ class Wiring(unittest.TestCase):  # AC18-AC20
         d, _ = wf(CI)
         steps = d["jobs"]["allowlist"]["steps"]
         self.assertEqual([s for s in steps if re.search(r"\bbranch-sweep-test\.sh\b", s.get("run") or "")], [])
-        sel = [s for s in steps if "bin/select-tests.sh" in (s.get("run") or "")]
+        sel = [s for s in steps if "bin/run-selected-tests.sh" in (s.get("run") or "")]
         self.assertEqual(len(sel), 1)
         self.assertNotEqual(str(sel[0].get("continue-on-error", "false")).lower(), "true")
 
