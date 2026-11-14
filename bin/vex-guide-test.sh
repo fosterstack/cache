@@ -192,23 +192,63 @@ scan = (text_of("docs/scanning.md") or "").replace("\n", " ")
 check("R4 docs/scanning.md says the CSAF file leaves out Go standard library versions the release is not built with",
       re.search(r"CSAF file[^.]*(omit|leave out|leaves out|without|not (carry|include|contain))[^.]*Go standard library",
                 scan, re.I) is not None, scan[:200])
-# R8: the release notes draft does not claim the image includes a CA bundle (the images carry none)
+# R8: a customer doc sentence that mentions a CA bundle (the images carry none) fails unless it is listed as reviewed
 CA_BUNDLE = re.compile(r"\bca[-\s]+(certificates?[-\s]+)?bundle|\bca-certificates?\b", re.I)
-NEGATED = re.compile(r"\b(no|not|none|without|never)\b", re.I)
-def names_ca_bundle(text):
-    return any(CA_BUNDLE.search(s) and not NEGATED.search(s)
-               for s in re.split(r"(?<=[.!?])\s+", text.replace("\n", " ")))
+REVIEWED_CA = [
+    ("README.md",
+        'Both images hold only the `fscache` binary and the few packages it needs (base layout, '
+        'time zone data): there is no base image, no CA certificate bundle, no shell to exec into '
+        'and no package manager.'),
+    ("docs/docker-deploy.md",
+        'The image has no CA certificate bundle, so the server cannot verify any outside '
+        'certificate;'),
+    ("docs/install.md",
+        '**The container images carry no CA certificate bundle.** The server makes no outbound '
+        'connection and verifies no certificate;'),
+    ("docs/quality/traceability.md",
+        'then the configs declare only our base-layout package fscache-baselayout, tzdata and our '
+        'apk, no CA bundle, no base image and no shell, take packages only from /work/archive and '
+        '/work/melange-repo, carry the Wolfi and assembly keys, build x86_64 and aarch64, run as '
+        'nonroot 65532 with /home/nonroot and the entrypoint /usr/bin/fscache, and differ only in '
+        'the apk name;'),
+    ("docs/quality/traceability.md",
+        'so the cache needs no CA bundle;'),
+    ("docs/quality/traceability.md",
+        'then the package has no dependency and no provides, holds only the files of '
+        'build/baselayout/ (passwd, group, hosts, nsswitch.conf, os-release, protocols, services), '
+        'names no shell path and no network address, and ships no CA bundle file | unit | | '
+        'approved | 1 item(s) |'),
+    ("docs/quality/traceability.md",
+        'when it builds fscache-baselayout, or is given another option, another recipe, no assembly'
+        ' key, a melange call outside the fosterstack namespace, an apk signed by another key, an '
+        'apk whose files differ from build/baselayout/etc or an apk that ships a CA bundle file;'),
+]
+def ca_bundle_hits(rel, text):
+    hits = []
+    for paragraph in text.split("\n\n"):
+        for row in paragraph.split("\n|"):
+            for sentence in re.split(r"(?<=[.!?;])\s+", " ".join(row.split())):
+                if CA_BUNDLE.search(sentence) and (rel, sentence) not in REVIEWED_CA:
+                    hits.append(sentence)
+    return hits
 notes = text_of("docs/release-notes-draft.md")
 check("R8 docs/release-notes-draft.md exists", notes is not None)
-check("R8 the release notes draft does not claim a CA bundle is part of the image", notes is not None and not names_ca_bundle(notes))
 check("R8 mutant: a sentence naming a CA bundle appended to the notes is caught",
-      all(names_ca_bundle((notes or "") + "\nThe image includes %s 20261020-r0.\n" % n)
+      all(ca_bundle_hits("docs/release-notes-draft.md", (notes or "") + "\nThe image includes %s 20261020-r0.\n" % n)
           for n in ("ca-certificates-bundle", "ca-certificates", "CA bundle", "CA certificate bundle",
                     "CA certificates bundle", "ca-bundle", "CA-Certificates-Bundle")))
-check("R8 a sentence saying the images ship no CA certificate bundle is not flagged",
-      names_ca_bundle("The images ship no CA certificate bundle.") is False)
-check("R8 a sentence saying the image includes ca-certificates-bundle is flagged",
-      names_ca_bundle("The image includes ca-certificates-bundle 20261020-r0.") is True)
+check("R8 new mention fails", ca_bundle_hits("docs/install.md", "The images ship a CA bundle.") != [])
+check("R8 new mention with negation fails", ca_bundle_hits("docs/install.md", "The images ship no CA certificate bundle.") != [])
+check("R8 new mention, hyphenated form, fails", ca_bundle_hits("docs/install.md", "Mount the ca-certificates package.") != [])
+check("R8 new mention in a table row fails", ca_bundle_hits("docs/install.md", "| Item | Note |\n| CA bundle | not shipped. |") != [])
+check("R8 new mention in release notes fails", ca_bundle_hits("docs/release-notes-draft.md", "The image now includes a CA certificate bundle.") != [])
+check("R8 release notes draft has no hits", ca_bundle_hits("docs/release-notes-draft.md", notes) == [])
+check("R8 each reviewed sentence passes in its own file", all(ca_bundle_hits(f, s) == [] for f, s in REVIEWED_CA))
+check("R8 reviewed sentence passes inside a longer paragraph", all(ca_bundle_hits(f, "Intro text. " + s + " More text.") == [] for f, s in REVIEWED_CA if s[-1] in ".!?;"))
+check("R8 each reviewed sentence with one word changed fails", all(ca_bundle_hits(f, s.replace(" no ", " a ", 1) if " no " in s else s.replace("needs", "has", 1)) != [] for f, s in REVIEWED_CA))
+check("R8 reviewed sentences with changed word really differ", all((s.replace(" no ", " a ", 1) if " no " in s else s.replace("needs", "has", 1)) != s for f, s in REVIEWED_CA))
+check("R8 reviewed sentence under a different file fails", all(ca_bundle_hits("docs/other.md", s) != [] for f, s in REVIEWED_CA))
+check("R8 sentence without a CA bundle gives no hits", ca_bundle_hits("docs/install.md", "The server listens on port 8080. Nothing else is needed.") == [])
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
