@@ -1540,8 +1540,8 @@ def graph(path):
 # those two (ops#107) and REQ-SCAN-015 forbids anyone calling them. Their job `build` calls ./.github/workflows/release.yml with `mode: snapshot` and NOTHING
 # else: no other input, no secrets, no `if`, no needs, and exactly the called file's permission set as a static ceiling. THE JUDGE READS ONLY `on` AND THE
 # JOBS THAT CALL A WORKFLOW FILE: the scanner steps and the other jobs (`manifests` of main-candidate-rescan.yml, cache's REQ-REL-004-AC5) are not read here.
-SNAPSHOT_CALLER_PERMISSIONS = {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "checks": "read", "statuses": "read",
-                               "pull-requests": "read"}     # REQ-CHAIN-004-AC14: the called file's set, a STATIC CEILING pinned in both directions
+SNAPSHOT_CALLER_PERMISSIONS = {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read",
+                               "pull-requests": "read"}     # REQ-CHAIN-004-AC14: the called file's set (issues write: patch-failed opens its issue), a STATIC CEILING pinned in both directions
 # THE ALLOWLIST: in a proof workflow the only job that carries a job-level `uses` is build, calling EXACTLY ./.github/workflows/release.yml, whatever the form.
 # release.yml runs Build and Rebuild in snapshot mode through that one call, so there is no rebuild or artifact-acceptance caller job.
 CALLER_ALLOWLIST = {"build": "./.github/workflows/release.yml"}
