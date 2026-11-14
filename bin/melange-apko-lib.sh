@@ -6,7 +6,8 @@
 # case can assert the flags and the order of the calls without network, docker, sudo or a real melange.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-work=$(mktemp -d); export TMPDIR=$work   # the scripts under test make their scratch here, so the trap gives it write back
+# the scripts under test make their scratch in the work folder, so the trap below gives it write back
+work=$(mktemp -d); export TMPDIR=$work
 trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); }
