@@ -54,20 +54,40 @@ SHORT = {"slsaprovenance": "https://slsa.dev/provenance/v0.2", "slsaprovenance02
 PREDICATE_TYPE = r"\bpredicateType:[ \t]*\"(https?://[^\s\"'$`\\]+)\""
 bad, produced = [], {}
 # WORD is a plain double-quoted word; the one $(basename "$f") is the only nesting release-signatures.sh writes.
-# Matches `"$out/apks/$a/$(basename "$f").bundle"`; refuses `'a""b'` and `"kms-sign"` in a call's place.
+# Matches `"$out/apks/$a/$(basename "$f").bundle"`; refuses `'a""b'` and `"a b"`.
 WORD = r'"(?:[\w$/.{}-]|\$\(basename "\$f"\))+"'
+# A new call form fails here until its form is added: that is the design.
 # Matches `bash bin/with-aws-token.sh kms-sign --aws "$x" ... --digest "$d" --out "$o" --bundle "$b"` (or --dsse-statement "$s"
 # in place of --digest/--out); refuses `sh -c '...'`, a quoted script path, a trailing comment and `--dsse-statement=FILE`.
 KMS_CALL = re.compile(r"bash bin/with-aws-token\.sh kms-sign --aws W --key-ref W --signing-config W --public-key W (?:"
                       r"(?P<digest>--digest W --out W)|--dsse-statement (?P<file>W)) --bundle W".replace("W", WORD))
+# Matches `jq -cj -n --arg v "$x" '{predicateType: "https://x/v1"}' > "$st"`;
+# refuses `... > "$st"; cp a "$st"` and `... > "$st" # c`.
+JQ_ARG = r'(?:\w+|"(?:[^"`$\\]|\$(?!\())*")'
+WRITER = re.compile(r"jq(?: (?:-[-\w]+|JQ_ARG))* '(?P<program>[^']*)' > (?P<file>WORD)"
+                    .replace("JQ_ARG", JQ_ARG).replace("WORD", WORD))
+KMS_WORD = re.compile(r"(?<![\w-])kms-sign(?![\w-])")
+WRAPPER_CASE = ('case "${1:-}" in sign-record|sign|kms-sign) ;; *) echo "with-aws-token: the first argument must be '
+                'sign-record, sign or kms-sign" >&2; exit 2 ;; esac')
+def code_lines(text):
+    """(physical line number, one-blank-between-words text) of each logical line; a comment line joins nothing."""
+    out, cur, start = [], "", 0
+    for n, line in enumerate(text.split("\n"), 1):
+        if not cur and line.lstrip().startswith("#"): continue
+        start = start if cur else n
+        cur += line
+        if len(line) - len(line.rstrip("\\")) & 1: cur = cur[:-1]; continue
+        out.append((start, " ".join(cur.split()))); cur = ""
+    return out + ([(start, " ".join(cur.split()))] if cur else [])
 def resolve_statement(rel, n, lines, file, add, bad):
     """The type of a --dsse-statement call is the one predicateType literal of the one jq line that writes its file."""
-    users = [x for x in lines if file in x and "kms-sign" not in x and not x.startswith("#")]
-    if len(users) != 1 or not (users[0].startswith("jq ") and users[0].endswith(" > " + file)):
+    users = [x for _, x in lines if file in x and not KMS_WORD.search(x)]
+    m = len(users) == 1 and WRITER.fullmatch(users[0])
+    if not m or m.group("file") != file:
         bad.append("%s: line %d: kms-sign --dsse-statement file without exactly one jq writer line (fail closed)" % (rel, n))
         return
-    types = re.findall(PREDICATE_TYPE, users[0])
-    if len(types) == 1: add(types[0])
+    types = re.findall(PREDICATE_TYPE, m.group("program"))
+    if len(types) == 1 and m.group("program").count("predicateType") == 1: add(types[0])
     else: bad.append("%s: line %d: kms-sign --dsse-statement with an unresolved type (fail closed)" % (rel, n))
 def frozen_paths():
     """The legacy stage files listed in .github/policy/legacy-stage-files.json whose bytes match: what they produce still counts (their rows
@@ -99,7 +119,6 @@ _disc = []
 files = _cts.signing_files(base, _disc)   # the ONE discovery routine, shared with chain-sign-wiring-test.sh (Codex #249 r7 B8, r8 B4)
 bad += _disc
 TABLE = _cts.load_table()
-strip, logical = _cts.strip, _cts.logical
 def scan(rel, text, raw=False):
     def add(t): produced.setdefault(t, set()).add(rel)
     bad = BAD if rel not in FROZEN else []          # a frozen legacy file's own findings are left out (its products still count)
@@ -133,10 +152,10 @@ def scan(rel, text, raw=False):
         elif e.get("pseudo"): add(e["pseudo"])
         else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
     # KA-2: a LISTED script (bin/release-signatures.sh) signs only through the one call line it writes today
-    if raw and rel != "bin/with-aws-token.sh":         # the wrapper itself names kms-sign as an argument it accepts
-        lines = [" ".join(x.split()) for x in logical(text).split("\n")]   # one blank between words, so a joined line reads as written
-        for i, line in enumerate(lines, 1):
-            if line.startswith("#") or "kms-sign" not in line: continue
+    if raw:
+        lines = code_lines(text)
+        for i, line in lines:
+            if not KMS_WORD.search(line) or (rel == "bin/with-aws-token.sh" and line == WRAPPER_CASE): continue
             m = KMS_CALL.fullmatch(line)
             if not m: bad.append("%s: line %d: kms-sign in a form the scan does not read (fail closed)" % (rel, i))
             elif m.group("digest"): add("urn:cosign:signature")
@@ -421,7 +440,8 @@ expect_named "KA-2 kms-sign --dsse-statement in a listed script is a produced ty
 d=$(mk kmsvar); kmssign "$d" sign attest '$T'; addrow "$d" "${SIGROW[@]}"
 expect_named "KA-2 mutant: kms-sign --dsse-statement whose predicateType is a variable is unresolved and fails closed" "$d" "kms-sign --dsse-statement with an unresolved type"
 d=$(mk kmstwo); kmssign "$d" sign attest "$REL_MANIFEST" https://example.com/other/v1; addrow "$d" "${SIGROW[@]}"; addrow "$d" "$REL_MANIFEST" "the release manifest" customer
-expect_named "KA-2 mutant: a second jq writer of the statement file and fails closed" "$d" "kms-sign --dsse-statement file without exactly one jq writer line"
+expect_named "KA-2 mutant: two jq lines writing the statement file fail closed" "$d" \
+  "kms-sign --dsse-statement file without exactly one jq writer line"
 # KA-2 one-form scan of kms-sign lines in a listed script (pasted after the helpers)
 P='bash bin/with-aws-token.sh kms-sign --aws "$RUNNER_TEMP/aws-cli/aws" --key-ref "$RELEASE_KMS_KEY_REF"'
 P="$P"' --signing-config "$cfg" --public-key "$pub"'
@@ -591,15 +611,99 @@ EOF
 expect_named "KA-2 --dsse-statement=FILE is not accepted" \
   "$d" "bin/ks.sh: line 3: kms-sign in a form the scan does not read"
 
-d=$(mk ka2joinn); ka2 "$d" <<'EOF'
+# r9 cases: ruling rows 1-5
+d=$(mk r9twojq); ka2 "$d" <<'EOF'; ka2rows "$d"
+#!/usr/bin/env bash
+jq -cn '{predicateType: "https://known.example/v1"}' > "$other"; jq -cn --arg t "$u" '{predicateType: $t}' > "$st"
+@P@ --dsse-statement "$st" --bundle "$b"
+EOF
+expect_named "r9 a writer line holding two jq commands fails" "$d" "bin/ks.sh: line 3:"
+
+d=$(mk r9trail); ka2 "$d" <<'EOF'; ka2rows "$d"
+#!/usr/bin/env bash
+jq -cn '{predicateType: "https://known.example/v1"}' > "$st" # the statement
+@P@ --dsse-statement "$st" --bundle "$b"
+EOF
+expect_named "r9 a trailing comment on a writer line fails" "$d" "bin/ks.sh: line 3:"
+
+d=$(mk r9trailredir); ka2 "$d" <<'EOF'; ka2rows "$d"
+#!/usr/bin/env bash
+jq -cn '{predicateType: "https://known.example/v1"}' > "$st" # > "$other"
+@P@ --dsse-statement "$st" --bundle "$b"
+EOF
+expect_named "r9 a trailing comment holding a redirect on a writer line fails" "$d" "bin/ks.sh: line 3:"
+
+d=$(mk r9cmtcall); ka2 "$d" <<'EOF'
+#!/usr/bin/env bash
+# note \
+sh -c 'kms-sign'
+EOF
+expect_named "r9 a comment ending in a backslash joins nothing: the call below is read" "$d" "bin/ks.sh: line 3:"
+
+d=$(mk r9cmtwriter); ka2 "$d" <<'EOF'; ka2rows "$d"
+#!/usr/bin/env bash
+jq -cn '{predicateType: "https://fosterstack.com/attestations/release-manifest/v1"}' > "$scratch/$host-$v.statement"
+# x \
+cp other "$scratch/$host-$v.statement"
+@P@ --dsse-statement "$scratch/$host-$v.statement" --bundle "$out/x.bundle"
+EOF
+expect_named "r9 a writer-ish line after a backslash comment is read: two writers fail at the call" "$d" "bin/ks.sh: line 5:"
+
+d=$(mk r9cmtgood); ka2 "$d" <<EOF; ka2rows "$d"
+#!/usr/bin/env bash
+# note \\
+$SIGN
+$WRITER
+$DSSE
+EOF
+expect ok "r9 a backslash comment above the real call forms still passes" "$d"
+
+d=$(mk r9cmtword); ka2 "$d" <<EOF; ka2rows "$d"
+#!/usr/bin/env bash
+# kms-sign > "\$other" is only a comment
+$SIGN
+$WRITER
+$DSSE
+EOF
+expect ok "r9 a comment line naming kms-sign and a redirect is not read" "$d"
+
+d=$(mk r9wrapok); mkdir -p "$d/bin"
+printf '%s\n' '#!/usr/bin/env bash' "$(cat <<'L'
+case "${1:-}" in sign-record|sign|kms-sign) ;; *) echo "with-aws-token: the first argument must be sign-record, sign or kms-sign" >&2; exit 2 ;; esac
+L
+)" > "$d/bin/with-aws-token.sh"
+listed "$d" bin/with-aws-token.sh jq
+expect ok "r9 the wrapper's own accepting line alone passes" "$d"
+
+d=$(mk r9wrapadd); mkdir -p "$d/bin"
+printf '%s\n' '#!/usr/bin/env bash' "$(cat <<'L'
+case "${1:-}" in sign-record|sign|kms-sign) ;; *) echo "with-aws-token: the first argument must be sign-record, sign or kms-sign" >&2; exit 2 ;; esac
+L
+)" "sh -c 'kms-sign'" > "$d/bin/with-aws-token.sh"
+listed "$d" bin/with-aws-token.sh jq
+expect_named "r9 the wrapper is not skipped whole: an added kms-sign call line fails" "$d" "bin/with-aws-token.sh: line 3:"
+
+d=$(mk r9word); ka2 "$d" <<'EOF'
+#!/usr/bin/env bash
+echo "kms-signing-key ok"
+EOF
+expect ok "r9 kms-signing-key is not the word kms-sign" "$d"
+
+d=$(mk r9order); ka2 "$d" <<'EOF'
+#!/usr/bin/env bash
+  @P@ --bundle "$2" --digest "$dg" --out "$scratch/$n.sig"
+EOF
+expect_named "r9 a call with its flags in another order is refused" "$d" "bin/ks.sh: line 2:"
+
+d=$(mk r9physline); ka2 "$d" <<'EOF'
 #!/usr/bin/env bash
 echo one \
   two \
   three
 sh -c 'kms-sign'
 EOF
-expect_named "KA-2 line numbers count the backslash-joined text" \
-  "$d" "bin/ks.sh: line 3: kms-sign in a form the scan does not read"
+expect_named "r9 line N is physical: a 3-line continued command does not shift it" "$d" "bin/ks.sh: line 5:"
+
 d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
 SH40=$(printf 'a%.0s' $(seq 40))
@@ -660,7 +764,7 @@ d=$(realmut realnoatt '/with-aws-token\.sh kms-sign.*--dsse-statement/d')
 expect_named "mutant on the real release-signatures.sh: the kms-sign --dsse-statement line dropped -> the release manifest row has no producer" "$d" "row for a type nothing produces: https://fosterstack.com/attestations/release-manifest/v1"
 d=$(realmut realnosig '/with-aws-token\.sh kms-sign.*--digest/d')
 expect_named "mutant on the real release-signatures.sh: the kms-sign --digest lines dropped -> the cosign signature row has no producer" "$d" "row for a type nothing produces: urn:cosign:signature"
-EXPECT=145
+EXPECT=156
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
