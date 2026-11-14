@@ -1090,7 +1090,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-policy
-          path: .
+          path: release-policy
       - name: release-assets under Witness (a throwaway key, no identity token)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1353,7 +1353,7 @@ jobs:
     # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run
     # replaces the first pending one, which ends as cancelled, not failed. failure() alone would open no issue; the issue below says to publish the tag again.
     if: ${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release, sign-release]
+    needs: [build-freeze, build-apk, build-assemble, sign, rebuild-apk, rebuild-assemble, sign-rebuild, check-govulncheck, check, sign-check, release-compare, release-verify, release, sign-release, release-evidence]
     runs-on: ubuntu-latest
     permissions:
       contents: read
