@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC30, REQ-SUP-001-AC33, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
 # Behaviour of the Check scripts (bin/check-*.sh, bin/witnessed-local.sh). Each runs in a throw-away tree with
-# fake tools first on PATH (grype, osv-scanner, docker, curl, cosign, witness, ...), so the scripts carry no
+# fake tools first on PATH (grype, osv-scanner, docker, the download stub, cosign, witness, ...), so the scripts carry no
 # test-only code path. No network, no Docker, no keys.
 # Needs bash, jq, python3.
 set -euo pipefail
