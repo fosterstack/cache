@@ -72,13 +72,15 @@ only provenance provenance.json provenance.rekor.json provenance.bundle.json
 for c in "${runners[@]}"; do for n in scanners acceptance runtime; do only "witness-check/$c/witness-$n" "$n-collection.json" "$n-collection.rekor.json"; done; done
 for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
 for f in release-key-manifest.json release-key-manifest.sig; do stage ".github/policy/$f" "$f"; done
-for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json \
+for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 release-policy/policy.json \
          witness-build/build-collection.json witness-build/build-collection.rekor.json witness-build/digests.json witness-build/items.json witness-build/admission-baseline.json witness-rebuild/rebuild-collection.json witness-rebuild/rebuild-collection.rekor.json provenance/provenance.json provenance/provenance.rekor.json provenance/provenance.bundle.json; do
   stage "$f" "${f##*/}"
 done
-# the two chips make the same three records, so each is attached under its runner's name
+# the two chips each have the same three records: each is attached under its runner's name
 for c in "${runners[@]}"; do
-  for f in witness-check/"$c"/witness-*/*-collection.json witness-check/"$c"/witness-*/*-collection.rekor.json; do stage "$f" "$c-${f##*/}"; done
+  for n in scanners acceptance runtime; do
+    for f in "$n-collection.json" "$n-collection.rekor.json"; do stage "witness-check/$c/witness-$n/$f" "$c-$f"; done
+  done
 done
 python3 bin/release-metadata.py gate --dir release-upload
 files=()
