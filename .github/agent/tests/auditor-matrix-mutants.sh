@@ -3,8 +3,8 @@
 # the repo, each adversarial stand-in class from the two independent second-gate
 # reviews, runs .github/agent/tests/auditor-matrix-test.sh against it, and asserts the class buys no
 # undue passes. This is what makes "nothing false-passes" a permanent, on-demand
-# property. The stand-ins are the reviewers' own, checked in verbatim under
-# .github/agent/fixtures/mutants/ as TEST INPUTS (adversaries), not auditor code.
+# property. The stand-ins under .github/agent/fixtures/mutants/ are TEST INPUTS (adversaries), not auditor code;
+# they were not checked in verbatim: this pull request rewrote effect-standin.py and edited the headers of the other two.
 #
 #   original-inert     first-pass-inert.py (exit 7, echoes old expectation fields)
 #   stdout-echo        exit-0, prints input files to stdout, writes nothing
@@ -29,6 +29,7 @@ here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/../../.." && pwd)"
 MUT="$repo/.github/agent/fixtures/mutants"
 EFFECT="$MUT/effect-standin.py"; INERT="$MUT/first-pass-inert.py"; PROBE="$MUT/probe-standin.py"
 PY=python3
+SUITE="$repo/.github/agent/tests/auditor-matrix-test.sh"
 fails=0
 # Static cases parse the workflow file and exported policy fixtures only — they call
 # no auditor command, so any command-mutant replacement passes them legitimately once
@@ -44,7 +45,9 @@ STATIC="$STATIC req3-ac3-workflow-carries-the-nochange-state ol3-3-gvc-module-fr
 STATIC="${STATIC//$'\n'/}"
 is_static(){ case " $STATIC " in *" $1 "*) return 0;; *) return 1;; esac; }
 MK="$(mktemp -d)"; trap 'rm -rf "$MK"' EXIT
-cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/.github/agent/tests/auditor-matrix-test.sh" | sort -u; }
+cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$SUITE" | sort -u; }
+# a case is a `begin "name"` at the start of a line; a commented-out one is no case
+is_case() { grep -q "^begin \"$1\"" "$SUITE"; }
 # copies are git repositories (the layout case lists tracked files), never the real checkout's .git
 gitify() { ( cd "$1" && git init -q && git add -A && git -c user.name=m -c user.email=m@m -c commit.gpgsign=false commit -qm copy ) >/dev/null 2>&1; }
 
@@ -52,8 +55,12 @@ gitify() { ( cd "$1" && git init -q && git add -A && git -c user.name=m -c user.
 # installs the stand-in under every command name (with AUDIT_MUTANT=<mode>), prints passes.
 keep_fixture_helper() {  # keep_fixture_helper <workspace>: the suite's own verdict helper and the library it imports
   mkdir -p "$1/.github/agent/bin/tests"
-  cp "$repo/.github/agent/bin/tests/verdict_fixture.py" "$1/.github/agent/bin/tests/"
   cp -R "$repo/.github/agent/bin/auditorlib" "$1/.github/agent/bin/"
+  # materialize() builds each manifest's panel block with the REAL auditor-manifest.py, but bin/auditor-manifest.py in
+  # the copy is a stand-in under test: keep the real one beside the helper and point the helper's copy at it
+  cp "$repo/.github/agent/bin/auditor-manifest.py" "$1/.github/agent/bin/tests/auditor-manifest-real.py"
+  sed 's|os.path.join(BIN, "auditor-manifest.py")|os.path.join(BIN, "tests", "auditor-manifest-real.py")|' \
+    "$repo/.github/agent/bin/tests/verdict_fixture.py" > "$1/.github/agent/bin/tests/verdict_fixture.py"
 }
 
 run_mutant() {
@@ -87,6 +94,7 @@ marker_ok() {  # marker_ok <label> : the class must have reached a faulty branch
 assert_zero() {   # assert_zero <label> <passes...> : zero NON-static passes
   local label="$1"; shift
   local undue=""; local c
+  if [ "$#" -eq 0 ]; then echo "FAIL  ${label}: no case passed at all, so nothing was graded"; fails=$((fails+1)); return; fi
   for c in "$@"; do is_static "$c" || undue="$undue $c"; done
   if [ -z "$undue" ]; then echo "PASS  ${label}: 0 command-cases passed (static workflow/policy cases excluded)"; else
     echo "FAIL  ${label}: command-cases passed —$undue"; fails=$((fails+1)); fi
@@ -99,11 +107,30 @@ assert_contains() {  # assert_contains <label> <needle> <haystack-lines...>
 assert_absent() {  # assert_absent <label> <needle> <haystack-lines...>
   local label="$1" needle="$2"; shift 2
   # a needle that is no case of the suite can never fail, so it would pass vacuously
-  if ! grep -qF "begin \"$needle\"" "$repo/.github/agent/tests/auditor-matrix-test.sh"; then
+  if ! is_case "$needle"; then
     echo "FAIL  ${label}: '${needle}' is not a case of the matrix suite"; fails=$((fails+1)); return; fi
+  # an empty list means the mutant run produced no result, not that the case failed
+  if [ "$#" -eq 0 ]; then echo "FAIL  ${label}: no case passed at all, so nothing was graded"; fails=$((fails+1)); return; fi
   if printf '%s\n' "$@" | grep -qx "$needle"; then echo "FAIL  ${label}: '${needle}' should have failed but passed"; fails=$((fails+1)); else
     echo "PASS  ${label}: '${needle}' correctly failed"; fi
 }
+
+echo "=== harness self-checks (the assertions themselves must not pass vacuously) ==="
+self_check() {  # self_check <label> <command...> : the command must raise the failure count
+  local label="$1"; shift
+  local before="$fails"
+  "$@" >/dev/null
+  if [ "$fails" -gt "$before" ]; then fails="$before"; echo "PASS  self-check ${label}"; else
+    echo "FAIL  self-check ${label}: the assertion did not fail"; fails=$((fails+1)); fi
+}
+self_check "assert_zero fails on an empty pass list" assert_zero "empty-list"
+self_check "assert_absent fails on an empty pass list" assert_absent "empty-list" "req1-ac1-workflow-path"
+SUITE="$MK/commented-suite.sh"
+printf '# begin "ghost-case" "a commented-out line"\nbegin "real-case" "a case"\n' > "$SUITE"
+self_check "a commented-out begin line is no case" assert_absent "ghost" "ghost-case" "some-other-case"
+is_case "real-case" && echo "PASS  self-check a begin at the start of a line is a case" || {
+  echo "FAIL  self-check a begin at the start of a line is a case"; fails=$((fails+1)); }
+SUITE="$repo/.github/agent/tests/auditor-matrix-test.sh"
 
 echo "=== command / effect / echo classes (must buy zero passes) ==="
 for spec in \
