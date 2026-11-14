@@ -76,4 +76,15 @@ for f in ("release-only-checks.json", "required-checks.json"):
         short = merged is not None and len(merged) < len(want)
         report(rc not in (0, 99) and not short, f"{f} {form} is refused",
                f"exit {rc}, merged {len(merged) if merged is not None else None} contexts")
+# an empty file beside a file of two objects must not pass for a pair: each file is judged on its own
+both = {f: open(f"{pol}/{f}").read() for f in ("required-checks.json", "release-only-checks.json")}
+for full, empty in (("required-checks.json", "release-only-checks.json"),
+                    ("release-only-checks.json", "required-checks.json")):
+    rc, merged = run_step({full: both[full] + both[full], empty: ""})
+    short = merged is not None and len(merged) < len(want)
+    report(rc not in (0, 99) and not short, f"{empty} empty beside two objects in {full} is refused",
+           f"exit {rc}, merged {len(merged) if merged is not None else None} contexts")
+# the seven release-only contexts are pinned in the guard alone, never copied into a consumer
+copied = [c for c in contexts(f"{pol}/release-only-checks.json") if c in step["run"]]
+report(not copied, "the step holds no copy of the release-only contexts", copied)
 sys.exit(1 if failed else 0)
