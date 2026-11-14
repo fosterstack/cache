@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 105 |
 | Acceptance criteria | 548 |
 | Release-blocking ACs | 138 |
-| ACs with mapped evidence | 535 |
+| ACs with mapped evidence | 538 |
 | Release-blocking ACs with mapped evidence | 138 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 51 |
@@ -1679,6 +1679,6 @@ A release whose tag changes the controls document carries, at the top of the rel
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-014-AC1 | Given a final release tag whose docs/controls.md has a higher version than the docs/controls.md of the last final release published before it, or no earlier release has the document; when bin/release-assets.sh writes the release note; then the first lines of the note are a notice that the controls document changes in this release, with the old version, the new version (or that there was none before) and the change text of the new version's row in plain words, followed by the rest of the note unchanged | unit |  | approved | none mapped |
-| REQ-REL-014-AC2 | Given docs/controls.md has the same version at this release tag and in the last final release published before it, or is absent at this tag, or no earlier final release exists; when bin/release-assets.sh writes the release note; then the note is exactly what it would be without this requirement, with no notice and no mention of the controls document | unit |  | approved | none mapped |
-| REQ-REL-014-AC3 | Given docs/controls.md at this release tag has no readable version row or an empty change text for its newest version, or the earlier release's document cannot be read for any reason other than not being there; when bin/release-assets.sh writes the release note; then the step stops with one plain line naming the problem before a release is created or anything is uploaded, so a failed lookup never passes as no change | unit |  | approved | none mapped |
+| REQ-REL-014-AC1 | Given a final release tag whose docs/controls.md has a higher version than the docs/controls.md of the last final release published before it, or no earlier release has the document; when bin/release-assets.sh writes the release note; then the first lines of the note are a notice that the controls document changes in this release, with the old version, the new version (or that there was none before) and the change text of the new version's row in plain words, followed by the rest of the note unchanged | unit |  | approved | 2 item(s) |
+| REQ-REL-014-AC2 | Given docs/controls.md has the same version at this release tag and in the last final release published before it, or is absent at this tag, or no earlier final release exists; when bin/release-assets.sh writes the release note; then the note is exactly what it would be without this requirement, with no notice and no mention of the controls document | unit |  | approved | 2 item(s) |
+| REQ-REL-014-AC3 | Given docs/controls.md at this release tag has no readable version row or an empty change text for its newest version, or the earlier release's document cannot be read for any reason other than not being there; when bin/release-assets.sh writes the release note; then the step stops with one plain line naming the problem before a release is created or anything is uploaded, so a failed lookup never passes as no change | unit |  | approved | 2 item(s) |
