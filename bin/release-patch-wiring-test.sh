@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13
+# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13, REQ-REL-013-AC1
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
@@ -550,5 +550,13 @@ print("ok" if not bad else "; ".join(bad))
 PY
 )
 if [ "$issue_out" = ok ]; then pass=$((pass+1)); echo "PASS standing-issue-one-body-whole-entries → ok"; else failn=$((failn+1)); echo "FAIL standing-issue-one-body-whole-entries ($issue_out)"; fi
+# REQ-REL-013-AC1: the step's real text against a fixture origin/main: each policy file must be an object with a
+# non-empty required_checks, or the step refuses and leaves no shorter merged list behind
+out=$(python3 "$root/bin/policy-merge-harness.py" \
+  "$root" release.yml "wait for the tagged commit's required checks" tmp/required-checks.json "ready policy merge") && rc=0 || rc=$?
+echo "$out"
+nfail=$(grep -c '^FAIL' <<< "$out" || true)
+pass=$((pass + $(grep -c '^PASS' <<< "$out" || true))); failn=$((failn + nfail))
+[ "$rc" = 0 ] || [ "$nfail" != 0 ] || { failn=$((failn+1)); echo "FAIL policy merge cases did not finish"; }
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

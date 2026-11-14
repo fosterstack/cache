@@ -617,12 +617,18 @@ jobs:
       - name: guard regressions (offline fixtures)
         run: bash bin/required-check-guard-test.sh
 
-      # The verdict uses THIS tree's list, so a PR that fixes a stale list goes green on
-      # its own run; on push to main the tree is main.
-      - name: the ruleset on main vs this tree's required-checks.json
+      # One call of main's guard over this tree's two lists: the ruleset comparison, and the seven release-only entries
+      # pinned in the guard, so a pull request cannot change the pin it is judged by. The verdict uses THIS tree's lists,
+      # so a PR that fixes a stale list goes green on its own run; on push to main the tree is main.
+      - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash bin/required-check-guard.sh .github/policy/required-checks.json
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
+          [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
+          bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
 
       # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
       # first; one open issue, updated in place, never duplicated. Best effort: a

@@ -2,8 +2,9 @@
   "comment": [
     "The single source of truth for the required-check set on main.",
     "Consumed by the Dependabot auto-merge guard today and by the release",
-    "chain's source-admission stage when it lands. The GitHub ruleset",
-    "(main-protection) must match this list EXACTLY - contexts and",
+    "chain's source-admission stage when it lands. Release admission also",
+    "requires the checks in release-only-checks.json, which the ruleset does",
+    "not list. The GitHub ruleset (main-protection) must match this list EXACTLY - contexts and",
     "integration IDs both; the guard fails closed on any difference in",
     "either direction. integration_id 15368 is GitHub Actions: it pins each",
     "context to check runs produced by Actions, so a check run with the",
@@ -49,16 +50,6 @@
       "scope": "push"
     },
     {
-      "context": "allowlist-persona",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "allowlist-chain",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "allowlist-pins-auditor",
       "integration_id": 15368,
       "scope": "push"
@@ -74,32 +65,12 @@
       "scope": "push"
     },
     {
-      "context": "acceptance-gradle",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.0)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.3)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "requirements",
       "integration_id": 15368,
       "scope": "push"
     },
     {
       "context": "reproducibility",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "coverage",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -111,11 +82,6 @@
     {
       "context": "pin-age",
       "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
-      "context": "auditor-review-gate",
-      "integration_id": 5054756,
       "scope": "pull_request"
     },
     {

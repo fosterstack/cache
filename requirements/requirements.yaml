@@ -2105,16 +2105,17 @@ requirements:
     origin: release process decision 6 (Oct 23 2026)
     confidence: implementation-only
     notes: >
-      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
-      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
-      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
-      release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
-      something.
+      No new required check: auditor-review-gate is not required per pull request on main (the owner took it off the
+      ruleset on Nov 12 2026; release-only-checks.json still has release admission require it), so a missing record
+      blocks the box merger's clearance, not GitHub's merge button. It therefore lands only after the writer (a later
+      pull request) and the dispatch that calls it exist, on the landing day, together with the ruleset rule that only
+      the writer creates branches under audit/** (the release manager's step). The record commit adds one file,
+      audit-record, because the API can only make a commit that changes something.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
         given: "a pull request whose base is main, and the head sha it has now"
         when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails; since the owner took the gate off the ruleset (Nov 12 2026) the record no longer blocks GitHub's merge, and the box merger merges only after the review seats and the cleared row"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC2
@@ -2157,6 +2158,46 @@ requirements:
         given: "a dispatch of the record job with the word release as the pull request and a commit sha"
         when: "the writer's prepare script runs"
         then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-013
+    title: Release admission requires the checks the ruleset does not list
+    statement: >
+      Release admission and the patch release's ready step shall require the checks of
+      .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
+      shall be red on every pull request.
+    source: [.github/policy/release-only-checks.json, bin/required-check-guard.sh, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: the owner's trim of the ruleset (Nov 12 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-013-AC1
+        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
+        when: stage admission and the patch release's ready step read the required checks from main
+        then: >-
+          each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
+          a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
+          the requirement is the two lists together
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC2
+        given: a pull request or a push to main whose release-only-checks.json is not the seven entries pinned in bin/required-check-guard.sh on main
+        when: the required-check guard runs
+        then: >-
+          the guard fails and prints each entry that differs;
+          each entry is compared whole: its context, its integration_id and its scope;
+          the pin is main's copy of the guard, so a change to the file, the judge and the guard in one pull request is still red
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC3
+        given: a head whose workflows are judged by the pin-wiring judge
+        when: it judges the head
+        then: >-
+          it refuses a head with no release-only-checks.json (the landing form is judged by its own copy);
+          it refuses any job other than the one that produces a reserved name when that job carries the name;
+          the reserved names are the seven above, each by job id, by literal name and by a name with an expression in it
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

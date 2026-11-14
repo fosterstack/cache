@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 91 |
-| Acceptance criteria | 389 |
+| Active requirements | 92 |
+| Acceptance criteria | 392 |
 | Release-blocking ACs | 54 |
-| ACs with mapped evidence | 369 |
+| ACs with mapped evidence | 372 |
 | Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 45 |
+| Confidence: implementation-only | 46 |
 
 ## Cache protocol
 
@@ -804,11 +804,11 @@ A pull request into the release carries a passed-audit record for its exact head
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; bin/audit-record-judge.sh; bin/audit-record.py; .github/policy/audit-writers.json*
 
-> No new required check: auditor-review-gate is already required on main, so once this lands every pull request into main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes something.
+> No new required check: auditor-review-gate is not required per pull request on main (the owner took it off the ruleset on Nov 12 2026; release-only-checks.json still has release admission require it), so a missing record blocks the box merger's clearance, not GitHub's merge button. It therefore lands only after the writer (a later pull request) and the dispatch that calls it exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes something.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-012-AC1 | Given a pull request whose base is main, and the head sha it has now; when the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch; then it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-012-AC1 | Given a pull request whose base is main, and the head sha it has now; when the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch; then it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails; since the owner took the gate off the ruleset (Nov 12 2026) the record no longer blocks GitHub's merge, and the box merger merges only after the review seats and the cleared row | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-012-AC2 | Given a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base; when the judge decides; then it fails closed and says why (an API error says it is one); no doubt passes | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-012-AC3 | Given a pull request whose base is not main; when the judge runs; then it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate) | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-012-AC4 | Given the verdict job and the sweep of agent-review-gate.yml; when the auditor matrix runs them as written with stand-ins for the checks; then each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it) | ci-workflow |  | approved | 3 item(s) |
@@ -816,6 +816,18 @@ A pull request into the release carries a passed-audit record for its exact head
 | REQ-REL-012-AC6 | Given a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch; when the scheduled sweep runs; then it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-012-AC7 | Given a release tag that reaches source admission and is not a patch tag (a vX.Y.0 tag or a release candidate), whose signature the earlier admission step verified; when the whole-release audit step of stage-admission.yml runs main's copy of the judge and of the writers policy over it; then admission continues only if the tagged commit has the same passed-audit record as a pull request into main (the branch audit/<tagged sha>) AND the release manager's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-012-AC8 | Given a dispatch of the record job with the word release as the pull request and a commit sha; when the writer's prepare script runs; then a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check | ci-workflow |  | approved | 2 item(s) |
+
+### REQ-REL-013 — Release admission requires the checks the ruleset does not list
+
+Release admission and the patch release's ready step shall require the checks of .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list shall be red on every pull request.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/policy/release-only-checks.json; bin/required-check-guard.sh; .github/workflows/ci.yml; .github/workflows/stage-admission.yml; .github/workflows/release.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-013-AC1 | Given the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green; when stage admission and the patch release's ready step read the required checks from main; then each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array; a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds; the requirement is the two lists together | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-013-AC2 | Given a pull request or a push to main whose release-only-checks.json is not the seven entries pinned in bin/required-check-guard.sh on main; when the required-check guard runs; then the guard fails and prints each entry that differs; each entry is compared whole: its context, its integration_id and its scope; the pin is main's copy of the guard, so a change to the file, the judge and the guard in one pull request is still red | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-013-AC3 | Given a head whose workflows are judged by the pin-wiring judge; when it judges the head; then it refuses a head with no release-only-checks.json (the landing form is judged by its own copy); it refuses any job other than the one that produces a reserved name when that job carries the name; the reserved names are the seven above, each by job id, by literal name and by a name with an expression in it | ci-workflow |  | approved | 1 item(s) |
 
 ## SCAN
 

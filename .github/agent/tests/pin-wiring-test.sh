@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
+# proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3 — the scanner guard step is required, exactly, in the allowlist job
+# (the scanguard cases);
+# the seven release-only names belong to the jobs that produce them (the reserved cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -127,7 +129,7 @@ read -r -d '' PIN_WIRING_CHAIN25 <<'JSON' || true
 JSON
 export PIN_WIRING_CHAIN25
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -626,41 +628,67 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
         else:
             bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
-# the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
-# and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
+# the required-check policy (release admission reads it): required-checks.json (the ruleset's list) and release-only-checks.json (admission's extra
+# list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
+# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The seven release-only entries
+# are pinned whole in bin/required-check-guard.sh, not here.
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
-try:
-    pol = json.load(open(os.environ["PIN_WIRING_POLICY_FILE"]))["required_checks"]
-    if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
+def read_checks(env_name):
+    checks = json.load(open(os.environ[env_name]))["required_checks"]
+    if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
         raise ValueError("required_checks is not a list of objects")
+    return checks
+release_only = []
+try:
+    ruleset = read_checks("PIN_WIRING_POLICY_FILE")
+    release_only = read_checks("PIN_WIRING_RELEASE_ONLY_FILE")
+    pol = ruleset + release_only
 except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
-    bad.append(f"required-checks.json is unreadable or malformed ({type(e).__name__})")
+    bad.append(f"required-checks.json or release-only-checks.json is unreadable or malformed ({type(e).__name__})")
 if pol is not None:
     ctxs = [c.get("context") for c in pol]
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
-        bad.append(f"required-checks.json lists the context {dup} more than once")
+        bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
     for jid in PROTECTED:
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
-            bad.append(f"required-checks.json does not have exactly one entry {jid} (integration 15368, scope push)")
-# the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
+            bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
+# the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
-# name may be an expression or come from a matrix (its rendered name cannot be judged).
-def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
-    nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
-    if "${{" not in nm:
+# name may be an expression that could render as one. auditor-review-gate is the App's alone: nothing produces it.
+RESERVED = set(PROTECTED) | {n for c in release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
+PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-gradle", "acceptance-maven")}
+def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
+    produces = jid in PRODUCES.get(wf, ()) and nm == jid
+    return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
+def spells(parts, name):   # parts in order: the first starts name, the last ends it, text between
+    # two or more parts (the caller checks); stop is where the last part starts, so a stop before the first part's
+    # end means the two overlap
+    stop = len(name) - len(parts[-1])
+    if not name.startswith(parts[0]) or not name.endswith(parts[-1]) or stop < len(parts[0]):
+        return False
+    at = len(parts[0])
+    for part in parts[1:-1]:
+        found = name.find(part, at, stop)
+        if found < 0:
+            return False
+        at = found + len(part)
+    return True
+def could_render_reserved(nm):   # a plain `${{ matrix.a.b }}` stands for any text; any other expression is refused (fail closed)
+    plain = r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}"
+    parts = re.split(plain, str(nm))[::2]
+    if any("${{" in p or "}}" in p for p in parts):
         return True
-    rest = re.sub(r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}", "", nm)
-    return "${{" not in rest and "}}" not in rest and bool(re.search(r"[ (]", rest))
+    return len(parts) > 1 and any(spells(parts, r) for r in RESERVED)
 def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
     return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
     if not isinstance(j_, dict):
         continue
     nm = j_.get("name", jid_)
-    if jid_ not in PROTECTED and (nm in PROTECTED or jid_ in PROTECTED):
-        bad.append(f"the job {jid_} produces the protected check name {nm}")
-    if jid_ not in PROTECTED and not name_disjoint(nm):
+    if takes_reserved("ci.yml", jid_, nm):
+        bad.append(f"the job {jid_} produces the reserved check name {nm}")
+    if could_render_reserved(nm):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
     if writes_checks(j_.get("permissions")):
         bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
@@ -684,9 +712,9 @@ for _f in sorted(os.listdir(_wdir)):
         bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
     for _jid, _j in _jobs.items():
         _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
-        if _jid in PROTECTED or _nm in PROTECTED:
-            bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
-        elif not name_disjoint(_nm):
+        if takes_reserved(_f, _jid, _nm):
+            bad.append(f"{_f}: the job {_jid} takes the reserved check name {_nm}")
+        elif could_render_reserved(_nm):
             bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
         if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
             bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
@@ -702,6 +730,10 @@ PY
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  # the landing form (chain-v030) has no release-only list: a commit without one is judged with an empty list
+  git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" \
+    2> /dev/null \
+    || echo '{"required_checks": []}' > "$work/head-release-only.json"
   mkdir -p "$work/head-wf"
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
@@ -709,6 +741,7 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   # Two exact forms are accepted: main's own (judged here) or the landing form, chain-v030's ci.yml, judged by
   # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
   export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
+  export PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json"
   if main_out=$(judge "$work/head-ci.yml"); then exit 0; fi
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
   [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
@@ -828,10 +861,10 @@ case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.s
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
 # does nothing else; exit 1 and the reasons when it fails
-gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
+gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty> [shell edit of the policy tree]
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
-  mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
+  mkdir -p "$r/.github/policy"; cp "$here"/.github/policy/*-checks.json "$r/.github/policy/"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
 import sys, yaml
@@ -841,6 +874,7 @@ exec(edit)
 yaml.safe_dump(d, open(p, "w"), sort_keys=False)
 PY
   fi
+  [ -z "${4:-}" ] || ( cd "$r" && eval "$4" )
   ( cd "$r" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
   if out=$(cd "$r" && PIN_WIRING_JUDGE_GIT="$(cd "$r" && git rev-parse HEAD)" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS git:$1 → $got"
@@ -848,6 +882,12 @@ PY
 }
 gitcase the-real-ci-at-a-commit   ok  ""
 # the policy at the commit is read too: a missing split entry is refused (and so is a missing file, above)
+
+# main's own form needs release-only-checks.json: a head without it, or one that drops a protected entry, is refused
+RO=.github/policy/release-only-checks.json
+gitcase no-release-only-at-a-commit    bad "" "rm $RO"
+gitcase release-only-drops-chain-at-a-commit bad "" \
+  "jq '.required_checks |= map(select(.context != \"allowlist-chain\"))' $RO > ro.tmp && mv ro.tmp $RO"
 
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
@@ -1085,9 +1125,102 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
-# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
+# the seven release-only names are reserved (REQ-REL-013-AC3): no job but the one that produces each may carry it,
+# by job id, by literal name or by a name with an expression; auditor-review-gate is the App's alone, so no Actions
+# job may carry it
+reserved_wf() {  # <name> <jobs of an extra workflow zz.yml>
+  rm -rf "$work/rs-$1"; mkdir -p "$work/rs-$1"; cp "$here"/.github/workflows/*.y*ml "$work/rs-$1/"
+  printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n%s' "$2" > "$work/rs-$1/zz.yml"
+}
+JOB='    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n'
+for mut in "gate-name|  zz:\n    name: auditor-review-gate\n" "gate-id|  auditor-review-gate:\n" \
+  "gate-expr|  zz:\n    name: 'auditor-review-gate (\${{ matrix.v }})'\n" "coverage-name|  zz:\n    name: coverage\n" \
+  "coverage-id|  coverage:\n" "gradle-name|  zz:\n    name: acceptance-gradle\n" "gradle-id|  acceptance-gradle:\n" \
+  "maven-literal|  zz:\n    name: acceptance-maven (1.2.0)\n" "maven-id|  acceptance-maven:\n" \
+  "maven-expr|  zz:\n    name: 'acceptance-maven (\${{ matrix.v }})'\n" \
+  "chain-expr|  zz:\n    name: 'allowlist-chain (\${{ matrix.v }})'\n" \
+  "persona-expr|  zz:\n    name: 'allowlist-persona (\${{ matrix.v }})'\n"; do
+  reserved_wf "${mut%%|*}" "$(printf "${mut#*|}${JOB}")"
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml")
+  then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then
+    pass=$((pass+1)); echo "PASS reserved-${mut%%|*} → bad"
+  else
+    failn=$((failn+1)); echo "FAIL reserved-${mut%%|*} → $got, want bad ($out)"
+  fi
+done
+# a producer of one reserved name carrying another's, and the names inside ci.yml
+rm -rf "$work/rs-swapped"; mkdir -p "$work/rs-swapped"; cp "$here"/.github/workflows/*.y*ml "$work/rs-swapped/"
+python3 - "$work/rs-swapped/acceptance.yml" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+assert "  acceptance-maven:\n    name: acceptance-maven\n" in t
+old = "  acceptance-maven:\n    name: acceptance-maven\n"
+open(sys.argv[1], "w").write(t.replace(old, "  acceptance-maven:\n    name: acceptance-gradle\n", 1))
+PY
+if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-swapped" judge "$here/.github/workflows/ci.yml")
+then got=ok; else got=bad; fi
+if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS reserved-producer-swapped → bad"
+else failn=$((failn+1)); echo "FAIL reserved-producer-swapped → $got, want bad ($out)"; fi
+ZZ="{'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+case_ reserved-gate-in-ci          bad "d['jobs']['zz'] = dict($ZZ, name='auditor-review-gate')"
+case_ reserved-gate-id-in-ci       bad "d['jobs']['auditor-review-gate'] = $ZZ"
+case_ reserved-maven-in-ci         bad "d['jobs']['zz'] = dict($ZZ, name='acceptance-maven')"
+case_ reserved-maven-expr-in-ci    bad "d['jobs']['zz'] = dict($ZZ, name='acceptance-maven (\${{ matrix.v }})')"
+case_ reserved-gradle-id-in-ci     bad "d['jobs']['acceptance-gradle'] = $ZZ"
+case_ reserved-coverage-expr-in-ci bad "d['jobs']['lint']['name'] = 'coverage (\${{ matrix.v }})'"
+
+# a name with an expression that could render as a reserved name is refused (REQ-REL-013-AC3), except in the job
+# that produces it
+RS='${{ matrix.target.scanner }} ${{ matrix.target.release }} ${{ matrix.target.variant }}'
+RT='{scanner: grype, release: a, variant: b}'
+MX='    strategy:\n      matrix:\n        t: [acceptance-maven]\n'
+for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    strategy:\n      matrix:\n        tool: [acceptance-maven]\n|bad" \
+  "exprname-prefix|  zz:\n    name: 'acceptance-\${{ matrix.t }} (1.2.0)'\n${MX}|bad" \
+  "exprname-version|  zz:\n    name: '\${{ matrix.t }} (1.2.3)'\n${MX}|bad" \
+  "exprname-suffix|  zz:\n    name: 'auditor-review-gate\${{ matrix.s }}'\n    strategy:\n      matrix:\n        s: ['']\n|bad" \
+  "exprname-alone|  zz:\n    name: '\${{ matrix.n }}'\n    strategy:\n      matrix:\n        n: [coverage]\n|bad" \
+  "exprname-ok-os|  zz:\n    name: 'build \${{ matrix.os }} (1.2.0)'\n    strategy:\n      matrix:\n        os: [ubuntu]\n|ok" \
+  "exprname-ok-scan|  zz:\n    name: 'scan (\${{ matrix.scanner }})'\n    strategy:\n      matrix:\n        scanner: [grype]\n|ok" \
+  "exprname-bang|  zz:\n    name: '\${{ matrix.n }}!'\n    strategy:\n      matrix:\n        n: [x]\n|ok" \
+  "exprname-ok-rescan|  zz:\n    name: '${RS}'\n    strategy:\n      matrix:\n        target: [${RT}]\n|ok"; do
+  want="${mut##*|}"; body="${mut%|*}"
+  reserved_wf "${mut%%|*}" "$(printf "${body#*|}${JOB}")"
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml")
+  then got=ok; else got=bad; fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass+1)); echo "PASS ${mut%%|*} → $got"
+  else
+    failn=$((failn+1)); echo "FAIL ${mut%%|*} → $got, want $want ($out)"
+  fi
+done
+
+# REQ-REL-013-AC3: 64 plain matrix expressions with no text between and a final "!" (in no reserved name) cannot render
+# as a reserved name, so the judge says ok; the old matcher backtracked on that name for over 30 s, so the only time
+# bound is the timeout 10 of timed_judge, and a slow runner cannot turn the check red
+timed_judge() {  # <workflow copy name>: sets got (ok|bad), ms and out; the judge runs under timeout 10
+  local t0; t0=$(date +%s%N)
+  # a subshell, so that timeout can kill the judge
+  if out=$(here="$here" PIN_WIRING_WORKFLOWS_DIR="$work/rs-$1" \
+    PIN_WIRING_POLICY_FILE="$here/.github/policy/required-checks.json" \
+    PIN_WIRING_RELEASE_ONLY_FILE="$here/.github/policy/release-only-checks.json" timeout 10 \
+    bash -c "$(declare -f judge); judge \"\$1\"" _ "$here/.github/workflows/ci.yml" 2>&1)
+  then got=ok; else got=bad; fi
+  ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+}
+expr64=""; for _ in $(seq 64); do expr64+='${{ matrix.a.b }}'; done
+reserved_wf exprname-64-plain "$(printf '  zz:\n    name: %s!\n%b' "$expr64" "$JOB")"
+timed_judge exprname-64-plain
+if [ "$got" = ok ]; then
+  pass=$((pass+1)); echo "PASS exprname-64-plain-then-bang → ok in ${ms} ms"
+else
+  failn=$((failn+1)); echo "FAIL exprname-64-plain-then-bang → $got in ${ms} ms, want ok ($out)"
+fi
+
+# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission
+# reads them); allowlist-chain is in release-only-checks.json, so these edit that file
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
-  python3 - "$here/.github/policy/required-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
+  python3 - "$here/.github/policy/release-only-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); rc = d["required_checks"]
 e = [c for c in rc if c["context"] == "allowlist-chain"][0]
@@ -1101,9 +1234,25 @@ elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
 if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
 else: json.dump(d, open(sys.argv[2], "w"))
 PY
-  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
+  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml")
+  then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then
+    pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"
+  else
+    failn=$((failn+1)); echo "FAIL policy-$mut accepted"
+  fi
 done
 
+python3 - "$here/.github/policy" "$work/pol-in-both" <<'PY'
+import json, sys
+req = json.load(open(sys.argv[1] + "/required-checks.json"))
+rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
+req["required_checks"].append([c for c in rel["required_checks"] if c["context"] == "allowlist-chain"][0])
+json.dump(req, open(sys.argv[2] + "-required.json", "w"))
+PY
+if out=$(PIN_WIRING_POLICY_FILE="$work/pol-in-both-required.json" judge "$here/.github/workflows/ci.yml"); then
+  failn=$((failn+1)); echo "FAIL policy-in-both accepted"
+else pass=$((pass+1)); echo "PASS policy-in-both → bad ($out)"; fi
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which

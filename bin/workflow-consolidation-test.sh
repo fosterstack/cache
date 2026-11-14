@@ -133,7 +133,7 @@ for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
         bad.append("%s still exists" % gone)
 if not os.path.exists(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")):
     bad.append("dependabot-auto-merge.yml was moved, but its events differ from ci.yml's")
-# every required check is produced by a top-level job (name or id) of some workflow, on its scope's event
+# every required or release-only check is produced by a top-level job of some workflow, on its scope's event
 names = {}
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
     w = d if os.path.basename(wf) == "ci.yml" else yaml.load(open(wf), Loader=yaml.BaseLoader)
@@ -142,14 +142,18 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
     for jid, j in (w.get("jobs") or {}).items():
         if "uses" in j:
             continue
-        names.setdefault(j.get("name") or jid, set()).update(events)
-for rc in json.load(open(os.path.join(root, ".github/policy/required-checks.json")))["required_checks"]:
-    ev = "push" if rc["scope"] == "push" else "pull_request"
-    if rc["integration_id"] != 15368:
-        continue                                    # the review gate's App check, published by the App, not a job
-    if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
-            not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
-        bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
+        name = j.get("name") or jid
+        axes = ((j.get("strategy") or {}).get("matrix") or {}).values()
+        values = next(iter(axes), [])   # a matrix job is named per value of its first axis
+        for rendered in [f"{name} ({v})" for v in values] or [name]:
+            names.setdefault(rendered, set()).update(events)
+for policy_file in ("required-checks.json", "release-only-checks.json"):
+    for rc in json.load(open(os.path.join(root, ".github/policy", policy_file)))["required_checks"]:
+        ev = "push" if rc["scope"] == "push" else "pull_request"
+        if rc["integration_id"] != 15368:
+            continue                                # the review gate's App check, published by the App, not a job
+        if ev not in names.get(rc["context"], set()):
+            bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -178,6 +182,8 @@ case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
+case_ci release-only-check-gone  bad "d['jobs']['allowlist-persona']['name'] = 'persona'"
+case_ci release-only-coverage-gone bad "d['jobs']['coverage']['name'] = 'cover'"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 3 of 4: main-candidate-rescan.yml absorbs daily-rescan.yml under its ONE schedule (the auditor finds its run by this

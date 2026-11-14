@@ -115,6 +115,7 @@ ALLOW_PATTERNS=(
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
   '^bin/release-patch-wiring-test\.sh$'
+  '^bin/policy-merge-harness\.py$'
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'

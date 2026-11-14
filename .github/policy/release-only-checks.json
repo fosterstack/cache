@@ -1,0 +1,46 @@
+{
+  "comment": [
+    "Checks that release admission requires green but the ruleset on main does not list",
+    "(the owner trimmed them from the ruleset on 2026-11-12). Same shape and meaning as",
+    "required-checks.json. The required-check guard holds these seven entries whole and refuses any",
+    "other list. Admission and the patch release's ready step append these entries to",
+    "required-checks.json's. A context is in one file or the other, never both."
+  ],
+  "required_checks": [
+    {
+      "context": "allowlist-persona",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "allowlist-chain",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "acceptance-gradle",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "acceptance-maven (1.2.0)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "acceptance-maven (1.2.3)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "coverage",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "auditor-review-gate",
+      "integration_id": 5054756,
+      "scope": "pull_request"
+    }
+  ]
+}

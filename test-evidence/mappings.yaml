@@ -459,6 +459,16 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
+  - ac: REQ-REL-013-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-013-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+  - ac: REQ-REL-013-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
