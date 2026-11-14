@@ -566,7 +566,7 @@ SIGNS = (False, "provenance", "other")
 # Round 3 (5): the ONE pinned step REQ-CHAIN-004-AC2 ratifies, as an exact tuple (file, job, id) -> run text. An entry for any other tuple or text is
 # an error until a later reviewed change adds it HERE.
 _R = ".github/workflows/release.yml"          # the one release file: every chain job (all but NON_CHAIN_JOBS) is judged by the stage grammar
-PINNED_IF = {(_R, "rebuild-assemble", "records"): "${{ inputs.mode == 'release' }}"}
+PINNED_IF = {(_R, "rebuild-assemble", "records"): "${{ inputs.mode != 'snapshot' }}"}
 PINNED_ALLOWED = {(_R, "build-assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"',
                   (_R, "rebuild-assemble", "records"): 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"'}
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
