@@ -261,7 +261,6 @@ check("R8 reviewed sentence under a different file fails",
       all(ca_bundle_hits("docs/other.md", s) != [] for f, s in REVIEWED_CA))
 check("R8 sentence without a CA bundle gives no hits",
       ca_bundle_hits("docs/install.md", "The server listens on port 8080. Nothing else is needed.") == [])
-# R8 over the customer docs themselves: the real files, and copies of them with one change each
 def scope_files(base):
     names = ["README.md", "SECURITY.md", "CONTRIBUTING.md", "RELEASING.md"]
     for sub in ("docs", ".vex"):
