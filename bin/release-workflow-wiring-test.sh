@@ -4,14 +4,14 @@
 # /srv/handoffs/briefs/cache-921-signer-identity-ruling.md and kvm-postponed-one-build-path.md). This suite judges that file from the PARSED workflow (never from substrings of
 # the text), once on the real file, which must pass, and on mutated copies, each of which must be refused FOR THE REASON NAMED (a refusal for another reason, or a crash, counts as a failure).
 # What it pins is what the English rows say and nothing more:
-#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check, sign-release and release, the Check jobs'
+#   REQ-CHAIN-005-AC5  the job graph: the chain jobs and their needs, the gate G on build-freeze, the guard S on sign, sign-rebuild, sign-check and (followed by && !contains(github.ref_name, '-')) sign-release and release, the Check jobs'
 #                      condition, no if on the Rebuild jobs, workflow-level permissions {}, the allowed other jobs, the dry-run input a boolean
 #   REQ-CHAIN-001-AC9  the four sign jobs: environment sign, exactly contents read and id-token write, the three KMS federation literals as job env, the only jobs that run a signing
 #                      command; the release job holds no AWS role and no id-token; no other file's job names the key role
 #   REQ-CHAIN-004-AC1  Build: build-freeze, build-apk (matrix over both chips), build-assemble, their permissions, steps and shape
 #   REQ-CHAIN-004-AC12 the one input `mode` on workflow_call, the guard step after the checkout, one Witness step per mode with its closed step name
 #   REQ-CHAIN-004-AC19 the hostile Build step runs in every build: no condition, no token
-#   REQ-CHAIN-005-AC1 / AC7  Rebuild: rebuild-apk is ONE job over both chips (no second per-chip job), rebuild-assemble, the snapshot step names
+#   REQ-CHAIN-005-AC1 / AC7  Rebuild: rebuild-apk (needs build-assemble only) is ONE job over both chips (no second per-chip job), rebuild-assemble, both starting from the unsigned artifact witness-build in every mode, the snapshot step names
 #   REQ-CHAIN-006-AC1  Check: check-govulncheck and check (ONE job over both chips, one script bin/check-phase.sh, no arm64 job or script)
 #   REQ-CHAIN-004-AC14 the snapshot callers scan.yml and main-candidate-rescan.yml (their job build; the permissions ceiling is the called file's set; no job reachable in snapshot
 #                      mode requests a write or an id-token) -- the callers' own shape is also judged by bin/workflow-consolidation-test.sh
@@ -37,13 +37,13 @@ CHAIN = BUILD_JOBS + ["sign"] + REBUILD_JOBS + ["sign-rebuild"] + CHECK_JOBS + [
 OTHER_ALLOWED = {"decide", "patch-notes", "patch-failed", "live-test", "live-test-release"}   # and the hostile-* jobs; persona-uat has its own file
 KMS_ENV = ["AWS_ROLE_ARN", "AWS_REGION", "RELEASE_KMS_KEY_REF"]
 NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
-    "build-freeze": [], "build-apk": ["build-freeze"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
+    "build-freeze": [], "build-apk": ["build-freeze"], "rebuild-apk": ["build-assemble"], "build-assemble": ["build-apk"], "sign": ["build-assemble"],
     "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble"],
     "sign-check": ["build-assemble", "check"],
     "release-compare": ["check", "sign", "sign-rebuild", "sign-check"], "release-verify": ["release-compare"],
     "release": ["release-verify", "release-compare"], "sign-release": ["release"],
 }
-NEEDS_AT_LEAST = {"rebuild-apk": ["build-assemble"], "check": ["check-govulncheck", "build-assemble", "sign"]}
+NEEDS_AT_LEAST = {"check": ["check-govulncheck", "build-assemble", "sign"]}
 
 def norm(expr):
     """an expression with the ${{ }} wrapper removed and whitespace removed only OUTSIDE quoted strings (exact comparison)"""
@@ -61,6 +61,7 @@ def norm(expr):
     return "".join(out)
 G = norm("(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot'")
 S = norm("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")
+S_TAG = S + norm(" && !contains(github.ref_name, '-')")   # sign-release and release: S, then the release-candidate rule, in the job's if
 NOT_SNAPSHOT = norm("inputs.mode != 'snapshot'")
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -145,8 +146,13 @@ for jn in CHAIN:
 if "build-freeze" in jobs and norm(jobs["build-freeze"].get("if", "")) != G:
     bad.append("build-freeze does not carry the gate G exactly: %s" % jobs["build-freeze"].get("if"))
 for jn in SIGN_JOBS + ["release"]:
-    if jn in jobs and norm(jobs[jn].get("if", "")) != S:
-        bad.append("guard S: %s does not carry the guard S exactly (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, jobs[jn].get("if")))
+    want = S_TAG if jn in ("sign-release", "release") else S
+    if jn in jobs and norm(jobs[jn].get("if", "")) != want:
+        bad.append("guard S: %s does not carry the guard S exactly%s (it must run only on a v* tag push of release.yml itself, never in snapshot mode or under workflow_call): %s" % (jn, " followed by && !contains(github.ref_name, '-') (a release candidate never enters the environment)" if want == S_TAG else "", jobs[jn].get("if")))
+for jn in ("sign-release", "release"):
+    for s in steps_of(jobs.get(jn) or {}):
+        if "contains(github.ref_name,'-')" in norm(s.get("if", "")):
+            bad.append("candidate rule: a step of %s carries the release-candidate condition (it belongs in the job's if)" % jn)
 for jn in CHECK_JOBS:
     if jn in jobs and norm(jobs[jn].get("if", "")) != NOT_SNAPSHOT:
         bad.append("the Check job %s does not carry exactly inputs.mode != 'snapshot': %s" % (jn, jobs[jn].get("if")))
@@ -336,6 +342,13 @@ if "hostile" in ((wc or {}).get("inputs") or {}):
     bad.append("workflow_call still takes a hostile input")
 
 # ---- Rebuild (REQ-CHAIN-005-AC1): rebuild-apk is ONE job over both chips -----------------------------------------------------------------------------
+for jn in REBUILD_JOBS:   # both start from Build's UNSIGNED record, in release and snapshot mode alike
+    if jn in jobs:
+        rec = [s for s in steps_of(jobs[jn]) if "actions/download-artifact@" in str(s.get("uses")) and "witness-build" in str((s.get("with") or {}).get("name"))]   # an expression that picks between the two names counts as a name
+        if len(rec) != 1 or (rec[0].get("with") or {}).get("name") != "witness-build" or str((rec[0].get("with") or {}).get("path", "")).rstrip("/") != "witness-build" or "if" in rec[0]:
+            bad.append("%s does not download the unsigned record artifact witness-build exactly once into witness-build/ with no condition (never signed-witness-build, no mode conditional): %s" % (jn, [(s.get("with"), s.get("if")) for s in rec]))
+        if "signed-witness-build" in text_of(jobs[jn]):
+            bad.append("%s names signed-witness-build (Rebuild needs Build only, so it cannot need Sign)" % jn)
 if "rebuild-assemble" in jobs and "stage-start" not in runs_of(jobs["rebuild-assemble"]) + runs_of(jobs.get("rebuild-apk") or {}) + "\n".join(
         open(os.path.join(root, "bin", b)).read() for b in ("build-stage-rebuild-apk.sh", "build-stage-rebuild-assemble.sh") if os.path.exists(os.path.join(root, "bin", b))):
     bad.append("Rebuild does not start from chain-verify.py stage-start against Build's record (in the jobs or their two scripts)")
@@ -471,7 +484,8 @@ case_ release-no-verify       bad "job release needs" "$J['release']['needs'] = 
 case_ sign-release-before-release bad "job sign-release needs" "$J['sign-release']['needs'] = ['release-verify']"
 case_ check-not-after-govulncheck bad "job check must need at least" "$J['check']['needs'] = ['build-assemble', 'sign']"
 case_ check-not-after-sign    bad "job check must need at least" "$J['check']['needs'] = ['check-govulncheck', 'build-assemble']"
-case_ rebuild-apk-not-after-build bad "job rebuild-apk must need at least" "$J['rebuild-apk'].pop('needs')"
+case_ rebuild-apk-not-after-build bad "job rebuild-apk needs" "$J['rebuild-apk'].pop('needs')"
+case_ rebuild-apk-needs-sign  bad "job rebuild-apk needs" "$J['rebuild-apk']['needs'] = ['build-assemble', 'sign']"
 for jn in sign rebuild-apk check release; do
   case_ "$jn-continue-on-error" bad "chain job $jn carries continue-on-error" "$J['$jn']['continue-on-error'] = 'true'"
   case_ "$jn-secrets"         bad "chain job $jn carries secrets" "$J['$jn']['secrets'] = 'inherit'"
@@ -492,6 +506,16 @@ for jn in sign sign-rebuild sign-check sign-release release; do
   case_ "guard-$jn-no-tag"         bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) }}\""
   case_ "guard-$jn-no-workflow-ref" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}\""
   case_ "guard-$jn-always"         bad "guard S: $jn" "$J['$jn']['if'] = 'always()'"
+done
+# the release-candidate rule is in the job's if of sign-release and release (guard S followed by && !contains(github.ref_name, '-')), nowhere else
+for jn in sign sign-rebuild sign-check; do
+  case_ "guard-$jn-with-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['$jn']['if'] + \" && !contains(github.ref_name, '-')\""
+done
+for jn in sign-release release; do
+  case_ "guard-$jn-without-candidate-rule" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if']"
+  case_ "guard-$jn-candidate-rule-other" bad "guard S: $jn" "$J['$jn']['if'] = $J['sign']['if'] + \" && !contains(github.ref_name, '-rc')\""
+  case_ "guard-$jn-candidate-rule-first" bad "guard S: $jn" "$J['$jn']['if'] = \"\${{ !contains(github.ref_name, '-') && \" + $J['sign']['if'].replace('\${{ ', '', 1)"
+  case_ "guard-$jn-candidate-rule-on-step" bad "candidate rule: a step of $jn" "$J['$jn']['steps'][-1]['if'] = \"\${{ !contains(github.ref_name, '-') }}\""
 done
 case_ check-no-snapshot-guard bad "Check job check does not carry" "$J['check'].pop('if')"
 case_ govulncheck-no-guard    bad "Check job check-govulncheck does not carry" "$J['check-govulncheck'].pop('if')"
@@ -585,6 +609,13 @@ case_ hostile-output-back     bad "exposes a hostile output" "$J['build-assemble
 # Rebuild (REQ-CHAIN-005-AC1, AC7)
 case_ rebuild-apk-one-runner  bad "rebuild-apk is not ONE job with a matrix over both chips" "$J['rebuild-apk']['strategy']['matrix'][list($J['rebuild-apk']['strategy']['matrix'])[0]] = ['ubuntu-24.04']"
 case_ rebuild-apk-no-matrix   bad "rebuild-apk is not ONE job" "$J['rebuild-apk'].pop('strategy')"
+for jn in rebuild-apk rebuild-assemble; do
+  case_ "$jn-record-signed"      bad "$jn does not download the unsigned record artifact witness-build" "hit(s['with'].__setitem__('name', 'signed-witness-build') for s in $J['$jn']['steps'] if 'witness-build' in (s.get('with') or {}).get('name', ''))"
+  case_ "$jn-record-gone"        bad "$jn does not download the unsigned record artifact witness-build" "$J['$jn']['steps'] = [s for s in $J['$jn']['steps'] if 'witness-build' not in (s.get('with') or {}).get('name', '')]"
+  case_ "$jn-record-by-mode"     bad "$jn does not download the unsigned record artifact witness-build" "hit(s.__setitem__('if', \"\${{ inputs.mode != 'snapshot' }}\") for s in $J['$jn']['steps'] if 'witness-build' in (s.get('with') or {}).get('name', ''))"
+  case_ "$jn-record-elsewhere"   bad "$jn does not download the unsigned record artifact witness-build" "hit(s['with'].__setitem__('path', 'records') for s in $J['$jn']['steps'] if 'witness-build' in (s.get('with') or {}).get('name', ''))"
+  case_ "$jn-record-twice"       bad "$jn does not download the unsigned record artifact witness-build" "$J['$jn']['steps'].append({'uses': 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'with': {'name': 'signed-witness-build', 'path': 'witness-build'}})"
+done
 case_ rebuild-permissions     bad "rebuild-apk does not hold exactly contents read" "$J['rebuild-apk']['permissions']['checks'] = 'read'"
 case_ rebuild-assemble-arm    bad "rebuild-assemble does not run on ubuntu-24.04" "$J['rebuild-assemble']['runs-on'] = 'ubuntu-24.04-arm'"
 
