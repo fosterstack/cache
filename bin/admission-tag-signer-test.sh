@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC6, REQ-REL-009-AC13, REQ-DEP-002-AC3
+# proves: REQ-REL-009-AC6, REQ-REL-009-AC13, REQ-REL-013-AC1
 # Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057): the owner's
 # SSH signature (allowed-signers) on any tag; the release.yml-on-main gitsign identity on a PATCH tag only (vX.Y.Z,
 # Z >= 1, the previous patch vX.Y.(Z-1) already released); an unsigned tag, any other signature format, an ambiguous
@@ -344,66 +344,10 @@ case_ baselines-from-commit bad "B = [s for s in S if 'APPROVED' in s.get('name'
 case_ any-signer-baselines bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('--allowed-signers /tmp/policy/allowed_signers', '--allowed-signers allowed_signers')"
 case_ copy-unchecked      bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('cmp -s', 'true')"
 case_ no-refuse-default  bad "sig['run'] = sig['run'].replace('*) echo \"::error::', '*) echo \"::notice::')"
-# REQ-DEP-002-AC3: the step's real text, run against a fixture origin/main: both policy files must be objects with a
+# REQ-REL-013-AC1: the step's real text against a fixture origin/main: each policy file must be an object with a
 # non-empty required_checks, or the step refuses and leaves no shorter merged list behind
-out=$(python3 - "$root" stage-admission.yml "fetch policy from protected main" policy/required-checks.json "admission policy merge" <<'PY'
-import json, os, shutil, subprocess, sys, tempfile, yaml
-root, wfname, needle, merged_rel, label = sys.argv[1:6]
-step = next(s for j in yaml.load(open(f"{root}/.github/workflows/{wfname}"), Loader=yaml.BaseLoader)["jobs"].values()
-            for s in j.get("steps") or [] if needle in s.get("name", ""))
-pol = f"{root}/.github/policy"
-def contexts(path):
-    return [c["context"] for c in json.load(open(path))["required_checks"]]
-want = sorted(contexts(f"{pol}/required-checks.json") + contexts(f"{pol}/release-only-checks.json"))
-def run_step(files):
-    w = tempfile.mkdtemp(); origin, clone, stub = f"{w}/origin.git", f"{w}/clone", f"{w}/stub"
-    seed = f"{w}/seed"; os.makedirs(f"{seed}/.github/policy"); os.makedirs(f"{seed}/bin"); os.makedirs(stub)
-    for f in os.listdir(pol):
-        shutil.copy(f"{pol}/{f}", f"{seed}/.github/policy/{f}")
-    for f in ("admission-tag-signer.py", "install-scanner.sh", "patch-decide.py"):
-        shutil.copy(f"{root}/bin/{f}", f"{seed}/bin/{f}")
-    for f, text in files.items():
-        p = f"{seed}/.github/policy/{f}"
-        if text is None: os.remove(p)
-        else: open(p, "w").write(text)
-    g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
-    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
-    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "c"], ["push", "-q", origin, "main"]):
-        subprocess.run(g + cmd if cmd[0] == "commit" else ["git"] + cmd, cwd=seed, check=True)
-    subprocess.run(["git", "clone", "-q", origin, clone], check=True)
-    # gh answers no check runs; sleep ends the step with 99, so reaching it means the merged list was accepted
-    open(f"{stub}/gh", "w").write("#!/bin/bash\nexit 0\n")
-    open(f"{stub}/sleep", "w").write(f"#!/bin/bash\ntouch {w}/slept\nexit 99\n")
-    for s in ("gh", "sleep"): os.chmod(f"{stub}/{s}", 0o755)
-    os.makedirs(f"{w}/tmp"); os.makedirs(f"{w}/policy")
-    text = step["run"].replace("/tmp/policy", f"{w}/policy")
-    env = dict(os.environ, PATH=f"{stub}:{os.environ['PATH']}", RUNNER_TEMP=f"{w}/tmp", GH_TOKEN="x",
-               GITHUB_REPOSITORY="o/r", GITHUB_SHA="0" * 40, GITHUB_OUTPUT=f"{w}/out")
-    r = subprocess.run(["bash", "-c", text], cwd=clone, env=env, capture_output=True, text=True, timeout=60)
-    merged = None
-    try: merged = contexts(f"{w}/{merged_rel}")
-    except (OSError, ValueError, KeyError, TypeError): pass
-    slept = os.path.exists(f"{w}/slept")
-    shutil.rmtree(w)
-    return r.returncode, merged, slept
-failed = 0
-def report(ok, name, got):
-    global failed
-    failed += not ok
-    print(("PASS" if ok else "FAIL"), f"{label}: {name}", "" if ok else f"-> {got}")
-rc, merged, slept = run_step({})
-report(sorted(merged or []) == want and rc in (0, 99), f"a good pair merges to all {len(want)} contexts", (rc, merged))
-bad_forms = {"empty-object": "{}", "empty-file": "", "null-list": '{"required_checks": null}',
-             "empty-list": '{"required_checks": []}', "top-level-array": "[]", "missing": None}
-for f in ("release-only-checks.json", "required-checks.json"):
-    for form, text in bad_forms.items():
-        rc, merged, slept = run_step({f: text})
-        short = merged is not None and len(merged) < len(want)
-        report(rc not in (0, 99) and not slept and not short, f"{f} {form} is refused",
-               f"exit {rc}, merged {len(merged) if merged is not None else None} contexts, reached the wait: {slept}")
-sys.exit(1 if failed else 0)
-PY
-) && rc=0 || rc=$?
+out=$(python3 "$root/bin/policy-merge-harness.py" \
+  "$root" stage-admission.yml "fetch policy from protected main" policy/required-checks.json "admission policy merge") && rc=0 || rc=$?
 echo "$out"
 nfail=$(grep -c '^FAIL' <<< "$out" || true)
 pass=$((pass + $(grep -c '^PASS' <<< "$out" || true))); failn=$((failn + nfail))
