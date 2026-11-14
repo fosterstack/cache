@@ -88,7 +88,7 @@ else
   echo "$out" | sed 's/^/    /'; fail=$((fail+1))
 fi
 
-python3 - "$repo/.github/workflows/ci.yml" "$w/pin-step.txt" <<'PY'
+python3 - "$repo/.github/workflows/ci.yml" "$w/pin-step.txt" "$w/pin-run.sh" <<'PY'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]["steps"]
 pin = [s for s in steps if "release-only-checks.json" in (s.get("run") or "") and "required-check-guard.sh" in s["run"]]
@@ -97,8 +97,9 @@ s = pin[0]
 bad = [k for k in ("if", "continue-on-error", "shell", "working-directory") if k in s]
 # the step's last line, as bin/dependency-lanes-test.sh takes it
 open(sys.argv[2], "w").write(s["run"].strip().splitlines()[-1] + "\n---\n" + ",".join(bad))
+open(sys.argv[3], "w").write(s["run"])
 PY
-# the last line must be exactly the guard call over both files from the copy fetched from main: no tree copy
+# the last line must be exactly the guard call over both files from the fetched copy in RUNNER_TEMP: no tree copy
 # (./bin/..., ;bin/...), no other call
 guard_call='bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json'
 guard_call+=' .github/policy/release-only-checks.json'
@@ -113,6 +114,20 @@ else
   echo "FAIL: ci.yml's required-check guard job has no single step that runs the guard over release-only-checks.json"
   fail=$((fail+1))
 fi
+
+# The last line only runs RUNNER_TEMP's copy; the fetch above it is what makes that copy main's. A fetch of the
+# pull request's own ref would let a head move its pin, so the step must fetch the guard from main by repo and path.
+fetches_main_guard() { # run_file
+  grep -qF 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main"' "$1"
+}
+check_fetch() { # name run_file want (0 = accepted, 1 = refused)
+  if fetches_main_guard "$2"; then got=0; else got=1; fi
+  if [ "$got" -eq "$3" ]; then echo "ok: $1"; pass=$((pass+1))
+  else echo "FAIL: $1 (accepted=$((1-got)), want accepted=$((1-$3)))"; fail=$((fail+1)); fi
+}
+check_fetch "the pin step fetches the guard from main" "$w/pin-run.sh" 0
+sed 's|guard.sh?ref=main|guard.sh?ref=${GITHUB_HEAD_REF}|' "$w/pin-run.sh" > "$w/pin-run-moved.sh"
+check_fetch "a pin step fetching the guard at the pull request's branch is refused" "$w/pin-run-moved.sh" 1
 
 # The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
 # committed under GitHub's default `bash -e` with a recording gh stub (round-1 blocker:
