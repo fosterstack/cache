@@ -253,8 +253,9 @@ jobs:
             # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand the
             # head) and publish only if it has turned to success, so a head that still fails is not
             # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
-            last="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate&per_page=100" \
-              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+            gate_runs="repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate"
+            last="$(GH_TOKEN="$APP_TOKEN" gh api "${gate_runs}&per_page=100" \
+              --jq "if (.check_runs | length) >= 100 then error(\"the check runs are cut\") else . end
                     | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
                       elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end")" \
@@ -271,7 +272,10 @@ jobs:
             conclusion=failure
             if [ "$last" = success ]; then
               # a green Dependabot head did not change: only the reviewer's verdict can have
-              if GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then continue; fi
+              GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; rc=$?
+              if [ "$rc" = 0 ]; then continue; fi
+              # a GitHub API error is no verdict: publish nothing, fail the run
+              if [ "$rc" = 3 ]; then fail=1; continue; fi
             elif GH_TOKEN="$LIST_TOKEN" python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
                && git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
