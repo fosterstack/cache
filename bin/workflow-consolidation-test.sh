@@ -157,17 +157,16 @@ for key in ("required_checks", "promotion_checks"):
     for gone in ("gosec", "dependency-review"):
         if any(e["context"] == gone for e in pol.get(key) or []):
             bad.append("%s is listed in %s but no workflow makes it" % (gone, key))
-FIFTH = "vendor"
-QUICK = ["test", "lint", "requirements", "allowlist", FIFTH, "govulncheck", "pin-age"]
-if sorted(e["context"] for e in pol["required_checks"]) != sorted(QUICK):
+SIX = ["test", "lint", "requirements", "allowlist", "govulncheck", "pin-age"]
+ctxs = [e["context"] for e in pol["required_checks"]]
+if len(ctxs) != 7 or len(set(ctxs)) != 7 or not set(SIX) <= set(ctxs):
     bad.append("required_checks are not exactly the seven quick checks")
 # the gate's check run is published by the `publish` job of agent-review-gate.yml (`-f name=auditor-review-gate`), not made by a job of that name
 if "-f name=auditor-review-gate" not in json.dumps((yaml.load(open(os.path.join(root, ".github/workflows/agent-review-gate.yml")), Loader=yaml.BaseLoader).get("jobs") or {}).get("publish")):
     bad.append("agent-review-gate.yml no longer publishes the auditor-review-gate check run (it still judges Dependabot pull requests)")
 for rc in pol["required_checks"]:
     ev = "push" if rc["scope"] == "push" else "pull_request"
-    if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
-            not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
+    if rc["context"] not in names or ev not in names[rc["context"]]:
         bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
@@ -315,6 +314,10 @@ import os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+text = open(sys.argv[1]).read()
+for word in ("image-ref", "IMAGE_REF", "ghcr.io"):
+    if word in text:
+        bad.append("acceptance.yml still carries %s (it has no registry mode)" % word)
 on = d.get("on") or {}
 if sorted(on) != ["workflow_call"]:
     bad.append("acceptance.yml's events are not workflow_call alone (REQ-CI-001-AC2): %s" % list(on))
@@ -324,9 +327,9 @@ if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.
     bad.append("the workflow_call outputs are not both suites' results: %s" % outs)
 jobs = d.get("jobs") or {}
 g, m = jobs.get("acceptance-gradle") or {}, jobs.get("acceptance-maven") or {}
-if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read", "packages": "read"}:
+if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read"}:
     bad.append("acceptance-gradle changed: %s" % {k: g.get(k) for k in ("name", "permissions")})
-if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read", "packages": "read"} or \
+if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read"} or \
         (m.get("strategy") or {}).get("matrix", {}).get("extension-version") != ["1.2.0", "1.2.3"]:
     bad.append("acceptance-maven changed: %s" % {k: m.get(k) for k in ("name", "permissions", "strategy")})
 if m.get("env") != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):
@@ -340,6 +343,8 @@ rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loade
 calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", "")) and "stage-" not in str(v.get("uses", ""))]
 if calls != ["acceptance"] or rel["acceptance"].get("uses") != "./.github/workflows/acceptance.yml":
     bad.append("release.yml does not call acceptance.yml once: %s" % calls)
+elif "image-ref" in (rel["acceptance"].get("with") or {}):
+    bad.append("release.yml still passes image-ref to acceptance.yml")
 pred = (rel.get("acceptance-predicate") or {}).get("with") or {}
 if pred.get("gradle-results") != "${{ needs.acceptance.outputs.gradle-results }}" or \
         pred.get("maven-results") != "${{ needs.acceptance.outputs.maven-results }}":
@@ -371,6 +376,10 @@ case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('mav
 case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
 case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
 case_acc dispatch-added        bad "d['on']['workflow_dispatch'] = ''"
+case_acc image-ref-input       bad "d['on']['workflow_call'].setdefault('inputs', {})['image-ref'] = {'type': 'string'}"
+case_acc packages-read-back    bad "d['jobs']['acceptance-gradle']['permissions']['packages'] = 'read'"
+case_acc ghcr-login-back       bad "d['jobs']['acceptance-gradle']['steps'].append({'run': 'docker login ghcr.io'})"
+case_acc image-ref-env-back    bad "d['jobs']['acceptance-gradle']['steps'].append({'run': 'docker run \"\${IMAGE_REF}\"'})"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
