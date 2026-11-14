@@ -3338,7 +3338,7 @@ try:
     open(gh, "w").write('#!/bin/sh\n'
         'case "$1 $2" in\n'
         '"pr list") echo "7 %s feature owner/repo" ;;\n'
-        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo none ;;\n'
+        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate&per_page=100") echo none ;;\n'
         '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
         '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
         'esac\n' % (sha, sha))
@@ -3414,7 +3414,7 @@ os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=
 open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
 case "$1 $2" in
   "pr list") echo "7 %s $HEADREF owner/repo" ;;
-  "api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate")
+  "api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate&per_page=100")
       f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done; jq -r "$f" "$GATE_JSON" ;;
   "api repos/o/r/check-runs") [ "${PUBFAIL:-}" = 1 ] && exit 1
       for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$PUBLISHED" ;; esac; done ;;
@@ -3427,8 +3427,8 @@ def sweep_over(headref, gate, audit, pubfail=False):
     calls, published, gate_json = (os.path.join(base, x) for x in ("calls", "published", "gate.json"))
     for f in (calls, published): open(f, "w").close()
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    json.dump({"check_runs": [] if gate == "none" else [{"conclusion": gate, "completed_at": now,
-            "app": {"slug": "app"}}]}, open(gate_json, "w"))
+    runs = [] if gate == "none" else [{"conclusion": gate, "completed_at": now, "app": {"slug": "app"}}]
+    json.dump({"total_count": len(runs), "check_runs": runs}, open(gate_json, "w"))
     env = dict(os.environ, CALLS=calls, PUBLISHED=published, GATE_JSON=gate_json, HEADREF=headref,
             RUNNER_TEMP=os.path.join(base, "tmp"),
                GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
@@ -3584,7 +3584,7 @@ try:
     open(gh, "w").write('#!/bin/sh\n'
         'case "$1 $2" in\n'
         '"pr list") echo "7 %s feature owner/repo" ;;\n'
-        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo "$STUB_LAST" ;;\n'
+        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate&per_page=100") echo "$STUB_LAST" ;;\n'
         '"api repos/o/r/git/ref/heads/audit/%s") [ "$STUB_REC" = 1 ] || exit 1 ;;\n'
         '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
         '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
