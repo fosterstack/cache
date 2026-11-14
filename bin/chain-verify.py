@@ -881,7 +881,8 @@ def cmd_stage_start(a):
 
 # ---- Release's two refuse-only bindings (PR 4; advisor read-back verifier-bindings) -------------------------------------------------------
 # Both are new commands run by Release's first witnessed step only. They add refusals and change no existing subcommand, pin or message.
-CHECK_RECORDS = ("scanners", "acceptance", "runtime", "arm64")        # the four Check records, by step name (REQ-CHAIN-007-AC16)
+CHECK_RECORDS = ("scanners", "acceptance", "runtime")        # a Check job's three records, by step name (REQ-CHAIN-007-AC16)
+CHECK_RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")        # the two chips; each makes all three records, so a record is named by its runner and its step
 MATERIAL = "https://witness.dev/attestations/material/v0.1/file:witness-build/digests.json"
 ITEMS_PRODUCT = "https://witness.dev/attestations/product/v0.1/file:items.json"
 
@@ -1030,8 +1031,8 @@ def cmd_apk_compare(a):
 
 
 def cmd_check_list(a):
-    """Exactly the four Check records, scanners, acceptance, runtime and arm64, each verified under Check's identity at the tag and each tied by its
-    material digest list to the digest list Build attested; a missing, extra, duplicated, substituted, unverifiable or wrong-job record is refused."""
+    """Exactly the six Check records, scanners, acceptance and runtime of each of the two runners (DIR/<runner>/witness-<step>/), each verified under Check's identity at the tag and each
+    tied by its material digest list to the digest list Build attested; a missing, extra, duplicated, substituted, unverifiable or wrong-job record is refused."""
     pol = _release_policy(a, "check")
     try:
         with open(a.digests, "rb") as f:
@@ -1042,49 +1043,57 @@ def cmd_check_list(a):
     parse_digest_bytes(d_bytes, "check")
     want = hashlib.sha256(d_bytes).hexdigest()
     try:
-        names = sorted(os.listdir(a.dir))
+        runners = sorted(os.listdir(a.dir))
     except OSError:
         refuse("check", "missing: the Check records directory %s is unreadable" % a.dir)
+    for r in runners:
+        if r not in CHECK_RUNNERS:
+            refuse("check", "extra: %s is not one of the Check runners (%s)" % (r, ", ".join(CHECK_RUNNERS)))
     expected = ["witness-" + n for n in CHECK_RECORDS]
-    for n in names:
-        if n not in expected:
-            refuse("check", "extra: %s is not one of the four Check records (%s)" % (n, ", ".join(CHECK_RECORDS)))
-    for n in CHECK_RECORDS:
-        d = os.path.join(a.dir, "witness-" + n)
-        if os.path.islink(d) or not os.path.isdir(d):
-            refuse("check", "missing: the %s record (witness-%s/%s-collection.json)" % (n, n, n))
-        inside = sorted(os.listdir(d))
-        record, entries = "%s-collection.json" % n, "%s-collection.rekor.json" % n      # a record and, beside it, its Rekor entries file (nothing else)
-        if record not in inside:
-            refuse("check", "missing: the %s record (witness-%s/%s)" % (n, n, record))
-        stray = [x for x in inside if x not in (record, entries)]
-        if stray:
-            refuse("check", "extra: witness-%s holds %s besides its record and its Rekor entries file" % (n, ", ".join(stray)))
-        for x in (record, entries):
-            if x in inside and os.path.islink(os.path.join(d, x)):
-                refuse("check", "the %s %s is a symlink" % (n, "record" if x == record else "Rekor entries file"))
+    for r in CHECK_RUNNERS:
+        rd = os.path.join(a.dir, r)
+        if os.path.islink(rd) or not os.path.isdir(rd):
+            refuse("check", "missing: the records of the runner %s (%s)" % (r, rd))
+        for n in sorted(os.listdir(rd)):
+            if n not in expected:
+                refuse("check", "extra: %s/%s is not one of the three Check records (%s)" % (r, n, ", ".join(CHECK_RECORDS)))
+        for n in CHECK_RECORDS:
+            d = os.path.join(rd, "witness-" + n)
+            if os.path.islink(d) or not os.path.isdir(d):
+                refuse("check", "missing: the %s record of %s (%s/witness-%s/%s-collection.json)" % (n, r, r, n, n))
+            inside = sorted(os.listdir(d))
+            record, entries = "%s-collection.json" % n, "%s-collection.rekor.json" % n      # a record and, beside it, its Rekor entries file (nothing else)
+            if record not in inside:
+                refuse("check", "missing: the %s record of %s (%s/witness-%s/%s)" % (n, r, r, n, record))
+            stray = [x for x in inside if x not in (record, entries)]
+            if stray:
+                refuse("check", "extra: %s/witness-%s holds %s besides its record and its Rekor entries file" % (r, n, ", ".join(stray)))
+            for x in (record, entries):
+                if x in inside and os.path.islink(os.path.join(d, x)):
+                    refuse("check", "the %s %s of %s is a symlink" % (n, "record" if x == record else "Rekor entries file", r))
     seen = set()
-    for n in CHECK_RECORDS:
-        path = os.path.join(a.dir, "witness-" + n, "%s-collection.json" % n)
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                stmt, _payload, dsse = verify_record(pol, "check", path, tmp)
-        except Refuse as r:
-            refuse("check", "the %s record: %s" % (n, r.reason))
-        if dsse["payloadType"] == POLT:
-            refuse("check", "predicate: the %s record is a signed release policy" % n)
-        step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
-        if step != n:
-            refuse("check", "the %s record is the record of step %r (a record is accepted only in the slot of its own step)" % (n, step))
-        mats = [s for s in typed_subjects("check", stmt) if s["name"] == MATERIAL]
-        if len(mats) != 1:
-            refuse("check", "digests: the %s record names %d material subjects file:witness-build/digests.json, exactly one is required" % (n, len(mats)))
-        if mats[0]["digest"].get("sha256") != want:
-            refuse("check", "digest: the %s record is about another digest list than the one Build attested" % n)
-        h = _sha256_bytes_of(path, "check", n)
-        if h in seen:
-            refuse("check", "the %s record is a duplicate of another record" % n)
-        seen.add(h)
+    for r in CHECK_RUNNERS:
+        for n in CHECK_RECORDS:
+            path = os.path.join(a.dir, r, "witness-" + n, "%s-collection.json" % n)
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    stmt, _payload, dsse = verify_record(pol, "check", path, tmp)
+            except Refuse as ex:
+                refuse("check", "the %s record of %s: %s" % (n, r, ex.reason))
+            if dsse["payloadType"] == POLT:
+                refuse("check", "predicate: the %s record of %s is a signed release policy" % (n, r))
+            step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
+            if step != n:
+                refuse("check", "the %s record of %s is the record of step %r (a record is accepted only in the slot of its own step)" % (n, r, step))
+            mats = [x for x in typed_subjects("check", stmt) if x["name"] == MATERIAL]
+            if len(mats) != 1:
+                refuse("check", "digests: the %s record of %s names %d material subjects file:witness-build/digests.json, exactly one is required" % (n, r, len(mats)))
+            if mats[0]["digest"].get("sha256") != want:
+                refuse("check", "digest: the %s record of %s is about another digest list than the one Build attested" % (n, r))
+            h = _sha256_bytes_of(path, "check", n)
+            if h in seen:
+                refuse("check", "the %s record of %s is a duplicate of another record" % (n, r))
+            seen.add(h)
     print("ok")
 
 
@@ -1097,10 +1106,7 @@ RC_RECORDS = (
     ("sign", "provenance/provenance.json"),
     ("rekor", "provenance/provenance.rekor.json"),
     ("rebuild", "witness-rebuild/rebuild-collection.json"),
-    ("scanners", "witness-check/witness-scanners/scanners-collection.json"),
-    ("acceptance", "witness-check/witness-acceptance/acceptance-collection.json"),
-    ("runtime", "witness-check/witness-runtime/runtime-collection.json"),
-    ("arm64", "witness-check/witness-arm64/arm64-collection.json"),
+    *(("%s-%s" % (n, r), "witness-check/%s/witness-%s/%s-collection.json" % (r, n, n)) for r in CHECK_RUNNERS for n in CHECK_RECORDS),
     ("hostile_verdict", "hostile-results/hostile-results.json"),
 )
 
@@ -1958,9 +1964,10 @@ def cmd_sign(a):
 # Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This step is the check that comes before Sign re-signs the
 # payloads with the release key: it signs nothing, calls no tool and reads no token. A shell step of the Sign job
 # signs each staged payload and `verify` checks the result.
-SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": ("scanners", "acceptance", "runtime", "arm64")}
-SR_CHECK_FOLDER = {"witness-scanners": "scanners", "witness-acceptance": "acceptance", "witness-runtime": "runtime", "witness-arm64": "arm64"}     # Check's four record folders, each named for its one step
-SR_CHECK_GROUPS = (("check-results", ("witness-scanners", "witness-acceptance", "witness-runtime")), ("check-results-arm64", ("witness-arm64",)))     # (artifact folder under --artifacts-dir, the records whose products it carries)
+SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": CHECK_RECORDS}
+SR_CHECK_FOLDER = {"witness-" + n: n for n in CHECK_RECORDS}     # Check's three record folders, each named for its one step
+SR_CHECK_NAMES = ["%s/%s" % (r, f) for r in CHECK_RUNNERS for f in SR_CHECK_FOLDER]     # a Check record is named <runner>/<folder>: both runners make the same three folders
+SR_CHECK_GROUPS = tuple(("check-results-" + r, ["%s/%s" % (r, f) for f in SR_CHECK_FOLDER]) for r in CHECK_RUNNERS)     # (artifact folder under --artifacts-dir, the records whose products it carries)
 SR_CHECK_PREFIX = "check-results/"
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
@@ -1972,6 +1979,12 @@ SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}
 SR_ATTESTORS = ("environment", "git", "material", "command-run", "product")
 GIT_COMMIT_PREFIX = "https://witness.dev/attestations/git/v0.1/commithash:"
 ATTESTOR_URI = re.compile(r"https://witness\.dev/attestations/([a-z-]+)/v0\.1")
+
+
+def sr_record_name(stage, rec_dir):
+    """The name of a record directory: its own name, and for Check <runner>/<folder>, so the two runners' folders of one name never meet."""
+    parts = rec_dir.rstrip("/").split("/")
+    return "/".join(parts[-2:]) if stage == "check" else parts[-1]
 
 
 def sr_received(stage, rec_dir, art_dir, name):
@@ -2071,7 +2084,7 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
     if step == "rapk" and art_dir and os.path.lexists(os.path.join(art_dir, name)):
         refuse(stage, "rapk: %s has artifacts under %s, but Rebuild's apks never reach Sign" % (name, art_dir))
     if stage == "check":
-        if SR_CHECK_FOLDER.get(name) != step:
+        if SR_CHECK_FOLDER.get(name.rsplit("/", 1)[-1]) != step:
             refuse(stage, "record: the folder %s holds the %s record; Check's folders are %s, each named for its step" % (name, step, " ".join(sorted(SR_CHECK_FOLDER))))
         mats = [x for x in subs if x["name"] == MATERIAL]
         if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
@@ -2096,7 +2109,7 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
 
 
 def sr_expected_many(stage, paths):
-    """One or more lists of the records the producing jobs made (Check has two: the check job and check-arm64). The folder sets must be disjoint."""
+    """One or more lists of the records the producing jobs made (Check has two: one per runner). The folder sets must be disjoint."""
     merged = {}
     for path in paths:
         for folder, files in sr_expected(stage, path).items():
@@ -2123,11 +2136,11 @@ def sr_expected(stage, path):
 
 def sr_check_expected(stage, expected, rec_dirs):
     """Every record folder Sign received must be exactly what the producing job listed: same folders, same files, same sha256 (no extra, no missing)."""
-    names = {os.path.basename(d.rstrip("/")) for d in rec_dirs}
+    names = {sr_record_name(stage, d) for d in rec_dirs}
     if names != set(expected):
         refuse(stage, "expect-digests: the record folders received (%s) are not the ones the Rebuild job listed (%s)" % (" ".join(sorted(names)) or "none", " ".join(sorted(expected))))
     for d in rec_dirs:
-        name = os.path.basename(d.rstrip("/"))
+        name = sr_record_name(stage, d)
         if not os.path.isdir(d) or os.path.islink(d):
             refuse(stage, "record: %r is not a distinct plain record directory" % d)
         have = sorted(os.listdir(d))
@@ -2142,7 +2155,7 @@ def sr_check_expected(stage, expected, rec_dirs):
 
 
 def sr_check_results(stage, art_dir, products):
-    """Check's results: each record folder group has its artifact folder under --artifacts-dir (check-results for scanners, acceptance and runtime; check-results-arm64 for arm64). Every
+    """Check's results: each record folder group has its artifact folder under --artifacts-dir (check-results-<runner> for the three records of that runner). Every
     file received must be a product `check-results/<path>` of exactly one record of its group with the same sha256, and every such product the records name must be received; products
     elsewhere in the repository (a log in a scratch folder) are not Sign's concern, as for Build."""
     if not art_dir:
@@ -2194,8 +2207,8 @@ def cmd_sign_records(a):
         sr_check_expected(stage, sr_expected_many(stage, a.expect_digests), a.record_dir)   # before any record is read: a folder that is not what the Rebuild job made is never parsed
     seen, plan, check_products = set(), [], {}
     for rec_dir in a.record_dir:
-        name = os.path.basename(rec_dir.rstrip("/"))
-        if name in seen or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or not os.path.isdir(rec_dir) or os.path.islink(rec_dir):
+        name = sr_record_name(stage, rec_dir)
+        if name in seen or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?", name) or ("/" in name) != (stage == "check") or not os.path.isdir(rec_dir) or os.path.islink(rec_dir):
             refuse(stage, "record: %r is not a distinct plain record directory" % rec_dir)
         seen.add(name)
         step, payload, data, prods = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha,
@@ -2203,22 +2216,25 @@ def cmd_sign_records(a):
         plan.append((rec_dir, name, step, payload, data))
         check_products[name] = prods
     if stage == "check":
-        if sorted(seen) != sorted(SR_CHECK_FOLDER):
-            refuse(stage, "record: Check's records are exactly %s, got %s" % (" ".join(sorted(SR_CHECK_FOLDER)), " ".join(sorted(seen))))
+        if sorted(seen) != sorted(SR_CHECK_NAMES):
+            refuse(stage, "record: Check's records are exactly %s, got %s" % (" ".join(sorted(SR_CHECK_NAMES)), " ".join(sorted(seen))))
         sr_check_results(stage, a.artifacts_dir, check_products)
     make_out(a.out)
     try:
-        lines = []
+        plans = {}     # the staged tree each plan.txt belongs to: the root of Build's and Rebuild's, one tree per runner for Check
         for rec_dir, name, step, payload, data in plan:
-            os.mkdir(os.path.join(a.out, name))
+            group, _, folder = name.rpartition("/")
+            os.makedirs(os.path.join(a.out, name))
             with open(os.path.join(a.out, name, step + "-collection.payload"), "wb") as f:
                 f.write(payload)
             for n in data:
                 with open(os.path.join(rec_dir, n), "rb") as src, open(os.path.join(a.out, name, n), "wb") as dst:
                     dst.write(src.read())
-            lines.append("%s\t%s" % (os.path.join(a.out, name, step + "-collection.payload"), "signed/%s/%s-collection.json" % (name, step)))
-        with open(os.path.join(a.out, "plan.txt"), "w") as f:      # the list the signing step reads: it signs exactly these payloads and refuses any other
-            f.write("\n".join(lines) + "\n")
+            plans.setdefault(group, []).append("%s\t%s" % (os.path.join(a.out, name, step + "-collection.payload"), os.path.join("signed", group, folder, step + "-collection.json")))
+        for group, group_lines in plans.items():
+            with open(os.path.join(a.out, group, "plan.txt"), "w") as f:      # the list the signing step reads: it signs exactly these payloads and refuses any other
+                f.write("\n".join(group_lines) + "\n")
+        lines = [line for group_lines in plans.values() for line in group_lines]
     except OSError as ex:
         shutil.rmtree(a.out, ignore_errors=True)
         refuse(stage, "staging: cannot write %s (%s)" % (a.out, type(ex).__name__))
