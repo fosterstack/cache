@@ -830,6 +830,18 @@ for what, extra in (("a .src.tar.gz line of another version", "      uri: https:
           r_.returncode == 0 and got_ == ok_got and ok_r.returncode == 0, (r_.returncode, r_.stderr[-300:]))
 r_, got_ = run_with(MEL + "\n      uri: https://go.dev/dl/go%s.linux-s390x.tar.gz\n" % other_ver, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
 check("R6 a third real linux line of another version still refuses", r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_, (r_.returncode, r_.stderr[-200:]))
+for what, extra in (("a comment line holding a go.dev Go URL of another version",
+                     "      # Previous toolchain: https://go.dev/dl/go%s.linux-amd64.tar.gz\n" % other_ver),
+                    ("a uri line on another host with another version",
+                     "      uri: https://evil.example/dl/go%s.linux-amd64.tar.gz\n" % other_ver)):
+    r_, got_ = run_with(MEL + "\n" + extra, two)
+    check("R6 a melange.yaml with the normal lines plus %s works as with the normal lines" % what,
+          r_.returncode == 0 and got_ == ok_got and ok_r.returncode == 0, (r_.returncode, r_.stderr[-300:]))
+foreign_ = MEL.replace("https://go.dev/dl/", "https://evil.example/dl/")
+r_, got_ = run_with(foreign_, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
+check("R6 a melange.yaml whose Go fetch URIs are all on another host refuses, nothing written",
+      r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-200:]))
 many = {"statements": [scoped("CVE-R6-%d" % i, "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/stdlib@%s.%s.%d" % (_maj, _min, int(_pat) - 1 - i)} for i in range(5)] + [{"@id": f"pkg:golang/stdlib@{BUILD_GO}"}]}]) for i in range(2)]}
 count_open = ("import builtins, io, atexit, sys\n_n = [0]; _o = builtins.open\n"
               "def _op(f, *a, **k):\n    if str(f).endswith('melange.yaml'): _n[0] += 1\n    return _o(f, *a, **k)\n"
