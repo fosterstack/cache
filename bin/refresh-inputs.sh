@@ -32,7 +32,8 @@ SELF=refresh-inputs.sh
 # and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY that differs from this file only in occurrences of those ten paths,
 # each replaced one for one by a dispatcher.
 dir_empty() { local e; for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do { [ -e "$e" ] || [ -L "$e" ]; } && return 1; done; return 0; }   # no ls
-# every check and every file the job makes is in bin/refresh-inputs.py (python3 -I -B bin/refresh-inputs.py MODE REPO ...), run from the repository root
+# every check and every file the job makes is in bin/refresh-inputs.py (python3 -I -B bin/refresh-inputs.py MODE REPO
+# ...), run from the repository root
 # the one repository identity: the commit is created on it and its verification is asked of it
 slug=${GITHUB_REPOSITORY:-fosterstack/cache}
 
@@ -193,7 +194,8 @@ open-pr)
     case ${archive_digest#sha256:} in *[!0-9a-f]*) die "--archive-digest must be sha256:<64 lower-case hex>";; esac
     [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
   fi
-  /usr/bin/python3 -I -B bin/refresh-inputs.py open-pr-plan "$repo" "$plan_dir" "$archive" "$archive_digest" "$tmp" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py open-pr-plan "$repo" "$plan_dir" "$archive" "$archive_digest" "$tmp" \
+    || exit $?
   nc=0; read -r nc <"$tmp/ncount" 2>/dev/null || nc=0
   [ "$nc" != 0 ] || exit 0
   # the validated plans, one open_pr each, in plan order
@@ -305,7 +307,8 @@ fips-module)
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ "$staged" = 1 ] || [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  /usr/bin/python3 -I -B bin/refresh-inputs.py fips-module "$repo" "$pr_author" "$goroot" "$modfile" "$tmp" "$staged" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py fips-module "$repo" "$pr_author" "$goroot" "$modfile" "$tmp" "$staged" \
+    || exit $?
   [ -s "$tmp/new" ] || exit 0
   { IFS= read -r newest; IFS= read -r cur; } <"$tmp/new"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/paths"
