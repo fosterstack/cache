@@ -399,6 +399,13 @@ class PoamRecheck(TmpCase):
         self.assertEqual([s["vulnerability"]["name"] for s in kept["statements"]], ["CVE-1", "CVE-2"])      # nothing was removed
 
 
+class PoamPlanRemoval(TmpCase):
+    def test_no_vex_file_is_nothing_to_remove_and_writes_nothing(self):
+        path = self.p("supp", ".vex", "a.openvex.json")
+        self.assertIsNone(poam._plan_removal(path, {"CVE-1"}))
+        self.assertFalse(os.path.exists(self.p("supp")))
+
+
 class PoamAcceptGuard(TmpCase):
     def test_not_reachable_no_fix_is_refused(self):
         for i, f in enumerate(({"cve": "CVE-1", "reachable": False, "fix_pullable": False},
