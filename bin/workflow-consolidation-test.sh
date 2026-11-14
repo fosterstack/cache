@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-DEP-002-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -133,7 +133,7 @@ for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
         bad.append("%s still exists" % gone)
 if not os.path.exists(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")):
     bad.append("dependabot-auto-merge.yml was moved, but its events differ from ci.yml's")
-# every required or release-only check is produced by a top-level job (name or id) of some workflow, on its scope's event
+# every required or release-only check is produced by a top-level job of some workflow, on its scope's event
 names = {}
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
     w = d if os.path.basename(wf) == "ci.yml" else yaml.load(open(wf), Loader=yaml.BaseLoader)
@@ -142,16 +142,17 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
     for jid, j in (w.get("jobs") or {}).items():
         if "uses" in j:
             continue
-        names.setdefault(j.get("name") or jid, set()).update(events)
-policy = [json.load(open(os.path.join(root, ".github/policy", f)))["required_checks"]
-          for f in ("required-checks.json", "release-only-checks.json")]
-for rc in policy[0] + policy[1]:
-    ev = "push" if rc["scope"] == "push" else "pull_request"
-    if rc["integration_id"] != 15368:
-        continue                                    # the review gate's App check, published by the App, not a job
-    if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
-            not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
-        bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
+        name = j.get("name") or jid
+        axes = ((j.get("strategy") or {}).get("matrix") or {}).values()
+        for rendered in [f"{name} ({v})" for v in next(iter(axes), [])] or [name]:   # a matrix job is named per value
+            names.setdefault(rendered, set()).update(events)
+for policy_file in ("required-checks.json", "release-only-checks.json"):
+    for rc in json.load(open(os.path.join(root, ".github/policy", policy_file)))["required_checks"]:
+        ev = "push" if rc["scope"] == "push" else "pull_request"
+        if rc["integration_id"] != 15368:
+            continue                                # the review gate's App check, published by the App, not a job
+        if ev not in names.get(rc["context"], set()):
+            bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
