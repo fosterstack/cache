@@ -1108,6 +1108,41 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
+# the seven release-only names are reserved (REQ-REL-013-AC3): no job but the one that produces each may carry it, by job id,
+# by literal name or by a name with an expression; auditor-review-gate is the App's alone, so no Actions job may carry it
+reserved_wf() {  # <name> <jobs of an extra workflow zz.yml>
+  rm -rf "$work/rs-$1"; mkdir -p "$work/rs-$1"; cp "$here"/.github/workflows/*.y*ml "$work/rs-$1/"
+  printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n%s' "$2" > "$work/rs-$1/zz.yml"
+}
+JOB='    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n'
+for mut in "gate-name|  zz:\n    name: auditor-review-gate\n" "gate-id|  auditor-review-gate:\n" \
+  "gate-expr|  zz:\n    name: 'auditor-review-gate (\${{ matrix.v }})'\n" "coverage-name|  zz:\n    name: coverage\n" \
+  "coverage-id|  coverage:\n" "gradle-name|  zz:\n    name: acceptance-gradle\n" "gradle-id|  acceptance-gradle:\n" \
+  "maven-literal|  zz:\n    name: acceptance-maven (1.2.0)\n" "maven-id|  acceptance-maven:\n" \
+  "maven-expr|  zz:\n    name: 'acceptance-maven (\${{ matrix.v }})'\n" "chain-expr|  zz:\n    name: 'allowlist-chain (\${{ matrix.v }})'\n" \
+  "persona-expr|  zz:\n    name: 'allowlist-persona (\${{ matrix.v }})'\n"; do
+  reserved_wf "${mut%%|*}" "$(printf "${mut#*|}${JOB}")"
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS reserved-${mut%%|*} → bad"; else failn=$((failn+1)); echo "FAIL reserved-${mut%%|*} → $got, want bad ($out)"; fi
+done
+# a producer of one reserved name carrying another's, and the names inside ci.yml
+rm -rf "$work/rs-swapped"; mkdir -p "$work/rs-swapped"; cp "$here"/.github/workflows/*.y*ml "$work/rs-swapped/"
+python3 - "$work/rs-swapped/acceptance.yml" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+assert "  acceptance-maven:\n    name: acceptance-maven\n" in t
+open(sys.argv[1], "w").write(t.replace("  acceptance-maven:\n    name: acceptance-maven\n", "  acceptance-maven:\n    name: acceptance-gradle\n", 1))
+PY
+if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-swapped" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS reserved-producer-swapped → bad"; else failn=$((failn+1)); echo "FAIL reserved-producer-swapped → $got, want bad ($out)"; fi
+ZZ="{'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]"
+case_ reserved-gate-in-ci          bad "d['jobs']['zz'] = dict($ZZ, 'name': 'auditor-review-gate'})"
+case_ reserved-gate-id-in-ci       bad "d['jobs']['auditor-review-gate'] = $ZZ}"
+case_ reserved-maven-in-ci         bad "d['jobs']['zz'] = dict($ZZ, 'name': 'acceptance-maven'})"
+case_ reserved-maven-expr-in-ci    bad "d['jobs']['zz'] = dict($ZZ, 'name': 'acceptance-maven (\${{ matrix.v }})'})"
+case_ reserved-gradle-id-in-ci     bad "d['jobs']['acceptance-gradle'] = $ZZ}"
+case_ reserved-coverage-expr-in-ci bad "d['jobs']['lint']['name'] = 'coverage (\${{ matrix.v }})'"
+
 # the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them);
 # allowlist-chain is in release-only-checks.json, so these edit that file
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
