@@ -47,9 +47,6 @@ MK="$(mktemp -d)"; trap 'rm -rf "$MK"' EXIT
 cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/.github/agent/tests/auditor-matrix-test.sh" | sort -u; }
 # copies are git repositories (the layout case lists tracked files), never the real checkout's .git
 gitify() { ( cd "$1" && git init -q && git add -A && git -c user.name=m -c user.email=m@m -c commit.gpgsign=false commit -qm copy ) >/dev/null 2>&1; }
-passes_of() {   # passes_of <workdir>  -> prints the pass case names (one per line)
-  ( cd "$1" && bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
-}
 
 # run_mutant <label> <mode> <standin> [workflow-variant]
 # installs the stand-in under every command name (with AUDIT_MUTANT=<mode>), prints passes.
@@ -101,6 +98,9 @@ assert_contains() {  # assert_contains <label> <needle> <haystack-lines...>
 }
 assert_absent() {  # assert_absent <label> <needle> <haystack-lines...>
   local label="$1" needle="$2"; shift 2
+  # a needle that is no case of the suite can never fail, so it would pass vacuously
+  if ! grep -qF "begin \"$needle\"" "$repo/.github/agent/tests/auditor-matrix-test.sh"; then
+    echo "FAIL  ${label}: '${needle}' is not a case of the matrix suite"; fails=$((fails+1)); return; fi
   if printf '%s\n' "$@" | grep -qx "$needle"; then echo "FAIL  ${label}: '${needle}' should have failed but passed"; fails=$((fails+1)); else
     echo "PASS  ${label}: '${needle}' correctly failed"; fi
 }
@@ -157,7 +157,8 @@ QUOTED_WF="${INERT_WF/on:/\'on\':}"
 PC="$(run_mutant "workflow-comment-oidc" "wrong-effects" "$EFFECT" "$INERT_WF")"
 marker_ok "workflow-comment-oidc"
 assert_absent "workflow-comment-oidc" "req6-ac1-oidc-federation-no-api-key" $PC
-assert_absent "workflow-comment-oidc" "req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" $PC
+assert_absent "workflow-comment-oidc" "req6-ac1-identifiers-are-env-secrets" $PC
+assert_absent "workflow-comment-oidc" "req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" $PC
 assert_absent "workflow-comment-oidc" "req1-ac1-schedule-cron-offset" $PC
 
 PF="$(run_mutant "workflow-forbidden-push" "wrong-effects" "$EFFECT" "$PUSH_WF")"
@@ -180,7 +181,7 @@ probe recheck-flags-only             req2-ac5c-expiry-reopens-item
 probe recheck-flags-only             req2-ac7-every-run-recheck
 probe reconcile-wrong-row            req3-ac5-second-exact-key-same-row
 probe known-exploited-omitted        req2-ac5b-known-exploited-alone
-probe entrypoint-noop                req12-ac1-dryrun-produces-report-vex-accepteditems-misses-only-no-shim
+probe entrypoint-noop                req12-ac1-dryrun-deterministic-rows-actions-status
 
 echo "=== README independence (no command under test reads fixtures/README.md) ==="
 A="$(mktemp -d)"; B="$(mktemp -d)"; rsync -a --exclude .git "$repo/" "$A/"; rsync -a --exclude .git "$repo/" "$B/"
