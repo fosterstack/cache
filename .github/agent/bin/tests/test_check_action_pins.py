@@ -872,7 +872,7 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"   # main's gate workflow
-GATE_B = "474800cf840be013282a83decd20b20ba8fc05ed359d15c6fca31f70e77d2d8e"   # the same file after this change
+GATE_B = "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89"   # the same file after this change
 # this change's edits to the gate workflow (old text, new text): its header, its notice and its sweep summary no
 # longer say that a run Dependabot triggered has no App credentials, and its sweep judges a green Dependabot head
 # again, for the reviewer's verdict only (publishing only when the conclusion differs); either variant is derived
@@ -938,10 +938,15 @@ GATE_HUNKS = (
      'fail=1\n'),
     # the judge's reader asks for the head's pull requests and check runs: both jobs that run it hold those scopes
     ('    permissions:\n      contents: read\n    outputs:\n',
-     '    permissions:\n      contents: read\n      checks: read\n      pull-requests: read\n    outputs:\n'),
+     '    permissions:\n      contents: read\n      checks: read   # the judge reads the head\'s check runs\n'
+     '      pull-requests: read   # and the pull requests that share the head\n    outputs:\n'),
     ('    environment: agent\n    permissions:\n      contents: read\n      pull-requests: read\n    steps:\n',
-     '    environment: agent\n    permissions:\n      contents: read\n      pull-requests: read\n'
-     '      checks: read\n    steps:\n'),
+     '    environment: agent\n    permissions:\n      contents: read\n'
+     '      pull-requests: read   # the sweep lists open pull requests and their heads\n'
+     '      checks: read   # and the judge it runs reads each head\'s check runs\n    steps:\n'),
+    # what the judge step's token reads
+    ('          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit\n',
+     '          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit; the judge reads check runs and pull requests with it\n'),
 )
 
 
