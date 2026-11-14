@@ -26,11 +26,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (read only: the building jobs hold no identity token).
+  # The candidate build (REQ-CHAIN-004-AC12, AC14): release.yml in SNAPSHOT mode, no tag and no admission. The caller grants the called file's permission set as a ceiling
+  # (every job of release.yml keeps its own minimal block, and every job that writes or holds an id-token is guarded off in snapshot mode).
   build:
-    uses: ./.github/workflows/stage-build.yml
+    uses: ./.github/workflows/release.yml
     permissions:
-      contents: read
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
       checks: read
       statuses: read
       pull-requests: read
