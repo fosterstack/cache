@@ -416,9 +416,10 @@ def _head_is(ws, pr, oid):
 def _os_failure(ex, command):
     """Why `command` did not start: `ex` is the OSError subprocess raised."""
     name = ex.filename or command
+    why = ex.strerror or type(ex).__name__
     if isinstance(ex, FileNotFoundError):
-        return "%s is missing: %s" % (name, ex.strerror)
-    return "%s: %s" % (name, ex.strerror)
+        return "%s is missing: %s" % (name, why)
+    return "%s: %s" % (name, why)
 
 
 def _find_pr(ws, branch):
