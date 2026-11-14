@@ -89,6 +89,8 @@ def code_lines(text):
 def bare(text):
     """Text without quotes and braces, so `"$st"`, $st and ${st} read alike."""
     return re.sub(r'["{}]', "", text)
+def is_kms_call(rel, line):
+    return KMS_WORD.search(line) and not (rel == WRAPPER and line == WRAPPER_CASE)
 def resolve_statement(rel, n, lines, file, add, bad):
     """The type of a --dsse-statement call is the one predicateType literal of the one jq line that writes its file.
     The file is named on exactly two logical lines, its writer and this call: the call and every
@@ -99,11 +101,12 @@ def resolve_statement(rel, n, lines, file, add, bad):
     for i, x in others:
         w = WRITER.fullmatch(x)
         if w: writers.append((i, w))
-    if len(others) == 1 and writers and writers[0][1].group("file") == file:
-        m = writers[0][1]
+    if writers: first_at, first = writers[0]
+    if len(others) == 1 and writers and first.group("file") == file:
+        m = first
     else:
         failing = {n} | {i for i, _ in others}
-        if writers: failing.discard(writers[0][0])
+        if writers: failing.discard(first_at)
         for at in sorted(failing):
             bad.append("%s: line %d: kms-sign --dsse-statement file without exactly one jq writer line (fail closed)"
                        % (rel, at))
@@ -181,13 +184,12 @@ def scan(rel, text, raw=False):
     if raw:
         lines = code_lines(text)
         for n, line in lines:
-            if not KMS_WORD.search(line) or (rel == WRAPPER and line == WRAPPER_CASE): continue
+            if not is_kms_call(rel, line): continue
             m = KMS_CALL.fullmatch(line)
             if not m: bad.append("%s: line %d: kms-sign in a form the scan does not read (fail closed)" % (rel, n))
             elif m.group("digest"): add("urn:cosign:signature")
             else: resolve_statement(rel, n, lines, m.group("file"), add, bad)
-        calls = [x for _, x in lines if KMS_WORD.search(x) and not (rel == WRAPPER and x == WRAPPER_CASE)]
-        if calls:    # a heredoc body could hold the one writer line unseen
+        if any(is_kms_call(rel, x) for _, x in lines):    # a heredoc body could hold the one writer line unseen
             bad += ["%s: line %d: a heredoc in a script that calls kms-sign (fail closed)" % (rel, n)
                     for n, line in lines if "<<" in line]
 BAD = bad
@@ -899,7 +901,15 @@ printf '%s\n' '#!/usr/bin/env bash' \
   "cat <<'X'" usage X > "$d/bin/with-aws-token.sh"
 listed "$d" bin/with-aws-token.sh jq
 expect ok "r10 a heredoc in bin/with-aws-token.sh beside its accepting line is fine" "$d"
-EXPECT=169
+
+d=$(mk r12wrapcallhd); mkdir -p "$d/bin"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case "${1:-}" in sign-record|sign|kms-sign) ;; *) echo "with-aws-token: the first argument must be '\
+'sign-record, sign or kms-sign" >&2; exit 2 ;; esac' \
+  'bash bin/with-aws-token.sh kms-sign --digest "$dg"' "cat <<'X'" usage X > "$d/bin/with-aws-token.sh"
+listed "$d" bin/with-aws-token.sh jq
+expect_named "r12 the wrapper's accepting line, a kms-sign call and a heredoc fails, naming the heredoc line" "$d" "bin/with-aws-token.sh: line 4:"
+EXPECT=170
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
