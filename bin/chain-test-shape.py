@@ -308,8 +308,11 @@ EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 EXPOSE_RECORDS = 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"'
 # the Rebuild apk job (one job, a matrix over both chips) writes the sha256 of its record to a file and uploads it as rebuild-records-<runner>, never as a job output (ruling 8 of cache#921);
 # assemble downloads both files and checks what it downloaded of each rapk record against them (adversarial pass round 6, A1)
-RAPK_RECORDS_FILE = 'bash bin/rebuild-records-digests.sh --rapk "${{ matrix.runner }}" witness-rapk > rebuild-records.json'
-RAPK_CHECK_RUN = 'bash bin/rebuild-records-digests.sh --check "$(cat rec-digests/ubuntu-24.04/rebuild-records.json)" "$(cat rec-digests/ubuntu-24.04-arm/rebuild-records.json)"'
+# the script writes the file itself; the leg's runner comes in as the step env LEG (the judge refuses an env named RUNNER*)
+RAPK_RECORDS_FILE = 'bash bin/rebuild-records-digests.sh --rapk "$LEG" witness-rapk rebuild-records.json'
+RAPK_RECORDS_ENV = {"LEG": "${{ matrix.runner }}"}
+RAPK_CHECK_RUN = ('bash bin/rebuild-records-digests.sh --check rec-digests/ubuntu-24.04/rebuild-records.json '
+                  'rec-digests/ubuntu-24.04-arm/rebuild-records.json')
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
 JOBS = {  # (family, job id of release.yml) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
     # judged by freeze_job(): no Witness step, no mode, no tools; the job carries gate G as its if
@@ -535,8 +538,9 @@ def job(j, family, name, allowed):
             bad.append("step %d must be exactly id: digests, run: %s (the stage output is the digests.json text, compact)" % (i, EXPOSE))
     if spec.get("records_file"):
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"name", "if", "run"} or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != RAPK_RECORDS_FILE:
-            bad.append("step %d must be exactly if: %s, run: %s (the record digests of this apk job, written to a file that is uploaded, release mode only; never a job output)" % (i, MODE_RELEASE_IF, RAPK_RECORDS_FILE))
+        if (set(s) - {"name", "if", "env", "run"} or s.get("if") != MODE_RELEASE_IF or s.get("env") != RAPK_RECORDS_ENV
+                or str(s.get("run") or "").strip() != RAPK_RECORDS_FILE):
+            bad.append("step %d must be exactly if: %s, env LEG: ${{ matrix.runner }}, run: %s (the record digests of this apk job, written to a file that is uploaded, release mode only; never a job output)" % (i, MODE_RELEASE_IF, RAPK_RECORDS_FILE))
     if spec.get("expose_records"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "if", "run"} or s.get("id") != "records" or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != EXPOSE_RECORDS:
