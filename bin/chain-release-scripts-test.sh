@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-008-AC1, REQ-CHAIN-008-AC2, REQ-CHAIN-008-AC3, REQ-CHAIN-008-AC4, REQ-CHAIN-008-AC5, REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4
+# proves: REQ-CHAIN-008-AC1, REQ-CHAIN-008-AC2, REQ-CHAIN-008-AC3, REQ-CHAIN-008-AC4, REQ-CHAIN-008-AC5, REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4, REQ-REL-014-AC1, REQ-REL-014-AC2, REQ-REL-014-AC3
 # RED until PR 4 is implemented (bin/release-verify.sh, release-apks.sh, release-publish.sh, release-sign.sh, release-assets.sh, release-postverify.sh/.py do not exist): step 4.
 #
 # Release, behaviour half (v0.3.0 rules 5, 17, 29, 53b, 56, 57, 64, 69, 71; advisor rulings of Oct 9: rc tags like finals, the release policy
@@ -99,6 +99,10 @@ echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL:-}" ] || { echo "gh failed" >&2; exit 1; }
 [ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
 [ -z "${GH_VIEW_ERR:-}" ] || [ "$1 $2" != "release view" ] || { echo "$GH_VIEW_ERR" >&2; exit 1; }
+[ "$1 $2" != "release list" ] || { [ -z "${CONTROLS_RELEASES:-}" ] || cat "$CONTROLS_RELEASES"; exit 0; }
+if [ "$1" = api ]; then all="$*"; ref=${all##*ref=}; f="${CONTROLS_DOCS:-/nonexistent}/$ref"
+  [ ! -f "$f.err" ] || { cat "$f.err" >&2; exit 1; }
+  [ -f "$f" ] && { cat "$f"; exit 0; }; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
 if [ "$1 $2" = "release create" ] || [ "$1 $2" = "release edit" ]; then a=("$@"); for i in "${!a[@]}"; do
   [ "${a[$i]}" = --notes-file ] && cp "${a[$((i+1))]}" "$LOG.notes"; [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"; done; fi
 pub="$LOG.published"
@@ -773,6 +777,65 @@ for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: con
     t4 = full_assets(); rc4, so4, se4 = run(t4, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": err})
     check(rc4 != 0 and not [l for l in log(t4) if l.startswith("gh release create") or l.startswith("gh release upload")], "AC9 R3 a failed release view (%s) is not 'no release': nothing is created or uploaded" % err, "rc=%s %s" % (rc4, first(se4)))
 
+# ---- REQ-REL-014: a release that changes the controls document says so at the top of its notes -------------------------------------------------------
+CTL_TEXT = "Adds a step for key rotation"
+def ctl_doc(*rows):
+    """a controls.md with the given (version, change text) rows, in the order given"""
+    return "# Controls\n\n| Version | Signed | Change |\n|---|---|---|\n" + "".join("| %s | 2026-11-%02d | %s |\n" % (v, 10 + i, c) for i, (v, c) in enumerate(rows))
+V1, V2 = (1, "First issue"), (2, CTL_TEXT)
+def ctl_run(this_doc, earlier=None, gen=False, tag="v0.3.0"):
+    """earlier: {tag: document, or None for a 404, or an error text starting with 'ERR '}; the fake gh lists those tags and answers for each one"""
+    t = full_assets(); cd = os.path.join(t, "cdocs"); os.makedirs(cd)
+    if this_doc is not None:
+        os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/controls.md"), "w").write(this_doc)
+    for name, doc in (earlier or {}).items():
+        if doc is None: continue      # listed, but the fake has no document for it: gh answers 404
+        open(os.path.join(cd, name + (".err" if doc.startswith("ERR ") else "")), "w").write(doc[4:] if doc.startswith("ERR ") else doc)
+    open(os.path.join(t, "releases"), "w").write("".join(n + "\n" for n in (earlier or {})))
+    env = {"GH_VIEW_ERR": "release not found", "CONTROLS_RELEASES": os.path.join(t, "releases"), "CONTROLS_DOCS": cd}
+    if gen: open(os.path.join(t, "tagobj"), "w").write(GEN); env["TAG_OBJECT"] = os.path.join(t, "tagobj")
+    return (t,) + run(t, "release-assets", creds=["GH_TOKEN"], env=env, tag=tag)
+def ctl_notice(t, base):
+    """what stands before the notes of today: None when the notes do not end with them"""
+    n = notes_of(t) or ""
+    return n[:len(n) - len(base)] if n.endswith(base) else None
+GEN_NOTES = ctl_run(None, gen=True); GEN_NOTES = notes_of(GEN_NOTES[0])
+def ctl_has(notice, *words): return notice is not None and all(w.lower() in notice.lower() for w in words)
+def ctl_stops(t, rc, se):
+    return rc != 0 and se.strip() != "" and "controls.md" in se and "Traceback" not in se and not [l for l in log(t) if re.match(r"gh release (create|edit|upload)", l)]
+
+# AC1: the notice is the very start of the notes; the notes of today follow it unchanged
+for what, gen, base in (("the fixed evidence text", False, FIXED), ("a generated patch tag's notes", True, GEN_NOTES)):
+    t, rc, so, se = ctl_run(ctl_doc(V1, V2), {"v0.2.0": ctl_doc(V1)}, gen=gen)
+    nt = ctl_notice(t, base)
+    check(rc == 0 and ctl_has(nt, "controls document", "changes in this release", "version 1", "version 2", CTL_TEXT) and len(nt.strip().split("\n")) <= 6,
+          "REQ-REL-014-AC1 version 1 before and 2 now: the notes start with the notice (old version, new version, the change text) and %s follow unchanged" % what, "rc=%s %s notes=%r" % (rc, first(se), notes_of(t)))
+t, rc, so, se = ctl_run(ctl_doc(V1, V2), {"v0.2.0": None})
+nt = ctl_notice(t, FIXED)
+check(rc == 0 and ctl_has(nt, "controls document", "changes in this release", "none", "version 2", CTL_TEXT), "REQ-REL-014-AC1 an earlier release without the document (404): the notice gives the old version as none", "rc=%s %s notes=%r" % (rc, first(se), notes_of(t)))
+many = {"v0.2.10": ctl_doc(V1, V2), "v0.2.9": ctl_doc(V1), "v0.1.0": ctl_doc(V1), "v0.2.10-rc1": ctl_doc(V1, V2, (3, "x")), "v0.3.0": ctl_doc(V1, V2, (3, "x")),
+        "v0.4.0": ctl_doc(V1, V2, (3, "x")), "nightly": ctl_doc(V1, V2, (3, "x"))}
+t, rc, so, se = ctl_run(ctl_doc((3, "Adds an audit step"), V2, V1), many)
+nt = ctl_notice(t, FIXED); L = " ".join(log(t))
+check(rc == 0 and ctl_has(nt, "version 2", "version 3", "Adds an audit step") and not ctl_has(nt, "version 1") and "ref=v0.2.10" in L,
+      "REQ-REL-014-AC1 of several earlier tags (an rc, a higher tag, this tag, a non-version name, older finals) the compared one is the highest final below this tag", "rc=%s %s notes=%r" % (rc, first(se), notes_of(t)))
+
+# AC2: no change, no document at this tag, or no earlier final release: the notes are what they are today and say nothing of the controls
+for why, this_doc, earlier in (("the same version in both", ctl_doc(V1, V2), {"v0.2.0": ctl_doc(V1, V2)}),
+                               ("no document at this tag", None, {"v0.2.0": ctl_doc(V1)}),
+                               ("no earlier final release", ctl_doc(V1, V2), {}),
+                               ("only an rc and a non-version name before", ctl_doc(V1, V2), {"v0.2.0-rc1": ctl_doc(V1), "nightly": ctl_doc(V1)})):
+    for what, gen, base in (("the fixed evidence text", False, FIXED), ("a generated patch tag's notes", True, GEN_NOTES)):
+        t, rc, so, se = ctl_run(this_doc, earlier, gen=gen)
+        check(rc == 0 and notes_of(t) == base and "controls" not in (notes_of(t) or "").lower(), "REQ-REL-014-AC2 %s: the notes are %s, nothing about the controls" % (why, what), "rc=%s %s notes=%r" % (rc, first(se), notes_of(t)))
+
+# AC3: a document that cannot be trusted stops the step before a release is created or anything is uploaded
+for why, this_doc, earlier in (("a document at this tag with no version row", "# Controls\n\nNothing signed yet.\n", {"v0.2.0": ctl_doc(V1)}),
+                               ("an empty change text on the newest row", ctl_doc(V1, (2, "")), {"v0.2.0": ctl_doc(V1)}),
+                               ("an earlier release whose document fails with a 502", ctl_doc(V1, V2), {"v0.2.0": "ERR HTTP 502: Bad Gateway"})):
+    t, rc, so, se = ctl_run(this_doc, earlier)
+    check(ctl_stops(t, rc, se), "REQ-REL-014-AC3 %s: one line naming controls.md, no release created, edited or uploaded to" % why, "rc=%s %s" % (rc, first(se)))
+
 # A re-run of the job (cache6 P2, cache#798 round 1): release-sign signs again (new bundles, the run attempt in the
 # manifest), so its evidence never equals the attached one, and gh refuses the whole upload when any name is
 # attached. gh's refusal is the behaviour: no step deletes an attached asset, an operator does by hand
@@ -1365,7 +1428,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "534"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "549"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

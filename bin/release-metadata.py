@@ -14,6 +14,10 @@
         file of this version, in this order
   release-metadata.py gate     --dir DIR [--same-as STAGED_DIR]
         every file of the release assets directory is covered; see GATE below
+  release-metadata.py previous-release --tag T          (release tag names on stdin)
+        the highest final tag below T, nothing printed when there is none
+  release-metadata.py controls-notice --old FILE --new FILE
+        the notice for the top of a release note when the version of the controls document differs (nothing otherwise)
 
 Every refusal exits 1 and names the file or the key; an output file is written only after every check passed. Offline."""
 import argparse, hashlib, json, os, re, sys
@@ -465,6 +469,41 @@ def cmd_tag_notes(a):
     sys.stdout.write(body.strip() + "\n")
 
 
+def cmd_previous_release(a):
+    def key(tag):
+        return tuple(int(n) for n in tag[1:].split("."))
+    below = [t for t in sys.stdin.read().split() if FINAL.fullmatch(t) and key(t) < key(a.tag)]
+    if below:
+        print(max(below, key=key))
+
+
+def controls_version(path):
+    """(highest version, its change text) from the rows `| 2 | 2026-11-20 | Adds a step |`; None for an empty file."""
+    with open(path) as f:
+        text = f.read()
+    if not text.strip():
+        return None
+    rows = []
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) > 3 and cells[0] == "" and cells[1].isascii() and cells[1].isdigit():
+            rows.append((int(cells[1]), cells[3]))
+    if not rows:
+        refuse("docs/controls.md has no readable version row")
+    if not max(rows)[1]:
+        refuse("docs/controls.md version %d has no change text" % max(rows)[0])
+    return max(rows)
+
+
+def cmd_controls_notice(a):
+    old, new = controls_version(a.old), controls_version(a.new)
+    if new is None or (old and old[0]) == new[0]:
+        return
+    print("## CONTROLS DOCUMENT CHANGES IN THIS RELEASE: version %s -> version %d" % (old[0] if old else "none", new[0]))
+    print("What changed: " + new[1])
+    print("Signing this tag approves controls document version %d.\n" % new[0])
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -478,9 +517,12 @@ def main(argv):
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
     n = sub.add_parser("tag-notes"); n.add_argument("--tag", required=True); n.add_argument("--object", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
+    sub.add_parser("previous-release").add_argument("--tag", required=True)
+    k = sub.add_parser("controls-notice"); k.add_argument("--old", required=True); k.add_argument("--new", required=True)
     c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums, "tag-notes": cmd_tag_notes}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums, "tag-notes": cmd_tag_notes,
+     "previous-release": cmd_previous_release, "controls-notice": cmd_controls_notice}[a.cmd](a)
 
 
 if __name__ == "__main__":

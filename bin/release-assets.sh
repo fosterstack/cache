@@ -79,11 +79,32 @@ done
 if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; exit 1; fi
 # The release's notes: a generated patch tag's notes (REQ-REL-009-AC8; bin/release-metadata.py tag-notes accepts only the release workflow's own patch tag), else
 # the fixed evidence text. Only a definite "release not found" creates a release; any other failure of the view stops here (round 1 R3).
-notes=(--notes "Evidence: see docs/verify-release.md for the verification commands of this release.")
+fixed="Evidence: see docs/verify-release.md for the verification commands of this release."
+notes=(--notes "$fixed")
 if git cat-file tag "$rel" > release-tag.txt 2> /dev/null && python3 bin/release-metadata.py tag-notes --tag "$rel" --object release-tag.txt > release-notes.md 2> /dev/null && [ -s release-notes.md ]; then
   notes=(--notes-file release-notes.md)
 fi
 rm -f release-tag.txt
+# The notice comes first when the controls document changes in this release (REQ-REL-014). The checkout holds only this tag, so the earlier
+# release and its document are read with gh; only "Not Found" means the document was not there, any other failure stops the step.
+new=docs/controls.md; [ -f "$new" ] || new=/dev/null
+prev=$(gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' | python3 bin/release-metadata.py previous-release --tag "$rel")
+: > controls-notice.md
+if [ -n "$prev" ]; then
+  old=controls-old.md
+  if ! gh_err=$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/{owner}/{repo}/contents/docs/controls.md?ref=$prev" 2>&1 > "$old"); then
+    [[ "$gh_err" == *"Not Found"* ]] || { echo "release-assets: cannot read docs/controls.md of $prev: $gh_err" >&2; exit 1; }
+    : > "$old"
+  fi
+  python3 bin/release-metadata.py controls-notice --old "$old" --new "$new" > controls-notice.md
+fi
+if [ -s controls-notice.md ]; then
+  [ -s release-notes.md ] || printf '%s' "$fixed" > release-notes.md
+  cat controls-notice.md release-notes.md > release-body.md
+  mv release-body.md release-notes.md
+  notes=(--notes-file release-notes.md)
+fi
+rm -f controls-old.md controls-notice.md
 if ! view_err=$(gh release view "$rel" 2>&1 > /dev/null); then
   [[ "$view_err" == *"release not found"* ]] || { echo "release-assets: cannot tell whether release $rel exists: $view_err" >&2; exit 1; }
   gh release create "$rel" --title "fscache $rel" "${notes[@]}" --verify-tag
