@@ -559,7 +559,6 @@ for name, pulls in (
     ("only a human pull request has the head", [HUMAN]),
     ("two Dependabot pull requests have the head", [DEP, mut(DEP, ["number"], 8)]),
     ("Dependabot's pull request has another head", [mut(DEP, ["head", "sha"], "c" * 40)]),
-    ("the answer is a full page of 100", [DEP] + [mut(HUMAN, ["state"], "closed")] * 99),
     ("an item is not a pull request", [DEP, "x"]), ("an item has no state", [DEP, mut(HUMAN, ["state"], A)]),
     ("an item has no head", [DEP, mut(HUMAN, ["head"], None)]),
     ("an item has an empty head", [DEP, mut(HUMAN, ["head"], {})]),
@@ -571,6 +570,16 @@ for name, pulls in (
     ("no pull request at all", []), ("the answer is not a list", DEP), ("no answer", None),
 ):
     check("bump: the record rule stands when " + name, A.bump_pull(HEAD, pulls) is None, A.bump_pull(HEAD, pulls))
+
+def raises_api_error(fn):
+    try: fn()
+    except A._ApiError: return True
+    except Exception as e: return repr(e)
+    return False
+FULL_PULLS = [DEP] + [mut(HUMAN, ["state"], "closed")] * 99
+check("bump: a full page of 100 pull requests is a read that failed: _ApiError, not a refusal",
+      raises_api_error(lambda: A.bump_pull(HEAD, FULL_PULLS)) is True)
+check("bump: 99 pull requests are the whole answer", A.bump_pull(HEAD, FULL_PULLS[:99]) == DEP)
 
 REVIEWER_PY = os.path.join(os.path.dirname(JUDGE_SH), "dependabot-reviewer.py")
 VERSION_FILES = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
@@ -621,7 +630,6 @@ for name, answer, want in (
     ("a completed run that was cancelled", runs(run(1, "cancelled")), "cancelled"),
     ("a completed run whose conclusion is the word none (not the absence of a run)", runs(run(1, "none")), "none"),
     ("a completed run with no conclusion", runs(run(1, None)), None),
-    ("a full page of 100 runs (GitHub may have cut it)", runs(*[run(i) for i in range(1, 101)]), None),
     ("99 runs, the newest a failure: the whole answer", runs(*[run(i) for i in range(1, 99)], run(99, "failure")),
      "failure"),
     ("99 runs under a total_count of 150: the total is ignored",
@@ -639,6 +647,9 @@ for name, answer, want in (
     ("a malformed entry", runs("x"), None), ("a malformed answer", [], None), ("no answer", None, None),
 ):
     check("bump: the reviewer's verdict: %s -> %s" % (name, want), verdict(answer) == want, verdict(answer))
+
+check("bump: the reviewer's verdict: a full page of 100 runs (GitHub may have cut it) is a read that failed: _ApiError",
+      raises_api_error(lambda: verdict(runs(*[run(i) for i in range(1, 101)]))) is True)
 
 def no_pass(got): return got != "success" and got is not A.NO_RUN
 for name, answer in (
@@ -843,13 +854,37 @@ for name, head, verdicts in (
     {U1: [run(3, "failure", slug="")], D: [run(1)]}),
     ("a check entry on the head has no App, though the head before was passed", U1,
     {U1: runs(dict(run(3), app=None)), D: [run(1)]}),
-    ("the list of check runs on the head is a full page of 100, which GitHub may have cut", U1,
-    {U1: runs(*[run(i) for i in range(3, 103)]), D: [run(1)]}),
     ("the reviewer's completed run on the head has the conclusion none, though the head before was passed", U1,
     {U1: [run(3, "none")], D: [run(1)]}),
 ):
     r, c = gate(head, pulls=[dep(head)], verdicts=verdicts)
     check("gate refused: " + name, refused(r, "newest verdict on") and "not success" in r.stdout, said(r, c))
+# a full page of 100 may have been cut: a read that failed (exit 3, no verdict), not a refusal; 99 are the whole answer
+def bump_cli(head, pulls, verdicts):
+    fk = tempfile.mkdtemp(dir=d); open(fk + "/calls", "w").close()
+    open(fk + "/pulls-%s.json" % head, "w").write(json.dumps(pulls))
+    for sha, rs in verdicts.items(): open(fk + "/checks-%s.json" % sha, "w").write(json.dumps(runs(*rs)))
+    return subprocess.run([sys.executable, "-I", G + "/bin/audit-record.py", "bump", "--head", head, "--repo", "o/r",
+          "--base-root", G], capture_output=True, text=True,
+          env=dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=fk + "/calls"))
+CLOSED = [dep(D, state="closed")]
+for name, head, pulls, verdicts in (
+    ("a full page of 100 check runs on the head", U1, [dep(U1)], {U1: [run(i) for i in range(3, 103)], D: [run(1)]}),
+    ("a full page of 100 check runs on the head that is the bump", D, [dep(D)], {D: [run(i) for i in range(1, 101)]}),
+    ("a full page of 100 pull requests", D, [dep(D)] + CLOSED * 99, {D: [run(1)]}),
+):
+    r, c = gate(head, pulls=pulls, verdicts=verdicts)
+    check("gate: %s is a read that failed: exit 3, an API error, nothing on stdout" % name,
+          r.returncode == 3 and "GitHub API error" in r.stderr and r.stdout == "", said(r, c))
+    r = bump_cli(head, pulls, verdicts)
+    check("bump cli: %s is a read that failed: exit 3, an API error, nothing on stdout" % name,
+          r.returncode == 3 and "GitHub API error" in r.stderr and r.stdout == "", (r.returncode, r.stdout, r.stderr))
+r, c = gate(D, pulls=[dep(D)] + CLOSED * 98, verdicts={D: [run(1)]})
+check("gate: 99 pull requests are the whole answer: the bump passes as before",
+      r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
+r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(i) for i in range(1, 100)]})
+check("gate: 99 check runs are the whole answer: the newest, a success, passes as before",
+      r.returncode == 0 and "passed this head" in r.stdout, said(r, c))
 r, c = gate(D, pulls=[dep(D)], verdicts={D: [run(1, slug="github-actions")]})
 check("gate refused: a bump that only another App passed", refused(r, "it has no verdict"), said(r, c))
 
@@ -967,7 +1002,6 @@ for name, pulls in (("a human pull request shares the head with Dependabot's", [
                     ("it is into another branch", [mut(dep(D), ["base", "ref"], "chain-v030")]),
                     ("the Dependabot pull request GitHub names has another head", [dep(U1)]),
                     ("two Dependabot pull requests have the head", [dep(D), dep(D, number=8)]),
-                    ("GitHub answers a full page of 100 pull requests", [dep(D)] + [dep(D, state="closed")] * 99),
                     ("no pull request has the head", [])):
     r, c = gate(D, pulls=pulls, verdicts={D: [run(1)]})
     check("gate: %s: the record rule stands (exit 1, no record, no verdict asked for)" % name,
