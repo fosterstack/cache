@@ -300,8 +300,10 @@ def tagobj(msg_lines, sig=SIG):
     return "object %s\ntype commit\ntag v0.3.0\ntagger Owner <o@x> 1 +0000\n\n%s\n%s" % (HEAD, "\n".join(msg_lines),
         sig)
 APPROVED = tagobj(["Release v0.3.0", "Audit-approved: " + REC])
-def rel(tag="v0.3.0", obj=APPROVED, sha=HEAD, ref=REF, commit=COMMIT, policy=WRITERS):
-    return A.verify_release(tag, obj, sha, ref, commit, policy)
+TODAY = "2026-11-14"
+def rel(tag="v0.3.0", obj=APPROVED, sha=HEAD, ref=REF, commit=COMMIT, policy=WRITERS, items={"accepted_items": []},
+        today=TODAY):
+    return A.verify_release(tag, obj, sha, ref, commit, policy, items, today)
 ok, why = rel()
 check("release: an owner-signed v0.3.0 whose message approves the record of the tagged commit -> passes",
     ok and why == "", (ok, why))
@@ -349,6 +351,31 @@ for name, kw in (
     ("a newline after the tag", dict(tag="v0.3.0-rc1\n")),
 ):
     ok, why = rel(**kw); check("release refused: " + name, (not ok) and bool(why), (ok, why))
+# REQ-AUD-17 AC5, the judge itself: an item is read the way the auditor reads it (threshold, then expiry as text)
+def listed(threshold, expiry="2099-01-01"):
+    entry = {"cve": "CVE-2099-1", "threshold": threshold}
+    if expiry is not None: entry["expiry"] = expiry
+    return {"accepted_items": [entry]}
+for name, items, tags, passes in (
+    ("an open item (at_or_above)", listed("at_or_above"), ("v0.3.0", "v0.3.1"), False),
+    ("an open item with no expiry", listed("at_or_above", None), ("v0.3.0", "v0.3.1"), False),
+    ("a closed item (below, future expiry)", listed("below"), ("v0.3.0", "v0.3.1"), True),
+    ("a below item with no expiry", listed("below", None), ("v0.3.0", "v0.3.1"), True),
+    ("an expired item (expiry 2000-01-01)", listed("below", "2000-01-01"), ("v0.3.0", "v0.3.1"), False),
+    ("an item that expires today", listed("below", TODAY), ("v0.3.0", "v0.3.1"), False),
+    ("an item that expires tomorrow", listed("below", "2026-11-15"), ("v0.3.0", "v0.3.1"), True),
+    ("an expired open item", listed("at_or_above", "2000-01-01"), ("v0.3.0", "v0.3.1"), False),
+):
+    for tag in tags:
+        ok, why = rel(tag=tag, items=items)
+        check("release item: %s with %s -> %s" % (name, tag, "passes" if passes else "refused"),
+            ok == passes and (passes or bool(why)), (ok, why))
+for name, items in (("not an object", []), ("null", None), ("accepted_items null", {"accepted_items": None}),
+    ("accepted_items an object", {"accepted_items": {}}), ("a non-object item", {"accepted_items": [1]}),
+    ("an expiry that is not a string", {"accepted_items": [{"threshold": "below", "expiry": 5}]})):
+    ok, why = rel(tag="v0.3.1", items=items)
+    check("release item refused: malformed items (%s) names the file" % name, not ok and "accepted-items.json" in why,
+        (ok, why))
 # the command line and the wrapper in release mode
 open(os.path.join(d, "tagobj.txt"), "w").write(APPROVED)
 def relcli(tag="v0.3.0", obj="tagobj.txt", ref=REF, commit=COMMIT, sha=HEAD):
@@ -373,18 +400,20 @@ def owner_run(script, items, tag="v0.3.0", raw=None):
     cmd = [sys.executable, "-I", script, "release", "--tag", tag, "--tag-object", os.path.join(d, "tagobj.txt"),
         "--tagged-sha", HEAD, "--base-root", b, "--ref-json", w("ref.json", REF), "--commit-json", w("commit.json", COMMIT)]
     return subprocess.run(cmd, capture_output=True, text=True)
-item = lambda threshold: {"cve": "CVE-2099-1", "severity": "Critical", "package": "p", "threshold": threshold,
-    "owner_issue": 1, "expiry": "2099-01-01"}
+def item(threshold, expiry="2099-01-01"):
+    return {"cve": "CVE-2099-1", "severity": "Critical", "package": "p", "threshold": threshold, "owner_issue": 1,
+        "expiry": expiry}
 def owner_items_case(script, tag="v0.3.0"):
     held = owner_run(script, [item("at_or_above")], tag)
-    return (held.returncode == 1 and held.stdout.strip() != "" and owner_run(script, [item("below")], tag).returncode == 0
-        and owner_run(script, [], tag).returncode == 0 and owner_run(script, None, tag).returncode == 0)
+    return (held.returncode == 1 and held.stdout.strip() != "", owner_run(script, [item("below")], tag).returncode == 0,
+        owner_run(script, [], tag).returncode == 0, owner_run(script, None, tag).returncode == 0)
+results = owner_items_case(sys.argv[1])
 check("cli release: an open owner-decision item refuses the tag, a closed or absent record accepts it",
-    owner_items_case(sys.argv[1]))
+    all(results), "refused-open, accepted-closed, accepted-empty, accepted-absent: %s" % (results,))
 # a judge that always succeeds must fail the case above
 always_ok = os.path.join(d, "always-ok.py"); open(always_ok, "w").write("raise SystemExit(0)\n")
 check("cli release: the owner-decision case fails when the judge is replaced by success",
-    not owner_items_case(always_ok), "the always-succeeding judge passed the case")
+    not all(owner_items_case(always_ok)), "the always-succeeding judge passed the case")
 # the open-item check holds every tag, a patch tag too
 r = owner_run(sys.argv[1], [item("at_or_above")], "v0.3.1")
 check("cli release: an open owner-decision item refuses a patch tag too",
@@ -393,17 +422,46 @@ for name, items in (("a below item", [item("below")]), ("an empty list", []), ("
     r = owner_run(sys.argv[1], items, "v0.3.1")
     check("cli release: a patch tag with %s in the record exits 0" % name, r.returncode == 0, (r.returncode, r.stdout, r.stderr))
 check("cli release: the owner-decision case for a patch tag fails when the judge is replaced by success",
-    not owner_items_case(always_ok, "v0.3.1"), "the always-succeeding judge passed the case")
+    not all(owner_items_case(always_ok, "v0.3.1")), "the always-succeeding judge passed the case")
+# an expired item reopens the hold, whatever its threshold; a future expiry keeps a below item closed
+for name, items, code in (("an expired below item", [item("below", "2000-01-01")], 1),
+    ("an expired open item", [item("at_or_above", "2000-01-01")], 1), ("a below item with a future expiry", [item("below")], 0)):
+    for tag in ("v0.3.0", "v0.3.1"):
+        r = owner_run(sys.argv[1], items, tag)
+        check("cli release: %s with %s exits %d" % (name, tag, code), r.returncode == code
+            and (code == 0 or "accepted-items.json" in r.stdout), (r.returncode, r.stdout, r.stderr))
 # a malformed record is a named refusal, not a traceback
-for name, raw in (("a list instead of an object", "[]"), ("null instead of an object", "null"),
-    ("accepted_items null", '{"accepted_items": null}'), ("accepted_items an object", '{"accepted_items": {}}'),
-    ("an item that is a number", '{"accepted_items": [1]}'), ("an item that is a string", '{"accepted_items": ["x"]}'),
-    ("an item that is null", '{"accepted_items": [null]}')):
-    for tag in ("v0.3.0", "v0.3.1") if name == "a list instead of an object" else ("v0.3.0",):
+for name, raw, tags in (("a list instead of an object", "[]", ("v0.3.0", "v0.3.1")),
+    ("null instead of an object", "null", ("v0.3.0",)),
+    ("accepted_items null", '{"accepted_items": null}', ("v0.3.0",)),
+    ("accepted_items an object", '{"accepted_items": {}}', ("v0.3.0",)),
+    ("an item that is a number", '{"accepted_items": [1]}', ("v0.3.0",)),
+    ("an item that is a string", '{"accepted_items": ["x"]}', ("v0.3.0",)),
+    ("an item that is null", '{"accepted_items": [null]}', ("v0.3.0",)),
+    ("an expiry that is not a string", '{"accepted_items": [{"threshold": "below", "expiry": 5}]}', ("v0.3.0", "v0.3.1")),
+    ("unparseable json", "{broken", ("v0.3.0", "v0.3.1"))):
+    for tag in tags:
         r = owner_run(sys.argv[1], None, tag, raw)
         check("cli release: a malformed accepted-items file (%s) with %s exits 1 and names the file, no traceback" % (name, tag),
             r.returncode == 1 and "accepted-items.json" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr,
             (r.returncode, r.stdout, r.stderr))
+# a judge that treats a decode error as an absent file must fail the unparseable-file case
+decode_as_absent = os.path.join(d, "decode-as-absent.py")
+open(decode_as_absent, "w").write("""import json
+_load, _loads = json.load, json.loads
+def tolerant(read):
+    def wrapped(*args, **kw):
+        try: return read(*args, **kw)
+        except ValueError: return {"accepted_items": []}
+    return wrapped
+json.load, json.loads = tolerant(_load), tolerant(_loads)
+""" + open(sys.argv[1]).read())
+def broken_refused(script):
+    r = owner_run(script, None, "v0.3.0", "{broken")
+    return r.returncode == 1 and "accepted-items.json" in r.stdout + r.stderr
+check("cli release: the unparseable-file case passes for the real judge", broken_refused(sys.argv[1]), "not refused")
+check("cli release: the unparseable-file case fails when a decode error is treated as an absent file",
+    not broken_refused(decode_as_absent), "the decode-as-absent judge still refused")
 def wrap_rel(tag="v0.3.0", ref=REF, commit=COMMIT, ref_err=None, obj_text=APPROVED):
     fk = tempfile.mkdtemp(dir=d)
     for name, o, err in (("ref", ref, ref_err), ("commit", commit, None)):
@@ -554,8 +612,8 @@ for name, old, new, frag in (
         "        check_required_checks(ctx)\n        check_audit_approval(ctx)", "before check_required_checks"),
     ("the check before the on-main check", "        check_ancestor_of_main(ctx)\n        check_audit_approval(ctx)",
         "        check_audit_approval(ctx)\n        check_ancestor_of_main(ctx)", "after check_ancestor_of_main"),
-    ("the tagged commit's own judge", ' + (AUDIT_ITEMS,):\n        data = git_show("origin/main:" + path)\n',
-        ' + (AUDIT_ITEMS,):\n        data = git_show(ctx.sha + ":" + path)\n', "lacks"),
+    ("the tagged commit's own judge", '    for path in AUDIT_FILES:\n        data = git_show("origin/main:" + path)\n',
+        '    for path in AUDIT_FILES:\n        data = git_show(ctx.sha + ":" + path)\n', "lacks"),
     ("a non-release mode", '"--release"', '"--verify"', "lacks"),
     ("a swallowed result", "    why = one_line(text(out) or text(err), 300)\n",
         "    why = one_line(text(out) or text(err), 300)\n    rc = 0\n", "rc is assigned"),
