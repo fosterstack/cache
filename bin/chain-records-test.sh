@@ -180,6 +180,9 @@ def scan(rel, text, raw=False):
             if not m: bad.append("%s: line %d: kms-sign in a form the scan does not read (fail closed)" % (rel, n))
             elif m.group("digest"): add("urn:cosign:signature")
             else: resolve_statement(rel, n, lines, m.group("file"), add, bad)
+        if any(KMS_WORD.search(line) for _, line in lines):    # a heredoc body could hold the one writer line unseen
+            bad += ["%s: line %d: a heredoc in a script that calls kms-sign (fail closed)" % (rel, n)
+                    for n, line in lines if "<<" in line]
 BAD = bad
 texts = {os.path.relpath(f, base): open(f).read() for f in files}
 for rel, txt in texts.items(): scan(rel, txt)
@@ -834,6 +837,17 @@ X
 EOF
 expect_named "r10 a writer line inside a heredoc body is a third line and fails" "$d" "bin/ks.sh: line 4:"
 
+d=$(mk r10heredoc2); ka2 "$d" <<'EOF'; ka2rows "$d"
+#!/usr/bin/env bash
+cat > /dev/null <<'X'
+jq -cn '{predicateType: "https://fosterstack.com/attestations/release-manifest/v1"}' > "$st"
+X
+@P@ --dsse-statement "$st" --bundle "$b"
+@P@ --digest "$dg" --out "$o" --bundle "$b"
+EOF
+expect_named "r10 a script with a kms-sign call and a heredoc fails, naming the heredoc line" "$d" \
+  "bin/ks.sh: line 2:"
+
 d=$(mk r10cmtjoin); ka2 "$d" <<'EOF'; ka2rows "$d"
 #!/usr/bin/env bash
 jq -cn '{predicateType: "https://fosterstack.com/attestations/release-manifest/v1"}' > "$st"
@@ -871,7 +885,7 @@ d=$(mk r10wfcmt)
 printf 'jobs:\n  c:\n    steps:\n      # the sign step runs kms-sign inside bin/ks.sh\n      - run: echo hi\n' \
   > "$d/.github/workflows/stage-verify.yml"
 expect ok "r10 a workflow comment line naming kms-sign is not a finding" "$d"
-EXPECT=167
+EXPECT=168
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
