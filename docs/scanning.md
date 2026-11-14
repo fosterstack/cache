@@ -71,12 +71,15 @@ check them against the signed release manifest as described in
 | Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
 | Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
 | Docker Scout | none yet | Scout does not apply a VEX file given on the command line (see [Docker Scout](#docker-scout)) |
-| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per statement: `aws inspector2 create-filter`, one rule per call |
+| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule for each product scope and package a statement names: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
-The three files are generated from the same statements. The OpenVEX and CSAF files
-carry every statement; the Inspector file carries one rule per `not_affected` or
-`fixed` statement and none for `affected` or `under_investigation`. Google applies
+The three files are generated from the same statements. The OpenVEX file carries
+every statement. The CSAF file leaves out a Go standard library version the release
+is not built with and carries every other statement about this release's images; the
+Inspector file leaves out that same version and carries one rule for each product scope and package
+that a `not_affected` or `fixed` statement names, and none for `affected`, `under_investigation`
+or a statement that names no package. Google applies
 whole-image statements only. [`.vex/README.md`](../.vex/README.md) has the detail.
 
 ## Suppression rules

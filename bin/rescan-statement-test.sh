@@ -259,6 +259,13 @@ SUBP3='{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcompo
 vexdoc "$D/v/sub-ok.json" "[$(st CVE-2024-9999 '[]' not_affected "[$SUBP]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/sub-ok.json"; expect "osv: a subcomponent statement for this package and version suppresses" clean false 0 1
 vexdoc "$D/v/sub-ver.json" "[$(st CVE-2024-9999 '[]' not_affected "[$SUBP2]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/sub-ver.json"; expect "osv: a subcomponent statement for ANOTHER version does not suppress" findings true 1 0
 vexdoc "$D/v/sub-pkg.json" "[$(st CVE-2024-9999 '[]' not_affected "[$SUBP3]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/sub-pkg.json"; expect "osv: a subcomponent statement for ANOTHER package does not suppress" findings true 1 0
+# R1: the Go standard library is written go1.27.2 by the scanner and 1.27.2 by our statement (an osv-scanner finding has package and version, no purl)
+osv_std() { printf '{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"stdlib","version":"%s","ecosystem":"Go"},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"]}]}]}]}' "$1"; }
+SUBSTD='{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:golang/stdlib@1.27.2"}]}'
+vexdoc "$D/v/sub-std.json" "[$(st CVE-2024-9999 '[]' not_affected "[$SUBSTD]")]"
+vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/sub-std.json"; expect "R1 osv: a stdlib finding at go1.27.2 is covered by the pkg:golang/stdlib@1.27.2 statement" clean false 0 1
+vrun osv-scanner 1 "$(osv_std go1.27.3)" "$D/v/sub-std.json"; expect "R1 osv: a stdlib finding at go1.27.3 is not covered by the stdlib@1.27.2 statement" findings true 1 0
+vrun osv-scanner 1 "$(osv_std 1.27.2)" "$D/v/sub-std.json"; expect "R1 osv: a stdlib finding at 1.27.2 (no go prefix) is covered by the stdlib@1.27.2 statement" clean false 0 1
 # every other finding still counts at any severity
 OSV_TWO='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0","ecosystem":"Go"},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"]},{"id":"GO-2024-0002","aliases":["CVE-2024-8888"]}]}]}]}'
 vrun osv-scanner 1 "$OSV_TWO" "$D/v/by-cve.json"; expect "osv: with two findings only the covered one is removed (verdict findings, one counts, one suppressed)" findings true 1 1
