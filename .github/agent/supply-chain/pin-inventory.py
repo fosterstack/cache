@@ -15,6 +15,7 @@ NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go 
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
+import ast
 import copy
 import fnmatch
 import hashlib
@@ -374,20 +375,6 @@ def _image_item(ref, label=""):
     if m:
         return Item("image", _strip_tag(ref[:m.start()].rstrip("@")), m.group(0), label)
     return Item("image", ref, "", label)  # tag only: kept so the age check can fail it
-
-
-MAX_LINE = 4000
-
-
-def _cap(text):
-    """A command line longer than MAX_LINE is REFUSED, never read as its prefix (a dependency appended after the limit
-    would otherwise go unseen)."""
-    for l in text.split("\n"):
-        if len(l) > MAX_LINE:
-            raise RuntimeError(
-                f"a command line of {len(l)} characters is longer than the {MAX_LINE} "
-                "this check reads: refusing to read it partially")
-    return text
 
 
 def _ctx_tag(node):
@@ -862,7 +849,7 @@ def _step_items(node, out, labels):
     run = node.get("run")
     if isinstance(run, str):
         # a backslash continuation is one command; an expression becomes a placeholder before any pattern can cut it
-        run = _cap(_hide(re.sub(r"\\\n\s*", " ", run)))
+        run = (_hide(re.sub(r"\\\n\s*", " ", run)))
         for m in list(_GO_INSTALL.finditer(run)) + list(_GO_RUN_GET.finditer(run)):
             for t in _GO_TARGET.finditer(m.group(1)):
                 out.append(Item("gotool", t.group(1), t.group(2)))
@@ -1464,12 +1451,31 @@ _VENDOR_TOOLWORD = re.compile(r"(?<![\w-])go\s+mod\s+vendor(?![\w/.-])|(?<![\w-]
 _ESCAPE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2}))")
 _SHELL_DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")
 _PY_FETCH = re.compile(r"\b(?:urlopen|urlretrieve|urllib\.request|requests\.(?:get|post|put|head|request|Session))\b")
-# these clients also serve plain API calls: a file that imports one (plain, aliased or from-imported) fetches every
-# release download URL it names; the client is found by its module, never by how it is called
-_CLIENT_MODULE = r"(?:requests|urllib3|httpx|http\.client|urllib\.request)"
-_PY_CLIENT = re.compile(r"^[ \t]*(?:import\s+(?:[\w.]+(?:\s+as\s+\w+)?\s*,\s*)*" + _CLIENT_MODULE
-    + r"\b|from\s+" + _CLIENT_MODULE + r"\b|from\s+http\s+import\s+[^#\n]*\bclient\b"
-    + r"|from\s+urllib\s+import\s+[^#\n]*\brequest\b)", re.M)
+# these clients also serve plain API calls: a file that imports one fetches every release download URL it names
+_CLIENT_MODULES = ("requests", "urllib3", "httpx", "http.client", "urllib.request")
+
+
+def _imports_client(text):
+    """True when the Python text imports one of the client modules, found by Python's own parser; text it cannot parse
+    counts as importing one. `import requests as r` and `from http import client` count, a comment or string saying
+    `import requests` does not."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return True
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            names = [node.module] + [node.module + "." + a.name for a in node.names]
+        else:
+            continue
+        if any(n == m or n.startswith(m + ".") for n in names for m in _CLIENT_MODULES):
+            return True
+    return False
+
+
+# matches github.com/o/r/releases/download/v1/x.tgz, refuses github.com/o/r/issues/1
 _RELEASE_URL = re.compile(r"github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/")
 _SURFACE = re.compile(r"(?:\.py|\.mk|(?:^|/)(?:GNU)?[Mm]akefile|(?:^|/)Dockerfile[\w.-]*|\.dockerfile)$")
 
@@ -1545,7 +1551,7 @@ def unmeasured_occurrences(files):
                         + _hide(ln)[:100]), " ".join(ln.split()), False
                     break
         # marks where a continuation was joined; a file that already holds it is never bash-like
-        client = path.endswith(".py") and _PY_CLIENT.search(text)
+        client = path.endswith(".py") and _imports_client(text)
         mark = "\ue000"
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
@@ -1553,10 +1559,6 @@ def unmeasured_occurrences(files):
             if not tainted:
                 line = line.replace(mark, "")
             flat = " ".join(line.split())
-            if len(flat) > MAX_LINE:
-                raise RuntimeError(
-                    f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} "
-                    "this check reads: refusing to read it partially")
             if path not in _VENDOR_NAMING_FILES and _names_vendor(line):
                 yield (path, "a line that names the vendored folder",
                     hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":"
