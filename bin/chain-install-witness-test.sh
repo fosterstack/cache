@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC1, REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC4 — the Witness install is pinned by checksum before Witness starts
 # Failure paths and the success path of `./bin/install-scanner.sh witness [dest-dir]`, offline:
-# a stub curl serves the release tarballs.
+# a stub serves the release tarballs.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 sut="$root/bin/install-scanner.sh"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-# the installer downloads from fixed https URLs: a curl on PATH serves the local layout STUB_REL
+# the installer downloads from fixed https URLs: a stub on PATH serves the local layout STUB_REL
 # (the URL after /download/ or /dl/), or fails like a refused download
 stubbin="$work/stubbin"; mkdir -p "$stubbin"
 cat > "$stubbin/curl" <<'STUB'
@@ -170,7 +170,9 @@ case "$1" in
   version) echo "go version ${GV_GOVER:-go1.27.2} linux/amd64"; exit 0 ;;
   build) [ -z "${GV_BUILD_RC:-}" ] || { echo "build failed" >&2; exit "$GV_BUILD_RC"; }
          while [ $# -gt 0 ]; do [ "$1" = -o ] && o=$2; shift; done
-         printf '#!/usr/bin/env bash\n[ "$1" = -version ] && printf "Go: go1.27.2\\nScanner: govulncheck@%s\\nDB: https://vuln.go.dev\\n" "%s"\n' "${GV_REPORTS:-$GV_PIN}" "x" > "$o"; chmod +x "$o" ;;
+         # one write for the three lines (cat, not printf, which writes each line alone): the installer's `-version | grep -qx` under pipefail
+         # fails when grep has left before the last line is written
+         printf '#!/usr/bin/env bash\n[ "$1" = -version ] && cat <<EOT\nGo: go1.27.2\nScanner: govulncheck@%s\nDB: https://vuln.go.dev\nEOT\n' "${GV_REPORTS:-$GV_PIN}" > "$o"; chmod +x "$o" ;;
 esac
 EOF
 chmod +x "$gv/dest/fscache-go/bin/go"
