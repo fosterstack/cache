@@ -63,8 +63,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      checks: read
-      pull-requests: read
+      checks: read   # the judge reads the head's check runs
+      pull-requests: read   # and the pull requests that share the head
     outputs:
       verdict: ${{ steps.gate.outputs.verdict }}
     steps:
@@ -88,7 +88,7 @@ jobs:
         id: gate
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
+          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit; the judge reads check runs and pull requests with it
           # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
           GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -218,8 +218,8 @@ jobs:
     environment: agent
     permissions:
       contents: read
-      pull-requests: read
-      checks: read
+      pull-requests: read   # the sweep lists open pull requests and their heads
+      checks: read   # and the judge it runs reads each head's check runs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
