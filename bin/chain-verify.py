@@ -1290,7 +1290,7 @@ def provenance_statement(pol, obj, dry, byproducts):
                 "internalParameters": {},
                 "resolvedDependencies": [{"uri": "git+https://github.com/%s@%s" % (repo, ref), "digest": {"gitCommit": commit}}],
             },
-            "runDetails": {"builder": {"id": "%s/.github/workflows/stage-sign.yml@%s" % (site, ref)},
+            "runDetails": {"builder": {"id": "%s/.github/workflows/release.yml@%s" % (site, ref)},
                            "metadata": {"invocationId": run_url}, "byproducts": byproducts},
         },
     }
