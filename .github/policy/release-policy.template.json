@@ -2,19 +2,19 @@
  "repository": "fosterstack/cache",
  "stages": {
   "build": {
-   "workflow": ".github/workflows/stage-sign.yml"
+   "workflow": ".github/workflows/release.yml"
   },
   "sign": {
-   "workflow": ".github/workflows/stage-sign.yml"
+   "workflow": ".github/workflows/release.yml"
   },
   "rebuild": {
-   "workflow": ".github/workflows/stage-sign.yml"
+   "workflow": ".github/workflows/release.yml"
   },
   "check": {
-   "workflow": ".github/workflows/stage-sign.yml"
+   "workflow": ".github/workflows/release.yml"
   },
   "release": {
-   "workflow": ".github/workflows/stage-promote.yml"
+   "workflow": ".github/workflows/release.yml"
   }
  }
 }
