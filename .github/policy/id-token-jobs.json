@@ -57,11 +57,6 @@
    "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
   },
   {
-   "workflow": "go-freshness.yml",
-   "job": "persona-uat",
-   "reason": "Persona UAT, weekly run (REQ-UAT-001, owner ratified Oct 3 and Oct 4): behind the PERSONA_UAT_ENABLED gate (off unless the repository variable is exactly 'true'), the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, packages read"
-  },
-  {
    "workflow": "release.yml",
    "job": "persona-uat-rc",
    "reason": "the job-level call of persona-uat.yml on a release candidate: the called file's job mints a federated identity token for the model provider in the persona-uat environment (REQ-UAT-001-AC1); it signs no provenance and publishes nothing"
