@@ -631,8 +631,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
-            | base64 -d > "${RUNNER_TEMP}/main-guard.sh"
-          bash "${RUNNER_TEMP}/main-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
+            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
+          bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
 
       # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
       # first; one open issue, updated in place, never duplicated. Best effort: a
