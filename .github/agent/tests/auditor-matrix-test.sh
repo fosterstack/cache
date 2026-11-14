@@ -3422,13 +3422,17 @@ case "$1 $2" in
 esac
 """ % (sha, sha))
 os.chmod(os.path.join(stub, "gh"), 0o755)
-def sweep_over(headref, gate, audit, pubfail=False):
-    """(exit status, what was published, the checks called) for one open pull request"""
+def sweep_over(headref, gate, audit, pubfail=False, older=0, total=None):
+    """(exit status, what was published, the checks called) for one open pull request.
+    older: runs of the gate's check that finished an hour before it; total: the total_count GitHub reports"""
     calls, published, gate_json = (os.path.join(base, x) for x in ("calls", "published", "gate.json"))
     for f in (calls, published): open(f, "w").close()
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    now = datetime.datetime.now(datetime.timezone.utc).strftime(stamp)
     runs = [] if gate == "none" else [{"conclusion": gate, "completed_at": now, "app": {"slug": "app"}}]
-    json.dump({"total_count": len(runs), "check_runs": runs}, open(gate_json, "w"))
+    hour_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).strftime(stamp)
+    runs = [{"conclusion": "failure", "completed_at": hour_ago, "app": {"slug": "app"}}] * older + runs
+    json.dump({"total_count": len(runs) if total is None else total, "check_runs": runs}, open(gate_json, "w"))
     env = dict(os.environ, CALLS=calls, PUBLISHED=published, GATE_JSON=gate_json, HEADREF=headref,
             RUNNER_TEMP=os.path.join(base, "tmp"),
                GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
@@ -3463,6 +3467,16 @@ only_the_judge("a green Dependabot head whose judge passes: nothing published, n
         0), 0, [])
 only_the_judge("a green Dependabot head, judge failing, the failure cannot be published: the run fails, no pin check",
         sweep_over(dep, "success", 1, pubfail=True), 1, [])
+# the judge's exit 3 is a GitHub API error: nothing is published for the head and the run fails
+only_the_judge("a green Dependabot head whose judge hits a GitHub API error (exit 3): nothing published, the run fails",
+        sweep_over(dep, "success", 3), 1, [])
+# a full page of 100 runs may have been cut: the read fails closed, so nothing is judged or published
+want("a full page of 100 gate runs is a failed read: nothing judged or published, the run fails",
+        sweep_over(dep, "success", 1, older=99), 1, [], False)
+want("99 gate runs are the whole answer: the newest, a success, skips a feature head",
+        sweep_over("feature/bump", "success", 1, older=98), 0, [], False)
+want("a total_count above the 99 runs read is ignored: the newest, a success, skips a feature head",
+        sweep_over("feature/bump", "success", 1, older=98, total=150), 0, [], False)
 want("a Dependabot head with no gate check is judged and published as before", sweep_over(dep, "none", 0), 0,
         ["conclusion=success"], True)
 if sweep_over(dep, "none", 0)[2] != ["pins", "allow", "wiring", "scan", "audit"]:
