@@ -1543,26 +1543,39 @@ done
 # ---- REQ-REL-011-AC1: bin/check-records-digests.sh RUNNER DIR... (a Check job's list of its records, keyed <runner>/<folder>) ----
 crd="$work/crd"; mkdir -p "$crd/witness-scanners" "$crd/witness-runtime"
 printf 'scanners record\n' > "$crd/witness-scanners/scanners-collection.json"; printf 'rekor entry\n' > "$crd/witness-scanners/scanners-collection.rekor.json"; printf 'runtime record\n' > "$crd/witness-runtime/runtime-collection.json"
-crd_run() { rc=0; out=$( (cd "$crd" && bash "$root/bin/check-records-digests.sh" "$@") 2> "$work/crderr") || rc=$?; }
+# crd_run RUNNER DIR...: the script gets RUNNER, the out file o.json, then the folders; $out is the file's text, $so what it printed on stdout
+crd_run() {
+  local a=(); rm -f "$crd/o.json"; [ "$#" = 0 ] || a=("$1" o.json "${@:2}")
+  rc=0; so=$( (cd "$crd" && bash "$root/bin/check-records-digests.sh" ${a[@]+"${a[@]}"}) 2> "$work/crderr") || rc=$?
+  out=$(cat "$crd/o.json" 2> /dev/null || true)
+}
 crd_run ubuntu-24.04 witness-scanners witness-runtime
 want=$(jq -S -c -n --arg a "sha256:$(sha256sum "$crd/witness-scanners/scanners-collection.json" | cut -d' ' -f1)" --arg b "sha256:$(sha256sum "$crd/witness-scanners/scanners-collection.rekor.json" | cut -d' ' -f1)" --arg c "sha256:$(sha256sum "$crd/witness-runtime/runtime-collection.json" | cut -d' ' -f1)" '{"ubuntu-24.04/witness-scanners": {"scanners-collection.json": $a, "scanners-collection.rekor.json": $b}, "ubuntu-24.04/witness-runtime": {"runtime-collection.json": $c}}')
 if [ "$rc" = 0 ] && [ "$out" = "$want" ]; then ok "REL-011-AC1 the list is one key-sorted JSON object keyed <runner>/<folder>, each file with its sha256"; else bad "REL-011-AC1 check-records-digests ubuntu-24.04 -> rc=$rc: ${out:0:200}"; fi
 crd_run ubuntu-24.04-arm witness-scanners witness-runtime
 if [ "$rc" = 0 ] && [ "$(jq -c 'keys' <<< "$out")" = '["ubuntu-24.04-arm/witness-runtime","ubuntu-24.04-arm/witness-scanners"]' ] && [ "$(jq -c '[.[][]] | length' <<< "$out")" = 3 ]; then ok "REL-011-AC1 the arm runner's list is keyed ubuntu-24.04-arm/<folder>"; else bad "REL-011-AC1 check-records-digests ubuntu-24.04-arm -> rc=$rc: ${out:0:200}"; fi
-a=$(cd "$crd" && bash "$root/bin/check-records-digests.sh" ubuntu-24.04 witness-scanners witness-runtime); b=$(cd "$crd" && bash "$root/bin/check-records-digests.sh" ubuntu-24.04-arm witness-scanners witness-runtime)
+crd_run ubuntu-24.04 witness-scanners witness-runtime; a=$out; crd_run ubuntu-24.04-arm witness-scanners witness-runtime; b=$out
 if [ "$(jq -n -c --argjson a "$a" --argjson b "$b" '($a + $b) | length')" = 4 ] && [ "$(jq -c -n --argjson a "$a" --argjson b "$b" '$a * $b | [.[][]] | length')" = 6 ]; then ok "REL-011-AC1 the two chips' lists never collide (the same folders under two runner keys)"; else bad "REL-011-AC1 the two lists collide"; fi
 for r in arm64 ubuntu-latest ubuntu-22.04 macos-14 ubuntu-24.04-arm64 ""; do
   crd_run "$r" witness-scanners
-  if [ "$rc" = 2 ] && [ -z "$out" ]; then ok "REL-011-AC1 an unknown runner ('$r') exits 2 and prints nothing"; else bad "REL-011-AC1 runner '$r' -> rc=$rc, out: ${out:0:100}"; fi
+  if [ "$rc" = 2 ] && [ -z "$out$so" ]; then ok "REL-011-AC1 an unknown runner ('$r') exits 2 and prints nothing"; else bad "REL-011-AC1 runner '$r' -> rc=$rc, out: ${out:0:100}"; fi
 done
 crd_run ubuntu-24.04
-if [ "$rc" = 2 ] && [ -z "$out" ]; then ok "REL-011-AC1 a runner and no folder exits 2"; else bad "REL-011-AC1 runner only -> rc=$rc: ${out:0:100}"; fi
+if [ "$rc" = 2 ] && [ -z "$out$so" ]; then ok "REL-011-AC1 a runner, the out file and no folder exits 2"; else bad "REL-011-AC1 runner only -> rc=$rc: ${out:0:100}"; fi
+(cd "$crd" && rm -f o.json && bash "$root/bin/check-records-digests.sh" ubuntu-24.04 o.json witness-scanners witness-runtime > "$work/crdso" 2> /dev/null) || true
+if [ ! -s "$work/crdso" ] && [ -s "$crd/o.json" ]; then ok "REL-011-AC1 the list goes to the out file and nothing is printed on stdout"; else bad "REL-011-AC1 stdout: $(head -c 100 "$work/crdso")"; fi
+(cd "$crd" && printf 'old' > o.json && bash "$root/bin/check-records-digests.sh" ubuntu-24.04 o.json witness-scanners witness-runtime) || true
+if [ "$(jq -c 'length' "$crd/o.json" 2> /dev/null)" = 2 ]; then ok "REL-011-AC1 an existing out file is overwritten"; else bad "REL-011-AC1 out file not overwritten"; fi
 crd_run
-if [ "$rc" = 2 ] && [ -z "$out" ]; then ok "REL-011-AC1 no argument exits 2"; else bad "REL-011-AC1 no argument -> rc=$rc: ${out:0:100}"; fi
+if [ "$rc" = 2 ] && [ -z "$out$so" ]; then ok "REL-011-AC1 no argument exits 2"; else bad "REL-011-AC1 no argument -> rc=$rc: ${out:0:100}"; fi
 mkdir -p "$crd/witness-empty"; crd_run ubuntu-24.04 witness-scanners witness-empty
-if [ "$rc" = 1 ]; then ok "REL-011-AC1 a record folder with no file fails (a missing record is not a smaller list)"; else bad "REL-011-AC1 empty folder -> rc=$rc: ${out:0:100}"; fi
+if [ "$rc" = 1 ] && [ -z "$so" ]; then ok "REL-011-AC1 a record folder with no file fails (a missing record is not a smaller list)"; else bad "REL-011-AC1 empty folder -> rc=$rc: ${out:0:100}"; fi
 crd_run ubuntu-24.04 witness-scanners witness-missing
-if [ "$rc" = 1 ]; then ok "REL-011-AC1 a record folder that is not there fails"; else bad "REL-011-AC1 missing folder -> rc=$rc: ${out:0:100}"; fi
+if [ "$rc" = 1 ] && [ -z "$so" ] && grep -q "not a plain folder" "$work/crderr"; then ok "REL-011-AC1 a record folder that is not there fails"; else bad "REL-011-AC1 missing folder -> rc=$rc: ${out:0:100}"; fi
+ln -s witness-runtime "$crd/witness-link"; crd_run ubuntu-24.04 witness-link
+if [ "$rc" = 1 ] && grep -q "not a plain folder" "$work/crderr"; then ok "REL-011-AC1 a symlinked record folder fails"; else bad "REL-011-AC1 symlinked folder -> rc=$rc"; fi
+rm -f "$crd/witness-link"; mkdir -p "$crd/witness-sub/inner"; crd_run ubuntu-24.04 witness-sub
+if [ "$rc" = 1 ] && grep -q "not a regular file" "$work/crderr"; then ok "REL-011-AC1 a folder holding a folder (not a regular file) fails"; else bad "REL-011-AC1 inner folder -> rc=$rc"; fi
 # ---- ruling G (advisor Oct 12): bin/check-govulncheck.py, the source scan of the product module, whose output Release reads from Check's record -----------------------
 # `govulncheck -json ./...` runs once in the scanners step with the pinned Go (the fixed path /usr/local/bin/fscache-go/bin first on PATH, GOTOOLCHAIN=local,
 # GOFLAGS=-mod=vendor and GOPROXY=off, so the scan reads the exact bytes the build uses; never a flag or toolchain of the caller's environment); the raw stream is written byte for byte to OUT/govulncheck.json, which the Witness
@@ -1814,7 +1827,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=626
+EXPECT=630
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
