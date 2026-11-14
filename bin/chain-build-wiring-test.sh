@@ -2688,6 +2688,7 @@ jobs:
       packages: write
       attestations: write
       id-token: write
+      issues: write
       checks: read
       statuses: read
       pull-requests: read
