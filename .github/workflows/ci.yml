@@ -194,13 +194,52 @@ jobs:
 
       # The suites the changed files need (REQ-CI-001-AC4): bin/select-tests.sh prints them, one command per line, from
       # .github/policy/test-paths.json; a changed path that map does not name fails the step, so a new directory needs an entry.
-      # The rest of the suites run in full-suite.yml.
-      - name: the suites the changed files need
+      # The suites that are one committed test file run through bin/run-selected-tests.sh; each suite that is more than one file
+      # has its own step below, run only when the selection names it. The rest of the suites run in full-suite.yml.
+      - name: select the suites the changed files need
+        id: select
         if: ${{ github.event_name == 'pull_request' }}
         env:
           BASE: ${{ github.base_ref }}
         run: |
-          bash bin/run-selected-tests.sh "origin/${BASE}" HEAD
+          bash bin/select-tests.sh "origin/${BASE}" HEAD > "${RUNNER_TEMP}/selected-suites"
+          {
+            echo 'suites<<SELECTED_SUITES_END'
+            cat "${RUNNER_TEMP}/selected-suites"
+            echo 'SELECTED_SUITES_END'
+          } >> "${GITHUB_OUTPUT}"
+      - name: the suites that are one test file
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          bash bin/run-selected-tests.sh "${RUNNER_TEMP}/selected-suites"
+      - name: auditor Python requirements resolve (hash-pinned SDK + coverage tool)
+        if: >-
+          ${{ contains(steps.select.outputs.suites, 'for r in .github/agent/adjudicator-requirements.txt .github/agent/coverage-requirements.txt .github/agent/test-requirements.txt; do python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: --target "$RUNNER_TEMP/resolve-check" -r "$r"; done') }}
+        run: |
+          python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: --target "$RUNNER_TEMP/resolve-check" -r .github/agent/adjudicator-requirements.txt
+          python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: --target "$RUNNER_TEMP/resolve-check" -r .github/agent/coverage-requirements.txt
+          python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: --target "$RUNNER_TEMP/resolve-check" -r .github/agent/test-requirements.txt
+      - name: the probe's one-request-per-seat cap against the hash-pinned SDKs (scanner panel rule 8; REQ-SCAN-008)
+        if: >-
+          ${{ contains(steps.select.outputs.suites, 'set -euo pipefail; v="$RUNNER_TEMP/panel-sdk"; python3 -m venv "$v"; "$v/bin/python" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt; "$v/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt; PANEL_SDK_TEST_REQUIRED=1 "$v/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v') }}
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/panel-sdk"
+          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip --version
+          "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
+          PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
+      - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
+        if: >-
+          ${{ contains(steps.select.outputs.suites, './bin/install-scanner.sh grype && bash bin/vex-scope-test.sh') }}
+        run: |
+          ./bin/install-scanner.sh grype
+          bash bin/vex-scope-test.sh
+      - name: VEX tripwire, golang-jwt is not in go.sum (punch list #4b)
+        if: >-
+          ${{ contains(steps.select.outputs.suites, '! grep -q golang-jwt go.sum || { echo "golang-jwt has entered go.sum: the VEX statement for CVE-2024-51744 claims component_not_present and needs review (.vex/README.md)" >&2; exit 1; }') }}
+        run: |
+          ! grep -q golang-jwt go.sum || { echo "golang-jwt has entered go.sum: the VEX statement for CVE-2024-51744 claims component_not_present and needs review (.vex/README.md)" >&2; exit 1; }
 
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
