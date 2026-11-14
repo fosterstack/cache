@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC6
+# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5, REQ-REL-012-AC6, REQ-REL-012-AC9
 # proves: REQ-DEP-001-AC13
 # Matrix-first EFFECT-OBSERVING failing suite for the daily CVE auditor
 # (.github/agent/docs/cve-auditor-matrix.md). Round-7 hardening after the second review
@@ -3641,7 +3641,7 @@ try:
         os.makedirs(tmp, exist_ok=True)
         env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
                    STUB_LAST=last, STUB_REC=str(rec), PATH=stubbin + ":" + os.environ["PATH"])
-        subprocess.run(["bash", "-c", sweep_run], cwd=fx, env=env, capture_output=True, text=True)
+        subprocess.run(["bash", "-e", "-c", sweep_run], cwd=fx, env=env, capture_output=True, text=True)
         return open(calls).read().split()
     c = run("stale", 1); ok = ok and c.count("judged") == 5 and "conclusion=success" in c           # old failure + a record branch -> judged again, published
     c = run("stale", 0); ok = ok and c == []                                                          # old failure, no record -> skipped, nothing called
