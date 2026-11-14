@@ -1,13 +1,12 @@
 # The Release stage of the v0.3.0 release chain (REQ-CHAIN-007). Called only from release.yml, after Check,
-# Sign and Sign-rebuild (it needs exactly those three; it reaches Build and Rebuild through them). This is the ONLY file of the repository that holds a registry credential,
-# a release-key role (the apks are signed in KMS, too) or packages: write, and the release job binds the secrets only in the Witness steps that need them (the environment named release holds them; the job's write permissions exist from its start, which is why it needs the verify job).
+# Sign, Sign-rebuild and Sign-check (it needs exactly those four; it reaches Build and Rebuild through them). This is the ONLY file of the repository that holds a registry credential
+# or packages: write. It holds no release-key role, key or AWS name: Sign (stage-sign.yml) makes every signature and Release only checks and pushes them. And the release job binds the secrets only in the Witness steps that need them (the environment named release holds them; the job's write permissions exist from its start, which is why it needs the verify job).
 # It builds nothing. Steps: checkout, the three pinned tools (Witness first), the earlier stages' artifacts, then six Witness steps through the one helper,
 # each a committed script: release-verify (no credential is bound to this step: the tag, the release policy, every earlier stage's record in order),
-# release-apks (sign the apks with the release key in KMS through cosign, each with a Rekor bundle), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
-# release-sign (signatures with the release key, each with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
-# commands that need a registry, run against what was just published, in both registries). Release creates no tag.
-# A release candidate (a tag vX.Y.Z-rcN, so one with a hyphen) ends after the verify job: the release job carries the job-level condition below and is skipped (and every
-# witnessed step after release-verify carries it too), so no secret or key is bound to any step, nothing is pushed and no release is made (REQ-CHAIN-007-AC14). A tag that is neither is refused by release-verify's tag rule.
+# release-apks (put Sign's signatures on the apks), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
+# release-sign (checks Sign's signatures, each with its Rekor entry, and pushes them), release-postverify (the customer-guide commands that need a registry, run against what
+# was just published, in both registries) and then release-assets (the GitHub release is created only after postverify passed). Release creates no tag.
+# A release candidate (a tag vX.Y.Z-rcN, so one with a hyphen) ends after the verify job: the release job carries the job-level condition below and is skipped, so no secret or key is bound to any step, nothing is pushed and no release is made (REQ-CHAIN-007-AC14). A tag that is neither is refused by release-verify's tag rule.
 # The shape of this file is judged by bin/chain-release-wiring-test.sh and the closed grammar of bin/chain-sign-wiring-test.sh.
 name: 'Stage: release'
 on:
@@ -126,6 +125,7 @@ jobs:
     if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     environment: release
+    timeout-minutes: 60
     permissions:
       contents: write
       packages: write
@@ -140,8 +140,6 @@ jobs:
         run: bash bin/install-scanner.sh cosign
       - name: install crane (pinned by checksum)
         run: bash bin/install-scanner.sh crane
-      - name: install the aws CLI (pinned by checksum)
-        run: bash bin/install-scanner.sh aws-cli
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signed-witness-build
@@ -198,71 +196,44 @@ jobs:
         with:
           name: apk-ubuntu-24.04-arm
           path: apks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-signed
+          path: release-signed
       - name: release-verify under Witness
-        env:
-          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
-          AWS_REGION: us-east-1
-          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witnessed.sh release-verify bin/release-verify.sh
       - name: release-apks under Witness
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
-          AWS_REGION: us-east-1
-          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
         run: bash bin/witnessed.sh release-apks bin/release-apks.sh
       - name: release-publish under Witness
-        if: ${{ !contains(github.ref_name, '-') }}
         env:
-          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
-          AWS_REGION: us-east-1
-          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-publish bin/release-publish.sh
       - name: release-sign under Witness
-        if: ${{ !contains(github.ref_name, '-') }}
         env:
-          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
-          AWS_REGION: us-east-1
-          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-sign bin/release-sign.sh
+      - name: release-postverify under Witness
+        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
       - name: release-assets under Witness
-        if: ${{ !contains(github.ref_name, '-') }}
         env:
-          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
-          AWS_REGION: us-east-1
-          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-assets bin/release-assets.sh
-      - name: release-postverify under Witness
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
-          AWS_REGION: us-east-1
-          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
-        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json
       - name: release-apks record holds no token (REQ-CHAIN-007-AC12)
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-apks/release-apks-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-apks/release-apks-collection.local.json
       - name: release-publish record holds no token (REQ-CHAIN-007-AC12)
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.local.json
       - name: release-sign record holds no token (REQ-CHAIN-007-AC12)
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-sign/release-sign-collection.json
-      - name: release-assets record holds no token (REQ-CHAIN-007-AC12)
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-assets/release-assets-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-sign/release-sign-collection.local.json
       - name: release-postverify record holds no token (REQ-CHAIN-007-AC12)
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-postverify/release-postverify-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-postverify/release-postverify-collection.local.json
+      - name: release-assets record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-assets/release-assets-collection.local.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-evidence
@@ -275,5 +246,5 @@ jobs:
             witness-release-apks
             witness-release-publish
             witness-release-sign
-            witness-release-assets
             witness-release-postverify
+            witness-release-assets

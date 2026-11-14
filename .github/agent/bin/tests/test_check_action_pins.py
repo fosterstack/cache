@@ -26,20 +26,11 @@ HEAD = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n"
 
 
 GATE = os.path.join(BIN, "..", "..", "workflows", "agent-review-gate.yml")
-QJ_REL = ".github/agent/bin/queue-gate-judge.sh"   # the script the gate's queue-judge job runs
-QJ = os.path.join(BIN, "queue-gate-judge.sh")
-
-
-def _qj():
-    with open(QJ) as fh:
-        return fh.read()
-
-
 def repo(files, gate=True):
     """A throwaway tree; it carries the real, pinned gate workflow unless gate=False."""
     if gate:
         with open(GATE) as fh:
-            files = {".github/workflows/agent-review-gate.yml": fh.read(), QJ_REL: _qj(), **files}
+            files = {".github/workflows/agent-review-gate.yml": fh.read(), **files}
     d = tempfile.mkdtemp()
     for rel, text in files.items():
         p = os.path.join(d, rel)
@@ -156,8 +147,8 @@ class Main(unittest.TestCase):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n",
                   ".github/agent/bin/check-action-pins.py": "",
-                  "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
-                  "bin/scan-no-workflow-call-test.sh": "", QJ_REL: _qj(), "bin/audit-record-judge.sh": "",
+                  "bin/check-file-allowlist.sh": "",
+                  "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "",
                   "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""})
         table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
                  {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}}
@@ -417,7 +408,7 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
     STUB = "#!/usr/bin/env bash\nset -euo pipefail\n:\n"
     FILES = {".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
-             "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
+             "bin/check-file-allowlist.sh": "",
              "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "", "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": "",   # the gate's committed programs
              **dict.fromkeys(["bin/build.sh", "bin/witnessed.sh", "bin/build-stage-apk.sh", "bin/build-stage-rebuild-apk.sh",
                               "bin/install-scanner.sh", "bin/build-stage-refuse-mode.sh", "bin/build-stage-snapshot-apk.sh",
@@ -494,11 +485,11 @@ class LiteralRunnerMatrix(unittest.TestCase):
         run: bash bin/build-stage-refuse-mode.sh "$MODE"
       - name: install Witness (pinned by checksum)
         run: bash bin/install-scanner.sh witness
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: witness-build
           path: witness-build
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: digests
           path: build-in
@@ -882,272 +873,184 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 # main's gate workflow (the passed-audit record judge)
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"
-# the gate workflow with the merge queue judge (cache#542)
-GATE_B = "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc"
+# the change's gate workflow: no merge queue judge, one step per check, the record rule's Dependabot exemption
+GATE_B = "3102248f3d2c88b6e5be3751a1fc42635296b5187bc1d10024eaf19b810bf34e"
 # the edits from main's gate workflow to the change's (old text, new text); the repository carries the change's copy,
 # so main's copy is made by undoing them
-QUEUE_HUNKS = (
+GATE_HUNKS = (
     (
-        (r'''#   The sweep holds the App token while reading PR data — still as git objects only, never
-#   executed; it runs only the default branch's gate script.
-
-on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
-  schedule:
-    - cron: '*/10 * * * *'
+        (r'''
+# REQ-AUD-18 AC3: the verdict runs main's copies of three checks over the PR head, read as git objects, and
+# judges no review record. Register row 78: every action reference in the PR head must be a full commit digest
+# (.github/agent/bin/check-action-pins.py, main's copy). Here — not in a check of its own — because this check
 '''),
-        (r'''#   The sweep holds the App token while reading PR data — still as git objects only, never
-#   executed; it runs only the default branch's gate script.
+        (r'''
+# REQ-AUD-18 AC3: the verdict runs main's copies of its checks over the PR head, read as git objects. Register
+# row 78: every action reference in the PR head must be a full commit digest
+# (.github/agent/bin/check-action-pins.py, main's copy). Here — not in a check of its own — because this check
+'''),
+    ),
+    (
+        (r'''#
+# The same verdict also runs main's copies of the allowlist guard (bin/check-file-allowlist.sh, over the head's
+# file list, with ALLOWLIST_HEAD_REV so the head is judged as a commit) and of the pin-wiring judge
+# (.github/agent/tests/pin-wiring-test.sh, PIN_WIRING_JUDGE_GIT, over the head's ci.yml), so a PR cannot
+# disable its own whole-tree guard by editing ci.yml.
 #
-# THE MERGE QUEUE (REQ-DEP-005-AC3, cache#542). The required check `auditor-review-gate` must also '''
-        r'''be posted on the
-# merge queue's head, by the App. The queue judge is a `workflow_run` job, not a `merge_group` job, '''
-        r'''because a
-# merge_group run has a GITHUB_REF that is never the default branch, so it cannot reach the `agent` '''
-        r'''environment that
-# holds the App credentials. `workflow_run` runs the default branch's copy of this file, so the '''
-        r'''group never edits it.
-# - queue-judge holds no secret and runs no code of the group: the head is fetched as a git object '''
-        r'''and only main's
-#   .github/agent/bin/queue-gate-judge.sh reads it. queue-publish holds the App token and touches '''
-        r'''no group data.
-# - `requested` fires when the queue starts CI, so the verdict is posted early. A missing verdict '''
-        r'''leaves the check
-#   absent and the queue ejects the group at its timeout: that fails closed, and no sweep covers it.
-# - Every failure to read, validate or judge publishes failure, never success.
-
-on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
-  # the merge queue's CI run (REQ-DEP-005-AC3): the job `queue-judge` only; every other job tests '''
-        r'''event_name
-  workflow_run:
-    workflows: [CI]
-    types: [requested]
-  schedule:
-    - cron: '*/10 * * * *'
+'''),
+        (r'''#
+# The same verdict also runs main's copy of the allowlist guard (bin/check-file-allowlist.sh, over the head's
+# file list, with ALLOWLIST_HEAD_REV so the head is judged as a commit), so a PR cannot disable its own whole-tree
+# guard by editing ci.yml.
+#
+# A head whose every commit is authored by Dependabot or the reviewer's App needs no passed-audit record
+# (bin/audit-record-judge.sh); the checks above still run on it.
+#
 '''),
     ),
     (
         (r'''
-concurrency:
-  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && '''
-        r'''format('record-{0}', inputs.audit_pr)) || 'sweep' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
-
-'''),
-        (r'''
-concurrency:
-  group: >-
-    agent-review-gate-${{ github.event.pull_request.number
-    || (inputs.audit_head != '' && format('record-{0}', inputs.audit_pr))
-    || (github.event_name == 'workflow_run'
-        && format('queue-{0}-{1}', github.event.workflow_run.event, '''
-        r'''github.event.workflow_run.head_sha))
-    || 'sweep' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
-
-'''),
-    ),
-    (
-        (r'''        run: |
-          set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference '''
-        r'''is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the '''
-        r'''passed-audit record for this head passed."
-          else conclusion=failure; summary="An action reference is not a commit digest, or the '''
-        r'''allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the '''
-        r'''judge did not finish) — see the run log."; fi
-'''),
-        (r'''        run: |
-          set -euo pipefail
-          # the queue's own publisher owns this check name on a queue head: a later post would '''
-        r'''replace its verdict
-          queue_tips="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" '''
-        r''''refs/heads/gh-readonly-queue/*')" \
-            || { echo "::warning::the merge queue branches could not be listed: nothing is posted"; '''
-        r'''exit 0; }
-          tips="$(cut -f1 <<<"$queue_tips")"
-          if grep -qxF "$HEAD_SHA" <<<"$tips"; then
-            echo "::notice::this head is the tip of a live merge queue branch: the queue publishes '''
-        r'''its verdict"; exit 0
-          fi
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference '''
-        r'''is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the '''
-        r'''passed-audit record for this head passed."
-          else conclusion=failure; summary="An action reference is not a commit digest, or the '''
-        r'''allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the '''
-        r'''judge did not finish) — see the run log."; fi
-'''),
-    ),
-    (
-        (r'''        run: bash bin/audit-record-judge.sh "$AUDIT_HEAD" main
-
-  sweep:
-    name: agent review gate — sweep
-'''),
-        (r'''        run: bash bin/audit-record-judge.sh "$AUDIT_HEAD" main
-
-  # REQ-DEP-005-AC3: the review gate on the merge queue's head (see the header).
-  queue-judge:
-    name: agent review gate — queue judge
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      pull-requests: read   # the allowlist guard's one lookup of the pull request's head branch
-    outputs:
-      verdict: ${{ steps.judge.outputs.verdict }}
-    steps:
-      # the DEFAULT branch only: no ref, path or repository from workflow_run
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: fetch the queue head as data (never checked out, never executed) and judge it with '''
-        r'''main's script
-        id: judge
+      - name: run the default branch's review gate and pin check over the PR head
+        id: gate
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          # read-only: tag lookups, the passed-audit records, the pull request's head branch
-          GH_TOKEN: ${{ github.token }}
-        run: |
+'''),
+        (r'''
+      # Each check is its own step, judged by the checked-out default branch's copies (HEAD), never the PR's; a failed one does not stop the others,
+      # and the last step turns the four outcomes into the verdict.
+      # row 78: every action reference in the head is a commit digest (git objects only)
+      - name: the pin check over the PR head
+        id: pins
+        continue-on-error: true
+        env:
+'''),
+    ),
+    (
+        (r'''          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
+          # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
+          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+'''),
+        (r'''          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
+        run: python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA"
+
+      # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list as git objects (nothing of the PR runs)
+      - name: the allowlist guard over the PR head's files
+        id: allowlist
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # the PR's identity, for main's copy of the allowlist guard
+          GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+'''),
+    ),
+    (
+        (r'''        run: |
           set -uo pipefail
-          verdict=failure
-          # kept: gh-readonly-queue/main/pr-9-<sha>; emptied: feature/x, '''
-        r'''gh-readonly-queue/main/a..b, one with a space
-          case "$HEAD_BRANCH" in
-            gh-readonly-queue/main/*[!A-Za-z0-9._/-]* | *..* | gh-readonly-queue/main/) '''
-        r'''HEAD_BRANCH= ;;
-            gh-readonly-queue/main/*) ;;
-            *) HEAD_BRANCH= ;;
-          esac
-          # the fetched tip must be the event's head: that, not the ref's name, ties the ref to the '''
-        r'''head
-          if [ "${#HEAD_SHA}" -eq 40 ] && [[ "$HEAD_SHA" != *[!0-9a-f]* ]] && [ -n "$HEAD_BRANCH" ] '''
-        r'''\
-             && git fetch --no-tags -q origin "+refs/heads/main:refs/remotes/origin/main" \
-             && git fetch --no-tags -q origin "+refs/heads/${HEAD_BRANCH}:refs/remotes/queue/head" \
-             && [ "$(git rev-parse refs/remotes/queue/head)" = "$HEAD_SHA" ] \
-             && bash .github/agent/bin/queue-gate-judge.sh "$HEAD_SHA" "$HEAD_BRANCH"; then
-            verdict=success
-          fi
+          # judged by the checked-out default branch's copies (HEAD), never the PR's
+          verdict=success
+          # row 78: every action reference in the head is a commit digest (git objects only)
+          python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
+          # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list
+          # and main's pin-wiring judge reads the head's ci.yml, both as git objects (nothing of the PR runs)
+          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
+          mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
+          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure
+          # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
+          # of the PR's own CI that overwrites the guard on disk changes nothing
+          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
+          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
+          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-          [ "$verdict" = success ]
+'''),
+        (r'''        run: |
+          set -o pipefail
+          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh
 
-  queue-publish:
-    name: agent review gate — queue publish
-    needs: queue-judge
-    # not on cancellation (a superseded run must not overwrite a newer verdict on the same head)
-    if: ${{ !cancelled() && github.event_name == 'workflow_run' && github.event.workflow_run.event '''
-        r'''== 'merge_group' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    environment: agent
-    permissions: {}
-    steps:
-      - name: mint the App token (checks:write only)
-        id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.AUDITOR_APP_ID }}
-          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
-          repositories: cache
-          permission-checks: write
+      - name: the yaml reader the scanner guard below loads
+        run: mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
 
-      - name: publish the auditor-review-gate check run on the queue head
+      # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
+      # of the PR's own CI that overwrites the guard on disk changes nothing
+      - name: the scanner guard over the PR head's workflows
+        id: scan
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          VERDICT: ${{ needs.queue-judge.outputs.verdict }}
-          RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ '''
-        r'''github.run_id }}
-        run: |
-          set -euo pipefail
-          [ "${#HEAD_SHA}" -eq 40 ] && [[ "$HEAD_SHA" != *[!0-9a-f]* ]] \
-            || { echo "::error::the queue head is not 40 lower-case hex" >&2; exit 1; }
-          if [ "$VERDICT" = "success" ]; then
-            conclusion=success
-            summary="Every pull request in the merge group has a passed-audit record, and main's '''
-        r'''judges passed."
-          else
-            conclusion=failure
-            summary="The merge group is not a chain of merges, a pull request has no readable '''
-        r'''passed-audit record,"
-            summary="${summary} or a judge failed (or did not finish) — see the run log."
-          fi
-          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f '''
-        r'''head_sha="$HEAD_SHA" \
-            -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_LINK" \
-            -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" '''
-        r'''>/dev/null
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh
 
-  sweep:
-    name: agent review gate — sweep
+      # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
+      # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
+      - name: the passed-audit record for the PR head
+        id: record
+        continue-on-error: true
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF"
+
+      - name: the verdict
+        id: gate
+        env:
+          OUTCOMES: ${{ steps.pins.outcome }} ${{ steps.allowlist.outcome }} ${{ steps.scan.outcome }} ${{ steps.record.outcome }}
+        run: |
+          verdict=failure
+          [ "$OUTCOMES" = "success success success success" ] && verdict=success
+          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
 '''),
     ),
     (
-        (r'''            # head) and publish only if it has turned to success, so a head that still fails is not
-            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
-            last="$(GH_TOKEN="$APP_TOKEN" gh api '''
-        r'''"repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) '''
-        r'''| last
-                    | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
+        (r'''          set -euo pipefail
+          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record for this head passed."
+          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
 '''),
-        (r'''            # head) and publish only if it has turned to success, so a head that still fails is not
-            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
+        (r'''          set -euo pipefail
+          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the scanner guard and the passed-audit record for this head passed."
+          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
+'''),
+    ),
+    (
+        (r'''            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
+            last="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
+              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
+'''),
+        (r'''            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
             last="$(GH_TOKEN="$APP_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" '''
-        r'''\
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) '''
-        r'''| last
-                    | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
+              "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
+              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
 '''),
     ),
     (
-        (r'''            fi
-            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} '''
-        r'''${sha:0:7}: still failure"; continue; fi
-            GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f '''
-        r'''name=auditor-review-gate -f head_sha="$sha" \
-              -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
+        (r'''                    ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
 '''),
-        (r'''            fi
-            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} '''
-        r'''${sha:0:7}: still failure"; continue; fi
-            # a head that is the tip of a live merge queue branch is the queue publisher's (same '''
-        r'''check name and SHA);
-            # a head can become one while it is judged, so the branches are read here, right before '''
-        r'''the post
-            queue_tips="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" '''
-        r''''refs/heads/gh-readonly-queue/*')" \
-              || { echo "PR #${n} ${sha:0:7}: the queue branches could not be listed, not posted"; '''
-        r'''fail=1; continue; }
-            tips="$(cut -f1 <<<"$queue_tips")"
-            if grep -qxF "$sha" <<<"$tips"; then
-              echo "PR #${n} ${sha:0:7}: the head of a live merge queue branch, not posted"; '''
-        r'''continue
+        (r'''                    ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
+'''),
+    ),
+    (
+        (r'''               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
+              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)
             fi
-            GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f '''
-        r'''name=auditor-review-gate -f head_sha="$sha" \
-              -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
+'''),
+        (r'''               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
+              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, scanner guard and the passed-audit record (REQ-REL-012)
+            fi
 '''),
     ),
 )
 
 
 def gate_variants():
-    """(main's gate workflow, the gate workflow with the merge queue judge), from the repository's copy."""
+    """(main's gate workflow, the change's), from the repository's copy."""
     with open(GATE) as fh:
         cur = fh.read()
-    assert all(cur.count(new) == 1 for _, new in QUEUE_HUNKS), "the gate workflow is not the change's copy"
+    assert all(cur.count(new) == 1 for _, new in GATE_HUNKS), "the gate workflow is not the change's copy"
     main_copy = cur
-    for old, new in QUEUE_HUNKS:
+    for old, new in GATE_HUNKS:
         main_copy = main_copy.replace(new, old)
     return main_copy, cur
 
@@ -1157,8 +1060,8 @@ def gate_tree(gate_text):
     return repo({".github/workflows/agent-review-gate.yml": gate_text,
                  ".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                  ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
-                 "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
-                 "bin/scan-no-workflow-call-test.sh": "", QJ_REL: _qj(), "bin/audit-record-judge.sh": "",
+                 "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",   # main's gate runs it
+                 "bin/scan-no-workflow-call-test.sh": "", "bin/audit-record-judge.sh": "",
                  "bin/audit-record-prepare.sh": "", ".github/agent/bin/auditor-signed-commit.py": ""}, gate=False)
 
 
@@ -1188,14 +1091,14 @@ class GateWorkflowDigestSet(unittest.TestCase):
         self.assertEqual(M.gate_digest(b), GATE_B)
 
     def test_a_tree_with_either_accepted_gate_workflow_passes(self):
-        for name, text in zip(("main", "queue"), gate_variants()):
+        for name, text in zip(("main", "change"), gate_variants()):
             with self.subTest(gate=name):
                 code, out = run([gate_tree(text)])
                 self.assertEqual(code, 0, out)
                 self.assertIn(", 0 finding(s)", out)
 
     def test_a_dependabot_pin_bump_in_either_still_matches(self):
-        for name, text in zip(("main", "queue"), gate_variants()):
+        for name, text in zip(("main", "change"), gate_variants()):
             with self.subTest(gate=name):
                 bumped = bump_first_pin(text)
                 self.assertNotEqual(bumped, text)

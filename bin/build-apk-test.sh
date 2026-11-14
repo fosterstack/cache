@@ -58,7 +58,7 @@ chmod +x "$work/ba.sh"; BA_PROD=$BA; BA="$work/ba.sh"
 export FSCACHE_ROOT="$root"   # lib.mkapk signs a fixture apk with the committed (non-secret) assembly key found here
 mkdir -p "$work/keysfx"
 python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy.sh" \
-  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'AWS=${TEST_AWS:-'"$stubs"'/aws}' 'SIGNING_CONFIG=${TEST_SIGNING_CONFIG:-'"$work"'/signing-config-test.json}' 'KMSSIGN=${TEST_KMSSIGN:-bin/chain-verify.py}' 'KEYS_DIR='"$work"'/keysfx' \
+  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'SIGNING_CONFIG=${TEST_SIGNING_CONFIG:-'"$work"'/signing-config-test.json}' 'VERIFIER=${TEST_VERIFIER:-bin/chain-verify.py}' 'KEYS_DIR='"$work"'/keysfx' \
   || { echo "FIXTURE SETUP FAILED: release-sign copy"; exit 1; }
 chmod +x "$work/rs-copy.sh" "$work/ba-copy.sh"
 # ---- begin verbatim sections ----
@@ -334,10 +334,10 @@ mkrsa() { openssl genrsa 2048 2>/dev/null >"$1.raw"; if grep -q 'BEGIN PRIVATE K
 mkrsa "$work/release.rsa"
 # the signer checks the fake KMS signature against build/keys/release.rsa.pub: the tests run a copy whose KEYS_DIR line (TEST-SUBST) names a fixture keys dir holding the public half of the suite-made key
 mkdir -p "$work/keysfx"; cp "$root/build/keys/assembly.rsa" "$root/build/keys/assembly.rsa.pub" "$work/keysfx/"; openssl rsa -in "$work/release.rsa" -pubout -out "$work/keysfx/release.rsa.pub" 2>/dev/null
-RS_REAL=$RS; RS="$work/rs-copy.sh"
+RS_REAL=$RS; RSC="$work/rs-copy.sh"; RS="$work/rs-wrap.sh"      # RSC: the signer copy as it is called (--build-dir A --signatures S); RS: the same, with Sign's signatures made first for the apks of A (see rs-wrap.sh below)
 # ---- KA-1: the apks are signed by KMS Sign with RSASSA_PKCS1_V1_5_SHA_256 named on every call (the one-key rule + the owner's strict algorithm); the fake aws signs with a suite-made RSA key ----
 # RK is the call prefix: the KMS reference the job pins and the key the fake aws signs with (a fake: nothing here reaches KMS, the real Rekor or any network but the suite's own localhost stub)
-RK=(env RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing STUB_AWS_KEY="$work/release.rsa" RELEASE_ROLE_ARN=arn:aws:iam::111122223333:role/test-release RELEASE_TOKEN_FILE="$work/idtoken")
+RK=(env STUB_AWS_KEY="$work/release.rsa")      # S2: the signer holds no key and no reference; this is only the key the fake aws signs with when the SUITE makes Sign's signatures (mksigs.py below)
 printf 'identity-token\n' >"$work/idtoken"; chmod 600 "$work/idtoken"
 cat >"$stubs/aws" <<'EOF2'
 #!/bin/bash
@@ -509,7 +509,9 @@ if a[0] in ("bundle-check", "key-ref-check"):   # the signer's second call (and 
 assert a[0] == "kms-sign"
 opt = dict(zip(a[1::2], a[2::2])); dig = bytes.fromhex(opt["--digest"])
 spec = importlib.util.spec_from_file_location("cv", os.environ["STUB_REAL_CV"]); cv = importlib.util.module_from_spec(spec); sys.modules["cv"] = cv; spec.loader.exec_module(cv)
-sig = subprocess.run([os.environ["STUB_OPENSSL"], "pkeyutl", "-sign", "-inkey", os.environ["STUB_AWS_KEY"], "-pkeyopt", "digest:sha256", "-in", "/dev/stdin"], input=dig, capture_output=True).stdout
+pss = ["-pkeyopt", "rsa_padding_mode:pss", "-pkeyopt", "rsa_pss_saltlen:32"] if os.environ.get("STUB_FAKEKMS_PSS") else []
+sig = subprocess.run([os.environ["STUB_OPENSSL"], "pkeyutl", "-sign", "-inkey", os.environ["STUB_AWS_KEY"], "-pkeyopt", "digest:sha256"] + pss + ["-in", "/dev/stdin"], input=dig, capture_output=True).stdout
+if os.environ.get("STUB_FAKEKMS_GARBAGE"): sig = b"x" * 256
 open(opt["--out"], "xb").write(sig)
 if os.environ.get("STUB_FAKEKMS_NOBUNDLE"): sys.exit(0)
 item, hint = cv.kms_rekor_entry(opt["--signing-config"], opt["--public-key"], opt["--digest"], sig, cv.pinned_rekor_pem(opt["--signing-config"]))
@@ -539,32 +541,53 @@ else: ms = {"messageSignature": {"messageDigest": {"algorithm": "SHA2_256", "dig
 doc = {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": dict(cert, tlogEntries=ents)}; doc.update(ms)
 open(opt["--bundle"], "w").write(json.dumps(doc) + "\n")
 P
-python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy-fake.sh" \
-  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'AWS=${TEST_AWS:-'"$stubs"'/aws}' 'SIGNING_CONFIG='"$work"'/signing-config-test.json' 'KMSSIGN='"$work"'/fake-kmssign.py' 'KEYS_DIR='"$work"'/keysfx' || { echo "FIXTURE SETUP FAILED: release-sign fake kms-sign copy"; exit 1; }
-t "rule 22" "the fake aws exists and the suite asserts it is the one the signer copy names (command -v)" bash -c "test -x '$stubs/aws' && PATH='$stubs:$PATH' command -v aws | grep -qx '$stubs/aws' && grep -q 'AWS=.*$stubs/aws' '$work/rs-copy.sh'"
-toolrun() { grep -Eq '^(melange (build|sign)|apko (build|lock)|aws kms (sign|get-public-key))' "$CALLS"; }   # a signing tool is a tool run, also aws kms
-rs1() { rm -rf "$work/$1"; mkdir -p "$work/$1/x86_64"; cp "$pr/a.apk" "$work/$1/x86_64/fscache-0.3.0-r0.apk"; }   # a fresh Build directory with one assembly-signed apk
-snap() { (cd "$1" && { find . | sort; find . -type f | sort | xargs shasum -a 256; } | shasum -a 256); }   # names and bytes of a directory
-mkrsa "$work/other-rel.rsa"
-rs1 s1; s1apk="$work/s1/x86_64/fscache-0.3.0-r0.apk"; s1dg=$(python3 "$AT" digest "$s1apk")
-: >"$work/rekor.log"
-sd "rule 22" "release signing (KA-1): one apk -> aws --version, aws kms get-public-key (the SigningAlgorithms list, every call) and aws kms sign naming the algorithm and DIGEST, on the 32-byte digest of the control stream" "^aws kms sign --key-id alias/fosterstack-release-signing --message fileb://[^ ]+ --message-type DIGEST --signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 --output json\$" "${RK[@]}" "$RS" --build-dir "$work/s1"
-t "rule 22" "release signing (KA-1): the calls come in the order version, get-public-key, sign, and get-public-key names the key id and asks for SigningAlgorithms and PublicKey in one call (KA-2 p4 key compare)" bash -c "
-  grep -n '^aws ' '$CALLS' | cut -d: -f2- | head -n 3 | tr '\n' '|' | grep -Fx 'aws --version|aws kms get-public-key --key-id alias/fosterstack-release-signing --query {SigningAlgorithms:SigningAlgorithms,PublicKey:PublicKey} --output json|aws kms sign --key-id alias/fosterstack-release-signing --message fileb://'\"\$(grep -m1 '^aws kms sign' '$CALLS' | sed 's|.*fileb://||; s| .*||')\"' --message-type DIGEST --signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 --output json|'"
-t "rule 22" "release signing (KA-1): one hashedrekord 0.0.1 entry was POSTed to the signing config's Rekor v1 (/api/v1/log/entries) with the release public key, the sha256 of the control stream and the KMS signature" python3 - "$work/rekor.log" "$s1apk" "$AT" "$work/keysfx/release.rsa.pub" <<'P'
-import base64, hashlib, io, json, subprocess, sys, tarfile, zlib
-log, apk, at, pub = sys.argv[1:5]
-lines = open(log, "rb").read().splitlines(); assert len(lines) == 1, len(lines)
-path, body = lines[0].split(b" ", 1); assert path == b"/api/v1/log/entries", path
-e = json.loads(body); assert e["kind"] == "hashedrekord" and e["apiVersion"] == "0.0.1"
-sp = e["spec"]; assert sp["data"]["hash"]["algorithm"] == "sha256"
-subprocess.run([sys.executable, at, "control", apk, apk + ".ctl"], check=True)
-assert sp["data"]["hash"]["value"] == hashlib.sha256(open(apk + ".ctl", "rb").read()).hexdigest()
-raw = open(apk, "rb").read(); tar = zlib.decompressobj(31).decompress(raw)
-sig = tarfile.open(fileobj=io.BytesIO(tar)).extractfile(".SIGN.RSA256.release.rsa.pub").read()
-assert base64.b64decode(sp["signature"]["content"]) == sig
-assert b"BEGIN PUBLIC KEY" in base64.b64decode(sp["signature"]["publicKey"]["content"])
+# Sign's side of the signer's input (S2): mksigs.py makes release-signed/apks-shaped signatures for the apks of a Build directory, one <apk>.kms.sig and <apk>.bundle each, by running a kms-sign (the REAL chain-verify.py one
+# through the suite's fake aws and its localhost Rekor, or the suite's fake-kmssign.py with a defect) on the sha256 of the control stream. The signer under test gets them with --signatures; it holds no key and calls no aws.
+cat >"$work/mksigs.py" <<'P'
+import glob, hashlib, os, subprocess, sys
+bd, sg = sys.argv[1:3]
+e = os.environ
+for f in sorted(glob.glob(bd + "/*/*.apk")):
+    if os.path.islink(f) or not os.path.isfile(f): continue
+    arch, name = os.path.basename(os.path.dirname(f)), os.path.basename(f)
+    os.makedirs(sg + "/" + arch, exist_ok=True); ctl = sg + "/.ctl"
+    if subprocess.run([sys.executable, "-I", "-B", e["MKSIGS_AT"], "control", f, ctl], capture_output=True).returncode: continue
+    dg = hashlib.sha256(open(ctl, "rb").read()).hexdigest(); os.remove(ctl)
+    out = "%s/%s/%s.kms.sig" % (sg, arch, name)
+    subprocess.run([sys.executable, "-I", "-B", e["MKSIGS_SIGNER"], "kms-sign", "--aws", e["MKSIGS_AWS"], "--key-ref", "awskms:///alias/fosterstack-release-signing", "--signing-config", e["MKSIGS_CFG"],
+                    "--public-key", e["MKSIGS_PUB"], "--digest", dg, "--out", out, "--bundle", out[:-len(".kms.sig")] + ".bundle"], capture_output=True)
 P
+cat >"$work/rs-wrap.sh" <<WRAP
+#!/bin/bash
+# the suite's call of the signer copy: without --signatures, Sign's signatures for the apks of --build-dir A are made first into A.sigs (MKSIGS_SIGNER: the real kms-sign unless the case names the fake one), then the copy runs
+a=("\$@"); bd=; sg=
+for ((i = 0; i < \${#a[@]}; i++)); do case \${a[i]} in --build-dir) bd=\${a[i+1]:-};; --signatures) sg=\${a[i+1]:-};; esac; done
+if [ -z "\$sg" ] && [ -d "\$bd" ]; then
+  sg="\$bd.sigs"; rm -rf "\$sg"; mkdir -p "\$sg"; : >"$work/mksigs.calls"
+  env CALLS="$work/mksigs.calls" STUB_AWS_KEY="\${STUB_AWS_KEY:-$work/release.rsa}" MKSIGS_AT="$root/bin/apk-tool.py" MKSIGS_SIGNER="\${MKSIGS_SIGNER:-$root/bin/chain-verify.py}" STUB_REAL_CV="$root/bin/chain-verify.py" STUB_OPENSSL="$(command -v openssl)" \\
+    MKSIGS_AWS="$stubs/aws" MKSIGS_CFG="$work/signing-config-test.json" MKSIGS_PUB="$work/keysfx/release.rsa.pub" python3 -I -B "$work/mksigs.py" "\$bd" "\$sg" >/dev/null 2>&1 || true
+  a+=(--signatures "\$sg")
+  [ -z "\${MKSIGS_ONLY:-}" ] || exit 0
+fi
+exec bash "$work/rs-copy.sh" "\${a[@]}"
+WRAP
+chmod +x "$work/rs-wrap.sh"
+FKS=(env MKSIGS_SIGNER="$work/fake-kmssign.py")      # the signatures made by the suite's fake kms-sign, which writes the defect the case asks for through STUB_FAKEKMS_*
+openssl pkey -in "$work/release.rsa" -pubout -outform DER >"$work/release-pub.der"
+t "rule 22" "S2 the signer copy's TEST-SUBST lines are exactly PY3, OPENSSL, SIGNING_CONFIG, KEYS_DIR and VERIFIER (AWS and KMSSIGN are gone), and VERIFIER is bin/chain-verify.py" bash -c "grep -E '#[[:space:]]*TEST-SUBST' '$RS_REAL' | cut -d= -f1 | sort | tr '\n' ' ' | grep -qx 'KEYS_DIR OPENSSL PY3 SIGNING_CONFIG VERIFIER ' && grep -Eq '^VERIFIER=bin/chain-verify\.py +# *TEST-SUBST' '$RS_REAL'"
+toolrun() { grep -Eq '^(melange (build|sign)|apko (build|lock)|aws )' "$CALLS"; }   # a tool run: the signer must make no aws call at all (S2), so any aws line is one
+rs1() { rm -rf "$work/$1" "$work/$1.sigs"; mkdir -p "$work/$1/x86_64"; cp "$fx/pair/a.apk" "$work/$1/x86_64/fscache-0.3.0-r0.apk"; }   # a fresh Build directory with one assembly-signed apk
+rs2() { rs1 "$1"; mkdir -p "$work/$1/aarch64"; cp "$fx/pair/ctrl-post-install.apk" "$work/$1/aarch64/fscache-0.3.0-r0.apk"; }   # two apks with different control streams
+snap() { (cd "$1" && { find . | sort; find . -type f | sort | xargs shasum -a 256; } | shasum -a 256); }   # names and bytes of a directory
+mkS() { local d=$1; shift; MKSIGS_ONLY=1 env "$@" "$RS" --build-dir "$work/$d"; }      # Sign's signatures of the apks of $work/$d, into $work/$d.sigs (made by kms-sign, never by the signer under test)
+mkrsa "$work/other-rel.rsa"
+rs1 s1; s1apk="$work/s1/x86_64/fscache-0.3.0-r0.apk"; s1dg=$(python3 "$AT" digest "$s1apk"); mkS s1; s1sig="$work/s1.sigs/x86_64/fscache-0.3.0-r0.apk"
+t "rule 22" "S2 Sign's step (the suite's mksigs) leaves <apk>.kms.sig and <apk>.bundle for the apk" test -s "$s1sig.kms.sig" -a -s "$s1sig.bundle"
+: >"$work/rekor.log"
+run_s env -u RELEASE_KMS_KEY_REF -u RELEASE_ROLE_ARN -u RELEASE_TOKEN_FILE -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE "$RSC" --build-dir "$work/s1" --signatures "$work/s1.sigs"
+t "rule 22" "I3 a good run with no key reference, no role, no token file and no aws in the environment: exit 0" test "$(rc)" = 0
+t "rule 22" "I3 the signer makes no aws call and posts nothing to Rekor (Sign made the entry; the signer only checks it)" bash -c "! grep -q '^aws ' '$CALLS' && [ ! -s '$work/rekor.log' ]"
+t "rule 22" "release signing: the signed apk's signer is release.rsa.pub and apk-tool verify passes against the release public key" bash -c "test \"\$(python3 '$AT' signer '$s1apk')\" = release.rsa.pub && python3 '$AT' verify '$s1apk' '$work/keysfx/release.rsa.pub'"
 cat >"$work/sigmember.py" <<'P'
 import io, sys, tarfile, zlib
 raw = open(sys.argv[1], "rb").read()
@@ -573,53 +596,36 @@ ms = tarfile.open(fileobj=io.BytesIO(tar)).getmembers()
 assert [m.name for m in ms] == [".SIGN.RSA256.release.rsa.pub"], [m.name for m in ms]
 open(sys.argv[2], "wb").write(tarfile.open(fileobj=io.BytesIO(tar)).extractfile(ms[0]).read())
 P
-t "rule 22" "release signing: the signed apk's signer is release.rsa.pub and apk-tool verify passes against the release public key" bash -c "test \"\$(python3 '$AT' signer '$s1apk')\" = release.rsa.pub && python3 '$AT' verify '$s1apk' '$work/keysfx/release.rsa.pub'"
-t "rule 22" "release signing: the signature stream holds exactly one member, .SIGN.RSA256.release.rsa.pub, and openssl dgst -sha256 -verify (RSA PKCS#1 v1.5) accepts it over the control stream" bash -c "python3 '$work/sigmember.py' '$s1apk' '$work/s1.sig' && python3 '$AT' control '$s1apk' '$work/s1.ctl' && openssl dgst -sha256 -verify '$work/keysfx/release.rsa.pub' -signature '$work/s1.sig' '$work/s1.ctl'"; rm -f "$work/s1.sig" "$work/s1.ctl"
+t "rule 22" "release signing: the signature stream holds exactly one member, .SIGN.RSA256.release.rsa.pub, and it is Sign's kms.sig byte for byte; openssl dgst -sha256 -verify (RSA PKCS#1 v1.5) accepts it over the control stream" bash -c "python3 '$work/sigmember.py' '$s1apk' '$work/s1.sig' && cmp '$work/s1.sig' '$s1sig.kms.sig' && python3 '$AT' control '$s1apk' '$work/s1.ctl' && openssl dgst -sha256 -verify '$work/keysfx/release.rsa.pub' -signature '$work/s1.sig' '$work/s1.ctl' | grep -q 'Verified OK'"
 t "rule 22" "release signing: the digest of the apk (control and data) is unchanged by signing" test "$(python3 "$AT" digest "$s1apk")" = "$s1dg"
-t "rule 22" "release signing: the Rekor bundle is kept beside the apk as <apk>.bundle with exactly one tlogEntries item, and no .new file is left" bash -c "python3 -c 'import json,sys; sys.exit(0 if len(json.load(open(sys.argv[1]))[\"verificationMaterial\"][\"tlogEntries\"])==1 else 1)' '$s1apk.bundle' && test -z \"\$(find '$work/s1' -name '*.new')\""
+t "rule 22" "release signing: Sign's Rekor bundle is copied beside the apk as <apk>.bundle (the same bytes, exactly one tlogEntries item) and no .new file is left" bash -c "cmp '$s1apk.bundle' '$s1sig.bundle' && python3 -c 'import json,sys; sys.exit(0 if len(json.load(open(sys.argv[1]))[\"verificationMaterial\"][\"tlogEntries\"])==1 else 1)' '$s1apk.bundle' && test -z \"\$(find '$work/s1' -name '*.new')\""
 # refusals: exit 2 before any tool
-rs1 s2; s2b=$(snap "$work/s2")
-sr "rule 22" "release signing: RELEASE_KMS_KEY_REF unset -> exit 2 naming the variable, no tool run" 'RELEASE_KMS_KEY_REF is unset' env -u RELEASE_KMS_KEY_REF "$RS" --build-dir "$work/s2"
-sr "rule 22" "release signing: RELEASE_KMS_KEY_REF empty -> exit 2 naming the variable, no tool run" 'RELEASE_KMS_KEY_REF is unset' env RELEASE_KMS_KEY_REF= "$RS" --build-dir "$work/s2"
-for bad in "arn:aws:kms:us-east-1:111122223333:key/abc" "awskms://x" "awskms:///" "file:///etc/hostname" "release.rsa" "awskms:///alias/other" "awskms:///alias/fosterstack-release-signing-x"; do
-  sr "rule 22" "release signing: RELEASE_KMS_KEY_REF='$bad' is not the release key's awskms:///<name> reference (W2: byte-equal to the verifier's own, one check in chain-verify.py key-ref-check) -> exit 2, no tool run" 'not a KMS key reference' env RELEASE_KMS_KEY_REF="$bad" "$RS" --build-dir "$work/s2"; done
-sr "rule 22" "release signing: --key is an unknown argument (there is no stored key to name): exit 2, no tool run" 'unknown argument: --key' "${RK[@]}" "$RS" --build-dir "$work/s2" --key "$work/release.rsa"
-sr "rule 22" "release signing: --build-dir is required" 'missing value|not a directory' "${RK[@]}" "$RS"
+rs1 s2; mkS s2; s2b=$(snap "$work/s2")
+sr "rule 22" "I3 no argument at all: exit 2 naming the missing argument" 'build-dir|signatures|missing|usage' "$RSC"
+sr "rule 22" "I3 --build-dir without --signatures: exit 2 naming --signatures" 'signatures' "$RSC" --build-dir "$work/s2"
+sr "rule 22" "I3 --signatures without --build-dir: exit 2 naming --build-dir" 'build-dir' "$RSC" --signatures "$work/s2.sigs"
+sr "rule 22" "I3 --signatures that is a file, not a directory: exit 2" 'signatures|director' "$RSC" --build-dir "$work/s2" --signatures "$work/rekor.port"
+sr "rule 22" "I3 --signatures that does not exist: exit 2" 'signatures|director' "$RSC" --build-dir "$work/s2" --signatures "$work/no-such-sigs"
+sr "rule 22" "release signing: --key is an unknown argument (there is no stored key to name): exit 2, no tool run" 'unknown argument: --key' "$RSC" --build-dir "$work/s2" --signatures "$work/s2.sigs" --key "$work/release.rsa"
+sr "rule 22" "I3 --aws is an unknown argument (the signer calls no aws): exit 2" 'unknown argument' "$RSC" --build-dir "$work/s2" --signatures "$work/s2.sigs" --aws "$stubs/aws"
+sr "rule 22" "I3 --key-ref is an unknown argument (the signer holds no key reference): exit 2" 'unknown argument' "$RSC" --build-dir "$work/s2" --signatures "$work/s2.sigs" --key-ref awskms:///alias/fosterstack-release-signing
+sr "rule 22" "release signing: --build-dir is required" 'missing value|not a directory|build-dir' "$RSC" --signatures "$work/s2.sigs"
 t "rule 22" "release signing: after all these refusals Build's directory is byte-identical" test "$(snap "$work/s2")" = "$s2b"
-mutant() { # <ac> <desc> <keyword> <dir> [KEY=VALUE...]: the fakes misbehave as asked -> exit 1 naming the reason, and Build's directory is byte-identical (no .SIGN written, no bundle, no .new)
-  local ac=$1 d=$2 kw=$3 dir=$4; shift 4; rs1 "$dir"; local b a; b=$(snap "$work/$dir")
-  run_s "${RK[@]}" "$@" "$RS" --build-dir "$work/$dir"; a=$(snap "$work/$dir")
+sigcase() { # <ac> <desc> <keyword> <dir> <mutation run in the signatures directory, or ''> [ENV=VALUE for Sign's step...]: exit 1 naming the reason, and Build's directory is byte-identical (no .SIGN written, no bundle, no .new)
+  local ac=$1 d=$2 kw=$3 dir=$4 mut=$5; shift 5; rs2 "$dir"; mkS "$dir" "$@"; [ -z "$mut" ] || ( cd "$work/$dir.sigs" && eval "$mut" ); local b a; b=$(snap "$work/$dir")
+  run_s "$RSC" --build-dir "$work/$dir" --signatures "$work/$dir.sigs"; a=$(snap "$work/$dir")
   if [ "$(rc)" = 1 ] && grep -Eqi -- "$kw" "$work/log" && [ "$a" = "$b" ]; then ok; else bad "$ac" "$d (exit $(rc), wanted 1 naming '$kw', Build byte-identical)"; fi; }
-fmutant() { # like mutant, but the signer copy that calls the suite's fake kms-sign (the defects of what kms-sign hands back)
-  local ac=$1 d=$2 kw=$3 dir=$4; shift 4; rs1 "$dir"; local b a; b=$(snap "$work/$dir")
-  run_s "${RK[@]}" STUB_OPENSSL="$(command -v openssl)" STUB_REAL_CV="$root/bin/chain-verify.py" "$@" bash "$work/rs-copy-fake.sh" --build-dir "$work/$dir"; a=$(snap "$work/$dir")
-  if [ "$(rc)" = 1 ] && grep -Eqi -- "$kw" "$work/log" && [ "$a" = "$b" ]; then ok; else bad "$ac" "$d (exit $(rc), wanted 1 naming '$kw', Build byte-identical)"; fi; }
-rmutant() { # <ac> <desc> <keyword> <dir> <rekor mode>: the localhost Rekor answers with the given mode
-  echo "$5" >"$work/rekor.mode"; mutant "$1" "$2" "$3" "$4"; echo ok >"$work/rekor.mode"; }
-mutant "rule 22" "release signing: aws kms sign exits non-zero -> exit 1 and Build is untouched" 'signing the control stream failed' m1 STUB_AWS_FAIL_AT=1
-mutant "rule 22" "release signing (bar 3a): a fake KMS that signs PSS is refused by the PKCS#1 v1.5 check: exit 1, no .SIGN written, Build untouched" 'PKCS#1 v1\.5' m2 STUB_AWS_PSS=1
-mutant "rule 22" "release signing: a garbage signature is refused (exit 1, Build untouched)" 'PKCS#1 v1\.5' m3 STUB_AWS_GARBAGE=1
-# KA-2 p4: a KMS that holds another key than build/keys/release.rsa.pub is now refused BEFORE any signature is asked (kms-sign compares the --public-key file with get-public-key's key): exit 1, one refusal line naming the file, 0 KMS Sign, 0 Rekor POST, Build untouched
-rk_before=$(grep -c '^/api/v1/log/entries ' "$work/rekor.log" || true)
-mutant "rule 22" "release signing: a KMS key other than build/keys/release.rsa.pub is refused with the key-compare refusal, before any signature (exit 1, Build untouched)" 'does not match the KMS key' m4 STUB_AWS_KEY="$work/other-rel.rsa"
-if [ "$(grep -c '^aws kms sign ' "$CALLS" || true)" = 0 ] && [ "$(grep -c '^/api/v1/log/entries ' "$work/rekor.log" || true)" = "$rk_before" ] && [ "$(grep -c 'does not match the KMS key' "$work/log")" = 1 ]; then ok
-else bad "rule 22" "release signing: a KMS key other than build/keys/release.rsa.pub: 0 KMS Sign, 0 Rekor POST and exactly one refusal line wanted (signs $(grep -c '^aws kms sign ' "$CALLS" || true), POSTs $(( $(grep -c '^/api/v1/log/entries ' "$work/rekor.log" || true) - rk_before )), lines $(grep -c 'does not match the KMS key' "$work/log"))"; fi
-# KA-2 p4 r2 (C9): the case the key compare cannot see: the KMS answers get-public-key with the committed release key (the compare passes) but signs with ANOTHER key; the signature is a valid PKCS#1 v1.5 one, so only the post-sign check against build/keys/release.rsa.pub refuses it
-openssl pkey -in "$work/release.rsa" -pubout -outform DER >"$work/release-pub.der"
-mutant "rule 22" "release signing (KA-2 p4 r2 C9): a KMS that answers the committed key but signs with another key (a valid PKCS#1 v1.5 signature) is refused by the post-sign check against build/keys/release.rsa.pub (exit 1, Build untouched)" 'PKCS#1 v1\.5' m20 STUB_AWS_KEY="$work/other-rel.rsa" STUB_AWS_PUBDER="$work/release-pub.der"
-if [ "$(grep -c '^aws kms sign ' "$CALLS" || true)" = 1 ] && ! grep -q 'does not match the KMS key' "$work/log"; then ok
-else bad "rule 22" "release signing (KA-2 p4 r2 C9): in that refusal the key compare passed (no 'does not match the KMS key') and KMS was asked to sign once (signs $(grep -c '^aws kms sign ' "$CALLS" || true))"; fi
-rmutant "rule 22" "release signing (KA-1 case 5): Rekor answers with no entry -> refused naming Rekor (exit 1, Build untouched)" 'rekor' m5 empty
-rmutant "rule 22" "release signing (KA-1 case 5): Rekor answers with two entries -> refused naming Rekor (exit 1, Build untouched)" 'rekor' m6 two
-rmutant "rule 22" "release signing (KA-1 case 5): Rekor answers with an error status -> refused naming Rekor (exit 1, Build untouched)" 'rekor' m7 err
-mutant "rule 22" "release signing (KA-1 case 1): a release key that lists only PSS is refused with the exact message, exit 1, kms sign never called" 'kms-sign: refused: the release key awskms:///alias/fosterstack-release-signing does not support RSASSA_PKCS1_V1_5_SHA_256 \(it lists: RSASSA_PSS_SHA_256\); the release key must be RSA with usage SIGN_VERIFY' m15 'STUB_AWS_ALGS=["RSASSA_PSS_SHA_256"]'
-t "rule 22" "release signing (KA-1 case 1): in that refusal aws kms sign was never called" bash -c "! grep -q '^aws kms sign ' '$CALLS' && grep -q '^aws kms get-public-key ' '$CALLS'"
-mutant "rule 22" "release signing (KA-1 case 4): the KMS answers with another SigningAlgorithm than the one asked -> refused (exit 1, Build untouched)" 'SigningAlgorithm' m16 STUB_AWS_RESP_ALG=RSASSA_PSS_SHA_256
-mutant "rule 22" "release signing (KA-1): a KMS answer whose Signature is not base64 is refused (exit 1, Build untouched)" 'base64|Signature' m17 STUB_AWS_BADB64=1
-mutant "rule 22" "release signing (KA-1): an aws CLI of another major version than the pinned one is refused (exit 1, Build untouched)" 'aws-cli|version' m18 STUB_AWS_VERSION=1.32.0
-rs1 m19; run_s "${RK[@]}" 'STUB_AWS_ALGS=["RSASSA_PSS_SHA_256","RSASSA_PKCS1_V1_5_SHA_256"]' "$RS" --build-dir "$work/m19"
-t "rule 22" "release signing (KA-1 case 2): a key that lists PSS FIRST and PKCS#1 v1.5 second is signed with PKCS#1 v1.5 (the algorithm is named, not the first listed): exit 0, signer release.rsa.pub, apk-tool verify passes, the sign call names RSASSA_PKCS1_V1_5_SHA_256" bash -c "[ \"\$(cat '$work/rc')\" = 0 ] && [ \"\$(python3 '$AT' signer '$work/m19/x86_64/fscache-0.3.0-r0.apk')\" = release.rsa.pub ] && python3 '$AT' verify '$work/m19/x86_64/fscache-0.3.0-r0.apk' '$work/keysfx/release.rsa.pub' && grep -q '^aws kms sign .*--signing-algorithm RSASSA_PKCS1_V1_5_SHA_256 ' '$CALLS'"
-fmutant "rule 22" "release signing: kms-sign that writes no bundle is refused (exit 1, Build untouched)" 'no signature or no bundle' m20 STUB_FAKEKMS_NOBUNDLE=1
+sigcase "rule 22" "I3 an apk with no <apk>.kms.sig is refused (exit 1, Build untouched)" 'kms\.sig' m1 'rm aarch64/fscache-0.3.0-r0.apk.kms.sig'
+sigcase "rule 22" "I3 an apk with no <apk>.bundle is refused (exit 1, Build untouched)" 'bundle' m2 'rm x86_64/fscache-0.3.0-r0.apk.bundle'
+sigcase "rule 22" "I3 an apk whose kms.sig is not the signature in its bundle is refused (exit 1, Build untouched)" 'kms\.sig|signature|bundle' m3 'head -c 256 /dev/zero | tr "\0" y > aarch64/fscache-0.3.0-r0.apk.kms.sig'
+sigcase "rule 22" "I3 an apk whose kms.sig is the kms.sig of another apk (and whose bundle says so) is refused (exit 1, Build untouched)" 'kms\.sig|signature|bundle|digest|PKCS' m4 'cp x86_64/fscache-0.3.0-r0.apk.kms.sig aarch64/fscache-0.3.0-r0.apk.kms.sig; cp x86_64/fscache-0.3.0-r0.apk.bundle aarch64/fscache-0.3.0-r0.apk.bundle'
+sigcase "rule 22" "I3 a bundle made for another apk's control stream is refused by bundle-check (exit 1, Build untouched)" 'digest|bundle' m5 'cp x86_64/fscache-0.3.0-r0.apk.bundle aarch64/fscache-0.3.0-r0.apk.bundle'
+sigcase "rule 22" "I3 a kms.sig that does not verify under build/keys/release.rsa.pub over the control stream (a valid signature by another key, with its own Rekor entry) is refused (exit 1, Build untouched)" 'kms\.sig|signature|PKCS|verif|bundle' m6 '' STUB_AWS_KEY="$work/other-rel.rsa" STUB_AWS_PUBDER="$work/release-pub.der"
+sigcase "rule 22" "I3 a kms.sig made with PSS instead of PKCS#1 v1.5 (and its Rekor entry) is refused (exit 1, Build untouched)" 'PKCS|signature|verif' m7 '' MKSIGS_SIGNER="$work/fake-kmssign.py" STUB_FAKEKMS_PSS=1 STUB_AWS_KEY="$work/release.rsa"
+sigcase "rule 22" "I3 a garbage kms.sig (and its Rekor entry) is refused (exit 1, Build untouched)" 'PKCS|signature|verif' m8 '' MKSIGS_SIGNER="$work/fake-kmssign.py" STUB_FAKEKMS_GARBAGE=1 STUB_AWS_KEY="$work/release.rsa"
+fmutant() { # <ac> <desc> <keyword> <dir> STUB_FAKEKMS_X=1: the signatures were made by the suite's fake kms-sign, which writes that defect
+  local ac=$1 d=$2 kw=$3 dir=$4; shift 4; sigcase "$ac" "$d" "$kw" "$dir" '' MKSIGS_SIGNER="$work/fake-kmssign.py" STUB_AWS_KEY="$work/release.rsa" "$@"; }
+fmutant "rule 22" "release signing: a Sign step that leaves no bundle is refused (exit 1, Build untouched)" 'bundle' m20 STUB_FAKEKMS_NOBUNDLE=1
 fmutant "rule 22" "release signing: a bundle with no tlogEntries (no Rekor entry) is refused (exit 1, Build untouched)" 'tlogEntries' m21 STUB_FAKEKMS_NOTLOG=1
 fmutant "rule 22" "release signing: a bundle with two tlogEntries items is refused (exit 1, Build untouched)" 'tlogEntries' m22 STUB_FAKEKMS_TWOTLOG=1
 fmutant "rule 22" "release signing (A1 case 1): a bundle whose tlogEntries is [null] is refused (exit 1, Build untouched)" 'tlogEntries.*not an object' m30 STUB_FAKEKMS_NULLENTRY=1
@@ -628,13 +634,11 @@ fmutant "rule 22" "release signing (A1 case 3): a Rekor entry whose body names a
 fmutant "rule 22" "release signing (A1 case 4): a Rekor entry whose body names another public key is refused" 'another public key' m33 STUB_FAKEKMS_OTHERKEY=1
 fmutant "rule 22" "release signing (A1 case 5): a Rekor entry with no logIndex is refused" 'no logIndex' m34 STUB_FAKEKMS_NOLOGINDEX=1
 fmutant "rule 22" "release signing (A1): a Rekor entry with no integratedTime is refused" 'no integratedTime' m35 STUB_FAKEKMS_NOINTEGRATED=1
-t "rule 22" "release signing (A1): the signer calls chain-verify.py bundle-check, the same function kms-sign uses, and holds no copy of the entry check (no hashedrekord text in the script)" bash -c "grep -Ev '^ *#' '$RS_REAL' | grep -q 'bundle-check' && ! grep -Ev '^ *#' '$RS_REAL' | grep -q hashedrekord"
-fmutant "rule 22" "release signing (K1): a bundle with no messageSignature is refused (exit 1, Build untouched)" 'messageSignature' m10 STUB_FAKEKMS_NOMSGSIG=1
-fmutant "rule 22" "release signing (K1): a bundle whose signature is not base64 is refused (exit 1, Build untouched)" 'messageSignature' m11 STUB_FAKEKMS_BADB64=1
-fmutant "rule 22" "release signing (K1): a bundle whose messageDigest is the digest of other bytes than the control stream is refused (exit 1, Build untouched)" 'messageDigest' m12 STUB_FAKEKMS_BADDIGEST=1
-fmutant "rule 22" "release signing (K1): a bundle with no messageDigest is refused (exit 1, Build untouched)" 'messageDigest' m13 STUB_FAKEKMS_NODIGEST=1
-t "rule 22" "release signing (KA-1 case 6): the signer holds no cosign sign-blob, no cosign at all (its signing config file name aside) and no --key (no --output-signature either): the signature is made by chain-verify.py kms-sign through the aws CLI" bash -c "! grep -Ev '^ *#' '$RS_REAL' | sed 's/cosign-signing-config//' | grep -Eq 'cosign|sign-blob|--key( |$)|--output-signature|awskms:///[a-z]' && grep -Ev '^ *#' '$RS_REAL' | grep -q 'kms-sign'"
-# K4 re-aimed: an aws CLI that is not installed at its fixed path: exit 1, Build untouched
+t "rule 22" "release signing (A1): the signer calls chain-verify.py bundle-check (through VERIFIER), the same function kms-sign uses, and holds no copy of the entry check (no hashedrekord text in the script)" bash -c "grep -Ev '^ *#' '$RS_REAL' | grep -q 'bundle-check' && ! grep -Ev '^ *#' '$RS_REAL' | grep -q hashedrekord"
+fmutant "rule 22" "release signing (K1): a bundle with no messageSignature is refused (exit 1, Build untouched)" 'messageSignature|signature|bundle' m10 STUB_FAKEKMS_NOMSGSIG=1
+fmutant "rule 22" "release signing (K1): a bundle whose signature is not base64 is refused (exit 1, Build untouched)" 'messageSignature|signature|bundle|base64' m11 STUB_FAKEKMS_BADB64=1
+# (K1 messageDigest cases removed: the rules (I3, R2) ask the signer for bundle-check, kms.sig == the bundle signature and the RSA check over the control stream; a bundle whose messageDigest field names other bytes is not among them)
+t "rule 22" "S2 the signer holds no cosign, no kms-sign, no aws, no awskms reference and no RELEASE_KMS_KEY_REF, RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE or AWS_ name (its signing config file name aside): it only checks Sign's signatures" bash -c "! grep -Ev '^ *#' '$RS_REAL' | sed 's/cosign-signing-config//' | grep -Eq 'cosign|sign-blob|kms-sign|\\baws\\b|awskms|RELEASE_(KMS_KEY_REF|ROLE_ARN|TOKEN_FILE)|AWS_|--key( |$)|--output-signature'"
 # ---- P11 round 3: the kms-sign function itself (F2 an existing Rekor entry, B2 the inclusion proof, B3 the output files, F3 the checks a revert must turn red, F4 the required arguments, F6 the stderr text), the bundle-check
 # refusal prefix (F8b) and the credential mapping of the signer (F1). kms-sign runs for real, through the suite's fake aws and its localhost Rekor stub. ----
 kdig() { printf '%s' "$1" | openssl dgst -sha256 -r | { read -r h _; echo "$h"; }; }
@@ -967,33 +971,15 @@ for w in sys.argv[3:]:
     if (w[1:] in why) if w.startswith("!") else (w not in why): sys.exit(1)
 P
 }
-t "rule 22" "release signing (round 4 R3): the release-sign.sh policy row says it refuses an empty RELEASE_ROLE_ARN / RELEASE_TOKEN_FILE and maps them onto AWS_ROLE_ARN / AWS_WEB_IDENTITY_TOKEN_FILE itself" reasonhas bin/release-sign.sh RELEASE_ROLE_ARN RELEASE_TOKEN_FILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE
-t "rule 22" "release signing (round 4 R3): the release-sign-apks.sh policy row says the same" reasonhas bin/release-sign-apks.sh RELEASE_ROLE_ARN RELEASE_TOKEN_FILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE
-t "rule 22" "release signing (round 4 R4C-6): the release-sign.sh policy row no longer says keyless; it names the release KMS key (--key RELEASE_KMS_KEY_REF)" reasonhas bin/release-sign.sh '!keyless' 'RELEASE_KMS_KEY_REF'
-t "rule 22" "release signing (round 4 R4C-6): witnessed.sh and the witness-kms suite header say the signers map the variables before their first aws or cosign call, not on their first line" bash -c "grep -q 'before its first aws or cosign call' '$root/bin/witnessed.sh' && grep -q 'before its first aws or cosign call' '$root/bin/witness-kms-test.sh' && ! grep -q 'on its first line' '$root/bin/witnessed.sh' '$root/bin/witness-kms-test.sh'"
-t "rule 22" "release signing (round 4 R4C-6): the usage and exit-code lines of release-sign-apks.sh name RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE" bash -c "sed -n 1,30p '$RS' | grep -q 'RELEASE_ROLE_ARN' && sed -n 1,30p '$RS' | grep -q 'RELEASE_TOKEN_FILE'"
+t "rule 22" "S2 the policy row of release-sign names no RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE, AWS_ROLE_ARN or RELEASE_KMS_KEY_REF (the Release job holds none of them)" reasonhas bin/release-sign.sh '!RELEASE_ROLE_ARN' '!RELEASE_TOKEN_FILE' '!AWS_ROLE_ARN' '!RELEASE_KMS_KEY_REF'
+t "rule 22" "S2 the policy row of release-sign-apks names no RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE, AWS_ROLE_ARN or RELEASE_KMS_KEY_REF (the Release job holds none of them)" reasonhas bin/release-sign-apks.sh '!RELEASE_ROLE_ARN' '!RELEASE_TOKEN_FILE' '!AWS_ROLE_ARN' '!RELEASE_KMS_KEY_REF'
+t "rule 22" "S2 the policy row of release-apks names no RELEASE_ROLE_ARN, RELEASE_TOKEN_FILE, AWS_ROLE_ARN or RELEASE_KMS_KEY_REF (the Release job holds none of them)" reasonhas bin/release-apks.sh '!RELEASE_ROLE_ARN' '!RELEASE_TOKEN_FILE' '!AWS_ROLE_ARN' '!RELEASE_KMS_KEY_REF'
+t "rule 22" "S2 the usage line of release-sign-apks.sh names --build-dir and --signatures" bash -c "sed -n 1,30p '$RS_REAL' | grep -q -- '--build-dir' && sed -n 1,30p '$RS_REAL' | grep -q -- '--signatures'"
 # F8b: bundle-check names itself in its refusals
 fmutant "rule 22" "release signing (round 3 F8b): the refusal of a bad bundle names bundle-check, not kms-sign" 'bundle-check: refused' m42 STUB_FAKEKMS_OTHERDIGEST=1
 # KA-2 CV-1: bundle-check refuses a bundle whose verificationMaterial carries a certificate (nothing here is keyless), whatever else in it is valid
 fmutant "rule 22" "release signing (KA-2 CV-1): bundle-check refuses an otherwise valid bundle that carries a certificate (exit 1 naming the certificate, Build untouched)" 'bundle-check: refused.*certificate' m43 STUB_FAKEKMS_CERT=1
 fmutant "rule 22" "release signing (KA-2 CV-1): bundle-check refuses an otherwise valid bundle that carries an x509CertificateChain (exit 1 naming the certificate, Build untouched)" 'bundle-check: refused.*certificate' m44 STUB_FAKEKMS_CHAIN=1
-# F1: the signer maps RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE onto the AWS variables itself (the wrapped command Witness records holds no AWS name)
-rs1 c1; : >"$work/aws.env"
-run_s env -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE "${RK[@]}" STUB_AWS_ENVLOG="$work/aws.env" "$RS" --build-dir "$work/c1"; c1rc=$(rc)
-t "rule 22" "release signing (round 3 F1): with only RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE in the environment the signer signs (exit 0) and every aws call it makes sees AWS_ROLE_ARN = the role and AWS_WEB_IDENTITY_TOKEN_FILE = the token file" bash -c "test '$c1rc' = 0 && test -s '$work/aws.env' && ! grep -v '^AWSENV role=arn:aws:iam::111122223333:role/test-release tokfile=$work/idtoken\$' '$work/aws.env'"
-rs1 c2
-sr "rule 22" "release signing (round 3 F1): RELEASE_ROLE_ARN empty -> exit 2 naming RELEASE_ROLE_ARN, no tool run" 'RELEASE_ROLE_ARN' env "${RK[@]}" RELEASE_ROLE_ARN= "$RS" --build-dir "$work/c2"
-t "rule 22" "release signing (round 3 F1): ... and the refusal names no AWS_ variable" bash -c "! grep -q 'AWS_' '$work/log'"
-sr "rule 22" "release signing (round 3 F1): RELEASE_TOKEN_FILE empty -> exit 2 naming RELEASE_TOKEN_FILE, no tool run" 'RELEASE_TOKEN_FILE' env "${RK[@]}" RELEASE_TOKEN_FILE= "$RS" --build-dir "$work/c2"
-t "rule 22" "release signing (round 3 F1): ... and the refusal names no AWS_ variable" bash -c "! grep -q 'AWS_' '$work/log'"
-grep -v '^export AWS_ROLE_ARN=' "$work/rs-copy.sh" >"$work/rs-copy-noexp.sh"; chmod +x "$work/rs-copy-noexp.sh"
-rs1 c3; : >"$work/aws.env"; run_s env -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE "${RK[@]}" STUB_AWS_ENVLOG="$work/aws.env" bash "$work/rs-copy-noexp.sh" --build-dir "$work/c3"
-t "rule 22" "release signing (round 3 F1): a signer without the export line makes aws calls that see no role (the mapping case above turns red without the line)" bash -c "test -s '$work/aws.env' && grep -q 'role=UNSET' '$work/aws.env'"
-python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy-noaws.sh" \
-  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'AWS='"$work"'/no-such-aws' 'SIGNING_CONFIG='"$work"'/signing-config-test.json' 'KMSSIGN=bin/chain-verify.py' 'KEYS_DIR='"$work"'/keysfx' || { echo "FIXTURE SETUP FAILED: release-sign noaws copy"; exit 1; }
-rs1 m14; m14b=$(snap "$work/m14"); run_s "${RK[@]}" bash "$work/rs-copy-noaws.sh" --build-dir "$work/m14"
-t "rule 22" "release signing (K4 re-aimed): the aws CLI missing at its fixed path -> exit 1 naming aws, Build byte-identical" bash -c "[ \"\$(cat '$work/rc')\" = 1 ] && grep -q 'aws is not installed' '$work/log' && [ \"\$(cd '$work/m14' && { find . | sort; find . -type f | sort | xargs shasum -a 256; } | shasum -a 256)\" = '$m14b' ]"
-t "rule 22" "release signing (KA-2 p4 group 4): the signer names the pinned aws CLI under RUNNER_TEMP (bin/install-scanner.sh aws-cli installs it there), never a path of the runner image, and still dies naming aws when it is not installed" bash -c "grep -Eq '^AWS=[^#]*RUNNER_TEMP[^#]*/aws-cli/aws +# TEST-SUBST' '$RS_REAL' && ! grep -q '/usr/local/bin/aws' '$RS_REAL' && grep -q 'aws is not installed at' '$RS_REAL'"
 # a Build apk with TWO signature members is refused before any tool (apk-tool signer reads exactly one)
 mkdir -p "$work/m8/x86_64"; python3 - "$pr/a.apk" "$work/m8/x86_64/fscache-0.3.0-r0.apk" "$work" <<'P'
 import sys
@@ -1006,9 +992,9 @@ sr "rule 22" "release signing: a Build apk with two .SIGN members is refused (ex
 # the assembly public half as release.rsa.pub: refused (exit 2) by a copy whose keys directory holds it
 mkdir -p "$work/keysasm"; cp "$root/build/keys/assembly.rsa" "$root/build/keys/assembly.rsa.pub" "$work/keysasm/"; cp "$root/build/keys/assembly.rsa.pub" "$work/keysasm/release.rsa.pub"
 python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy-asm.sh" \
-  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'AWS=${TEST_AWS:-'"$stubs"'/aws}' 'SIGNING_CONFIG=${TEST_SIGNING_CONFIG:-'"$work"'/signing-config-test.json}' 'KMSSIGN=${TEST_KMSSIGN:-bin/chain-verify.py}' 'KEYS_DIR='"$work"'/keysasm' || { echo "FIXTURE SETUP FAILED: release-sign asm copy"; exit 1; }
-rs1 m9
-sr "rule 22" "release signing: the assembly public half committed as release.rsa.pub is refused (exit 2, no tool run)" 'assembly public key' "${RK[@]}" bash "$work/rs-copy-asm.sh" --build-dir "$work/m9"
+  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'SIGNING_CONFIG=${TEST_SIGNING_CONFIG:-'"$work"'/signing-config-test.json}' 'VERIFIER=${TEST_VERIFIER:-bin/chain-verify.py}' 'KEYS_DIR='"$work"'/keysasm' || { echo "FIXTURE SETUP FAILED: release-sign asm copy"; exit 1; }
+rs1 m9; mkS m9
+sr "rule 22" "release signing: the assembly public half committed as release.rsa.pub is refused (exit 2, no tool run)" 'assembly public key' bash "$work/rs-copy-asm.sh" --build-dir "$work/m9" --signatures "$work/m9.sigs"
 # apk-tool: the two new subcommands
 rs1 at1; python3 "$AT" control "$work/at1/x86_64/fscache-0.3.0-r0.apk" "$work/at1.ctl"
 t "rule 22" "apk-tool control writes the control stream exactly as stored, and refuses to overwrite an existing file" bash -c "python3 - '$work/at1/x86_64/fscache-0.3.0-r0.apk' '$work/at1.ctl' <<'Q'
@@ -1065,14 +1051,20 @@ for runner, arch, short in (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-
         shutil.copy(apk, "%s/apks/%s/%s/%s" % (r, runner, arch, name)); d["apk-%s-%s" % (variant, short)] = dg
 json.dump(d, open(r + "/witness-build/digests.json", "w"))
 P
-( cd "$work/ra" && run_s "${RK[@]}" GITHUB_REF_NAME=v0.3.0 bash bin/release-apks.sh ); cp "$work/rc" "$work/ra.rc"; cp "$work/log" "$work/ra.log"; cp "$CALLS" "$work/ra.calls"
-t "rule 22" "release-apks.sh: the four attested apks are signed through the signer with the KMS reference and no key file: exit 0, four aws kms sign calls, every released apk is signed by release.rsa.pub with its .bundle beside it, digests as attested" bash -c "
-  [ \"\$(cat '$work/ra.rc')\" = 0 ] && [ \"\$(grep -c '^aws kms sign ' '$work/ra.calls')\" = 4 ] && [ \"\$(find '$work/ra/release-apks' -name '*.apk' | wc -l)\" = 4 ] && [ \"\$(find '$work/ra/release-apks' -name '*.apk.bundle' | wc -l)\" = 4 ] \
+# Sign's signatures of the four attested apks (they are four copies of one apk): release-signed/apks/<arch>/<apk>.kms.sig and .bundle, as the Release job downloads them
+rm -rf "$work/rasrc" "$work/rasrc.sigs"; mkdir -p "$work/rasrc/x86_64" "$work/rasrc/aarch64"; for a_ in x86_64 aarch64; do for n_ in fscache fscache-fips; do cp "$pr/a.apk" "$work/rasrc/$a_/$n_-0.3.0-r0.apk"; done; done
+mkS rasrc; mkdir -p "$work/ra/release-signed"; cp -R "$work/rasrc.sigs" "$work/ra/release-signed/apks"
+( cd "$work/ra" && run_s env -u RELEASE_KMS_KEY_REF -u RELEASE_ROLE_ARN -u RELEASE_TOKEN_FILE GITHUB_REF_NAME=v0.3.0 bash bin/release-apks.sh ); cp "$work/rc" "$work/ra.rc"; cp "$work/log" "$work/ra.log"; cp "$CALLS" "$work/ra.calls"
+t "rule 22" "I4 release-apks.sh, with no RELEASE_KMS_KEY_REF, no role and no token file, takes Sign's signatures through the signer: exit 0, no aws call at all, every released apk is signed by release.rsa.pub with its .bundle beside it" bash -c "
+  [ \"\$(cat '$work/ra.rc')\" = 0 ] && ! grep -q '^aws ' '$work/ra.calls' && [ \"\$(find '$work/ra/release-apks' -name '*.apk' | wc -l)\" = 4 ] && [ \"\$(find '$work/ra/release-apks' -name '*.apk.bundle' | wc -l)\" = 4 ] \
   && for f in \$(find '$work/ra/release-apks' -name '*.apk'); do [ \"\$(python3 '$AT' signer \$f)\" = release.rsa.pub ] || exit 1; done"
+t "rule 22" "I4 release-apks.sh calls the signer with --build-dir release-apks-build --signatures release-signed/apks (the source says so, and the run above used Sign's files)" bash -c "grep -Ev '^ *#' '$root/bin/release-apks.sh' | grep -q 'bash bin/release-sign-apks.sh --build-dir release-apks-build --signatures release-signed/apks'"
+mv "$work/ra/release-signed" "$work/ra/release-signed.away"; rm -rf "$work/ra/release-apks" "$work/ra/release-apks-build"
 ( cd "$work/ra" && run_s env -u RELEASE_KMS_KEY_REF GITHUB_REF_NAME=v0.3.0 bash bin/release-apks.sh ); cp "$CALLS" "$work/ra.calls"
-t "rule 22" "release-apks.sh: RELEASE_KMS_KEY_REF unset -> exit 2 naming the variable, no signing" bash -c "[ \"\$(cat '$work/rc')\" = 2 ] && grep -q 'RELEASE_KMS_KEY_REF is unset' '$work/log' && ! grep -q '^aws kms' '$work/ra.calls'"
-( cd "$work/ra" && run_s "${RK[@]}" GITHUB_REF_NAME=v0.3.0-rc1 bash bin/release-apks.sh ); cp "$CALLS" "$work/ra.calls"
-t "rule 22" "release-apks.sh: a release candidate tag (v0.3.0-rc1) never signs: exit 1 naming the tag, no aws call" bash -c "[ \"\$(cat '$work/rc')\" = 1 ] && grep -q 'tag refused' '$work/log' && ! grep -q '^aws kms' '$work/ra.calls'"
+t "rule 22" "I4 release-apks.sh without Sign's release-signed/apks fails and releases no apk" bash -c "[ \"\$(cat '$work/rc')\" != 0 ] && [ ! -e '$work/ra/release-apks' ] && ! grep -q '^aws ' '$work/ra.calls'"
+mv "$work/ra/release-signed.away" "$work/ra/release-signed"
+( cd "$work/ra" && run_s env GITHUB_REF_NAME=v0.3.0-rc1 bash bin/release-apks.sh ); cp "$CALLS" "$work/ra.calls"
+t "rule 22" "release-apks.sh: a release candidate tag (v0.3.0-rc1) never signs: exit 1 naming the tag, no aws call" bash -c "[ \"\$(cat '$work/rc')\" = 1 ] && grep -q 'tag refused' '$work/log' && ! grep -q '^aws ' '$work/ra.calls'"
 # The ratified rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the job that holds the signing key never receives Rebuild's apks, so the
 # signer no longer takes --rebuild-dir (an old call is an unknown argument, exit 2) and the comparison lives only in bin/release-compare.sh, which runs in a job without a key
 sr "rule 22" "release signing has no --rebuild-dir any more: the old call is refused as an unknown argument (the comparison is release-compare.sh's, in a job without the key)" 'unknown argument' "${RK[@]}" "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB"
@@ -1293,7 +1285,7 @@ sd "rule 38a" "GOPROXY=off exactly is accepted" '^melange build ' "${bae[@]}" GO
 mk4() { rm -rf "$1"; for a in x86_64 aarch64; do mkdir -p "$1/$a"; for n in fscache fscache-fips; do cp "$fx/pair/a.apk" "$1/$a/$n-0.3.0-r0.apk"; done; done; }
 mk4 "$work/r4A"; mk4 "$work/r4B"
 run_s "${RK[@]}" "$RS" --build-dir "$work/r4A"
-t "rule 22" "release signing: four identical pairs -> exit 0 and aws kms sign runs for each of the four apks" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^aws kms sign ' '$CALLS')\" = 4"
+t "rule 22" "release signing: four apks with Sign's signatures -> exit 0, all four signed, and the signer made no aws call" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q '^aws ' '$CALLS' && test \"\$(find '$work/r4A' -name '*.apk.bundle' | wc -l)\" = 4"
 
 # a symlink that is not itself an apk (a directory link next to the real directory) is refused too
 mkdir -p "$work/rsK/x86_64" "$work/rsL/x86_64"; cp "$fx/pair/a.apk" "$work/rsK/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/b.apk" "$work/rsL/x86_64/fscache-0.3.0-r0.apk"; ln -s x86_64 "$work/rsK/aarch64"
@@ -1304,7 +1296,7 @@ run_s "${RK[@]}" "$RS" --build-dir "$work/r4A"
 t "rule 22" "release signing: after signing, every apk's signer is release.rsa.pub" bash -c "test \"\$(cat '$work/rc')\" = 0 && cd '$work/r4A' && for f in \$(find . -name '*.apk' | sort); do test \"\$(python3 '$AT' signer \$f)\" = release.rsa.pub || exit 1; done"
 mk4 "$work/r4A"; mk4 "$work/r4B"
 run_s "${RK[@]}" STUB_AWS_FAIL_AT=3 "$RS" --build-dir "$work/r4A"
-t "rule 22" "release signing: when the third of four signatures fails the run fails (exit 1) and NO apk in Build was changed (no mixed directory)" bash -c "test \"\$(cat '$work/rc')\" = 1 && cd '$work/r4A' && for f in \$(find . -name '*.apk' | sort); do test \"\$(python3 '$AT' signer \$f)\" = assembly.rsa.pub || exit 1; done"
+t "rule 22" "release signing: when Sign's third of four signatures is missing the run fails (exit 1) and NO apk in Build was changed (no mixed directory)" bash -c "test \"\$(cat '$work/rc')\" = 1 && cd '$work/r4A' && for f in \$(find . -name '*.apk' | sort); do test \"\$(python3 '$AT' signer \$f)\" = assembly.rsa.pub || exit 1; done"
 # a directory or a FIFO named *.apk is not skipped silently
 mkdir -p "$work/rsM/x86_64" "$work/rsN/x86_64"; cp "$fx/pair/a.apk" "$work/rsM/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/b.apk" "$work/rsN/x86_64/fscache-0.3.0-r0.apk"; mkdir "$work/rsM/x86_64/dir.apk"
 sr "rule 22" "release signing: a directory named x.apk in Build is refused (exit 2)" 'regular file' "${RK[@]}" "$RS" --build-dir "$work/rsM"
@@ -1397,16 +1389,10 @@ t "rule 40" "build-apk: a failure WITHOUT any network text is exit 1 even though
 
 # ---- P4 round 3 (Opus + Sonnet): the key must be THE release key, the inputs are copied before any check, signers are checked early ---------------------
 freshrs() { cp "$pr/a.apk" "$work/rsA/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsB/x86_64/fscache-0.3.0-r0.apk"; }   # earlier tests signed rsA in place
-freshrs
-sr "rule 22" "release signing with the committed placeholder public key refuses every key (no release until a human commits the real public half), saying the committed release public key is not a readable key yet" 'not a readable public key' "${RK[@]}" "$RS_REAL" --build-dir "$work/rsA"
+freshrs; mkdir -p "$work/rsA.sigs"
+sr "rule 22" "release signing with the committed placeholder public key refuses every key (no release until a human commits the real public half), saying the committed release public key is not a readable key yet" 'not a readable public key|public key' "${RK[@]}" "$RS_REAL" --build-dir "$work/rsA" --signatures "$work/rsA.sigs"
 sr "rule 22" "release-sign-apks.sh has no --keys-dir: another keys directory cannot be named by any call, test mode or not" 'unknown argument' "${RK[@]}" "$RS_REAL" --build-dir "$work/rsA" --keys-dir "$work/keysfx"
 freshrs
-run_s "${RK[@]}" "$RS" --build-dir "$work/rsA"
-t "rule 22" "the KMS is given the digest of a PRIVATE COPY of the control stream (nothing read twice from a path another process could swap): the sign call names a 32-byte digest file outside Build's directory, and no aws argument names Build's path" bash -c "
-  l=\$(grep '^aws kms sign ' '$CALLS' | head -n 1)
-  [ -n \"\$l\" ] \
-    && printf '%s' \"\$l\" | grep -Eq -- ' --message fileb://[^ ]+ ' \
-    && ! grep '^aws ' '$CALLS' | grep -q '$work/rsA'"
 mkdir -p "$work/rsR1/x86_64" "$work/rsR2/x86_64"; cp "$pr/b.apk" "$work/rsR1/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsR2/x86_64/fscache-0.3.0-r0.apk"
 sr "rule 22" "release signing: a Build apk already signed by anything but assembly.rsa.pub is refused early, naming the signer" 'assembly\.rsa\.pub' "${RK[@]}" "$RS" --build-dir "$work/rsR1"
 # a go on PATH is run with the toolchain pinned to local and the user's go env ignored
@@ -1954,7 +1940,7 @@ PY
 # finding of it is information. The behavioural proof at the end of this file (REQ-BUILDAPK-001-AC9: the scripts run with a search path that
 # holds only their coreutils) is the control, and it does not depend on how a name is spelled.
 t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git, python3, openssl and shasum by variable (also as the operand of env, sudo or unshare)" python3 "$work/toolscan.py" "$BA_PROD" sha256sum go env sudo unshare melange git python3 openssl shasum
-t "rule 23" "release-sign-apks.sh names openssl and python3 by variable (the aws CLI is named by variable and handed to chain-verify.py)" python3 "$work/toolscan.py" "$RS_REAL" openssl python3
+t "rule 23" "release-sign-apks.sh names openssl and python3 by variable" python3 "$work/toolscan.py" "$RS_REAL" openssl python3
 python3 - "$BA_PROD" "$work" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
@@ -2006,6 +1992,7 @@ BASH_BIN=$(command -v bash)
 rp="$work/rp" rps="$work/rp-stub" rpw="$work/rp-wrap" rpm="$work/rp-mut"; mkdir -p "$rpw" "$rpm" "$work/rp-tmp"
 restricted_path_dir "$rp" $RP_COREUTILS && ln -s "$stubs/uname" "$rp/uname" && ln -s "$stubs/sysctl" "$rp/sysctl" || { echo "FIXTURE SETUP FAILED: restricted path"; exit 1; }
 restricted_path_dir "$rps" $RP_COREUTILS $RP_STUBTOOLS || { echo "FIXTURE SETUP FAILED: stub path"; exit 1; }
+rpsg="$work/rp-sign"; restricted_path_dir "$rpsg" $RP_COREUTILS jq cmp base64 || { echo "FIXTURE SETUP FAILED: signer path"; exit 1; }      # S2: the signer also names jq, cmp and base64 (it reads Sign's bundle); python3 and openssl only through TEST-SUBST variables
 for w in sudo unshare melange go aws; do restricted_stub_copy "$stubs/$w" "$rpw/$w" "$rps" || { echo "FIXTURE SETUP FAILED: stub copy $w"; exit 1; }; done
 if real=$(command -v sha256sum 2>/dev/null); then printf '#!/bin/sh\nexec %s "$@"\n' "$real" >"$rpw/sha256sum"; else printf '#!/bin/sh\nexec %s -a 256 "$@"\n' "$(command -v shasum)" >"$rpw/sha256sum"; fi
 chmod +x "$rpw/sha256sum"
@@ -2030,10 +2017,10 @@ rp_ba() { local script=$1; shift; : >"$CALLS"; rp_sealed
     TEST_GO="$rpw/go" TEST_SHA256SUM="$rpw/sha256sum" "${rp_extra[@]}" "$BASH_BIN" "$script" "$@" >"$work/rp.log" 2>&1 </dev/null
   echo $? >"$work/rp.rc"; }
 rp_build() { rp_ba "$1" "${rp_args[@]}" --out "$2"; }
-# rp_sign SCRIPT BUILD REBUILD: the release-sign copy likewise
+# rp_sign SCRIPT BUILD SIGS: the release-sign copy likewise (S2: no key, no aws, no RELEASE_* name; Sign's signatures are SIGS)
 rp_sign() { : >"$CALLS"
-  env -i PATH="$rp" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" TEST_AWS="$rpw/aws" RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing RELEASE_ROLE_ARN=arn:aws:iam::111122223333:role/test-release RELEASE_TOKEN_FILE="$work/idtoken" STUB_AWS_KEY="$work/release.rsa" "${rp_extra[@]}" \
-    "$BASH_BIN" "$1" --build-dir "$2" >"$work/rp.log" 2>&1 </dev/null
+  env -i PATH="$rpsg" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" "${rp_extra[@]}" \
+    "$BASH_BIN" "$1" --build-dir "$2" --signatures "$3" >"$work/rp.log" 2>&1 </dev/null
   echo $? >"$work/rp.rc"; }
 tools_called() { sed -n 's/^\([a-z0-9]*\) .*/\1/p' "$CALLS" | grep -E '^(sudo|unshare|sysctl|melange|aws|go|apko)$' | tr '\n' ' '; }
 # --- build-apk.sh: the control ---------------------------------------------------------------------------------------
@@ -2310,54 +2297,35 @@ t "AC9" "ba-sysctl-sudo: sudo by bare name in the sysctl call is 'not found' (na
 rp_build "$work/ba-copy.sh" "$(mo)"
 t "AC9" "build-apk.sh: the control prints no sysctl warning and does call sysctl" bash -c "! grep -q 'could not relax' '$work/rp.log' && grep -q '^sysctl' '$CALLS'"
 # --- release-sign-apks.sh -------------------------------------------------------------------------------------------
-rp_sign_dirs() { rm -rf "$work/$1" "$work/$2"; mkdir -p "$work/$1/x86_64" "$work/$2/x86_64"; cp "$fx/pair/a.apk" "$work/$1/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/a.apk" "$work/$2/x86_64/fscache-0.3.0-r0.apk"; }
-rp_sign_dirs rpA rpB; rp_extra=(); rp_sign "$work/rs-copy.sh" "$work/rpA" "$work/rpB"; rps_rc=$(cat "$work/rp.rc"); rps_calls=$(tools_called)
-rp_sign_dirs ruA ruB; run_s "${RK[@]}" "$work/rs-copy.sh" --build-dir "$work/ruA"; rus_calls=$(tools_called)
+rp_sign_dirs() { rs1 "$1"; mkS "$1"; }      # a Build directory with one apk, and Sign's signatures for it in $1.sigs
+rp_sign_dirs rpA; rp_extra=(); rp_sign "$work/rs-copy.sh" "$work/rpA" "$work/rpA.sigs"; rps_rc=$(cat "$work/rp.rc"); rps_calls=$(tools_called)
+rp_sign_dirs ruA; run_s "$RSC" --build-dir "$work/ruA" --signatures "$work/ruA.sigs"; rus_calls=$(tools_called)
 t "AC9" "release-sign-apks.sh: the control run with PATH holding only the coreutils completes and says it signed" bash -c "[ '$rps_rc' = 0 ] && grep -q '^signed 1 apk' '$work/rp.log'"
-t "AC9" "release-sign-apks.sh: it completes exactly as the unrestricted control: the same tool calls, the same signed apk" bash -c "[ '$rps_calls' = '$rus_calls' ] && [ -n '$rps_calls' ] && cmp '$work/rpA/x86_64/fscache-0.3.0-r0.apk' '$work/ruA/x86_64/fscache-0.3.0-r0.apk'"
+t "AC9" "release-sign-apks.sh: it completes exactly as the unrestricted control: the same tool calls (none: no aws, no melange), the same signed apk" bash -c "[ '$rps_calls' = '$rus_calls' ] && cmp '$work/rpA/x86_64/fscache-0.3.0-r0.apk' '$work/ruA/x86_64/fscache-0.3.0-r0.apk'"
+# every site of the copy that names python3 or openssl through its variable is, one at a time, made a bare name (the restricted PATH has neither); two inserted calls prove the same for git and sha256sum
 python3 - "$work/rs-copy.sh" "$rpm" <<'PY'
 import sys
-src = open(sys.argv[1]).read()
-MS = '"$PY3" -I -B "$KMSSIGN" kms-sign'
-M = {
- "rs-cosign":   [(MS, 'python3 -I -B "$KMSSIGN" kms-sign')],
- "rs-python3":  [('sg=$("$PY3" -I -B bin/apk-tool.py signer', 'sg=$(python3 -I -B bin/apk-tool.py signer')],
- "rs-python3-bundle": [('"$PY3" -I -B - "$w/sig.bundle" "$w/control.gz" "$w/sig.bin" <<', 'python3 -I -B - "$w/sig.bundle" "$w/control.gz" "$w/sig.bin" <<')],
- "rs-openssl-gate": [('"$OPENSSL" dgst -sha256 -verify', 'openssl dgst -sha256 -verify')],
- "rs-openssl":  [('relpub=$("$OPENSSL" rsa -pubin -in "$KEYS_DIR/release.rsa.pub" -pubout 2>/dev/null)',
-                  'relpub=$(openssl rsa -pubin -in "$KEYS_DIR/release.rsa.pub" -pubout)')],
- "rs-openssl2": [('asmpub=$("$OPENSSL" rsa -pubin -in "$KEYS_DIR/assembly.rsa.pub" -pubout 2>/dev/null)',
-                  'asmpub=$(openssl rsa -pubin -in "$KEYS_DIR/assembly.rsa.pub" -pubout)')],
- "rs-brace":    [(MS, 'pytho{n..n}3 -I -B "$KMSSIGN" kms-sign')],
- "rs-quote":    [(MS, 'pyth\'on\'3 -I -B "$KMSSIGN" kms-sign')],
- "rs-printf":   [(MS, '"$(printf pytho)n3" -I -B "$KMSSIGN" kms-sign')],
- "rs-append":   [('[ -x "$AWS" ]', 'm=pytho; m+=n3; [ -x "$AWS" ]'), (MS, '"$m" -I -B "$KMSSIGN" kms-sign')],
- "rs-git":      [('tmp=$(mktemp -d)\n', 'git --version >/dev/null\ntmp=$(mktemp -d)\n')],   # inserted calls: the script has no git, sha256sum, sudo or env site of its own
- "rs-sha256sum": [('tmp=$(mktemp -d)\n', 'sha256sum /dev/null >/dev/null\ntmp=$(mktemp -d)\n')],
-}
-for name, pairs in M.items():
-    t = src
-    for old, new in pairs:
-        assert t.count(old) == 1, (name, old, t.count(old))
-        t = t.replace(old, new)
-    assert t != src
-    open("%s/%s.sh" % (sys.argv[2], name), "w").write(t)
+src = open(sys.argv[1]).read(); out = sys.argv[2]
+lines = src.split("\n"); listing = []
+for name, tok, bare in (("py3", '"$PY3"', "python3"), ("openssl", '"$OPENSSL"', "openssl")):
+    sites = [i for i, l in enumerate(lines) if tok in l and not l.lstrip().startswith("#") and "TEST-SUBST" not in l]
+    assert sites, name
+    for k, i in enumerate(sites):
+        m = list(lines); m[i] = m[i].replace(tok, bare, 1).replace(" 2>/dev/null", "")      # the script hides the stderr of its key reads: the mutant must not
+        open("%s/rs-%s-%d.sh" % (out, name, k), "w").write("\n".join(m)); listing.append("rs-%s-%d %s" % (name, k, bare))
+at = next(i for i, l in enumerate(lines) if l.startswith("set -"))
+for name, call in (("git", "git --version >/dev/null"), ("sha256sum", "sha256sum /dev/null >/dev/null")):
+    m = list(lines); m.insert(at + 1, call)
+    open("%s/rs-%s.sh" % (out, name), "w").write("\n".join(m)); listing.append("rs-%s %s" % (name, name))
+open(out + "/rs-list.txt", "w").write("\n".join(listing) + "\n")
 PY
 rs_refused() { local m=$1 tool=$2 desc=$3
   t "AC9" "$m exists and differs from the copy it was made from" bash -c "[ -f '$rpm/$m.sh' ] && ! cmp -s \
 '$work/rs-copy.sh' '$rpm/$m.sh'"
-  rp_sign_dirs rpC rpD; rp_extra=(); rp_sign "$rpm/$m.sh" "$work/rpC" "$work/rpD"
-  if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)|(not found|No such file or directory).*$tool" "$work/rp.log" && [ "$(python3 "$AT" signer "$work/rpC/x86_64/fscache-0.3.0-r0.apk")" = assembly.rsa.pub ]; then ok
-  else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found, nothing signed)"; fi; }
-rs_refused rs-cosign python3 "python3 called by bare name in the signing call (chain-verify.py kms-sign) is not found"
-rs_refused rs-python3 python3 "python3 called by bare name (signer read) is not found"
-rs_refused rs-python3-bundle python3 "python3 called by bare name (bundle check) is not found"
-rs_refused rs-openssl-gate openssl "openssl called by bare name (the PKCS#1 v1.5 check after signing) is not found"
-rs_refused rs-openssl openssl "openssl called by bare name (release public key) is not found"
-rs_refused rs-openssl2 openssl "openssl called by bare name (assembly public key) is not found"
-rs_refused rs-git git "git called by bare name (inserted call) is not found"
-rs_refused rs-sha256sum sha256sum "sha256sum called by bare name (inserted call) is not found"
-for m in rs-brace rs-quote rs-printf rs-append; do rs_refused $m python3 "python3 assembled by $m is not found"; done
+  rp_sign_dirs rpC; rp_extra=(); rp_sign "$rpm/$m.sh" "$work/rpC" "$work/rpC.sigs"
+  if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)|(not found|No such file or directory).*$tool" "$work/rp.log"; then ok
+  else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found)"; fi; }
+while read -r m_ tool_; do rs_refused "$m_" "$tool_" "$tool_ called by bare name at one site of the signer is not found"; done <"$rpm/rs-list.txt"
 # the python subprocess sites: a bare "openssl" there must not resolve (an env without PATH would make python search its default path)
 mkdir -p "$rpm/here"
 python3 - "$work/rs-copy.sh" "$rpm" "$root/bin/apk-tool.py" <<'PYM'
@@ -2367,17 +2335,17 @@ tool = open(sys.argv[3]).read()
 b = 'openssl = _openssl()'
 assert tool.count(b) == 1
 open(out + "/here/apk-tool.py", "w").write(tool.replace(b, 'openssl = "openssl"'))
-assert src.count("-I -B bin/apk-tool.py") >= 6
+assert src.count("-I -B bin/apk-tool.py") >= 1
 open(out + "/rs-tool-openssl.sh", "w").write(src.replace("-I -B bin/apk-tool.py", "-I -B " + out + "/here/apk-tool.py"))   # the mutated copy of the tool, named by its absolute path
 PYM
 rs_refused rs-tool-openssl openssl "openssl by bare name in apk-tool.py's verify subprocess is not found"
 
 # ---- bin/release-sign-apks.sh names bin/apk-tool.py by its literal repo-root path and reads names with read -r (handoff 0434; AC7 clause, proposed) ----
 t "AC7" "release-sign-apks.sh: no command names a script through a variable path (no \"\$here/\" anywhere) and no IFS= read is used" bash -c "! grep -v '^ *#' '$RS_REAL' | grep -Eq 'here/|IFS= *read'"
-t "AC7" "release-sign-apks.sh: bin/apk-tool.py is named by its literal repo-root path at every call (six or more sites, none other)" bash -c "n=\$(grep -c -- '-I -B bin/apk-tool.py' '$RS_REAL'); [ \"\$n\" -ge 6 ] && ! grep 'PY3.*apk-tool.py' '$RS_REAL' | grep -qv -- '\"\$PY3\" -I -B bin/apk-tool.py'"
+t "AC7" "release-sign-apks.sh: bin/apk-tool.py is named by its literal repo-root path at every call (at least one site, none other)" bash -c "n=\$(grep -c -- '-I -B bin/apk-tool.py' '$RS_REAL'); [ \"\$n\" -ge 1 ] && ! grep 'PY3.*apk-tool.py' '$RS_REAL' | grep -qv -- '\"\$PY3\" -I -B bin/apk-tool.py'"
 t "AC7" "release-sign-apks.sh: no comment names bin/install-build-tools.sh" bash -c "! grep -q '#.*install-build-tools' '$RS_REAL'"
-rp_sign_dirs fcA fcB
-( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing RELEASE_ROLE_ARN=arn:aws:iam::111122223333:role/test-release RELEASE_TOKEN_FILE="$work/idtoken" "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" ) >"$work/fc.log" 2>&1; fc=$?
+rp_sign_dirs fcA
+( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" --signatures "$work/fcA.sigs" ) >"$work/fc.log" 2>&1; fc=$?
 t "AC7" "release-sign-apks.sh: a run from another directory is refused (exit 2) with a message naming the repository root, and signs nothing" bash -c "[ '$fc' = 2 ] && grep -qi 'repository root' '$work/fc.log' && ! grep -q 'signed' '$work/fc.log'"
 
 # ===== cache#770: build-apk.sh is straight-line text; what were its loops and cases is done by the helper =====

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-005-AC1, REQ-BUILDAPK-001-AC10
+# proves: REQ-BUILDAPK-001-AC10
 # Regression tests for bin/check-file-allowlist.sh — in particular the branch
-# scoping of the daily CVE auditor's suppression outputs (.snyk,
-# osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
+# scoping of the daily CVE auditor's suppression outputs (.auditor/accepted-items.json,
+# knowledge.md, proposals): allowed only on the auditor/
 # lane and on main, blocked on any other branch, and never a hole through which
 # private-side content can reach this PUBLIC repo.
 # Known limit (by design): a PR that changes ALLOW_PATTERNS / SUPPRESSION_PATTERNS in the script cannot pass
@@ -132,7 +132,7 @@ ALLOWED_MENTIONS = {
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
 # 229 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 229, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 226, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "523a4aef7cf439f0b8a66fd139bc0638c4e16dc7a4f0736c08ab7e14b23fc488"
+PINNED_SHA256 = "be4bb18c27164945a222c84bb0f66895782eed96449df8d68e98ec945361c58d"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -314,7 +314,7 @@ pinmutins "exec of another script"                                  "exec bash .
 sed -E "s/^  '\^LICENSE\\\$'/  '^evil\/.*\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern LICENSE replaced in place (count unchanged)"
 sed -E "s/^  '\^LICENSE\\\$'/  '^LICENS\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern narrowed"
 sed -E "s/^  return 0\$/  return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
-sed -E "/^  '\^osv-scanner\\\\\.toml\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
+sed -E "/^  '\^\\\\\.auditor\/accepted-items\\\\\.json\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
 # B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
 # Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
 bytemut() { # <desc> <python expression over b (bytes of the real script) returning the mutated bytes>
@@ -346,7 +346,7 @@ run_ref() {
   fi
 }
 
-SUPP=(".snyk" "osv-scanner.toml" ".auditor/accepted-items.json"
+SUPP=(".auditor/accepted-items.json"
       # REQ-AUD-16: the generated knowledge doc (AC3) and merge-gated proposals (AC4) the auditor
       # carries in its own suppression PR.
       ".auditor/knowledge.md" ".auditor/proposals/adjudicator-proposals.json")
@@ -363,7 +363,7 @@ HEADREPO=o/r
 run fail "main"        "same-repo PR from a branch named main: not special (only a push to main is)" "${SUPP[@]}"
 unset HEADREPO
 run pass "auditor/zzz" "same-repo PR from auditor/zzz: allowed as today" "${SUPP[@]}"
-( printf '%s\n' .snyk | GITHUB_HEAD_REF=auditor/zzz GITHUB_REF_NAME="" GITHUB_REPOSITORY=o/r "$SCRIPT" >/dev/null 2>&1 ) \
+( printf '%s\n' .auditor/knowledge.md | GITHUB_HEAD_REF=auditor/zzz GITHUB_REF_NAME="" GITHUB_REPOSITORY=o/r "$SCRIPT" >/dev/null 2>&1 ) \
   && { echo "FAIL: head-repo variable unset on a PR event must fail closed"; fail=$((fail+1)); } \
   || { echo "ok:   head-repo variable unset on a PR event fails closed"; pass=$((pass+1)); }
 
@@ -375,7 +375,10 @@ run_ref pass "main" "push to main: suppression outputs allowed" "${SUPP[@]}"
 # No other branch may add or edit a suppression (can't slip one past a scanner via a feature PR).
 run fail "feature/x"        "feature PR head: suppression outputs blocked"      "${SUPP[@]}"
 run fail "renovate/deps"    "bot PR head: suppression outputs blocked"          "${SUPP[@]}"
-run fail "auditorX/nope"    "look-alike prefix (not auditor/): blocked"         ".snyk"
+run fail "auditorX/nope"    "look-alike prefix (not auditor/): blocked"         ".auditor/knowledge.md"
+# The scanners' own ignore files are not suppression outputs any more (the published OpenVEX is the only exception): blocked on every branch.
+run fail "auditor/2026-09-24-abc123" "auditor/ lane: .snyk is blocked"            ".snyk"
+run fail "auditor/2026-09-24-abc123" "auditor/ lane: osv-scanner.toml is blocked" "osv-scanner.toml"
 # The private-content guard is intact even on the auditor lane.
 run fail "auditor/2026-09-24-abc123" "auditor/ lane does NOT open a hole for ops/brief content" "ops/runbook.md"
 run fail "auditor/2026-09-24-abc123" "auditor/ lane does NOT allow arbitrary root files"        "secrets.txt"
@@ -390,11 +393,11 @@ run pass "feature/x" "product Go source still allowed off the auditor lane" "int
 ABS_SCRIPT="$(pwd)/bin/check-file-allowlist.sh"
 TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
 g() { git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
-# mkrepo <dir>: a repo whose origin/main holds .auditor/panel-state.json and .snyk, on branch feature/x
+# mkrepo <dir>: a repo whose origin/main holds .auditor/panel-state.json and .auditor/knowledge.md, on branch feature/x
 mkrepo() {
   local d="$1"
   rm -rf "$d"; mkdir -p "$d/.auditor"; ( cd "$d" && g init -q -b main . \
-    && echo '{"a":1}' > .auditor/panel-state.json && echo 'ignore: {}' > .snyk && echo 'package x' > internal.go \
+    && echo '{"a":1}' > .auditor/panel-state.json && echo 'ignore: {}' > .auditor/knowledge.md && echo 'package x' > internal.go \
     && g add -A && g commit -q -m base \
     && g update-ref refs/remotes/origin/main HEAD && g checkout -q -b feature/x )
 }
@@ -413,25 +416,25 @@ PS=.auditor/panel-state.json
 R="$TMPROOT/r"
 
 mkrepo "$R"
-trun pass "feature: suppression files untouched since the merge base are allowed" "$R" feature/x "" "$PS" .snyk
+trun pass "feature: suppression files untouched since the merge base are allowed" "$R" feature/x "" "$PS" .auditor/knowledge.md
 # an unrelated commit on the feature branch does not disturb them
 ( cd "$R" && mkdir -p internal && echo 'package y' > internal/other.go && g add -A && g commit -q -m other )
-trun pass "feature: unrelated commit, suppression files still untouched" "$R" feature/x "" "$PS" .snyk internal/other.go
+trun pass "feature: unrelated commit, suppression files still untouched" "$R" feature/x "" "$PS" .auditor/knowledge.md internal/other.go
 
 ( cd "$R" && echo '{"a":2}' > $PS && g commit -qam edit )
 trun fail "feature: edited suppression file is blocked" "$R" feature/x "" "$PS"
-trun pass "feature: the other, untouched suppression file is still allowed" "$R" feature/x "" .snyk
+trun pass "feature: the other, untouched suppression file is still allowed" "$R" feature/x "" .auditor/knowledge.md
 
-mkrepo "$R"; ( cd "$R" && echo 'x' > osv-scanner.toml && g add -A && g commit -q -m add )
-trun fail "feature: newly added suppression file (not on main) is blocked" "$R" feature/x "" osv-scanner.toml
+mkrepo "$R"; ( cd "$R" && echo 'x' > .auditor/accepted-items.json && g add -A && g commit -q -m add )
+trun fail "feature: newly added suppression file (not on main) is blocked" "$R" feature/x "" .auditor/accepted-items.json
 
-mkrepo "$R"; ( cd "$R" && g rm -q .snyk && g commit -qm del && echo 'ignore: {}' > .snyk && g add .snyk && g commit -qm readd )
-trun pass "feature: deleted then re-added with identical content is allowed" "$R" feature/x "" .snyk
-mkrepo "$R"; ( cd "$R" && g rm -q .snyk && g commit -qm del && echo 'ignore: {evil: 1}' > .snyk && g add .snyk && g commit -qm readd )
-trun fail "feature: deleted then re-added with different content is blocked" "$R" feature/x "" .snyk
+mkrepo "$R"; ( cd "$R" && g rm -q .auditor/knowledge.md && g commit -qm del && echo 'ignore: {}' > .auditor/knowledge.md && g add .auditor/knowledge.md && g commit -qm readd )
+trun pass "feature: deleted then re-added with identical content is allowed" "$R" feature/x "" .auditor/knowledge.md
+mkrepo "$R"; ( cd "$R" && g rm -q .auditor/knowledge.md && g commit -qm del && echo 'ignore: {evil: 1}' > .auditor/knowledge.md && g add .auditor/knowledge.md && g commit -qm readd )
+trun fail "feature: deleted then re-added with different content is blocked" "$R" feature/x "" .auditor/knowledge.md
 
-mkrepo "$R"; ( cd "$R" && chmod +x .snyk && g add .snyk && g commit -qm mode )
-trun fail "feature: mode change only is blocked" "$R" feature/x "" .snyk
+mkrepo "$R"; ( cd "$R" && chmod +x .auditor/knowledge.md && g add .auditor/knowledge.md && g commit -qm mode )
+trun fail "feature: mode change only is blocked" "$R" feature/x "" .auditor/knowledge.md
 
 mkrepo "$R"; ( cd "$R" && g update-ref -d refs/remotes/origin/main )
 trun fail "feature: base ref missing fails closed" "$R" feature/x "" "$PS"
@@ -464,12 +467,12 @@ trun fail "feature: shallow clone without a resolvable merge base fails closed" 
 mkrepo "$R"; ( cd "$R" && mkdir -p .auditor/proposals && echo '{"p":1}' > .auditor/proposals/a.json && g add -A && g commit -qm a && g update-ref refs/remotes/origin/main HEAD )
 ( cd "$R" && g mv .auditor/proposals/a.json .auditor/proposals/b.json && g commit -qm mv )
 trun fail "feature: move of a suppression file to another suppression path is blocked" "$R" feature/x "" .auditor/proposals/b.json
-trun pass "feature: the deleted old path of a move is not listed and not an error" "$R" feature/x "" "$PS" .snyk
+trun pass "feature: the deleted old path of a move is not listed and not an error" "$R" feature/x "" "$PS" .auditor/knowledge.md
 mkrepo "$R"; ( cd "$R" && mkdir -p .auditor/proposals && echo '{"p":1}' > .auditor/proposals/a.json && g add -A && g commit -qm a && g update-ref refs/remotes/origin/main HEAD \
   && cp .auditor/proposals/a.json .auditor/proposals/b.json && g add -A && g commit -qm cp )
 trun fail "feature: copy of a suppression file to another suppression path is blocked" "$R" feature/x "" .auditor/proposals/a.json .auditor/proposals/b.json
-mkrepo "$R"; ( cd "$R" && cp .snyk osv-scanner.toml && g add -A && g commit -qm cp )
-trun fail "feature: .snyk content copied to osv-scanner.toml is blocked" "$R" feature/x "" .snyk osv-scanner.toml
+mkrepo "$R"; ( cd "$R" && cp .auditor/knowledge.md .auditor/accepted-items.json && g add -A && g commit -qm cp )
+trun fail "feature: .auditor/knowledge.md content copied to .auditor/accepted-items.json is blocked" "$R" feature/x "" .auditor/knowledge.md .auditor/accepted-items.json
 
 mkrepo "$R"; ( cd "$R" && echo '{"a":5}' > $PS && g commit -qam edit )
 HEADREPO=fork/r
@@ -492,13 +495,13 @@ revrun() {  # revrun <expect> <desc> <rev> <paths...>   (cwd $R, checked out on 
 }
 mkrepo "$R"; ( cd "$R" && echo 'package q' > q.go && g add -A && g commit -qm same )
 SAME="$(cd "$R" && git rev-parse HEAD)"
-( cd "$R" && echo '{"a":6}' > $PS && echo x > osv-scanner.toml && g add -A && g commit -qm chg )
+( cd "$R" && echo '{"a":6}' > $PS && echo x > .auditor/accepted-items.json && g add -A && g commit -qm chg )
 CHG="$(cd "$R" && git rev-parse HEAD)"
 ( cd "$R" && g checkout -q main )
-revrun pass "rev: untouched suppression files at the PR head pass (checkout is main)" "$SAME" "$PS" .snyk
+revrun pass "rev: untouched suppression files at the PR head pass (checkout is main)" "$SAME" "$PS" .auditor/knowledge.md
 revrun fail "rev: edited suppression file at the PR head is blocked" "$CHG" "$PS"
-revrun fail "rev: new suppression file at the PR head is blocked" "$CHG" osv-scanner.toml
-revrun pass "rev: the other untouched file at that head still passes" "$CHG" .snyk
+revrun fail "rev: new suppression file at the PR head is blocked" "$CHG" .auditor/accepted-items.json
+revrun pass "rev: the other untouched file at that head still passes" "$CHG" .auditor/knowledge.md
 revrun fail "rev: a rev that is not a full hex sha fails closed" "main" "$PS"
 revrun fail "rev: a hex sha that is not a commit fails closed" "0000000000000000000000000000000000000000" "$PS"
 revrun fail "rev: an option-like rev fails closed" "--help" "$PS"
@@ -527,7 +530,7 @@ PICK="$(cd "$R" && git merge-base HEAD origin/main)"
 [ "$(cd "$R" && git merge-base --all HEAD origin/main | wc -l | tr -d ' ')" = 2 ] || gf "criss-cross fixture" "the sync commit changed the merge bases"
 ( cd "$R" && git cat-file -p "$PICK:$PS" | cmp -s - "$PS" ) && gp "criss-cross: the single-base pick equals the head (only --all can block)" || gf "criss-cross pick" "pick differs from head after syncing"
 trun fail "criss-cross: file equal to one merge base but not the other is blocked" "$R" feature/x "" "$PS"
-trun pass "criss-cross: a file identical in every merge base is allowed" "$R" feature/x "" .snyk
+trun pass "criss-cross: a file identical in every merge base is allowed" "$R" feature/x "" .auditor/knowledge.md
 
 # NUL-delimited input (ALLOWLIST_NUL=1, for `git ls-tree -z`): a path containing a newline is ONE path, not two
 # allowed ones; without the variable the line-oriented behaviour is unchanged
@@ -569,7 +572,7 @@ trun fail "feature: non-suppression unlisted file still blocked" "$R" feature/x 
 trun fail "feature: edited suppression plus unlisted file reports failure" "$R" feature/x "" "$PS" secrets.txt
 # pre-commit usage: no env at all, local branch name, staged change compared with the merge base
 mkrepo "$R"
-( cd "$R" && printf '%s\n' "$PS" .snyk | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
+( cd "$R" && printf '%s\n' "$PS" .auditor/knowledge.md | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
   && gp "pre-commit usage (no env, local feature branch): untouched suppression files pass" || gf "pre-commit untouched" "rc!=0"
 ( cd "$R" && echo '{"a":4}' > $PS && g add $PS && printf '%s\n' "$PS" | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
   && gf "pre-commit staged edit" "should have been blocked" || gp "pre-commit usage: staged edit of a suppression file is blocked"
@@ -770,12 +773,6 @@ passfam "feature/x" "v030: the FIPS module data file" "build/locks/fips-module.t
 runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build/locks/fips-module.txt.bak" "build/locks/fips-module.json" "build/locks/x/fips-module.txt" "build/fips-module.txt" "build/locks/Fips-module.txt" "build/locks/../fips-module.txt" "build/locks/fips-modules.txt"
 runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
 runeach fail "feature/x" "v030: other archive record names refused" "build/locks/archive-other.sha256" "build/locks/archive-keys.sha256.bak" "build/locks/x/archive-keys.sha256" "build/locks/archive-keys.sha512" "build/locks/../archive-keys.sha256"
-passfam "feature/x" "queue gate: the merge queue judge script (cache#542)" ".github/agent/bin/queue-gate-judge.sh"
-runeach fail "feature/x" "queue gate: near-miss judge script names refused" \
-  ".github/agent/bin/queue-gate-judge.sh.bak" ".github/agent/bin/queue-gate-judgeX.sh" \
-  ".github/agent/bin/queue-gate-judge.shx" ".github/agent/bin/Queue-gate-judge.sh" \
-  ".github/agent/bin/x/queue-gate-judge.sh" "bin/queue-gate-judge.sh" ".github/agent/queue-gate-judge.sh" \
-  ".github/agent/bin/queue-gate-judge-test.sh"
 runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
 passfam "feature/x" "v030: the freeze job script" "bin/build-freeze.sh"
 passfam "feature/x" "v030: the token wrapper of the release steps" "bin/with-aws-token.sh"
@@ -841,120 +838,6 @@ runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused"
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
-# The merge queue (REQ-DEP-005-AC1): the queue's commit has no pull request head branch, so the script looks up the
-# pull request named by GITHUB_QUEUE_REF through the API, with one call, and applies the same lane rule: only an
-# auditor/* branch of this repository may change a suppression file. A lookup that fails or is unclear fails the check.
-QSHA="$(printf 'a%.0s' $(seq 40))"
-QREF="refs/heads/gh-readonly-queue/main/pr-12-$QSHA"
-mkdir -p "$TMPROOT/qgh"
-cat > "$TMPROOT/qgh/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$QGH_LOG"
-[ "${QGH_FAIL:-}" = 1 ] && { echo "gh: HTTP 500" >&2; exit 1; }
-printf '%b' "${QGH_OUT-}"
-EOF
-chmod +x "$TMPROOT/qgh/gh"
-# qrun <expect> <desc> <queue ref> <gh output> <paths...>: the queue case, run inside $R
-# (GITHUB_HEAD_REF is empty there)
-qrun() {
-  local expect="$1" desc="$2" qref="$3" ghout="$4"; shift 4
-  local out rc
-  : > "$TMPROOT/qgh.log"
-  out="$(cd "$R" && printf '%s\n' "$@" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
-    QGH_OUT="$ghout" QGH_FAIL="${QGH_FAIL:-}" \
-    GITHUB_HEAD_REF="" GITHUB_REF_NAME="${qref#refs/heads/}" GITHUB_QUEUE_REF="$qref" GITHUB_REPOSITORY=o/r \
-    "$ABS_SCRIPT" 2>&1)"; rc=$?
-  # QWANT: the refusal text a failing case must print, so it cannot fail for another reason
-  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } \
-     || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && { [ -z "${QWANT:-}" ] || grep -qF -- "$QWANT" <<<"$out"; }; }; then
-    echo "ok:   $desc"; pass=$((pass+1))
-  else
-    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
-  fi
-}
-mkrepo "$R"; ( cd "$R" && echo '{"a":9}' > $PS && mkdir -p internal && echo 'package y' > internal/other.go \
-    && g add -A && g commit -qm edit )
-qrun pass "queue: an auditor/* branch of this repository may change a suppression file" "$QREF" 'auditor/x\to/r\n' "$PS"
-qrun fail "queue: any other branch may not change a suppression file" "$QREF" 'feature/x\to/r\n' "$PS"
-qrun fail "queue: main as the head branch is not the suppression lane" "$QREF" 'main\to/r\n' "$PS"
-qrun fail "queue: an auditor/* branch of a fork may not change a suppression file" "$QREF" 'auditor/x\tfork/r\n' "$PS"
-qrun fail "queue: an auditor/* look-alike prefix may not change a suppression file" "$QREF" 'auditorX/x\to/r\n' "$PS"
-qrun pass "queue: an ordinary file passes for any branch" "$QREF" 'feature/x\to/r\n' internal/other.go
-
-# A queue group is a chain of merges: each entry merges one pull request into the entry before it (the first into
-# main), and is judged on its own queue ref under its own pull request's lane. mkgroup <dir> <kind>...: main, then one
-# merge per kind. aud: an auditor pull request changes a suppression file; feat: a pull request changes only code;
-# featps: a pull request that is not an auditor's changes a suppression file (.snyk)
-mkgroup() {
-  local d="$1" k n=0; shift
-  mkrepo "$d"
-  ( cd "$d" && g checkout -q -b queue refs/remotes/origin/main
-    for k in "$@"; do
-      n=$((n+1)); g checkout -q -b "pr$n" refs/remotes/origin/main
-      case "$k" in
-        aud) echo '{"a":2}' > .auditor/panel-state.json ;;
-        feat) mkdir -p internal && echo 'package y' > internal/other.go ;;
-        featps) echo 'ignore: {x: 1}' > .snyk ;;
-      esac
-      g add -A && g commit -qm "pr$n" && g checkout -q queue && g merge -q --no-ff -m "entry$n" "pr$n" || exit 1
-    done ) || { echo "mkgroup failed: $*" >&2; exit 1; }
-}
-G="$TMPROOT/grp"; ALLPATHS=("$PS" .snyk internal/other.go)
-R_SAVED="$R"; R="$G"
-mkgroup "$G" aud feat
-qrun pass "queue group: a code entry behind an auditor entry is judged on its own change" \
-    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
-mkgroup "$G" feat aud
-qrun pass "queue group: an auditor entry behind a code entry may change a suppression file" \
-    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
-qrun fail "queue group: the same auditor entry named as a feature branch may not" \
-    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
-mkgroup "$G" feat featps
-qrun fail "queue group: a non-auditor entry that changes a suppression file is refused" \
-    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
-mkgroup "$G" aud featps
-qrun fail "queue group: the same change behind an auditor entry is refused too" \
-    "$QREF" 'feature/x\to/r\n' "${ALLPATHS[@]}"
-mkgroup "$G" featps aud
-qrun pass "queue group: an earlier entry's change is that entry's own run, not this one's" \
-    "$QREF" 'auditor/x\to/r\n' "${ALLPATHS[@]}"
-rm -rf "$G"; mkdir -p "$G/.auditor"
-( cd "$G" && g init -q -b main . && echo '{"a":1}' > "$PS" && g add -A && g commit -q -m root \
-    && g update-ref refs/remotes/origin/main HEAD )
-qrun fail "queue group: a head with no first parent is refused" "$QREF" 'feature/x\to/r\n' "$PS"
-R="$R_SAVED"
-
-QGH_FAIL=1 qrun fail "queue: a failed lookup (gh exits 1) fails the check, even for an ordinary file" \
-    "$QREF" '' internal/other.go
-# each refusal runs on an ordinary file, which every lane allows, and must print its own reason
-QWANT="could not be looked up" QGH_FAIL=1 qrun fail "queue: a failed lookup never falls back to the queue ref's name" \
-    "$QREF" 'auditor/x\to/r\n' internal/other.go
-QWANT="did not name one head branch" qrun fail "queue: an empty answer is a failure" "$QREF" '' internal/other.go
-QWANT="did not name one head branch" qrun fail "queue: two answers are ambiguous, a failure" \
-    "$QREF" 'auditor/x\to/r\nauditor/y\to/r\n' internal/other.go
-QWANT="did not name one head branch" qrun fail "queue: an answer with no repository is a failure" \
-    "$QREF" 'auditor/x\t\n' internal/other.go
-QWANT="did not name one head branch" qrun fail "queue: an answer with no branch is a failure" \
-    "$QREF" '\to/r\n' internal/other.go
-QWANT="not a merge queue ref" qrun fail "queue: a queue ref with no pull request number is refused" \
-    "refs/heads/gh-readonly-queue/main/pr--$QSHA" 'auditor/x\to/r\n' internal/other.go
-QWANT="no pull request number" qrun fail "queue: a queue ref with a non-numeric pull request number is refused" \
-    "refs/heads/gh-readonly-queue/main/pr-1x-$QSHA" 'auditor/x\to/r\n' internal/other.go
-QWANT="not a merge queue ref" qrun fail "queue: a ref that is not a queue ref is refused" \
-    "refs/heads/feature/x" 'auditor/x\to/r\n' internal/other.go
-qrun pass "queue: the ref without refs/heads/ (the workflow_run form) is accepted" \
-    "gh-readonly-queue/main/pr-12-$QSHA" 'auditor/x\to/r\n' "$PS"
-qrun pass "queue: one lookup" "$QREF" 'auditor/x\to/r\n' "$PS"
-[ "$(wc -l < "$TMPROOT/qgh.log")" -eq 1 ] && gp "queue: the lookup is exactly one gh call" \
-    || gf "queue: the lookup is exactly one gh call" "$(cat "$TMPROOT/qgh.log")"
-grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call reads pull request 12 of this repository" \
-    || gf "queue: the call reads pull request 12 of this repository" "$(cat "$TMPROOT/qgh.log")"
-: > "$TMPROOT/qgh.log"
-( cd "$R" && printf '%s\n' "$PS" | env PATH="$TMPROOT/qgh:$PATH" QGH_LOG="$TMPROOT/qgh.log" \
-    GITHUB_HEAD_REF=auditor/x GITHUB_REF_NAME="" GITHUB_BASE_REF=main \
-    GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO=o/r "$ABS_SCRIPT" >/dev/null 2>&1 )
-[ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" \
-    || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
 # pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
 runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
 runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"

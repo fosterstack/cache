@@ -25,7 +25,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         list also holds scanners, acceptance and runtime (advisor ruling Q2, a step-5 revisit). At the merge with PR 2 its judge's
                         STEPS takes the same three names and this copy is deleted in favour of it.
   cluster FILE          REQ-CHAIN-006-AC14: bin/acceptance-k8s.sh creates its cluster with exactly CLUSTER (the node image by digest) and no action.
-  suites FILE           REQ-CHAIN-006-AC5: acceptance.yml's gradle and maven jobs run the shared suite scripts (one copy of each suite).
+  suites FILE           REQ-CHAIN-006-AC5: acceptance.yml's job runs the shared suite scripts (one copy of each suite).
   phase FILE STEP       REQ-CHAIN-006-AC1/AC3: bin/check-phase-STEP.sh is the one line `bash bin/check-stage.sh STEP`.
   script FILE           REQ-CHAIN-006-AC3: bin/check-stage.sh is `set -euo pipefail`, the two verify commands, then ONE fixed `case "$1"` with
                         exactly the phases of PHASES (each with exactly its commands, in order) and nothing else.
@@ -62,55 +62,25 @@ SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scan
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
 STEP_LIST = "release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # the Release helper keeps only Release's six; Check's steps run under the local helper (REQ-REL-011-AC1)
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # PR 2's with the two AWS variables of handoff 0713 (SIGSTORE_ID_TOKEN is gone); never github or slsa
-RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
 
 
 def witnessed_lines():
-    """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py), with PR 3's three steps in the closed list. Handoff 0713: the collection is signed with the release KMS key
-    by its alias, by the one signing function, after Witness has run with a throwaway key and no token, AWS_ROLE_ARN or AWS_WEB_IDENTITY_TOKEN_FILE of its own (the scripts of release-sign and release-apks, which sign with the key themselves, are handed the sensitive names RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE and map them themselves; the wrapped command is the plain bash SCRIPT); a fresh identity token
-    (audience sts.amazonaws.com) goes to a file in a private directory under RUNNER_TEMP that a trap removes, and the AWS SDK reads it through AWS_WEB_IDENTITY_TOKEN_FILE and
-    AWS_ROLE_ARN for the one signing call."""
-    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
+    """The canonical bin/witnessed.sh (witnessed_lines in its bin/chain-test-shape.py): Release's steps record under Witness with a throwaway key, as the building steps do; the Release job holds no key (Q-T2, KMS:36-38)."""
+    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in %s) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac' % STEP_LIST,
             'mkdir -p "witness-${step#snapshot-}"',
-            ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
-            ': "${AWS_REGION:?witnessed: AWS_REGION is missing}"',
-            ': "${RELEASE_KMS_KEY_REF:?witnessed: RELEASE_KMS_KEY_REF is missing}"',
+            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN",
             "umask 077",
-            'td=$(mktemp -d "${RUNNER_TEMP:?}/witness-aws.XXXXXX")',
-            "trap 'rm -rf \"$td\"' EXIT HUP INT TERM",
-            "role=$AWS_ROLE_ARN region=$AWS_REGION kref=$RELEASE_KMS_KEY_REF",
-            "req_tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN req_url=$ACTIONS_ID_TOKEN_REQUEST_URL",
-            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
-            "oidc_token() {",
-            '  sh bin/loopback-get.sh -sSf -H "Authorization: bearer $req_tok" "${req_url}&audience=sts.amazonaws.com" | jq -r .value > "$td/token"',
-            '  tok=$(cat "$td/token")',
-            '  [ -n "$tok" ] && [ "$tok" != null ] || { echo "witnessed: no identity token" >&2; exit 1; }',
-            '  echo "::add-mask::$tok"',
-            "}",
-            'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE',
-            'signers=" release-sign release-apks "',
-            'case "$signers" in *" $step "*) ;; *) unset AWS_REGION RELEASE_KMS_KEY_REF ;; esac',
-            'case "$signers" in *" $step "*) mkdir "$td/step"; oidc_token; mv "$td/token" "$td/step/token"; export RELEASE_ROLE_ARN=$role RELEASE_TOKEN_FILE="$td/step/token" ;; esac',
-            'openssl genpkey -algorithm ed25519 -out "$td/key.pem"',
-            'local_record="$td/$step-collection.json"',
+            'kd=$(mktemp -d "${RUNNER_TEMP:?}/witness-key.XXXXXX")',
+            "trap 'rm -rf \"$kd\"' EXIT HUP INT TERM",
+            'openssl genpkey -algorithm ed25519 -out "$kd/key.pem"',
             "rc=0",
-            'witness run --step "$step" --signer-file-key-path "$td/key.pem" '
+            'witness run --step "$step" --signer-file-key-path "$kd/key.pem" '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "$local_record" -- bash "$@" || rc=$?' % keys,
-            'rm -rf "$td/step"',
-            "unset RELEASE_ROLE_ARN RELEASE_TOKEN_FILE",
-            'if [ "$rc" -eq 0 ]; then',
-            '  jq -er .payload "$local_record" | base64 -d > "$td/payload" && [ -s "$td/payload" ] || { echo "witnessed: the collection has no payload" >&2; exit 1; }',
-            "  oidc_token",
-            '  AWS_WEB_IDENTITY_TOKEN_FILE="$td/token" AWS_ROLE_ARN=$role AWS_REGION=$region RELEASE_KMS_KEY_REF=$kref '
-            'python3 -I -B bin/chain-verify.py sign-record --payload "$td/payload" '
-            '--out "witness-${step#snapshot-}/$step-collection.json" --template .github/policy/release-policy.template.json '
-            '--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub || rc=$?',
-            "fi",
-            'rm -rf "$td"',
-            '[ ! -e "$td" ] || { echo "witnessed: the token directory still exists" >&2; exit 1; }',
+            '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@" || rc=$?' % keys,
+            'rm -rf "$kd"',
+            '[ ! -e "$kd" ] || { echo "witnessed: the throwaway key directory still exists" >&2; exit 1; }',
             'exit "$rc"']
 
 
@@ -157,7 +127,7 @@ VERIFY = [  # bin/check-stage.sh after `set -euo pipefail` and the policy line: 
             # isolated and with no bytecode cache, as PR 1's Sign step runs the verifier (python3 -I -B, PR 1 r5)
     r"python3 -I -B bin/chain-verify\.py stage-start --stage check --previous build --record witness-build/build-collection\.json --digests witness-build/digests\.json --policy policy\.json",
 ]
-PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed command nears the 9-minute cap (rule 68, amended)
+PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed command nears the 10-minute certificate life (rule 68, amended)
     "scanners": [r"bash bin/check-scan\.sh --scanners \.github/policy/scanners\.json --digests witness-build/digests\.json --images images --archives dist --out check-results",
                  r"python3 -I -B bin/check-govulncheck\.py --scanners \.github/policy/scanners\.json --out check-results"],
     "acceptance": [r"bash bin/check-acceptance\.sh gradle --digests witness-build/digests\.json --images images --out check-results",
@@ -175,9 +145,8 @@ SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase
 # (kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)
 NODE_IMAGE = "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
 CLUSTER = "kind create cluster --name fscache-accept --image " + NODE_IMAGE
-SUITE_STEPS = {  # acceptance.yml: each job runs the shared suite scripts, the capped one as the results step
-    "acceptance-gradle": ["bash bin/acceptance-gradle.sh", "bash bin/acceptance-gradle-capped.sh"],
-    "acceptance-maven": ["bash bin/acceptance-maven.sh", "bash bin/acceptance-maven-capped.sh"],
+SUITE_STEPS = {  # acceptance.yml: the one job runs the shared suite scripts, in this order
+    "acceptance": ["bash bin/acceptance-gradle.sh", "bash bin/acceptance-gradle-capped.sh", "bash bin/acceptance-maven.sh", "bash bin/acceptance-maven-capped.sh"],
 }
 SIGNING = re.compile(r"cosign|witness|gitsign|sigstore|slsa|attest|in-toto|docker\s+login|ghcr\.io|secret|ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|GITHUB_TOKEN|GH_TOKEN|SNYK", re.I)
 OLD = ["stage-acceptance-artifacts.yml", "stage-acceptance-egress.yml", "stage-acceptance-k8s.yml", "stage-acceptance-predicate.yml", "stage-authorize.yml"]
@@ -428,18 +397,15 @@ def cluster(path):
 
 
 def suites(path):
-    """REQ-CHAIN-006-AC5: acceptance.yml's gradle and maven jobs run the shared suite scripts, the capped one as the results step."""
+    """REQ-CHAIN-006-AC5: acceptance.yml's one job runs the shared suite scripts."""
     d, bad = load(path), []
     jobs = d.get("jobs") or {}
     for job, want in SUITE_STEPS.items():
         steps = (jobs.get(job) or {}).get("steps") or []
-        runs = [(s.get("run") or "").strip() for s in steps if "run" in s]
-        got = [r for r in runs if r.startswith("bash bin/acceptance-")]
+        lines = [l.strip() for s in steps for l in (s.get("run") or "").split("\n")]
+        got = [l for l in lines if l.startswith("bash bin/acceptance-")]
         if got != want:
             bad.append("%s must run %s in that order, found %s" % (job, want, got))
-        res = [s for s in steps if s.get("id") == "results"]
-        if len(res) != 1 or (res[0].get("run") or "").strip() != want[-1]:
-            bad.append("%s: the results step must be the one that runs %s" % (job, want[-1]))
     return bad
 
 
@@ -770,19 +736,18 @@ def removed_rule61(root):
         if m:
             bad.append("%s names %r (rule 61: no Dockerfile, buildx or goreleaser is read or kept; a candidate image is read by crane, by digest)" % (rel, m.group(0)))
     # crane (the chain's own copy tool) is the ONLY reader of a candidate image now, so every executable line that names it is one of a short closed list of forms
-    # (Codex 4b-4 r2): the pinned install, the one manifest read of the rescan, the one index append of the Scout probe (and messages that only print its name);
-    # any other line naming crane is refused, and the variables those two forms read are assigned exactly once, by digest, in the same step or file.
+    # (Codex 4b-4 r2): the pinned install and the one manifest read of the rescan (and messages that only print its name);
+    # any other line naming crane is refused, and the variable the manifest read uses is assigned exactly once, by digest, in the same step.
     CRANE = re.compile(r"(?<![\w-])crane(?![\w-])")      # also a path-qualified crane (/usr/local/bin/crane, ./crane) and crane.<anything>
     INSTALL = re.compile(r"^(?:\./)?bin/install-scanner\.sh crane(?:\s+#.*)?$")
     MANIFEST = re.compile(r"^if ! crane manifest \"\$ref\" > /tmp/index\.json 2>/tmp/inspect\.err; then$")
-    APPEND = re.compile(r"^(?:> \"\$a/built-create\.log\" 2>&1 )?crane index append \"\$built_idx\" -m \"\$att_ref\" -t \"\$built_ref\"$")
 
     def exec_lines(text):
         return [ln.strip() for ln in str(text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
 
-    def crane_forbidden(l, context):
-        """True when the line names crane in a form that is not the install, the manifest read, the append, or a message that only prints the name."""
-        if not CRANE.search(l) or INSTALL.match(l) or (context == "workflow" and MANIFEST.match(l)) or (context == "script" and APPEND.match(l)):
+    def crane_forbidden(l):
+        """True when the line names crane in a form that is not the install, the manifest read, or a message that only prints the name."""
+        if not CRANE.search(l) or INSTALL.match(l) or MANIFEST.match(l):
             return False
         if re.match(r"(echo|printf)\b", l):
             inner = re.findall(r"\$\([^)]*\)|`[^`]*`", l)      # a command substitution inside a message would run
@@ -824,7 +789,6 @@ def removed_rule61(root):
             installed = False
             for st in steps:
                 ls = exec_lines(st.get("run") if isinstance(st, dict) else "")
-                installed_before_step = installed
                 depth = 0
                 for k, l in enumerate(ls):
                     if INSTALL.match(l):
@@ -839,7 +803,7 @@ def removed_rule61(root):
                         depth += 0 if closes_here else 1
                     elif first in ("fi", "done", "esac") or l == "}" or l.startswith(") "):
                         depth = max(0, depth - 1)
-                    if crane_forbidden(l, "workflow"):
+                    if crane_forbidden(l):
                         bad.append("main-candidate-rescan.yml job %s: a line names crane in a form other than the pinned install or `if ! crane manifest \"$ref\" > /tmp/index.json 2>/tmp/inspect.err; then`: %s" % (jn, l[:120]))
                     elif MANIFEST.match(l):
                         saw_manifest = True
@@ -848,24 +812,8 @@ def removed_rule61(root):
                         want = re.compile(r"^ref=\"[^\"]*cache@\$\{TARGET_DIGEST\}\"$")
                         if assigned(ls, "ref") != 1 or not any(want.match(x) for x in ls[:k]):
                             bad.append("main-candidate-rescan.yml job %s: `crane manifest` does not read a reference assigned exactly once, before it, as <repository>/cache@${TARGET_DIGEST} in the same step (a tag could move: by digest only)" % jn)
-                if any("bin/scout-root-cause.sh" in l for l in ls) and not installed_before_step:
-                    bad.append("main-candidate-rescan.yml job %s: runs bin/scout-root-cause.sh (its index append is crane) without the pinned crane install in an earlier step of that job" % jn)
         if not saw_manifest:
             bad.append("main-candidate-rescan.yml does not read the candidate index with crane (the pinned install, `crane manifest` by digest)")
-    sc = os.path.join(root, "bin/scout-root-cause.sh")
-    if os.path.exists(sc):
-        ls = exec_lines(open(sc, errors="replace").read())
-        for l in ls:
-            if crane_forbidden(l, "script"):
-                bad.append("bin/scout-root-cause.sh: a line names crane in a form other than the one index append: %s" % l[:120])
-        napp = sum(1 for l in ls if APPEND.match(l))
-        if any(re.search(r"(?<![\w`])crane index append", l) for l in ls) and napp != 1:
-            bad.append("bin/scout-root-cause.sh: the crane index append is not exactly one `crane index append \"$built_idx\" -m \"$att_ref\" -t \"$built_ref\"`")
-        if napp:
-            for var, pat in (("built_idx", r"built_idx=\"\$PROBE_REPO@\$MULTI\""), ("att_ref", r"att_ref=\"\$PROBE_REPO@\$att_dig\"")):
-                n_ok = sum(len(re.findall(r"(?:^|[;&] *)" + pat + r"(?:$|[; ])", l)) for l in ls)
-                if n_ok != 1 or assigned(ls, var) != 1:
-                    bad.append("bin/scout-root-cause.sh: %s is not assigned exactly once, by digest (%s)" % (var, pat.replace("\\", "")))
     return bad
 
 

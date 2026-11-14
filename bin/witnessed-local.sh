@@ -12,8 +12,6 @@
 #  - The key is key hygiene, not the trust boundary: it is made in a directory of mode 0700 under the runner temp folder (umask 077), handed to Witness by path only, never
 #    printed, never copied, never written into a record or an upload directory, and removed when Witness returns or the shell gets EXIT, HUP, INT or TERM; the helper then
 #    checks that the directory is gone. The wrapped build runs on the same runner as the same user, so nothing here claims it cannot read the key: the key carries no trust.
-#  - The build runs under `timeout -k 20 540`: a bound on a hung build, as REQ-CHAIN-004-AC2 says (a program that ignores the TERM is killed 20 seconds
-#    later). It is not a certificate lifetime: no certificate is involved any more.
 #  - Attestors: environment, git, material and product only (never github, whose record embeds the raw token, and never slsa: Sign's alone). The sensitive-key list keeps the
 #    token and credential variable names out of the record.
 #  - Witness runs from the repository root (no working-directory flag), so product subjects are named relative to it.
@@ -29,7 +27,7 @@ kd=$(mktemp -d "${RUNNER_TEMP:?}/witness-key.XXXXXX")
 trap 'rm -rf "$kd"' EXIT HUP INT TERM
 openssl genpkey -algorithm ed25519 -out "$kd/key.pem"
 rc=0
-witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN --env-add-sensitive-key GH_TOKEN --env-add-sensitive-key GITHUB_TOKEN --env-add-sensitive-key DOCKERHUB_USERNAME --env-add-sensitive-key DOCKERHUB_TOKEN --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE --env-add-sensitive-key AWS_ROLE_ARN -o "witness-${step#snapshot-}/$step-collection.local.json" -- timeout -k 20 540 bash "$@" || rc=$?
+witness run --step "$step" --signer-file-key-path "$kd/key.pem" -a environment,git,material,product --env-filter-sensitive-vars --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN --env-add-sensitive-key GH_TOKEN --env-add-sensitive-key GITHUB_TOKEN --env-add-sensitive-key DOCKERHUB_USERNAME --env-add-sensitive-key DOCKERHUB_TOKEN --env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE --env-add-sensitive-key AWS_ROLE_ARN -o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@" || rc=$?
 rm -rf "$kd"
 [ ! -e "$kd" ] || { echo "witnessed-local: the throwaway key directory still exists" >&2; exit 1; }
 exit "$rc"

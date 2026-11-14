@@ -42,7 +42,7 @@
 # THE GH TOKEN: bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env (job permissions contents, checks, statuses, pull-requests
 #   read, no id-token; advisor ruling, confirmed; the Witness move of Oct 22 removed the token). The script runs `unset GH_TOKEN` right after the admission line, so cache's scripts never see it.
 #
-# THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed-local.sh holds ALL the Witness flags and `timeout 540`; the judge is the
+# THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed-local.sh holds ALL the Witness flags; the judge is the
 # three functions witness_seam, helper and directwitness in bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below. If
 # harness spike (d) changes the wrapping, only those change; the script grammar never names Witness.
 #
@@ -56,7 +56,8 @@
 #   finds melange and apko, Witness's linux arm64 pin. The CLI of bin/chain-verify.py that the scripts use is documented in bin/chain-bind-test.sh
 #   (bind, items-apk, items-merge, which are tested against the REAL subcommands there), bin/chain-rebuild-test.sh (rebuild-compare) and PR 1's tests.
 # KNOWN LIMIT (PROPOSED/UNVERIFIED; the dry run decides): Witness loads its Fulcio signer when the command starts and takes the timestamp when it ends,
-#   so a build longer than the 10-minute certificate may not verify (harness spike (d)); `timeout 540` is the answer in the tests.
+#   so a build longer than the 10-minute certificate may not verify (harness spike (d));
+#   GitHub's default job time limit bounds a hung command.
 # INTEGRATION BRANCH (advisor 0341): PR 2 targets chain-v030; the real-tree cases are RED here and become green on chain-v030 after PR 1 and PR 2 merge.
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
@@ -122,7 +123,7 @@ def witnessed_text():           # bin/witnessed.sh, the witness line broken at i
     i = next(n for n, l in enumerate(lines) if l.startswith("witness run "))
     for flag in (" --signer-file-key-path", " -a ", " -o "):
         lines[i] = lines[i].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[i].replace(flag, " \\\n " + flag, 1)
-    comment = "# run one Release script under Witness, signed by the release KMS key through the AWS SDK: the identity token in a private file that a trap removes, the attestors (rule 68)"
+    comment = "# run one Release script under Witness with a throwaway key made in the job (the Release job holds no KMS key, no identity token): the attestors (rule 68)"
     return "#!/usr/bin/env bash\n" + comment + "\n" + "\n".join(lines) + "\n"
 
 
@@ -714,28 +715,21 @@ expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable"
 mkdir -p "$work/wf-ok" "$work/wf-new" "$work/wf-old" "$work/wf-cw" "$work/wf-cw-new"
 for f in ci.yml release.yml scan.yml stage-build.yml stage-reproducibility.yml stage-verify.yml stage-promote.yml stage-sign.yml; do : > "$work/wf-ok/$f"; done
 cp "$work/wf-ok"/* "$work/wf-new/"; : > "$work/wf-new/stage-extra.yml"
-# the monthly evidence letter's workflow is the second new file (owner's Oct 3 amendment,
-# ops/docs/ratify/2026-10-02-owner-load.md): admitted; a third is still refused
-mkdir -p "$work/wf-letter" "$work/wf-third"
-cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
-cp "$work/wf-letter"/* "$work/wf-third/"; : > "$work/wf-third/stage-extra.yml"
+mkdir -p "$work/wf-letter"; cp "$work/wf-ok"/* "$work/wf-letter/"; : > "$work/wf-letter/evidence-letter.yml"
 cp "$work/wf-ok"/* "$work/wf-old/"; : > "$work/wf-old/stage-admission.yml"
 cp "$work/wf-ok"/* "$work/wf-cw/"; : > "$work/wf-cw/customer-words-edited.yml"
 cp "$work/wf-cw"/* "$work/wf-cw-new/"; : > "$work/wf-cw-new/stage-extra.yml"
 expect ok     "AC1 fixture: a workflow directory with stage-sign.yml and without stage-image.yml / stage-admission.yml passes" "" workflows "$work/wf-ok"
 expect caught "AC1 a new workflow file other than the two named" "was added" workflows "$work/wf-new"
-expect ok     "AC1 evidence-letter.yml is admitted beside stage-sign.yml (rule 52 and the owner's Oct 3 amendment)" "" \
-  workflows "$work/wf-letter"
-expect caught "AC1 a third new workflow file is still refused, with evidence-letter.yml present" \
-  "workflow file stage-extra.yml was added" workflows "$work/wf-third"
+expect caught "AC1 evidence-letter.yml is gone for good: it is a new file too" "workflow file evidence-letter.yml was added" workflows "$work/wf-letter"
 expect ok     "AC1 customer-words-edited.yml is the one other file allowed (decision 98, Oct 3)" "" workflows "$work/wf-cw"
 expect caught "AC1 customer-words-edited.yml does not admit any other new file" "was added" workflows "$work/wf-cw-new"
 expect caught "AC1 stage-admission.yml still present" "still exists" workflows "$work/wf-old"
-# ---- the Witness seam: bin/witnessed.sh is the only place the Witness flags and `timeout 540` live (REQ-CHAIN-004-AC2; rule 68 as amended) ------------
+# ---- the Witness seam: bin/witnessed.sh alone holds the Witness flags; plain bash SCRIPT ARGS (REQ-CHAIN-004-AC2) ----
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
 hm() { replace "$work/witnessed.sh" "$work/h_$1.sh" "$3" "$4" && expect caught "$2" "helper command" helper "$work/h_$1.sh"; return 0; }
-hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "$local_record"' '-d out -o "$local_record"'
+hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "witness-${step#snapshot-}/$step-collection.local.json"' '-d out -o "witness-${step#snapshot-}/$step-collection.local.json"'
 hm fextra  "AC2 an extra Witness flag" '--env-filter-sensitive-vars' '--enable-archivista --env-filter-sensitive-vars'
 hm fnoflt  "AC8 no environment filter flag (tokens would be recorded)" '--env-filter-sensitive-vars' ''
 hm fnokey  "AC8 no token-variable key pattern" "--env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'" ''
@@ -743,38 +737,32 @@ hm fnogh   "AC8 GH_TOKEN not on the sensitive-key list" '--env-add-sensitive-key
 hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git,material,product' 'environment,git,material,slsa'
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
-hm fout    "AC2 the signed record written to another path" '--out "witness-${step#snapshot-}/$step-collection.json"' '--out out/x.json'
+hm fout    "AC2 the record written to another path than witness-DIR/STEP-collection.local.json" '-o "witness-${step#snapshot-}/$step-collection.local.json"' '-o out/x.json'
 hm fopen   "AC2 the step list is open" 'release-verify' '*'
-hm ftee "AC2 the token written elsewhere" '| jq -r .value' '| jq -r .value | tee /tmp/leak'
-hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
-hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
-hm kref    "AC2 Witness run with another key file than the step's throwaway key" '--signer-file-key-path "$td/key.pem"' '--signer-file-key-path /etc/signing-key.pem'
+hm kref    "AC2 Witness run with another key file than the step's throwaway key" '--signer-file-key-path "$kd/key.pem"' '--signer-file-key-path /etc/signing-key.pem'
 hm kfulcio "AC2 a Fulcio flag (keyless signing is gone)" '--signer-file-key-path' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-file-key-path'
 hm ktsa    "AC2 a timestamp authority flag (the Rekor entry carries the time)" '--signer-file-key-path' '-t https://tsa.example/ts --signer-file-key-path'
-hm kkms    "AC2 Witness told to sign with the KMS key itself again (the one signing function does it)" '--signer-file-key-path "$td/key.pem"' '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'
-hm knosign "AC2 the collection is not signed with the release key (the signing function is not called)" 'sign-record' 'verify'
-hm kaud    "AC2 the token asked for another audience (the AWS trust requires sts.amazonaws.com)" 'audience=sts.amazonaws.com' 'audience=sigstore'
-hm knotrap "AC2 no trap: the token directory outlives an interrupted run" $'trap \'rm -rf "$td"\' EXIT HUP INT TERM\n' ''
-hm ktmp    "AC2 the token directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-aws.XXXXXX"' '/tmp/witness-aws.XXXXXX'
+hm kkms    "AC2 Witness told to sign with the KMS key itself again (the Release job holds no key)" '--signer-file-key-path "$kd/key.pem"' '--signer-kms-ref "$RELEASE_KMS_KEY_REF"'
+hm knosign "AC2 a KMS signing call added after Witness (the Release job holds no key, no token: its record is evidence signed with the throwaway key)" $'rm -rf "$kd"\n[ ! -e' $'bash bin/with-aws-token.sh sign-record --payload x\nrm -rf "$kd"\n[ ! -e'
+hm knotrap "AC2 no trap: the key directory outlives an interrupted run" $'trap \'rm -rf "$kd"\' EXIT HUP INT TERM\n' ''
+hm ktmp    "AC2 the key directory outside RUNNER_TEMP" '"${RUNNER_TEMP:?}/witness-key.XXXXXX"' '/tmp/witness-key.XXXXXX'
 hm kumask  "AC2 no umask: the token file would be group-readable" $'umask 077\n' ''
-hm kwrap0  "AC2 Witness and the wrapped script keep the AWS variables" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE\n' ':\n'
-hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" 'unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE' 'unset AWS_ROLE_ARN'
-hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
-hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "$local_record" -- bash "$@"' '-o "$local_record" -- env "AWS_ROLE_ARN=$role" bash "$@"'
-hm ksignall "AC2 every step gets the signing variables, not release-sign and release-apks alone" 'signers=" release-sign release-apks "' 'signers=" release-verify release-apks release-publish release-sign release-assets release-postverify "'
+hm kwrap0  "AC2 Witness and the wrapped script keep the identity and AWS variables" $'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' $':\n'
+hm kwrap1  "AC2 only some of the AWS variables are removed from the wrapped script" ' AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN' ' AWS_ROLE_ARN'
+hm kwrap2  "AC2 the release-creds literal (AWS names in the recorded command) in front of the wrapped script: record-env refuses a record that names them" '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@"' '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash -c '"'"'AWS_ROLE_ARN=$RELEASE_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE=$RELEASE_TOKEN_FILE exec "$@"'"'"' release-creds bash "$@"'
+hm kwrap3  "AC2 the role in the wrapped command (env AWS_ROLE_ARN=... in front of the script: the value in the recorded argv)" '-o "witness-${step#snapshot-}/$step-collection.local.json" -- bash "$@"' '-o "witness-${step#snapshot-}/$step-collection.local.json" -- env "AWS_ROLE_ARN=$role" bash "$@"'
 hm ksensf  "AC8 the token-file variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_WEB_IDENTITY_TOKEN_FILE' ''
 hm ksensr  "AC8 the role variable is not a sensitive key of the record" '--env-add-sensitive-key AWS_ROLE_ARN' ''
-hm kghenv  "AC2 the token file written to GITHUB_ENV" 'mv "$td/token" "$td/step/token";' 'mv "$td/token" "$td/step/token"; echo "AWS_WEB_IDENTITY_TOKEN_FILE=$td/step/token" >> "$GITHUB_ENV";'
-hm kclean  "AC2 the token directory not removed after Witness returns" $'rm -rf "$td"\n[ ! -e' '[ ! -e'
+hm kclean  "AC2 the key directory not removed after Witness returns" $'rm -rf "$kd"\n[ ! -e' '[ ! -e'
 hm fexec   "AC2 witness exec'd (the cleanup after it would never run)" 'witness run --step' 'exec witness run --step'
 hm fignore "AC2 a failure of the witnessed command is ignored" '|| rc=$?' '|| true'
-hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
+hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" ' ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
-    '"witness-${step#snapshot-}/$step-collection.json"' \
-       '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
+    '"witness-${step#snapshot-}/$step-collection.local.json"' \
+       '"witness-${step#snapshot-}/${step#snapshot-}-collection.local.json"'
 hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-verify|' \
     'in snapshot-evil|release-verify|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
@@ -819,7 +807,7 @@ lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environ
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
 lm lnounset "WIT1 the token variables not unset" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN\n' ''
-lm ltimeout "WIT1 no time limit on the build" '-- timeout -k 20 540 bash' '-- bash'
+lm ltimeout "WIT1 a time limit on the build (the local helper has had no timeout wrapper since handoff 0713)" '-- bash "$@"' '-- timeout -k 20 540 bash "$@"'
 lm lsnapdir "WIT1 a snapshot record in its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 { cat "$work/witnessed-local.sh"; echo "witness run --step x -- true"; } > "$work/l_second.sh"
 expect caught "WIT1 a second witness invocation in the local helper" "local helper" localhelper "$work/l_second.sh"
@@ -2652,7 +2640,7 @@ for f in sys.argv[1:]:
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 GUARDTXT
 out=$(python3 "$work/tmpguard.py" --selftest 2>&1) && ok "no fixed /tmp path: the guard catches redirections, file commands and open() on /tmp and leaves fixture text alone" || bad "no fixed /tmp path: the guard itself is wrong: $out"
-out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/release-patch-wiring-test.sh bin/install-scanner-test.sh bin/patch-decide-test.sh 2>&1) && ok "no fixed /tmp path: no chain suite reads or writes a literal /tmp path (every file lives in its own mktemp -d)" || bad "no fixed /tmp path: $out"
+out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/install-scanner-test.sh bin/patch-decide-test.sh 2>&1) && ok "no fixed /tmp path: no chain suite reads or writes a literal /tmp path (every file lives in its own mktemp -d)" || bad "no fixed /tmp path: $out"
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
@@ -2717,7 +2705,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
           path: /tmp/oci
@@ -3364,7 +3352,7 @@ cat > "$work/vi-named.py" <<'PY'
 import glob, hashlib, os, re, yaml
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
-        "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
+        "bin/check-file-allowlist.sh", ".github/policy/ci-suites.json"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); the CI suite list names its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
 PINWIRE = (".github", "tests", "pin-wiring-test.sh")      # the pin-wiring judge is recognised by the SHAPE of its path, .github/<one directory>/tests/pin-wiring-test.sh, so this file never names the auditor directory (REQ-AUD-18 AC1: nothing outside it refers to it); the judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521/#540) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
 PIN_LINES = frozenset((
@@ -3472,9 +3460,8 @@ exec(open(os.path.join(work, "vi-named.py")).read())
 allowed = BASE
 stray_files = stray(root)
 assert not stray_files, "named outside Build's and Rebuild's assemble scripts: %s" % stray_files       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
-ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
-WRAPPED = "run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-index-test.sh bin/vex-index-test.sh </dev/null"      # REQ-CI-005: the test runs as a counting step, exactly this line
-assert all(row.startswith("run: bash bin/vex-index-test.sh") or row == WRAPPED or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
+ci = [row.strip() for row in open(root + "/.github/policy/ci-suites.json") if "vex-index" in row]
+assert ci == ['{"suite": "vex-index-test.sh"},'], ci      # CI runs the tool's TEST and nothing else of it (one entry of the suite list)
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 assert runners(rows) == sorted(p for p in allowed if p.startswith("bin/build-stage-")), runners(rows)      # a row may carry no runs list (bin/loopback-get.sh): it runs nothing
 PY
@@ -3556,7 +3543,7 @@ vim r2 "REQ-REL-010-AC5 the daily rescan naming vex-index in a line that is not 
 vim r3 "REQ-REL-010-AC4 a reviewed rescan line with the layout changed to Build's images is refused" $RS '' "$RSHEAD"$'          python3 bin/vex-index.py layout --layout /tmp/oci/production --vex /tmp/attach/selfcheck-ours.json\n'
 vim r4 "REQ-REL-010-AC4 a reviewed rescan line in another workflow file is refused" .github/workflows/other.yml '' "$RSHEAD$R2"
 vim r8 "REQ-REL-010-AC5 a reviewed rescan line twice (once more than reviewed) is refused (cache#561 ruling: each admitted line exactly once)" $RS '' "$RSHEAD$R2$R2"
-vim r9 "REQ-REL-010-AC5 a reviewed rescan line inside a job other than vex-attach is refused (R2 probe: the line steered at a published copy in scout-root-cause)" $RS '' "$RSHEAD$R2"$'  scout-root-cause:\n    steps:\n      - run: |\n'"$R1"
+vim r9 "REQ-REL-010-AC5 a reviewed rescan line inside a job other than vex-attach is refused (R2 probe: the line steered at a published copy in panel-scout)" $RS '' "$RSHEAD$R2"$'  panel-scout:\n    steps:\n      - run: |\n'"$R1"
 PT=bin/panel-wiring-test.sh
 R3=$(printf '%s\n' '        if "vex-index" in att[0].get("run", ""):'); R3="$R3"$'\n'
 vimok r5 "REQ-REL-010-AC4 the panel wiring test's reviewed lines that name the tool (its checks and one mutation fixture) are admitted in bin/panel-wiring-test.sh only" $PT "$R3"
@@ -3598,7 +3585,7 @@ expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode 
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
-label="AC1 the real workflow directory: no file added beyond stage-sign.yml, customer-words-edited.yml and evidence-letter.yml, stage-image.yml"
+label="AC1 the real workflow directory: no file added beyond stage-sign.yml and customer-words-edited.yml, stage-image.yml"
 expect ok "$label and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the four chain stage files pin download-artifact to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
@@ -3799,7 +3786,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1319
+EXPECT=1312
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

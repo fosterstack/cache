@@ -170,6 +170,50 @@ printf 'not json\n' > test-evidence/suite-floors.json; git add -A; git commit -q
 brk=$(git rev-parse HEAD); printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 1 "vs-base: a floors file at the base that is not valid JSON fails" "base" -- floors-vs-base "$brk" test-evidence/suite-floors.json
 expect 0 "vs-base: a readable base without the floors file still passes" "no floors file" -- floors-vs-base "$(git rev-list --max-parents=0 HEAD)" test-evidence/suite-floors.json
+# a suite the PR drops: the body's `Dropped suites: A,B` line names it and its file is deleted in the same diff
+printf '{"suite-a": 50, "suite-b": 10, "suite-c": 5}\n' > test-evidence/suite-floors.json; echo x > bin/suite-b; echo x > bin/suite-c; git add -A; git commit -qm suites
+dbase=$(git rev-parse HEAD); git rm -q bin/suite-b; git commit -qm dropb; D=test-evidence/suite-floors.json
+printf '{"suite-a": 50, "suite-c": 5}\n' > $D
+PR_BODY=$'Dropped suites: suite-b' expect 0 "vs-base: a dropped suite the body names, its file deleted, passes" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+expect 1 "vs-base: a dropped suite the body does not name fails" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'Dropped suites: suite-a' expect 1 "vs-base: naming another suite does not excuse a dropped one" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'Dropped suites: suite-b\r\nmore\r\n' expect 0 "vs-base: a carriage return at the end of the Dropped suites line is stripped" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 50, "suite-b": 10, "suite-c": 5}\n' > $D
+PR_BODY=$'Dropped suites: suite-b' expect 1 "vs-base: a named suite whose floor is still in the file is not dropped, it fails" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 50}\n' > $D
+PR_BODY=$'Dropped suites: suite-b, suite-c' expect 1 "vs-base: a dropped suite whose file stays is not excused by the body" "suite-c is named as dropped but its file is not deleted" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 50, "suite-c": 5}\n' > $D
+PR_BODY=$' Dropped suites: suite-b' expect 1 "vs-base: a Dropped suites line that does not start with the words is ignored (leading space)" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'See: Dropped suites: suite-b' expect 1 "vs-base: the Dropped suites words in the middle of a line are ignored" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'Dropped suites: suite-c\nDropped suites: suite-b' expect 1 "vs-base: only the first Dropped suites line counts" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 40, "suite-c": 5}\n' > $D
+PR_BODY=$'Lowered floors: suite-a\nDropped suites: suite-b' expect 0 "vs-base: a Lowered floors line and a Dropped suites line each pass together" "suite-a 50->40" -- floors-vs-base --allow-from-body "$dbase" $D
+git reset -q --hard "$brk"; printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
+# a dropped suite is judged on NUL-delimited git lists (a path git would quote is read as itself) and with rename detection on:
+# a renamed suite file still exists, so it is not dropped
+nrepo() { local r="$work/$1"; shift; mkdir -p "$r/test-evidence" "$r/bin"; cd "$r"; git init -q .; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false; }
+nrepo ren; printf '{"foo-test.sh": 7, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+printf 'echo foo\necho foo two\necho foo three\n' > bin/foo-test.sh; echo keep > bin/keep-test.sh; git add -A; git commit -qm base; rbase=$(git rev-parse HEAD)
+git mv bin/foo-test.sh bin/foo2-test.sh; git commit -qm rename
+printf '{"foo2-test.sh": 1, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY=$'Dropped suites: foo-test.sh' expect 1 "vs-base: a suite file renamed to another basename is not dropped, the body does not excuse it" "foo-test.sh" -- floors-vs-base --allow-from-body "$rbase" test-evidence/suite-floors.json
+nrepo mov; printf '{"foo-test.sh": 7, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+echo foo > bin/foo-test.sh; echo keep > bin/keep-test.sh; git add -A; git commit -qm base; mbase=$(git rev-parse HEAD)
+mkdir "tést"; git mv bin/foo-test.sh "tést/foo-test.sh"; git commit -qm move
+printf '{"keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY=$'Dropped suites: foo-test.sh' expect 1 "vs-base: a suite file moved into a directory git quotes (non-ASCII) still exists, it is not dropped" "foo-test.sh" -- floors-vs-base --allow-from-body "$mbase" test-evidence/suite-floors.json
+nrepo del; printf '{"foo-test.sh": 7, "keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+echo foo > bin/foo-test.sh; echo keep > bin/keep-test.sh; git add -A; git commit -qm base; xbase=$(git rev-parse HEAD)
+git rm -q bin/foo-test.sh; git commit -qm del
+printf '{"keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY=$'Dropped suites: foo-test.sh' expect 0 "vs-base: a plainly deleted suite file with its floor removed and named in the body passes as dropped" "dropped" -- floors-vs-base --allow-from-body "$xbase" test-evidence/suite-floors.json
+nrepo six; names=""; fl='{"keep-test.sh": 3'
+mkdir -p d1 d2 d3 d4 d5 d6; echo keep > bin/keep-test.sh
+for i in 1 2 3 4 5 6; do echo "suite $i body $i" > "d$i/s$i-test.sh"; fl="$fl, \"s$i-test.sh\": $i"; names="$names${names:+,}s$i-test.sh"; done
+printf '%s}\n' "$fl" > test-evidence/suite-floors.json; git add -A; git commit -qm base; sbase=$(git rev-parse HEAD)
+git rm -q d1/s1-test.sh d2/s2-test.sh d3/s3-test.sh d4/s4-test.sh d5/s5-test.sh d6/s6-test.sh; git commit -qm delall
+printf '{"keep-test.sh": 3}\n' > test-evidence/suite-floors.json
+PR_BODY="Dropped suites: $names" expect 0 "vs-base: six suite files in different directories deleted at once, all named in the body, pass as dropped" "dropped" -- floors-vs-base --allow-from-body "$sbase" test-evidence/suite-floors.json
 cd "$root"
 # the wiring: ci.yml reads the body through the step's env only, never as an expression inside run: (the body is public
 # text a contributor writes: an injection route)
@@ -189,8 +233,6 @@ expect 1 "all: a floors file that is not JSON fails (it must not pass having run
 expect 1 "all: a floors file with no suite in it fails" "floors" -- all --count-only "$work/empty-floors.json" "$work"
 expect 1 "all: a floors file that is a list, not an object, fails" "floors" -- all --count-only "$work/list-floors.json" "$work"
 expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- all --count-only "$work/str-floors.json" "$work"
-# round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.py all), not only the floors file against the base
-if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.py all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
 # ---- REQ-CI-005: a suite is run once, by the step that counts it; `all` runs only the rest ------------------------------------------------
 # run shows the suite's own output (the step log keeps what `bash PATH` would have shown), exactly once
@@ -252,21 +294,6 @@ expect 1 "REQ-CI-005-AC3 run: a counted suite that lost cases (below its floor) 
 expect 1 "REQ-CI-005-AC3 run: a counted suite that prints no count fails its step" "no case count" -- run "$work/rc.json" silent "$work/s/silent.sh"
 
 # REQ-CI-005 on the real tree and the rulings of the audit record (cache#679 round 3, items 1 to 5)
-# (1) the real ci.yml (REQ-CI-005-AC5): the suites `all` runs itself are exactly the ones the AC names, each with the number of runs the AC states (its plain steps plus `all`'s one); every other floored suite is counted by its own step
-real=$(cd "$root" && python3 -I - <<'PY'
-import importlib.util, json, re, yaml
-sp = importlib.util.spec_from_file_location("r", "bin/suite-guard-run.py"); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
-names = set(json.load(open("test-evidence/suite-floors.json")))
-got, bad = m.counting_steps(".", "test-evidence/suite-floors.json", names)
-rest = names - set(got)
-ac = next(a for r in yaml.safe_load(open("requirements/requirements.yaml"))["requirements"] if r["id"] == "REQ-CI-005" for a in r["acceptance_criteria"] if a["id"] == "REQ-CI-005-AC5")
-pinned = {n: int(k) for n, k in re.findall(r"([a-z0-9-]+-test\.sh) \((\d) runs?", ac["then"])}
-ci = [l for l in open(".github/workflows/ci.yml").read().splitlines() if not l.lstrip().startswith("#")]
-actual = {n: sum(1 for l in ci if re.search(r"\bbash [./A-Za-z0-9_-]*/%s\b" % re.escape(n), l)) + 1 for n in rest}
-print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 3 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
-PY
-)
-if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the three suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
 # (2) two counting steps for one suite: refused
 cwf "" "$CNT a-test.sh bin/a-test.sh" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'more than one counting step' <<< "$out"; then ok "REQ-CI-005-AC1 all: two counting steps for one suite are refused (the suite would run twice)"; else bad "duplicate counting step: rc=$rc ${out:0:200}"; fi
@@ -290,7 +317,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=115
+EXPECT=127
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

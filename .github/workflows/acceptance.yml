@@ -1,24 +1,13 @@
 name: Acceptance
 
-# The client acceptance suites (workflow consolidation 4 of 4): acceptance-gradle.yml and
-# acceptance-maven.yml merged, unchanged. Each job keeps its required check name (acceptance-gradle; acceptance-maven
-# (1.2.0) and (1.2.3) from its matrix), its permissions and its results output. Push to main and pull requests run
-# them from source. The release chain does not call this file (REQ-CHAIN-006-AC10): Check runs the suites through
-# bin/check-acceptance.sh, and this file starts no container image (REQ-SUP-001-AC29).
+# The client acceptance suites: Gradle, then Maven once per extension version (1.2.0, 1.2.3), in the one required job `acceptance`.
+# Push to main and pull requests run them from source. The release chain does not call this file (REQ-CHAIN-006-AC10): Check runs
+# the suites through bin/check-acceptance.sh, and this file starts no container image (REQ-SUP-001-AC29).
 
 on:
   push:
     branches: [main]
   pull_request:
-  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
-  workflow_call:
-    outputs:
-      gradle-results:
-        description: 'JSON list of the AC IDs the Gradle suite asserted, with results'
-        value: ${{ jobs.acceptance-gradle.outputs.results }}
-      maven-results:
-        description: 'JSON list of the AC IDs the Maven suite asserted, with results'
-        value: ${{ jobs.acceptance-maven.outputs.results }}
 
 # A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
 # its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels
@@ -31,13 +20,11 @@ permissions:
   contents: read
 
 jobs:
-  acceptance-gradle:
-    name: acceptance-gradle
+  acceptance:
+    name: acceptance
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      results: ${{ steps.results.outputs.results }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -50,6 +37,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          cache: maven
 
       - name: build fscache from source
         run: CGO_ENABLED=0 go build -o /tmp/fscache-bench ./cmd/fscache
@@ -84,94 +72,45 @@ jobs:
           done
           echo "capped server never became healthy" >&2; exit 1
 
-      - name: the Gradle capped-server suite and its results (bin/acceptance-gradle-capped.sh, REQ-EVICT-002-AC3)
-        id: results
+      - name: the Gradle capped-server suite (bin/acceptance-gradle-capped.sh, REQ-EVICT-002-AC3)
         run: bash bin/acceptance-gradle-capped.sh
 
-      - name: stop the capped server
-        if: always()
-        run: |
-          kill "$(cat /tmp/fscache-capped.pid)" 2>/dev/null || true
-          docker rm -f fscache-capped 2>/dev/null || true
-
-      - name: stop fscache
-        if: always()
-        run: kill "$(cat /tmp/fscache-bench.pid)" 2>/dev/null || true
-
-  acceptance-maven:
-    name: acceptance-maven
-    env:   # the scenario counts (top-level in acceptance-maven.yml; moved onto this job unchanged)
-      COLD_LOOKUPS: "2"   # GET 404s on an empty cache
-      COLD_UPLOADS: "5"   # buildinfo + artifacts across both modules
-      MODULES: "2"
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      results: ${{ steps.results.outputs.results }}
-    strategy:
-      fail-fast: false
-      matrix:
-        extension-version: ["1.2.0", "1.2.3"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-          check-latest: true
-
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
-
-      - name: pin the matrix extension version
-        run: |
-          sed -i "s|<version>[0-9.]*</version>|<version>${{ matrix.extension-version }}</version>|" \
-            bench/maven-sample/.mvn/extensions.xml
-          grep version bench/maven-sample/.mvn/extensions.xml
-
-      - name: build fscache and start it WITH Basic Auth
-        run: |
-          CGO_ENABLED=0 go build -o /tmp/fscache-mvn ./cmd/fscache
-          FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
-            FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
-            /tmp/fscache-mvn & echo $! > /tmp/fscache-mvn.pid
-          for _ in $(seq 1 20); do
-            curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
-          done
-          echo "server never became healthy" >&2; exit 1
-
-      - name: the Maven suite (bin/acceptance-maven.sh, REQ-MAVEN-001-AC1, AC2)
-        run: bash bin/acceptance-maven.sh
-
-      # ── REQ-EVICT-002-AC4 ────────────────────────────────────────────
-      # Same shape as the Gradle AC3 scenario: one module output larger
-      # than the cap; the build completes twice, the oversized archive is
-      # 413'd with the documented header, the small module still caches.
-      - name: start a capped server (source mode)
+      # Each extension version starts from a clean state (as its own runner once did), with the server WITH Basic Auth on 18098.
+      # REQ-EVICT-002-AC4: the capped server (on 18099) is the same shape as the Gradle AC3 scenario: one module output larger
+      # than the cap; the build completes twice, the oversized archive is 413'd with the documented header, the small module still caches.
+      - name: the Maven suites, once per extension version (bin/acceptance-maven.sh, REQ-MAVEN-001-AC1, AC2; bin/acceptance-maven-capped.sh, REQ-EVICT-002-AC4)
+        env:
+          COLD_LOOKUPS: "2"   # GET 404s on an empty cache
+          COLD_UPLOADS: "5"   # buildinfo + artifacts across both modules
+          MODULES: "2"
         run: |
           set -euo pipefail
-          FSCACHE_ADDR=:18099 FSCACHE_DATA_DIR=/tmp/fscache-mvn-capped \
-            FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
-            FSCACHE_MAX_BYTES=262144 /tmp/fscache-mvn & echo $! > /tmp/fscache-mvn-capped.pid
-          for _ in $(seq 1 20); do
-            curl -sf http://localhost:18099/healthz && exit 0; sleep 0.5
+          for v in 1.2.0 1.2.3; do
+            rm -rf /tmp/fscache-mvn-data /tmp/fscache-mvn-capped /tmp/mvn-* /tmp/m2-* /tmp/m-cold* /tmp/m-warm* bench/maven-sample/target bench/maven-sample/lib/target bench/maven-sample/app/target
+            sed -i "s|<version>[0-9.]*</version>|<version>$v</version>|" bench/maven-sample/.mvn/extensions.xml
+            grep version bench/maven-sample/.mvn/extensions.xml
+            FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
+              FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
+              /tmp/fscache-bench & echo $! > /tmp/fscache-mvn.pid
+            (for _ in $(seq 1 20); do
+              curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
+            done
+            echo "server on 18098 never became healthy" >&2; exit 1)
+            bash bin/acceptance-maven.sh
+            FSCACHE_ADDR=:18099 FSCACHE_DATA_DIR=/tmp/fscache-mvn-capped \
+              FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
+              FSCACHE_MAX_BYTES=262144 /tmp/fscache-bench & echo $! > /tmp/fscache-mvn-capped.pid
+            (for _ in $(seq 1 20); do
+              curl -sf http://localhost:18099/healthz && exit 0; sleep 0.5
+            done
+            echo "server on 18099 never became healthy" >&2; exit 1)
+            bash bin/acceptance-maven-capped.sh
+            kill "$(cat /tmp/fscache-mvn.pid)" "$(cat /tmp/fscache-mvn-capped.pid)"
           done
-          echo "capped server never became healthy" >&2; exit 1
 
-      - name: the Maven capped-server suite and its results (bin/acceptance-maven-capped.sh, REQ-EVICT-002-AC4)
-        id: results
-        run: bash bin/acceptance-maven-capped.sh
-
-      - name: stop the capped server
+      - name: stop the servers
         if: always()
         run: |
-          kill "$(cat /tmp/fscache-mvn-capped.pid)" 2>/dev/null || true
-          docker rm -f fscache-mvn-capped 2>/dev/null || true
-
-      - name: stop fscache
-        if: always()
-        run: kill "$(cat /tmp/fscache-mvn.pid)" 2>/dev/null || true
+          for f in fscache-capped fscache-bench fscache-mvn fscache-mvn-capped; do
+            kill "$(cat "/tmp/$f.pid")" 2>/dev/null || true
+          done

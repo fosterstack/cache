@@ -263,12 +263,14 @@ REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "require
 def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))
 t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
 t19 = ac("REQ-CHAIN-007", 19)["then"]
-check("the command wrapped in timeout -k 20 540 (a bound on a hung command, with a kill-after of 20 seconds)" in t4 and "wrapped in timeout 540," not in t4,
-      "text: REQ-CHAIN-004-AC2 says timeout -k 20 540 (E item A)")
+# the audit removed the 540 s cap: the command runs plain, and no timeout wrapper wording may be left in these spots
+check("and the command run as plain `bash SCRIPT ARGS` (GitHub's default job time limit bounds a hung command)" in t4 and "timeout -k 20 540" not in t4 and "timeout 540" not in t4,
+      "text: REQ-CHAIN-004-AC2 says the command runs as plain bash SCRIPT ARGS, no timeout -k 20 540 (E item A)")
 n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
-check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in n4 and "with timeout -k 20 540 inside it" in n7 and "with timeout 540 inside it" not in n7
+check("Every command run under Witness is plain `bash SCRIPT ARGS`; GitHub's default job time limit bounds a hung command" in n4 and "timeout -k 20 540" not in n4 and "timeout 540" not in n4
+      and "with the command run as plain `bash SCRIPT ARGS` inside it" in n7 and "timeout -k 20 540" not in n7 and "timeout 540" not in n7
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
-      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps (E item B)")
+      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say plain bash SCRIPT ARGS, no timeout 540, and six Release steps (E item B)")
 t1 = ac("REQ-CHAIN-007", 1)["then"]
 check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
       "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name (accepted Oct 13)")
@@ -334,8 +336,23 @@ check("Build/Rebuild comparison" not in CS["bin/release-apks.sh"]["reason"] and 
 check("--rebuild-dir" not in open(os.path.join(BIN, "melange-apko-lib.sh")).read(), "text: melange-apko-lib.sh no longer shows release-sign-apks.sh with --rebuild-dir")
 check("TODO (PR 2" not in open(os.path.join(BIN, "release-verify.sh")).read(), "text: release-verify.sh has no TODO for the rc tag grammar it already accepts")
 check("docs/apk-signing-key.md" not in open(os.path.join(BIN, "..", "build", "keys", "release.rsa.pub")).read(), "text: release.rsa.pub does not point at a document that does not exist")
+# ---- the policy file of Sign's release step (G1, G2): release-signatures.sh makes policy.json itself, because a stage file's run lines cannot read GITHUB_REF_NAME ----------
+POLICY_MAKE = ('python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json '
+               '--tag "$GITHUB_REF_NAME" --out policy.json')
+SIGS = [l.strip() for l in open(os.path.join(BIN, "release-signatures.sh")).read().split("\n") if l.strip() and not l.strip().startswith("#")]
+def line_of(part): return next((i for i, l in enumerate(SIGS) if part in l), None)
+check(SIGS.count(POLICY_MAKE) == 1 and sum("policy make" in l for l in SIGS) == 1,
+      "G1 release-signatures.sh runs exactly once, as one whole line, the policy make command of release-verify.sh (no `|| true`, no other spelling)")
+at_tag, at_key, at_make, at_sign = line_of("[[ $tag =~"), line_of("chain-verify.py key-ref-check"), line_of("policy make"), line_of("sign_file ")
+check(None not in (at_tag, at_key, at_make, at_sign) and at_tag < at_key < at_make < at_sign,
+      "G1 the policy make line comes after the tag check and the key-reference check and before anything is signed", str((at_tag, at_key, at_make, at_sign)))
+row = CS["bin/release-signatures.sh"]
+check(row["tools"] == ["bash", "git", "jq", "python3", "sha256sum", "trap"] and row["runs"] == ["bin/chain-verify.py", "bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py", "bin/apk-tool.py", "bin/with-aws-token.sh"],
+      "G2 the chain-scripts.json row of release-signatures.sh keeps its tools and runs (chain-verify.py is already in runs): only the sha256 changes", "%s %s" % (row["tools"], row["runs"]))
+check(row["sha256"] == hashlib.sha256(open(os.path.join(BIN, "release-signatures.sh"), "rb").read()).hexdigest(),
+      "G2 the sha256 of that row is the script's own, after the policy make line was added")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "124"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "128"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scanner-panel rule 12 (owner RATIFIED Oct 2; REQ-SCAN-012; read-back approved, advisor 0098): the live test of our VEX
 # files and of docs/using-our-vex.md against the real services. Runs only in the `live-test` environment, one run at a
-# time (concurrency group vex-live-test), from the release-candidate job of release.yml and the main-push job of ci.yml,
+# time (concurrency group vex-live-test), from the release-candidate and post-publish jobs of release.yml,
 # as the federated live-test identities.
 #
 #   bin/vex-live-run.sh run       sweep the test resources; every guide command block exactly as written (settings
