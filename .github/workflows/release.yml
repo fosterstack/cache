@@ -856,18 +856,18 @@ jobs:
         with:
           name: apk-ubuntu-24.04-arm
           path: apks/ubuntu-24.04-arm
-      - name: release-verify under Witness
-        run: bash bin/witnessed.sh release-verify bin/release-verify.sh
-      - name: release-publish under Witness
+      - name: release-verify under Witness (a throwaway key, no identity token)
+        run: bash bin/witnessed-local.sh release-verify bin/release-verify.sh
+      - name: release-publish under Witness (a throwaway key, no identity token)
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
-        run: bash bin/witnessed.sh release-publish bin/release-publish.sh
+        run: bash bin/witnessed-local.sh release-publish bin/release-publish.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.local.json
       - name: release-publish record holds no token (REQ-CHAIN-007-AC12)
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.json
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.local.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-release
@@ -878,7 +878,7 @@ jobs:
   # Sign's fourth job (ruling 7 of cache#921): after release publishes, it alone holds the KMS role and the registry write it needs to attach the signatures and attestations (bin/release-sign.sh) and to sign the apks
   # (bin/release-apks.sh). Release holds neither the role nor an identity token. Its if carries the release-candidate condition: a candidate signs nothing.
   sign-release:
-    needs: release
+    needs: [build-assemble, release]
     if: ${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && !contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     environment: sign
@@ -962,6 +962,22 @@ jobs:
         with:
           name: apk-ubuntu-24.04-arm
           path: apks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: witness-release
+          path: rec-release
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ needs.build-assemble.outputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+      - name: check the release job's records, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage release --template .github/policy/release-policy.template.json --digests digests.json --out staged --record-dir rec-release/witness-release-verify --record-dir rec-release/witness-release-publish
+      - name: sign the staged records of the release job and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-release
+          path: signed
       - name: release-apks under Witness
         run: bash bin/witnessed.sh release-apks bin/release-apks.sh
       - name: release-sign under Witness
