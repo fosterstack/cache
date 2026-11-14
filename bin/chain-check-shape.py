@@ -1,22 +1,17 @@
 """Test infrastructure (not product code) for PR 3 "Check", shared by bin/chain-check-wiring-test.sh. Judges for the shape of the Check
-stage file, the order of bin/check-stage.sh, the release.yml job graph, the plainness of the check scripts and the removal of the old
+stage file, the order of bin/check-phase.sh, the release.yml job graph, the plainness of the check scripts and the removal of the old
 acceptance stages. Each judge prints `ok` or the list of faults and exits 1 on a fault. The test first proves every judge on a
 known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then applies it to the real repository, which is
 RED until PR 3 is implemented. Finite grammars and allowlists only; no shell analysis (final PR 1 design, advisor decision b).
 
-  stage FILE            REQ-CHAIN-006-AC1: stage-verify.yml is an ALLOWLIST. on: workflow_call only; exactly ONE job `check`; runs-on
-                        ubuntu-24.04; permissions exactly contents read (no identity token: the records are local and Sign signs them; REQ-REL-011-AC1); no container, services, env, defaults, secrets,
-                        strategy, needs, shell, working-directory, continue-on-error; steps EXACTLY, in order:
-                          1. actions/checkout (full commit digest, persist-credentials: false, nothing else)
-                          2. run: bash bin/install-scanner.sh witness, then one `bash bin/install-scanner.sh S` per listed scanner (grype, osv-scanner)
-                          3. (no kind step: REQ-CHAIN-006-AC14, amended Oct 24: kind and kubectl come from the runner image and
-                             bin/acceptance-k8s.sh stops at its first use of either if it is missing)
-                          4. digest-pinned actions/download-artifact steps, names from DOWN, explicit path outside bin/ and .github/, EXACTLY ONE
-                             of them `images` (path images/; the candidates arrive as OCI tarballs, advisor ruling Q4)
-                          5. THREE run steps, one line each, the only form `bash bin/witnessed-local.sh STEP TARGET` (TARGET = bin/check-phase-STEP.sh) with STEP
-                             from the closed list scanners, acceptance, runtime, in that order (REQ-CHAIN-006-AC11: the stage never calls
-                             `witness` or `timeout` itself; the helper is the one place for both)
-                          6. only digest-pinned upload-artifact steps with names from UP (witness-check carries the three record directories)
+  stage FILE            REQ-CHAIN-006-AC1: the Check jobs of release.yml (FILE) are an ALLOWLIST: check-govulncheck (credential-free, builds govulncheck) and ONE job `check`: needs exactly check-govulncheck,
+                        build-assemble and sign; runs-on ${{ matrix.runner }} with a matrix over exactly ubuntu-24.04 and ubuntu-24.04-arm; permissions exactly contents read (no identity token, no environment, no
+                        job output); no per-chip job; steps EXACTLY, in order: checkout, the checksum-pinned installs, the govulncheck hand-over, the digest-pinned downloads (images exactly once), THREE
+                        `bash bin/witnessed-local.sh STEP bin/check-phase.sh STEP` steps (STEP scanners, acceptance, runtime), the records-list step, and the uploads witness-check-R, check-results-R and
+                        check-records-R (R the matrix runner)
+  signcheck FILE        REQ-CHAIN-006-AC1, REQ-REL-011-AC1: the sign-check job of release.yml: environment sign, id-token for the KMS role, the downloads and the one sign-records call for both chips,
+                        one signing step per chip, the uploads signed-witness-check-R
+  oldcheck ROOT         the per-chip and per-phase Check files and names (check-stage.sh, check-phase-STEP.sh, stage-verify.yml, check-arm64, records-arm64) are gone
   installs FILE JSON    REQ-CHAIN-006-AC4 (round 1 F2): the check job runs `bash bin/install-scanner.sh S` for every scanner S in the scanners list JSON
                         (.github/policy/scanners.json) and for none it does not list.
   helper FILE           REQ-CHAIN-006-AC9, AC11 (the RULE 68 SEAM): bin/witnessed.sh, the one helper every stage calls, is EXACTLY PR 2's canonical
@@ -26,14 +21,13 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         STEPS takes the same three names and this copy is deleted in favour of it.
   cluster FILE          REQ-CHAIN-006-AC14: bin/acceptance-k8s.sh creates its cluster with exactly CLUSTER (the node image by digest) and no action.
   suites FILE           REQ-CHAIN-006-AC5: acceptance.yml's job runs the shared suite scripts (one copy of each suite).
-  phase FILE STEP       REQ-CHAIN-006-AC1/AC3: bin/check-phase-STEP.sh is the one line `bash bin/check-stage.sh STEP`.
-  script FILE           REQ-CHAIN-006-AC3: bin/check-stage.sh is `set -euo pipefail`, the two verify commands, then ONE fixed `case "$1"` with
-                        exactly the phases of PHASES (each with exactly its commands, in order) and nothing else.
+  script FILE           REQ-CHAIN-006-AC1, AC3: bin/check-phase.sh is `set -euo pipefail`, the chip case (uname -m), the two verify commands, then ONE fixed `case "$1"` with
+                        exactly the phases of PHASES (each with exactly its commands, in order; govulncheck only when the chip is amd64, check-artifacts told --arch "$arch") and nothing else.
   records JSON          REQ-CHAIN-006-AC13 (rule 66): .github/policy/chain-records.json has no row for the old acceptance record and has a row
                         for the Witness collection naming Check as a producer and `release` as consumer. [P: the table's shape is PR 1's]
-  graph FILE            REQ-CHAIN-006-AC2: release.yml job graph (check beside rebuild).
+  graph FILE            REQ-CHAIN-006-AC2: release.yml job graph (check beside rebuild; sign-check after check; the release job waits for all four signing jobs).
   plain FILE...         REQ-CHAIN-006-AC8: the check scripts know nothing about signing (text scan, comments and quotes included). Applied to
-                        check-scan/fips/acceptance/guide; bin/check-stage.sh is judged by `script` alone (its pinned lines name Build's
+                        check-scan/fips/acceptance/guide; bin/check-phase.sh is judged by `script` alone (its pinned lines name Build's
                         witness-build/ directory, advisor ruling Q3).
   listed JSON ROOT      REQ-CHAIN-006-AC8: each check script is a row of .github/policy/chain-scripts.json with the sha256 the file has.
   removed ROOT          REQ-CHAIN-006-AC10 (rules 61, 65): the Dockerfile, buildx and goreleaser, their Dependabot entry and every reader are gone; the old acceptance stages and the custom authorization verifier are gone and
@@ -45,21 +39,24 @@ import hashlib, json, os, re, shlex, sys, yaml
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 DOWN = {"signed-witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
-UP = {"witness-check": RECORD_DIRS, "check-results": "check-results", "witness-check-arm64": "witness-arm64", "check-results-arm64": "check-results"}   # artifact name -> the path(s) it may carry
+RUNNER = "${{ matrix.runner }}"
+RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]   # the two chips of the one check job (REQ-CHAIN-006-AC1)
+UP = {"witness-check-" + RUNNER: RECORD_DIRS, "check-results-" + RUNNER: "check-results", "check-records-" + RUNNER: "check-records.json"}   # artifact name -> the path(s) it may carry
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
-REC_RUN = {"records": 'r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"',
-           "records-arm64": 'r=$(bash bin/check-records-digests.sh witness-arm64) && echo "records-arm64=$r" >> "$GITHUB_OUTPUT"'}   # the two pinned steps (bin/chain-test-signers.py PINNED_ALLOWED; REQ-REL-011-AC1, cache#606)
-WF_OUTPUTS = {"records": "${{ jobs.check.outputs.records }}", "records-arm64": "${{ jobs.check-arm64.outputs.records-arm64 }}"}
-GV_BUILD = "govulncheck-build"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (no identity token) only installs what it hands over
+REC_LINE = "bash bin/check-records-digests.sh " + RUNNER + " witness-scanners witness-acceptance witness-runtime > check-records.json"   # the runner's list of its three record folders, a file Sign compares (REQ-REL-011-AC1); no job output
+SNAPSHOT_IF = "${{ inputs.mode != 'snapshot' }}"
+CHECK_NEEDS = ["check-govulncheck", "build-assemble", "sign"]
+CHECK_STRATEGY = {"matrix": {"runner": RUNNERS}}
+GV_BUILD = "check-govulncheck"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (no identity token) only installs what it hands over
 GV_BUILD_LINE = "bash bin/install-scanner.sh govulncheck"
 GV_PACK_LINE = "bash bin/pack-govulncheck.sh"   # the one build step; the artifact it uploads is the hand-over (download-artifact fails the step on a digest mismatch; no override is allowed)
 GV_HAND_LINE = "bash bin/unpack-govulncheck.sh"
 GV_OUTPUT = {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}   # the Check job downloads by this id, so an artifact another job uploads under the same name is not the one it gets
-GV_IDS = "${{ needs.govulncheck-build.outputs.artifact-id }}"
+GV_IDS = "${{ needs.check-govulncheck.outputs.artifact-id }}"
 SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scanners of .github/policy/scanners.json `source_scanners`, installed after Go, run by bin/check-govulncheck.py
-PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
+PHASE_LINE = {s: "bash bin/witnessed-local.sh %s bin/check-phase.sh %s" % (s, s) for s in STEPS}   # the one script runs all three phases; the step name is its argument
 STEP_LIST = "release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # the Release helper keeps only Release's six; Check's steps run under the local helper (REQ-REL-011-AC1)
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]   # PR 2's with the two AWS variables of handoff 0713 (SIGSTORE_ID_TOKEN is gone); never github or slsa
 RELEASE_SENSITIVE = ["RELEASE_ROLE_ARN", "RELEASE_TOKEN_FILE"]   # the names release-sign and release-apks receive the role and the token path under (witnessed.sh only; the local helper has none)
@@ -153,22 +150,27 @@ def control_chars(raw):
 
 POLICY = (r'python3 -I -B bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" '
           r'--out policy\.json')   # Q5 (advisor, Oct 10): Check makes the release policy per tag, as PR 2's Rebuild does, before it verifies
-VERIFY = [  # bin/check-stage.sh after `set -euo pipefail` and the policy line: the verify step first (rule 58: Check's previous stage is Build), before any check (every phase re-verifies);
+VERIFY = [  # bin/check-phase.sh after `set -euo pipefail` and the policy line: the verify step first (rule 58: Check's previous stage is Build), before any check (every phase re-verifies);
             # isolated and with no bytecode cache, as PR 1's Sign step runs the verifier (python3 -I -B, PR 1 r5)
     r"python3 -I -B bin/chain-verify\.py stage-start --stage check --previous build --record witness-build/build-collection\.json --digests witness-build/digests\.json --policy policy\.json",
 ]
+CHIP = [  # bin/check-phase.sh after `set -euo pipefail`: the chip comes from uname -m, never from an argument; any other chip stops the script
+    ("lit", 'case "$(uname -m)" in'), ("lit", "x86_64) arch=amd64 ;;"), ("lit", "aarch64) arch=arm64 ;;"),
+    ("lit", '*) echo "unknown chip: $(uname -m)" >&2; exit 2 ;;'), ("lit", "esac")]
 PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed command nears the 9-minute cap (rule 68, amended)
     "scanners": [r"bash bin/check-scan\.sh --scanners \.github/policy/scanners\.json --digests witness-build/digests\.json --images images --archives dist --out check-results",
-                 r"python3 -I -B bin/check-govulncheck\.py --scanners \.github/policy/scanners\.json --out check-results"],
+                 r'if \[ "\$arch" = amd64 \]; then',   # govulncheck reads the source, not the chip: it runs once, on the amd64 chip
+                 r"python3 -I -B bin/check-govulncheck\.py --scanners \.github/policy/scanners\.json --out check-results",
+                 r"fi"],
     "acceptance": [r"bash bin/check-acceptance\.sh gradle --digests witness-build/digests\.json --images images --out check-results",
                    r"bash bin/check-acceptance\.sh maven --digests witness-build/digests\.json --images images --out check-results"],
     "runtime": [r"bash bin/check-acceptance\.sh egress --digests witness-build/digests\.json --images images --out check-results",
                 r"bash bin/check-acceptance\.sh k8s --digests witness-build/digests\.json --images images --out check-results",
                 r"bash bin/check-fips\.sh --digests witness-build/digests\.json --images images --out check-results",
-                r"bash bin/check-artifacts\.sh --digests witness-build/digests\.json --images images --archives dist --out check-results",
+                r'bash bin/check-artifacts\.sh --arch "\$arch" --digests witness-build/digests\.json --images images --archives dist --out check-results',
                 r"bash bin/check-guide\.sh --guide docs/verify-release\.md --digests witness-build/digests\.json --images images --out check-results"],
 }
-SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-phase-arm64.sh", "bin/check-scan.sh", "bin/check-govulncheck.py", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
+SCRIPTS = ["bin/check-phase.sh", "bin/check-scan.sh", "bin/check-govulncheck.py", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
            "bin/acceptance-gradle.sh", "bin/acceptance-gradle-capped.sh", "bin/acceptance-maven.sh", "bin/acceptance-maven-capped.sh",
            "bin/acceptance-egress.sh", "bin/acceptance-k8s.sh", "bin/acceptance-serve.sh"]
 # REQ-CHAIN-006-AC14: the node image the k8s suite creates its cluster with, by digest
@@ -188,10 +190,7 @@ def load(path):
     return yaml.load(open(path), Loader=yaml.BaseLoader)
 
 
-ARM_STEP = "arm64"
-ARM_TARGET = "bin/check-phase-arm64.sh"
-ARM_LINE = "bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"
-ARM_DOWNLOADS = [("signed-witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
+CHECK_DOWNLOADS = [("signed-witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the inputs bin/check-phase.sh verifies
 
 
 def exact_steps(label, steps, want, what):
@@ -202,7 +201,7 @@ def exact_steps(label, steps, want, what):
     if len(steps) != len(want):
         bad.append("%s must have exactly its %d listed steps (%s), found %d" % (label, len(want), what, len(steps)))
     for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
-        extra = {"upid": {"id"}, "rec": {"id"}}.get(kind, set())
+        extra = {"upid": {"id"}}.get(kind, set())
         if not isinstance(s, dict) or set(s) - ({"name", "uses", "with", "run"} | extra):
             bad.append("%s step %d: keys not allowed (an if, env or shell would change what runs): %s" % (label, i, sorted(s) if isinstance(s, dict) else s)); continue
         u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
@@ -212,9 +211,6 @@ def exact_steps(label, steps, want, what):
         elif kind == "run":
             if u or r != arg:
                 bad.append("%s step %d must be exactly `run: %s`, found %r" % (label, i, arg, (r or u)[:80]))
-        elif kind == "rec":
-            if u or r != REC_RUN[arg] or s.get("id") != arg:
-                bad.append("%s step %d must be the pinned step with id %s and the exact run %r, found id %r and %r" % (label, i, arg, REC_RUN[arg], s.get("id"), (r or u)[:140]))
         elif kind == "downid":
             if not u.startswith("actions/download-artifact@") or not PIN.match(u.split(" ")[0]) or w != {"artifact-ids": GV_IDS, "path": arg} or "run" in s:
                 bad.append("%s step %d must be a digest-pinned download-artifact with exactly artifact-ids %s and path %s (no name, pattern, merge-multiple or digest-mismatch)" % (label, i, GV_IDS, arg))
@@ -228,29 +224,6 @@ def exact_steps(label, steps, want, what):
     return bad
 
 
-def arm_job(j):
-    """REQ-CHAIN-006-AC1 (advisor 0385): the one second job, check-arm64: runs-on the literal ubuntu-24.04-arm, permissions exactly contents read
-    only (no identity token), no other key (no if, needs, env, strategy, container), and EXACTLY these steps in this order: a digest-pinned checkout without
-    persisted credentials, the checksum-pinned Witness install, the digest-pinned downloads of witness-build, digests (into witness-build), dist and images, the one
-    witnessed step `bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh`, and the digest-pinned upload of witness-check-arm64 carrying witness-arm64."""
-    bad = []
-    if not isinstance(j, dict):
-        return ["check-arm64 is not a job"]
-    if set(j) != {"runs-on", "permissions", "outputs", "steps"}:
-        bad.append("check-arm64 may hold exactly runs-on, permissions, outputs and steps (no if, needs, env, strategy, container, name): %s" % sorted(j))
-    if j.get("runs-on") != "ubuntu-24.04-arm":
-        bad.append("check-arm64 must run on the literal GitHub-hosted label ubuntu-24.04-arm, got %r" % j.get("runs-on"))
-    if j.get("permissions") != {"contents": "read"}:
-        bad.append("check-arm64 permissions must be exactly contents read (no identity token: its record is made with the local helper and signed by Sign; REQ-REL-011-AC1): %s" % j.get("permissions"))
-    steps = j.get("steps") or []
-    want = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("down", x) for x in ARM_DOWNLOADS] + \
-           [("run", "bash bin/witnessed-local.sh %s %s" % (ARM_STEP, ARM_TARGET)), ("rec", "records-arm64"), ("up", ("witness-check-arm64", "witness-arm64")), ("up", ("check-results-arm64", "check-results"))]
-    bad += exact_steps("check-arm64", steps, want, "checkout, Witness install, five downloads, the arm64 witnessed step, the records output step, the two uploads")
-    if j.get("outputs") != {"records-arm64": "${{ steps.records-arm64.outputs.records-arm64 }}"}:
-        bad.append("check-arm64 must expose exactly the output records-arm64 from its records-arm64 step: %s" % j.get("outputs"))
-    return bad
-
-
 def gv_job(j):
     """REQ-REL-011-AC1: govulncheck-build holds contents read only (no id-token, no secret, no environment, no other key), runs on ubuntu-24.04 and has EXACTLY these steps: a digest-pinned
     checkout without persisted credentials, the checksum-pinned Go install, the one build step (the pinned installer arm) and the digest-pinned upload of the binary as the artifact
@@ -258,8 +231,9 @@ def gv_job(j):
     if not isinstance(j, dict):
         return ["%s is not a job" % GV_BUILD]
     bad = []
-    if set(j) != {"runs-on", "permissions", "outputs", "steps"}:
-        bad.append("%s may hold exactly runs-on, permissions, outputs and steps (no if, needs, env, environment, container): %s" % (GV_BUILD, sorted(j)))
+    if set(j) - {"if"} != {"runs-on", "permissions", "outputs", "steps"}:
+        bad.append("%s may hold exactly runs-on, permissions, outputs and steps (and the snapshot `if`; no needs, env, environment, container): %s" % (GV_BUILD, sorted(j)))
+    bad += snapshot_guard(GV_BUILD, j)
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("%s must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % (GV_BUILD, j.get("runs-on")))
     if j.get("permissions") != {"contents": "read"}:
@@ -271,45 +245,47 @@ def gv_job(j):
     return bad
 
 
+def snapshot_guard(label, j):
+    """The two check jobs may carry an `if`, only the snapshot guard (the snapshot mode builds and checks nothing of a release)."""
+    if "if" in j and j["if"] != SNAPSHOT_IF:
+        return ["%s may carry only the `if` %s, found %r" % (label, SNAPSHOT_IF, j["if"])]
+    return []
+
+
 def stage(path):
+    """REQ-CHAIN-006-AC1: the Check jobs of release.yml, check-govulncheck and the one `check` job with a matrix over the two chips; any other job of the file is not judged here."""
     d, bad = load(path), []
-    on = d.get("on") or {}
-    if not (isinstance(on, dict) and set(on) == {"workflow_call"}):
-        bad.append("on: must be exactly workflow_call: %s" % on)
-    else:
-        wc = on.get("workflow_call") or {}
-        outs = wc.get("outputs") if isinstance(wc, dict) else None
-        if not isinstance(wc, dict) or set(wc) != {"outputs"} or not isinstance(outs, dict) or {k: (v or {}).get("value") if isinstance(v, dict) else None for k, v in outs.items()} != WF_OUTPUTS or any(set(v) - {"description", "value"} for v in outs.values() if isinstance(v, dict)):
-            bad.append("workflow_call must carry exactly the outputs records and records-arm64 with the values %s (and nothing else): %s" % (WF_OUTPUTS, wc))
-    if set(d) - {"name", "on", "permissions", "jobs"}:
-        bad.append("workflow keys not allowed: %s" % sorted(set(d) - {"name", "on", "permissions", "jobs"}))
     jobs = d.get("jobs") or {}
-    if list(jobs) != [GV_BUILD, "check", "check-arm64"]:
-        bad.append("exactly three jobs, govulncheck-build, check and check-arm64, are required (advisor 0385; REQ-REL-011-AC1), found %s" % list(jobs))
+    for n in (GV_BUILD, "check"):
+        if n not in jobs:
+            bad.append("release.yml has no job %s" % n)
+    if bad:
         return bad
+    if [n for n in jobs if n.startswith("check-") and n != GV_BUILD]:
+        bad.append("there is no per-chip check job: the one job `check` has a matrix over both chips (found %s)" % sorted(n for n in jobs if n.startswith("check")))
     bad += gv_job(jobs[GV_BUILD])
-    bad += arm_job(jobs["check-arm64"])
     j = jobs["check"]
-    if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs", "outputs"}:
-        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs", "outputs"}))
-    if j.get("outputs") != {"records": "${{ steps.records.outputs.records }}"}:
-        bad.append("check must expose exactly the output records from its records step: %s" % j.get("outputs"))
-    if j.get("needs") != GV_BUILD:
-        bad.append("check must need exactly %s (the job that builds govulncheck with no credential), got %r" % (GV_BUILD, j.get("needs")))
-    if j.get("runs-on") != "ubuntu-24.04":
-        bad.append("check must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
+    if set(j) - {"needs", "if", "runs-on", "strategy", "permissions", "steps"}:
+        bad.append("job keys not allowed: %s" % sorted(set(j) - {"needs", "if", "runs-on", "strategy", "permissions", "steps"}))
+    bad += snapshot_guard("check", j)
+    if "outputs" in j:
+        bad.append("check exposes no job output: its records travel as the artifact check-records-<runner>")
+    if j.get("needs") != CHECK_NEEDS:
+        bad.append("check must need exactly %s (the job that builds govulncheck with no credential, Build's records, and Sign's signature of them), got %r" % (CHECK_NEEDS, j.get("needs")))
+    if j.get("runs-on") != RUNNER:
+        bad.append("check must run on its matrix runner %s, got %r" % (RUNNER, j.get("runs-on")))
+    if j.get("strategy") != CHECK_STRATEGY:
+        bad.append("check's strategy must be exactly a matrix over the runners %s and nothing else (no fail-fast, include, exclude or max-parallel): %s" % (RUNNERS, j.get("strategy")))
     if j.get("permissions") != {"contents": "read"}:
         bad.append("permissions must be exactly contents read (no identity token: the records are made with the local helper and signed by Sign; REQ-REL-011-AC1): %s" % j.get("permissions"))
     steps = j.get("steps") or []
-    text = open(path).read()
-    if re.search(r"docker\s+login|\bsecrets\s*\.|secrets:|packages\s*:|attestations\s*:|ghcr\.io", text):
-        bad.append("a registry login, a secret, a packages or attestations permission or a registry name appears in the file")
+    text = yaml.dump({n: jobs[n] for n in (GV_BUILD, "check")})
+    if re.search(r"docker\s+login|\bsecrets\s*\.|secrets:|packages\s*:|attestations\s*:|ghcr\.io|id-token|environment", text):
+        bad.append("a registry login, a secret, a packages or attestations permission, an identity token, an environment or a registry name appears in a Check job")
     kinds, names = [], []
     for s in steps:
-        if set(s) - {"name", "uses", "with", "run", "id"}:
-            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run", "id"}))
-        if "id" in s and s.get("id") != "records":
-            bad.append("step key id is allowed only on the pinned records step: %s" % s.get("id"))
+        if set(s) - {"name", "uses", "with", "run"}:
+            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run"}))
         u = s.get("uses", "")
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
@@ -327,20 +303,20 @@ def stage(path):
             kinds.append("up")
             w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or UP.get(w.get("name")) != (w.get("path") or "").strip() or set(w) != {"name", "path"}:
-                bad.append("upload-artifact must be digest-pinned, name and path from %s (witness-check carries witness-records/): %s" % (UP, w))
+                bad.append("upload-artifact must be digest-pinned, name and path from %s (witness-check-<runner> carries the three record folders): %s" % (UP, w))
         elif u:
-            bad.append("uses not allowed in the Check stage: %s" % u)
+            bad.append("uses not allowed in the Check job: %s" % u)
         elif (s.get("run") or "").strip() in ["bash bin/install-scanner.sh " + n for n in ["witness"] + SCANNERS + ["go"]]:
             kinds.append("install")
         elif (s.get("run") or "").strip() == GV_HAND_LINE:
             kinds.append("hand")
-        elif (s.get("run") or "").strip() == REC_RUN["records"] and s.get("id") == "records":
+        elif (s.get("run") or "").strip() == REC_LINE:
             kinds.append("rec")
         elif "run" in s:
             kinds.append("witnessed")
-            m = re.fullmatch(r"bash bin/witnessed-local\.sh ([a-z]+) (bin/check-phase-[a-z]+\.sh)", (s["run"] or "").strip())
-            if not m or PHASE_TARGET.get(m.group(1)) != m.group(2):
-                bad.append("a run step must be exactly `bash bin/witnessed-local.sh STEP TARGET` with TARGET the phase target of STEP, %s (no witness, timeout or other command in the stage): %r" % (PHASE_TARGET, (s["run"] or "")[:80]))
+            m = re.fullmatch(r"bash bin/witnessed-local\.sh ([a-z]+) bin/check-phase\.sh ([a-z]+)", (s["run"] or "").strip())
+            if not m or m.group(1) != m.group(2) or m.group(1) not in STEPS:
+                bad.append("a run step must be exactly `bash bin/witnessed-local.sh STEP bin/check-phase.sh STEP` with STEP one of %s (no witness, timeout or other command in the job): %r" % (STEPS, (s["run"] or "")[:80]))
             else:
                 names.append(m.group(1))
         else:
@@ -357,12 +333,12 @@ def stage(path):
               + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS]
               + [("run", GO_INSTALL)]
               + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)]
-              + [("down", x) for x in ARM_DOWNLOADS]
-              + [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS]
-              + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)),
-                 ("up", ("check-results", "check-results"))])
+              + [("down", x) for x in CHECK_DOWNLOADS]
+              + [("run", PHASE_LINE[n]) for n in STEPS]
+              + [("run", REC_LINE)]
+              + [("up", (n, p)) for n, p in UP.items()])
     bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, "
-                                               "four downloads, the three witnessed steps, the two uploads")
+                                               "four downloads, the three witnessed steps, the records step, the three uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":
         bad.append("exactly one download of the images artifact, into images/, is required; found %d" % len(imgs))
@@ -440,12 +416,12 @@ def suites(path):
 
 
 def script(path):
-    """bin/check-stage.sh: set -euo pipefail, the two verify commands, then ONE fixed case "$1" with exactly the PHASES. Nothing else."""
+    """bin/check-phase.sh: set -euo pipefail, the chip case (uname -m), the policy and verify commands, then ONE fixed case "$1" with exactly the PHASES. Nothing else."""
     bad = []
     lines = [l.strip() for l in open(path).read().split("\n") if l.strip() and not l.strip().startswith("#")]
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
-    want = [("lit", "set -euo pipefail"), ("rx", POLICY)] + [("rx", r) for r in VERIFY] + [("lit", 'case "$1" in')]
+    want = [("lit", "set -euo pipefail")] + CHIP + [("rx", POLICY)] + [("rx", r) for r in VERIFY] + [("lit", 'case "$1" in')]
     for ph, cmds in PHASES.items():
         want += [("lit", ph + ")")] + [("rx", c) for c in cmds] + [("lit", ";;")]
     want += [("lit", '*) echo "unknown phase: $1" >&2; exit 2 ;;'), ("lit", "esac")]
@@ -459,50 +435,98 @@ def script(path):
     return bad
 
 
-def phase(path, step):
-    """REQ-CHAIN-006-AC1/AC3 (ruling 0384): the thin target of a witnessed step is ONE command line, `bash bin/check-stage.sh STEP`, and nothing else."""
-    if step not in STEPS + [ARM_STEP]:
-        return ["unknown phase %r" % step]
-    raw = open(path, newline="").read()
-    lines = [l for l in raw.split("\n") if l.strip() and not l.strip().startswith("#")]
-    bad = ["control character %s in the target" % c for c in control_chars(raw)]
-    if lines and lines[0].startswith("#!"):
-        lines = lines[1:]
-    if step == ARM_STEP:
-        # rule 58: set -euo pipefail, the policy line, the verification of Build's record (isolated), THEN the artifact checks on the digest file verified
-        want = [("lit", "set -euo pipefail"), ("rx", POLICY)] + [("rx", r) for r in VERIFY] + [("lit", ARM_LINE)]
-        if len(lines) != len(want):
-            bad.append("the arm64 target must be exactly set -euo pipefail, the policy line, the verification of Build's record and the artifact checks (%d lines), found %d" % (len(want), len(lines)))
-        for i, (k, w) in enumerate(want):
-            got = lines[i] if i < len(lines) else "<missing>"
-            if (k == "lit" and got != w) or (k == "rx" and not re.fullmatch(w, got)):
-                bad.append("the arm64 target is not exactly the pinned form at line %d: %s" % (i + 1, got[:100])); break
-        return bad
-    one = "bash bin/check-stage.sh %s" % step
-    if lines != [one]:
-        bad.append("the target must be exactly the one line `%s`, found %s" % (one, [l[:80] for l in lines]))
+def signcheck(path):
+    """REQ-CHAIN-006-AC1, REQ-REL-011-AC1: sign-check is the Check stage's signing job: environment sign, the identity token (for the KMS role) and nothing else, it needs build-assemble and check,
+    downloads for each runner the record folders (witness-check-R into rec-check/R), the results (check-results-R into artifacts/check-results-R) and the list of the records
+    (check-records-R into rec-digests/R), runs ONE `chain-verify.py sign-records --stage check` with both lists and the six record folders (the two runners times scanners, acceptance, runtime),
+    then signs each runner's staged tree once (`bash bin/witness-sign-staged.sh staged/R signed/R`), and uploads signed-witness-check-R carrying signed/R."""
+    jobs = load(path).get("jobs") or {}
+    j = jobs.get("sign-check")
+    if not isinstance(j, dict):
+        return ["release.yml has no job sign-check"]
+    bad = []
+    if j.get("environment") != "sign":
+        bad.append("sign-check must run in the environment sign, got %r" % j.get("environment"))
+    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
+        bad.append("sign-check permissions must be exactly contents read and id-token write (the KMS role), got %s" % j.get("permissions"))
+    n = j.get("needs") or []
+    if set([n] if isinstance(n, str) else n) != {"build-assemble", "check"}:
+        bad.append("sign-check must need exactly build-assemble and check, got %s" % n)
+    steps = j.get("steps") or []
+    downs = sorted((s["with"].get("name"), s["with"].get("path")) for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@"))
+    want_d = sorted([("witness-check-" + r, "rec-check/" + r) for r in RUNNERS] + [("check-results-" + r, "artifacts/check-results-" + r) for r in RUNNERS] + [("check-records-" + r, "rec-digests/" + r) for r in RUNNERS])
+    if downs != want_d:
+        bad.append("sign-check must download exactly %s (name, path), found %s" % (want_d, downs))
+    ups = [(s["with"].get("name"), s["with"].get("path")) for s in steps if (s.get("uses") or "").startswith("actions/upload-artifact@")]
+    want_u = [("signed-witness-check-" + r, "signed/" + r) for r in RUNNERS]
+    if ups != want_u:
+        bad.append("sign-check must upload exactly %s (name, path) in that order, found %s" % (want_u, ups))
+    runs = [(i, (s.get("run") or "").strip()) for i, s in enumerate(steps) if s.get("run")]
+    recs = [(i, r) for i, r in runs if "sign-records" in r]
+    if len(recs) != 1:
+        bad.append("sign-check must run chain-verify.py sign-records once, found %d runs" % len(recs))
+    else:
+        want_head = ["env", "-u", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "-u", "ACTIONS_ID_TOKEN_REQUEST_URL", "python3", "-I", "-B", "bin/chain-verify.py", "sign-records"]
+        toks = shlex.split(recs[0][1])
+        flags = toks[len(want_head):]
+        got = sorted(zip(flags[0::2], flags[1::2])) if len(flags) % 2 == 0 else None
+        want_f = sorted([("--stage", "check"), ("--template", ".github/policy/release-policy.template.json"), ("--digests", "digests.json"), ("--artifacts-dir", "artifacts"), ("--out", "staged")]
+                        + [("--expect-digests", "rec-digests/%s/check-records.json" % r) for r in RUNNERS]
+                        + [("--record-dir", "rec-check/%s/witness-%s" % (r, s)) for r in RUNNERS for s in STEPS])
+        if toks[:len(want_head)] != want_head or got != want_f:
+            bad.append("the sign-records step must be exactly `%s` with the flags %s, found %s" % (" ".join(want_head), want_f, recs[0][1][:300]))
+    signs = [(i, r) for i, r in runs if "witness-sign-staged" in r]
+    want_s = ["bash bin/witness-sign-staged.sh staged/%s signed/%s" % (r, r) for r in RUNNERS]
+    if [r for _, r in signs] != want_s:
+        bad.append("sign-check must sign each runner's staged tree once, as %s, found %s" % (want_s, [r for _, r in signs]))
+    if recs and signs and (min(i for i, _ in signs) < recs[0][0] or any(not (s.get("uses") or "").startswith("actions/upload-artifact@") for s in steps[max(i for i, _ in signs) + 1:])):
+        bad.append("sign-check must sign after sign-records and upload last")
+    other = [r for i, r in runs if "sign-records" not in r and "witness-sign-staged" not in r and r not in ("bash bin/install-scanner.sh aws-cli", "printf '%s' \"$DIGESTS\" > digests.json")]
+    if other:
+        bad.append("sign-check runs a command that is not listed: %s" % other)
+    return bad
+
+
+OLD_CHECK_FILES = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-phase-arm64.sh", ".github/workflows/stage-verify.yml"]
+
+
+def oldcheck(root):
+    """REQ-CHAIN-006-AC1: the per-chip and per-phase Check files are gone, and no workflow names them or the per-chip jobs, artifacts and outputs."""
+    bad = ["%s still exists" % f for f in OLD_CHECK_FILES if os.path.exists(os.path.join(root, f))]
+    wf = os.path.join(root, ".github/workflows")
+    for f in sorted(os.listdir(wf)) if os.path.isdir(wf) else []:
+        m = re.search(r"check-stage|check-phase-(scanners|acceptance|runtime|arm64)|check-arm64|records-arm64|witness-arm64|witness-check-arm64|stage-verify", open(os.path.join(wf, f)).read())
+        if m:
+            bad.append(".github/workflows/%s names %r, which is gone" % (f, m.group(0)))
     return bad
 
 
 def graph(path):
+    """REQ-CHAIN-006-AC2: the Check jobs sit beside Rebuild's in release.yml: check needs exactly check-govulncheck, build-assemble and sign; sign-check needs build-assemble and check; the release job waits (directly or through another job) for check, sign, sign-rebuild and sign-check."""
     d, bad = load(path), []
     jobs = d.get("jobs") or {}
     def needs(n):
         v = (jobs.get(n) or {}).get("needs", [])
         return {v} if isinstance(v, str) else set(v)
-    for n in ("build", "sign", "rebuild", "sign-rebuild", "check", "release"):   # the last stage is Release (the ratified rules' name; Q9)
+    def reach(n, seen=()):
+        return set().union(*[{m} | reach(m, seen + (n,)) for m in needs(n) if m in jobs and m not in seen]) if needs(n) else set()
+    rebuilds = ("rebuild-apk", "rebuild-assemble", "sign-rebuild")
+    for n in ("build-assemble", "sign", "check-govulncheck", "check", "sign-check") + rebuilds + ("release",):   # the last stage is Release (the ratified rules' name; Q9)
         if n not in jobs:
             bad.append("release.yml has no job %s" % n)
     if bad:
         return bad
-    if (jobs["check"].get("uses") or "") != "./.github/workflows/stage-verify.yml":
-        bad.append("the check job must call ./.github/workflows/stage-verify.yml")
-    if needs("check") != {"build", "sign"}:
-        bad.append("check must need exactly build and sign (its previous stage is Build, whose record it verifies as Sign signed it; Sign's provenance is Release's to verify, rule 58), found %s" % sorted(needs("check")))
-    if "check" in needs("rebuild") or "rebuild" in needs("check"):
+    if "uses" in jobs["check"] or "uses" in jobs["check-govulncheck"]:
+        bad.append("the check jobs are jobs of release.yml itself, not a call of another workflow")
+    if needs("check") != set(CHECK_NEEDS):
+        bad.append("check must need exactly %s (its previous stage is Build, whose record it verifies as Sign signed it; Sign's provenance is Release's to verify, rule 58), found %s" % (CHECK_NEEDS, sorted(needs("check"))))
+    if any("check" in reach(n) for n in rebuilds) or any(n in reach("check") for n in rebuilds):
         bad.append("check and rebuild must run side by side (rule 70)")
-    if needs("release") != {"check", "sign", "sign-rebuild", "sign-check"}:   # the Witness move: Sign signs Build's records, sign-rebuild Rebuild's, sign-check Check's; build is reached through check
-        bad.append("the release job must need exactly check, sign, sign-rebuild and sign-check, found %s" % sorted(needs("release")))
+    if needs("sign-check") != {"build-assemble", "check"}:
+        bad.append("sign-check must need exactly build-assemble and check, found %s" % sorted(needs("sign-check")))
+    missing = {"check", "sign", "sign-rebuild", "sign-check"} - reach("release")
+    if missing:   # the Witness move: Sign signs Build's records, sign-rebuild Rebuild's, sign-check Check's
+        bad.append("the release job must wait for check, sign, sign-rebuild and sign-check; it does not wait for %s" % sorted(missing))
     return bad
 
 
@@ -543,6 +567,17 @@ def listed(jsonpath, root):
             bad.append("%s: the sha256 in chain-scripts.json is not the file's" % s)
         if r.get("signs") not in (False, "false"):
             bad.append("%s must be listed with signs: false" % s)
+    for g in OLD_CHECK_FILES:
+        if g in rows:
+            bad.append("%s is gone but chain-scripts.json still has a row for it" % g)
+    arg_map = (rows.get("bin/witnessed-local.sh") or {}).get("arg_map") or {}
+    want = {s: "bin/check-phase.sh" for s in STEPS}
+    want.update({"release-assets": "bin/release-assets.sh", "release-postverify": "bin/release-postverify.sh"})
+    for step, target in want.items():
+        if arg_map.get(step) != target:
+            bad.append("witnessed-local.sh's arg_map must map %s to %s, found %r" % (step, target, arg_map.get(step)))
+    if "arm64" in arg_map:
+        bad.append("witnessed-local.sh's arg_map has a step arm64: Check has no arm64 step")
     return bad
 
 
@@ -853,7 +888,7 @@ if __name__ == "__main__":
         if cmd in ("stage", "script", "graph", "helper", "cluster", "suites") and not os.path.exists(p):
             print("missing file: %s" % p); sys.exit(1)
         break
-    fn = {"stage": lambda: stage(sys.argv[2]), "script": lambda: script(sys.argv[2]), "phase": lambda: phase(sys.argv[2], sys.argv[3]), "graph": lambda: graph(sys.argv[2]),
+    fn = {"stage": lambda: stage(sys.argv[2]), "script": lambda: script(sys.argv[2]), "signcheck": lambda: signcheck(sys.argv[2]), "oldcheck": lambda: oldcheck(sys.argv[2]), "graph": lambda: graph(sys.argv[2]),
           "plain": lambda: plain(sys.argv[2:]), "helper": lambda: helper(sys.argv[2]),
           "cluster": lambda: cluster(sys.argv[2]), "suites": lambda: suites(sys.argv[2]), "guidelist": lambda: guidelist(sys.argv[2]), "records": lambda: records(sys.argv[2]), "listed": lambda: listed(sys.argv[2], sys.argv[3]), "installs": lambda: installs(sys.argv[2], sys.argv[3]), "removed": lambda: removed(sys.argv[2])}[cmd]
     bad = fn()
