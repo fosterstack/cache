@@ -883,7 +883,8 @@ def cmd_stage_start(a):
 # Both are new commands run by Release's first witnessed step only. They add refusals and change no existing subcommand, pin or message.
 CHECK_RECORDS = ("scanners", "acceptance", "runtime")        # a Check job's three records, by step name (REQ-CHAIN-007-AC16)
 CHECK_RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")        # the two chips; each makes all three records, so a record is named by its runner and its step
-MATERIAL = "https://witness.dev/attestations/material/v0.1/file:witness-build/digests.json"
+MATERIAL_PREFIX = "https://witness.dev/attestations/material/v0.1/file:"
+MATERIAL = MATERIAL_PREFIX + "witness-build/digests.json"
 ITEMS_PRODUCT = "https://witness.dev/attestations/product/v0.1/file:items.json"
 
 
@@ -2085,9 +2086,9 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
         refuse(stage, "rapk: %s has artifacts under %s, but Rebuild's apks never reach Sign" % (name, art_dir))
     if stage == "release":
         if name != "witness-" + step:
-            refuse(stage, "record: the folder %s holds the %s record; a release record folder is named witness-<step>" % (name, step))
-        mats = [x for x in subs if x["name"] == MATERIAL]
-        if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
+            refuse(stage, "record: the folder %s holds the %s record; Release's folders are %s, each named for its step" % (name, step, " ".join(sorted("witness-" + n for n in steps))))
+        mats = [x for x in subs if x["name"].startswith(MATERIAL_PREFIX)]
+        if len(mats) != 1 or mats[0]["name"] != MATERIAL or mats[0]["digest"].get("sha256") != digests_sha:
             refuse(stage, "material: the %s record's file:witness-build/digests.json is not Build's attested digests.json (--digests)" % step)
         return step, payload, [], {}
     if stage == "check":
@@ -2208,6 +2209,10 @@ def cmd_sign_records(a):
     digests_sha = _sha256_bytes_of(a.digests, stage, "--digests")
     if stage in ("rebuild", "check") and not a.expect_digests:
         refuse(stage, "expect-digests: --expect-digests FILE is required for the %s stage (the producing job's list of the records it made)" % stage)
+    if stage == "release":
+        for flag, given in (("--expect-digests", a.expect_digests), ("--artifacts-dir", a.artifacts_dir)):
+            if given:
+                refuse(stage, "flag: %s is not taken by the release stage" % flag)
     if stage == "rebuild" and len(a.expect_digests) != 1:
         refuse(stage, "expect-digests: the rebuild stage takes exactly one list")
     if stage in ("rebuild", "check"):
