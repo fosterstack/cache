@@ -37,7 +37,9 @@ ci = load(WF + "ci.yml")
 fs = load(WF + "full-suite.yml") if os.path.exists(os.path.join(root, WF + "full-suite.yml")) else None
 POLICY = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
 
-REQUIRED = ["test", "lint", "requirements", "allowlist", "vendor", "govulncheck", "pin-age"]
+# each required context comes from the policy file; the six named here are the ones every case may name, the seventh is taken from the policy
+SIX = ["test", "lint", "requirements", "allowlist", "govulncheck", "pin-age"]
+REQUIRED = [e["context"] for e in POLICY["required_checks"]]
 PROMOTION = ["coverage", "fips140-only", "analyze (go)", "allowlist-persona", "allowlist-chain",
              "allowlist-pins-auditor",
              "acceptance / acceptance-gradle", "acceptance / acceptance-maven (1.2.0)",
@@ -74,7 +76,8 @@ def policy_problems(doc):
             if not isinstance(e, dict) or set(e) != SHAPE: bad.append("%s entry has not the shape context/integration_id/scope: %s" % (key, e)); continue
             if e["integration_id"] != 15368: bad.append("%s %r has integration_id %r" % (key, e["context"], e["integration_id"]))
     rc_names, pc_names = [e.get("context") for e in rc], [e.get("context") for e in pc]
-    if sorted(rc_names) != sorted(REQUIRED): bad.append("required_checks are not exactly the seven: %s" % rc_names)
+    if sorted(rc_names) != sorted(REQUIRED) or len(set(rc_names)) != 7 or not set(SIX) <= set(rc_names):
+        bad.append("required_checks are not exactly the seven: %s" % rc_names)
     if sorted(pc_names) != sorted(PROMOTION): bad.append("promotion_checks are not exactly the eleven: %s" % pc_names)
     for key, lst in (("required_checks", rc), ("promotion_checks", pc)):
         if any(isinstance(e, dict) and e.get("context") == "auditor-review-gate" for e in lst): bad.append("auditor-review-gate is listed in %s (REQ-CI-001-AC8)" % key)
@@ -341,7 +344,7 @@ def selection_problems(job):
 def ci_problems(w):
     jobs = w.get("jobs") or {}
     bad = []
-    for ctx in REQUIRED[:6]:
+    for ctx in [c for c in REQUIRED if c != "pin-age"]:
         if (jobs.get(ctx) or {}).get("name") != ctx: bad.append("ci.yml has no job named %s" % ctx)
     for ctx in GONE:
         for jid, j in jobs.items():
@@ -623,6 +626,24 @@ def full_problems(w):
     return bad
 verdict("full-suite.yml: a daily schedule, dispatch and call; the five moved jobs whole; the two wiring suites; "
         "acceptance called; no gosec", full_problems(fs), True)
+
+# acceptance.yml has no registry mode (REQ-SUP-001): release.yml calls it once with no image-ref, as full-suite.yml's one acceptance job does
+def acceptance_calls_problems(rel, acc_text, acc):
+    bad = []
+    calls = {jid: j for jid, j in (rel.get("jobs") or {}).items() if j.get("uses") == "./.github/workflows/acceptance.yml"}
+    if len(calls) != 1: bad.append("release.yml does not call acceptance.yml from exactly one job: %s" % sorted(calls))
+    for jid, j in calls.items():
+        if "image-ref" in (j.get("with") or {}): bad.append("release.yml job %s passes image-ref" % jid)
+    for word in ("image-ref", "IMAGE_REF", "ghcr.io"):
+        if word in acc_text: bad.append("acceptance.yml still has %s" % word)
+    if sorted((acc.get("on") or {})) != ["workflow_call"]: bad.append("acceptance.yml is not workflow_call alone")
+    if sorted(((acc.get("on") or {}).get("workflow_call") or {}).get("outputs") or {}) != ["gradle-results", "maven-results"]:
+        bad.append("acceptance.yml lost an output")
+    for jid, j in (acc.get("jobs") or {}).items():
+        if j.get("permissions") != {"contents": "read"}: bad.append("acceptance.yml job %s permissions are %s" % (jid, j.get("permissions")))
+    return bad
+verdict("release.yml calls acceptance.yml once without image-ref; acceptance.yml has no registry mode",
+        acceptance_calls_problems(load(WF + "release.yml"), open(os.path.join(root, WF + "acceptance.yml")).read(), load(WF + "acceptance.yml")), True)
 def turn_off(d, suite):
     hit = [s for j in d["jobs"].values() for s in j.get("steps") or [] if suite in (s.get("run") or "")]
     if not hit: raise ValueError("no step runs " + suite)
