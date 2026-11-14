@@ -11,8 +11,11 @@ step=$(awk '/^step_06\(\) \($/ {on=1} on {print} on && /^\)$/ {exit}' "$sut")
 pass=0; fail=0
 # gradlew <mode>: ok prints task lines, quiet prints nothing the grep matches, fail prints a task line and exits 1
 mock() {
-  printf '#!/usr/bin/env bash\ncase "%s" in\n  ok) echo "> Task :compileJava"; echo "BUILD SUCCESSFUL" ;;\n  quiet) echo "some other line" ;;\n  fail) echo "> Task :compileJava FAILED"; echo "BUILD FAILED"; exit 1 ;;\nesac\n' \
-    "$1" > "$work/bench/gradle-sample/gradlew"
+  {
+    printf '#!/usr/bin/env bash\ncase "%s" in\n  ok) echo "> Task :compileJava"; echo "BUILD SUCCESSFUL" ;;\n' "$1"
+    printf '  quiet) echo "some other line" ;;\n'
+    printf '  fail) echo "> Task :compileJava FAILED"; echo "BUILD FAILED"; exit 1 ;;\nesac\n'
+  } > "$work/bench/gradle-sample/gradlew"
   chmod +x "$work/bench/gradle-sample/gradlew"
 }
 check() { # name, mode, want_rc (zero|nonzero)
