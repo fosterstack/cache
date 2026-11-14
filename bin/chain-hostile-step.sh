@@ -52,7 +52,7 @@ forged_record() {
 }
 
 attempt_mint_sign_cert() {
-  statement "https://github.com/${GITHUB_REPOSITORY:-fosterstack/cache}/.github/workflows/stage-sign.yml@${GITHUB_REF:-refs/heads/dry-run}" > hostile-work/mint.json
+  statement "https://github.com/${GITHUB_REPOSITORY:-fosterstack/cache}/.github/workflows/release.yml@${GITHUB_REF:-refs/heads/dry-run}" > hostile-work/mint.json
   forged_record hostile-work/mint.json > hostile-work/mint-record.json && cp hostile-work/mint-record.json attempts/mint_sign_cert.json
   return 0
 }
