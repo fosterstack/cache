@@ -2112,10 +2112,10 @@ check python3 - "$root" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import hashlib, json, os, re, sys
 SRC = re.compile(r"(?:^|[;&|({]|\bthen\b|\bdo\b|\belse\b)\s*(?:source|\.)\s+([^\s;&|)]+)")
 def sourced(text):
-    return [m.group(1) for l in text.split("\n") if not l.lstrip().startswith("#")
+    return [os.path.normpath(m.group(1)) for l in text.split("\n") if not l.lstrip().startswith("#")
             for m in SRC.finditer(l) if not re.search(r"""[$"'\\`*?\[\]{}~]""", m.group(1))]
 def body_hash(root, first):
-    seen, todo = {}, [first]
+    seen, todo = {}, [os.path.normpath(first)]
     while todo:
         path = todo.pop()
         if path in seen:
@@ -2124,7 +2124,9 @@ def body_hash(root, first):
         seen[path] = open(full, "rb").read() if os.path.isfile(full) else None
         if seen[path] is not None:
             todo += sourced(seen[path].decode("utf-8", "replace"))
-    out = "".join("%s %s\n" % (p, hashlib.sha256(seen[p]).hexdigest()) for p in [first] + sorted(set(seen) - {first}) if seen[p] is not None)
+    first = os.path.normpath(first)
+    out = "".join("%s %s\n" % (p, "absent" if seen[p] is None else hashlib.sha256(seen[p]).hexdigest())
+                  for p in [first] + sorted(set(seen) - {first}))
     return hashlib.sha256(out.encode()).hexdigest()
 rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if "body-sha256" in r or "body-first" in r or "body-last" in r]
 assert rows, "no row carries a body hash"
