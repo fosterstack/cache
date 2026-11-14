@@ -263,7 +263,7 @@ def _scopes(statement, digests, meta=None):
                         _left_out.add((_cve(statement), pid, sid))
                         sys.stderr.write("vex-forms: left out %s: %s of %s is not the Go the build ships (go%s)\n" % (_cve(statement), sid, pid, _build_go_version()))
                     continue                             # the images ship one Go: another version's stdlib is not in them
-                # Scanners write go1.27.2 for the golang stdlib's 1.27.2; the gate, the panel and the rescan add that spelling.
+                # Scanners write go1.27.2 for the golang stdlib's 1.27.2; the gate and the rescan add it.
                 ver_ = "go%s" % ver_
             out.append((ds, (name_, ver_)))
     return out
