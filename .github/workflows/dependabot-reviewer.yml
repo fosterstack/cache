@@ -134,8 +134,9 @@ jobs:
           # failure (six hours old at most) or stale
           gate_of() {
             GH_TOKEN="$APP_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
+              "repos/${GITHUB_REPOSITORY}/commits/$1/check-runs?check_name=auditor-review-gate&per_page=100" \
+              --jq "if .total_count != (.check_runs | length) then error(\"the check runs are cut\") else . end
+                    | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
                       elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end"
           }
@@ -320,7 +321,7 @@ jobs:
         # Straight from the runner's OIDC endpoint: no third-party action holds the token.
         run: |
           set -euo pipefail
-          tok=$(curl -q -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
                   "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value)
           [ -n "$tok" ] && [ "$tok" != "null" ] || { echo "::error::no identity token"; exit 1; }
           echo "::add-mask::$tok"
@@ -396,7 +397,7 @@ jobs:
           # of a job with id-token: write.
           mint() {
             local tok
-            tok=$(curl -q -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
                     "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || return 1
             [ -n "$tok" ] && [ "$tok" != "null" ] || return 1
             echo "::add-mask::$tok"
