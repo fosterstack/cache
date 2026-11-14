@@ -125,13 +125,19 @@ def dependabot_pull(pr):
             and type(ours.get("id")) is int and ours["id"] == theirs.get("id"))
 
 
+class _ApiError(Exception):
+    pass
+
+
 def bump_pull(head, pulls):
     """The one open pull request with this head sha, when Dependabot opened it (`gh api repos/R/commits/SHA/pulls`),
     else None. The gate's check run belongs to the commit, so the record rule stays in force for any other open pull
-    request on it, for an item whose state (or, for an open item, head sha) cannot be read, and for a full page, which
-    GitHub may have cut."""
-    if not isinstance(pulls, list) or len(pulls) >= 100:
+    request on it, and for an item whose state (or, for an open item, head sha) cannot be read. _ApiError for a full
+    page, which GitHub may have cut."""
+    if not isinstance(pulls, list):
         return None
+    if len(pulls) >= 100:
+        raise _ApiError("the list of pull requests is a full page")
     for p in pulls:
         if not isinstance(p, dict) or p.get("state") not in ("open", "closed"):
             return None
@@ -154,11 +160,13 @@ def reviewer_verdict(checks, logins, version):
     (the reviewer publishes as the App that writes the records, so its login is the App's slug plus [bot]):
     NO_RUN when it put none, "unfinished" for one still running, OTHER_VERSION for a success whose external_id is not
     `version` (the sha256 of the reviewer's files on main), None when the answer of
-    `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&filter=all&per_page=100` is malformed or
-    a full page of 100 runs (which GitHub may have cut), or the completed run has no conclusion."""
+    `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&filter=all&per_page=100` is malformed, or
+    the completed run has no conclusion. _ApiError for a full page of 100 runs, which GitHub may have cut."""
     runs = checks.get("check_runs") if isinstance(checks, dict) else None
-    if not isinstance(runs, list) or len(runs) >= 100:
+    if not isinstance(runs, list):
         return None
+    if len(runs) >= 100:
+        raise _ApiError("the list of check runs is a full page")
     mine = []
     for r in runs:
         app = r.get("app") if isinstance(r, dict) else None
@@ -294,10 +302,6 @@ def plan_record(number, head, pr, actor=None, policy=None):
     if dependabot_pull(pr):
         return False, "Dependabot opened the pull request: no passed-audit record is written for it"
     return True, ""
-
-
-class _ApiError(Exception):
-    pass
 
 
 def _gh(path):
