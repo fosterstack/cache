@@ -27,9 +27,9 @@ name: Agent review gate
 #   secret; the publisher holds the App token and never touches PR data.
 # - Only PRs into the default branch are judged, against the checked-out default branch (never the
 #   event's base), and `edited` (a retarget) re-runs the gate.
-# - Dependabot-triggered runs get no environment secrets, so a Dependabot PR's publish finds no
-#   App credentials. The scheduled SWEEP (not Dependabot-triggered) judges every open PR into the
-#   default branch whose head has no auditor-review-gate check from the App yet, and publishes.
+# - A PR run that holds no App credentials publishes nothing and says so in a notice. The scheduled
+#   SWEEP judges every open PR into the default branch whose head has no auditor-review-gate check
+#   from the App yet, or a failed one it still judges again, and publishes.
 #   The sweep holds the App token while reading PR data — still as git objects only, never
 #   executed; it runs only the default branch's gate script.
 
@@ -63,6 +63,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      checks: read   # the judge reads the head's check runs
+      pull-requests: read   # and the pull requests that share the head
     outputs:
       verdict: ${{ steps.gate.outputs.verdict }}
     steps:
@@ -86,7 +88,7 @@ jobs:
         id: gate
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
+          GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit; the judge reads check runs and pull requests with it
           # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
           GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -126,7 +128,10 @@ jobs:
           APP_ID: ${{ secrets.AUDITOR_APP_ID }}
         run: |
           if [ -n "$APP_ID" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
-          else echo "::notice::no App credentials in this run (a Dependabot-triggered run gets none) — the scheduled sweep publishes this PR's check"; echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+          else
+            echo "::notice::no App credentials in this run — the scheduled sweep publishes this PR's check"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: mint the App token (checks:write only)
         id: app
@@ -213,7 +218,8 @@ jobs:
     environment: agent
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read   # the sweep lists open pull requests and their heads
+      checks: read   # and the judge it runs reads each head's check runs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -245,16 +251,19 @@ jobs:
           fail=0
           while read -r n sha headref headrepo; do
             case "$n$sha" in *[!0-9a-f]*) echo "::error::unexpected PR list line"; fail=1; continue ;; esac
-            # the App's latest verdict on this head: none -> judge; success -> done; a failure from the
+            # the App's latest verdict on this head: none -> judge; success -> done (a green Dependabot head only
+            # has its reviewer verdict judged again: an old reviewer's success may have bought it); a failure from the
             # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand the
             # head) and publish only if it has turned to success, so a head that still fails is not
             # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
-            last="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
+            gate_runs="repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate"
+            last="$(GH_TOKEN="$APP_TOKEN" gh api "${gate_runs}&per_page=100" \
+              --jq "if (.check_runs | length) >= 100 then error(\"the check runs are cut\") else . end
+                    | [.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
                       elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end")" \
               || { fail=1; continue; }
-            case "$last" in success) continue ;; esac
+            if [ "$last" = success ] && [[ "$headref" != dependabot/* ]]; then continue; fi
             # an older failure waits for a push or a re-run, EXCEPT when the head has a passed-audit record branch now (REQ-REL-012: the record is written after the review clears, which can be
             # hours after the first "no record" verdict, and no event of the pull request re-runs its gate): one cheap lookup, then it is judged again like a recent failure
             if [ "$last" = stale ]; then
@@ -264,7 +273,14 @@ jobs:
             git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }
             [ "$(git rev-parse "refs/remotes/pr/${n}")" = "$sha" ] || continue     # moved: next sweep
             conclusion=failure
-            if GH_TOKEN="$LIST_TOKEN" python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
+            if [ "$last" = success ]; then
+              # a green Dependabot head did not change: only the reviewer's verdict can have
+              rc=0
+              GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT" || rc=$?
+              if [ "$rc" = 0 ]; then continue; fi
+              # a GitHub API error is no verdict: publish nothing, fail the run
+              if [ "$rc" = 3 ]; then fail=1; continue; fi
+            elif GH_TOKEN="$LIST_TOKEN" python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
                && git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
                && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \
@@ -272,11 +288,11 @@ jobs:
                && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
               conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)
             fi
-            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} ${sha:0:7}: still failure"; continue; fi
+            if [ "$last" = "$conclusion" ]; then echo "PR #${n} ${sha:0:7}: still ${conclusion}"; continue; fi
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \
               -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
               -f "output[title]=auditor review gate: ${conclusion}" \
-              -f "output[summary]=Judged by the scheduled sweep (the PR's own run had no App credentials)." >/dev/null || fail=1
+              -f "output[summary]=Judged by the scheduled sweep." >/dev/null || fail=1
             echo "PR #${n} ${sha:0:7}: ${conclusion}"
           done < "$RUNNER_TEMP/prs.txt"
           exit "$fail"

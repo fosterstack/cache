@@ -31,7 +31,7 @@ GITSIGN_VER=0.17.1
 KIND_VER=0.33.0
 # crane reads the digest of the latest release's image in the weekly persona job (the chain's pinned tool for digest reads: no buildx, rule 61). The two sums are the sha256 of the
 # Linux release tarballs of google/go-containerregistry v0.22.1, equal to the release's checksums.txt and to the downloaded files (the same values chain-v030 pins). The version is
-# written only in the two literal release URLs below (no version variable): the pin-age scan measures those URLs.
+# written only in the two literal release URLs below (no version variable): the pin scan names those URLs.
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
@@ -182,7 +182,8 @@ case "$TOOL" in
     ;;
   kind)
     # the Kubernetes-in-Docker CLI for the persona UAT (on-call persona): a single binary; the driver finds it on PATH
-    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (the version here must equal KIND_VER; the wiring test checks)
+    # each release asset is written out in full, with its version: the pin scan names a literal release URL
+    # (the version here must equal KIND_VER; the wiring test checks)
     case "$A_KIND" in
       kind-linux-amd64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64" || pipeline_fail "download failed: kind v${KIND_VER} amd64" ;;
       kind-linux-arm64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64" || pipeline_fail "download failed: kind v${KIND_VER} arm64" ;;
@@ -194,7 +195,8 @@ case "$TOOL" in
     ;;
   crane)
     # the digest reader of the weekly persona job (the chain's pinned tool; no buildx): a release tarball holding the crane binary, verified against the pinned sum.
-    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (no version variable and no base-URL hook)
+    # each release asset is written out in full, with its version: the pin scan names a literal release URL
+    # (no version variable and no base-URL hook)
     case "$arch" in
       x86_64|amd64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
       *) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;

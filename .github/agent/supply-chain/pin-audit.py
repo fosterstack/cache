@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""The supply-chain audit (REQ-SUP-001-AC5 to AC10): advisories, malicious-package reports, upstream reachability, disputed hits, held-PR re-runs.
+"""The supply-chain audit (REQ-SUP-001-AC5 to AC10): advisories, malicious-package reports, upstream reachability,
+disputed hits.
 
-  pin-audit.py --root REPO [--base REV] [--fixtures FILE] [--now ISO] [--gh CMD] [--exceptions FILE] [--rerun-held]
+  pin-audit.py --root REPO [--base REV] [--fixtures FILE] [--now ISO] [--gh CMD] [--exceptions FILE]
 
-Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull request mode (--base REV): only the
-items the head moved. A hit becomes ONE issue (found again later: updated, never a second issue) labelled supply-chain-hit, naming the version,
-the advisory id and the rollback; it is also labelled owner-decision when no clean version at least 7 days old exists or the version ran in the last
-90 days. A disputed hit (the two lists disagree about the same incident) is reported without rolling back unless a checked-in exception applies.
---rerun-held does only the re-run of held pull requests whose moved versions have turned 7 days old; it never touches issues.
+Daily mode (no --base): every item in today's inventory AND in the workflow history of the last 90 days. Pull
+request mode (--base REV): only the items the head moved. A hit becomes ONE issue (found again later: updated,
+never a second issue) labelled supply-chain-hit, naming the version,
+the advisory id and the rollback; it is also labelled owner-decision when no clean version exists or the version
+ran in the last 90 days. A disputed hit (the two lists disagree about the same incident) is reported without
+rolling back
+unless a checked-in exception applies.
 Exit 0: clean (or only excepted disputes); 1: a hit or an unexcepted disputed hit; 2: it could not do its job.
 Only public facts go in an issue: versions, advisory ids, dates. It never produces run, environment or secret names.
 """
@@ -30,7 +33,6 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOOKBACK_DAYS = 90
-WAIT_DAYS = 7
 HIT_LABEL, OWNER_LABEL = "supply-chain-hit", "owner-decision"
 
 
@@ -43,7 +45,6 @@ def _load(name):
 
 inv = _load("pin-inventory")
 age = _load("pin-age-check")
-tobs = age.tobs
 
 
 class Fail(Exception):
@@ -204,18 +205,6 @@ class FixtureNet:
 
     def versions(self, item):
         return (self.fx.get("versions") or {}).get(item.name) or []
-
-    def prs(self):
-        return self.fx.get("prs") or []
-
-    def proofs(self, item, base=None, head="HEAD"):
-        return age.Fixture(self.fx).proofs(item)
-
-    def tag_map(self, items):
-        return dict(self.fx.get("tags") or {})
-
-    def observed(self):
-        return self.fx.get("observed")
 
     def modified(self, advisory_id):
         return None
@@ -741,62 +730,6 @@ class LiveNet:
             out.append((p["number"], items))
         return out
 
-    def prs(self):
-        repo = os.environ.get("GITHUB_REPOSITORY")
-        if not repo:
-            raise Fail("GITHUB_REPOSITORY is not set")
-        r = _run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "1000"], capture_output=True,
-            text=True)
-        if r.returncode:
-            raise Fail("could not list open pull requests: " + r.stderr.strip())
-        out = []
-        for p in json.loads(r.stdout or "[]"):
-            phase(f"pull request #{p['number']}")
-            tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            hdr = ["-c",
-                "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
-            try:
-                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
-            except Fail as e:
-                print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
-                continue
-            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
-                key=lambda x: x.get("created_at", ""), reverse=True)
-            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
-            if not failed:      # only a pull request whose newest run failed can be held: the inventories below cost seconds each
-                continue
-            f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
-            if f.returncode:
-                continue
-            try:
-                head = _run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True).stdout.strip()
-                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]], capture_output=True, text=True).stdout.strip()
-                moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
-            except (RuntimeError, ValueError):
-                continue
-            if moved and failed:
-                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved,
-                    "_base": mb, "_head": p["headRefOid"]})
-        return out
-
-    def proofs(self, item, base=None, head="HEAD"):
-        return age.live_proofs(item, self.root, base, head)
-
-    def observed(self):
-        return age.observed()
-
-    def tag_map(self, items):
-        """{"owner/repo@tag": commit} for the latest tags of every action we use plus the tags we pin: what today's run observed."""
-        out = {}
-        for repo in sorted({i.name for i in items if i.kind == "action"}):
-            for t in age._gh_pages(f"repos/{repo}/tags?per_page=100") or []:
-                out[f"{repo}@{t['name']}"] = t["commit"]["sha"]
-        for i in items:
-            if i.kind == "action" and inv.SHA40.match(i.version):
-                for tag in age._tags_for_commit(i.name, i.version):
-                    out[f"{i.name}@{tag}"] = i.version
-        return out
-
     def modified(self, advisory_id):
         if advisory_id.startswith("GHSA-"):
             adv = self._gh_json(f"advisories/{advisory_id}")
@@ -1004,26 +937,25 @@ def any_affected(entry_lists):
 UNKNOWN = "unknown"
 
 
-def rollback(item, net, now):
-    """The newest clean version public at least 7 days; never a younger one. None: drop it. UNKNOWN: this kind of item could not be searched."""
+def rollback(item, net):
+    """The newest clean version. None: drop it. UNKNOWN: this kind of item could not be searched."""
     versions = net.versions(item)
     if versions is None:
         return UNKNOWN
     eligible = []
     for v in versions:
-        pub = age.parse_time(v.get("published"))
-        if pub is None or (now - pub).total_seconds() < WAIT_DAYS * 86400 or v["version"] == (item.label or item.version) or v.get("sha") == item.version:
+        if v["version"] == (item.label or item.version) or v.get("sha") == item.version:
             continue
-        eligible.append((pub, v))
+        eligible.append(v)
     def vkey(x):
         try:
-            nums, cls, parts = _vt(x[1]["version"])
+            nums, cls, parts = _vt(x["version"])
         except ValueError:
             return None
         return (nums, cls, [(0, q) if isinstance(q, int) else (1, q) for q in parts]) if cls != 0 else None   # a pre-release is never a rollback target
     ordered = [x for x in eligible if vkey(x) is not None]
     # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is reached
-    for pub, v in sorted(ordered, key=vkey, reverse=True):
+    for v in sorted(ordered, key=vkey, reverse=True):
         lists = v.get("lists")
         if lists is None:
             gh_l, osv_l = net.lists(v["_item"])
@@ -1031,8 +963,10 @@ def rollback(item, net, now):
         if any_affected(lists):
             continue
         cand = v.get("_item")
-        if cand is not None and net.proofs(cand) is not None and not age.judge_item(cand, net.proofs(cand), now)[0]:
-            continue  # the candidate commit must itself be provably old enough (a tag moved under an old release is not an old version)
+        if cand is not None and not age.judge_item(cand)[0]:
+            # the candidate must itself be an exact pin (an action named by its commit):
+            # a tag or a missing sha is no rollback target
+            continue
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
             # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
             try:
@@ -1099,10 +1033,11 @@ def body_of(f, rb, owner, ran, today):
         lines.append("Rollback: this kind of item cannot be searched for older versions automatically; "
                      "nobody has looked for a clean one, so the owner decides.")
     elif rb:
-        lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {_safe(rb['version'])}"
-                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + f", published {_safe(rb['published'])}.")
+        lines.append(f"Rollback: pin the newest clean version: {_safe(rb['version'])}"
+                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "")
+                     + (f", published {_safe(rb['published'])}" if rb.get("published") else "") + ".")
     else:
-        lines.append(f"No clean version public at least {WAIT_DAYS} days exists: drop it (remove its use) until one does.")
+        lines.append("No clean version exists: drop it (remove its use) until one does.")
     if ran:
         lines.append(f"This version was in our workflows within the last {LOOKBACK_DAYS} days: the owner decides what follows.")
     if owner and not ran:
@@ -1221,34 +1156,6 @@ def file_issues(gh, plan, today):
             os.unlink(path)
 
 
-# ---------- held pull requests ----------
-def rerun_held(gh, net, now):
-    n = 0
-    base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
-    for pr in net.prs():
-        phase(f"pull request #{pr.get('number')}")
-        try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
-            items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
-            for it in items:     # a key-built item (fixtures): its repository path is the part after file:
-                if it.raw is None and it.kind == "tool" and it.version == "(file)" and it.name.startswith("file:"):
-                    it.raw = it.name[5:]
-            items, _ = age.split_base_inputs(items, base_inputs)   # REQ-SUP-001-AC21: the same trusted decision the age check takes, or a mixed pull request is never re-run
-            rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
-        except (Fail, age.CouldNotLook, RuntimeError, ValueError) as e:
-            print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")
-            continue
-        if rows and all(r[0] for r in rows):
-            try:
-                gh.run("run", "rerun", str(pr["run_id"]))
-            except Fail as e:
-                print(f"information: pull request #{pr.get('number')}: the re-run failed: {clean(e)}")
-                continue
-            print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
-            n += 1
-    if not n:
-        print("audit: no held pull request is ready to re-run")
-
-
 def _split_key(k):
     kind, rest = k.split(":", 1)
     name, _, version = rest.rpartition("@")
@@ -1266,10 +1173,10 @@ def phase(name):
 
 def deadline_for(a):
     """Seconds the whole run may take: --deadline, else 900 for the daily run (a 20-minute job),
-    600 for --rerun-held and pull request mode (15-minute jobs)."""
+    600 for pull request mode (a 15-minute job)."""
     if a.deadline is not None:
         return a.deadline
-    return 600 if (a.rerun_held or a.base) else 900
+    return 600 if a.base else 900
 
 
 def _deadline_passed(seconds):
@@ -1293,12 +1200,10 @@ def main(argv=None):
     ap.add_argument("--now")
     ap.add_argument("--gh", default="gh")
     ap.add_argument("--exceptions")
-    ap.add_argument("--rerun-held", action="store_true")
-    ap.add_argument("--observations-out", help="write the cumulative tag observations (state.json) FIRST, before judging anything")
     ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
     ap.add_argument("--deadline", type=int,
                     help="seconds the whole run may take before it ends itself with exit 2 "
-                         "(1 to 86400; default 900, or 600 for --rerun-held and --base)")
+                         "(1 to 86400; default 900, or 600 for --base)")
     a = ap.parse_args(argv)
     if a.deadline is not None and not 1 <= a.deadline <= 86400:
         print("audit: cannot do its job: --deadline must be from 1 to 86400 seconds", file=sys.stderr)
@@ -1323,10 +1228,6 @@ def main(argv=None):
             raise Fail("--now is not an ISO time")
         gh = Gh(a.gh)
         net = FixtureNet(fx) if fx is not None else LiveNet(gh.cmd, a.root)
-        if a.rerun_held:
-            phase("re-run of held pull requests")
-            rerun_held(gh, net, now)
-            return 0
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
         phase("history")
@@ -1334,17 +1235,6 @@ def main(argv=None):
             head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
         except RuntimeError as e:
             raise Fail(str(e))
-        if a.observations_out and not a.base:   # before the history is read: a history that cannot be read must not lose the observations
-            phase("tag observations")
-            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
-            tmp = a.observations_out + ".tmp"
-            # a deadline in the middle of the write must not leave half a file at the published path
-            with open(tmp, "w") as f:
-                json.dump(state, f, sort_keys=True)
-            os.replace(tmp, a.observations_out)
-            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
-            phase("history")
         try:
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
@@ -1356,9 +1246,11 @@ def main(argv=None):
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
             raise Fail(str(e))
-        # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
+        # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the pin scan
         audited = [i for i in audited if i.version not in ("(local)", "(source)")]
-        if a.base:    # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the age check reports it), never as an advisory hit
+        # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling
+        # (the pin scan reports it), never as an advisory hit
+        if a.base:
             try:
                 audited = age.drop_ruled_unpinned(audited, age.ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or age.DEFAULT_EXCEPTIONS))
             except RuntimeError as e:
@@ -1507,7 +1399,7 @@ def main(argv=None):
                 g.why += "; " + f.why
                 continue
             per_item[(f.item.key, f.via)] = f
-            rb = None if f.via else rollback(f.item, net, now)
+            rb = None if f.via else rollback(f.item, net)
             ran = f.item.key in ran_keys
             owner = rb is None or rb == UNKNOWN or ran or bool(f.via)
             pending.append((f, rb, ran, owner))

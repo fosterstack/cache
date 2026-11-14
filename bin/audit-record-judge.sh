@@ -5,9 +5,13 @@
 # It reads the record branch audit/<HEAD_SHA> and its commit through the API (only when the base is main and the head is 40 lower-case hex, so nothing odd is ever put in
 # a request path) and hands both answers, as data, to bin/audit-record.py. Exit 0: a base that is not main, or a good record. Exit 1: a missing or invalid record, with the reason.
 # Exit 3: a GitHub API error (it says so; it is not a record defect and still fails closed). The writer treats only exit 1 as "no passing record" and never writes over a record it could not read.
+# A head with no passing record is then put to bin/audit-record.py bump (that file's module docstring has the
+# contract), which reads the head's commits from this checkout. --release mode never reaches it. The writer's
+# prepare script also calls this judge without --release for a release commit, and that call does reach it.
 set -uo pipefail
 # mode --release TAG TAG_OBJECT_FILE: gate 7, the tagged commit and the owner's approval line
 head=${1:-}; base=${2:-}; mode=${3:-}; rtag=${4:-}; rfile=${5:-}
+repo=
 here=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 args=()
@@ -44,4 +48,15 @@ if [ "$mode" = --release ]; then
   cd "$here" && exec python3 -I bin/audit-record.py release --tag "$rtag" --tag-object "$rfile" \
     --tagged-sha "$head" --base-root . "${args[@]+"${args[@]}"}"
 fi
-cd "$here" && exec python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . "${args[@]+"${args[@]}"}"
+cd "$here" || exit 1
+said=$(python3 -I bin/audit-record.py verify --head "$head" --base-ref "$base" --base-root . \
+  "${args[@]+"${args[@]}"}"); rc=$?
+# repo is set only above, for a base of main and a head of 40 lower-case hex
+if [ "$rc" = 1 ] && [ -n "$repo" ]; then
+  bump=$(python3 -I bin/audit-record.py bump --head "$head" --repo "$repo" --base-root .); b=$?
+  if [ "$b" = 3 ]; then exit 3; fi
+  # a line: the head is a Dependabot pull request's, and its verdict is the one printed
+  if [ -n "$bump" ]; then said=$bump; [ "$b" = 0 ] && rc=0; fi
+fi
+printf '%s\n' "$said"
+exit "$rc"

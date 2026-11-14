@@ -888,7 +888,7 @@ assert c("1.0.0-0", "1.0.0-0a") < 0 and c("1.0.0-alpha", "1.0.0-alpha.1") < 0 an
 assert c("v0.0.0-20230101000000-abcdef123456", "v0.0.0-20240101000000-abcdef123456") < 0
 assert c("v0.0.0-00010101000000-000000000000", "v0.0.0-20230101000000-abcdef123456") < 0      # the zero-time pseudo-version is one valid identifier
 PY
-py "B22: the shared gh helpers of pin-age-check.py have a timeout too: a hanging gh is CouldNotLook (the run stops, exit 2), never clean" <<'PY'
+py "B22: pin-age-check.py's shared gh helper has a timeout: a hanging gh is CouldNotLook (exit 2)" <<'PY'
 import tempfile, time
 age = pa.age
 d = tempfile.mkdtemp(prefix="pa-hang-")
@@ -897,10 +897,9 @@ os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 assert getattr(age, "GH_TIMEOUT", 0) > 0
 age.GH_TIMEOUT = 1
 t0 = time.time()
-for fn in (age._gh_pages, age._gh_api, age._gh_bytes):
-    try: fn("repos/x/y"); raise AssertionError(fn.__name__ + ": no CouldNotLook")
-    except age.CouldNotLook: pass
-assert time.time() - t0 < 20, "the helpers waited for the hanging gh"
+try: age._gh_pages("repos/x/y"); raise AssertionError("_gh_pages: no CouldNotLook")
+except age.CouldNotLook: pass
+assert time.time() - t0 < 20, "the helper waited for the hanging gh"
 os.remove(d + "/gh"); os.rmdir(d)
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
