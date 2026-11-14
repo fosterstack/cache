@@ -7,7 +7,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 - "$root" <<'PY'
-import importlib.util, os, re, sys
+import glob, importlib.util, os, re, shutil, sys, tempfile
 root = sys.argv[1]
 passed = failed = 0
 def check(name, ok, got=""):
@@ -226,6 +226,7 @@ REVIEWED_CA = [
 def ca_bundle_hits(rel, text):
     hits = []
     for paragraph in text.split("\n\n"):
+        # a table row is a sentence of its own: its cells carry no full stop to cut at
         for row in paragraph.split("\n|"):
             for sentence in re.split(r"(?<=[.!?;])\s+", " ".join(row.split())):
                 if CA_BUNDLE.search(sentence) and (rel, sentence) not in REVIEWED_CA:
@@ -245,10 +246,49 @@ check("R8 new mention in release notes fails", ca_bundle_hits("docs/release-note
 check("R8 release notes draft has no hits", ca_bundle_hits("docs/release-notes-draft.md", notes) == [])
 check("R8 each reviewed sentence passes in its own file", all(ca_bundle_hits(f, s) == [] for f, s in REVIEWED_CA))
 check("R8 reviewed sentence passes inside a longer paragraph", all(ca_bundle_hits(f, "Intro text. " + s + " More text.") == [] for f, s in REVIEWED_CA if s[-1] in ".!?;"))
-check("R8 each reviewed sentence with one word changed fails", all(ca_bundle_hits(f, s.replace(" no ", " a ", 1) if " no " in s else s.replace("needs", "has", 1)) != [] for f, s in REVIEWED_CA))
-check("R8 reviewed sentences with changed word really differ", all((s.replace(" no ", " a ", 1) if " no " in s else s.replace("needs", "has", 1)) != s for f, s in REVIEWED_CA))
+def changed(s):
+    return s.replace(" no ", " a ", 1) if " no " in s else s.replace("needs", "has", 1)
+check("R8 each reviewed sentence with one word changed fails",
+      all(ca_bundle_hits(f, changed(s)) != [] for f, s in REVIEWED_CA))
+check("R8 reviewed sentences with changed word really differ", all(changed(s) != s for f, s in REVIEWED_CA))
 check("R8 reviewed sentence under a different file fails", all(ca_bundle_hits("docs/other.md", s) != [] for f, s in REVIEWED_CA))
 check("R8 sentence without a CA bundle gives no hits", ca_bundle_hits("docs/install.md", "The server listens on port 8080. Nothing else is needed.") == [])
+# R8 over the customer docs themselves: the real files, and copies of them with one change each
+def scope_files(base):
+    names = ["README.md", "SECURITY.md", "CONTRIBUTING.md", "RELEASING.md"]
+    for sub in ("docs", ".vex"):
+        names += [os.path.relpath(m, base) for m in glob.glob(os.path.join(base, sub, "**/*.md"), recursive=True)]
+    return sorted(n for n in set(names) if os.path.isfile(os.path.join(base, n)))
+def collapsed(base, rel):
+    return " ".join(open(os.path.join(base, rel)).read().split())
+def scan_hits(base):
+    return [(rel, h) for rel in scope_files(base) for h in ca_bundle_hits(rel, open(os.path.join(base, rel)).read())]
+def reviewed_gone(base):
+    return [(f, s) for f, s in REVIEWED_CA if s not in collapsed(base, f)]
+def copy_scope(base, dest):
+    for rel in scope_files(base):
+        os.makedirs(os.path.dirname(os.path.join(dest, rel)), exist_ok=True)
+        shutil.copy(os.path.join(base, rel), os.path.join(dest, rel))
+for rel in scope_files(root):
+    text = open(os.path.join(root, rel)).read()
+    check("R8 %s has no unreviewed CA bundle sentence" % rel, ca_bundle_hits(rel, text) == [])
+check("R8 every reviewed sentence is still in its file", reviewed_gone(root) == [], reviewed_gone(root))
+scratch = tempfile.mkdtemp(prefix="vex-guide-r8.")
+try:
+    copy_scope(root, scratch)
+    check("R8 the copy of the tree scans clean", scan_hits(scratch) == [])
+    with open(os.path.join(scratch, "docs/install.md"), "a") as fh:
+        fh.write("\nThe images ship a CA bundle.\n")
+    check("R8 a CA bundle sentence appended to a copy of docs/install.md is a hit",
+          scan_hits(scratch) == [("docs/install.md", "The images ship a CA bundle.")], scan_hits(scratch))
+    copy_scope(root, scratch)
+    f0, s0 = REVIEWED_CA[0]
+    text0 = open(os.path.join(scratch, f0)).read()
+    open(os.path.join(scratch, f0), "w").write(" ".join(text0.split()).replace(s0, changed(s0), 1))
+    check("R8 a reviewed sentence with one word changed in a copy is reported gone",
+          reviewed_gone(scratch) == [(f0, s0)], reviewed_gone(scratch))
+finally:
+    shutil.rmtree(scratch)
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
