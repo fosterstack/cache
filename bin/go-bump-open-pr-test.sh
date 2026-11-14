@@ -114,7 +114,9 @@ for a in "\$@"; do
 done
 echo "gh \${args[*]}" >> "${log}"
 case "\$1 \$2" in
-  "pr list") printf '%s' '${prs}' | jq -c 'map((if has("comments") then .comments |= map({author:{login:"app/fosterstack-auditor"}} + .) else . end) | {author:{login:"app/fosterstack-auditor"},isCrossRepository:false} + .)' ;;
+  "pr list") printf '%s' '${prs}' | jq -c 'map((if has("comments")
+    then .comments |= map({author:{login:"app/fosterstack-auditor"}} + .) else . end)
+    | {author:{login:"app/fosterstack-auditor"},isCrossRepository:false} + .)' ;;
   "pr create") [ "${create_rc}" = 0 ] && echo "https://example/pr/1"; exit ${create_rc} ;;
   "api graphql") case "${gql}" in ok) echo ${OID} ;; badoid) echo "not-an-oid" ;; fail) echo "HTTP 502" >&2; exit 1 ;; esac ;;
   "api repos/{owner}/{repo}/commits/${OID}"|"api repos/{owner}/{repo}/commits/${OTHER}"|"api repos/{owner}/{repo}/commits/${RIVAL}") case "\$*" in
@@ -275,8 +277,10 @@ run_case "a fork's merged pull request on the bump branch name is not a landed b
 run_case "a fork's closed pull request on the bump branch name is not a decline -> recovery goes on" \
     "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"isCrossRepository":true}]' 1 0 0 \
     "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
+closed_json='[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"author":{"login":"someone-else"},'
+closed_json+='"body":"closed by go-bump-open-pr.sh: the branch moved after its commit was verified"}]}]'
 run_case "a \"closed by\" comment from another user does not undo a decline" \
-                                                     "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"author":{"login":"someone-else"},"body":"closed by go-bump-open-pr.sh: the branch moved after its commit was verified"}]}]' 1 0 0 "$LIST" old
+    "$SUT" "$closed_json" 1 0 0 "$LIST" old
 run_case "an open pull request by another user on the bump branch name is not the open bump PR -> recovery goes on" \
     "$SUT" '[{"number":42,"state":"OPEN","mergedAt":null,"author":{"login":"someone-else"}}]' 1 0 0 \
     "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
