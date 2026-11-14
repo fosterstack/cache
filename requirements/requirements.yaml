@@ -5016,9 +5016,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-001-AC4
-        given: "the pin-wiring judge"
-        when: "it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
-        then: "it fails for each of those mutations, and it accepts the real workflow"
+        given: "the pin-wiring judge, withdrawn by the release audit ruling of Nov 12"
+        when: "it was run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
+        then: "it failed for each of those mutations, and it accepted the real workflow; no check holds this now, as the notes say"
         verification: { method: unit, release_blocking: false }
         status: approved
 
