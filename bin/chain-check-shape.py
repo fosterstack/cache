@@ -572,7 +572,7 @@ def listed(jsonpath, root):
             bad.append("%s is gone but chain-scripts.json still has a row for it" % g)
     arg_map = (rows.get("bin/witnessed-local.sh") or {}).get("arg_map") or {}
     want = {s: "bin/check-phase.sh" for s in STEPS}
-    want.update({"release-assets": "bin/release-assets.sh", "release-postverify": "bin/release-postverify.sh"})
+    want.update({"release-verify": "bin/release-verify.sh", "release-publish": "bin/release-publish.sh", "release-assets": "bin/release-assets.sh", "release-postverify": "bin/release-postverify.sh"})      # the Release steps that run under the local helper (ruling Q-e)
     for step, target in want.items():
         if arg_map.get(step) != target:
             bad.append("witnessed-local.sh's arg_map must map %s to %s, found %r" % (step, target, arg_map.get(step)))
