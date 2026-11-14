@@ -10,7 +10,7 @@
 # RELEASE_BIN can point at another directory of scripts (used to prove the cases satisfiable against a throw-away reference; default bin/).
 #
 # FIXED paths the scripts read and write (PROPOSED, they are what the stage's downloads and uploads would carry; the scripts take no arguments
-# because the stage runs them as `bash bin/witnessed.sh STEP bin/STEP.sh`):
+# because the stage runs them as `bash bin/witnessed.sh STEP bin/STEP.sh` (release-apks, release-sign) or `bash bin/witnessed-local.sh STEP bin/STEP.sh` (the rest)):
 #   in : Build's REAL interface (REQ-CHAIN-007-AC17, the fixed table; Build is the reviewed source of truth): witness-build/digests.json with the keys
 #        image-production, image-fips, apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64 (bin/chain_items.py digests_of),
 #        witness-build/build-collection.json, witness-rebuild/..., witness-check/..., provenance/provenance.json, images/<variant>/ (an OCI layout directory) + images/<variant>.digest,
