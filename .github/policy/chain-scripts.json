@@ -1063,7 +1063,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "cc4eda67a294fa4078deeca069cfc80253881b67f51eb677126d92acc5bace56",
+      "sha256": "41aef881a8f0c13d2f8dac98c4eecea9b0c6cf70c08e5cf7e64de55cd7b98548",
       "tools": [
         "at",
         "awk",
@@ -1166,20 +1166,8 @@
       ]
     },
     {
-      "path": "bin/acceptance-gradle-lib.sh",
-      "sha256": "ef60f9742d1b4d3bab8645822a083335c757a2564558ec94d4a85bd787ccef02",
-      "tools": [
-        "grep",
-        "sed",
-        "sha256sum"
-      ],
-      "runs": [],
-      "signs": false,
-      "reason": "the wrapper-jar check both Gradle acceptance scripts source (REQ-SUP-001-AC32)"
-    },
-    {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "e3614e9529ed439e5b7ae64784408c457b0f06323f4614b88094f4c27e82e39f",
+      "sha256": "21b9e146bbdf073ab73c38a5ad976983000d5dca0ed4080e18f2544d3b41009f",
       "tools": [
         "awk",
         "bash",

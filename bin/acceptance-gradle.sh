@@ -7,8 +7,15 @@
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
-. "$(dirname "$0")/acceptance-gradle-lib.sh"
-check_wrapper_jar || exit 1
+# the wrapper jar is the reviewed one before anything runs it (REQ-SUP-001-AC32): the expected file is one line, for the
+# jar, and the jar matches it
+policy=.github/policy/gradle-wrapper-jar-sha256.txt
+jar=bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar
+if [ "$(grep -c '' "$policy")" != 1 ] || [ "$(sed 's/^[0-9a-f]*//' "$policy")" != "  $jar" ] ||
+  ! sha256sum -c --status "$policy"; then
+  echo "acceptance-gradle: gradle-wrapper.jar does not match $policy" >&2
+  exit 1
+fi
 
 # acceptance.yml, job acceptance-gradle, step 6: gradlew build (cold — populates the remote cache) (working-directory bench/gradle-sample)
 # --info so Gradle logs each task's cache key: the assertions below
