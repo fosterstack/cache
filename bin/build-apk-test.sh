@@ -76,8 +76,11 @@ assert len(hit) == 1, hit
 lines[hit[0]] = swap
 open(out, "w").write("\n".join(lines))
 PY
-printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
-  "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)" >"$work/py3-shim"
+{
+  printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then '
+  printf 'exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
+    "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)"
+} >"$work/py3-shim"
 chmod +x "$work/py3-shim"
 # ---- begin verbatim sections ----
 # A Go toolchain is now always required (the cross-check cannot be skipped), so every run that must succeed needs the go
@@ -95,7 +98,10 @@ echo "GOTOOLCHAIN=\${GOTOOLCHAIN:-} GOFLAGS=\${GOFLAGS-unset} GOENV=\${GOENV:-}"
 [ "\$1 \$2" = "version -m" ] || exit 2
 [ "\$STUB_GOVM_FILE" = auto ] || { cat "\$STUB_GOVM_FILE"; exit 0; }
 if [ -n "\${STUB_BUILDINFO:-}" ]; then cat "\$STUB_BUILDINFO"; exit 0; fi
-printf '%s\n' "\$3: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0" "	dep	github.com/example/x	v1.0.0" "	dep	golang.org/x/sys	v0.30.0" "	build	-trimpath=true" "	build	vcs.revision=\$(git -C "\${STUB_SRC:-$src}" rev-parse HEAD)" "	build	vcs.modified=false"
+printf '%s\n' "\$3: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" \\
+  "	mod	github.com/fosterstack/cache	v0.3.0" "	dep	github.com/example/x	v1.0.0" "	dep	golang.org/x/sys	v0.30.0" \\
+  "	build	-trimpath=true" \\
+  "	build	vcs.revision=\$(git -C "\${STUB_SRC:-$src}" rev-parse HEAD)" "	build	vcs.modified=false"
 grep -q 'fscache-fips' "\$3" && printf '\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n'
 exit 0
 EOF
