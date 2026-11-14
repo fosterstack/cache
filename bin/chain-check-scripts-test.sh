@@ -1525,7 +1525,8 @@ want="witness-acceptance/acceptance-collection.local.json witness-arm64/arm64-co
 want="$want witness-runtime/runtime-collection.local.json witness-scanners/scanners-collection.local.json "
 if [ "$got" = "$want" ]; then
   label="AC12 the four steps (scanners, acceptance, runtime, arm64) are accepted and leave exactly four records, "
-  ok "${label}one per step (the next stage verifies the list)"
+  label+="one per step (the next stage verifies the list)"
+  ok "$label"
 else
   bad "AC12 the records: $got"
 fi
