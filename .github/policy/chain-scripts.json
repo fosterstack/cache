@@ -1800,7 +1800,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "72d21d13348b707e79f50c899b6dce0d9814a964b74f6f38b15ec5b2af5b6180",
+      "sha256": "c9e8e8a5ef26963905c65d74f63988fe9304d8a64bae57fd576a902df6be802c",
       "reads_env": [
         "GH_TOKEN"
       ],
