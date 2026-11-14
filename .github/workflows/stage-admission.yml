@@ -118,12 +118,15 @@ jobs:
           git show origin/main:.github/policy/github-web-flow.gpg  > /tmp/policy/github-web-flow.gpg
           git show origin/main:.github/policy/required-checks.json > /tmp/policy/ruleset-checks.json
           git show origin/main:.github/policy/release-only-checks.json > /tmp/policy/release-only-checks.json
-          # admission requires the ruleset's checks and the release-only ones
-          jq -s 'if length == 2 and all(.[]; type == "object" and (.required_checks | type) == "array"
-                                    and (.required_checks | length) > 0)
-            then .[0].required_checks += .[1].required_checks | .[0]
-            else error("a required-checks list is missing, empty or malformed") end' \
-            /tmp/policy/ruleset-checks.json /tmp/policy/release-only-checks.json > /tmp/policy/required-checks.json
+          # admission requires the ruleset's checks and the release-only ones; each file must hold a list itself
+          for f in ruleset-checks release-only-checks; do
+            jq -en '[inputs | type == "object" and (.required_checks | type) == "array"
+              and (.required_checks | length) > 0] | length > 0 and all' "/tmp/policy/$f.json" > /dev/null \
+              || { echo "::error::$f.json is missing, empty or malformed"; exit 1; }
+          done
+          jq -s '{required_checks: (map(.required_checks) | add)}' \
+            "/tmp/policy/ruleset-checks.json" "/tmp/policy/release-only-checks.json" \
+            > "/tmp/policy/required-checks.json"
           # automatic patch releases (REQ-REL-009-AC6): the signer route and the pinned gitsign installer, from main too
           git show origin/main:bin/admission-tag-signer.py        > /tmp/policy/admission-tag-signer.py
           git show origin/main:bin/install-scanner.sh             > /tmp/policy/install-scanner.sh
