@@ -577,7 +577,7 @@ jobs:
       - name: runtime under Witness
         run: bash bin/witnessed-local.sh runtime bin/check-phase.sh runtime
       - name: write the record digests of this job to a file
-        run: bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime > check-records.json
+        run: bash bin/check-records-digests.sh ${{ matrix.runner }} witness-scanners witness-acceptance witness-runtime > check-records.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-check-${{ matrix.runner }}
@@ -643,8 +643,10 @@ jobs:
         run: printf '%s' "$DIGESTS" > digests.json
       - name: check Check's records against the results, then sign them
         run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rec-digests/ubuntu-24.04/check-records.json --expect-digests rec-digests/ubuntu-24.04-arm/check-records.json --artifacts-dir artifacts --out staged --record-dir rec-check/ubuntu-24.04/witness-scanners --record-dir rec-check/ubuntu-24.04/witness-acceptance --record-dir rec-check/ubuntu-24.04/witness-runtime --record-dir rec-check/ubuntu-24.04-arm/witness-scanners --record-dir rec-check/ubuntu-24.04-arm/witness-acceptance --record-dir rec-check/ubuntu-24.04-arm/witness-runtime
-      - name: sign the staged records and check each signed one
-        run: bash bin/witness-sign-staged.sh staged signed
+      - name: sign the staged records of ubuntu-24.04 and check each signed one
+        run: bash bin/witness-sign-staged.sh staged/ubuntu-24.04 signed/ubuntu-24.04
+      - name: sign the staged records of ubuntu-24.04-arm and check each signed one
+        run: bash bin/witness-sign-staged.sh staged/ubuntu-24.04-arm signed/ubuntu-24.04-arm
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-witness-check-ubuntu-24.04
@@ -763,6 +765,11 @@ jobs:
           name: witness-release-verify
           path: witness-release-verify
           if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-policy
+          path: policy.json
+          if-no-files-found: error
 
   # The only job that makes anything public: it holds a registry credential, contents write and packages write, and NO key role and no identity token (the signatures are the job sign-release's). A release candidate (a tag with a hyphen)
   # never enters this job: the guard S followed by the candidate condition is the job's own if (REQ-CHAIN-007-AC14).
@@ -857,32 +864,16 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-publish bin/release-publish.sh
-      - name: release-assets under Witness
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash bin/witnessed.sh release-assets bin/release-assets.sh
-      - name: release-postverify under Witness
-        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
         run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
       - name: release-publish record holds no token (REQ-CHAIN-007-AC12)
         run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.json
-      - name: release-assets record holds no token (REQ-CHAIN-007-AC12)
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-assets/release-assets-collection.json
-      - name: release-postverify record holds no token (REQ-CHAIN-007-AC12)
-        run: python3 -I bin/chain-verify.py record-env --record witness-release-postverify/release-postverify-collection.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: release-evidence
-          path: release-evidence
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-release
           path: |-
             witness-release-verify
             witness-release-publish
-            witness-release-assets
-            witness-release-postverify
 
   # Sign's fourth job (ruling 7 of cache#921): after release publishes, it alone holds the KMS role and the registry write it needs to attach the signatures and attestations (bin/release-sign.sh) and to sign the apks
   # (bin/release-apks.sh). Release holds neither the role nor an identity token. Its if carries the release-candidate condition: a candidate signs nothing.
@@ -993,6 +984,129 @@ jobs:
           path: |-
             witness-release-apks
             witness-release-sign
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-apks
+          path: release-apks
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-metadata
+          path: release-metadata
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-checksums
+          path: dist/checksums.txt
+
+  # Release's last job: after the signatures exist it attaches the evidence to the release (bin/release-assets.sh) and runs the post-publish commands (bin/release-postverify.sh), so both see what sign-release signed. It holds contents write
+  # and nothing else: no environment, no KMS role, no identity token, so its two Witness steps run under the throwaway key of bin/witnessed-local.sh. A candidate never reaches it: sign-release is skipped for one and this job needs it.
+  release-evidence:
+    needs: sign-release
+    if: ${{ inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository)) && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-build
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rebuild
+          path: witness-rebuild
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check-ubuntu-24.04
+          path: witness-check/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-check-ubuntu-24.04-arm
+          path: witness-check/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results-ubuntu-24.04
+          path: check-results/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: check-results-ubuntu-24.04-arm
+          path: check-results/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: provenance
+          path: provenance
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-checksums
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04
+          path: apks/ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: apks/ubuntu-24.04-arm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-apks
+          path: release-apks
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-metadata
+          path: release-metadata
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-evidence-signatures
+          path: release-evidence
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-policy
+          path: .
+      - name: release-assets under Witness (a throwaway key, no identity token)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed-local.sh release-assets bin/release-assets.sh
+      - name: release-postverify under Witness (a throwaway key, no identity token)
+        run: bash bin/witnessed-local.sh release-postverify bin/release-postverify.sh
+      - name: release-assets record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-assets/release-assets-collection.local.json
+      - name: release-postverify record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-postverify/release-postverify-collection.local.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: witness-release-evidence
+          path: |-
+            witness-release-assets
+            witness-release-postverify
 
   # ---------------------------------------------------------------------------------------------------------------
   # The live tests and the hostile judges stay here (they test the release); persona UAT is persona-uat.yml.
