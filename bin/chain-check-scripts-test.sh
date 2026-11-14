@@ -1203,8 +1203,9 @@ gwant_fail "AC7 a command on a file that is not local to Check is not runnable a
 JQF="jq -e --arg ref <IMAGE_REF> '.payload | @base64d | fromjson | .subject[0].digest.sha256 == \$ref'"
 Q1="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> <IMAGE_REF> | $JQF"
 g "$(blk "$Q1")"; lst "$Q1"
-gwant_ok "AC7 a listed verify command piped to a jq filter that itself holds pipes inside single quotes "\
-  "is one verify form (not refused as 'not a verify form')"
+label="AC7 a listed verify command piped to a jq filter that itself holds pipes inside single quotes "
+label+="is one verify form (not refused as 'not a verify form')"
+gwant_ok "$label"
 if jq -e '(.commands | length) == 1 and .commands[0].outcome == "not-run"' \
   "$fx/out/guide-results.json" > /dev/null 2>&1; then
   ok "AC7 the quoted-pipe jq command is recorded as not-run"
@@ -1224,8 +1225,9 @@ for c in "cosign verify <IMAGE_REF> --key <RELEASE_KEY> | sh" \
          "jq -n \\'.a | rm -rf x" \
          "jq -n '.a | .b"; do
   g "$(blk "$c")"; lst "$c"
-  gwant_fail "AC7 a chain to a command that is not a verify form or jq (or an unterminated quote) "\
-    "is still refused: ${c:0:60}" "verify form"
+  label="AC7 a chain to a command that is not a verify form or jq (or an unterminated quote) "
+  label+="is still refused: ${c:0:60}"
+  gwant_fail "$label" "verify form"
 done
 for c in "jq -n '.a | .b' ; rm -rf x" \
          "jq -n '.a | .b' \$(id)" \
@@ -1307,13 +1309,15 @@ done
 # not the verify form
 for c in "\"cosign verify\" | jq ." "'gh attestation' verify | jq ."; do
   g "$(blk "$c")"; lst "$c"
-  gwant_fail "AC7 a listed command whose quoted word holds a space is not a verify form "\
-    "(compared word by word): ${c:0:60}" "not a verify form"
+  label="AC7 a listed command whose quoted word holds a space is not a verify form "
+  label+="(compared word by word): ${c:0:60}"
+  gwant_fail "$label" "not a verify form"
 done
 for c in "cosign verify-evil x" "cosign verifyx y" "gh attestation verify-evil z" "jqx ."; do
   g "$(blk "$L2" "$c")"; printf '[{"command": "%s", "reason": "x"}]\n' "$c" > "$fx/guide.cannot-run.json"
-  gwant_fail "AC7 a cannot-run entry whose first words only START with a verify form is not a verify form "\
-    "(the form is compared by whole words): $c" "not a verify form"
+  label="AC7 a cannot-run entry whose first words only START with a verify form is not a verify form "
+  label+="(the form is compared by whole words): $c"
+  gwant_fail "$label" "not a verify form"
 done
 g "$(blk "$L2" "jq -n 1")"; printf '[{"command": "jq -n 1", "reason": "x"}]\n' > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a runnable command in the cannot-run list fails (it is run, never excused)" "runnable"
@@ -1520,8 +1524,8 @@ got=$(cd "$hw" && find . -path './witness-*' -type f | sed 's|^\./||' | sort | t
 want="witness-acceptance/acceptance-collection.local.json witness-arm64/arm64-collection.local.json"
 want="$want witness-runtime/runtime-collection.local.json witness-scanners/scanners-collection.local.json "
 if [ "$got" = "$want" ]; then
-  ok "AC12 the four steps (scanners, acceptance, runtime, arm64) are accepted and leave exactly four records, "\
-    "one per step (the next stage verifies the list)"
+  label="AC12 the four steps (scanners, acceptance, runtime, arm64) are accepted and leave exactly four records, "
+  ok "${label}one per step (the next stage verifies the list)"
 else
   bad "AC12 the records: $got"
 fi
