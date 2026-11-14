@@ -15,7 +15,7 @@ The chain files of a commit are read from the commit's own objects, never from a
     and every sibling module a Python chain file imports or loads with load_sibling(), repeated until nothing new is named. A test file named only in
     a comment is not code the chain runs and stays outside; a name that is not a file of the commit is not a chain file.
 The marker is the closed object {rc_tag, run_id, chain_sha256, records}: rc_tag is vX.Y.Z-rcN, run_id the digits of the rc run, chain_sha256 the sha256 above and
-records the sha256 of each record the rc run produced (build, sign, rekor, rebuild, scanners, acceptance, runtime, arm64, hostile_verdict). check-marker is what
+records the sha256 of each record the rc run produced (build, sign, rekor, rebuild, hostile_verdict and, for each of the runners ubuntu-24.04 and ubuntu-24.04-arm, scanners, acceptance and runtime, keyed STEP-RUNNER). check-marker is what
 admission and the patch decide job run at tag time: the marker must be readable and closed, the rc tag must exist and be an ancestor of the commit, and the chain
 files of the commit AND of the rc tag's commit must both hash to chain_sha256 (the rc run ran those bytes). The records themselves were verified when the marker was
 merged (the verifier's rc-proof subcommand). Nothing is skipped: a missing marker is a refusal.
@@ -44,7 +44,7 @@ AGENT = ".github/" + "ag" + "ent"      # assembled: the layout check (REQ-AUD-18
 CODE_DIRS = ("bin", AGENT + "/bin")
 MENTION = re.compile(r"(?<![A-Za-z0-9._-])((?:%s/)?bin/[A-Za-z0-9._-]+)" % re.escape(AGENT))
 KEYS = ("rc_tag", "run_id", "chain_sha256", "records")
-RECORD_KEYS = ("build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict")
+RECORD_KEYS = ("build", "sign", "rekor", "rebuild") + tuple("%s-%s" % (n, r) for r in ("ubuntu-24.04", "ubuntu-24.04-arm") for n in ("scanners", "acceptance", "runtime")) + ("hostile_verdict",)
 
 
 class Refusal(Exception):

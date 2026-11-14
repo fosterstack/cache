@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the records of the jobs that hold no identity token: Build's and Rebuild's (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4) and Check's four steps (REQ-REL-011-AC1).
+# bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the records of the jobs that hold no identity token: Build's and Rebuild's (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4) Check's three steps (on each runner) (REQ-REL-011-AC1) and the release job's release-verify and release-publish (REQ-CHAIN-007-AC1).
 # the records step of the verifier (its sign-records subcommand) has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
 # record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal; STAGED/plan.txt is that printed list (one line per record: staged payload path, TAB, signed record path). This helper signs exactly the payloads on that list, and refuses before any token request when the staged tree holds anything else or a PLAN line is not of the fixed form. It signs each payload
 # with the release KMS key (handoff 0713) by the one signing function (bin/chain-verify.py sign-record: the key named by RELEASE_KMS_KEY_REF, checked there, signs through the cloud key service (KMS Sign), the Rekor
@@ -26,7 +26,7 @@ while read -r line; do
   step=${file%-collection.payload}
   printf '%s' "$name" | grep -Eq '^witness-[A-Za-z0-9.-]+$' || { echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1; }
   case "$file" in *[/]*) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
-  case "$step" in apk|build|rapk|rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
+  case "$step" in apk|build|rapk|rebuild|scanners|acceptance|runtime|release-verify|release-publish) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
   if [ -n "$extra" ] || [ "$final" != "$signed/$name/$step-collection.json" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
     echo "witness-sign-staged: plan line does not match the staged tree: $payload" >&2; exit 1
   fi
@@ -73,6 +73,6 @@ while read -r line; do
   mkdir -p "$signed/$name"
   for f in "$dir"/*; do case "$f" in *.payload) ;; *) cat "$f" > "$signed/$name/$(basename "$f")" ;; esac; done
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=$req_tok ACTIONS_ID_TOKEN_REQUEST_URL=$req_url bash bin/with-aws-token.sh sign-record --payload "$payload" --out "$final" --template .github/policy/release-policy.template.json
-  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime|arm64) stage=check ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
+  case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; scanners|acceptance|runtime) stage=check ;; release-verify|release-publish) stage=release ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
   python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$final"
 done < "$plan"

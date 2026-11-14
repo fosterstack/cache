@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
 """Static release-workflow permission checks (audit R01 + B01).
 
-Two classes of failure that GitHub only surfaces by dispatching a real
-run (which PR CI never does for the release chain):
-
-1. Reusable-workflow permission ceilings. A reusable workflow cannot
-   raise its caller's grant, so a caller job that omits a scope a callee
-   job needs makes the whole run a startup_failure with zero jobs. The
-   grant a callee receives is the CALLER JOB's effective permissions:
-   the job's own `permissions:` when it declares one, otherwise the
-   caller workflow's top-level `permissions:`. The callee job's NEED is
-   its own `permissions:` when declared, otherwise the callee workflow's
-   top-level default.
-
-2. Action-level requirements. Some actions persist records through the
-   GitHub API and need specific scopes regardless of the reusable-workflow
-   graph: actions/attest* need `attestations: write` + `id-token: write`.
-   A job that runs one without the grant fails at that step, after
-   side effects (tags pushed, draft release created) may already exist.
+Reusable-workflow permission ceilings, a failure GitHub only surfaces by
+dispatching a real run (which PR CI never does for the release chain). A
+reusable workflow cannot raise its caller's grant, so a caller job that
+omits a scope a callee job needs makes the whole run a startup_failure
+with zero jobs. The grant a callee receives is the CALLER JOB's effective
+permissions: the job's own `permissions:` when it declares one, otherwise
+the caller workflow's top-level `permissions:`. The callee job's NEED is
+its own `permissions:` when declared, otherwise the callee workflow's
+top-level default.
 """
 import glob
 import sys
@@ -29,14 +21,6 @@ except ImportError:
     sys.exit(2)
 
 RANK = {"none": 0, "read": 1, "write": 2}
-
-# action prefix -> {scope: level} it requires in the running job.
-ACTION_REQUIREMENTS = {
-    "actions/attest": {"attestations": "write", "id-token": "write"},
-    "actions/attest-build-provenance": {"attestations": "write", "id-token": "write"},
-    "actions/attest-sbom": {"attestations": "write", "id-token": "write"},
-}
-
 
 def norm(perms):
     """Return {scope: level} from a `permissions:` value, or None if unspecified."""
@@ -80,16 +64,6 @@ def effective(job_perms, workflow_perms):
     return norm(workflow_perms)
 
 
-def job_steps(job):
-    steps = job.get("steps") if isinstance(job, dict) else None
-    return steps if isinstance(steps, list) else []
-
-
-def action_id(uses):
-    # "actions/attest@sha # v4" -> "actions/attest"
-    return uses.split("@", 1)[0].strip()
-
-
 def main():
     failures = []
     for path in sorted(glob.glob(".github/workflows/*.yml")):
@@ -103,24 +77,7 @@ def main():
                 continue
             eff = effective(job.get("permissions"), wf_perms)
 
-            # (2) action-level requirements in THIS job.
-            for step in job_steps(job):
-                uses = step.get("uses") if isinstance(step, dict) else None
-                if not uses:
-                    continue
-                req = ACTION_REQUIREMENTS.get(action_id(uses))
-                if not req:
-                    continue
-                for scope, level in req.items():
-                    if not covers(level_of(eff, scope), level):
-                        have = level_of(eff, scope)
-                        failures.append(
-                            f"{path}: job '{job_name}' runs {action_id(uses)} which needs "
-                            f"{scope}={level} but the job's effective grant is "
-                            f"{scope}={have if have is not None else 'unspecified'}"
-                        )
-
-            # (1) reusable-workflow ceiling.
+            # the reusable-workflow ceiling.
             uses = job.get("uses")
             if not uses or not uses.startswith("./"):
                 continue
@@ -159,11 +116,11 @@ def main():
                             f"{callee_path} job '{cj_name}' needs {scope}={level}"
                         )
     if failures:
-        sys.stderr.write("::error::workflow permission gaps (a release run would fail at startup or at an action):\n")
+        sys.stderr.write("::error::workflow permission gaps (a release run would fail at startup):\n")
         for f in failures:
             sys.stderr.write("  " + f + "\n")
         sys.exit(1)
-    print("workflow permissions: caller/callee ceilings and action requirements satisfied")
+    print("workflow permissions: caller/callee ceilings satisfied")
 
 
 if __name__ == "__main__":

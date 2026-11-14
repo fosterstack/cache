@@ -10,7 +10,7 @@
 # RELEASE_BIN can point at another directory of scripts (used to prove the cases satisfiable against a throw-away reference; default bin/).
 #
 # FIXED paths the scripts read and write (PROPOSED, they are what the stage's downloads and uploads would carry; the scripts take no arguments
-# because the stage runs them as `bash bin/witnessed.sh STEP bin/STEP.sh`):
+# because the stage runs them as `bash bin/witnessed.sh STEP bin/STEP.sh` (release-apks, release-sign) or `bash bin/witnessed-local.sh STEP bin/STEP.sh` (the rest)):
 #   in : Build's REAL interface (REQ-CHAIN-007-AC17, the fixed table; Build is the reviewed source of truth): witness-build/digests.json with the keys
 #        image-production, image-fips, apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64 (bin/chain_items.py digests_of),
 #        witness-build/build-collection.json, witness-rebuild/..., witness-check/..., provenance/provenance.json, images/<variant>/ (an OCI layout directory) + images/<variant>.digest,
@@ -181,17 +181,20 @@ if a[0] == "bind-items":     # items.json (and, with --product, admission-baseli
     for f in (a[a.index("--record") + 1], a[a.index("--items") + 1]):
         if not os.path.exists(f): print("refused at build: missing %s" % f, file=sys.stderr); sys.exit(1)
     sys.exit(0)
-if a[0] == "bind-check":     # ruling G: check-results/govulncheck.json must be a product of Check's verified scanners record: modelled as the files existing
+if a[0] == "bind-check":     # ruling G and ruling 7 of cache#921: the ubuntu-24.04 runner's check-results/ubuntu-24.04/govulncheck.json must be a product of that runner's verified scanners record: modelled as the files existing
     if os.environ.get("FAIL_STAGE") == "govulncheck": print("refused at check: govulncheck.json: it is not the file Check's record holds", file=sys.stderr); sys.exit(1)
+    if a[a.index("--record") + 1] != "witness-check/ubuntu-24.04/witness-scanners/scanners-collection.json" or a[a.index("--file") + 1] != "check-results/ubuntu-24.04/govulncheck.json":
+        print("refused at check: govulncheck.json is bound only to the ubuntu-24.04 runner's scanners record", file=sys.stderr); sys.exit(1)
     for f in (a[a.index("--record") + 1], a[a.index("--file") + 1], a[a.index("--digests") + 1]):
         if not os.path.exists(f): print("refused at check: missing %s" % f, file=sys.stderr); sys.exit(1)
     if a[a.index("--product") + 1] != "check-results/govulncheck.json": print("refused at check: product: only check-results/govulncheck.json", file=sys.stderr); sys.exit(1)
     sys.exit(0)
-if a[0] == "check-list":     # exactly four records, one per slot
+if a[0] == "check-list":     # exactly six records, one per runner and step
     d = a[a.index("--dir") + 1]
     if os.environ.get("FAIL_STAGE") == "check": print("refused at check: a record is invalid", file=sys.stderr); sys.exit(1)
-    for n in ("scanners", "acceptance", "runtime", "arm64"):
-        if not os.path.exists(os.path.join(d, "witness-" + n, n + "-collection.json")): print("refused at check: missing the %s record" % n, file=sys.stderr); sys.exit(1)
+    for r in ("ubuntu-24.04", "ubuntu-24.04-arm"):
+        for n in ("scanners", "acceptance", "runtime"):
+            if not os.path.exists(os.path.join(d, r, "witness-" + n, n + "-collection.json")): print("refused at check: missing the %s record of %s" % (n, r), file=sys.stderr); sys.exit(1)
     sys.exit(0)
 if a[0] == "apk-compare":    # the comparison job's result file: modelled as the file and the digest list existing
     if os.environ.get("FAIL_STAGE") == "apkcompare": print("refused at rebuild: apk-compare: the result is not a pass", file=sys.stderr); sys.exit(1)
@@ -224,6 +227,8 @@ DIG = {"image-" + v: make_layout(os.path.join(LAYOUTS, v), v) for v in ("product
 def apk_data(variant, arch): return "data-%s-%s" % (variant, arch)
 # REQ-CHAIN-007-AC17, the fixed Build interface table: artifact (runner) -> apk architecture directory -> short name; variant -> file name
 RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
+GV = "check-results/ubuntu-24.04/govulncheck.json"      # the govulncheck stream: the only runner that runs govulncheck is ubuntu-24.04
+CHECK_RECS = ["witness-check/%s/witness-%s/%s-collection.json" % (r, n, n) for r, _, _ in RUNNERS for n in ("scanners", "acceptance", "runtime")]      # Check's six records: three steps on each of the two chips
 APKS = (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk"))
 # Build's Go module lists, in out/ beside each runner's apks
 MODULE_SBOMS = (("standard", "fscache-modules.spdx.json"), ("fips", "fscache-modules-fips.spdx.json"))
@@ -267,10 +272,10 @@ def tree(extra_env=None):
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
         open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
         open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("lock " + v); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("sbom " + v)
-    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist", "check-results", "apk-compare"):
+    for d in ["witness-build", "witness-rebuild", "provenance", "dist", "apk-compare"] + ["witness-check/" + r for r, _, _ in RUNNERS] + ["check-results/" + r for r, _, _ in RUNNERS]:
         os.makedirs(os.path.join(t, d), exist_ok=True)
     open(os.path.join(t, "apk-compare/apk-compare.json"), "w").write("{}")   # the comparison job's result file (modelled as existing; chain-verify apk-compare judges it)
-    open(os.path.join(t, "check-results/govulncheck.json"), "w").write('{"config":{"scanner_name":"govulncheck"}}\n')   # Check's product (ruling G), bound by release-verify
+    open(os.path.join(t, GV), "w").write('{"config":{"scanner_name":"govulncheck"}}\n')   # Check's product (ruling G): only the ubuntu-24.04 runner runs govulncheck; release-verify binds it
     for k in ("archive-linux-amd64", "archive-linux-arm64", "archive-fips-linux-amd64", "archive-fips-linux-arm64"): digs[k] = "sha256:" + hashlib.sha256(k.encode()).hexdigest()
     json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
     items = {}
@@ -283,7 +288,7 @@ def tree(extra_env=None):
     adm(t, "v0.3.0", "v0.3.0")
     for f in ["provenance/provenance.rekor.json", "provenance/provenance.bundle.json"]:      # Sign's three files (REQ-CHAIN-007-AC9: attached to the release; provenance.json is below)
         open(os.path.join(t, f), "w").write("{}")
-    for f in ["witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "provenance/provenance.json"] + ["witness-check/witness-%s/%s-collection.json" % (n, n) for n in ("scanners", "acceptance", "runtime", "arm64")]:
+    for f in ["witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "provenance/provenance.json"] + CHECK_RECS:
         os.makedirs(os.path.dirname(os.path.join(t, f)), exist_ok=True); open(os.path.join(t, f), "w").write("{}")
         if f.endswith("-collection.json"): open(os.path.join(t, f[:-len(".json")] + ".rekor.json"), "w").write("{}")      # R1 (#822 round 1): the entries file Sign keeps beside each record
     for k, n in (("archive-linux-amd64", "fscache_0.3.0_linux_amd64.tar.gz"), ("archive-linux-arm64", "fscache_0.3.0_linux_arm64.tar.gz"),      # the four Linux archives Build uploaded as `dist` (REQ-CHAIN-007-AC21: checksums.txt is NOT among them; release-sign.sh makes it)
@@ -294,7 +299,7 @@ def tree(extra_env=None):
     os.makedirs(os.path.join(t, "release-published"), exist_ok=True)   # what release-assets.sh downloads the published release into (gh release download -D release-published)
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
     return t
-KMS = "awskms:///alias/fosterstack-release-signing"      # the value stage-promote.yml gives RELEASE_KMS_KEY_REF; the P3 workflow cases below read it from that file
+KMS = "awskms:///alias/fosterstack-release-signing"      # the value release.yml gives RELEASE_KMS_KEY_REF to sign-release; the P3 workflow cases below read it from that file
 def run(t, script, env=None, creds=None, tag="v0.3.0"):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
@@ -346,7 +351,7 @@ for s in STAGES:
     after = STAGES[STAGES.index(s) + 1:]
     seen = " ".join(l for l in log(t) if l.startswith("chain-verify"))
     check(rc != 0 and first(se).startswith("refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "baseline" and "--product admission-baseline.json" in seen) or (a == "govulncheck" and "bind-check" in seen) or (a == "apkcompare" and "apk-compare" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
-    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/witness-arm64/arm64-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json", "govulncheck": "check-results/govulncheck.json", "apkcompare": "apk-compare/apk-compare.json"}[s]
+    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/ubuntu-24.04-arm/witness-runtime/runtime-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json", "govulncheck": GV, "apkcompare": "apk-compare/apk-compare.json"}[s]
     os.remove(os.path.join(t, rec)); rc, so, se = run(t, "release-verify")
     check(rc != 0 and "refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
 # rule 58 (PR 3 made Check verify Build's record only): Release does not rely on Check having verified Sign; it verifies Sign's provenance itself, whatever Check's four records say
@@ -430,7 +435,7 @@ check(rc != 0 and not pushes(t), "AC7 an image whose own digest is not the attes
 for miss in ("DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"):
     t = tree(); rc, so, se = run(t, "release-publish", creds=[c for c in REG if c != miss])
     check(rc == 2 and miss in se and not pushes(t), "AC7 a missing %s is refused with exit 2, naming it, before any push" % miss, "rc=%s %s" % (rc, first(se)))
-# ---- REQ-REL-009-AC11 (Codex B1 on the old stage-promote.yml, which moved :latest on every release): the floating tags of a FINAL release --------
+# ---- REQ-REL-009-AC11 (Codex B1 on the old promote stage, which moved :latest on every release): the floating tags of a FINAL release --------
 # AC11: ":X.Y to itself every time, :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest".
 # The released versions are the plain X.Y.Z tags of ghcr.io/fosterstack/cache (rc tags, -fips tags and the floating tags themselves are not versions).
 # NOT in AC11 and so not built: floating tags of the -fips image (it gets its exact tag only), and any flag. The registry fake lists tags with `crane ls`.
@@ -537,13 +542,13 @@ check(rc == 0, "AC8 a good run signs", se)
 check(L and L[0].startswith("vendor-provenance evidence --out"), "AC8 the dependency evidence is produced first (bin/vendor-provenance.py evidence --out DIR)", str(L[:1]))
 # ruling G (advisor Oct 12; cache-ce's PROPOSED interface `evidence --out DIR --provenance FILE --govulncheck FILE --date EPOCH`): the dependency list is the tag checkout's own
 # file, the govulncheck stream is Check's product (bound by release-verify), the date is the admitted commit's committer date from git; each one in the one fixed call
-EV = "vendor-provenance evidence --out release-evidence --provenance dependency-provenance.json --govulncheck check-results/govulncheck.json --date 1760000000"
-check(L and L[0] == EV, "G the evidence call is exactly `evidence --out release-evidence --provenance dependency-provenance.json --govulncheck check-results/govulncheck.json --date EPOCH`", str(L[:1]))
+EV = "vendor-provenance evidence --out release-evidence --provenance dependency-provenance.json --govulncheck check-results/ubuntu-24.04/govulncheck.json --date 1760000000"
+check(L and L[0] == EV, "G the evidence call is exactly `evidence --out release-evidence --provenance dependency-provenance.json --govulncheck check-results/ubuntu-24.04/govulncheck.json --date EPOCH`", str(L[:1]))
 gl = open(os.path.join(t, "calls.log.git")).read().strip().split("\n") if os.path.exists(os.path.join(t, "calls.log.git")) else []
 check(gl == ["git log -1 --format=%ct " + "c" * 40], "G the date is `git log -1 --format=%ct $GITHUB_SHA` (the admitted tag commit's committer date) and git is used for nothing else", str(gl))
-for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, "check-results/govulncheck.json")), {}),
-                           ("is a symlink", lambda t: (os.remove(os.path.join(t, "check-results/govulncheck.json")), os.symlink("/etc/hosts", os.path.join(t, "check-results/govulncheck.json"))), {}),
-                           ("is empty", lambda t: open(os.path.join(t, "check-results/govulncheck.json"), "w").close(), {}),
+for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, GV)), {}),
+                           ("is a symlink", lambda t: (os.remove(os.path.join(t, GV)), os.symlink("/etc/hosts", os.path.join(t, GV))), {}),
+                           ("is empty", lambda t: open(os.path.join(t, GV), "w").close(), {}),
                            ("(dependency-provenance.json) is missing", lambda t: os.remove(os.path.join(t, "dependency-provenance.json")), {}),
                            ("(dependency-provenance.json) is empty", lambda t: open(os.path.join(t, "dependency-provenance.json"), "w").close(), {}),
                            ("(dependency-provenance.json) is a symlink", lambda t: (os.remove(os.path.join(t, "dependency-provenance.json")), os.symlink("/etc/hosts", os.path.join(t, "dependency-provenance.json"))), {})):
@@ -722,8 +727,9 @@ check(all(("release-upload/%s-%s.bundle" % (sh, nm)) in L for sh in ("amd64", "a
 tnb = full_assets(); os.remove(os.path.join(tnb, "release-apks/aarch64/fscache-fips-0.3.0-r0.apk.bundle")); rcnb, sonb, senb = run(tnb, "release-assets", creds=["GH_TOKEN"])
 check(rcnb != 0 and "bundle" in senb and not [l for l in log(tnb) if l.startswith("gh release")], "AC9 an apk with no Rekor bundle beside it stops the step before a release is created or anything is uploaded", "rc=%s %s" % (rcnb, first(senb)))
 for what in ("release upload v0.3.0", "release-upload/amd64-fscache-0.3.0-r0.apk", "release-upload/arm64-fscache-fips-0.3.0-r0.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
-             "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json", "release-upload/provenance.json", "release-upload/provenance.rekor.json", "release-upload/provenance.bundle.json"):
+             "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/ubuntu-24.04-scanners-collection.json", "release-upload/ubuntu-24.04-acceptance-collection.json", "release-upload/ubuntu-24.04-runtime-collection.json", "release-upload/ubuntu-24.04-arm-scanners-collection.json", "release-upload/ubuntu-24.04-arm-acceptance-collection.json", "release-upload/ubuntu-24.04-arm-runtime-collection.json", "release-upload/provenance.json", "release-upload/provenance.rekor.json", "release-upload/provenance.bundle.json"):
     check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
+check(not any(("release-upload/%s-collection.json" % n) in L + " " for n in ("scanners", "acceptance", "runtime", "arm64")) and "arm64-collection" not in L, "AC9 (ruling 7) no Check record is attached under its bare step name, and none under an arm64 step: each is attached as <runner>-<step>-collection.json")
 for variant, name in MODULE_SBOMS:
     staged = os.path.join(t, "release-upload", name)
     check(rc == 0 and os.path.exists(staged) and open(staged).read() == module_sbom(variant),
@@ -835,16 +841,27 @@ t = full_assets(); open(os.path.join(t, "dist/fscache_0.3.0_linux_ppc64.tar.gz")
 t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/aarch64")); refused_before_upload(t, "no apk of the arm64 architecture", "aarch64")
 t = full_assets(); os.remove(os.path.join(t, "release-apks/aarch64/fscache-fips-0.3.0-r0.apk")); refused_before_upload(t, "no -fips apk of the arm64 architecture (one apk of four is missing)", "fips")
 t = full_assets(); os.remove(os.path.join(t, "release-apks/x86_64/fscache-0.3.0-r0.apk")); refused_before_upload(t, "no standard apk of the amd64 architecture (one apk of four is missing)", "x86_64")
-for n in ("scanners", "acceptance", "runtime", "arm64"):
-    t = full_assets(); os.remove(os.path.join(t, "witness-check/witness-%s/%s-collection.json" % (n, n))); refused_before_upload(t, "the Check record %s missing (the four named records are attached)" % n, n)
+for rec in CHECK_RECS:
+    t = full_assets(); os.remove(os.path.join(t, rec)); refused_before_upload(t, "the Check record %s missing (the six records of the two chips are attached)" % rec, rec.rsplit("/", 1)[1])
+def attached_after(t, word):      # run the step on a tree and say whether the word names something it uploads; a refusal before any upload attaches nothing either
+    rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"})
+    return any(word in l for l in log(t) if l.startswith("gh release upload"))
+t = full_assets(); os.makedirs(os.path.join(t, "witness-check/ubuntu-24.04/witness-arm64"))
+for ext in (".json", ".rekor.json"): open(os.path.join(t, "witness-check/ubuntu-24.04/witness-arm64/arm64-collection" + ext), "w").write("{}")
+check(not attached_after(t, "arm64-collection"), "AC9 (ruling 7) an arm64 step record beside Check's three steps is not attached (Check has no arm64 step)")
+t = full_assets(); shutil.copytree(os.path.join(t, "witness-check/ubuntu-24.04"), os.path.join(t, "witness-check/ubuntu-latest"))
+check(not attached_after(t, "ubuntu-latest"), "AC9 (ruling 7) the records of a third runner are not attached (only the two chips' six are)")
+t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check/ubuntu-24.04-arm")); refused_before_upload(t, "no record of the arm chip", "ubuntu-24.04-arm")
 # R1 (#822 round 1; wording pending the owner's approval for REQ-CHAIN-007-AC9, whose text lists what is attached and names no entries file): exactly one <stem>.rekor.json beside each record, in the staging list, the upload list and the coverage gate
-RECS = ["witness-build/build", "witness-rebuild/rebuild"] + ["witness-check/witness-%s/%s" % (n, n) for n in ("scanners", "acceptance", "runtime", "arm64")]
+RECS = ["witness-build/build", "witness-rebuild/rebuild"] + [r[:-len("-collection.json")] for r in CHECK_RECS]
+def stem_of(r): return r.rsplit("/", 1)[1] if r.startswith(("witness-build", "witness-rebuild")) else "%s-%s" % (r.split("/")[1], r.rsplit("/", 1)[1])      # a Check record is attached as <runner>-<step>
+
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"}); L = " ".join(log(t)) + " "
 for r in RECS:
-    nm = r.rsplit("/", 1)[1] + "-collection.rekor.json"
+    nm = stem_of(r) + "-collection.rekor.json"
     check(rc == 0 and ("release-upload/" + nm + " ") in L and os.path.exists(os.path.join(t, "release-upload", nm)), "AC9 R1 the entries file %s is staged and attached beside its record" % nm, "rc=%s %s" % (rc, first(se)))
 for r in RECS:
-    t = full_assets(); os.remove(os.path.join(t, r + "-collection.rekor.json")); refused_before_upload(t, "a record %s-collection.json with no entries file beside it" % r.rsplit("/", 1)[1], r.rsplit("/", 1)[1] + "-collection.rekor.json")
+    t = full_assets(); os.remove(os.path.join(t, r + "-collection.rekor.json")); refused_before_upload(t, "a record %s-collection.json with no entries file beside it" % r, r.rsplit("/", 1)[1] + "-collection.rekor.json")
 t = full_assets(); open(os.path.join(t, "witness-build/other-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "an entries file with no record (other-collection.rekor.json)", "other-collection.rekor.json")
 t = full_assets(); open(os.path.join(t, "release-evidence/build-collection.rekor.json"), "w").write("{}"); refused_before_upload(t, "a second source for the release name build-collection.rekor.json", "build-collection.rekor.json")
 def gate_of(t, mutate):
@@ -853,8 +870,8 @@ def gate_of(t, mutate):
     except OSError: pass      # the run was refused before this file was staged
     r = subprocess.run(["python3", "bin/release-metadata.py", "gate", "--dir", "release-upload"], cwd=t, capture_output=True, text=True)
     return r.returncode, r.stderr
-t = full_assets(); rcg, seg = gate_of(t, lambda d: os.remove(os.path.join(d, "scanners-collection.rekor.json")))
-check(rcg != 0 and "scanners-collection.rekor.json" in seg, "AC9 R1 the coverage gate refuses a record whose entries file is gone, naming it", "rc=%s %s" % (rcg, seg.strip()[:160]))
+t = full_assets(); rcg, seg = gate_of(t, lambda d: os.remove(os.path.join(d, "ubuntu-24.04-scanners-collection.rekor.json")))
+check(rcg != 0 and "ubuntu-24.04-scanners-collection.rekor.json" in seg, "AC9 R1 the coverage gate refuses a record whose entries file is gone, naming it", "rc=%s %s" % (rcg, seg.strip()[:160]))
 t = full_assets(); rcg, seg = gate_of(t, lambda d: open(os.path.join(d, "stray-collection.rekor.json"), "w").write("{}"))
 check(rcg != 0 and "stray-collection.rekor.json" in seg, "AC9 R1 the coverage gate refuses an entries file with no record, naming it", "rc=%s %s" % (rcg, seg.strip()[:160]))
 t = full_assets(); rcg, seg = gate_of(t, lambda d: None)
@@ -868,7 +885,7 @@ rc5, so5, se5 = run(t5, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR"
 check(rc5 == 0 and not os.path.exists(os.path.join(t5, "release-upload/verdict.json")), "AC9 R3b Rebuild's own verdict.json beside its record is allowed and is not attached (the inventory names what is attached)", "rc=%s %s" % (rc5, first(se5)))
 t5 = full_assets(); open(os.path.join(t5, "witness-rebuild/extra.json"), "w").write("{}"); refused_before_upload(t5, "a file of Rebuild's record directory outside the inventory", "extra.json")
 t5 = full_assets(); open(os.path.join(t5, "release-evidence/build-collection.json"), "w").write("{}"); refused_before_upload(t5, "a second source for the release name build-collection.json", "build-collection.json")
-t5 = full_assets(); open(os.path.join(t5, "witness-check/witness-scanners/stray.json"), "w").write("{}"); refused_before_upload(t5, "a stray file beside a Check record", "stray.json")
+t5 = full_assets(); open(os.path.join(t5, "witness-check/ubuntu-24.04/witness-scanners/stray.json"), "w").write("{}"); refused_before_upload(t5, "a stray file beside a Check record", "stray.json")
 t = tree(); rc, so, se = run(t, "release-assets"); check(rc == 2 and "GH_TOKEN" in se and not log(t), "AC9 a missing GH_TOKEN is refused with exit 2, naming it")
 # ---- REQ-CHAIN-006-AC7 (rule 79 amended, owner Oct 10): the post-publish verification, release-postverify.sh -----------------------------------
 # PROPOSED interface: it reads docs/verify-release.cannot-run.json ([{command, reason}], the one exact-text list Check also reads), runs each
@@ -1282,7 +1299,7 @@ for what, text, want in (
     check(rc == 1 and not calls(t) and want in se, "KL-1 post-publish: %s is refused and nothing runs" % what, "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": kmod(lambda b: b.update(cert="x", verificationMaterial=json.loads(KCERT)["verificationMaterial"]))})
 check(rc == 1 and not calls(t) and CERTMSG in se, "KL-1 post-publish: a certificate bundle with an unknown key too gets the certificate refusal first", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
-KREAL = kmod(lambda b: b["verificationMaterial"].update(timestampVerificationData={"rfc3161Timestamps": []}))      # the key set of a real key-signed bundle (the image-publishers fixture)
+KREAL = kmod(lambda b: b["verificationMaterial"].update(timestampVerificationData={"rfc3161Timestamps": []}))      # the key set of a real key-signed bundle
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KREAL})
 check(rc == 0 and len(calls(t)) == 1, "KL-1 post-publish control: a bundle with publicKey, tlogEntries and timestampVerificationData is accepted (the shape check is not vacuous)", "rc=%s calls=%d %s" % (rc, len(calls(t)), first(se)))
 t, rc, so, se = pva([PBF], assets={"provenance.bundle.json": KKEY}, cv="altercommon")
@@ -1365,7 +1382,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "534"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "546"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

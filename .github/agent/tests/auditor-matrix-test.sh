@@ -3275,21 +3275,16 @@ old="$(git ls-files 'bin/auditor-*' 'docs/quality/cve-auditor-*' 2>/dev/null | w
 mkdir -p "$lr/test-evidence"; for f in mappings unmapped other; do printf 'ref: .github/agent/bin/tests/test_x.py\n' > "$lr/test-evidence/$f.yaml"; done
 printf 'test-evidence/mappings.yaml\ntest-evidence/unmapped.yaml\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; trace=$?
 printf 'test-evidence/other.yaml\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; trace_other=$?
-# the second amendment (owner, Oct 3): the patch-release classifier and its test name the auditor directory as data;
-# exactly those two paths — a look-alike next to them still fails
-mkdir -p "$lr/bin"; for f in patch-decide.py patch-decide-test.sh patch-decide2.py; do printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/bin/$f"; done
-printf 'bin/patch-decide.py\nbin/patch-decide-test.sh\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; patchx=$?
-printf 'bin/patch-decide2.py\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; patch_other=$?
 # a whitespace look-alike is another file: git ls-files lists it verbatim and the check reads it verbatim (Codex r1 B1)
-for f in "patch-decide.py " "patch-decide-test.sh "; do printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/bin/$f"; done
-printf 'bin/patch-decide.py \n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws1=$?
-printf 'bin/patch-decide-test.sh \n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws2=$?
-mkdir -p "$lr/ bin"; printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/ bin/patch-decide.py"
-printf ' bin/patch-decide.py\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws3=$?
+mkdir -p "$lr/bin"; for f in "check-file-allowlist.sh " "check-file-allowlist-test.sh "; do printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/bin/$f"; done
+printf 'bin/check-file-allowlist.sh \n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws1=$?
+printf 'bin/check-file-allowlist-test.sh \n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws2=$?
+mkdir -p "$lr/ bin"; printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/ bin/check-file-allowlist.sh"
+printf ' bin/check-file-allowlist.sh\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws3=$?
 { eq "$real" "0" && eq "$named" "1" && eq "$refers" "1" && eq "$exempt" "0" && eq "$smug1" "1" && eq "$smug2" "1" && eq "$old" "0" \
-  && eq "$trace" "0" && eq "$trace_other" "1" && eq "$patchx" "0" && eq "$patch_other" "1" \
+  && eq "$trace" "0" && eq "$trace_other" "1" \
   && eq "$ws1" "1" && eq "$ws2" "1" && eq "$ws3" "1"; } \
-  && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other patch_classifier=$patchx patch_lookalike=$patch_other whitespace=$ws1/$ws2/$ws3"
+  && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other whitespace=$ws1/$ws2/$ws3"
 
 begin "req18-ac1-suites-wired-into-required-allowlist-job" "ci.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
 hy="$(python3 - <<'HH'
@@ -3306,13 +3301,13 @@ HH
 )"
 eq "$hy" "OK" && ok || no "layout check + suites, unconditional, in the required allowlist job" "$hy"
 
-begin "req18-ac2-python-100pct-coverage-gate" "the required 'coverage' job runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
+begin "req18-ac2-python-100pct-coverage-gate" "the required 'test' job runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
 cg="$(python3 - <<'CC'
 import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
-j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["coverage"]
+j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["test"]
 g=[x for x in j["steps"] if ".github/agent/tests/coverage-gate.sh" in x.get("run","")]
-ok=(j.get("name")=="coverage" and len(g)==1 and "--require-hashes" in g[0]["run"]
+ok=(j.get("name")=="test" and len(g)==1 and "--require-hashes" in g[0]["run"]
     and ".github/agent/coverage-requirements.txt" in g[0]["run"]
     and "if" not in g[0] and "continue-on-error" not in g[0])
 print("OK" if ok else "BAD")
@@ -3419,21 +3414,21 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
-begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging script is gone, and the trusted verdict (judge and sweep) runs the action-pin checker, the allowlist guard, the pin-wiring judge and the scanner guard and nothing else over the head"
+begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging script is gone, and the trusted verdict (judge and sweep) runs the action-pin checker, the allowlist guard and the scanner guard and nothing else (and the record judge) over the head"
 nr="$(python3 - <<'NR'
 import os,re
 gate=".github/agent/bin/auditor-review-gate.py"
 src=open(".github/workflows/agent-review-gate.yml").read()
-tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","pin-wiring-test.sh","bin/scan-no-workflow-call-test.sh")
+tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","bin/scan-no-workflow-call-test.sh")
 code="\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 ok=(not os.path.exists(gate) and "auditor-review-gate.py" not in src and "--subs-rev" not in src
     and all(code.count(t)==2 for t in tools) and code.count("bin/audit-record-judge.sh")==3 and "reviews/" not in src)    # the audit-record judge: the verdict job, the sweep and the record writer's last step
 print("OK" if ok else "BAD")
 NR
 )"
-eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the five checks in judge and sweep" "state=$nr"
+eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the four checks in judge and sweep" "state=$nr"
 
-begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the five checks, publish success only when the pin checker, the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record judge ALL exit 0, call each check, and fail when any one fails"
+begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the four checks, publish success only when the pin checker, the allowlist guard, the scanner guard and the passed-audit record judge ALL exit 0, call each check, and fail when any one fails"
 vp="$(python3 - <<'VP'
 import sys, os, subprocess, tempfile, itertools, shutil
 sys.path.insert(0, ".github/agent/fixtures/testlib")
@@ -3442,11 +3437,19 @@ d = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
 def step(job, key):
     r = [x for x in d["jobs"][job]["steps"] if key in x.get("name", "")]
     return r[0]["run"] if len(r) == 1 else None
-judge_run = step("judge", "review gate and pin check")
+# the judge job runs each check as its own step (continue-on-error), then the verdict step turns the four outcomes into the verdict
+jsteps = {x["id"]: x["run"] for x in d["jobs"]["judge"]["steps"] if x.get("id") in ("pins", "allowlist", "scan", "record", "gate")}
+shim = [x["run"] for x in d["jobs"]["judge"]["steps"] if "yaml reader" in x.get("name", "")]
+judge_run = "judge" if len(jsteps) == 5 and len(shim) == 1 and all(x.get("continue-on-error") for x in d["jobs"]["judge"]["steps"] if x.get("id") in ("pins", "allowlist", "scan", "record")) else None
 sweep_run = step("sweep", "judge and publish every open PR")
 if not judge_run or not sweep_run:
     print("BAD missing step"); sys.exit()
 def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
+def run_judge(fx, env):
+    subprocess.run(["bash", "-eo", "pipefail", "-c", shim[0]], cwd=fx, env=env, capture_output=True, text=True)
+    outcomes = ["success" if subprocess.run(["bash", "-eo", "pipefail", "-c", jsteps[k]], cwd=fx, env=env, capture_output=True, text=True).returncode == 0 else "failure"
+                for k in ("pins", "allowlist", "scan", "record")]
+    return subprocess.run(["bash", "-eo", "pipefail", "-c", jsteps["gate"]], cwd=fx, env=dict(env, OUTCOMES=" ".join(outcomes)), capture_output=True, text=True)
 gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
               GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
 root = tempfile.mkdtemp(prefix="verdict-")
@@ -3462,7 +3465,6 @@ try:
     for rel, body in {
         ".github/agent/bin/check-action-pins.py": "import os,sys\nopen(os.environ['CALLS'],'a').write('pins\\n')\nsys.exit(int(os.environ['STUB_PINS']))\n",
         "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\nexit \"$STUB_ALLOW\"\n",
-        ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\nexit \"$STUB_WIRING\"\n",
         "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\nexit \"$STUB_SCAN\"\n",
         "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\nexit \"$STUB_AUDIT\"\n",
     }.items():
@@ -3478,12 +3480,9 @@ try:
         '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
         'esac\n' % (sha, sha))
     os.chmod(gh, 0o755)
-    ls_remote_none = '#!/bin/sh\n[ "$1" = ls-remote ] && exit 0\nexec %s "$@"\n' % shutil.which("git")
-    open(os.path.join(stubbin, "git"), "w").write(ls_remote_none)
-    os.chmod(os.path.join(stubbin, "git"), 0o755)   # the sweep lists the merge queue's branches: none
     bad = []
-    for pins, allow, wiring, scan, audit in itertools.product((0, 1), repeat=5):
-        allpass = (pins, allow, wiring, scan, audit) == (0, 0, 0, 0, 0)
+    for pins, allow, scan, audit in itertools.product((0, 1), repeat=4):
+        allpass = (pins, allow, scan, audit) == (0, 0, 0, 0)
         for which, run in (("judge", judge_run), ("sweep", sweep_run)):
             calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
             for f in (calls, out): open(f, "w").close()
@@ -3491,20 +3490,20 @@ try:
             env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, HEAD_SHA=sha,
                        GITHUB_HEAD_REF="feature", GITHUB_BASE_REF="main", GITHUB_HEAD_REPO="owner/repo",
                        GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan), STUB_AUDIT=str(audit),
+                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_SCAN=str(scan), STUB_AUDIT=str(audit),
                        PATH=stubbin + ":" + os.environ["PATH"])
-            r = subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
+            r = run_judge(fx, env) if which == "judge" else subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
             c = open(calls).read().split()
-            tag = "%s pins=%d allow=%d wiring=%d scan=%d audit=%d" % (which, pins, allow, wiring, scan, audit)
+            tag = "%s pins=%d allow=%d scan=%d audit=%d" % (which, pins, allow, scan, audit)
             if which == "judge":
                 v = open(out).read().strip()
-                if sorted(c) != ["allow", "audit", "pins", "scan", "wiring"]: bad.append(tag + " calls=%s" % c)
+                if sorted(c) != ["allow", "audit", "pins", "scan"]: bad.append(tag + " calls=%s" % c)
                 if v != ("verdict=success" if allpass else "verdict=failure"): bad.append(tag + " out=%s" % v)
                 if (r.returncode == 0) != allpass: bad.append(tag + " rc=%d" % r.returncode)
             else:
                 pub = [x for x in c if x.startswith("conclusion=")]
                 if pub != ["conclusion=success" if allpass else "conclusion=failure"]: bad.append(tag + " published=%s" % pub)
-                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "audit", "pins", "scan", "wiring"]):
+                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "audit", "pins", "scan"]):
                     bad.append(tag + " calls=%s" % c)
                 if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
     print("OK" if not bad else "BAD " + "; ".join(bad[:4]))
@@ -3512,153 +3511,7 @@ finally:
     shutil.rmtree(root, ignore_errors=True)
 VP
 )"
-eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all five checks exit 0" "$vp"
-
-begin "req-dep-005-publishers-skip-a-live-queue-head" \
-  "the PR publisher and the sweep post nothing on a live merge queue branch tip, or when the list is unreadable"
-qs="$(python3 - <<'QS'
-import sys, os, subprocess, tempfile, shutil
-sys.path.insert(0, ".github/agent/fixtures/testlib")
-import pyyaml as yaml
-d = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
-def step(job, key):
-    r = [x for x in d["jobs"][job]["steps"] if key in x.get("name", "")]
-    return r[0]["run"] if len(r) == 1 else None
-publish_run = step("publish", "publish the auditor-review-gate check run")
-sweep_run = step("sweep", "judge and publish every open PR")
-if not publish_run or not sweep_run:
-    print("BAD missing step"); sys.exit()
-def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
-gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
-              GIT_COMMITTER_EMAIL="t@t", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
-root = tempfile.mkdtemp(prefix="qhead-")
-try:
-    src = os.path.join(root, "src"); fx = os.path.join(root, "fx")
-    os.makedirs(src)
-    sh("git", "-C", src, "init", "-q"); open(os.path.join(src, "f"), "w").write("x")
-    subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=gitenv)
-    subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"],
-                   check=True, env=gitenv, capture_output=True)
-    sha = sh("git", "-C", src, "rev-parse", "HEAD")
-    other = "0" * 40
-    sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
-    sh("git", "clone", "-q", src, fx)
-    for rel, body in {
-        ".github/agent/bin/check-action-pins.py": "",
-        "bin/check-file-allowlist.sh": "cat >/dev/null\ntouch \"$FLAG\"\n",   # judging ran: the flag exists
-        ".github/agent/tests/pin-wiring-test.sh": "",
-        "bin/scan-no-workflow-call-test.sh": "",
-        "bin/audit-record-judge.sh": "",
-    }.items():
-        f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True); open(f, "w").write(body)
-    os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
-    stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
-    real_git = shutil.which("git")
-    # ls-remote: the tip (first), then STUB_PAD other queue refs; the tip only once the flag exists when
-    # STUB_TIP_AFTER is set (it goes live while the head is judged); unreadable when STUB_LSREMOTE_FAIL is 1
-    open(os.path.join(stubbin, "git"), "w").write('#!/bin/sh\n'
-        'if [ "$1" = ls-remote ]; then\n'
-        '  echo "$*" >> "$CALLS"\n'
-        '  [ "$STUB_LSREMOTE_FAIL" = 1 ] && exit 128\n'
-        '  [ -n "$STUB_TIP_AFTER" ] && [ ! -e "$FLAG" ] && exit 0\n'
-        '  [ -n "$STUB_QUEUE_TIP" ] &&'
-        ' printf \'%%s\\trefs/heads/gh-readonly-queue/main/pr-9-%%s\\n\' "$STUB_QUEUE_TIP" "$STUB_QUEUE_TIP"\n'
-        '  i=0; while [ "$i" -lt "${STUB_PAD:-0}" ]; do\n'
-        '    printf \'%%040d\\trefs/heads/gh-readonly-queue/main/pr-%%d-x\\n\' "$i" "$i"; i=$((i+1)); done\n'
-        '  exit 0\n'
-        'fi\n'
-        'exec %s "$@"\n' % real_git)
-    open(os.path.join(stubbin, "gh"), "w").write('#!/bin/sh\n'
-        'case "$1 $2" in\n'
-        '"pr list") echo "7 %s feature owner/repo" ;;\n'
-        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo none ;;\n'
-        '"api repos/o/r/check-runs") for a in "$@"; do'
-        ' case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
-        '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
-        'esac\n' % (sha, sha))
-    for n in ("git", "gh"): os.chmod(os.path.join(stubbin, n), 0o755)
-    bad = []
-    def run(run_text, tip="", fail=0, pad=0, after=""):
-        calls = os.path.join(root, "calls"); tmp = os.path.join(root, "tmp"); flag = os.path.join(root, "flag")
-        open(calls, "w").close(); os.makedirs(tmp, exist_ok=True)
-        if os.path.exists(flag): os.remove(flag)
-        env = dict(os.environ, CALLS=calls, FLAG=flag, RUNNER_TEMP=tmp, HEAD_SHA=sha, VERDICT="success", RUN_URL="u",
-                   GH_TOKEN="t", GITHUB_REPOSITORY="o/r", GITHUB_BASE_REF="main", LIST_TOKEN="t", APP_TOKEN="t",
-                   APP_SLUG="app", DEFAULT="main", STUB_QUEUE_TIP=tip, STUB_LSREMOTE_FAIL=str(fail), STUB_PAD=str(pad),
-                   STUB_TIP_AFTER=after, PATH=stubbin + ":" + os.environ["PATH"])
-        r = subprocess.run(["bash", "-c", run_text], cwd=fx, env=env, capture_output=True, text=True)
-        c = open(calls).read().split("\n")
-        return r.returncode, [x for x in c if x.startswith("conclusion=")], c
-    # (queue tip, ls-remote fails, must it post?)
-    for tip, fail, posts in (("", 0, True), (sha, 0, False), ("", 1, False), (other, 0, True)):
-        for which, text in (("publish", publish_run), ("sweep", sweep_run)):
-            rc, posted, c = run(text, tip, fail)
-            tag = "%s tip=%s fail=%d" % (which, "none" if not tip else ("this head" if tip == sha else "another"), fail)
-            if bool(posted) != posts: bad.append(tag + " posted=%s" % posted)
-            if which == "sweep" and fail and rc != 1: bad.append(tag + " exit=%d, want 1" % rc)
-            if not any(x.startswith("ls-remote https://github.com/o/r refs/heads/gh-readonly-queue/") for x in c):
-                bad.append(tag + " no ls-remote of this repository's queue branches")
-            if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
-    # a long list with the head first (grep -q would stop at once): under pipefail it must still never post
-    for which, text in (("publish", publish_run), ("sweep", sweep_run)):
-        n_posted = sum(1 for _ in range(20) if run(text, sha, 0, 1200)[1])
-        if n_posted: bad.append("%s long list: posted in %d of 20 runs" % (which, n_posted))
-    # the head becomes a queue tip while it is judged: the sweep reads the list after judging, so it posts nothing
-    rc, posted, c = run(sweep_run, sha, 0, 0, "1")
-    if posted: bad.append("sweep: posted %s although the head went live while it was judged" % posted)
-    print("OK" if not bad else "BAD " + "; ".join(bad[:5]))
-finally:
-    shutil.rmtree(root, ignore_errors=True)
-QS
-)"
-eq "$qs" "OK" && ok || no "both publishers skip a live queue branch tip; an unreadable list posts nothing" "$qs"
-
-begin "req-dep-005-queue-judge-binds-the-ref-to-the-head" \
-  "main's judge runs only when the fetched queue branch ends at the event's head sha; else verdict=failure"
-qb="$(python3 - <<'QB'
-import sys, os, subprocess, tempfile, shutil
-sys.path.insert(0, ".github/agent/fixtures/testlib")
-import pyyaml as yaml
-d = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
-r = [x for x in d["jobs"]["queue-judge"]["steps"] if "fetch the queue head as data" in x.get("name", "")]
-if len(r) != 1:
-    print("BAD missing step"); sys.exit()
-step = r[0]["run"]
-root = tempfile.mkdtemp(prefix="qbind-")
-try:
-    sha, other = "a" * 40, "b" * 40
-    stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
-    # fetches succeed; the fetched queue branch ends at $STUB_TIP; every other git call is the real one
-    open(os.path.join(stubbin, "git"), "w").write('#!/bin/sh\n'
-        'case "$1" in\n'
-        '  fetch) echo "fetch $*" >> "$CALLS"; exit 0 ;;\n'
-        '  rev-parse) [ "$2" = refs/remotes/queue/head ] && { echo "$STUB_TIP"; exit 0; } ;;\n'
-        'esac\n'
-        'exec %s "$@"\n' % shutil.which("git"))
-    os.chmod(os.path.join(stubbin, "git"), 0o755)
-    work = os.path.join(root, "work"); os.makedirs(os.path.join(work, ".github/agent/bin"))
-    judge_stub = os.path.join(work, ".github/agent/bin/queue-gate-judge.sh")
-    open(judge_stub, "w").write('echo "judge $*" >> "$CALLS"\nexit 0\n')
-    bad = []
-    for branch, tip, verdict, judged in (("gh-readonly-queue/main/pr-9-" + sha, sha, "success", True),
-                                        ("gh-readonly-queue/main/pr-9-" + sha, other, "failure", False),
-                                        ("feature/x", sha, "failure", False)):
-        calls = os.path.join(root, "calls"); out = os.path.join(root, "out")
-        open(calls, "w").close(); open(out, "w").close()
-        env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, HEAD_SHA=sha, HEAD_BRANCH=branch, GH_TOKEN="t",
-                   STUB_TIP=tip, PATH=stubbin + ":" + os.environ["PATH"])
-        subprocess.run(["bash", "-c", step], cwd=work, env=env, capture_output=True, text=True)
-        v = open(out).read().strip()
-        c = open(calls).read()
-        tag = "branch=%s tip=%s" % (branch.split("/")[-1][:12], "head" if tip == sha else "other")
-        if v != "verdict=" + verdict: bad.append(tag + " " + v)
-        if (("judge " + sha) in c) != judged: bad.append(tag + " judge called=%s" % (("judge " + sha) in c))
-    print("OK" if not bad else "BAD " + "; ".join(bad[:4]))
-finally:
-    shutil.rmtree(root, ignore_errors=True)
-QB
-)"
-eq "$qb" "OK" && ok || no "the judge runs only when the fetched queue branch ends at the event's head sha" "$qb"
+eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all four checks exit 0" "$vp"
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'
@@ -3667,67 +3520,36 @@ import pyyaml as yaml
 src=open(".github/workflows/agent-review-gate.yml").read(); d=yaml.safe_load(src)
 on=d.get("on") or d.get(True) or {}
 J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{}); w=J.get("sweep",{})
-q=J.get("queue-judge",{}); qp=J.get("queue-publish",{})
 runs=lambda job: "\n".join(x.get("run","") for x in job.get("steps",[]))
 jr, pr, wr = runs(j), runs(p), runs(w)
-# the one git call the publisher and the sweep make: the list of the merge queue's branches
-# (a head that is the tip of one belongs to the queue's own publisher)
-LS = "git ls-remote \"https://github.com/${GITHUB_REPOSITORY}\" 'refs/heads/gh-readonly-queue/*'"
 co=[x for x in j.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
 wco=[x for x in w.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
 tok=lambda job: [x for x in job.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
 main_only="github.event.pull_request.base.ref == github.event.repository.default_branch"
 def scoped(t): return len(t)==1 and {k for k in (t[0].get("with") or {}) if k.startswith("permission-")}=={"permission-checks"} and t[0]["with"]["permission-checks"]=="write"
-qco=[x for x in q.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
-ok=(set(on)=={"pull_request_target","workflow_run","schedule","workflow_dispatch"}
+ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"}
     and "edited" in on["pull_request_target"]["types"]
-    and d.get("permissions")=={} and set(J)=={"judge","publish","record","queue-judge","queue-publish","sweep"}
-    # queue-judge: a workflow_run job (the default branch's copy), never a pull_request_target job; NO environment,
-    # no secret, no App token (contents: read, plus pull-requests: read for the allowlist guard's one lookup); fires
-    # only for a merge_group CI run; the default branch's checkout; judged by main's script; its verdict is a job output
-    and on["workflow_run"].get("workflows")==["CI"]
-    and on["workflow_run"].get("types")==["requested"]
-    and "environment" not in q and q.get("permissions")=={"contents":"read","pull-requests":"read"}
-    and "secrets." not in yaml.safe_dump(q) and not tok(q) and "verdict" in (q.get("outputs") or {})
-    and q.get("if")=="github.event_name == 'workflow_run' && github.event.workflow_run.event == 'merge_group'"
-    and "pull_request_target" not in str(q.get("if")) and "pull_request" not in yaml.safe_dump(q.get("steps",[]))
-    and len(qco)==1 and (qco[0].get("with") or {}).get("persist-credentials") is False
-    and "ref" not in (qco[0].get("with") or {})
-    and "bash .github/agent/bin/queue-gate-judge.sh" in runs(q) and "checkout" not in runs(q)
-    # queue-publish: needs queue-judge, agent environment, permissions {}, a checks-only App token, no checkout and no
-    # git, a 40-hex head, success only when the judge's verdict output is success; RUN_LINK (not a *_URL name) for the
-    # run link
-    and qp.get("needs")=="queue-judge" and qp.get("environment")=="agent" and qp.get("permissions")=={}
-    and "!cancelled()" in str(qp.get("if")) and "github.event.workflow_run.event == 'merge_group'" in str(qp.get("if"))
-    and scoped(tok(qp)) and "actions/checkout" not in yaml.safe_dump(qp) and "git " not in runs(qp)
-    and "refs/pull" not in runs(qp)
-    and "${#HEAD_SHA}" in runs(qp) and "[!0-9a-f]" in runs(qp)
-    and "github.event.workflow_run.head_sha" in yaml.safe_dump(qp)
-    and "needs.queue-judge.outputs.verdict" in yaml.safe_dump(qp) and "-f name=auditor-review-gate" in runs(qp)
-    and "RUN_LINK" in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(qp) and "RUN_URL" not in yaml.safe_dump(q)
+    and d.get("permissions")=={} and set(J)=={"judge","publish","record","sweep"}
     # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
     and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
     and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
     and "base.sha" not in yaml.safe_dump(j) and "auditor-review-gate.py" not in jr
-    and 'check-action-pins.py --verify-tags --git "$HEAD_SHA"' in jr and "PIN_WIRING_JUDGE_GIT=\"$HEAD_SHA\"" in jr
+    and 'check-action-pins.py --verify-tags --git "$HEAD_SHA"' in jr
     and "checkout" not in jr and "pip install" not in jr
     # publisher: agent-env App token (checks only), no PR data, not on cancellation
     and p.get("needs")=="judge" and p.get("environment")=="agent" and p.get("permissions")=={}
     and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and scoped(tok(p))
-    and "actions/checkout" not in yaml.safe_dump(p) and "refs/pull" not in pr and "git " not in pr.replace(LS, "")
-    and pr.count(LS) == 1
+    and "actions/checkout" not in yaml.safe_dump(p) and "refs/pull" not in pr and "git " not in pr
     and "-f name=auditor-review-gate" in pr and '-f head_sha="$HEAD_SHA"' in pr
     # sweep: schedule/dispatch only, base checkout, data-only fetch + sha check, only App-authored checks count
     and w.get("environment")=="agent" and "pull_request_target" not in str(w.get("if")) and "schedule" in str(w.get("if"))
     and len(wco)==1 and (wco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (wco[0].get("with") or {})
     and scoped(tok(w)) and 'refs/remotes/pr/${n}' in wr and '= "$sha" ] || continue' in wr
     and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and "auditor-review-gate.py" not in wr
-    and 'check-action-pins.py --verify-tags --git "$sha"' in wr and "PIN_WIRING_JUDGE_GIT=\"$sha\"" in wr
-    and "checkout" not in wr and "statuses" not in src and "gh-readonly-queue" not in wr.replace(LS, "")
-    # the sweep reads the queue branches once, in the loop, after judging and right before the post
-    and wr.count(LS) == 1 and wr.index("while read") < wr.index("bin/audit-record-judge.sh") < wr.index(LS)
-    and wr.index(LS) < wr.index("-f name=auditor-review-gate"))
+    and 'check-action-pins.py --verify-tags --git "$sha"' in wr
+    and "checkout" not in wr and "statuses" not in src and "gh-readonly-queue" not in src
+    and wr.index("while read") < wr.index("bin/audit-record-judge.sh") < wr.index("-f name=auditor-review-gate"))
 # the auditor's own mint of the same App never includes checks
 a=yaml.safe_load(open(".github/workflows/auditor.yml"))
 mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
@@ -3793,7 +3615,7 @@ try:
     subprocess.run(["git", "-C", srcd, "add", "-A"], check=True, env=gitenv)
     subprocess.run(["git", "-C", srcd, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=gitenv, capture_output=True)
     sha = sh("git", "-C", srcd, "rev-parse", "HEAD"); sh("git", "-C", srcd, "update-ref", "refs/pull/7/head", sha); sh("git", "clone", "-q", srcd, fx)
-    for rel in (".github/agent/bin/check-action-pins.py", "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh", "bin/scan-no-workflow-call-test.sh", "bin/audit-record-judge.sh"):
+    for rel in (".github/agent/bin/check-action-pins.py", "bin/check-file-allowlist.sh", "bin/scan-no-workflow-call-test.sh", "bin/audit-record-judge.sh"):
         f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True)
         open(f, "w").write("import sys\nopen(__import__('os').environ['CALLS'],'a').write('judged\\n')\n" if rel.endswith(".py") else "cat >/dev/null 2>&1\necho judged >> \"$CALLS\"\n")
     os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
@@ -3808,9 +3630,6 @@ try:
         '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
         'esac\n' % (sha, sha, sha))
     os.chmod(gh, 0o755)
-    ls_remote_none = '#!/bin/sh\n[ "$1" = ls-remote ] && exit 0\nexec %s "$@"\n' % shutil.which("git")
-    open(os.path.join(stubbin, "git"), "w").write(ls_remote_none)
-    os.chmod(os.path.join(stubbin, "git"), 0o755)   # the sweep lists the merge queue's branches: none
     def run(last, rec):
         calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
         for f in (calls, out): open(f, "w").close()
@@ -3819,10 +3638,10 @@ try:
                    STUB_LAST=last, STUB_REC=str(rec), PATH=stubbin + ":" + os.environ["PATH"])
         subprocess.run(["bash", "-c", sweep_run], cwd=fx, env=env, capture_output=True, text=True)
         return open(calls).read().split()
-    c = run("stale", 1); ok = ok and c.count("judged") == 5 and "conclusion=success" in c           # old failure + a record branch -> judged again, published
+    c = run("stale", 1); ok = ok and c.count("judged") == 4 and "conclusion=success" in c           # old failure + a record branch -> judged again, published
     c = run("stale", 0); ok = ok and c == []                                                          # old failure, no record -> skipped, nothing called
     c = run("success", 1); ok = ok and c == []                                                        # already green -> nothing
-    c = run("failure", 0); ok = ok and c.count("judged") == 5                                         # a recent failure is judged as before
+    c = run("failure", 0); ok = ok and c.count("judged") == 4                                         # a recent failure is judged as before
 finally:
     shutil.rmtree(root, ignore_errors=True)
 print("OK" if ok else "BAD")

@@ -46,7 +46,7 @@ permissions:
   contents: read
 
 jobs:
-  # govulncheck publishes no release binary, so it is built here, in a job that holds no credential (no secret, no environment, contents: read
+  # govulncheck publishes no release binary, so it is built here from the committed tools/govulncheck module, in a job that holds no credential (no secret, no environment, contents: read
   # only). The audit job below holds the model-federation identity and the App's key: it downloads this binary and uses it only when its
   # sha256 equals this job's output (REQ-REL-011-AC1; Oct 21 2026: a builder and a credential never share a machine).
   govulncheck-build:
@@ -62,31 +62,24 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Go for the build
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        continue-on-error: true
-        with:
-          go-version-file: go.mod
-          cache: false
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
 
-      - name: Build govulncheck at its pinned module version
+      - name: build govulncheck (pinned by go.sum)
+        run: bash bin/install-scanner.sh govulncheck
+
+      - name: place the built govulncheck for upload
         id: build
         run: |
-          set -uo pipefail
-          mkdir -p "${RUNNER_TEMP}/gobin"
-          if GOBIN="${RUNNER_TEMP}/gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.1.4; then
-            echo "sha256=$(sha256sum "${RUNNER_TEMP}/gobin/govulncheck" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::could not build govulncheck; reachability will be recorded 'did not run'"
-            echo "sha256=" >> "$GITHUB_OUTPUT"
-          fi
+          set -euo pipefail
+          bash bin/pack-govulncheck.sh
+          echo "sha256=$(sha256sum govulncheck-out/govulncheck | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Hand the binary to the audit job
-        if: ${{ steps.build.outputs.sha256 != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: govulncheck
-          path: ${{ runner.temp }}/gobin/govulncheck
+          path: govulncheck-out/govulncheck
           retention-days: 1
           if-no-files-found: error
 
@@ -261,6 +254,28 @@ jobs:
             --known-defect-log "${KNOWN_DEFECT_LOG:-.github/agent/known-defect-log.json}" \
             --out "${RUNNER_TEMP}/manifest.json"
 
+      - name: pin pip (hash-checked)
+        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: Install the pinned adjudicator SDK (real adjudicator only, before the driver)
+        # The real adjudicator client imports the anthropic SDK; it was never installed, so every
+        # model call failed with ModuleNotFoundError (surfaced by the driver as "adjudicator
+        # unavailable"). Install it hash-pinned (the same pinned-checksum contract as the
+        # scanners) into the SAME python3 the driver runs, and ASSERT the workload-identity
+        # federation surface is importable — or fail the run with exactly that message.
+        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --require-hashes --break-system-packages \
+            -r .github/agent/adjudicator-requirements.txt
+          python3 - <<'PY'
+          from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
+          from openai.auth import WorkloadIdentity  # noqa: F401  (the scanner panel's second seat)
+          print("adjudicator SDKs ready: both workload-identity federation surfaces importable")
+          PY
+
       - name: Mint the federated OIDC identity token (real adjudicator only, after scans)
         id: oidc
         if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
@@ -307,28 +322,6 @@ jobs:
           # verdict (agent-review-gate.yml), and the auditor must not be able to mint one
           permission-contents: write
           permission-pull-requests: write
-
-      - name: pin pip (hash-checked)
-        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
-        run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt
-          python3 -m pip --version
-      - name: Install the pinned adjudicator SDK (real adjudicator only, before the driver)
-        # The real adjudicator client imports the anthropic SDK; it was never installed, so every
-        # model call failed with ModuleNotFoundError (surfaced by the driver as "adjudicator
-        # unavailable"). Install it hash-pinned (the same pinned-checksum contract as the
-        # scanners) into the SAME python3 the driver runs, and ASSERT the workload-identity
-        # federation surface is importable — or fail the run with exactly that message.
-        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
-        run: |
-          set -euo pipefail
-          python3 -m pip install --quiet --require-hashes --break-system-packages \
-            -r .github/agent/adjudicator-requirements.txt
-          python3 - <<'PY'
-          from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
-          from openai.auth import WorkloadIdentity  # noqa: F401  (the scanner panel's second seat)
-          print("adjudicator SDKs ready: both workload-identity federation surfaces importable")
-          PY
 
       - name: Run the auditor
         env:

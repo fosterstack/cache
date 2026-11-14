@@ -29,22 +29,22 @@
   {
    "workflow": "release.yml",
    "job": "sign",
-   "reason": "calls stage-sign.yml: Sign, the one provenance signer (REQ-CHAIN-001)"
+   "reason": "Sign: the one provenance signer; it holds the identity token for the release key and builds nothing (REQ-CHAIN-001)"
   },
   {
    "workflow": "release.yml",
    "job": "sign-rebuild",
-   "reason": "calls stage-sign.yml a second time, for the Rebuild records: Sign's second call, which checks and signs them with the release key and receives no Rebuild apk or image (REQ-CHAIN-005-AC4)"
+   "reason": "Sign's second job: checks and signs the Rebuild records with the release key and receives no Rebuild apk or image (REQ-CHAIN-005-AC4)"
   },
   {
    "workflow": "release.yml",
    "job": "sign-check",
-   "reason": "calls stage-sign.yml a third time, for the Check records: Sign's third call, which checks and signs them with the release key (REQ-REL-011-AC1)"
+   "reason": "Sign's third job: checks and signs the Check records of both chips with the release key (REQ-REL-011-AC1)"
   },
   {
    "workflow": "release.yml",
-   "job": "release",
-   "reason": "calls stage-promote.yml: Release, whose Witness steps and cosign signatures are made with the release key through the job's OIDC token (REQ-CHAIN-007)"
+   "job": "sign-release",
+   "reason": "Sign's fourth job, after release publishes: it alone holds the release key's role for the signatures and attestations of the published images and apks (REQ-CHAIN-007-AC3); the release job holds no identity token"
   },
   {
    "workflow": "scan.yml",
@@ -57,39 +57,19 @@
    "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
   },
   {
-   "workflow": "go-freshness.yml",
-   "job": "persona-uat",
-   "reason": "Persona UAT, weekly run (REQ-UAT-001, owner ratified Oct 3 and Oct 4): behind the PERSONA_UAT_ENABLED gate (off unless the repository variable is exactly 'true'), the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, packages read"
-  },
-  {
    "workflow": "release.yml",
-   "job": "persona-uat",
-   "reason": "Persona UAT, release-candidate run (REQ-UAT-001-AC1; advisor reading Oct 17 of the owner's Oct 3/4 rule and REQ-CHAIN-007-AC14): needs Build only, behind the PERSONA_UAT_ENABLED gate and only on an rc tag; the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no packages, no registry credential; Build's image reaches only a registry on the runner's loopback"
+   "job": "persona-uat-rc",
+   "reason": "the job-level call of persona-uat.yml on a release candidate: the called file's job mints a federated identity token for the model provider in the persona-uat environment (REQ-UAT-001-AC1); it signs no provenance and publishes nothing"
   },
   {
-   "workflow": "stage-promote.yml",
-   "job": "release",
-   "reason": "Release (REQ-CHAIN-007): the Witness steps and the cosign signatures of release-sign.sh are made with the release key through the job's OIDC token; the one job with a registry credential, the release key (KMS, for the apks too) through that token, and packages: write"
+   "workflow": "persona-uat.yml",
+   "job": "persona-uat-rc",
+   "reason": "Persona UAT, release-candidate run, called by release.yml (REQ-UAT-001-AC1): a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no registry credential"
   },
   {
-   "workflow": "stage-sign.yml",
-   "job": "sign",
-   "reason": "Sign: the one provenance signer (REQ-CHAIN-001), and the signer of the Build records (owner Oct 22)"
-  },
-  {
-   "workflow": "stage-sign.yml",
-   "job": "sign-rebuild",
-   "reason": "Sign: the signer of the Rebuild records (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md); receives no Rebuild apk or image"
-  },
-  {
-   "workflow": "stage-sign.yml",
-   "job": "sign-check",
-   "reason": "Sign: the signer of the Check records (REQ-REL-011-AC1, cache#606): the Check jobs hold no identity token; Sign checks their records against the results and signs them with the release key"
-  },
-  {
-   "workflow": "ci.yml",
-   "job": "live-test",
-   "reason": "the rule-12 live test of our VEX files (REQ-SCAN-012): OIDC federation into the dedicated live-test AWS account and Google project only (environment live-test); signs and publishes nothing"
+   "workflow": "persona-uat.yml",
+   "job": "persona-uat-weekly",
+   "reason": "Persona UAT, weekly run (REQ-UAT-001): the same federation in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no registry credential"
   },
   {
    "workflow": "release.yml",
@@ -102,9 +82,14 @@
    "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
   },
   {
-   "workflow": "evidence-letter.yml",
-   "job": "sign",
-   "reason": "the monthly evidence letter's one signing job: the KMS release key by federation, its Rekor entry recorded (REQ-REL-013-AC9; owner's Oct 3 amendment, ops/docs/ratify/2026-10-02-owner-load.md)"
+   "workflow": "main-candidate-rescan.yml",
+   "job": "build",
+   "reason": "the call of release.yml in snapshot mode: id-token is the ceiling the caller grants (REQ-CHAIN-004-AC14); no called job holds it in that mode"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "build",
+   "reason": "the call of release.yml in snapshot mode: id-token is the ceiling the caller grants (REQ-CHAIN-004-AC14); no called job holds it in that mode"
   }
  ]
 }

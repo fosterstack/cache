@@ -5,8 +5,8 @@
 # receives and re-signs the payload with the release key (signed with the KMS key; its Rekor entry is recorded); verifiers trust
 # only the release key and refuse a record whose only signature is the throwaway one.
 # STEP is one of a CLOSED list: apk, build, rapk, rebuild (a release), snapshot-apk, snapshot-build, snapshot-rapk, snapshot-rebuild (the snapshot mode) and Check's four steps
-# scanners, acceptance, runtime and arm64 (they build and run workloads, so their jobs hold no identity token either; REQ-REL-011-AC1), and release-verify (its job holds no identity
-# token and cannot assume the signing role). The other Release steps stay on the KMS helper, which signs in their own job.
+# scanners, acceptance and runtime (they build and run workloads, so their jobs hold no identity token either; REQ-REL-011-AC1), and release-verify, release-publish, release-assets and release-postverify (their jobs hold no identity
+# token and cannot assume the signing role; the sign job sign-release signs the records of release-verify and release-publish, as Sign signs Build's). The other Release steps stay on the KMS helper, which signs in their own job.
 #  - The record is witness-DIR/STEP-collection.local.json, where DIR is STEP without a leading snapshot-: a snapshot job uploads the same directory as a release job, and the
 #    snapshot marker is the step name inside the record (every verifier refuses a snapshot- name, REQ-CHAIN-004-AC13).
 #  - The key is key hygiene, not the trust boundary: it is made in a directory of mode 0700 under the runner temp folder (umask 077), handed to Witness by path only, never
@@ -21,7 +21,7 @@
 set -euo pipefail
 step="$1"
 shift
-case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|scanners|acceptance|runtime|arm64) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac
+case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|release-publish|release-assets|release-postverify|scanners|acceptance|runtime) ;; *) echo "witnessed-local: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN
 umask 077

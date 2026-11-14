@@ -8,7 +8,7 @@
 # test, the tests that prove a keyless signature is refused, the history in docs/). Admission refuses a keyless
 # signature on every tag and accepts the owner's SSH signature on every tag, patch tags included
 # (bin/admission-tag-signer-test.sh, bin/chain-build-admit-test.sh). Creating a tag at all is the release judges'
-# job (bin/chain-release-shape.py, bin/release-patch-wiring-test.sh).
+# job (bin/chain-release-shape.py).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 -I - "$root" <<'PY'

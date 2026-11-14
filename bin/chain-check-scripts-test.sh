@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-SUP-001-AC30, REQ-SUP-001-AC33, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
-# RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
+# RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-phase.sh and PR 2's
 # bin/witnessed.sh do not exist): step 4.
 #
 # The behaviour of the Check scripts (v0.3.0 rules 55, 66, 72, 79; advisor read-back approved Oct 9). Each script is run in a throw-away tree
@@ -40,8 +40,9 @@
 #         server) cannot be faked here without re-implementing them, so only the interface (unknown kind, missing images) is tested below; that a
 #         failing suite fails the script and that a suite which ran no test fails it (REQ-CHAIN-006-AC5) is proven by the implementation PR's
 #         dry run on GitHub, and by the review brief which asks the reviewers to read those suites.
-#   [P] bin/check-stage.sh PHASE (scanners|acceptance|runtime): verifies Build's record and Sign's provenance FIRST (every phase), then runs only
-#         that phase's checks in the order of bin/chain-check-shape.py PHASES; an unknown phase exits 2 naming it; a failed verify runs no check.
+#   [P] bin/check-phase.sh PHASE (scanners|acceptance|runtime): the one script of both chips; makes the policy, verifies Build's record FIRST (every phase), then runs only
+#         that phase's checks in the order of bin/chain-check-shape.py PHASES; the chip comes from uname -m (govulncheck only on amd64; check-artifacts --arch from it);
+#         an unknown phase (arm64 is none) exits 2 naming it; a failed verify runs no check.
 #   [P] bin/witnessed.sh STEP SCRIPT [ARGS] (PR 2's helper; the rule 68 cap, as amended by the owner Oct 9): fetches the identity token, runs
 #         `witness run --step STEP ... -o witness-records/STEP.json -- timeout 540 bash SCRIPT ARGS`. Fake curl / witness / timeout on PATH below.
 #         WHAT IS NOT FIXED: what real `witness run` does with a command that exits non-zero (here: no record is written; the dry run decides) and
@@ -833,7 +834,7 @@ done
 # read from the binary's build info), REQ-FIPS-001-AC2 and REQ-FIPS-002-AC1 (three runtime postures; the forced-standard build never claims the module),
 # REQ-PLAT-003-AC1 (production and -fips run no shell at any probed path), REQ-PLAT-002-AC1 (production and -fips: both platform entries are in the image
 # archive and the image serves cache traffic on this runner's architecture). The -debug clause has no subject (owner Oct 9). The arm64 binaries and images
-# need an arm64 runner, which the one-job Check does not have (reported in round 2); only the amd64 halves run here.
+# run on the arm64 leg of the check matrix; only the amd64 halves run here.
 # The "binaries" are small real HTTP servers (python3) so the script's curl calls are real; GOFIPS140 is read from a fake `go version -m`.
 fa="$work/fa"; mkdir -p "$fa/bin" "$fa/images" "$fa/out" "$fa/real"
 cat > "$fa/server.py" <<'PYS'
@@ -991,7 +992,7 @@ if [ "$rc" = 0 ] && [ "$addrs" = " 3 127.0.0.1:0;" ]; then
 else
   bad "PLAT-001-AC1 the servers were given [$addrs] (rc=$rc): ${out:0:160}"
 fi
-# REQ-CHAIN-006-AC17 (advisor 0385): the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on an arm64 runner
+# REQ-CHAIN-006-AC17 (advisor 0385): the same checks for the linux/arm64 binaries and images, run by the arm64 leg of the check matrix (bin/check-phase.sh passes --arch from uname -m)
 mkarch "$fa/dist"
 aok "AC17 --arch arm64: the arm64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}" --arch arm64
 if grep -Fq -- '--platform linux/arm64' "$work/log" && [ -f "$fa/out/artifacts-result-arm64.json" ] && jq -e '.arch == "arm64" and .production.digest and .fips.digest' "$fa/out/artifacts-result-arm64.json" > /dev/null 2>&1; then ok "AC17 the arm64 images run with --platform linux/arm64 and the result names the arch and the same candidate digests"; else bad "AC17 arm64 run: no --platform linux/arm64, or artifacts-result-arm64.json incomplete"; fi
@@ -1464,11 +1465,14 @@ reset_h; hrun X=1 -- '../x' bin/step.sh a
 if [ "$h_ok" = 1 ] && [ "$rc" = 2 ] && [ ! -s "$work/hwlog" ]; then ok "AC11 a step name that is not a plain lower-case word is refused (exit 2) before anything runs"; else bad "AC11 bad step name -> rc=$rc, log: $(cat "$work/hwlog")"; fi
 reset_h; hrun X=1 -- extra bin/step.sh extra
 if [ "$h_ok" = 1 ] && [ "$rc" = 2 ] && [ ! -s "$work/hwlog" ] && [ ! -s "$work/hwargv" ]; then ok "AC11 a fourth step outside the closed list (extra) is refused (exit 2) before anything runs"; else bad "AC11 unknown step extra -> rc=$rc"; fi
+reset_h; hrun X=1 -- arm64 bin/step.sh arm64
+if [ "$h_ok" = 1 ] && [ "$rc" = 2 ] && [ ! -s "$work/hwlog" ] && [ ! -s "$work/hwargv" ]; then ok "AC11 there is no arm64 step in the closed list (exit 2) before anything runs"; else bad "AC11 step arm64 -> rc=$rc"; fi
 reset_h; for s in scanners acceptance runtime; do hrun X=1 -- "$s" bin/step.sh "$s"; done
 got=$(cd "$hw" && find . -path './witness-*' -type f | sed 's|^\./||' | sort | tr '\n' ' ')
 if [ "$got" = "witness-acceptance/acceptance-collection.local.json witness-runtime/runtime-collection.local.json witness-scanners/scanners-collection.local.json " ]; then ok "AC12 the three steps are accepted and leave exactly three records, one per step (the next stage verifies the list)"; else bad "AC12 the records: $got"; fi
-# ---- REQ-CHAIN-006-AC3 / AC11: bin/check-stage.sh, the fixed dispatcher (verify first, then only the phase's checks) -------------------
-dp="$work/dp"; mkdir -p "$dp/bin"; cp "$root/bin/check-stage.sh" "$dp/bin/" 2> /dev/null || true
+# ---- REQ-CHAIN-006-AC1 / AC3 / AC11 / AC17: bin/check-phase.sh PHASE, Check's one script for both chips (verify first, then only the phase's checks) ----
+# The chip comes from `uname -m` inside the script (a stub uname is first on PATH here), never from an argument.
+dp="$work/dp"; mkdir -p "$dp/bin"; cp "$root/bin/check-phase.sh" "$dp/bin/" 2> /dev/null || true
 cat > "$dp/bin/chain-verify.py" <<'EOF'
 #!/usr/bin/env bash
 echo "verify $*" >> "$DP_LOG"
@@ -1478,45 +1482,100 @@ if [ "${VERIFY_STRICT:-}" = 1 ]; then   # a record that is not there is refused,
 fi
 exit "${VERIFY_RC:-0}"
 EOF
-for s in check-scan check-fips check-artifacts check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n' "$s" > "$dp/bin/$s.sh"; done
+for s in check-scan check-fips check-artifacts check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n[ "${CHECK_FAIL:-}" != %s ] || exit 1\n' "$s" "$s" > "$dp/bin/$s.sh"; done
 cat > "$dp/bin/python3" <<'EOF'
 #!/usr/bin/env bash
 [ "$1 $2" = "-I -B" ] || { echo "python3 not isolated: $*" >> "$DP_LOG"; exit 3; }
 script=$3; shift 3
-case "$script" in bin/check-govulncheck.py) echo "check-govulncheck $*" >> "$DP_LOG" ;; *) bash "bin/chain-verify.py" "$@" ;; esac
+case "$script" in bin/check-govulncheck.py) echo "check-govulncheck $*" >> "$DP_LOG"; [ "${CHECK_FAIL:-}" != check-govulncheck ] || exit 1 ;; *) bash "bin/chain-verify.py" "$@" ;; esac
 EOF
-chmod +x "$dp/bin/python3"
-drun() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" VERIFY_RC="${VERIFY_RC:-0}" GITHUB_REF_NAME=v0.3.0 bash bin/check-stage.sh "$@") 2>&1) || rc=$?; }   # a release run always has its tag (Q5)
-# ---- REQ-CHAIN-006-AC17 and rule 58: the arm64 target verifies Build's record and Sign's provenance BEFORE it loads or runs anything ----------
-cp "$root/bin/check-phase-arm64.sh" "$dp/bin/" 2> /dev/null || true
-printf '#!/usr/bin/env bash\necho "docker $*" >> "$DP_LOG"\n' > "$dp/bin/docker"; chmod +x "$dp/bin/docker"
+printf '#!/usr/bin/env bash\n[ "$*" = "-m" ] || exit 64\necho "${UNAME_M:-x86_64}"\n' > "$dp/bin/uname"
+chmod +x "$dp/bin/python3" "$dp/bin/uname"
 mkdir -p "$dp/witness-build"; : > "$dp/witness-build/build-collection.json"; : > "$dp/witness-build/digests.json"
-arun64() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && env "$@" PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" GITHUB_REF_NAME=v0.3.0 bash bin/check-phase-arm64.sh) 2>&1) || rc=$?; }
-arun64 X=1
-if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start " ] && [ "$(grep -c '^check-artifacts' "$work/dplog")" = 1 ] \
-   && grep -q '^check-artifacts --arch arm64 --digests witness-build/digests.json ' "$work/dplog" && grep -n '' "$work/dplog" | awk -F: '/verify stage-start/{a=$1} /check-artifacts/{c=$1} END{exit !(a<c)}';  then ok "AC17 the arm64 target makes the policy, verifies Build's record, verifies Sign's provenance, then runs the arm64 artifact checks on the digest file it verified (rule 58)"; else bad "AC17 arm64 target ran: $(tr '\n' '|' < "$work/dplog" | cut -c1-300)"; fi
-# (c) the stage-start the arm64 leg runs is the one the dispatcher runs: the same line, naming Build's record only
-if [ "$(grep -c 'chain-verify.py stage-start' "$root/bin/check-phase-arm64.sh")" = 1 ] && [ "$(grep 'chain-verify.py stage-start' "$root/bin/check-phase-arm64.sh")" = "$(grep 'chain-verify.py stage-start' "$root/bin/check-stage.sh")" ] \
-   && ! grep -q 'provenance' "$root/bin/check-phase-arm64.sh" "$root/bin/check-stage.sh"; then ok "AC17 the arm64 target's stage-start is the dispatcher's own line, and neither script names Sign's provenance"; else bad "AC17 the stage-start lines differ, or a Check script names Sign's provenance"; fi
-arm_stops() { # arm_stops LABEL ENV... : the target fails and nothing of the candidate is loaded or run
-  local l=$1; shift; arun64 "$@"
-  if [ "$rc" != 0 ] && ! grep -Eq '^(check-artifacts|docker)' "$work/dplog"; then ok "$l"; else bad "$l -> rc=$rc, log: $(tr '\n' '|' < "$work/dplog" | cut -c1-200)"; fi; }
-arm_stops "rule 58 a forged Build record (stage-start refuses it): no artifact is loaded, no binary runs" VERIFY_FAIL=stage-start
-arm_stops "rule 58 no policy for the tag: no artifact is loaded, no binary runs" VERIFY_FAIL=policy
+drun() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" UNAME_M="${UNAME_M:-x86_64}" VERIFY_RC="${VERIFY_RC:-0}" GITHUB_REF_NAME=v0.3.0 bash bin/check-phase.sh "$@") 2>&1) || rc=$?; }   # a release run always has its tag (Q5)
+checks_of() { grep -E '^check-' "$work/dplog" | cut -d' ' -f"$1" | tr '\n' ' '; }
+stops() { # stops LABEL PHASE ENV...: the script fails and no check of the candidate runs
+  local l=$1 ph=$2; shift 2; export "$@"; drun "$ph"; unset "${@%%=*}"
+  if [ "$rc" != 0 ] && ! grep -Eq '^check-' "$work/dplog"; then ok "$l"; else bad "$l -> rc=$rc, log: $(tr '\n' '|' < "$work/dplog" | cut -c1-200)"; fi; }
+for ph in scanners acceptance runtime; do
+  stops "rule 58 phase $ph: a forged Build record (stage-start refuses it): no check runs" "$ph" VERIFY_FAIL=stage-start
+  stops "rule 58 phase $ph: no policy for the tag: no check runs" "$ph" VERIFY_FAIL=policy
+done
 rm -f "$dp/witness-build/build-collection.json"
-arm_stops "rule 58 a missing Build record: no artifact is loaded, no binary runs" VERIFY_STRICT=1
+stops "rule 58 a missing Build record: no check runs" runtime VERIFY_STRICT=1
 : > "$dp/witness-build/build-collection.json"
 drun scanners; d_ok=0; [ "$rc" = 0 ] && grep -q '^check-scan' "$work/dplog" && d_ok=1
 drun nosuch
 if [ "$d_ok" = 1 ] && [ "$rc" = 2 ] && grep -Fq 'unknown phase: nosuch' <<< "$out" && ! grep -q '^check-' "$work/dplog"; then ok "AC3 an unknown phase is refused (exit 2) naming it, and no check runs"; else bad "AC3 unknown phase -> rc=$rc: ${out:0:100}"; fi
+drun arm64
+if [ "$d_ok" = 1 ] && [ "$rc" = 2 ] && ! grep -q '^check-' "$work/dplog"; then ok "AC1 there is no arm64 phase: the chip is not a phase (exit 2, no check runs)"; else bad "AC1 phase arm64 -> rc=$rc, log: $(tr '\n' ' ' < "$work/dplog")"; fi
 VERIFY_RC=1 drun scanners
 if [ "$d_ok" = 1 ] && [ "$rc" != 0 ] && ! grep -q '^check-' "$work/dplog"; then ok "AC3 when verifying Build's record fails, no check runs (rule 58)"; else bad "AC3 verify failure -> rc=$rc, log: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun scanners
-if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start " ] && grep -q '^verify policy make .*--tag ' "$work/dplog" && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1 | tr '\n' ' ')" = "check-scan check-govulncheck " ]; then ok "AC3 phase scanners: the policy made per tag (Q5), both verifications, then only the scan"; else bad "AC3 phase scanners ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start " ] && grep -q '^verify policy make .*--tag ' "$work/dplog" && [ "$(checks_of 1)" = "check-scan check-govulncheck " ]; then ok "AC3 phase scanners on amd64: the policy made per tag (Q5), both verifications, then the scan and the source scan"; else bad "AC3 phase scanners ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+CHECK_FAIL=check-scan drun scanners
+if [ "$rc" != 0 ] && ! grep -q '^check-govulncheck' "$work/dplog"; then ok "AC3 a failing scan fails the scanners phase and the source scan does not run after it"; else bad "AC3 failing check-scan -> rc=$rc, log: $(tr '\n' ' ' < "$work/dplog")"; fi
+CHECK_FAIL=check-govulncheck drun scanners
+if [ "$rc" != 0 ]; then ok "AC3 a failing source scan fails the scanners phase"; else bad "AC3 failing check-govulncheck -> rc=$rc"; fi
+CHECK_FAIL=check-fips drun runtime
+if [ "$rc" != 0 ] && ! grep -Eq '^check-(artifacts|guide)' "$work/dplog"; then ok "AC3 a failing check fails the runtime phase and no later check runs"; else bad "AC3 failing check-fips -> rc=$rc, log: $(tr '\n' ' ' < "$work/dplog")"; fi
+CHECK_FAIL=check-acceptance drun acceptance
+if [ "$rc" != 0 ]; then ok "AC3 a failing suite fails the acceptance phase"; else bad "AC3 failing check-acceptance -> rc=$rc"; fi
+UNAME_M=aarch64 drun scanners
+if [ "$rc" = 0 ] && [ "$(checks_of 1)" = "check-scan " ] && ! grep -q '^check-govulncheck' "$work/dplog" && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start " ]; then ok "AC1 phase scanners on arm64: the same verifications and the scan, no source scan (govulncheck runs on the amd64 chip only)"; else bad "AC1 phase scanners on arm64 ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun acceptance
-if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+if [ "$rc" = 0 ] && [ "$(checks_of 1,2)" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+UNAME_M=aarch64 drun acceptance
+if [ "$rc" = 0 ] && [ "$(checks_of 1,2)" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC1 phase acceptance on arm64 runs the same two suites"; else bad "AC1 phase acceptance on arm64 ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
-if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+if [ "$rc" = 0 ] && [ "$(checks_of 1,2)" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --arch check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, artifacts, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+if grep -q '^check-artifacts --arch amd64 --digests witness-build/digests.json ' "$work/dplog"; then ok "AC17 phase runtime on x86_64: the artifact checks are told --arch amd64"; else bad "AC17 x86_64 artifact line: $(grep '^check-artifacts' "$work/dplog")"; fi
+UNAME_M=aarch64 drun runtime
+if [ "$rc" = 0 ] && [ "$(checks_of 1,2)" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --arch check-guide --guide " ] && grep -q '^check-artifacts --arch arm64 --digests witness-build/digests.json ' "$work/dplog" && ! grep -q -- '--arch amd64' "$work/dplog"; then ok "AC17 phase runtime on aarch64: the same checks, the artifact checks told --arch arm64"; else bad "AC17 aarch64 runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+for u in riscv64 x86 armv7l; do
+  UNAME_M="$u" drun runtime
+  if [ "$rc" != 0 ] && ! grep -q '^check-' "$work/dplog"; then ok "AC1 a chip other than x86_64 and aarch64 ('$u') stops the script and no check runs"; else bad "AC1 chip '$u' -> rc=$rc, log: $(tr '\n' ' ' < "$work/dplog")"; fi
+done
+if [ "$(grep -c 'chain-verify.py stage-start' "$root/bin/check-phase.sh")" = 1 ] && grep -q 'stage-start --stage check --previous build ' "$root/bin/check-phase.sh" && ! grep -q 'provenance' "$root/bin/check-phase.sh"; then ok "AC17 the script's one stage-start names Build's record only, and it never names Sign's provenance"; else bad "AC17 the stage-start lines, or a mention of Sign's provenance in bin/check-phase.sh"; fi
+for gone in check-stage.sh check-phase-scanners.sh check-phase-acceptance.sh check-phase-runtime.sh check-phase-arm64.sh; do
+  if [ ! -e "$root/bin/$gone" ]; then ok "AC1 bin/$gone is gone (bin/check-phase.sh is the one script)"; else bad "AC1 bin/$gone still exists"; fi
+done
+# ---- REQ-REL-011-AC1: bin/check-records-digests.sh RUNNER DIR... (a Check job's list of its records, keyed <runner>/<folder>) ----
+crd="$work/crd"; mkdir -p "$crd/witness-scanners" "$crd/witness-runtime"
+printf 'scanners record\n' > "$crd/witness-scanners/scanners-collection.json"; printf 'rekor entry\n' > "$crd/witness-scanners/scanners-collection.rekor.json"; printf 'runtime record\n' > "$crd/witness-runtime/runtime-collection.json"
+# crd_run RUNNER DIR...: the script gets RUNNER, the out file o.json, then the folders; $out is the file's text, $so what it printed on stdout
+crd_run() {
+  local a=(); rm -f "$crd/o.json"; [ "$#" = 0 ] || a=("$1" o.json "${@:2}")
+  rc=0; so=$( (cd "$crd" && bash "$root/bin/check-records-digests.sh" ${a[@]+"${a[@]}"}) 2> "$work/crderr") || rc=$?
+  out=$(cat "$crd/o.json" 2> /dev/null || true)
+}
+crd_run ubuntu-24.04 witness-scanners witness-runtime
+want=$(jq -S -c -n --arg a "sha256:$(sha256sum "$crd/witness-scanners/scanners-collection.json" | cut -d' ' -f1)" --arg b "sha256:$(sha256sum "$crd/witness-scanners/scanners-collection.rekor.json" | cut -d' ' -f1)" --arg c "sha256:$(sha256sum "$crd/witness-runtime/runtime-collection.json" | cut -d' ' -f1)" '{"ubuntu-24.04/witness-scanners": {"scanners-collection.json": $a, "scanners-collection.rekor.json": $b}, "ubuntu-24.04/witness-runtime": {"runtime-collection.json": $c}}')
+if [ "$rc" = 0 ] && [ "$out" = "$want" ]; then ok "REL-011-AC1 the list is one key-sorted JSON object keyed <runner>/<folder>, each file with its sha256"; else bad "REL-011-AC1 check-records-digests ubuntu-24.04 -> rc=$rc: ${out:0:200}"; fi
+crd_run ubuntu-24.04-arm witness-scanners witness-runtime
+if [ "$rc" = 0 ] && [ "$(jq -c 'keys' <<< "$out")" = '["ubuntu-24.04-arm/witness-runtime","ubuntu-24.04-arm/witness-scanners"]' ] && [ "$(jq -c '[.[][]] | length' <<< "$out")" = 3 ]; then ok "REL-011-AC1 the arm runner's list is keyed ubuntu-24.04-arm/<folder>"; else bad "REL-011-AC1 check-records-digests ubuntu-24.04-arm -> rc=$rc: ${out:0:200}"; fi
+crd_run ubuntu-24.04 witness-scanners witness-runtime; a=$out; crd_run ubuntu-24.04-arm witness-scanners witness-runtime; b=$out
+if [ "$(jq -n -c --argjson a "$a" --argjson b "$b" '($a + $b) | length')" = 4 ] && [ "$(jq -c -n --argjson a "$a" --argjson b "$b" '$a * $b | [.[][]] | length')" = 6 ]; then ok "REL-011-AC1 the two chips' lists never collide (the same folders under two runner keys)"; else bad "REL-011-AC1 the two lists collide"; fi
+for r in arm64 ubuntu-latest ubuntu-22.04 macos-14 ubuntu-24.04-arm64 ""; do
+  crd_run "$r" witness-scanners
+  if [ "$rc" = 2 ] && [ -z "$out$so" ]; then ok "REL-011-AC1 an unknown runner ('$r') exits 2 and prints nothing"; else bad "REL-011-AC1 runner '$r' -> rc=$rc, out: ${out:0:100}"; fi
+done
+crd_run ubuntu-24.04
+if [ "$rc" = 2 ] && [ -z "$out$so" ]; then ok "REL-011-AC1 a runner, the out file and no folder exits 2"; else bad "REL-011-AC1 runner only -> rc=$rc: ${out:0:100}"; fi
+(cd "$crd" && rm -f o.json && bash "$root/bin/check-records-digests.sh" ubuntu-24.04 o.json witness-scanners witness-runtime > "$work/crdso" 2> /dev/null) || true
+if [ ! -s "$work/crdso" ] && [ -s "$crd/o.json" ]; then ok "REL-011-AC1 the list goes to the out file and nothing is printed on stdout"; else bad "REL-011-AC1 stdout: $(head -c 100 "$work/crdso")"; fi
+(cd "$crd" && printf 'old' > o.json && bash "$root/bin/check-records-digests.sh" ubuntu-24.04 o.json witness-scanners witness-runtime) || true
+if [ "$(jq -c 'length' "$crd/o.json" 2> /dev/null)" = 2 ]; then ok "REL-011-AC1 an existing out file is overwritten"; else bad "REL-011-AC1 out file not overwritten"; fi
+crd_run
+if [ "$rc" = 2 ] && [ -z "$out$so" ]; then ok "REL-011-AC1 no argument exits 2"; else bad "REL-011-AC1 no argument -> rc=$rc: ${out:0:100}"; fi
+mkdir -p "$crd/witness-empty"; crd_run ubuntu-24.04 witness-scanners witness-empty
+if [ "$rc" = 1 ] && [ -z "$so" ]; then ok "REL-011-AC1 a record folder with no file fails (a missing record is not a smaller list)"; else bad "REL-011-AC1 empty folder -> rc=$rc: ${out:0:100}"; fi
+crd_run ubuntu-24.04 witness-scanners witness-missing
+if [ "$rc" = 1 ] && [ -z "$so" ] && grep -q "not a plain folder" "$work/crderr"; then ok "REL-011-AC1 a record folder that is not there fails"; else bad "REL-011-AC1 missing folder -> rc=$rc: ${out:0:100}"; fi
+ln -s witness-runtime "$crd/witness-link"; crd_run ubuntu-24.04 witness-link
+if [ "$rc" = 1 ] && grep -q "not a plain folder" "$work/crderr"; then ok "REL-011-AC1 a symlinked record folder fails"; else bad "REL-011-AC1 symlinked folder -> rc=$rc"; fi
+rm -f "$crd/witness-link"; mkdir -p "$crd/witness-sub/inner"; crd_run ubuntu-24.04 witness-sub
+if [ "$rc" = 1 ] && grep -q "not a regular file" "$work/crderr"; then ok "REL-011-AC1 a folder holding a folder (not a regular file) fails"; else bad "REL-011-AC1 inner folder -> rc=$rc"; fi
 # ---- ruling G (advisor Oct 12): bin/check-govulncheck.py, the source scan of the product module, whose output Release reads from Check's record -----------------------
 # `govulncheck -json ./...` runs once in the scanners step with the pinned Go (the fixed path /usr/local/bin/fscache-go/bin first on PATH, GOTOOLCHAIN=local,
 # GOFLAGS=-mod=vendor and GOPROXY=off, so the scan reads the exact bytes the build uses; never a flag or toolchain of the caller's environment); the raw stream is written byte for byte to OUT/govulncheck.json, which the Witness
@@ -1768,7 +1827,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=592
+EXPECT=630
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

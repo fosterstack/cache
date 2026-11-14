@@ -13,5 +13,5 @@ python3 bin/chain-verify.py stage-start --stage release --previous rebuild --rec
 # the owner's rule of Oct 21 2026: Rebuild's apks are compared with Build's in the compare job (no key, no token); this step reads only that job's small result file and accepts a pass for Build's attested apk digests
 python3 bin/chain-verify.py apk-compare --file apk-compare/apk-compare.json --digests witness-build/digests.json
 python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check
-# ruling G: the govulncheck stream release-sign hands the evidence step is a product of Check's verified scanners record (bound under Check's identity, for Build's digests)
-python3 bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json
+# ruling G: the govulncheck stream release-sign hands the evidence step is a product of the scanners record of the amd64 runner, the only one that runs govulncheck (bound under Check's identity, for Build's digests)
+python3 bin/chain-verify.py bind-check --policy policy.json --record witness-check/ubuntu-24.04/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/ubuntu-24.04/govulncheck.json --product check-results/govulncheck.json

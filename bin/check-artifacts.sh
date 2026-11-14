@@ -8,7 +8,7 @@
 #   REQ-FIPS-001-AC2  that forced-standard build is not a validated-module build: the module check of AC1 rejects its binary
 #   REQ-PLAT-003-AC1  the production and the -fips image run no shell at any probed path
 #   REQ-PLAT-002-AC1  the production and the -fips image archives carry both linux/amd64 and linux/arm64, and the image serves cache traffic here
-# --arch arm64 (REQ-CHAIN-006-AC17) runs the same checks on the linux/arm64 binaries and images; the check-arm64 job runs it on an arm64 runner. The default
+# --arch arm64 (REQ-CHAIN-006-AC17) runs the same checks on the linux/arm64 binaries and images; the arm64 leg of the check job runs it on an arm64 runner. The default
 # is amd64, run by the check job. Writes OUT/artifacts-result.json (arm64: artifacts-result-arm64.json, with the arch) naming both candidate digests and every AC asserted. The certificate number is never written.
 set -euo pipefail
 LGROOT=$PWD

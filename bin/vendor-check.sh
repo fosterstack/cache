@@ -31,8 +31,8 @@ esac
 [ -d "$src" ] && [ -r "$src" ] || die "the tree $src is not a readable directory"
 src=$(cd "$src" 2>/dev/null && pwd -P) || die "the tree $src cannot be resolved to a physical directory"
 
-scratch=""
-cleanup() { local rc=$?; set +e; [ -z "$scratch" ] || { chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"; }; exit $rc; }
+unset scratch
+cleanup() { local rc=$?; set +e; [ -z "${scratch-}" ] || { chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"; }; exit $rc; }
 trap cleanup EXIT
 
 if [ ! -d "$src/vendor" ] || [ -L "$src/vendor" ]; then
@@ -118,7 +118,7 @@ function fail(msg) { print "vendor-check.sh: " FILENAME ":" FNR ": " msg > "/dev
 
 scratch=$(mktemp -d) || die "no scratch directory" 1
 tree="$scratch/tree"; mkdir "$tree" || die "no scratch tree" 1
-( cd "$src" && tar -cf - --exclude=./.git --exclude=./vendor . ) | ( cd "$tree" && tar -xf - ) || die "cannot copy $src" 1
+( cd "$src" && tar -cf - --exclude=./.git --exclude=./vendor . ) | tar -xf - -C "$tree" || die "cannot copy $src" 1
 ( cd "$tree" && go mod verify ) >"$scratch/verify.log" 2>&1 || { cat "$scratch/verify.log" >&2; die "go mod verify failed" 1; }
 ( umask 022; cd "$tree" && go mod vendor ) >"$scratch/vendor.log" 2>&1 || { cat "$scratch/vendor.log" >&2; die "go mod vendor failed" 1; }
 cmp -s "$src/go.mod" "$tree/go.mod" || die "go mod vendor changed go.mod: the committed go.mod is not what the vendored tree was made from" 1

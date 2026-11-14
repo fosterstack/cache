@@ -2,11 +2,9 @@
   "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
   "env_names": [
     "DIGESTS",
+    "LEG",
     "MODE",
-    "RAPK_ARM_RECORDS",
-    "RAPK_RECORDS",
-    "RECORDS",
-    "RECORDS_ARM64"
+    "RECORDS"
   ],
   "scripts": [
     {
@@ -57,7 +55,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
+      "sha256": "96631cc7cb6b00fb3a3f3b7b1c5b38f8d9938aea5eb6f668a9035edcd86d96bf",
       "tools": [
         "make",
         "at",
@@ -73,7 +71,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "fa99405a70d2b1ee73abb8c5465762d32e71f98b0a126b3af38db5ee2e8bdacc",
+      "sha256": "b8efa3eefd286d6dcfd3e53e824fdc261418d096ae0b7f20a3af752e964a9e17",
       "tools": [
         "at",
         "aws",
@@ -100,13 +98,6 @@
           "rule": "deny",
           "line": "  [ \"$got\" = \"$SUM\" ] || pipeline_fail \"${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner\"",
           "line_sha256": "9f7919497d8fd256779d60755071eb60aebbee18846b7523a220c2d4aa169370",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    [ \"$TOOL\" = docker-scout ] || SCOUT_VER=\"${TOOL#docker-scout-}\"",
-          "line_sha256": "8836e172326e4cd0efaa0f586ca851977c876876c95f642b8e9120ec577a589f",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -149,7 +140,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
+      "sha256": "2e09a11b964cfcfc632bc8da1e0c9cc406525f2aa5dfc44523e83277affbdb2f",
       "tools": [
         "at",
         "bash",
@@ -234,7 +225,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
+      "sha256": "096b1cd46903aefc921f2e59c633e5889139bfdb93c39675340cba83672c91ab",
       "tools": [
         "at"
       ],
@@ -244,18 +235,18 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
+      "sha256": "754ee5bb31f7cad861dbd44502ee2197e5120c12584895aaaa5ba890036c0d96",
       "tools": [
         "at",
         "git"
       ],
       "runs": [],
       "signs": false,
-      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof, run by build-admit.py (from origin/main) and patch-decide.py rc-proof; reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
+      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof, run by build-admit.py (from origin/main); reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
     },
     {
       "path": "bin/install-build-tools.sh",
-      "sha256": "4703b2ee829fa12247e1abd1c1fcdaeacece6fb495a1a172e100a58505ae4267",
+      "sha256": "2e161723f2311c64a444c9bc2476c712e7369ed586119275c45a13d9e2727f2f",
       "tools": [
         "at",
         "command",
@@ -320,7 +311,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2; handoff 0713): runs witness run once with a throwaway key; Witness's own environment holds no identity token, no AWS_ROLE_ARN and no AWS_WEB_IDENTITY_TOKEN_FILE for any step, and the wrapped command is the plain bash SCRIPT, so no AWS role or token-path name stands in the command-run record (attestors environment, git, material, product; never slsa; the steps whose scripts sign with the key themselves, release-sign and release-apks, are handed the role and a token file as RELEASE_ROLE_ARN and RELEASE_TOKEN_FILE, sensitive keys of the record, and bin/release-sign.sh and bin/release-sign-apks.sh map them onto the AWS variables themselves, REQ-CHAIN-007-AC15; the token made for it is removed when Witness returns), then fetches a fresh identity token (audience sts.amazonaws.com) into a file in a private directory under RUNNER_TEMP that a trap removes and signs the collection's payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record); a Witness collection is not a provenance statement",
-      "sha256": "d72e0e84301adffc7e750e342b0e8eb3863a0989e14606d8dba2fdd2137ead54",
+      "sha256": "822548b46deb2c1537e9ad3e75ea29b6f7d976368f46b39742488f4451e54b81",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -363,7 +354,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "be4c8cdcf99c8f47ecc8659f1776034eb5df9725fb0ded860c06e929f2eecb08",
+      "sha256": "df7ba5d4cf214d66e6259c3146716ec3f76fc0a5ac2dfbac3991d0b5adf55fec",
       "reads_env": [
         "GH_TOKEN",
         "DOCKERHUB_USERNAME",
@@ -378,11 +369,13 @@
         "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
         "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
         "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
-        "scanners": "bin/check-phase-scanners.sh",
-        "acceptance": "bin/check-phase-acceptance.sh",
-        "runtime": "bin/check-phase-runtime.sh",
-        "arm64": "bin/check-phase-arm64.sh",
-        "release-verify": "bin/release-verify.sh"
+        "scanners": "bin/check-phase.sh",
+        "acceptance": "bin/check-phase.sh",
+        "runtime": "bin/check-phase.sh",
+        "release-verify": "bin/release-verify.sh",
+        "release-assets": "bin/release-assets.sh",
+        "release-postverify": "bin/release-postverify.sh",
+        "release-publish": "bin/release-publish.sh"
       },
       "exceptions": [
         {
@@ -414,7 +407,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1; handoff 0713): for each payload that chain-verify.py sign-records has already checked and staged, signs the payload with the release KMS key through the one signing function (bin/chain-verify.py sign-record, which checks RELEASE_KMS_KEY_REF and keeps the Rekor entry beside the record), each call run by bin/with-aws-token.sh with a fresh identity token that is removed when the call ends, copies the data files unchanged, then verifies every signed record against the release key; builds nothing and runs no Witness",
-      "sha256": "42eeef9bbeb1a49b89227578ff7be9e679e8a35e7ee97ec9826087d6c56cc318",
+      "sha256": "c6be6041132774632b7652304468bcb108fa01bfb34974a659f08fa6f6fe3896",
       "reads_env": [
         "AWS_ROLE_ARN",
         "AWS_REGION",
@@ -434,8 +427,8 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the lists of the records Rebuild's jobs made (REQ-CHAIN-005-AC4): each apk job prints its own leg after its Witness step (--rapk), the assemble job checks both legs against the folders BEFORE its Witness step (--check: any difference, extra or missing file, empty or invalid output is refused) and prints the whole list after it; the text leaves a job as a job output and Sign refuses any folder that differs; reads and prints, writes nothing, builds nothing",
-      "sha256": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49"
+      "reason": "the lists of the records Rebuild's jobs made (REQ-CHAIN-005-AC4): each apk job writes its own leg to a file it uploads after its Witness step (--rapk), the assemble job checks both uploaded files against the folders BEFORE its Witness step (--check: any difference, extra or missing file, empty or invalid file is refused) and prints the whole list after it; Sign refuses any folder that differs; builds nothing",
+      "sha256": "6ffbe755ab676d7d58f5831875f2cba9fcdcfafbdabd4fe2b45de7344475272c"
     },
     {
       "path": "bin/build-stage-apk.sh",
@@ -561,7 +554,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): main's copy, read from origin/main by bin/build-admit.py and run on the tagged commit's sha, tag and tag object; reads the record branch with gh GET only and writes nothing",
-      "sha256": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485"
+      "sha256": "0507ac99636b3094100d499a82e43d7a03f2467869748cfe1dc6dfcd21666e77"
     },
     {
       "path": "bin/audit-record.py",
@@ -576,7 +569,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing",
-      "sha256": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f"
+      "sha256": "55149407c2564acef44873f34e0943f6de21dac39e40d890ad3545d900c5b2c8"
     },
     {
       "path": "bin/build-freeze.sh",
@@ -588,7 +581,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the freeze job's script: runs the requirements tool's verify-freeze of the tagged tree with the pinned Go for each release baseline file and writes one freeze-ok line per file; it runs only in the freeze job of stage-build.yml, which holds no token and no Witness step",
+      "reason": "the freeze job's script: runs the requirements tool's verify-freeze of the tagged tree with the pinned Go for each release baseline file and writes one freeze-ok line per file; it runs only in the freeze job of release.yml, which holds no token and no Witness step",
       "exceptions": [
         {
           "rule": "deny",
@@ -668,7 +661,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e"
+      "sha256": "3584c2404d40bb5c2b843ae82dc47f15761b838063e11b793ff9f69e907f2918"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -789,20 +782,20 @@
       "runs": [],
       "signs": false,
       "reason": "Build and Rebuild guard (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7): runs only when mode is neither release nor snapshot and refuses",
-      "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe",
+      "sha256": "f1bbed832093cde55c2a2e5c7331e7a287e256b6da789e4d70ca277fda7d5d3d",
       "exceptions": [
         {
           "rule": "deny",
-          "line": "# The guard of stage-build.yml and stage-reproducibility.yml (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7). The step passes the stage's `mode` input as the one",
-          "line_sha256": "10fcb1efb275cc05e239e082d224ff02eb6d7a8034c93ab95ef0438cc7af0a2e",
+          "line": "# The guard of the build and rebuild jobs of release.yml (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7). The step passes the stage's `mode` input as the one",
+          "line_sha256": "890210a7a025724169d7d14b286b649abc47c6b3e02655f5836021816b5bc0eb",
           "count": 1,
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
     },
     {
-      "path": "bin/check-stage.sh",
-      "sha256": "34d873b931d5d67789643114af9a81b1a8d5e1ba24b212a176c1fb8d2f0af0e7",
+      "path": "bin/check-phase.sh",
+      "sha256": "d102e9d81e1c772b08decdca39397be6fbf6c81c0c16d0b3540ee74369db04a3",
       "tools": [
         "bash",
         "make",
@@ -819,7 +812,7 @@
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)"
+      "reason": "Check's one script, run by the same three witnessed steps on both chips: makes the release policy for the tag, verifies Build, then runs the phase's check scripts; the chip comes from uname -m (REQ-CHAIN-006-AC1, AC3)"
     },
     {
       "path": "bin/check-govulncheck.py",
@@ -1624,7 +1617,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "e638d4892f4f6cdf5ba3c93a769d72e65a1c0d286deaaf58a7f058c41f079a45",
+      "sha256": "e2041528f2cc94c3e0bbed9860df8295077a121274d592fdf83c4a2f8d78b73c",
       "exceptions": [
         {
           "rule": "deny",
@@ -1765,7 +1758,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "4e68f5b569736ef7ec01e5988d71b2a5d8d454252c68d48dda9ff0784e526ad0",
+      "sha256": "56ab4202d04d0d999541a3266b7836c205cf59999e57a0f53255e11548e1eb03",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1800,7 +1793,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "c00ae4aab1954305e7905baba37b89b5e39ed61747f825c6fe1ce01c19dc92cb",
+      "sha256": "3d124bb7b069fc8e7952e48a2e0013186c5f44700ad8f5c31a2ce3fda72e7ffc",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1970,44 +1963,8 @@
       ]
     },
     {
-      "path": "bin/check-phase-scanners.sh",
-      "sha256": "0eba74a24fcaefc173a068e6bd97f03493e8988ec6109b3a2c14f0601c7bf04c",
-      "tools": [
-        "bash"
-      ],
-      "runs": [
-        "bin/check-stage.sh"
-      ],
-      "signs": false,
-      "reason": "the thin target of Check's scanners step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
-    },
-    {
-      "path": "bin/check-phase-acceptance.sh",
-      "sha256": "113c2da8fa43264754f1f4158b245583f8b9aa9a464653697de5f70c5da2831e",
-      "tools": [
-        "bash"
-      ],
-      "runs": [
-        "bin/check-stage.sh"
-      ],
-      "signs": false,
-      "reason": "the thin target of Check's acceptance step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
-    },
-    {
-      "path": "bin/check-phase-runtime.sh",
-      "sha256": "7abe1474108348e53b56066422e51220b81db9ec387817c638331cfa6ea0067d",
-      "tools": [
-        "bash"
-      ],
-      "runs": [
-        "bin/check-stage.sh"
-      ],
-      "signs": false,
-      "reason": "the thin target of Check's runtime step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
-    },
-    {
       "path": "bin/check-artifacts.sh",
-      "sha256": "6a40993c22bf4ab912f3eaea4f6412fe381c5b4d889a1e6e74ba55c59e22e6ac",
+      "sha256": "f3b5a0c62f8a393cdc426320eb98a6ac77b3d1a997342f4cd59957152dba0746",
       "tools": [
         "at",
         "curl",
@@ -2060,21 +2017,6 @@
       "runs": [],
       "signs": false,
       "reason": "lists the platforms an OCI image archive carries (REQ-PLAT-002-AC1)"
-    },
-    {
-      "path": "bin/check-phase-arm64.sh",
-      "sha256": "6065475e20aac72ccd9ab6f0845e29fe7dc4a67c9dab194cfcdf33a5e8cb2711",
-      "tools": [
-        "bash",
-        "make",
-        "python3"
-      ],
-      "runs": [
-        "bin/chain-verify.py",
-        "bin/check-artifacts.sh"
-      ],
-      "signs": false,
-      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)"
     },
     {
       "path": "bin/check-bind.py",
@@ -2649,7 +2591,7 @@
     },
     {
       "path": "bin/pack-govulncheck.sh",
-      "sha256": "8a982c3a166e9603f68fad21ede4942242ed785c6be5ca76c80924f0800722eb",
+      "sha256": "75cd58c848a72ca5277270795de1291c3878d8b6d143104d6cbe3269801cba0b",
       "tools": [
         "install",
         "mkdir"
@@ -2671,7 +2613,7 @@
     },
     {
       "path": "bin/check-records-digests.sh",
-      "sha256": "c688699f949e46cfe8e4613754161f519e4b12c3dadb7b8f791097159a3feb49",
+      "sha256": "4c3dd7a145b928ef94e1a8591523a564f4e942c260224fbaddb5e19e1cd02183",
       "tools": [
         "basename",
         "jq",
@@ -2679,7 +2621,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "a Check job's list of the records it made, as a job output Sign compares with what it receives (REQ-REL-011-AC1)"
+      "reason": "a Check job's list of the records it made, written to a file the job uploads, which Sign compares with what it receives (REQ-REL-011-AC1)"
     },
     {
       "path": "bin/layout-archive.sh",
@@ -2726,137 +2668,137 @@
       "name": "GH_TOKEN",
       "script": "bin/witnessed-local.sh",
       "why": "the Witness wrapper of the building steps (bin/witnessed-local.sh) receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
-      "file": ".github/workflows/stage-build.yml",
-      "job": "apk"
+      "file": ".github/workflows/release.yml",
+      "job": "build-apk"
     },
     {
       "name": "GH_TOKEN",
       "script": "bin/build-stage-apk.sh",
       "why": "the stage script runs the admission script first and unsets GH_TOKEN right after, so cache's build scripts never see it (REQ-CHAIN-004-AC3, AC8)",
-      "file": ".github/workflows/stage-build.yml",
-      "job": "apk",
+      "file": ".github/workflows/release.yml",
+      "job": "build-apk",
       "handoff_line": "unset GH_TOKEN"
     },
     {
       "name": "GH_TOKEN",
       "script": "bin/build-admit.py",
       "why": "admission reads GitHub (GET only) through gh, which inherits the token; the step's env is the only route the token has (REQ-CHAIN-004-AC8)",
-      "file": ".github/workflows/stage-build.yml",
-      "job": "apk"
+      "file": ".github/workflows/release.yml",
+      "job": "build-apk"
     },
     {
       "name": "GH_TOKEN",
-      "script": "bin/witnessed.sh",
+      "script": "bin/witnessed-local.sh",
       "why": "Release (rule 56, advisor 0386 J row 5): the run's own token, read by gh in this step's script; the wrapper passes its environment on and never reads it",
-      "file": ".github/workflows/stage-promote.yml",
+      "file": ".github/workflows/release.yml",
       "job": "release"
     },
     {
       "name": "GH_TOKEN",
       "script": "bin/release-publish.sh",
       "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/stage-promote.yml",
+      "file": ".github/workflows/release.yml",
       "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J row 5): the run's own token, read by gh in this step's script; the wrapper passes its environment on and never reads it",
+      "file": ".github/workflows/release.yml",
+      "job": "sign-release"
     },
     {
       "name": "GH_TOKEN",
       "script": "bin/release-sign.sh",
       "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/stage-promote.yml",
+      "file": ".github/workflows/release.yml",
+      "job": "sign-release"
+    },
+    {
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/witnessed-local.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_USERNAME from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/release.yml",
       "job": "release"
     },
     {
-      "name": "GH_TOKEN",
-      "script": "bin/release-assets.sh",
-      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/stage-promote.yml",
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/release-publish.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/release.yml",
       "job": "release"
     },
     {
       "name": "DOCKERHUB_USERNAME",
       "script": "bin/witnessed.sh",
       "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_USERNAME from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "DOCKERHUB_USERNAME",
-      "script": "bin/release-publish.sh",
-      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
+      "file": ".github/workflows/release.yml",
+      "job": "sign-release"
     },
     {
       "name": "DOCKERHUB_USERNAME",
       "script": "bin/release-sign.sh",
       "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
-      "file": ".github/workflows/stage-promote.yml",
+      "file": ".github/workflows/release.yml",
+      "job": "sign-release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/witnessed-local.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_TOKEN from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/release.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/release-publish.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/release.yml",
       "job": "release"
     },
     {
       "name": "DOCKERHUB_TOKEN",
       "script": "bin/witnessed.sh",
       "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_TOKEN from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
-    },
-    {
-      "name": "DOCKERHUB_TOKEN",
-      "script": "bin/release-publish.sh",
-      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
+      "file": ".github/workflows/release.yml",
+      "job": "sign-release"
     },
     {
       "name": "DOCKERHUB_TOKEN",
       "script": "bin/release-sign.sh",
       "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
-      "file": ".github/workflows/stage-promote.yml",
-      "job": "release"
+      "file": ".github/workflows/release.yml",
+      "job": "sign-release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-assets.sh",
+      "why": "the run's own token (contents write only) read from this script's environment, never printed",
+      "file": ".github/workflows/release.yml",
+      "job": "release-evidence"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/witnessed-local.sh",
+      "why": "the Witness wrapper of release-evidence receives the job's GH_TOKEN from the release-assets step's env and passes its environment to the script; it never reads it and names it only in the sensitive-key filter list",
+      "file": ".github/workflows/release.yml",
+      "job": "release-evidence"
     }
   ],
   "pinned_steps": [
     {
-      "file": ".github/workflows/stage-build.yml",
-      "job": "assemble",
+      "file": ".github/workflows/release.yml",
+      "job": "build-assemble",
       "id": "digests",
       "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
     },
     {
-      "file": ".github/workflows/stage-reproducibility.yml",
-      "job": "assemble",
+      "file": ".github/workflows/release.yml",
+      "job": "rebuild-assemble",
       "id": "records",
       "run": "r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-005-AC4 (adversarial pass R2): the stage output Sign checks Rebuild's records against (the sha256 of its record, verdict and rapk records); a job output only the Rebuild assemble job can write"
-    },
-    {
-      "file": ".github/workflows/stage-reproducibility.yml",
-      "job": "rapk",
-      "id": "records",
-      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
-      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
-    },
-    {
-      "file": ".github/workflows/stage-reproducibility.yml",
-      "job": "rapk-arm",
-      "id": "records",
-      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
-      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
-    },
-    {
-      "file": ".github/workflows/stage-verify.yml",
-      "job": "check",
-      "id": "records",
-      "run": "r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
-      "why": "REQ-REL-011-AC1: the Check job lists its records (witness-scanners, witness-acceptance, witness-runtime) as a stage output for Sign; the reviewed write into the job outputs"
-    },
-    {
-      "file": ".github/workflows/stage-verify.yml",
-      "job": "check-arm64",
-      "id": "records-arm64",
-      "run": "r=$(bash bin/check-records-digests.sh witness-arm64) && echo \"records-arm64=$r\" >> \"$GITHUB_OUTPUT\"",
-      "why": "REQ-REL-011-AC1: the arm64 Check job lists its record (witness-arm64) as a stage output for Sign; the reviewed write into the job outputs"
     }
   ]
 }

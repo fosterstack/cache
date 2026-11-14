@@ -52,18 +52,20 @@ signing key or `packages: write`.
   and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check
   and the customer-guide commands against the exact candidate digests, as
   Witness steps; it runs beside Rebuild.
-- **Release** (`stage-promote.yml`, environment `release`): six Witness steps,
-  each a committed script. `release-verify` checks the tag and verifies the
-  earlier stages' records in order before any credential exists in the job;
-  `release-apks` re-signs the apks with the stored release key through
-  `bin/release-sign-apks.sh`; `release-publish` pushes the images by digest to
+- **Release** (`release.yml`, environment `release`): `release-verify` checks
+  the tag and verifies the earlier stages' records in order before any
+  credential exists in the job; `release-publish` pushes the images by digest to
   `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and reads each
-  registry back; `release-sign` signs the images in both registries and the
-  release files with the release signing key, each with a Rekor entry, and
-  `release-assets` attaches the
-  evidence to the GitHub release; `release-postverify` runs the customer-guide
-  commands that need a registry against what was just published. Release
-  creates no tag.
+  registry back. The job `sign-release` (environment `sign`, the only job after
+  publishing that holds the signing role) then runs `release-apks`, which
+  re-signs the apks with the release key through `bin/release-sign-apks.sh`,
+  and `release-sign`, which signs the images in both registries and the release
+  files with the release signing key, each with a Rekor entry. The last job,
+  `release-evidence` (contents write only, no signing role), runs
+  `release-assets`, which attaches the evidence to the GitHub release, and
+  `release-postverify`, which runs the customer-guide commands that need a
+  registry against what was just published, so both see the signatures.
+  Release creates no tag.
 - **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage
   and Release's `release-verify`, and then ends: no credential is read, nothing
   is pushed, no release is created, no floating tag moves. A tag that is

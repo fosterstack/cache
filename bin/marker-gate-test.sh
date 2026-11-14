@@ -19,13 +19,15 @@ TAG=v0.3.0-rc1; RUN=424242; REPO=fosterstack/cache
 mkbase() { # mkbase DIR: a base checkout with a stub verifier that logs its arguments and exits with MG_VERIFY_RC
   local d=$1; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/policy" "$d/test-evidence"
   cat > "$d/bin/chain-verify.py" <<'PY'
-import os, sys
+import json, os, sys
 a = sys.argv[1:]
 open(os.environ["MG_LOG"], "a").write("verify " + " ".join(a) + "\n")
 rec = a[a.index("--records") + 1]
 need = ["witness-build/build-collection.json", "witness-build/digests.json", "witness-build/items.json", "provenance/provenance.json", "provenance/provenance.rekor.json",
-        "witness-rebuild/rebuild-collection.json", "witness-check/witness-scanners/scanners-collection.json", "witness-check/witness-acceptance/acceptance-collection.json",
-        "witness-check/witness-runtime/runtime-collection.json", "witness-check/witness-arm64/arm64-collection.json", "hostile-results/hostile-results.json"]
+        "witness-rebuild/rebuild-collection.json", "hostile-results/hostile-results.json"]
+RUNNERS = ["ubuntu-24.04", "ubuntu-24.04-arm"]
+KEYS = ["build", "sign", "rekor", "rebuild", "hostile_verdict"] + ["%s-%s" % (s, r) for r in RUNNERS for s in ("scanners", "acceptance", "runtime")]
+want_check = sorted("%s/witness-%s/%s-collection.json" % (r, s, s) for r in RUNNERS for s in ("scanners", "acceptance", "runtime"))
 miss = [n for n in need if not os.path.isfile(os.path.join(rec, n))]
 extra = []
 for dp, dn, fn in os.walk(os.path.join(rec, "witness-check")):
@@ -33,8 +35,10 @@ for dp, dn, fn in os.walk(os.path.join(rec, "witness-check")):
         extra.append(os.path.relpath(os.path.join(dp, f), os.path.join(rec, "witness-check")))
 if miss:
     sys.stderr.write("refused at marker: missing %s\n" % miss); sys.exit(1)
-if sorted(extra) != ["witness-acceptance/acceptance-collection.json", "witness-arm64/arm64-collection.json", "witness-runtime/runtime-collection.json", "witness-scanners/scanners-collection.json"]:
-    sys.stderr.write("refused at check: an extra or misplaced Check record %s\n" % extra); sys.exit(1)
+if sorted(extra) != want_check:
+    sys.stderr.write("refused at check: an extra, missing or misplaced Check record %s\n" % extra); sys.exit(1)
+if sorted(json.load(open(a[a.index("--marker") + 1]))["records"]) != sorted(KEYS):
+    sys.stderr.write("refused at marker: the marker's records are not build, sign, rekor, rebuild, hostile_verdict and <step>-<runner>\n"); sys.exit(1)
 sys.exit(int(os.environ.get("MG_VERIFY_RC", "0")))
 PY
   printf '{"x":1}\n' > "$d/.github/policy/release-policy.template.json"
@@ -59,7 +63,7 @@ PY
   git -C "$d" tag "$TAG"
   python3 - "$d/.github/policy/rc-proof.json" "$RUN" <<'PY'
 import json, sys
-keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict"]
+keys = ["build", "sign", "rekor", "rebuild", "hostile_verdict"] + ["%s-%s" % (s, r) for r in ("ubuntu-24.04", "ubuntu-24.04-arm") for s in ("scanners", "acceptance", "runtime")]
 json.dump({"rc_tag": "v0.3.0-rc1", "run_id": sys.argv[2], "chain_sha256": "a" * 64, "records": {k: "b" * 64 for k in keys}}, open(sys.argv[1], "w"))
 PY
 }
@@ -81,8 +85,7 @@ case "$1 $2" in
       items) echo "{}" > "$dir/items.json" ;;
       provenance) echo "{}" > "$dir/provenance.json"; echo "{}" > "$dir/provenance.rekor.json" ;;
       witness-rebuild) echo "{}" > "$dir/rebuild-collection.json" ;;
-      witness-check) for s in scanners acceptance runtime; do mkdir -p "$dir/witness-$s"; echo "{}" > "$dir/witness-$s/$s-collection.json"; done ;;
-      witness-check-arm64) echo "{}" > "$dir/arm64-collection.json" ;;
+      witness-check-ubuntu-24.04|witness-check-ubuntu-24.04-arm) for s in scanners acceptance runtime; do mkdir -p "$dir/witness-$s"; echo "{}" > "$dir/witness-$s/$s-collection.json"; done ;;
       hostile-results) echo "{}" > "$dir/hostile-results.json" ;;
     esac ;;
   *) exit 3 ;;
@@ -189,7 +192,7 @@ for spec in "repository:evil/cache:repository" "event:workflow_dispatch:event" "
 done
 unset MG_RUN_FILE
 gate "an API read that fails is refused" 1 "run" MG_API_FAIL=1
-for art in witness-build digests items provenance witness-rebuild witness-check witness-check-arm64 hostile-results; do
+for art in witness-build digests items provenance witness-rebuild witness-check-ubuntu-24.04 witness-check-ubuntu-24.04-arm hostile-results; do
   gate "a missing artifact ($art) is refused and the verifier is not run" 1 "$art" MG_DL_FAIL=$art
   [ "$(nlog verify)" = 0 ] || bad "the verifier ran although $art could not be downloaded"
 done

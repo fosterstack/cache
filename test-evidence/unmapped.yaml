@@ -30,3 +30,60 @@ unmapped:
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
   - ac: REQ-DEP-004-AC2
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
+# The checks these criteria named were deleted by the release audit ruling of Nov 12 (cache#359 section 1); each criterion stays in requirements.yaml, reworded to what holds after the change, and is listed here because no test proves it.
+  - ac: REQ-DEP-005-AC1
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-DEP-005-AC2
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-DEP-005-AC3
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC5
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC10
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-013-AC1
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC2
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC3
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC4
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC5
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC6
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC7
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC8
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC9
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC10
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-013-AC11
+    reason: "the evidence letter and its checks were deleted by the release audit ruling of Nov 12; the criterion text is kept as written and no test proves it"
+  - ac: REQ-REL-009-AC1
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC2
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion text is unchanged and no test proves it"
+  - ac: REQ-REL-009-AC3
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC4
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC8
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC11
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC14
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-REL-009-AC15
+    reason: "the check it named was deleted by the release audit ruling of Nov 12; the criterion is reworded in the requirements text change to what holds without it, and no test proves it"
+  - ac: REQ-SUP-001-AC3
+    reason: "the age measurement was removed (owner, Nov 11 2026); the criterion now says the scan reads no time, and no test declares it"
+  - ac: REQ-SUP-001-AC6
+    reason: "the held-pull-request re-run was removed with the age hold (owner, Nov 11 2026); no test declares the reworded criterion"
+  - ac: REQ-SUP-001-AC34
+    reason: "the file_pins rows were removed with the age hold (owner, Nov 11 2026); no test declares the reworded criterion"
+  - ac: REQ-SUP-001-AC35
+    reason: "the test file no longer declares this criterion after the age check was removed (owner, Nov 11 2026); no test proves it"
