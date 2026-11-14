@@ -92,20 +92,18 @@ jobs:
             FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
               FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
               /tmp/fscache-bench & echo $! > /tmp/fscache-mvn.pid
-            up=
-            for _ in $(seq 1 20); do
-              curl -sf http://localhost:18098/healthz && up=yes && break; sleep 0.5
+            (for _ in $(seq 1 20); do
+              curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
             done
-            [ -n "$up" ] || { echo "server on 18098 never became healthy" >&2; exit 1; }
+            echo "server on 18098 never became healthy" >&2; exit 1)
             bash bin/acceptance-maven.sh
             FSCACHE_ADDR=:18099 FSCACHE_DATA_DIR=/tmp/fscache-mvn-capped \
               FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
               FSCACHE_MAX_BYTES=262144 /tmp/fscache-bench & echo $! > /tmp/fscache-mvn-capped.pid
-            up=
-            for _ in $(seq 1 20); do
-              curl -sf http://localhost:18099/healthz && up=yes && break; sleep 0.5
+            (for _ in $(seq 1 20); do
+              curl -sf http://localhost:18099/healthz && exit 0; sleep 0.5
             done
-            [ -n "$up" ] || { echo "server on 18099 never became healthy" >&2; exit 1; }
+            echo "server on 18099 never became healthy" >&2; exit 1)
             bash bin/acceptance-maven-capped.sh
             kill "$(cat /tmp/fscache-mvn.pid)" "$(cat /tmp/fscache-mvn-capped.pid)"
           done
