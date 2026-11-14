@@ -73,7 +73,7 @@ if grep -q "witness:x86_64|witness:amd64) SUM=${ok_sum}" "$sut_copy"; then
 else
   bad "the pinned witness sum was not replaced in the copy"
 fi
-# the regex matches "installed witness (pinned, checksum-verified) to /bin" and refuses "not installed witness"
+# the regex matches "installed witness (pinned, checksum-verified) to /bin" and refuses "the installed witness binary does not start"
 check "witness install succeeds when the download matches its pinned sum" 0 "^installed witness " -- \
   env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/ok-rel" bash "$sut_copy" witness "$work/ok-bin"
 if [ -x "$work/ok-bin/witness" ]; then ok "witness is installed and executable"
