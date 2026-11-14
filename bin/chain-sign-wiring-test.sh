@@ -813,11 +813,11 @@ EOF
 mutate() {
   python3 - "$good" "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml" "$2" "$3" <<'PY' || { failn=$((failn + 1)); echo "FAIL mutation $1 did not apply to the fixture"; return 1; }
 import re, sys
-t = open(sys.argv[1]).read()
+t = open(sys.argv[1], encoding="utf-8").read()
 # expand: \1 is a capture, \n a newline
 n = re.sub(sys.argv[3], lambda m: m.expand(sys.argv[4]), t, count=1, flags=re.S)
 if n == t: sys.exit(1)
-open(sys.argv[2], "w").write(n)
+open(sys.argv[2], "w", encoding="utf-8").write(n)
 PY
 }
 caught() { # LABEL regex replacement
@@ -3464,7 +3464,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='989e09128fd5ed03a80cb85ca7a297ff97a12f96fb2da68688d3c4211aec23f0'
+FX_PIN='cb307a15a875c144e08c43b1253e9b5df25392bc1d19d62884c24264bf954015'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
