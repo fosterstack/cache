@@ -75,7 +75,7 @@ DSSE_STMT = "application/vnd.in-toto+json"
 STMT_TYPES = ("https://in-toto.io/Statement/v0.1", "https://in-toto.io/Statement/v1")
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:digests.json"
 STAGES = ("build", "sign", "rebuild", "check", "release")
-WITNESS_STAGES = ("build", "rebuild", "check")
+WITNESS_STAGES = ("build", "rebuild", "check", "release")
 ENV_ATTESTOR = "https://witness.dev/attestations/environment/v0.1"
 
 
@@ -1964,7 +1964,7 @@ def cmd_sign(a):
 # Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This step is the check that comes before Sign re-signs the
 # payloads with the release key: it signs nothing, calls no tool and reads no token. A shell step of the Sign job
 # signs each staged payload and `verify` checks the result.
-SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": CHECK_RECORDS}
+SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild"), "check": CHECK_RECORDS, "release": ("release-verify", "release-publish")}
 SR_CHECK_FOLDER = {"witness-" + n: n for n in CHECK_RECORDS}     # Check's three record folders, each named for its one step
 SR_CHECK_NAMES = ["%s/%s" % (r, f) for r in CHECK_RUNNERS for f in SR_CHECK_FOLDER]     # a Check record is named <runner>/<folder>: both runners make the same three folders
 SR_CHECK_GROUPS = tuple(("check-results-" + r, ["%s/%s" % (r, f) for f in SR_CHECK_FOLDER]) for r in CHECK_RUNNERS)     # (artifact folder under --artifacts-dir, the records whose products it carries)
@@ -2030,13 +2030,13 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
     fname = locals_[0]
     if fname.startswith("snapshot-"):
         refuse(stage, "snapshot record: %s/%s is a snapshot step's file name" % (name, fname))
-    m = re.fullmatch(r"([a-z][a-z0-9]*)-collection\.local\.json", fname)
+    m = re.fullmatch(r"([a-z][a-z0-9-]*)-collection\.local\.json", fname)
     if not m or m.group(1) not in steps:
         refuse(stage, "step: %s/%s is not a record of the %s stage (%s-collection.local.json)" % (name, fname, stage, " or ".join(steps)))
     step = m.group(1)
     for n in names:
-        if stage == "check" and n != fname:
-            refuse(stage, "record: %s holds %s: a Check record folder holds only its record (%s), nothing else is staged or signed" % (name, n, fname))
+        if stage in ("check", "release") and n != fname:
+            refuse(stage, "record: %s holds %s: a %s record folder holds only its record (%s), nothing else is staged or signed" % (name, n, stage.capitalize(), fname))
         if n != fname and n not in SR_DATA:
             refuse(stage, "record: %s holds %s, which is neither the record (%s) nor a data file (%s)" % (name, n, fname, " ".join(SR_DATA)))
     try:
@@ -2083,6 +2083,13 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha, ref):
             products.setdefault(x["name"][len(PRODUCT_PREFIX):], []).append(x["digest"].get("sha256"))
     if step == "rapk" and art_dir and os.path.lexists(os.path.join(art_dir, name)):
         refuse(stage, "rapk: %s has artifacts under %s, but Rebuild's apks never reach Sign" % (name, art_dir))
+    if stage == "release":
+        if name != "witness-" + step:
+            refuse(stage, "record: the folder %s holds the %s record; a release record folder is named witness-<step>" % (name, step))
+        mats = [x for x in subs if x["name"] == MATERIAL]
+        if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
+            refuse(stage, "material: the %s record's file:witness-build/digests.json is not Build's attested digests.json (--digests)" % step)
+        return step, payload, [], {}
     if stage == "check":
         if SR_CHECK_FOLDER.get(name.rsplit("/", 1)[-1]) != step:
             refuse(stage, "record: the folder %s holds the %s record; Check's folders are %s, each named for its step" % (name, step, " ".join(sorted(SR_CHECK_FOLDER))))
@@ -2215,6 +2222,10 @@ def cmd_sign_records(a):
                                                      os.environ.get("GITHUB_REF", ""))
         plan.append((rec_dir, name, step, payload, data))
         check_products[name] = prods
+    if stage == "release":
+        want = ["witness-" + n for n in SR_STEPS["release"]]
+        if sorted(seen) != sorted(want):
+            refuse(stage, "record: the release stage's records are exactly %s, got %s" % (" ".join(sorted(want)), " ".join(sorted(seen))))
     if stage == "check":
         if sorted(seen) != sorted(SR_CHECK_NAMES):
             refuse(stage, "record: Check's records are exactly %s, got %s" % (" ".join(sorted(SR_CHECK_NAMES)), " ".join(sorted(seen))))
