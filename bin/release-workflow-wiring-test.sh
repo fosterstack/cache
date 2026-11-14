@@ -42,7 +42,7 @@ NEEDS = {   # exactly, as REQ-CHAIN-005-AC5 lists them
     "rebuild-assemble": ["rebuild-apk"], "sign-rebuild": ["build-assemble", "rebuild-assemble"],
     "sign-check": ["build-assemble", "check"],
     "release-compare": ["check", "sign", "sign-rebuild", "sign-check"], "release-verify": ["release-compare"],
-    "release": ["release-verify", "release-compare"], "sign-release": ["release"], "release-evidence": ["sign-release"],
+    "release": ["release-verify", "release-compare"], "sign-release": ["build-assemble", "release"], "release-evidence": ["sign-release"],
 }
 NEEDS_AT_LEAST = {"check": ["check-govulncheck", "build-assemble", "sign"]}
 
@@ -198,7 +198,7 @@ for jn in SIGN_JOBS:
             bad.append("a step of %s carries a KMS federation literal (only the job does)" % jn)
     if "with" in j or j.get("secrets"):
         bad.append("sign job %s takes an input or a secret" % jn)
-    if jn != "sign-release" and "needs.build-assemble.outputs.digests" not in text_of(j):
+    if "needs.build-assemble.outputs.digests" not in text_of(j):
         bad.append("sign job %s does not read Build's digests through needs.build-assemble.outputs.digests" % jn)
     if not SIGNING.search(runs_of(j)):
         bad.append("sign job %s runs no signing command" % jn)
@@ -208,6 +208,19 @@ if "sign-release" in jobs:
         bad.append("sign-release does not run bin/release-apks.sh and bin/release-sign.sh")
     if re.search(r"bin/release-(publish|assets|postverify|verify|compare)\.sh", r):
         bad.append("sign-release runs more of Release than its two signing scripts")
+    # it signs the release stage's two local records, as the other sign jobs sign theirs, before release-apks and release-sign (ruling Q-e)
+    one = re.sub(r"\s+", " ", r.replace("\\\n", " "))
+    m = re.search(r"chain-verify\.py sign-records --stage release\b[^\n]*", one)
+    if not m:
+        bad.append("sign-release does not run chain-verify.py sign-records --stage release on the release stage's local records")
+    elif not all(x in m.group(0) for x in ("--record-dir rec-release/witness-release-verify", "--record-dir rec-release/witness-release-publish")) or "--expect-digests" in m.group(0) or "--artifacts-dir" in m.group(0):
+        bad.append("sign-release: the sign-records --stage release step takes exactly the two record dirs of release-verify and release-publish and no --expect-digests or --artifacts-dir")
+    if "witness-sign-staged.sh staged signed" not in one or one.find("witness-sign-staged.sh") > one.find("bin/witnessed.sh release-apks"):
+        bad.append("sign-release does not sign the staged release records (witness-sign-staged.sh staged signed) before its release-apks step")
+    if "actions/download-artifact" not in text_of(jobs["sign-release"]) or "witness-release" not in text_of(jobs["sign-release"]) or "signed-witness-release" not in text_of(jobs["sign-release"]):
+        bad.append("sign-release does not download witness-release and upload signed-witness-release")
+    if [(n, sc) for n, sc, _ in witness_lines(jobs["sign-release"])] != [("release-apks", "bin/release-apks.sh"), ("release-sign", "bin/release-sign.sh")] or re.search(r"bin/witnessed-local\.sh", r):
+        bad.append("sign-release does not run release-apks and release-sign through bin/witnessed.sh and nothing else witnessed")
 for jn in ("sign", "sign-rebuild", "sign-check"):
     if jn in jobs and "chain-verify.py sign-records" not in re.sub(r"\s+", " ", runs_of(jobs[jn]).replace("\\\n", " ")):
         bad.append("sign job %s does not run chain-verify.py sign-records" % jn)
@@ -236,6 +249,15 @@ if ev:
         bad.append("release-evidence does not run exactly the witnessed-local steps release-assets and release-postverify in that order: %s" % local_steps)
     if re.search(r"bin/witnessed\.sh", runs_of(ev)):
         bad.append("release-evidence uses bin/witnessed.sh, which needs the KMS role (it has none): it uses bin/witnessed-local.sh")
+# the release job runs release-verify and release-publish under bin/witnessed-local.sh, holds no KMS role, only contents write and packages write (ruling Q-e)
+if rel:
+    if [(n, sc) for n, sc, _ in witness_lines(rel)] != [("release-verify", "bin/release-verify.sh"), ("release-publish", "bin/release-publish.sh")] or re.search(r"bin/witnessed\.sh", runs_of(rel)) or len(re.findall(r"bin/witnessed-local\.sh", runs_of(rel))) != 2:
+        bad.append("the release job does not run exactly release-verify then release-publish through bin/witnessed-local.sh (never bin/witnessed.sh)")
+    if rel.get("permissions") != {"contents": "write", "packages": "write"}:
+        bad.append("the release job does not hold exactly contents write and packages write: %s" % rel.get("permissions"))
+    pub = [s for n, sc, s in witness_lines(rel) if n == "release-publish"]
+    if pub and sorted(pub[0].get("env") or {}) != ["DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"]:
+        bad.append("the release-publish step of the release job does not carry exactly DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and GH_TOKEN as env: %s" % sorted((pub[0].get("env") or {})))
 if isinstance(rel.get("permissions"), dict) and "id-token" in rel["permissions"]:
     bad.append("the release job holds an identity token (id-token): it holds no key role")
 if rel.get("permissions") == "write-all":
@@ -496,6 +518,8 @@ case_ release-compare-no-sign-check bad "job release-compare needs" "$J['release
 case_ release-verify-no-compare bad "job release-verify needs" "$J['release-verify'].pop('needs')"
 case_ release-no-verify       bad "job release needs" "$J['release']['needs'] = ['release-compare']"
 case_ sign-release-before-release bad "job sign-release needs" "$J['sign-release']['needs'] = ['release-verify']"
+case_ sign-release-no-build-assemble bad "job sign-release needs" "$J['sign-release']['needs'] = ['release']"
+case_ sign-release-no-release bad "job sign-release needs" "$J['sign-release']['needs'] = ['build-assemble']"
 case_ release-evidence-needs-release bad "job release-evidence needs" "$J['release-evidence']['needs'] = ['release']"
 case_ release-evidence-needs-both bad "job release-evidence needs" "$J['release-evidence']['needs'] = ['release', 'sign-release']"
 case_ release-evidence-no-needs bad "job release-evidence needs" "$J['release-evidence'].pop('needs')"
@@ -560,6 +584,20 @@ for jn in sign sign-rebuild sign-check; do
   case_ "$jn-digests-not-from-build" bad "$jn does not read Build's digests" "$J['$jn']['steps'] = [dict(s, **{'env': {k: v.replace('needs.build-assemble.outputs.digests', 'needs.sign.outputs.digests') for k, v in (s.get('env') or {}).items()}}) if s.get('env') else s for s in $J['$jn']['steps']]"
 done
 case_ sign-release-no-release-sign bad "sign-release does not run bin/release-apks.sh and bin/release-sign.sh" "$J['sign-release']['steps'] = [s for s in $J['sign-release']['steps'] if 'release-sign.sh' not in (s.get('run') or '')]"
+case_ sign-release-no-sign-records bad "sign-release does not run chain-verify.py sign-records --stage release" "$J['sign-release']['steps'] = [s for s in $J['sign-release']['steps'] if 'sign-records' not in (s.get('run') or '')]"
+case_ sign-release-stage-check bad "sign-release does not run chain-verify.py sign-records --stage release" "hit(s.__setitem__('run', s['run'].replace('--stage release', '--stage check')) for s in $J['sign-release']['steps'] if 'sign-records' in (s.get('run') or ''))"
+case_ sign-release-one-record-dir bad "takes exactly the two record dirs" "hit(s.__setitem__('run', s['run'].replace('--record-dir rec-release/witness-release-publish', '')) for s in $J['sign-release']['steps'] if 'sign-records' in (s.get('run') or ''))"
+case_ sign-release-expect-digests bad "takes exactly the two record dirs" "hit(s.__setitem__('run', s['run'] + ' --expect-digests digests.json') for s in $J['sign-release']['steps'] if 'sign-records' in (s.get('run') or ''))"
+case_ sign-release-artifacts-dir bad "takes exactly the two record dirs" "hit(s.__setitem__('run', s['run'] + ' --artifacts-dir artifacts') for s in $J['sign-release']['steps'] if 'sign-records' in (s.get('run') or ''))"
+case_ sign-release-no-staged-sign bad "does not sign the staged release records" "$J['sign-release']['steps'] = [s for s in $J['sign-release']['steps'] if 'witness-sign-staged' not in (s.get('run') or '')]"
+case_ sign-release-no-digests bad "sign job sign-release does not read Build's digests" "hit(s.__setitem__('env', {k: v.replace('needs.build-assemble.outputs.digests', 'needs.release.outputs.digests') for k, v in (s.get('env') or {}).items()}) for s in $J['sign-release']['steps'] if s.get('env') and 'needs.build-assemble.outputs.digests' in str(s['env']))"
+case_ sign-release-local-witness bad "does not run release-apks and release-sign through bin/witnessed.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed.sh', 'witnessed-local.sh')) for s in $J['sign-release']['steps'] if 'witnessed.sh release-apks' in (s.get('run') or ''))"
+case_ release-job-witnessed-kms bad "does not run exactly release-verify then release-publish through bin/witnessed-local.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed-local.sh', 'witnessed.sh')) for s in $J['release']['steps'] if 'witnessed-local.sh release-publish' in (s.get('run') or ''))"
+case_ release-job-verify-kms bad "does not run exactly release-verify then release-publish through bin/witnessed-local.sh" "hit(s.__setitem__('run', s['run'].replace('witnessed-local.sh', 'witnessed.sh')) for s in $J['release']['steps'] if 'witnessed-local.sh release-verify' in (s.get('run') or ''))"
+case_ release-job-no-publish bad "does not run exactly release-verify then release-publish through bin/witnessed-local.sh" "$J['release']['steps'] = [s for s in $J['release']['steps'] if 'release-publish' not in (s.get('run') or '')]"
+case_ release-job-packages-gone bad "the release job does not hold exactly contents write and packages write" "$J['release']['permissions'].pop('packages')"
+case_ release-job-extra-permission bad "the release job does not hold exactly contents write and packages write" "$J['release']['permissions']['actions'] = 'read'"
+case_ release-publish-env-extra bad "does not carry exactly DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and GH_TOKEN" "hit(s['env'].__setitem__('X', 'y') for s in $J['release']['steps'] if 'witnessed-local.sh release-publish' in (s.get('run') or ''))"
 case_ sign-release-publishes  bad "sign-release runs more of Release" "$J['sign-release']['steps'].append({'run': 'bash bin/release-publish.sh'})"
 case_ sign-runs-no-sign-records bad "does not run chain-verify.py sign-records" "$J['sign']['steps'] = [s for s in $J['sign']['steps'] if 'sign-records' not in (s.get('run') or '')]"
 # no other job holds the key, the environment or a signing command
