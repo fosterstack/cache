@@ -130,18 +130,33 @@ def _approval(tag_object):
     return found[0] if len(found) == 1 else None
 
 
-def verify_release(tag, tag_object, tagged_sha, ref, commit, policy, items=None):
+NO_ITEMS = {"accepted_items": []}      # what a missing .auditor/accepted-items.json means: no item is open
+
+
+def _open_item(items):
+    """Why the parsed .auditor/accepted-items.json holds the release (an owner-decision item is open, or the file is
+    malformed), else None."""
+    listed = items.get("accepted_items") if isinstance(items, dict) else None
+    if not isinstance(listed, list) or not all(isinstance(i, dict) for i in listed):
+        return "%s is malformed: it must be an object whose accepted_items is a list of objects" % ITEMS_PATH
+    if any(i.get("threshold") == "at_or_above" for i in listed):
+        return "an owner-decision item is still open in %s" % ITEMS_PATH
+    return None
+
+
+def verify_release(tag, tag_object, tagged_sha, ref, commit, policy, items=NO_ITEMS):
     """Gate 7 (release process rule 7): (True, "") for a patch tag or for a release tag whose commit has a
-    passed-audit record that the owner's signed tag message approves and no owner-decision item open in `items`
-    (the parsed .auditor/accepted-items.json, REQ-AUD-17 AC5); else (False, reason).
+    passed-audit record that the owner's signed tag message approves; else (False, reason). Every tag is refused while
+    an owner-decision item is open in `items` (the parsed .auditor/accepted-items.json, REQ-AUD-17 AC5).
     The tag's signature is verified by the admission step before this runs, so a line in the message is the
     owner's own."""
     if not isinstance(tag, str) or not _RELEASE_TAG.fullmatch(tag):
         return False, "the tag is not a release version"
+    held = _open_item(items)
+    if held:
+        return False, held
     if _PATCH_TAG.fullmatch(tag):
         return True, ""
-    if any(i.get("threshold") == "at_or_above" for i in (items or {}).get("accepted_items", [])):
-        return False, "an owner-decision item is still open in %s" % ITEMS_PATH
     approved = _approval(tag_object)
     if approved is None:
         return False, ("the signed tag message does not carry exactly one 'Audit-approved: <40-hex record commit>' "
@@ -206,6 +221,13 @@ def _load(path):
         return None
 
 
+def _load_items(path):
+    """The parsed items file; NO_ITEMS when it is missing; None (malformed) when it exists but cannot be read."""
+    if not os.path.exists(path):
+        return NO_ITEMS
+    return _load(path)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="audit-record.py")
     sub = ap.add_subparsers(dest="cmd")
@@ -244,7 +266,7 @@ def main(argv):
             obj = None
         ok, why = verify_release(a.tag, obj, a.tagged_sha, _load(a.ref_json), _load(a.commit_json),
                                  _load(os.path.join(a.base_root, WRITERS_PATH)),
-                                 _load(os.path.join(a.base_root, ITEMS_PATH)))
+                                 _load_items(os.path.join(a.base_root, ITEMS_PATH)))
         done = ("no whole-release record needed" if is_patch_tag(a.tag)
                 else "the owner's approval matches the passed-audit record")
         print("audit-record: " + ("release %s: %s" % (a.tag, done) if ok else why))
