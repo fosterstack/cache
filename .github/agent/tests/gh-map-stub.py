@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# a gh stub for the offline tests: GH_MAP is a JSON file {api path: value}; --jq supports .field, .a.b and .[]; {"__b64": "..."} is a binary body; {"__err": "..."} fails; a path with '?' that the map does not name is an empty list (200), any other unnamed path is a 404
+# a gh stub for the offline tests: GH_MAP is a JSON file {api path: value}; --jq supports .field, .a.b and .[]; {"__b64": "..."} is a binary body; {"__err": "..."} fails; an unnamed path starting 'advisories?' is an empty list (200), any other unnamed path is a 404
 import base64, json, os, re, sys
 a = sys.argv[1:]
 if not a or a[0] != "api":
@@ -7,7 +7,7 @@ if not a or a[0] != "api":
 jq = a[a.index("--jq") + 1] if "--jq" in a else None
 path = [x for x in a[1:] if not x.startswith("-") and x != jq][0]
 m = json.load(open(os.environ["GH_MAP"]))
-if path not in m and "?" in path:   # a list endpoint answers 200 with an empty list when the map does not name it; only a record path is "Not Found"
+if path not in m and path.startswith("advisories?"):   # the advisory list endpoint answers 200 with an empty list when the map does not name it
     m[path] = []
 if path not in m:
     sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
