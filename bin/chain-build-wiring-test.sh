@@ -182,7 +182,7 @@ def stage_text(family):
         out += witness_block(sp)
         if sp.get("probe"):
             out += "      - name: sandbox wall probe\n        run: %s\n" % S.PROBE_RUN
-        if sp.get("records_file"): out += "      - name: write the record digests of this apk job to a file\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.RAPK_RECORDS_FILE)
+        if sp.get("records_file"): out += "      - name: write the record digests of this apk job to a file\n        if: %s\n        env:\n          LEG: ${{ matrix.runner }}\n        run: %s\n" % (S.MODE_RELEASE_IF, S.RAPK_RECORDS_FILE)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the job output\n        run: %s\n" % S.EXPOSE
         if sp.get("expose_records"): out += "      - id: records\n        name: expose the record digests as the job output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.EXPOSE_RECORDS)
         if sp.get("hostile"):
@@ -575,14 +575,22 @@ PY
 )
 rb r_chk_gone "A1 assemble does not check the rapk records against the digest lists their jobs uploaded" "rapk records are checked" "$CHK" ''
 rb r_chk_noif "A1 the rapk check runs in snapshot mode too" "rapk records are checked" "      - name: check the rapk records against the digest lists their jobs uploaded\n        if: \${{ inputs.mode != 'snapshot' }}\n" "      - name: check the rapk records against the digest lists their jobs uploaded\n"
-rb r_chk_swap "A1 the check reads the arm leg's digest list as the x86 leg's" "rapk records are checked" 'cat rec-digests/ubuntu-24.04/rebuild-records.json' 'cat rec-digests/ubuntu-24.04-arm/rebuild-records.json'
+rb r_chk_swap "A1 the check reads the arm leg's digest list as the x86 leg's" "rapk records are checked" '--check rec-digests/ubuntu-24.04/rebuild-records.json' '--check rec-digests/ubuntu-24.04-arm/rebuild-records.json'
 rb r_chk_late "A1 the rapk check runs after the rebuild Witness step (too late)" "rapk records are checked" "$CHK      - name: rebuild under Witness\n" "      - name: rebuild under Witness\n"
 rb r_needs_one "A1 assemble does not need the apk job" "must need exactly rebuild-apk" 'needs: rebuild-apk' 'needs: build-assemble'
-rb r_rapkrec_gone "A1 the apk job writes no record digests file" "record digests of this apk job" "      - name: write the record digests of this apk job to a file\n        if: \${{ inputs.mode != 'snapshot' }}\n        run: bash bin/rebuild-records-digests.sh --rapk \"\${{ matrix.runner }}\" witness-rapk > rebuild-records.json\n" ''
-rb r_rapkrec_leg "A1 the apk job lists the x86 leg's name on both chips" "record digests of this apk job" '--rapk "${{ matrix.runner }}" witness-rapk' '--rapk ubuntu-24.04 witness-rapk'
-rb r_rapkrec_dir "A1 the apk job lists another folder than the record it uploads" "record digests of this apk job" 'witness-rapk > rebuild-records.json' 'out > rebuild-records.json'
+rb r_rapkrec_gone "A1 the apk job writes no record digests file" "record digests of this apk job" "      - name: write the record digests of this apk job to a file\n        if: \${{ inputs.mode != 'snapshot' }}\n        env:\n          LEG: \${{ matrix.runner }}\n        run: bash bin/rebuild-records-digests.sh --rapk \"\$LEG\" witness-rapk rebuild-records.json\n" ''
+rb r_rapkrec_leg "A1 the apk job lists the x86 leg's name on both chips" "record digests of this apk job" '--rapk "$LEG" witness-rapk' '--rapk ubuntu-24.04 witness-rapk'
+rb r_rapkrec_dir "A1 the apk job lists another folder than the record it uploads" "record digests of this apk job" 'witness-rapk rebuild-records.json' 'out rebuild-records.json'
+rb r_rapkrec_env "A1 the apk job's LEG is a constant, not the matrix runner (the arm leg would list the x86 name)" "record digests of this apk job" 'LEG: ${{ matrix.runner }}' 'LEG: ubuntu-24.04'
+rb r_rapkrec_envname "A1 the apk job passes the runner under the name RUNNER (the judge refuses that env name)" "record digests of this apk job" 'LEG: ${{ matrix.runner }}\n        run: bash bin/rebuild-records-digests.sh --rapk "$LEG"' 'RUNNER: ${{ matrix.runner }}\n        run: bash bin/rebuild-records-digests.sh --rapk "$RUNNER"'
+rb r_rapkrec_redirect "A1 the apk job writes the file by a shell redirect (the script writes it itself)" "record digests of this apk job" 'witness-rapk rebuild-records.json' 'witness-rapk > rebuild-records.json'
+rb r_rapkrec_file "A1 the apk job writes another file than the one it uploads" "record digests of this apk job" 'witness-rapk rebuild-records.json' 'witness-rapk other-records.json'
+rb r_rapkrec_nofile "A1 the apk job gives the script no out file (the old three arguments)" "record digests of this apk job" 'witness-rapk rebuild-records.json' 'witness-rapk'
+rb r_rapkrec_if "A1 the apk job writes its digest file in snapshot mode too" "record digests of this apk job" "        if: \${{ inputs.mode != 'snapshot' }}\n        env:\n          LEG" "        env:\n          LEG"
 rb r_rapkrec_out "ruling 8 the apk job exposes its record digests as a job output (it uploads them as an artifact)" "job has outputs" '    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1' '    outputs:\n      records: ${{ steps.records.outputs.records }}\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
-rb r_chk_argswap "A1 the check's arguments are swapped" "rapk records are checked" '--check "$(cat rec-digests/ubuntu-24.04/rebuild-records.json)" "$(cat rec-digests/ubuntu-24.04-arm/rebuild-records.json)"' '--check "$(cat rec-digests/ubuntu-24.04-arm/rebuild-records.json)" "$(cat rec-digests/ubuntu-24.04/rebuild-records.json)"'
+rb r_chk_argswap "A1 the check's arguments are swapped" "rapk records are checked" '--check rec-digests/ubuntu-24.04/rebuild-records.json rec-digests/ubuntu-24.04-arm/rebuild-records.json' '--check rec-digests/ubuntu-24.04-arm/rebuild-records.json rec-digests/ubuntu-24.04/rebuild-records.json'
+rb r_chk_cat "A1 the check passes the file's text through a command substitution, not the path" "rapk records are checked" '--check rec-digests/ubuntu-24.04/rebuild-records.json rec-digests/ubuntu-24.04-arm/rebuild-records.json' '--check "$(cat rec-digests/ubuntu-24.04/rebuild-records.json)" "$(cat rec-digests/ubuntu-24.04-arm/rebuild-records.json)"'
+rb r_chk_onefile "A1 the check names one digest file only" "rapk records are checked" '--check rec-digests/ubuntu-24.04/rebuild-records.json rec-digests/ubuntu-24.04-arm/rebuild-records.json' '--check rec-digests/ubuntu-24.04/rebuild-records.json'
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 rb r_nomatrix "ruling 8 Rebuild's apk job runs on one runner (it is one job, a matrix over both chips)" "must run on matrix.runner" '    runs-on: ${{ matrix.runner }}' '    runs-on: ubuntu-24.04'
 rb r_dlrec_gone "A1 assemble does not download the x86 leg's digest list" "digest list of one Rebuild apk job" "      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        if: \${{ inputs.mode != 'snapshot' }}\n        with:\n          name: rebuild-records-ubuntu-24.04\n          path: rec-digests/ubuntu-24.04\n" ''
@@ -3675,7 +3683,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1334
+EXPECT=1342
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
