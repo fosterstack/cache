@@ -20,7 +20,8 @@
 # `apk` (matrix over
 # ubuntu-24.04 and ubuntu-24.04-arm: bin/build-stage-apk.sh), job `assemble` (the VM, needs apk:
 # bin/build-stage-assemble.sh);
-# stage-reproducibility.yml: the same two Witness jobs (bin/build-stage-rebuild-apk.sh and the one bin/build-stage-assemble.sh). Four
+# stage-reproducibility.yml: the same two Witness jobs (bin/build-stage-rebuild-apk.sh and
+# the one bin/build-stage-assemble.sh). Four
 # Witness scripts,
 #   so there is no dispatch to analyse, each a row of .github/policy/chain-scripts.json with its sha256 (PR 1's design).
 # Each Witness job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a
@@ -593,7 +594,8 @@ st s_snap_gh   "AC12 the snapshot Witness step holds GH_TOKEN" "snapshot" \
               'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n' \
               'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
 st s_snap_asm  "AC12 the assemble job's snapshot step carries another job's snapshot step name" "snapshot" \
-              'witnessed-local.sh snapshot-build bin/build-stage-assemble.sh' 'witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh'
+              'witnessed-local.sh snapshot-build bin/build-stage-assemble.sh' \
+              'witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh'
 st s_outapk  "AC2 the stage output reads the apk job's output, not the assemble job's" "on: must be" 'value: ${{ jobs.assemble.outputs.digests }}' \
              'value: ${{ jobs.apk.outputs.digests }}'
 st s_outnone "AC2 the stage has no digests output (Sign would get nothing)" "on: must be" \
@@ -685,7 +687,8 @@ rb r_snap_none "005-AC7 the snapshot-rapk Witness step is missing" "Witness step
 rb r_snap_rel "005-AC7 the snapshot-rapk step runs the release script (policy and stage-start of a release)" "Witness step" \
        'snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'snapshot-rapk bin/build-stage-rebuild-apk.sh'
 rb r_snap_name "005-AC7 the snapshot-rebuild step uses a name outside the closed list" "Witness step" \
-       'witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh' 'witnessed-local.sh snapshot-evil bin/build-stage-assemble.sh'
+       'witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh' \
+       'witnessed-local.sh snapshot-evil bin/build-stage-assemble.sh'
 rb r_snap_asmname "005-AC7 the snapshot-rapk step runs under the release step name" "Witness step" \
        'witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'witnessed-local.sh rapk bin/build-stage-snapshot-rebuild-apk.sh'
 # I5 (step-8, Opus): the Rebuild verdict artifact is uploaded under if: always(), so snapshot-verdict.json is readable even when rebuild-compare failed; no other upload is
@@ -714,26 +717,32 @@ rb r_chk_argswap "A1 the check's arguments are swapped" "rapk records are checke
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
-# The four assemble Witness lines are exactly the one script with the step word and nothing else (REQ-CHAIN-004-AC2, AC12; REQ-CHAIN-005-AC7).
+# The four assemble Witness lines are exactly the one script with the step word and nothing else
+# (REQ-CHAIN-004-AC2, AC12; REQ-CHAIN-005-AC7).
 for want in "witnessed-local.sh build bin/build-stage-assemble.sh apk" \
             "witnessed-local.sh snapshot-build bin/build-stage-assemble.sh snapshot-apk"; do
-  if grep -Fxq "        run: bash bin/$want" "$work/build.yml"; then ok "AC2 the fixture Build stage spells the Witness line '$want' exactly"
+  if grep -Fxq "        run: bash bin/$want" "$work/build.yml"; then
+    ok "AC2 the fixture Build stage spells the Witness line '$want' exactly"
   else bad "AC2 the fixture Build stage lacks the Witness line '$want'"; fi
 done
 for want in "witnessed-local.sh rebuild bin/build-stage-assemble.sh rapk" \
             "witnessed-local.sh snapshot-rebuild bin/build-stage-assemble.sh snapshot-rapk"; do
-  if grep -Fxq "        run: bash bin/$want" "$work/rebuild.yml"; then ok "005-AC7 the fixture Rebuild stage spells the Witness line '$want' exactly"
+  if grep -Fxq "        run: bash bin/$want" "$work/rebuild.yml"; then
+    ok "005-AC7 the fixture Rebuild stage spells the Witness line '$want' exactly"
   else bad "005-AC7 the fixture Rebuild stage lacks the Witness line '$want'"; fi
 done
-wit_mutants() { # wit_mutants st|rb ID STEP WORD WRONGWORD OTHERMODEWORD OLDSCRIPT   one mutant of each kind of the assemble Witness line
+wit_mutants() { # wit_mutants st|rb ID STEP WORD WRONGWORD OTHERMODEWORD OLDSCRIPT   one mutant of each kind
   local fn=$1 id=$2 step=$3 word=$4 head
   head="witnessed-local.sh $step bin/build-stage-assemble.sh"
   "$fn" "${id}_ws" "$id a wrong step word on the assemble Witness line" "exactly the one line" "$head $word" "$head $5"
-  "$fn" "${id}_wm" "$id the step word of the other mode on the assemble Witness line" "exactly the one line" "$head $word" "$head $6"
+  "$fn" "${id}_wm" "$id the step word of the other mode on the assemble Witness line" "exactly the one line" \
+        "$head $word" "$head $6"
   "$fn" "${id}_wv" "$id a version expression added to the assemble Witness line" "exactly the one line" "$head $word" \
         "$head $word \"\${GITHUB_REF_NAME#v}\""
-  "$fn" "${id}_mw" "$id the step word missing from the assemble Witness line" "exactly the one line" "$head $word" "$head"
-  "$fn" "${id}_xw" "$id an extra word on the assemble Witness line" "exactly the one line" "$head $word" "$head $word extra"
+  "$fn" "${id}_mw" "$id the step word missing from the assemble Witness line" "exactly the one line" \
+        "$head $word" "$head"
+  "$fn" "${id}_xw" "$id an extra word on the assemble Witness line" "exactly the one line" \
+        "$head $word" "$head $word extra"
   "$fn" "${id}_os" "$id the old script name on the assemble Witness line" "exactly the one line" "$head $word" \
         "witnessed-local.sh $step bin/build-stage-$7.sh $word"
 }
@@ -909,7 +918,8 @@ if [ -s "$wl/keep/stubpid" ]; then kill -TERM "$(cat "$wl/keep/stubpid")" 2>/dev
 for _ in $(seq 40); do { [ -s "$wl/keep/helperpid" ] && kill -0 "$(cat "$wl/keep/helperpid")" 2>/dev/null; } || break; sleep 0.25; done
 wait "$wl_pid" 2>/dev/null || true
 if [ -e "$wl/keep/started" ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 a TERM signal while Witness runs still destroys the key directory (trap)"; else bad "WIT2 after TERM the runner temp folder holds: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
-# ---- the five stage scripts (assemble is one script for all four steps): an EXACT line grammar (REQ-CHAIN-004-AC3, AC6, AC11; REQ-CHAIN-005-AC2) --------------------------------------
+# ---- the five stage scripts (assemble is one script for all four steps): an EXACT line grammar
+# (REQ-CHAIN-004-AC3, AC6, AC11; REQ-CHAIN-005-AC2) ----
 KINDS="apk assemble rebuild-apk snapshot-apk snapshot-rebuild-apk"
 for k in $KINDS; do
   expect ok "AC3 fixture: the known-good bin/build-stage-$k.sh is exactly the grammar (long lines broken with backslashes)" "" script "$work/s-$k.sh" "$k"
@@ -924,7 +934,7 @@ orig = list(L)
 import re
 
 
-def ix(sub, last=False):    # the index of the first (or last) grammar line holding sub: the mutations name a command, never a position
+def ix(sub, last=False): # index of the first (or last) line holding sub: mutations name a command, never a position
     hits = [i for i, l in enumerate(L) if sub in l]
     return hits[-1] if last else hits[0]
 
@@ -954,8 +964,10 @@ probe apk              "AC3 a failure ignored with || :"                        
 probe apk              "AC3 set +eu"                                                'L[:1] + ["set +eu"] + L[1:]'
 probe apk              "AC3 set -euo pipefail missing"                              'L[1:]'
 probe assemble "AC3 the verification wrapped in a never-true if (rule 58)" \
-       'L[:ix("chain-verify.py bind")] + ["if [ \"${GITHUB_RUN_ATTEMPT:-1}\" = 0 ]; then"] + L[ix("chain-verify.py bind"):][:1] + ["fi"] + L[ix("chain-verify.py bind") + 1:]'
-probe apk              "AC3 a case dispatch instead of one file per kind"           '["case \"$1\" in", "apk)"] + L + [";;", "esac"]'
+       '(L[:ix("chain-verify.py bind")] + ["if [ \"${GITHUB_RUN_ATTEMPT:-1}\" = 0 ]; then"]
+        + L[ix("chain-verify.py bind"):][:1] + ["fi"] + L[ix("chain-verify.py bind") + 1:])'
+probe apk              "AC3 a case dispatch instead of one file per kind" \
+       '["case \"$1\" in", "apk)"] + L + [";;", "esac"]'
 probe apk              "AC3 admission after the build started"                      'L[:5] + [L[1]] + L[5:]'
 probe apk              "AC3 GH_TOKEN not unset after admission (cache's scripts would see it)" '[l for l in L if l != "unset GH_TOKEN"]'
 probe apk              "AC3 GH_TOKEN unset in the wrong place"                      'L[:2] + L[3:5] + ["unset GH_TOKEN"] + L[5:]'
@@ -971,9 +983,12 @@ probe apk              "AC6 SOURCE_DATE_EPOCH assigned and exported in ONE line 
 probe assemble "AC6 a later SOURCE_DATE_EPOCH override on an image build" \
        '[("SOURCE_DATE_EPOCH=1 " + l if "assemble-image.sh --variant fips" in l else l) for l in L]'
 probe assemble "AC11 a direct apko call" \
-       'L[:ix("vex-index.py layout")] + ["apko build --lockfile out/production.lock.json build/apko.yaml fscache:x out/production.tar"] + L[ix("vex-index.py layout"):]'
+       '(L[:ix("vex-index.py layout")]
+        + ["apko build --lockfile out/production.lock.json build/apko.yaml fscache:x out/production.tar"]
+        + L[ix("vex-index.py layout"):])'
 probe assemble "AC11 apko build without the lock (a different image digest per the real run)" \
-       'L[:ix("vex-index.py layout")] + ["apko build build/apko.yaml fscache:x out/production.tar"] + L[ix("vex-index.py layout"):]'
+       '(L[:ix("vex-index.py layout")] + ["apko build build/apko.yaml fscache:x out/production.tar"]
+        + L[ix("vex-index.py layout"):])'
 probe assemble "AC11 --lockfile passed by the stage" \
        '[l + " --lockfile out/production.lock.json" if "assemble-image.sh --variant production" in l else l for l in L]'
 probe assemble         "AC11 a cd away from the repo root"                          'L[:1] + ["cd build"] + L[1:]'
@@ -983,12 +998,16 @@ probe assemble "AC11 --melange-repo pointing at an unverified download" \
 probe apk              "AC6 a source dir other than the checkout (another commit)"  '[l.replace("--source-dir . ", "--source-dir /tmp/other ") for l in L]'
 probe apk "AC3 the version check on a directory other than the built one" '[l.replace("--apk-dir \"out/$(uname -m)\"", "--apk-dir /bin") for l in L]'
 probe apk              "AC3 the version check missing for the fips apk (rule 24 covers both)" '[l for l in L if "--variant fips --tag" not in l]'
-probe assemble         "AC3 one apk directory not bound (a bind line missing)"      'L[:ix("chain-verify.py bind")] + L[ix("chain-verify.py bind") + 1:]'
+probe assemble         "AC3 one apk directory not bound (a bind line missing)" \
+       'L[:ix("chain-verify.py bind")] + L[ix("chain-verify.py bind") + 1:]'
 probe assemble         "AC3 the files not bound to the record (the bind lines missing)" '[l for l in L if "chain-verify.py bind" not in l]'
-probe assemble         "AC3 bound with another step name (a Rebuild record can stand in)" '[re.sub(r"--step (?!rapk\b)\S+", "--step rapk", l) for l in L]'
-probe assemble         "AC3 the admission baseline written BEFORE the files are bound" 'move(ix("admission-baseline"), ix("chain-verify.py bind"))'
+probe assemble         "AC3 bound with another step name (a Rebuild record can stand in)" \
+       '[re.sub(r"--step (?!rapk\b)\S+", "--step rapk", l) for l in L]'
+probe assemble         "AC3 the admission baseline written BEFORE the files are bound" \
+       'move(ix("admission-baseline"), ix("chain-verify.py bind"))'
 probe assemble "AC3 bound as a signed record (the building job's record is local and unsigned)" '[l.replace("bind --local ", "bind ") for l in L]'
-probe assemble "AC3 bound to a record named like a signed one" '[l.replace("-collection.local.json", "-collection.json") for l in L]'
+probe assemble "AC3 bound to a record named like a signed one" \
+       '[l.replace("-collection.local.json", "-collection.json") for l in L]'
 probe assemble         "AC9 digests.json forged by a plain write after the merge"   'L + ["printf \x27{}\x27 > digests.json"]'
 probe assemble         "AC9 digests.json written by hand instead of by the merge"   '[l for l in L if "items-merge" not in l] + ["echo {} > digests.json"]'
 probe assemble         "AC9 the archives built after the merge (their digests would not be in digests.json)" \
@@ -997,40 +1016,53 @@ probe rebuild-apk      "005-AC1 Build's record not verified FIRST (stage-start a
 probe rebuild-apk      "005-AC1 a command between the policy and stage-start"       'L[:2] + ["python3 bin/build-admit.py run"] + L[2:]'
 probe assemble "005-AC1 stage-start AFTER the Rebuild apk records are bound (Build's record must come first)" \
        'move(ix("stage-start"), ix("chain-verify.py bind") + 1)'
-probe assemble "005-AC2 no comparison"                                              '[l for l in L if "rebuild-compare" not in l]'
-probe assemble "005-AC2 no release comparison (rapk)"                               '[l for l in L if "rebuild-compare" not in l or "--snapshot" in l]'
-probe assemble "005-AC7 no snapshot comparison (snapshot-rapk)"                     '[l for l in L if "--snapshot" not in l]'
+probe assemble "005-AC2 no comparison" \
+       '[l for l in L if "rebuild-compare" not in l]'
+probe assemble "005-AC2 no release comparison (rapk)" \
+       '[l for l in L if "rebuild-compare" not in l or "--snapshot" in l]'
+probe assemble "005-AC7 no snapshot comparison (snapshot-rapk)" \
+       '[l for l in L if "--snapshot" not in l]'
 probe assemble "005-AC2 the comparison against Rebuild's own items" \
        '[l.replace("--expected build-in/items.json", "--expected items.json") for l in L]'
-probe assemble "005-AC2 stage-start missing (Build's record is never verified)"     '[l for l in L if "stage-start" not in l]'
-probe assemble "005-AC2 policy make missing"                                        '[l for l in L if "policy make" not in l]'
-probe assemble "005-AC2 the digest list not copied to digests.json"                 '[l for l in L if "cp build-in/digests.json" not in l]'
+probe assemble "005-AC2 stage-start missing (Build's record is never verified)" \
+       '[l for l in L if "stage-start" not in l]'
+probe assemble "005-AC2 policy make missing" \
+       '[l for l in L if "policy make" not in l]'
+probe assemble "005-AC2 the digest list not copied to digests.json" \
+       '[l for l in L if "cp build-in/digests.json" not in l]'
 probe assemble "005-AC2 Rebuild publishes (a copy of its dist)"                     'L + ["cp -r dist release"]'
 probe assemble "005-AC6 Rebuild assembles with other arguments than Build" \
        '[l.replace("--keyring-dir keyring", "--keyring-dir other") if "variant fips" in l else l for l in L]'
-# a mutation of a case arm: a command that belongs to one step moved to, copied into or taken from another (properties of the line list, not positions)
+# a mutation of a case arm: a command that belongs to one step moved to, copied into or taken from another
+# (properties of the line list, not positions)
 probe assemble "ARM rebuild-compare moved to the apk steps (after the merge)" \
        'move(ix("rebuild-compare"), ix("items-merge") + 1)'
 probe assemble "ARM the release comparison run in the snapshot arm (the two comparisons swapped)" \
        'swap(ix("--snapshot"), [i for i, l in enumerate(L) if "rebuild-compare" in l and "--snapshot" not in l][0])'
 probe assemble "ARM --digests passed for rapk (a second digests.json writer after the copy)" \
-       'L[:ix("cp build-in/digests.json") + 1] + [L[ix("items-merge")] + " --digests digests.json"] + L[ix("cp build-in/digests.json") + 1:]'
+       '(L[:ix("cp build-in/digests.json") + 1] + [L[ix("items-merge")] + " --digests digests.json"]
+        + L[ix("cp build-in/digests.json") + 1:])'
 probe assemble "ARM --digests passed on every items-merge" \
        '[l + " --digests digests.json" if "items-merge" in l and "--digests" not in l else l for l in L]'
-probe assemble "ARM --digests missing from the apk items-merge (the array is not used)" '[re.sub(r" \"?\$\{digests\[@\]\}\"?", "", l) for l in L]'
+probe assemble "ARM --digests missing from the apk items-merge (the array is not used)" \
+       '[re.sub(r" \"?\$\{digests\[@\]\}\"?", "", l) for l in L]'
 probe assemble "ARM admission-baseline run for the snapshot steps too (a copy after the binds)" \
-       'L[:ix("chain-verify.py bind", True) + 1] + [L[ix("admission-baseline")]] + L[ix("chain-verify.py bind", True) + 1:]'
+       '(L[:ix("chain-verify.py bind", True) + 1] + [L[ix("admission-baseline")]]
+        + L[ix("chain-verify.py bind", True) + 1:])'
 probe assemble "ARM admission-baseline taken out of the apk step" '[l for l in L if "admission-baseline" not in l]'
 probe assemble "ARM stage-start run for every step (a copy before the binds)" \
        'L[:ix("chain-verify.py bind")] + [L[ix("stage-start")]] + L[ix("chain-verify.py bind"):]'
 probe assemble "ARM a branch of an if added beside the case blocks" \
-       'L[:ix("items-merge")] + ["if [ \"$1\" = apk ]; then"] + L[ix("items-merge"):][:1] + ["fi"] + L[ix("items-merge") + 1:]'
+       '(L[:ix("items-merge")] + ["if [ \"$1\" = apk ]; then"] + L[ix("items-merge"):][:1] + ["fi"]
+        + L[ix("items-merge") + 1:])'
 probe assemble "ARM the version of a snapshot step taken from the tag (the snapshot version replaced)" \
        '[l.replace("0.0.0-rc.1", "${GITHUB_REF_NAME#v}") for l in L]'
 probe assemble "ARM the version of a release step hard-wired to the snapshot version (the tag expression replaced)" \
        '[l.replace("${GITHUB_REF_NAME#v}", "0.0.0-rc.1") for l in L]'
-probe assemble "ARM the snapshot version taken out (the snapshot arm has no version)" '[l for l in L if "0.0.0-rc.1" not in l]'
-probe assemble "ARM the version missing from the items merge" '[l.replace(" --version", " --noversion") if "items-merge" in l else l for l in L]'
+probe assemble "ARM the snapshot version taken out (the snapshot arm has no version)" \
+       '[l for l in L if "0.0.0-rc.1" not in l]'
+probe assemble "ARM the version missing from the items merge" \
+       '[l.replace(" --version", " --noversion") if "items-merge" in l else l for l in L]'
 # every deletion, swap, suffix and insertion, on every line of every kind
 python3 - "$shape" "$KINDS" "$work" <<'PY' > "$work/sweep.out"
 import importlib.util, sys
@@ -1100,31 +1132,40 @@ for name in vt ff fs nel ls; do
   expect caught "AC3 control character ($name) joined to a grammar line" "control character" script "$work/c-$name-hide.sh" apk
   expect caught "AC3 control character ($name) hidden in a comment" "control character" script "$work/c-$name-comment.sh" apk
 done
-# ---- Build and Rebuild assemble identically (REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC6): they run the one script, so only the workflow side is judged here -----
+# ---- Build and Rebuild assemble identically (REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC6): they run the one script,
+# so only the workflow side is judged here ----
 LA="$work/s-assemble.sh"
-expect ok "AC11/005-AC6 fixture: no stage file names apko; Build and Rebuild assemble with the one script" "" lockflow "$work/build.yml" "$work/rebuild.yml"
-replace "$LA" "$work/lf_date.sh" 'assemble-image.sh --variant production' 'assemble-image.sh --build-date 2026-10-09T00:00:00Z --variant production' \
-       && expect caught "005-AC6 the one assemble script passes its own --build-date" command script "$work/lf_date.sh" assemble
+expect ok "AC11/005-AC6 fixture: no stage file names apko; Build and Rebuild assemble with the one script" \
+       "" lockflow "$work/build.yml" "$work/rebuild.yml"
+replace "$LA" "$work/lf_date.sh" 'assemble-image.sh --variant production' \
+       'assemble-image.sh --build-date 2026-10-09T00:00:00Z --variant production' \
+       && expect caught "005-AC6 the one assemble script passes its own --build-date" \
+          command script "$work/lf_date.sh" assemble
 python3 - "$LA" "$work/lf_ver.sh" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
 open(sys.argv[2], "w").write(re.sub(r"(--variant production --version )\S+", r"\g<1>9.9.9", text, count=1))
 PY
-expect caught "005-AC6 the one assemble script gives the production image a version other than its VERSION word" command script "$work/lf_ver.sh" assemble
+expect caught "005-AC6 the one assemble script gives the production image a version other than its VERSION word" \
+       command script "$work/lf_ver.sh" assemble
 replace "$work/build.yml" "$work/lf_apko.yml" "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk" \
-       "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk && apko build build/apko.yaml fscache:x out.tar" && expect caught \
+       "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk "\
+       "&& apko build build/apko.yaml fscache:x out.tar" && expect caught \
        "AC11 a stage workflow names apko in a run step" apko lockflow "$work/lf_apko.yml" "$work/rebuild.yml"
 replace "$work/build.yml" "$work/lf_apkoi.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko --version 9' && expect caught \
-       "AC11 the apko installer line with an extra argument is not the one admitted line" apko lockflow "$work/lf_apkoi.yml" "$work/rebuild.yml"
+       "AC11 the apko installer line with an extra argument is not the one admitted line" \
+       apko lockflow "$work/lf_apkoi.yml" "$work/rebuild.yml"
 replace "$work/build.yml" "$work/lf_apkoj.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko && apko build build/apko.yaml fscache:x out.tar' && expect caught \
-       "AC11 apko run in the installer step's own command line is refused" apko lockflow "$work/lf_apkoj.yml" "$work/rebuild.yml"
+       "AC11 apko run in the installer step's own command line is refused" \
+       apko lockflow "$work/lf_apkoj.yml" "$work/rebuild.yml"
 # ---- the scripts are listed with their sha256 (PR 1's chain-scripts.json design) --------------------------------------------------------------
 mkdir -p "$work/listed/bin"
 for k in $KINDS
 do cp "$work/s-$k.sh" "$work/listed/bin/build-stage-$k.sh"
 done
 cp "$work/witnessed.sh" "$work/listed/bin/witnessed.sh"
-expect ok "AC3 fixture: the stage scripts and bin/witnessed.sh are rows of chain-scripts.json with the committed bytes' sha256" "" \
+expect ok "AC3 fixture: the stage scripts and bin/witnessed.sh are rows of chain-scripts.json"\
+" with the committed bytes' sha256" "" \
        listed "$work/chain-scripts.json" "$work/listed"
 echo '# changed after listing' >> "$work/listed/bin/build-stage-apk.sh"
 expect caught "AC3 a script changed after it was listed is refused (the sha256 binding)" "sha256" listed "$work/chain-scripts.json" "$work/listed"
@@ -1197,14 +1238,16 @@ LOCK = "bubblewrap=0.13.0-r0\nglibc=2.43-r13\nld-linux=2.43-r13\nlibcap=2.78-r4\
 n = [0]
 
 
-def case(label, setup=None, lock=LOCK, want=0, extra_args=(), arch=ARCH, after=None, nothing_written=None, bin_dir="@D/bin"):
+def case(label, setup=None, lock=LOCK, want=0, extra_args=(),
+         arch=ARCH, after=None, nothing_written=None, bin_dir="@D/bin"):
     n[0] += 1
     d = "%s/c%d" % (base, n[0]); os.makedirs(d + "/archive/" + ARCH); os.makedirs(d + "/bin")
     good_set(d + "/archive/" + ARCH)
     if setup: setup(d)
     lp = d + "/host-tools.lock"
     open(lp, "wb").write(lock.encode() if isinstance(lock, str) else lock)
-    args = ["python3", "-I", script, "--archive", d + "/archive", "--lock", lp, "--root", d + "/host-tools", "--bin", bin_dir.replace("@D", d), "--arch", arch] + list(extra_args)  # @D is the case folder
+    args = ["python3", "-I", script, "--archive", d + "/archive", "--lock", lp, "--root", d + "/host-tools",
+            "--bin", bin_dir.replace("@D", d), "--arch", arch] + list(extra_args)  # @D is the case folder
     r = subprocess.run(args, capture_output=True, text=True)
     good = r.returncode == want
     if want != 0 and nothing_written is not False:
@@ -1857,10 +1900,17 @@ fi
 # bin/chain-test-harness.py builds a throw-away tree; the expected digests.json and items.json come from its ORACLE, never from anything the
 # implementation wrote. The fixtures run with the fake chain-verify.py (MODE oracle); the real scripts run with the REAL items-apk and items-merge
 # (MODE real). Each function below covers one kind, so a wrong script fails its cases and the summary still prints.
-# the four assemble kinds (assemble, rebuild-assemble, snapshot-assemble, snapshot-rebuild-assemble) are the one script run with its STEP
+# the four assemble kinds (assemble, rebuild-assemble, snapshot-assemble, snapshot-rebuild-assemble)
+# are the one script run with its STEP
 file_of() { case "$1" in *assemble) echo assemble;; *) echo "$1";; esac; }
-script_of() { if [ "$1" = fixture ]; then echo "$work/s-$(file_of "$2").sh"; else echo "$root/bin/build-stage-$(file_of "$2").sh"; fi; }
-step_of() { case "$1" in assemble) echo apk;; rebuild-assemble) echo rapk;; snapshot-assemble) echo snapshot-apk;; snapshot-rebuild-assemble) echo snapshot-rapk;; esac; }
+script_of() {
+  if [ "$1" = fixture ]; then echo "$work/s-$(file_of "$2").sh"
+  else echo "$root/bin/build-stage-$(file_of "$2").sh"; fi
+}
+step_of() {
+  case "$1" in assemble) echo apk;; rebuild-assemble) echo rapk;; snapshot-assemble) echo snapshot-apk;;
+    snapshot-rebuild-assemble) echo snapshot-rapk;; esac
+}
 mk() { python3 "$harness" mktree "$1" "$2" "$3" "$4" "$5" > /dev/null; }       # mk DIR KIND SCRIPT MODE TAG
 with_timeout() { # with_timeout SECONDS COMMAND...   macOS has no timeout(1): a stuck stage must fail its case, never hang the test
   local seconds=$1 pid killer status; shift
@@ -1872,13 +1922,16 @@ with_timeout() { # with_timeout SECONDS COMMAND...   macOS has no timeout(1): a 
 }
 run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 if it hangs); GH_TOKEN is set as the apk job's Witness step sets it
   local dir=$1 kind=$2 mode=$3 tag=$4 words=() ref; shift 4
-  if [ -n "$(step_of "$kind")" ]; then   # the assemble script takes the STEP only; its version comes from GITHUB_REF_NAME (tag minus v) or is 0.0.0-rc.1 in a snapshot
+  # the assemble script takes the STEP only; its version comes from GITHUB_REF_NAME (tag minus v)
+  # or is 0.0.0-rc.1 in a snapshot
+  if [ -n "$(step_of "$kind")" ]; then
     words=("$(step_of "$kind")")
   fi
   ( cd "$dir" && if with_timeout 120 env GITHUB_ACTIONS=true "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" \
         HARNESS_DIR="$root/bin" REAL_CV="$CV" \
         GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GH_TOKEN=SENTINEL-GH-TOKEN PATH="$dir/bin:$PATH" \
-        bash "./bin/build-stage-$(file_of "$kind").sh" ${words[@]+"${words[@]}"} > stage.out 2> stage.err; then echo 0; else echo $?; fi )
+        bash "./bin/build-stage-$(file_of "$kind").sh" ${words[@]+"${words[@]}"} \
+          > stage.out 2> stage.err; then echo 0; else echo $?; fi )
 }
 n_calls() { grep -c -- "$1" "$2/calls.log" 2> /dev/null || true; }                         # n_calls REGEX DIR
 line_of() { grep -n -- "$1" "$2/calls.log" 2> /dev/null | head -1 | cut -d: -f1 || true; }  # line_of REGEX DIR
@@ -2394,11 +2447,14 @@ for tag in fixture real; do
   for kind in snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
     f=$(script_of "$tag" "$kind")
     if [ ! -f "$f" ]; then
-      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh never pushes a tag (the script does not exist: RED until implemented)"
+      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh"\
+        " never pushes a tag (the script does not exist: RED until implemented)"
     elif grep -Eq '(^|[^[:alnum:]_-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*push|--push' "$f"; then
-      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh names a git push (the snapshot tag is local and never pushed)"
+      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh"\
+        " names a git push (the snapshot tag is local and never pushed)"
     elif ! guard_first "$f" "$kind"; then
-      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh: the GITHUB_ACTIONS guard does not come before the first git tag"
+      bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh"\
+        ": the GITHUB_ACTIONS guard does not come before the first git tag"
     elif grep -Eq '(^|[^[:alnum:]_.-])gh[[:space:]]|build-admit' "$f"; then
       bad "AC12 $tag bin/build-stage-$(file_of "$kind").sh names gh or the admission (snapshot mode makes no API read)"
     else
@@ -2412,7 +2468,10 @@ for tag in fixture real; do
   for kind in apk assemble rebuild-apk rebuild-assemble; do
     n=$(cases_of "$kind")
     if [ ! -f "$(script_of "$tag" "$kind")" ]; then      # a missing script is as many failed cases as the script would have run, so the total never shrinks
-      for _ in $(seq "$n"); do bad "AC3 $tag $kind: a behaviour case (bin/build-stage-$(file_of "$kind").sh does not exist: RED until implemented)"; done
+      for _ in $(seq "$n"); do
+        bad "AC3 $tag $kind: a behaviour case (bin/build-stage-$(file_of "$kind").sh"\
+          " does not exist: RED until implemented)"
+      done
       continue
     fi
     before=$((pass + failn))
@@ -2420,15 +2479,20 @@ for tag in fixture real; do
     [ $((pass + failn - before)) = "$n" ] || bad "the $kind behaviour cases ran $((pass + failn - before)) cases, cases_of says $n"
   done
 done
-# The one assemble script derives its version from its STEP (REQ-CHAIN-004-AC3): the tag minus v for apk and rapk, 0.0.0-rc.1 for the snapshot steps
+# The one assemble script derives its version from its STEP (REQ-CHAIN-004-AC3): the tag minus v for apk and rapk,
+# 0.0.0-rc.1 for the snapshot steps
 # whatever GITHUB_REF_NAME is; a tag named v9.9.9 shows which one reaches both image builds and the archives
 for kind in assemble rebuild-assemble snapshot-assemble snapshot-rebuild-assemble; do
   vd="$work/ver-$kind"; vtag=v9.9.9; want=9.9.9; case "$kind" in snapshot-*) vtag=$SNAP_TAG; want=0.0.0-rc.1;; esac
-  mk "$vd" "$kind" "$(script_of real "$kind")" oracle "$vtag"; REF_NAME=v9.9.9 run_stage "$vd" "$kind" oracle "$vtag" > /dev/null
-  if [ "$(n_calls "^image .*--version $want " "$vd")" = 2 ] && [ "$(n_calls "^archives .*--version $want " "$vd")" = 1 ]; then
-    ok "AC3 $kind: with GITHUB_REF_NAME v9.9.9 both image builds and the archives get version $want (STEP $(step_of "$kind"))"
+  mk "$vd" "$kind" "$(script_of real "$kind")" oracle "$vtag"
+  REF_NAME=v9.9.9 run_stage "$vd" "$kind" oracle "$vtag" > /dev/null
+  if [ "$(n_calls "^image .*--version $want " "$vd")" = 2 ] && \
+     [ "$(n_calls "^archives .*--version $want " "$vd")" = 1 ]; then
+    ok "AC3 $kind: with GITHUB_REF_NAME v9.9.9 both image builds and the archives get version $want"\
+      " (STEP $(step_of "$kind"))"
   else
-    bad "AC3 $kind: the version did not reach the images and the archives as $want: $(grep -E '^(image|archives) ' "$vd/calls.log" 2> /dev/null | tr '\n' '|' | cut -c1-200)"
+    bad "AC3 $kind: the version did not reach the images and the archives as $want: "\
+      "$(grep -E '^(image|archives) ' "$vd/calls.log" 2> /dev/null | tr '\n' '|' | cut -c1-200)"
   fi
 done
 # the old scripts are gone: one file, no workflow call, no row, no judge entry (REQ-CHAIN-004-AC3)
@@ -2437,9 +2501,12 @@ if [ "$(ls "$root"/bin/build-stage-*assemble*.sh | wc -l)" = 1 ] && [ -f "$root/
 else
   bad "AC3 files matching bin/build-stage-*assemble*.sh: $(ls "$root"/bin/build-stage-*assemble*.sh | tr '\n' ' ')"
 fi
-old_names=$(grep -rEl 'build-stage-(rebuild-assemble|snapshot-assemble|snapshot-rebuild-assemble)' "$root/bin" "$root/.github" 2> /dev/null \
+old_names=$(grep -rEl 'build-stage-(rebuild-assemble|snapshot-assemble|snapshot-rebuild-assemble)' "$root/bin" \
+            "$root/.github" 2> /dev/null \
             | grep -v -e '/bin/chain-build-wiring-test.sh$' || true)
-if [ -z "$old_names" ]; then ok "AC3 no file under bin or .github (workflow, chain-scripts.json, the judge, an allowlist) names a deleted assemble script"
+if [ -z "$old_names" ]; then
+  ok "AC3 no file under bin or .github (workflow, chain-scripts.json, the judge, an allowlist)"\
+    " names a deleted assemble script"
 else bad "AC3 deleted assemble scripts are still named in: $(tr '\n' ' ' <<< "$old_names")"; fi
 # Codex A r1 F6: the guard script judges the raw string, case-sensitively (an `if` in a workflow cannot: GitHub compares strings without regard to case)
 GS="$root/bin/build-stage-refuse-mode.sh"
@@ -2547,14 +2614,16 @@ f1 caught "a panel download by artifact id with another key (run-id) in place of
 # Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
 # harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
 for kind in assemble rebuild-assemble; do
-  rd="$work/rcp-$kind"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1; rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
+  rd="$work/rcp-$kind"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
+  rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
   if [ "$kind" = assemble ] && [ "$rc" = 0 ] && [ ! -e "$rd/policy.json" ]; then
     ok "AC12/rc $kind: the tag v0.3.0-rc1 completes with no policy (the apk records are local; the REAL admission-baseline reads the full tag)"
   elif [ "$kind" = rebuild-assemble ] && [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" else 1)' "$rd/policy.json" 2> /dev/null; then
     ok "AC12/rc $kind: the tag v0.3.0-rc1 passes the REAL policy make and the policy carries the full tag"
   else bad "AC12/rc $kind: v0.3.0-rc1 through the real policy make: rc=$rc $(head -c 160 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
-    rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1; rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
+    rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$(script_of real "$kind")" real v0.3.0-rc1
+    rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
     if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at $([ "$kind" = assemble ] && echo 'build: tag' || echo policy)" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
@@ -3644,14 +3713,17 @@ root, work = sys.argv[1], sys.argv[2]
 exec(open(os.path.join(work, "vi-named.py")).read())
 allowed = BASE
 stray_files = stray(root)
-assert not stray_files, "named outside the one assemble script: %s" % stray_files       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
+# AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
+assert not stray_files, "named outside the one assemble script: %s" % stray_files
 ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
 WRAPPED = "run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-index-test.sh bin/vex-index-test.sh </dev/null"      # REQ-CI-005: the test runs as a counting step, exactly this line
 assert all(row.startswith("run: bash bin/vex-index-test.sh") or row == WRAPPED or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 assert runners(rows) == sorted(p for p in allowed if p.startswith("bin/build-stage-")), runners(rows)      # a row may carry no runs list (bin/loopback-get.sh): it runs nothing
 PY
-then ok "REQ-REL-010-AC4/AC5 only the one assemble script (Build's and Rebuild's) runs bin/vex-index.py: no Sign, Release, maintenance or patch-release file names it, so nothing attaches after Sign and no published version is touched"
+then ok "REQ-REL-010-AC4/AC5 only the one assemble script (Build's and Rebuild's) runs bin/vex-index.py"\
+": no Sign, Release, maintenance or patch-release file names it, so nothing attaches after Sign"\
+" and no published version is touched"
 else bad "REQ-REL-010-AC4/AC5 a file outside the one assemble script names or runs bin/vex-index.py"
 fi
 # the narrow exemption must keep biting: each mutation of a copy of the two live-test files (or a third file) is refused by the same scope function
@@ -3768,7 +3840,8 @@ fi
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
 expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
-expect ok "AC11/005-AC6 the real stage files (Build and Rebuild run the one assemble script) do not name apko" "" lockflow \
+expect ok "AC11/005-AC6 the real stage files (Build and Rebuild run the one assemble script) do not name apko" \
+       "" lockflow \
        "$root/.github/workflows/stage-build.yml" "$root/.github/workflows/stage-reproducibility.yml"
 label="AC1 the real workflow directory: no file added beyond stage-sign.yml, customer-words-edited.yml and evidence-letter.yml, stage-image.yml"
 expect ok "$label and stage-admission.yml gone (rules 50, 52, 61)" "" \
