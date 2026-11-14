@@ -54,12 +54,11 @@ jobs:
           fi
           dirs=()
           for f in "${changed[@]}"; do
-            case "$f" in
-              vendor/*|tools/requirements/*) continue ;;
-              testdata/*) d=. ;;
-              */testdata/*) d=${f%%/testdata/*} ;;
-              *) d=$(dirname -- "$f") ;;
-            esac
+            if [ "${f#vendor/}" != "$f" ] || [ "${f#tools/requirements/}" != "$f" ]; then continue; fi
+            d=${f%%/testdata/*}
+            if [ "$d" != "$f" ]; then :
+            elif [ "${f#testdata/}" != "$f" ]; then d=.
+            else d=$(dirname -- "$f"); fi
             if compgen -G "${d}/*.go" >/dev/null; then dirs+=("./${d}"); fi
           done
           echo "list=$(printf '%s\n' "${dirs[@]}" | sort -u | xargs)" >> "$GITHUB_OUTPUT"
