@@ -472,7 +472,7 @@ def sh(body, stubs, env=None):
         # the Container Analysis calls go through ca() -> the python helper (urllib, tested below); here ca() is replaced by the stub transport so the shell
         # logic around it is tested offline
         prelude = 'ca_get() { ca-transport "$1"; }; ca_delete() { ca-transport -X DELETE "$1"; }; ' if "ca-transport" in stubs else ""
-        r = subprocess.run(["bash", "-c", 'set -euo pipefail; sour' + 'ce "$0"; ' + prelude + body, script], cwd=t, env=e,
+        r = subprocess.run(["bash", "-c", 'set -euo pipefail; source "$0"; ' + prelude + body, script], cwd=t, env=e,
                            capture_output=True, text=True)
         return r.returncode, r.stdout + r.stderr
 # the Container Analysis API is called by the python helper (an API call for data, not a software download): fixed host, bearer token, the method asked for,
