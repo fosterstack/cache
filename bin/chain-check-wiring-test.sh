@@ -699,12 +699,13 @@ if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-
 # REQ-CHAIN-004-AC2: the wrapped script runs under `timeout -k 20 540`; a fake witness records its arguments
 fw="$work/fakewit"; mkdir -p "$fw/bin" "$fw/tmp"
 printf '#!/usr/bin/env bash\nprintf "%%s " "$@" > "$FAKE_ARGS"\n' > "$fw/bin/witness"; chmod +x "$fw/bin/witness"
+rc=0
 (cd "$fw" && PATH="$fw/bin:$PATH" RUNNER_TEMP="$fw/tmp" FAKE_ARGS="$fw/args" \
-  bash "$root/bin/witnessed-local.sh" apk x.sh) || true
-if grep -Fq -- ' -- timeout -k 20 540 bash x.sh ' "$fw/args"; then
+  bash "$root/bin/witnessed-local.sh" apk x.sh) || rc=$?
+if [ "$rc" = 0 ] && grep -Fq -- ' -- timeout -k 20 540 bash x.sh ' "$fw/args"; then
   ok "AC2 witnessed-local.sh bounds the wrapped script by timeout -k 20 540 (9 minutes)"
 else
-  bad "AC2 witnessed-local.sh ran the script under: $(grep -o -- ' -- .*' "$fw/args" 2> /dev/null)"
+  bad "AC2 witnessed-local.sh exit $rc, ran the script under: $(grep -o -- ' -- .*' "$fw/args" 2> /dev/null)"
 fi
 
 EXPECT=315
