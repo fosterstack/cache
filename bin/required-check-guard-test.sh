@@ -12,9 +12,9 @@ list="$repo/.github/policy/required-checks.json"
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 pass=0; fail=0
 
-check() { # name want_rc regex rules_file list_file
+check() { # name want_rc regex rules_file list_file [release_only_file]
   local out rc
-  out="$(GUARD_RULES_JSON="$4" bash "$sut" "$5" 2>&1)"; rc=$?
+  out="$(GUARD_RULES_JSON="$4" bash "$sut" "$5" ${6:+"$6"} 2>&1)"; rc=$?
   if [ "$rc" -ne "$2" ] || ! grep -qE "$3" <<<"$out"; then
     echo "FAIL: $1 (rc ${rc}, want $2; /$3/)"; echo "$out" | sed 's/^/    /'; fail=$((fail+1)); return
   fi
@@ -47,14 +47,6 @@ check "list without required_checks = exit 2"     2 "no required_checks array"  
 # REQ-REL-013-AC2: with a second argument the guard also compares release-only-checks.json, entry by entry (context,
 # integration_id, scope), with the seven entries pinned in the script
 ro="$repo/.github/policy/release-only-checks.json"
-check2() { # name want_rc regex release_only_file
-  local out rc
-  out="$(GUARD_RULES_JSON="$w/match.json" bash "$sut" "$list" "$4" 2>&1)"; rc=$?
-  if [ "$rc" -ne "$2" ] || ! grep -qE "$3" <<<"$out"; then
-    echo "FAIL: $1 (rc ${rc}, want $2; /$3/)"; echo "$out" | sed 's/^/    /'; fail=$((fail+1)); return
-  fi
-  echo "ok: $1"; pass=$((pass+1))
-}
 ro_edit() { jq -c "$2" "$ro" > "$w/ro-$1.json"; }
 ro_edit id      '(.required_checks[] | select(.context=="auditor-review-gate") | .integration_id) = 15368'
 ro_edit scope   '(.required_checks[] | select(.context=="coverage") | .scope) = "pull_request"'
@@ -62,32 +54,30 @@ ro_edit dropped '.required_checks |= map(select(.context != "allowlist-chain"))'
 ro_edit eighth  '.required_checks += [{"context":"extra-check","integration_id":15368,"scope":"push"}]'
 echo 'not json' > "$w/ro-garbage.json"
 echo '{"comment":["no array"]}' > "$w/ro-nolist.json"
-check2 "pinned release-only list passes"                0 "match"                                   "$ro"
-check2 "a changed integration_id is drift"              1 '^[-+] .*"auditor-review-gate".*5054756'  "$w/ro-id.json"
-check2 "a changed integration_id prints both entries"   1 '^[-+] .*"auditor-review-gate".*15368'     "$w/ro-id.json"
-check2 "a changed scope is drift, whole entry printed"  1 '^[-+] .*"coverage".*"scope":"pull_request"' "$w/ro-scope.json"
-check2 "a changed scope prints the pinned entry"        1 '^[-+] .*"coverage".*"scope":"push"'      "$w/ro-scope.json"
-check2 "a dropped entry is drift"                       1 '^[-+] .*"allowlist-chain"'               "$w/ro-dropped.json"
-check2 "an eighth entry is drift"                       1 '^[-+] .*"extra-check"'                   "$w/ro-eighth.json"
-check2 "unreadable release-only file = exit 2"          2 "release-only"                            "$w/ro-absent.json"
-check2 "release-only file not JSON = exit 2"            2 "release-only"                            "$w/ro-garbage.json"
-check2 "release-only file without the array = exit 2"   2 "release-only"                            "$w/ro-nolist.json"
+check "pinned release-only list passes"                0 "release-only list match" "$w/match.json" "$list" "$ro"
+check "a changed integration_id is drift"              1 '^[-+] .*"auditor-review-gate".*5054756' "$w/match.json" "$list" "$w/ro-id.json"
+check "a changed integration_id prints both entries"   1 '^[-+] .*"auditor-review-gate".*15368' "$w/match.json" "$list" "$w/ro-id.json"
+check "a changed scope is drift, whole entry printed"  1 '^[-+] .*"coverage".*"scope":"pull_request"' "$w/match.json" "$list" "$w/ro-scope.json"
+check "a changed scope prints the pinned entry"        1 '^[-+] .*"coverage".*"scope":"push"' "$w/match.json" "$list" "$w/ro-scope.json"
+check "a dropped entry is drift"                       1 '^[-+] .*"allowlist-chain"' "$w/match.json" "$list" "$w/ro-dropped.json"
+check "an eighth entry is drift"                       1 '^[-+] .*"extra-check"' "$w/match.json" "$list" "$w/ro-eighth.json"
+check "unreadable release-only file = exit 2"          2 "release-only" "$w/match.json" "$list" "$w/ro-absent.json"
+check "release-only file not JSON = exit 2"            2 "release-only" "$w/match.json" "$list" "$w/ro-garbage.json"
+check "release-only file without the array = exit 2"   2 "release-only" "$w/match.json" "$list" "$w/ro-nolist.json"
 
-# REQ-REL-013-AC2: the pin is main's copy of the guard, so a head that edits the file, the judge's constants and the
-# guard together is still red; the wiring runs the script fetched from main, not the tree's bin/ copy
-mkdir -p "$w/main" "$w/head/.github/policy" "$w/head/bin"
+# REQ-REL-013-AC2: the pin is main's copy of the guard, so a head that edits the file is still red; the wiring runs
+# the script fetched from main, not the tree's bin/ copy
+mkdir -p "$w/main" "$w/head/.github/policy"
 cp "$sut" "$w/main/required-check-guard.sh"
 cp "$list" "$w/head/.github/policy/required-checks.json"
 sed 's/5054756/15368/' "$ro" > "$w/head/.github/policy/release-only-checks.json"
-printf 'JUDGE_PIN=5054756\n' | sed 's/5054756/15368/' > "$w/head/judge-constants.sh"
-{ cat "$sut"; echo '# the head moves its own pin'; } | sed 's/5054756/15368/' > "$w/head/bin/required-check-guard.sh"
 out="$(cd "$w/head" && GUARD_RULES_JSON="$w/match.json" bash "$w/main/required-check-guard.sh" \
   .github/policy/required-checks.json .github/policy/release-only-checks.json 2>&1)"; rc=$?
 if [ "$rc" -eq 1 ] && grep -qE '^[-+] .*"auditor-review-gate"' <<<"$out"; then
   echo "ok: main's guard judges a head that edited the file, the judge and the guard together"; pass=$((pass+1))
 else echo "FAIL: main's guard over a head that moved its own pin (rc ${rc}, want 1)"; echo "$out" | sed 's/^/    /'; fail=$((fail+1)); fi
 
-python3 - "$repo/.github/workflows/ci.yml" "$w/pin-step.txt" 2>/dev/null <<'PY'
+python3 - "$repo/.github/workflows/ci.yml" "$w/pin-step.txt" <<'PY'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]["steps"]
 pin = [s for s in steps if "release-only-checks.json" in (s.get("run") or "") and "required-check-guard.sh" in s["run"]]
@@ -98,15 +88,14 @@ open(sys.argv[2], "w").write(s["run"] + "\n---\n" + ",".join(bad))
 PY
 if [ -s "$w/pin-step.txt" ]; then
   run="$(sed '/^---$/,$d' "$w/pin-step.txt")"
-  if grep -qE '(^|[[:space:];&|])(bash +|sh +)?(\./)?bin/required-check-guard\.sh' <<<"$run"; then
-    echo "FAIL: the pin step runs the tree's bin/required-check-guard.sh"; fail=$((fail+1))
-  elif ! grep -qE 'ref=main|origin/main|refs/heads/main' <<<"$run"; then
-    echo "FAIL: the pin step does not fetch the guard from main"; fail=$((fail+1))
-  elif ! grep -qE 'required-checks\.json +\S*release-only-checks\.json' <<<"$run"; then
-    echo "FAIL: the pin step does not pass the tree's two policy files to the guard"; fail=$((fail+1))
-  elif [ -n "$(sed '1,/^---$/d' "$w/pin-step.txt")" ]; then
-    echo "FAIL: the pin step carries $(sed '1,/^---$/d' "$w/pin-step.txt")"; fail=$((fail+1))
-  else echo "ok: the pin step runs main's guard over the tree's two policy files"; pass=$((pass+1)); fi
+  extra="$(sed '1,/^---$/d' "$w/pin-step.txt")"
+  case "$run" in
+    *" bin/required-check-guard.sh"*) echo "FAIL: the pin step runs the tree's bin/required-check-guard.sh"; fail=$((fail+1)) ;;
+    *"?ref=main"*"required-checks.json .github/policy/release-only-checks.json"*)
+      if [ -n "$extra" ]; then echo "FAIL: the pin step carries ${extra}"; fail=$((fail+1))
+      else echo "ok: the pin step runs main's guard over the tree's two policy files"; pass=$((pass+1)); fi ;;
+    *) echo "FAIL: the pin step does not fetch the guard from main and pass it the tree's two policy files"; fail=$((fail+1)) ;;
+  esac
 else echo "FAIL: ci.yml's required-check guard job has no single step that runs the guard over release-only-checks.json"; fail=$((fail+1)); fi
 
 # The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
@@ -149,6 +138,37 @@ step "drift with the issue open updates it, no dup"   "$w/missing.json" "$w/open
 grep -qx "issue=7" "$w/out" 2>/dev/null && { echo "ok: the updated issue's number is the job output"; pass=$((pass+1)); } || { echo "FAIL: updated issue output"; fail=$((fail+1)); }
 step "no required checks on main opens the issue"     "$w/none.json"    "$w/no-issues.json"  '^gh issue create'
 step "match opens nothing"                            "$w/match.json"   "$w/no-issues.json"  '^gh api ' '^gh issue (create|edit)'
+
+# The pin step, run as GitHub runs a step without `shell:` (bash -e, no pipefail): it must fail when the fetch of main's
+# guard fails or comes back empty, and must run the fetched guard once over both policy files with the ruleset from GUARD_RULES_JSON.
+python3 - "$repo/.github/workflows/ci.yml" "$w/pin-run.sh" <<'PY'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]["steps"]
+pin = [s["run"] for s in steps if "release-only-checks.json" in (s.get("run") or "") and "required-check-guard.sh" in s["run"]]
+assert len(pin) == 1, f"{len(pin)} pin steps"
+open(sys.argv[2], "w").write(pin[0])
+PY
+mkdir -p "$w/pintree/.github/policy" "$w/pinstub"
+cp "$list" "$w/pintree/.github/policy/required-checks.json"
+cp "$ro" "$w/pintree/.github/policy/release-only-checks.json"
+cat > "$w/pinstub/gh" <<'EOF'
+#!/usr/bin/env bash
+[ -n "${STUB_PRINT:-}" ] && cat "$STUB_PRINT"
+exit "${STUB_RC:-0}"
+EOF
+chmod +x "$w/pinstub/gh"
+base64 < "$sut" | tr -d '\n' > "$w/guard.b64"; : > "$w/empty.txt"
+pinstep() { # name want_zero(0|1) stub_rc stub_print_file
+  (cd "$w/pintree" && env PATH="$w/pinstub:$PATH" GH_TOKEN=x STUB_RC="$3" STUB_PRINT="$4" GUARD_RULES_JSON="$w/match.json" \
+     GITHUB_REPOSITORY=o/r RUNNER_TEMP="$w" bash --noprofile --norc -e "$w/pin-run.sh") >"$w/pin.out" 2>&1; local rc=$?
+  if { [ "$2" = 0 ] && [ "$rc" -ne 0 ]; } || { [ "$2" = 1 ] && [ "$rc" -eq 0 ]; }; then
+    echo "FAIL: $1 (rc ${rc}, want $([ "$2" = 0 ] && echo 0 || echo non-zero))"; sed 's/^/    /' "$w/pin.out"; fail=$((fail+1)); return
+  fi
+  echo "ok: $1"; pass=$((pass+1))
+}
+pinstep "pin step: gh fails with no output = non-zero"          1 1 "$w/empty.txt"
+pinstep "pin step: gh prints nothing, exits 0 = non-zero"       1 0 "$w/empty.txt"
+pinstep "pin step: gh prints main's guard = exit 0"             0 0 "$w/guard.b64"
 
 echo "----"
 echo "required-check-guard: ${pass} passed, ${fail} failed"
