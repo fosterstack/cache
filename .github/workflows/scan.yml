@@ -2,7 +2,7 @@ name: scan
 
 # The single required "scan" status check (audit follow-up). It exists so
 # a disclosed vulnerability is caught at PR time and on every push to main
-# and every tag — the same policy the release chain's stage-verify applies
+# and every tag — the same policy the release chain's Check job applies
 # at tag time, brought forward so tag day is not the first time the whole
 # scanner set runs. It builds the candidate through the EXACT same build +
 # image-assembly stages the release chain uses (mode: snapshot/pr), so the
@@ -43,13 +43,11 @@ concurrency:
   group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('scan-pr-{0}', github.event.pull_request.number) || format('scan-{0}-{1}', github.run_id, github.run_attempt) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Workflow default: read only. Each job states what it needs. The reusable-stage
-# callers (build, rebuild) grant what the shared stage files REQUEST, or the run is a
-# startup_failure with zero jobs (the former release-chain-pr.yml learned this the hard way);
-# checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
-# does not run, but they are static job permissions of the called stage. The callers' grants
-# are a static ceiling (REQ-CHAIN-004-AC14): no write and, since the Witness move, no id-token (building jobs record under a throwaway key). The inspector job requests
-# id-token: write for the role assumption; the grype job holds no token. Dependabot-
+# Workflow default: read only. Each job states what it needs. The caller of release.yml (build) grants the
+# called file's permission set as a ceiling, or the run is a startup_failure with zero jobs (GitHub counts every job of the called
+# file, skipped or not): contents, packages, attestations and id-token write, checks, statuses and pull-requests read (REQ-CHAIN-004-AC14).
+# Every job of release.yml keeps its own minimal permissions, and every job that requests a write or an id-token is guarded off in snapshot mode,
+# so this grant is a ceiling and nothing runs with it. The inspector job requests id-token: write for the role assumption; the grype job holds no token. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
 # events are downgraded and need none of this to build and scan.
@@ -60,37 +58,31 @@ jobs:
   # The proof build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, with no tag and no admission; its records are refused by every release verifier.
   build:
     permissions:
-      contents: read
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
       checks: read
       statuses: read
       pull-requests: read
-    uses: ./.github/workflows/stage-build.yml
+    uses: ./.github/workflows/release.yml
     with:
       mode: snapshot
 
-  # The PR-mode proof of the reproducibility property (kept): Rebuild in snapshot mode rebuilds everything on fresh runners and compares every item with
-  # Build's snapshot record; it FAILS the job on any difference (REQ-CHAIN-005-AC7). The release relies only on release.yml's own Rebuild; this is a PR/main proof.
-  rebuild:
-    needs: build
-    permissions:
-      contents: read
-    uses: ./.github/workflows/stage-reproducibility.yml
-    with:
-      mode: snapshot
-
-  # The required check `reproducibility` keeps its name. When `rebuild` fails GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as
-  # passing, so this job runs always() and fails unless rebuild's result is exactly success (the pattern of the `scan` aggregate below). Rebuild fails on any differing item.
+  # The required check `reproducibility` keeps its name. release.yml in snapshot mode runs Build and then Rebuild, which rebuilds everything on fresh runners and compares every item with
+  # Build's snapshot record (REQ-CHAIN-005-AC7); it FAILS the call on any difference. When the call fails GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as
+  # passing, so this job runs always() and fails unless the call's result is exactly success (the pattern of the `scan` aggregate below).
   reproducibility:
     name: reproducibility
-    needs: rebuild
+    needs: build
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: the snapshot Rebuild must have run and passed
+      - name: the snapshot Build and Rebuild must have run and passed
         run: |
-          r='${{ needs.rebuild.result }}'
-          echo "snapshot Rebuild result: ${r}"
-          [ "${r}" = "success" ] || { echo "::error::the build is not shown reproducible: the snapshot Rebuild failed, was cancelled or was skipped (result=${r})" >&2; exit 1; }
+          r='${{ needs.build.result }}'
+          echo "snapshot Build and Rebuild result: ${r}"
+          [ "${r}" = "success" ] || { echo "::error::the build is not shown reproducible: the snapshot Build or Rebuild failed, was cancelled or was skipped (result=${r})" >&2; exit 1; }
 
   scanner:
     name: scan (grype)
