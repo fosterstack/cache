@@ -355,9 +355,11 @@ hm h_out     '--out "witness-\$\{step#snapshot-\}/\$step-collection.json"' '--ou
 hm h_mask    'echo "::add-mask::\$tok"'                        'echo hi'                                                'the helper'        "AC9 the token is no longer masked"
 hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
 hm h_noset   'set -euo pipefail\n'                              ''                                                       'the helper'        "AC11 the helper without set -euo pipefail"
-hm h_nostep  'release-verify\|release-apks\|'              ''                                                      'the helper'        "AC11 two of Release's steps missing from the closed list"
+hm h_nostep  'release-apks\|release-sign\)'                   'release-apks)'                                          'the helper'        "AC11 one of the two release steps missing from the closed list (bin/witnessed.sh lists release-apks and release-sign only)"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
-hm h_extra   '\|release-postverify\)'                          '|release-postverify|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
+hm h_extra   '\|release-sign\)'                               '|release-sign|extra)'                                   'the helper'        "AC11 a third step in the closed list"
+hm h_chkstep 'release-apks\|release-sign\)'                   'release-apks|release-sign|scanners)'                    'the helper'        "AC11 a Check step in the closed list of the KMS helper (the Check steps run under bin/witnessed-local.sh)"
+hm h_localstep 'release-apks\|release-sign\)'                 'release-apks|release-sign|release-verify)'              'the helper'        "AC11 a local-helper step (release-verify) in the closed list of the KMS helper"
 hm h_kref    '--signer-file-key-path "\$td/key.pem"'    '--signer-file-key-path /etc/signing-key.pem'                 'the helper'        "AC9 Witness told to sign with another key file than the step's throwaway key"
 hm h_fulcio  '--signer-file-key-path'                          '--signer-fulcio-url https://fulcio.example.com --signer-file-key-path' 'the helper'  "AC9 a Fulcio flag (keyless signing is gone)"
 hm h_ts      '--signer-file-key-path'                          '-t https://timestamp.example.com/api --signer-file-key-path'  'the helper'        "AC9 a timestamp authority flag"
@@ -512,7 +514,7 @@ for n in ("check-phase", "check-scan", "check-govulncheck", "check-fips", "check
           "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve"):
     p = f"bin/{n}" + (".py" if n == "check-govulncheck" else ".sh"); open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
     rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
-AM = {"scanners": "bin/check-phase.sh", "acceptance": "bin/check-phase.sh", "runtime": "bin/check-phase.sh", "release-assets": "bin/release-assets.sh", "release-postverify": "bin/release-postverify.sh", "apk": "bin/build-stage-apk.sh"}
+AM = {"scanners": "bin/check-phase.sh", "acceptance": "bin/check-phase.sh", "runtime": "bin/check-phase.sh", "release-verify": "bin/release-verify.sh", "release-publish": "bin/release-publish.sh", "release-assets": "bin/release-assets.sh", "release-postverify": "bin/release-postverify.sh", "apk": "bin/build-stage-apk.sh"}
 rows.append({"path": "bin/witnessed-local.sh", "arg_map": AM})
 os.makedirs(w + "/.github/policy", exist_ok=True)
 json.dump({"env_names": [], "scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"))
@@ -543,6 +545,8 @@ lm_ l8 'del d["scripts"][-1]["arg_map"]["runtime"]' 'must map runtime to bin/che
 lm_ l9 'd["scripts"][-1]["arg_map"]["arm64"] = "bin/check-phase.sh"' 'no arm64 step' "AC1 witnessed-local.sh has an arm64 step"
 lm_ l10 'd["scripts"][-1]["arg_map"]["release-assets"] = "bin/release-sign.sh"' 'must map release-assets to bin/release-assets.sh' "REL-011-AC1 witnessed-local.sh maps release-assets to another script"
 lm_ l11 'del d["scripts"][-1]["arg_map"]["release-postverify"]' 'must map release-postverify to bin/release-postverify.sh' "REL-011-AC1 witnessed-local.sh has no release-postverify step"
+lm_ l12 'del d["scripts"][-1]["arg_map"]["release-verify"]' 'must map release-verify to bin/release-verify.sh' "REQ-CHAIN-007-AC1 witnessed-local.sh has no release-verify step (the release job runs it there)"
+lm_ l13 'd["scripts"][-1]["arg_map"]["release-publish"] = "bin/release-sign.sh"' 'must map release-publish to bin/release-publish.sh' "REQ-CHAIN-007-AC1 witnessed-local.sh maps release-publish to another script"
 # ---- AC13 (rule 66): the table of records ------------------------------------------------------------------------------
 rm_() { python3 - "$work/records.json" "$work/$1.json" "$2" <<'PY'
 import json, sys
@@ -709,7 +713,7 @@ out=$(signstaged evil)
 if grep -Fq "unknown step in the plan" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh still refuses a step that is not a record step"; else bad "REL-011-AC1 witness-sign-staged.sh accepted an unknown step: ${out:0:140}"; fi
 if grep -Fq 'scanners|acceptance|runtime) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-EXPECT=336
+EXPECT=340
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
