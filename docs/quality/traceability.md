@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 104 |
-| Acceptance criteria | 545 |
+| Active requirements | 105 |
+| Acceptance criteria | 548 |
 | Release-blocking ACs | 138 |
 | ACs with mapped evidence | 535 |
 | Release-blocking ACs with mapped evidence | 138 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 50 |
+| Confidence: documented | 51 |
 | Confidence: implementation-only | 53 |
 
 ## Cache protocol
@@ -1668,3 +1668,17 @@ Once a month the release chain drafts one letter that rolls up that month's publ
 | REQ-REL-013-AC9 | Given the workflow .github/workflows/evidence-letter.yml (a monthly schedule and a manual start, nothing else); when its sign job runs on a letter that passed AC5; then the sign job is the only one with an identity token (for the KMS federation); it signs the letter with the KMS key; its Rekor entry is recorded; customers verify with the release public key (connected customers also check the Rekor entry); it signs nothing that did not pass AC5 | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-013-AC10 | Given a signed letter and its bundle; when bin/evidence-letter-publish.sh attaches them; then they go to the latest published release with gh release upload and never --clobber, so a second run, or a repository whose releases cannot take new files, ends with one plain line and publishes nothing; the letter is not in checksums.txt; a signatory that is still the placeholder fails the draft job before anything is signed | unit |  | approved | 2 item(s) |
 | REQ-REL-013-AC11 | Given the daily workflow .github/workflows/supply-chain.yml and its job evidence-letter-present (a schedule and a manual start only; contents: read and nothing else); when it runs on or after the 3rd of a month, and a published release already carries an evidence-letter-YYYY-MM.md; then last month's evidence-letter-YYYY-MM.md and its .bundle are on the same published (not draft) release, found across every page of releases, and every copy passes bin/evidence-letter-verify.sh: the release key from the key manifest checked against the root, the bundle's Rekor entry, the pinned log, and no identity; otherwise the job fails with one plain line naming the month, and a failed scheduled run is reported | unit |  | approved | 3 item(s) |
+
+### REQ-REL-014 — A release that changes the controls document says so at the top of its release note
+
+A release whose tag changes the controls document carries, at the top of the release note the owner signs from, a notice that the controls document changes in this release (old version to new version, what changed in plain words); his signed tag is then that version's approval, with no separate typed approval. A release with no controls change says nothing (owner, Nov 2 2026, ops/docs/ratify/2026-10-27-monthly-evidence-letter.md). The step that writes the release note compares docs/controls.md of the last final release published before this one with docs/controls.md at this tag.
+
+*Introduced v0.3.0 · tier compliance · confidence documented · source: bin/release-metadata.py; bin/release-assets.sh*
+
+> The version of the controls document is the highest number in the first column of its version table. An absent document counts as no version, so a release before the document exists says nothing. The release job's checkout holds only the tag's commit, so the earlier release is found, and its document read, with gh.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-014-AC1 | Given a final release tag whose docs/controls.md has a higher version than the docs/controls.md of the last final release published before it, or no earlier release has the document; when bin/release-assets.sh writes the release note; then the first lines of the note are a notice that the controls document changes in this release, with the old version, the new version (or that there was none before) and the change text of the new version's row in plain words, followed by the rest of the note unchanged | unit |  | approved | none mapped |
+| REQ-REL-014-AC2 | Given docs/controls.md has the same version at this release tag and in the last final release published before it, or is absent at this tag, or no earlier final release exists; when bin/release-assets.sh writes the release note; then the note is exactly what it would be without this requirement, with no notice and no mention of the controls document | unit |  | approved | none mapped |
+| REQ-REL-014-AC3 | Given docs/controls.md at this release tag has no readable version row or an empty change text for its newest version, or the earlier release's document cannot be read for any reason other than not being there; when bin/release-assets.sh writes the release note; then the step stops with one plain line naming the problem before a release is created or anything is uploaded, so a failed lookup never passes as no change | unit |  | approved | none mapped |
