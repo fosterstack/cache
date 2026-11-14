@@ -1016,7 +1016,7 @@ probe assemble "ARM the release comparison run in the snapshot arm (the two comp
 probe assemble "ARM --digests passed for rapk (a second digests.json writer after the copy)" \
        'L[:ix("cp build-in/digests.json") + 1] + [L[ix("items-merge")] + " --digests digests.json"] + L[ix("cp build-in/digests.json") + 1:]'
 probe assemble "ARM --digests passed on every items-merge" \
-       '[l + " --digests digests.json" if "items-merge" in l and "--digests" not in l else l for l in L] if any("items-merge" in l and "--digests" not in l for l in L) else L + ["true"]'
+       '[l + " --digests digests.json" if "items-merge" in l and "--digests" not in l else l for l in L]'
 probe assemble "ARM --digests missing from the apk items-merge (the array is not used)" '[re.sub(r" \"?\$\{digests\[@\]\}\"?", "", l) for l in L]'
 probe assemble "ARM admission-baseline run for the snapshot steps too (a copy after the binds)" \
        'L[:ix("chain-verify.py bind", True) + 1] + [L[ix("admission-baseline")]] + L[ix("chain-verify.py bind", True) + 1:]'
@@ -1857,7 +1857,7 @@ fi
 # bin/chain-test-harness.py builds a throw-away tree; the expected digests.json and items.json come from its ORACLE, never from anything the
 # implementation wrote. The fixtures run with the fake chain-verify.py (MODE oracle); the real scripts run with the REAL items-apk and items-merge
 # (MODE real). Each function below covers one kind, so a wrong script fails its cases and the summary still prints.
-# the four assemble kinds (assemble, rebuild-assemble, snapshot-assemble, snapshot-rebuild-assemble) are the one script run with its STEP and VERSION
+# the four assemble kinds (assemble, rebuild-assemble, snapshot-assemble, snapshot-rebuild-assemble) are the one script run with its STEP
 file_of() { case "$1" in *assemble) echo assemble;; *) echo "$1";; esac; }
 script_of() { if [ "$1" = fixture ]; then echo "$work/s-$(file_of "$2").sh"; else echo "$root/bin/build-stage-$(file_of "$2").sh"; fi; }
 step_of() { case "$1" in assemble) echo apk;; rebuild-assemble) echo rapk;; snapshot-assemble) echo snapshot-apk;; snapshot-rebuild-assemble) echo snapshot-rapk;; esac; }
