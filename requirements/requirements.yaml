@@ -4988,15 +4988,14 @@ requirements:
       When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
       twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
       fails unless every new job succeeded.
-    source: [ci-speed read-back of Oct 23 (advisor), the pin-wiring judge (pin-wiring-test.sh)]
+    source: [ci-speed read-back of Oct 23 (advisor)]
     tier: community
     introduced: v0.3.0
     origin: advisor Oct 23 2026 (CI speed, under the owner's rules that no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
     confidence: documented
     notes: >
-      The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are
-      fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing
-      or empty result as on a failed, skipped or cancelled one.
+      The pin-wiring judge (pin-wiring-test.sh) that held this split was deleted by the release audit ruling of Nov 12, and no check holds it now; the criteria
+      below are listed in test-evidence/unmapped.yaml. The gate fails on a missing or empty result as on a failed, skipped or cancelled one.
     acceptance_criteria:
       - id: REQ-CI-001-AC1
         given: "the CI workflow after a required job is split into parallel jobs"
@@ -5028,15 +5027,14 @@ requirements:
     statement: >
       Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the
       step that re-runs the suites of the floors file runs only those that no counting step runs.
-    source: [ci-speed read-back of Oct 23 (advisor), the suite guard (bin/suite-guard-run.py), the pin-wiring judge (pin-wiring-test.sh)]
+    source: [ci-speed read-back of Oct 23 (advisor), the suite guard (bin/suite-guard-run.py)]
     tier: community
     introduced: v0.3.0
     origin: advisor Oct 23 2026 (CI speed; the floor re-run of every suite took 4876 s on top of the suites themselves; no check is dropped and every test runs exactly once)
     confidence: documented
     notes: >
       A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
-      once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
-      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
+      once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
       is not the file name of its PATH. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
@@ -5048,7 +5046,7 @@ requirements:
       - id: REQ-CI-005-AC2
         given: "a counting step in ci.yml"
         when: "it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`"
-        then: "`suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it"
+        then: "`suite-guard-run.py all` fails"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC3
