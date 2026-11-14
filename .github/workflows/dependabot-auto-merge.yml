@@ -286,7 +286,9 @@ jobs:
             [ "$external_id" = "$version" ] || success_counts=false
           fi
           if [ "$success_counts" = true ]; then
-            echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
+            if [ "$armed" = true ]; then
+              echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
+            else echo "the reviewer approved the current head (${head:0:7}); auto-merge is not armed"; fi
           elif [ "$verdict" = failure ]; then
             if [ "$armed" = true ]; then
               gh pr merge --disable-auto "$PR_URL"
