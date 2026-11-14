@@ -1783,6 +1783,20 @@
       "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
       "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
       "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
+    },
+    {
+      "file": ".github/workflows/full-suite.yml",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "11d550b5f2d6cb84d518d660f80016f82a661900afd72679b24e128da1a71b5d",
+      "line": "11d550b5f2d6cb84d518d660f80016f82a661900afd72679b24e128da1a71b5d",
+      "ruling": "pip install of requirements read from a heredoc in the step, with --require-hashes and --only-binary; moved from ci.yml with its job; a hash-checked install of a reviewed list, the same line as before"
+    },
+    {
+      "file": ".github/workflows/full-suite.yml",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "3aac261d79f300a66dbdffb3a740db67b9f44f5e3f053604b3fc14f3acba8fb8",
+      "line": "3aac261d79f300a66dbdffb3a740db67b9f44f5e3f053604b3fc14f3acba8fb8",
+      "ruling": "pip dry-run resolve of the committed hash-pinned requirements files, with --require-hashes and --only-binary, into a scratch folder; moved from ci.yml with its job"
     }
   ]
 }
