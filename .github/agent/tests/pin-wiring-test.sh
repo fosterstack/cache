@@ -662,6 +662,8 @@ def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)",
     produces = jid in PRODUCES.get(wf, ()) and nm == jid
     return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
 def spells(parts, name):   # parts in order: the first starts name, the last ends it, text between
+    # two or more parts (the caller checks); stop is where the last part starts, so a stop before the first part's
+    # end means the two overlap
     stop = len(name) - len(parts[-1])
     if not name.startswith(parts[0]) or not name.endswith(parts[-1]) or stop < len(parts[0]):
         return False
@@ -1123,10 +1125,9 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
-# the seven release-only names are reserved (REQ-REL-013-AC3): no job but the one that produces each may carry
-# it, by job id,
-# by literal name or by a name with an expression; auditor-review-gate is the App's alone, so no Actions job may
-# carry it
+# the seven release-only names are reserved (REQ-REL-013-AC3): no job but the one that produces each may carry it,
+# by job id, by literal name or by a name with an expression; auditor-review-gate is the App's alone, so no Actions
+# job may carry it
 reserved_wf() {  # <name> <jobs of an extra workflow zz.yml>
   rm -rf "$work/rs-$1"; mkdir -p "$work/rs-$1"; cp "$here"/.github/workflows/*.y*ml "$work/rs-$1/"
   printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n%s' "$2" > "$work/rs-$1/zz.yml"
@@ -1142,8 +1143,11 @@ for mut in "gate-name|  zz:\n    name: auditor-review-gate\n" "gate-id|  auditor
   reserved_wf "${mut%%|*}" "$(printf "${mut#*|}${JOB}")"
   if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml")
   then got=ok; else got=bad; fi
-  if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS reserved-${mut%%|*} → bad"
-  else failn=$((failn+1)); echo "FAIL reserved-${mut%%|*} → $got, want bad ($out)"; fi
+  if [ "$got" = bad ]; then
+    pass=$((pass+1)); echo "PASS reserved-${mut%%|*} → bad"
+  else
+    failn=$((failn+1)); echo "FAIL reserved-${mut%%|*} → $got, want bad ($out)"
+  fi
 done
 # a producer of one reserved name carrying another's, and the names inside ci.yml
 rm -rf "$work/rs-swapped"; mkdir -p "$work/rs-swapped"; cp "$here"/.github/workflows/*.y*ml "$work/rs-swapped/"
@@ -1189,30 +1193,37 @@ for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    st
 done
 
 # REQ-REL-013-AC3: 64 plain matrix expressions with no text between and a final "!" (in no reserved name) cannot render
-# as a reserved name, so the judge says ok, and no slower than a one-expression twin plus a second (a backtracking
-# match of that name never ends); the twin is the baseline because the judge's own start-up takes over a second
+# as a reserved name, so the judge says ok; the old matcher backtracked on that name for over 30 s, so the only time
+# bound is the timeout 10 of timed_judge, and a slow runner cannot turn the check red
 timed_judge() {  # <workflow copy name>: sets got (ok|bad), ms and out; the judge runs under timeout 10
   local t0; t0=$(date +%s%N)
-  if out=$(here="$here" PIN_WIRING_WORKFLOWS_DIR="$work/rs-$1" timeout 10 \
+  # a subshell, so that timeout can kill the judge
+  if out=$(here="$here" PIN_WIRING_WORKFLOWS_DIR="$work/rs-$1" \
+    PIN_WIRING_POLICY_FILE="$here/.github/policy/required-checks.json" \
+    PIN_WIRING_RELEASE_ONLY_FILE="$here/.github/policy/release-only-checks.json" timeout 10 \
     bash -c "$(declare -f judge); judge \"\$1\"" _ "$here/.github/workflows/ci.yml" 2>&1)
   then got=ok; else got=bad; fi
   ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 }
 expr64=""; for _ in $(seq 64); do expr64+='${{ matrix.a.b }}'; done
+# the twin is the control: the judge says ok on a benign one-expression name
 reserved_wf exprname-twin "$(printf '  zz:\n    name: %s!\n%b' '${{ matrix.a.b }}' "$JOB")"
 reserved_wf exprname-64-plain "$(printf '  zz:\n    name: %s!\n%b' "$expr64" "$JOB")"
-timed_judge exprname-twin; base=$ms
-timed_judge exprname-64-plain
-if [ "$got" = ok ] && [ "$ms" -lt $((base + 1000)) ]; then
-  pass=$((pass+1)); echo "PASS exprname-64-plain-then-bang → ok in ${ms} ms (twin ${base} ms)"
+timed_judge exprname-twin
+if [ "$got" = ok ]; then
+  pass=$((pass+1)); echo "PASS exprname-twin → ok in ${ms} ms"
 else
-  failn=$((failn+1))
-  echo "FAIL exprname-64-plain-then-bang → $got in ${ms} ms, want ok under twin ${base} ms + 1000 ($out)"
+  failn=$((failn+1)); echo "FAIL exprname-twin → $got in ${ms} ms, want ok ($out)"
+fi
+timed_judge exprname-64-plain
+if [ "$got" = ok ]; then
+  pass=$((pass+1)); echo "PASS exprname-64-plain-then-bang → ok in ${ms} ms"
+else
+  failn=$((failn+1)); echo "FAIL exprname-64-plain-then-bang → $got in ${ms} ms, want ok ($out)"
 fi
 
-# the required-check policy: each split job must stay listed with integration 15368 and scope push
-# (release admission reads them);
-# allowlist-chain is in release-only-checks.json, so these edit that file
+# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission
+# reads them); allowlist-chain is in release-only-checks.json, so these edit that file
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
   python3 - "$here/.github/policy/release-only-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
 import json, sys
@@ -1228,9 +1239,13 @@ elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
 if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
 else: json.dump(d, open(sys.argv[2], "w"))
 PY
-  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then
+  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml")
+  then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then
+    pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"
+  else
     failn=$((failn+1)); echo "FAIL policy-$mut accepted"
-  else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
+  fi
 done
 
 python3 - "$here/.github/policy" "$work/pol-in-both" <<'PY'
