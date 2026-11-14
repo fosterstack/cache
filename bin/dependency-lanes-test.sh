@@ -593,6 +593,9 @@ for what, runs in (("another version", [("success", OLDVER)]), ("no external_id"
     rc, log = go(last, runs, waits="true")
     if rc != 0 or "pr merge --disable-auto" not in log:
         bad.append("a success with %s on a major's head is no leave: it must disarm (rc %s)\n%s" % (what, rc, log))
+    if "auto-merge stands" in LASTOUT:
+        bad.append("a success with %s on a major's head: the step must not say auto-merge stands\n%s" % (what,
+                LASTOUT))
     rc, log = go(last, runs, waits="false")
     if rc != 0 or "--disable-auto" in log:
         bad.append("a success with %s on a patch's head is no verdict: the lane's arm stands (rc %s)\n%s" % (what, rc,
@@ -669,8 +672,8 @@ fetches = [l for l in code if "contents/%s?ref=main" % SCRIPT in l]
 FETCH_INTO = '--jq .content | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh"'
 if len(fetches) != 1 or "gh api " not in fetches[0] or FETCH_INTO not in fetches[0]:
     bad.append("the script is fetched by ONE literal gh api line with %s; got %s" % (FETCH_INTO, fetches))
-if any(re.search(r"\bcd\b", l) for l in code):
-    bad.append("the step must not cd anywhere: %s" % [l for l in code if re.search(r"\bcd\b", l)])
+if any("cd" in l.split() for l in code):
+    bad.append("the step must not cd anywhere: %s" % [l for l in code if "cd" in l.split()])
 # what the script is run with: the recorder prints the right answers, and notes its path, folder and arguments
 PATHLIST = " ".join(PATHS)
 FILES_LINE = "if [ \"${1:-}\" = --files ]; then printf '%s\\n' " + PATHLIST + "; exit 0; fi\n"
@@ -725,7 +728,7 @@ for step_name, step in (("last step", last), ("arm step", arm)):
                for l in log.splitlines()):
         bad.append("the %s does not ask for filter=all and per_page=100\n%s" % (step_name, log))
 cut = [("neutral", VER)] * 29
-for what, newest in (("the current version", VER), ("an old version", OLDVER)):
+for what, newest in (("the current version", VER), ("an old version", OLDVER), ("no external_id", None)):
     rc, log = go(last, cut + [("success", newest)], total=31, waits="true", armed="true")
     # the stub gh runs the real jq filter: its error is gh's nonzero exit, as a cut answer is for the real gh
     if rc == 0 or "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
@@ -833,13 +836,15 @@ cand = run_text("dependabot-reviewer.yml", "review", lambda s: s.get("id") == "c
 (gate_of,) = re.findall(r'(?m)^(gate_of\(\) \{.*?\n\})\n', cand, re.S)
 stub = os.path.join(work, "window-stub"); os.makedirs(stub, exist_ok=True)
 open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
+echo "$*" >> "$CHECK_RUNS.asked"
 f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
 jq -r "$f" "$CHECK_RUNS"
 """)
 os.chmod(os.path.join(stub, "gh"), 0o755)
-def answer(script, runs):
+def answer(script, runs, total=None):
     path = os.path.join(work, "window-runs.json")
-    json.dump({"check_runs": runs}, open(path, "w"))
+    json.dump({"total_count": len(runs) if total is None else total, "check_runs": runs}, open(path, "w"))
+    open(path + ".asked", "w").close()
     env = {**os.environ, "PATH": stub + ":" + os.environ["PATH"], "CHECK_RUNS": path, "APP_TOKEN": "t",
            "APP_SLUG": "the-app", "GITHUB_REPOSITORY": "o/r", "sha": "abc"}
     p = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, capture_output=True, text=True)
@@ -857,6 +862,15 @@ for name, runs in cases:
         bad.append("%s: the sweep reads %r, the reviewer reads %r" % (name, a, b))
 if seen != {"none", "success", "failure", "stale"}:
     bad.append("the cases did not reach all four answers: %s" % sorted(seen))
+# both read the gate's check 100 a time, the latest of each name (no filter=all), and a cut answer (30 runs read of
+# 31, the gate's success on the second page) is a failed read: neither answers
+for name, script in (("the sweep", sweep_cmd), ("the reviewer", gate_of + "\ngate_of abc")):
+    got = answer(script, [aged("failure", 24)] * 30, total=31)
+    asked = open(os.path.join(work, "window-runs.json.asked")).read()
+    if not got.startswith("error:"):
+        bad.append("%s answers %r over 30 of 31 runs read: it must fail the read" % (name, got))
+    if "per_page=100" not in asked or "filter=all" in asked:
+        bad.append("%s asks %r: it must ask per_page=100, and not filter=all" % (name, asked.strip()))
 print("gate window: " + ("the sweep and the reviewer read every age alike" if not bad else "; ".join(bad)))
 sys.exit(1 if bad else 0)
 PY
