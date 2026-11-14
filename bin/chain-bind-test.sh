@@ -33,7 +33,7 @@
 #     ends in .local.json is refused (cause record: an unsigned local record is not a trusted record), and WITH --local a record whose name does not end in
 #     .local.json is refused (cause record) too, so a signed record can never pass as a local one nor the reverse. Step names, snapshot steps and the other
 #     causes are as without --local.
-#   chain-verify.py sign-records --stage build|rebuild --template T.json --digests FILE --out DIR --record-dir D... [--artifacts-dir A]      (the Witness move)
+#   chain-verify.py sign-records --stage build|rebuild|check|release --template T.json --digests FILE --out DIR --record-dir D... [--artifacts-dir A]      (the Witness move)
 #     Sign's check-and-stage step. Each --record-dir D holds exactly one <step>-collection.local.json (step apk or build for --stage build, rapk or rebuild for
 #     --stage rebuild; a snapshot- step, another step, a record whose name is not <step>-collection.local.json, two records, or a file that is not a record or one of
 #     digests.json / items.json / admission-baseline.json / verdict.json is refused) and those data files. The record is a DSSE envelope of a Witness collection (the
@@ -46,6 +46,11 @@
 #     must equal --digests (Build's attested list). On success it writes, per record, OUT/<D-name>/<step>-collection.payload (the DSSE payload, byte for byte) and the
 #     data files unchanged, and prints one line per record `OUT/<D-name>/<step>-collection.payload<TAB>signed/<D-name>/<step>-collection.json`. Any refusal: exit 1,
 #     `refused at <build|rebuild>: <reason>`, and OUT is not created. Exit 2: --out exists, a usage error.
+#     --stage release (ruling Q-e, REQ-CHAIN-007-AC1): exactly two --record-dir, witness-release-verify and witness-release-publish (the folder is witness-<step> for its record's
+#     step), each holding only <step>-collection.local.json (step release-verify / release-publish; any other step, a snapshot name, a third or a missing folder, or a data file is refused),
+#     the same record checks as the other stages (DSSE, collection name, no token, exactly the five attestors, Sign's ref, the run's commit), exactly one material subject
+#     file:witness-build/digests.json equal to --digests, no product or data-file matching, and neither --expect-digests nor --artifacts-dir; the staged tree is
+#     OUT/<folder>/<step>-collection.payload and the plan lines are `OUT/<folder>/<step>-collection.payload<TAB>signed/<folder>/<step>-collection.json`.
 #   chain-verify.py items-apk --out-dir out/ARCH --result FILE
 #     reads the apks in out/ARCH by their names (fscache-VERSION-r0.apk for standard, fscache-fips-VERSION-r0.apk for fips; exactly one each) and
 #     writes the fragment {"arch","items"}. The apk item is `python3 bin/apk-tool.py digest APK`, run from the working directory (cache's tool, by
@@ -701,6 +706,14 @@ def put(root, rel, data):
     open(os.path.join(root, rel), "wb").write(data)
 
 
+REL_STEPS = ("release-verify", "release-publish")
+REL_PRODS = {"release-verify": {"release-policy/policy.json": b'{"policy":1}'}, "release-publish": {"release-publish/published.json": b'{"published":1}'}}   # no product is matched: any names
+
+
+def rel_dir(step):
+    return "rec-release/witness-" + step
+
+
 def sr_tree(name, stage="build"):
     """A Sign job's working tree: record dirs, received artifacts, Build's digests.json. Returns (root, payloads by dir)."""
     root = "%s/%s" % (work, name)
@@ -728,6 +741,11 @@ def sr_tree(name, stage="build"):
                 pays[runner + "/witness-" + step] = coll_record(root + "/" + check_dir(runner, step) + "/" + step + "-collection.local.json", step, {"check-results/" + n: d for n, d in prods.items()}, mat)
                 for n, d in prods.items():
                     put(root, "artifacts/check-results-%s/%s" % (runner, n), d)
+    elif stage == "release":
+        mat = [("witness-build/digests.json", BUILD_DATA["digests.json"])]
+        for step in REL_STEPS:
+            os.makedirs(root + "/" + rel_dir(step))
+            pays[step] = coll_record(root + "/" + rel_dir(step) + "/" + step + "-collection.local.json", step, REL_PRODS[step], mat)
     else:
         mat = [("witness-build/digests.json", BUILD_DATA["digests.json"])]
         os.makedirs(root + "/witness-rebuild"); os.makedirs(root + "/witness-rapk-ubuntu-24.04")
@@ -765,14 +783,16 @@ def sr_expect_check(root, runners=CHECK_RUNNERS):
 
 
 def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
-    dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else [check_dir(r, st) for r in CHECK_RUNNERS for st in CHECK_STEPS] if stage == "check" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
+    dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else [rel_dir(st) for st in REL_STEPS] if stage == "release" else [check_dir(r, st) for r in CHECK_RUNNERS for st in CHECK_STEPS] if stage == "check" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
     a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--digests", "digests.json", "--out", out]
     if stage == "rebuild" and expect:
         a += ["--expect-digests", expect if isinstance(expect, str) else sr_expect(root)]
     if stage == "check" and expect:
         for x in (expect if isinstance(expect, list) else sr_expect_check(root)):
             a += ["--expect-digests", x]
-    if artifacts and stage in ("build", "check"):
+    if stage == "release":
+        pass        # release takes neither --expect-digests nor --artifacts-dir
+    elif artifacts and stage in ("build", "check"):
         a += ["--artifacts-dir", "artifacts"]
     elif artifacts and os.path.isdir(root + "/artifacts"):
         a += ["--artifacts-dir", "artifacts"]
@@ -839,7 +859,7 @@ d, _ = sr_tree("sr4"); os.remove(d + "/witness-build/items.json")
 sr("sign-records build: a required name the record holds but Sign did not receive (items.json) is refused", d, "build", 1, ["items.json"])
 d, _ = sr_tree("sr5"); put(d, "witness-build/digests.json", b'{"apk":"sha256:' + b"d" * 64 + b'"}')
 sr("sign-records build: a data file whose bytes differ from the record's product is refused", d, "build", 1, ["digests.json"])
-for _st, _label in (("build", "Build"), ("rebuild", "Rebuild"), ("check", "Check")):
+for _st, _label in (("build", "Build"), ("rebuild", "Rebuild"), ("check", "Check"), ("release", "Release")):
     d, _ = sr_tree("sr6-" + _st, _st)
     sr("sign-records %s: a real-shaped record (environment, git, material, command-run, product, as Witness 0.12.0 writes it) is accepted" % _st, d, _st, 0)
 d, _ = sr_tree("sr6a"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=["environment", "git", "material", "product"])
@@ -1122,8 +1142,89 @@ open(d + "/own-list.json", "w").write(json.dumps({x: {f: "sha256:" + hashlib.sha
 sr("sign-records: --stage rebuild given Build's apk/build records (listed as they are) is refused (a record's step must be a step of the stage)", d, "rebuild", 1, ["step"], args=sr_args("rebuild", d, ["witness-build", "witness-apk-ubuntu-24.04"], expect="own-list.json"))
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
+# ---- sign-records --stage release (ruling Q-e: sign-release signs the release stage's two local records, as sign, sign-rebuild and sign-check sign theirs) ----------
+VF, PF = rel_dir("release-verify"), rel_dir("release-publish")
+def rr(d, step, **kw):      # rewrite one release record in place (name, products and the rest as coll_record takes them)
+    kw.setdefault("material", [("witness-build/digests.json", BUILD_DATA["digests.json"])])
+    return coll_record("%s/%s/%s-collection.local.json" % (d, rel_dir(step), step), kw.pop("name", step), REL_PRODS[step], **kw)
+d, pays = sr_tree("rl1", "release")
+rc, out, err = sr("sign-records release: a valid set (the release-verify and release-publish records, nothing else, no --expect-digests, no --artifacts-dir) is accepted", d, "release", 0)
+lines = [l.split("\t") for l in out.strip().split("\n") if l]
+check("sign-records release: one `payload<TAB>final` line per record, signed/witness-release-<step>/<step>-collection.json",
+      sorted(lines) == sorted([["staged/witness-release-verify/release-verify-collection.payload", "signed/witness-release-verify/release-verify-collection.json"],
+                               ["staged/witness-release-publish/release-publish-collection.payload", "signed/witness-release-publish/release-publish-collection.json"]]), repr(lines))
+check("sign-records release: OUT/plan.txt is the printed list, line for line", rc == 0 and open(d + "/staged/plan.txt").read() == out.strip("\n") + "\n")
+check("sign-records release: the staged payloads are the records' payloads byte for byte",
+      rc == 0 and all(open("%s/staged/witness-%s/%s-collection.payload" % (d, st, st), "rb").read() == pays[st] for st in REL_STEPS))
+d, _ = sr_tree("rl2", "release"); shutil.copytree(d + "/rec-release/witness-release-verify", d + "/rec-release/witness-build")
+os.rename(d + "/rec-release/witness-build/release-verify-collection.local.json", d + "/rec-release/witness-build/build-collection.local.json")
+sr("sign-records release: a third record folder is refused", d, "release", 1, ["record"], args=sr_args("release", d, [VF, PF, "rec-release/witness-build"]))
+d, _ = sr_tree("rl3", "release")
+sr("sign-records release: the release-publish folder missing is refused", d, "release", 1, ["record"], args=sr_args("release", d, [VF]))
+sr("sign-records release: the release-verify folder missing is refused", d, "release", 1, ["record"], args=sr_args("release", d, [PF]))
+sr("sign-records release: the same folder twice is refused", d, "release", 1, ["record"], args=sr_args("release", d, [VF, VF]))
+for _bad in ("apk", "build", "rebuild", "release-assets", "release-postverify", "release-apks"):
+    d, _ = sr_tree("rl4" + _bad, "release"); rr(d, "release-publish", name=_bad)
+    os.rename(d + "/" + PF + "/release-publish-collection.local.json", d + "/" + PF + "/%s-collection.local.json" % _bad)
+    sr("sign-records release: a %s record passed off as release-publish is refused (a record that is neither release-verify nor release-publish)" % _bad, d, "release", 1, ["step"])
+d, _ = sr_tree("rl5", "release"); rr(d, "release-publish", name="release-verify")
+sr("sign-records release: a record whose collection name is not the file's step is refused", d, "release", 1, ["step"])
+d, _ = sr_tree("rl5b", "release"); rr(d, "release-verify", name="snapshot-release-verify")
+sr("sign-records release: a snapshot collection name is refused", d, "release", 1, ["snapshot"])
+d, _ = sr_tree("rl5c", "release"); os.rename(d + "/" + VF + "/release-verify-collection.local.json", d + "/" + VF + "/snapshot-release-verify-collection.local.json")
+sr("sign-records release: a snapshot step file name is refused", d, "release", 1, ["snapshot"])
+d, _ = sr_tree("rl6", "release"); os.rename(d + "/" + PF, d + "/rec-release/witness-release-extra")
+sr("sign-records release: a record folder not named witness-<its step> is refused", d, "release", 1, [], args=sr_args("release", d, [VF, "rec-release/witness-release-extra"]))
+d, _ = sr_tree("rl6b", "release"); os.rename(d + "/" + VF, d + "/rec-release/tmp"); os.rename(d + "/" + PF, d + "/" + VF); os.rename(d + "/rec-release/tmp", d + "/" + PF)
+sr("sign-records release: the two records in each other's folders (a folder not named witness-<its record's step>) are refused", d, "release", 1, [])
+d, _ = sr_tree("rl7", "release"); rr(d, "release-verify", env_vars={"GH_TOKEN": "x"})
+sr("sign-records release: a record that names a token variable is refused (record-env)", d, "release", 1, ["env", "GH_TOKEN"])
+d, _ = sr_tree("rl7b", "release"); rr(d, "release-publish", env_vars={"DOCKERHUB_TOKEN": "x"})
+sr("sign-records release: a release-publish record that names DOCKERHUB_TOKEN is refused (record-env)", d, "release", 1, ["env", "DOCKERHUB_TOKEN"])
+d, _ = sr_tree("rl7c", "release"); rr(d, "release-publish", env_vars={"X": "github_pat_" + "A" * 30})
+sr("sign-records release: a record that holds a github_pat_ token value is refused (record-env)", d, "release", 1, ["env", "token"])
+d, _ = sr_tree("rl7d", "release"); rr(d, "release-verify", stdout="log\nGITHUB_TOKEN=ghp_" + "a" * 36 + "\n")
+sr("sign-records release: a GitHub token printed in command-run's stdout is refused", d, "release", 1, ["env"])
+d, _ = sr_tree("rl8", "release")
+sr("sign-records release: a git commit that is not the run's commit is refused", d, "release", 1, ["commit"], env={"GITHUB_SHA": "e" * 40})
+d, _ = sr_tree("rl8b", "release"); rr(d, "release-publish", commit=None)
+sr("sign-records release: a record with no git commit subject is refused", d, "release", 1, ["commit"])
+for _lab, _r in (("the rc tag", "refs/tags/v0.3.0-rc1"), ("another tag", "refs/tags/v0.3.1"), ("a branch", "refs/heads/v0.3.0")):
+    d, _ = sr_tree("rl9", "release"); rr(d, "release-publish", ref=_r)
+    sr("sign-records release: a record made at %s is refused at Sign's ref (the environment attestor)" % _lab, d, "release", 1, ["ref"])
+for _att, _w, _lab in ((["environment", "git", "material", "product"], "command-run", "without command-run"), (["environment", "git", "command-run", "product"], "material", "without the material attestor"),
+                       (ATT + ["github"], "github", "with an added github attestor"), (ATT + ["command-run"], "repeated", "with command-run twice")):
+    d, _ = sr_tree("rl10", "release"); rr(d, "release-verify", attestors=_att)
+    sr("sign-records release: a record %s is refused (the attestors are exactly the five)" % _lab, d, "release", 1, [_w])
+d, _ = sr_tree("rl11", "release"); rr(d, "release-verify", material=[("witness-build/digests.json", b"another list")])
+sr("sign-records release: a record whose material digests.json is not Build's attested list (--digests) is refused", d, "release", 1, ["material"])
+d, _ = sr_tree("rl11b", "release"); rr(d, "release-publish", material=())
+sr("sign-records release: a record with no material at all is refused", d, "release", 1, ["material"])
+d, _ = sr_tree("rl11c", "release"); rr(d, "release-publish", material=[("witness-build/digests.json", BUILD_DATA["digests.json"]), ("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records release: a record with two material subjects for the digest list is refused (exactly one)", d, "release", 1, ["material"])
+d, _ = sr_tree("rl11d", "release"); rr(d, "release-verify", material=[("witness-build/digests.json", BUILD_DATA["digests.json"]), ("witness-build/items.json", b"{}")])
+sr("sign-records release: a record with a second material subject of another name is refused (exactly one, witness-build/digests.json)", d, "release", 1, ["material"])
+d, _ = sr_tree("rl11e", "release"); rr(d, "release-verify", material=[("digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records release: a record whose material is named digests.json, not witness-build/digests.json, is refused", d, "release", 1, ["material"])
+d, _ = sr_tree("rl12", "release"); put(d, VF + "/digests.json", b"{}")
+sr("sign-records release: a data file in a release record folder (digests.json) is refused: the folder holds only its record", d, "release", 1, ["witness-release-verify", "digests.json"])
+d, _ = sr_tree("rl12b", "release"); put(d, PF + "/notes.txt", b"x")
+sr("sign-records release: a file in a record folder that is not the record is refused", d, "release", 1, ["notes.txt"])
+d, _ = sr_tree("rl13", "release"); put(d, VF + "/release-verify-collection.json", b"{}")
+sr("sign-records release: a signed-looking record file beside the local one is refused (only <step>-collection.local.json)", d, "release", 1, ["release-verify-collection.json"])
+d, _ = sr_tree("rl13b", "release"); shutil.copy(d + "/" + PF + "/release-publish-collection.local.json", d + "/" + VF + "/release-publish-collection.local.json")
+sr("sign-records release: two records in one folder are refused", d, "release", 1, ["one"])
+d, _ = sr_tree("rl14", "release"); rr(d, "release-verify", ptype="text/plain")
+sr("sign-records release: a payloadType other than application/vnd.in-toto+json is refused", d, "release", 1, ["payloadtype"])
+d, _ = sr_tree("rl15", "release"); rr(d, "release-publish", env_raw=["GITHUB_REF=refs/tags/v0.3.0"])
+sr("sign-records release: environment variables that are a list are refused (no traceback)", d, "release", 1, ["ref"])
+d, _ = sr_tree("rl16", "release")
+sr("sign-records release: GITHUB_REF that is not a pushed tag is refused", d, "release", 1, ["github_ref"], env={"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "push"}, at="sign")
+d, _ = sr_tree("rl17", "release"); os.makedirs(d + "/staged")
+rc, out, err = run_env(sr_args("release", d), d, GOODENV)
+check("sign-records release: an existing --out is a usage error (exit 2), nothing overwritten", rc == 2 and "Traceback" not in err and os.listdir(d + "/staged") == [], "exit %s" % rc)
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 235
+EXPECT = 281
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
