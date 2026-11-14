@@ -115,8 +115,11 @@ assert len(hit) == 1, hit
 lines[hit[0]] = swap
 open(out, "w").write("\n".join(lines))
 PY
-printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
-  "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)" >"$work/py3-shim"
+{
+  printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then '
+  printf 'exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
+    "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)"
+} >"$work/py3-shim"
 chmod +x "$work/py3-shim"
 rm -f "$air/bin/build-apk.sh"
 python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$air/bin/build-apk.sh" \
@@ -1877,7 +1880,10 @@ python3 "$OD" unpack "$oc/good.tar" "$work/unp-side/out3" "$work/unp-side/out3/i
 t "BT-002-AC3" "unpack refuses a DIGEST that is a link, a DIGEST and MANIFESTS that are one file, and a result file inside the layout directory; nothing was written through the link" bash -c "test $s1 != 0 && test $s2 != 0 && test $s3 != 0 && test ! -e '$work/unp-side/target' && test ! -e '$work/unp-side/out1'"
 # the remaining claims of the round-2 brief that had no test: probe status 126, a digest that cannot be computed, a linked --digests-out; and dup2's own assertion
 sf "rule 40" "sealed-proof: a probe that exits 126 inside the namespace is inconclusive" 'inconclusive' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}" || exit 126' "${sp_common[@]}"
-printf '#!/bin/bash\ncase "$*" in *apk-tool.py*digest*) echo "apk-tool: cannot read the apk" >&2; exit 1;; esac\nexec %s "$@"\n' "$work/py3-shim" >"$work/pyfail.sh"
+{
+  printf '#!/bin/bash\ncase "$*" in *apk-tool.py*digest*) echo "apk-tool: cannot read the apk" >&2; exit 1;; esac\n'
+  printf 'exec %s "$@"\n' "$work/py3-shim"
+} >"$work/pyfail.sh"
 chmod +x "$work/pyfail.sh"
 sf "rule 42" "sealed-proof: an apk digest that cannot be computed fails the proof (it is not recorded as empty)" 'digest' env TEST_PY3="$work/pyfail.sh" "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
 rm -f "$work/dgo-target" "$work/dgo-link"; ln -s "$work/dgo-target" "$work/dgo-link"
@@ -2141,7 +2147,9 @@ for src_name, name in (("oci-apko-ok", "oci-apko-upperdigest"), ("oci-ok", "oci-
 P
 for v_ in apko std; do
   python3 "$OD" "$work/oci-$v_-upperdigest.tar" >"$work/oci-$v_-upperdigest.out" 2>&1; r_=$?
-  t "BT-002-AC1" "a $v_ layout whose index.json digest is sha256: plus upper-case hex is refused, saying lowercase hex" bash -c "test $r_ != 0 && grep -q 'lowercase hex' '$work/oci-$v_-upperdigest.out'"
+  t "BT-002-AC1" \
+    "a $v_ layout whose index.json digest is sha256: plus upper-case hex is refused, saying lowercase hex" \
+    bash -c "test $r_ != 0 && grep -q 'lowercase hex' '$work/oci-$v_-upperdigest.out'"
 done
 # --digests-out by every spelling that reaches the proof's own results: dot components and doubled slashes resolve away before the containment check
 for spell_ in dots slashes; do
