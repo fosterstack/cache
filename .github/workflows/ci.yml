@@ -200,15 +200,7 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
         run: |
-          set -euo pipefail
-          suites=$(bash bin/select-tests.sh "origin/${BASE}" HEAD)
-          # bin/vex-both-scanners-test.sh needs the pinned grype on the PATH
-          if grep -qxF 'bash bin/vex-both-scanners-test.sh' <<< "${suites}"; then
-            ./bin/install-scanner.sh grype
-          fi
-          while IFS= read -r suite; do
-            [ -z "${suite}" ] || { echo "::group::${suite}"; bash -euo pipefail -c "${suite}"; echo "::endgroup::"; }
-          done <<< "${suites}"
+          bash bin/run-selected-tests.sh "origin/${BASE}" HEAD
 
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
