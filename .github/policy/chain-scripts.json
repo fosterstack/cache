@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "1c07cd59f11fc42c73f055d4887cba4f2a3ac95daf5e8d15393415c60e7ca3a8",
+      "sha256": "7932b9e6ca1908636daf70057900c30d7c51d0d6ca19bff41f370b55e7fab601",
       "tools": [
         "make",
         "at",
@@ -1794,7 +1794,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "0f8399dcb2f0c15c7b3d6084d419024b5dc770635c67ad357b6a1291022b0f8b",
+      "sha256": "3d124bb7b069fc8e7952e48a2e0013186c5f44700ad8f5c31a2ce3fda72e7ffc",
       "reads_env": [
         "GH_TOKEN"
       ],
