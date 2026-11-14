@@ -709,6 +709,11 @@ class StateMembers(Tmp):
         with self.assertRaises(P.reviewed.ReviewedInputInvalid):
             P._main_state_text(repo)
 
+    def test_a_state_of_this_run_that_is_not_an_object_is_refused_by_name(self):
+        with self.assertRaises(P.reviewed.ReviewedInputInvalid) as e:
+            P.check_delivery_inputs(self.d, {}, st=["x"])
+        self.assertEqual(str(e.exception), "state.json of this run is not a JSON object")
+
     def test_the_carried_documents_preflight_covers_its_branches(self):
         repo = os.path.join(self.d, "repo2"); os.makedirs(repo)
         plan = []
