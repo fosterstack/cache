@@ -31,10 +31,8 @@ SELF=refresh-inputs.sh
 # /usr/local/bin/apko, /usr/bin/openssl, /usr/bin/python3, /usr/bin/cmp, /usr/bin/mktemp, /bin/rm, /bin/mkdir), never through the caller's search path,
 # and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY that differs from this file only in occurrences of those ten paths,
 # each replaced one for one by a dispatcher.
-case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # this script's directory, without dirname
 dir_empty() { local e; for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do { [ -e "$e" ] || [ -L "$e" ]; } && return 1; done; return 0; }   # no ls
-# every check and every file the job makes is in this program (python3 -I -B "$PY" MODE REPO ...)
-PY=$HERE/refresh-inputs.py
+# every check and every file the job makes is in bin/refresh-inputs.py (python3 -I -B bin/refresh-inputs.py MODE REPO ...), run from the repository root
 # the one repository identity: the commit is created on it and its verification is asked of it
 slug=${GITHUB_REPOSITORY:-fosterstack/cache}
 
@@ -54,11 +52,11 @@ usage() {
 # open_pr BRANCH TITLE BODY PATH...: branch, commit, push the branch (never main), open the PR (never merge it)
 # REQ-REFRESH-001-AC34: every planned path must be a regular file of the repository, checked before
 # any branch is pushed; the commit builder and the restoration after the commit rely on this one check
-check_paths() { /usr/bin/python3 -I -B "$PY" check-paths "$repo" "$@"; }
+check_paths() { /usr/bin/python3 -I -B bin/refresh-inputs.py check-paths "$repo" "$@"; }
 # REQ-REFRESH-001-AC34: the pull request's commit through the API. $1 branch (already pushed), $2 the commit it points at, $3 headline, $4 body, then the repository paths.
 signed_commit() {
   local branch=$1 base=$2 headline=$3 cbody=$4 oid ver; shift 4
-  /usr/bin/python3 -I -B "$PY" commit-input "$repo" "$slug" "$tmp/commit-input.json" \
+  /usr/bin/python3 -I -B bin/refresh-inputs.py commit-input "$repo" "$slug" "$tmp/commit-input.json" \
     "$branch" "$base" "$headline" "$cbody" "$@" || return 1
   oid=$(cd "$repo" && /usr/bin/gh api graphql --input "$tmp/commit-input.json" -q '.data.createCommitOnBranch.commit.oid') \
     || { echo "refresh-inputs.sh: the API could not create the commit on $branch; opening no pull request" >&2; return 1; }
@@ -83,7 +81,7 @@ open_pr() {
   # Asked again immediately before the branch is created: two overlapping runs can both have passed the staging check (REQ-REFRESH-001-AC29). Only a
   # pull request of this repository counts; the list not being readable stops the job (an unknown state is not "no pull request").
   local _rc=0
-  /usr/bin/python3 -I -B "$PY" guard "$repo" "$pr_author" "$branch" || _rc=$?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py guard "$repo" "$pr_author" "$branch" || _rc=$?
   [ "$_rc" != 4 ] || return 0
   [ "$_rc" = 0 ] || exit "$_rc"
   local base=$branch n=1
@@ -165,13 +163,13 @@ archive-key-check)
   # After the archive is pulled or seeded and before the App token is minted: the live Wolfi signing key must be the pinned key AND the key the archive
   # holds (keys/wolfi-signing.rsa.pub); the stop then precedes every later step also when the archive carries another key (rule 6, AC30). A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
   /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
-  /usr/bin/python3 -I -B "$PY" archive-key-check "$repo" "$tmp/live-key.pub" "$archive" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py archive-key-check "$repo" "$tmp/live-key.pub" "$archive" || exit $?
   ;;
 key-check)
   # The first step of the daily job, before any tool is installed, any registry is touched or any token is minted: the live Wolfi signing key must be
   # the key pinned in build/locks/archive-keys.sha256. A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
   /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
-  /usr/bin/python3 -I -B "$PY" key-check "$repo" "$tmp/live-key.pub" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py key-check "$repo" "$tmp/live-key.pub" || exit $?
   ;;
 
 bootstrap)
@@ -183,7 +181,7 @@ bootstrap)
     { [ -d "$archive" ] && [ ! -L "$archive" ] && dir_empty "$archive"; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
   fi
   /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
-  /usr/bin/python3 -I -B "$PY" bootstrap "$repo" "$tmp/live-key.pub" "$archive" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py bootstrap "$repo" "$tmp/live-key.pub" "$archive" || exit $?
   ;;
 
 open-pr)
@@ -195,7 +193,7 @@ open-pr)
     case ${archive_digest#sha256:} in *[!0-9a-f]*) die "--archive-digest must be sha256:<64 lower-case hex>";; esac
     [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
   fi
-  /usr/bin/python3 -I -B "$PY" open-pr-plan "$repo" "$plan_dir" "$archive" "$archive_digest" "$tmp" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py open-pr-plan "$repo" "$plan_dir" "$archive" "$archive_digest" "$tmp" || exit $?
   nc=0; read -r nc <"$tmp/ncount" 2>/dev/null || nc=0
   [ "$nc" != 0 ] || exit 0
   # the validated plans, one open_pr each, in plan order
@@ -226,12 +224,12 @@ refresh)
   done
 
   /bin/mkdir -p "$tmp/host" "$tmp/vm-host" "$tmp/vm-guest"
-  /usr/bin/python3 -I -B "$PY" prepare "$repo" "$tmp" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py prepare "$repo" "$tmp" || exit $?
 
   # rules 32 and 46: every run, before anything else, compare the live key to the archived one
   /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
-  /usr/bin/python3 -I -B "$PY" pinned-key "$repo" "$tmp/live-key.pub" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py pinned-key "$repo" "$tmp/live-key.pub" || exit $?
   if ! /usr/bin/cmp -s "$tmp/live-key.pub" "$archived_key"; then
     echo "$SELF: the live Wolfi signing key differs from the archived one; stopping, no pull request, a human must decide whether to trust the new key" >&2
     exit 3
@@ -239,7 +237,7 @@ refresh)
 
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
   /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
-  /usr/bin/python3 -I -B "$PY" configs "$repo" "$tmp"
+  /usr/bin/python3 -I -B bin/refresh-inputs.py configs "$repo" "$tmp"
   lock() { /usr/local/bin/apko lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
   lock "$tmp/production/apko.yaml" "$tmp/production.lock.json"
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
@@ -257,7 +255,7 @@ refresh)
   # ruled download lines below and runs the program again (it starts from the same state each time, up to five passes:
   # packages, kernel, Go, index, the rest).
   for _pass in 1 2 3 4 5; do
-    _rc=0; /usr/bin/python3 -I -B "$PY" refresh "$repo" "$pr_author" "$archive" "$tmp" || _rc=$?
+    _rc=0; /usr/bin/python3 -I -B bin/refresh-inputs.py refresh "$repo" "$pr_author" "$archive" "$tmp" || _rc=$?
     [ "$_rc" = 75 ] || break
     if [ -s "$tmp/want-packages" ]; then
       while read -r p f; do
@@ -307,7 +305,7 @@ fips-module)
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ "$staged" = 1 ] || [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  /usr/bin/python3 -I -B "$PY" fips-module "$repo" "$pr_author" "$goroot" "$modfile" "$tmp" "$staged" || exit $?
+  /usr/bin/python3 -I -B bin/refresh-inputs.py fips-module "$repo" "$pr_author" "$goroot" "$modfile" "$tmp" "$staged" || exit $?
   [ -s "$tmp/new" ] || exit 0
   { IFS= read -r newest; IFS= read -r cur; } <"$tmp/new"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/paths"
