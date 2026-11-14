@@ -1266,12 +1266,12 @@ case "$1 $2" in
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *)
     [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   # the review gate's own check on a head (the App's latest): GATE99, none unless set; no gate check on any other head
-  "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate") [ "${GATELOOKUP:-}" = fail ] && exit 1
+  "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate&per_page=100") [ "${GATELOOKUP:-}" = fail ] && exit 1
               # the step's own filter, run for real
               if [ -n "${GATE99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done;
                 jq -r "$f" <<<"$GATE99_JSON"
               else echo "${GATE99:-none}"; fi ;;
-  "api repos/o/r/commits/"*"/check-runs?check_name=auditor-review-gate") echo none ;;
+  "api repos/o/r/commits/"*"/check-runs?check_name=auditor-review-gate&per_page=100") echo none ;;
   # #77: a PR whose title and body name no update that can be read
   "api repos/o/r/commits/sha77/check-runs?check_name=dependabot-reviewer"*) echo "${PRIOR77:-none}" ;;
   # the PR as GitHub gives it, read by the step's own filter
@@ -1409,7 +1409,7 @@ also "candidates: a stale gate failure over a failure verdict is not published a
 # is the line
 runs_json() {
   jq -cn --argjson r "$1" \
-  '{check_runs: [$r[] | {conclusion: .[0], completed_at: .[1], app: {slug: (.[2] // "fosterstack-automation")}}]}'; }
+  '{total_count: ($r | length), check_runs: [$r[] | {conclusion: .[0], completed_at: .[1], app: {slug: (.[2] // "fosterstack-automation")}}]}'; }
 RECENT=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); OLD=$(date -u -d '-7 hours' +%Y-%m-%dT%H:%M:%SZ);
   OLDER=$(date -u -d '-9 hours' +%Y-%m-%dT%H:%M:%SZ)
 PRIOR99=success GATE99_JSON=$(runs_json "[[\"failure\",\"$OLD\"]]") cand "91 none," 0 \
