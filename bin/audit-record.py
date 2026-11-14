@@ -155,9 +155,9 @@ def reviewer_verdict(checks, logins, version):
     NO_RUN when it put none, "unfinished" for one still running, OTHER_VERSION for a success whose external_id is not
     `version` (the sha256 of the reviewer's files on main), None when the answer of
     `gh api repos/R/commits/SHA/check-runs?check_name=dependabot-reviewer&filter=all&per_page=100` is malformed or
-    cut, or the completed run has no conclusion."""
+    a full page of 100 runs (which GitHub may have cut), or the completed run has no conclusion."""
     runs = checks.get("check_runs") if isinstance(checks, dict) else None
-    if not isinstance(runs, list) or checks.get("total_count") != len(runs):
+    if not isinstance(runs, list) or len(runs) >= 100:
         return None
     mine = []
     for r in runs:
