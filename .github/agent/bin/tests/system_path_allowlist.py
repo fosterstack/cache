@@ -29,7 +29,7 @@ LINK_ROWS = [
 # so the WHOLE FILE is pinned: (sha256 of the file's raw bytes, the literal-bearing lines it may contain, reason). Any edit to one of these files
 # needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
 PINS = {
-    '.github/agent/bin/tests/test_check_action_pins.py': ('c6613641a8a3eb4a6b05ad1def3af7bcc1bab8079bb7bf96f606c784632c6463',
+    '.github/agent/bin/tests/test_check_action_pins.py': ('9b7d5c635a8d744bde601a4257e817a9fc68959701f095fb88218b6e0133dded',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
                  'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
                  '"x"})',
@@ -39,7 +39,12 @@ PINS = {
                  'self.assertTrue(M._outside("$HOME/.docker/x", ""))',
                  'self.assertFalse(M._outside("$d", "d=/tmp/y; d=/home/runner/work/z"))',
                  'self.assertEqual(M._made_executable("curl -o /usr/local/bin/t https://e/t", "/usr/local/bin/t"), "downloads")',
-                 'self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})'],
+                 'self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})',
+                 'fh.write(HEAD + "    steps:\\n      - run: |\\n          printf x > /tmp/smoke-assert.sh; bash '
+                 '/tmp/smoke-assert.sh\\n")',
+                 'for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):',
+                 'for script in ("/tmp/smoke-assert.sh", "/tmp/pf-forward.sh"):',
+                 'code, out = run([self.tree_with(self.K8S, "/tmp/other.sh")])'],
         "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time)"),
     '.github/agent/bin/tests/test_panel.py': ('f746c6fa3e6f8bbd101227f64de17287fbb8a116532309f70c6ba489d4f1fcdd',
         [        '"package database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',

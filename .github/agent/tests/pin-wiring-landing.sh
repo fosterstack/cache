@@ -77,8 +77,8 @@ if "concurrency" in d and d["concurrency"] != {
         "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}",
         "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
     bad.append("the workflow's concurrency is not the reviewed block")
-if d.get("permissions") != {"contents": "read"}:
-    bad.append("the workflow permissions are not exactly {contents: read}")
+if d.get("permissions") != {"contents": "read", "pull-requests": "read"}:
+    bad.append("the workflow permissions are not exactly {contents: read, pull-requests: read}")
 on = d.get("on", {})
 if "pull_request" not in on:
     bad.append("not triggered on pull_request")
@@ -136,12 +136,13 @@ risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
 def is_risky(k):
     return k in risky or re.match(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)", k) is not None
 steps_all = job.get("steps", [])
-# the two steps whose env is judged exactly below are exempt from the name list (BASE, GITHUB_HEAD_REPO)
+# the two steps whose env is judged exactly below are exempt from the name list
+# (BASE, GITHUB_HEAD_REPO, GITHUB_QUEUE_REF)
 for where, env in [("the workflow", d.get("env")), ("the allowlist job", job.get("env"))] + \
         [(f"step {i}", st.get("env")) for i, st in enumerate(steps_all)]:
     if isinstance(env, dict):
         for k in sorted(k for k in env if is_risky(k)):
-            if where == "step 2" and k == "GITHUB_HEAD_REPO":
+            if where == "step 2" and k in ("GITHUB_HEAD_REPO", "GITHUB_QUEUE_REF"):
                 continue
             bad.append(f"{where} sets env {k}")
 # nothing that reaches every step of the allowlist job from above
@@ -161,7 +162,8 @@ for st in job.get("steps", []):
 # first, then exactly the base-ref step and exactly the check step, in that order, nothing redirecting them
 if job.get("name") != "allowlist":
     bad.append("the allowlist job is not named `allowlist` (the required-check context)")
-FETCH_RUN = """if [ -n "${BASE}" ]; then
+FETCH_RUN = """BASE="${BASE#refs/heads/}"
+if [ -n "${BASE}" ]; then
   [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
   [[ "${BASE}" != *..* ]] || exit 1
   git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
@@ -194,8 +196,10 @@ else:
     for k in plain + ("env",):
         if k in steps_[0]:
             bad.append(f"the allowlist checkout has `{k}`")
-for name, want_env in (("fetch", {"BASE": "${{ github.base_ref }}"}),
-                       ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}"})):
+for name, want_env in (("fetch", {"BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"}),
+                       ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}",
+                                  "GITHUB_QUEUE_REF": "${{ github.event.merge_group.head_ref }}",
+                                  "GH_TOKEN": "${{ github.token }}"})):
     if len(idx[name]) != 1:
         bad.append(f"the allowlist job does not have exactly one {name} step with the exact command")
         continue
@@ -217,7 +221,13 @@ CHAIN_STEPS = {
     "the suite guard's own regressions (REQ-CI-005, a counting step)": "bash bin/suite-guard-test.sh",
     "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
+    "the release chain's Rekor check in key form: entries, retries, the pinned log key": "bash bin/chain-rekor-key-test.sh",
+    "the release chain's trust files: exactly what the key and Rekor path reads": "bash bin/chain-trust-files-test.sh",
+    "the release key manifest: the root key's signature, the window, the revocation": "bash bin/chain-manifest-test.sh",
+    "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup": "bash bin/witness-kms-test.sh",
+    "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow": "bash bin/chain-no-keyless-tag-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
+    "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)": "bash bin/build-sandbox-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
     "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)": "bash bin/chain-build-wiring-test.sh",
@@ -229,23 +239,27 @@ CHAIN_STEPS = {
     "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)": "bash bin/chain-check-scripts-test.sh",
     "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)": "bash bin/chain-check-wiring-test.sh",
     "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)": "bash bin/verify-release-guide-test.sh </dev/null",
+    "the release key page: its two commands, setup text and customer words (REQ-CHAIN-008-AC7)": "bash bin/verify-key-page-test.sh </dev/null",
     "the pinned crane install (REQ-CHAIN-007-AC7)": "bash bin/chain-install-crane-test.sh",
     "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)": "bash bin/chain-release-wiring-test.sh",
     "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)": "bash bin/chain-release-scripts-test.sh",
     "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)": "bash bin/chain-release-metadata-test.sh",
-    "the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)": "bash bin/vex-guide-test.sh",
-    "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)": "bash bin/vex-live-test-test.sh",
-    "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)": "bash .github/agent/tests/vex-live-pins-test.sh",
+    "the customer guide — every scanner's file, check and exact command, no competitor named": "bash bin/vex-guide-test.sh",
+    "the live test's plan, test copy, fixture and wiring, offline": "bash bin/vex-live-test-test.sh",
+    "the live test's page and its driver are read by the action-pin checker": "bash .github/agent/tests/vex-live-pins-test.sh",
 }
 # the two guard steps of the suite floors carry an `if` or an `env` on purpose: judged as whole steps, every key and value
 GUARD_STEPS = [
     {
         "name": "suite floors only rise (against the merge base on a pull request)",
-        "if": "${{ github.base_ref != '' }}",
+        "if": "${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}",
         "env": {
-            "BASE": "${{ github.base_ref }}"
+            "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}",
+            "PR_BODY": "${{ github.event.pull_request.body }}"
         },
-        "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+        "run": "BASE=\"${BASE#refs/heads/}\"\n"
+               "bash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n"
+               "  test-evidence/suite-floors.json\n"
     },
     {
         "name": "every suite runs at or above its committed floor (real counts)",
@@ -311,6 +325,20 @@ elif sg[0] != SCAN_STEP:
 # name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
 # a suite cannot be deleted, edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR
 # cannot change for itself (the gate runs main's copy), being changed first. Adding a suite to a split job means adding its step here.
+def _by_shape(st):
+    """A step with `uses: name@<full 40-hex commit>` stands for every digest of
+    that action: the digest VALUE is judged by
+    check-action-pins --verify-tags, pin-age and the daily audit (a Dependabot bump moves it), not by these lists. The
+    action name and the exact shape of the ref (40 lower-case hex) stay compared; the stand-in is a tuple, which no YAML
+    scalar can equal."""
+    u = st.get("uses")
+    if isinstance(u, str) and u.count("@") == 1:
+        name, _, ref = u.partition("@")
+        if re.fullmatch(r"[0-9a-f]{40}", ref):
+            return dict(st, uses=(name, "@40-hex"))
+    return st
+
+
 SPLIT_STEPS = json.loads(r'''{
  "allowlist-chain": [
   {
@@ -321,10 +349,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -402,15 +430,23 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/layout-archive-test.sh"
   },
   {
-   "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest (scanner-panel rule 10)",
+   "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest",
    "run": "bash bin/vex-forms-test.sh"
   },
   {
-   "name": "the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)",
+   "name": "the monthly evidence letter \u2014 made from the release assets, refused on any mismatch (REQ-REL-013)",
+   "run": "bash bin/evidence-letter-test.sh"
+  },
+  {
+   "name": "the monthly evidence letter's jobs \u2014 key, no overwrite, closed, presence (REQ-REL-013-AC9 to AC11)",
+   "run": "bash bin/evidence-letter-job-test.sh"
+  },
+  {
+   "name": "the Docker Scout root-cause round's documents, matrix and judge",
    "run": "bash bin/scout-root-cause-test.sh"
   },
   {
-   "name": "the Docker Scout older-versions sweep (advisor 0520) \u2014 table logic with docker stubbed, installer pins, dispatch-only job",
+   "name": "the Docker Scout older-versions sweep \u2014 table logic with docker stubbed, installer pins, dispatch-only job",
    "run": "bash bin/scout-older-versions-test.sh"
   },
   {
@@ -427,11 +463,12 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}",
+    "PR_BODY": "${{ github.event.pull_request.body }}"
    },
-   "if": "${{ github.base_ref != '' }}",
+   "if": "${{ github.base_ref != '' || github.event.merge_group.base_ref != '' }}",
    "name": "suite floors only rise (against the merge base on a pull request)",
-   "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nbash bin/suite-guard.sh floors-vs-base --allow-from-body \"$(git merge-base HEAD \"origin/${BASE}\")\" \\\n  test-evidence/suite-floors.json\n"
   },
   {
    "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
@@ -442,8 +479,32 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"
   },
   {
+   "name": "the release chain's Rekor check in key form: entries, retries, the pinned log key",
+   "run": "bash bin/chain-rekor-key-test.sh"
+  },
+  {
+   "name": "the release chain's trust files: exactly what the key and Rekor path reads",
+   "run": "bash bin/chain-trust-files-test.sh"
+  },
+  {
+   "name": "the release key manifest: the root key's signature, the window, the revocation",
+   "run": "bash bin/chain-manifest-test.sh"
+  },
+  {
+   "name": "the Witness helpers sign with the release KMS key: the token file, the AWS variables, the cleanup",
+   "run": "bash bin/witness-kms-test.sh"
+  },
+  {
+   "name": "no tag is signed keylessly or cut without a signer: admission, the installer, the release workflow",
+   "run": "bash bin/chain-no-keyless-tag-test.sh"
+  },
+  {
    "name": "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)",
    "run": "bash bin/chain-hostile-test.sh"
+  },
+  {
+   "name": "the sandbox wall probe, judged offline: one recipe per wall, melange's exit decides (REQ-CHAIN-001-AC5)",
+   "run": "bash bin/build-sandbox-hostile-test.sh"
   },
   {
    "name": "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)",
@@ -490,6 +551,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/verify-release-guide-test.sh </dev/null"
   },
   {
+   "name": "the release key page: its two commands, setup text and customer words (REQ-CHAIN-008-AC7)",
+   "run": "bash bin/verify-key-page-test.sh </dev/null"
+  },
+  {
    "name": "the pinned crane install (REQ-CHAIN-007-AC7)",
    "run": "bash bin/chain-install-crane-test.sh"
   },
@@ -506,15 +571,15 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/chain-release-metadata-test.sh"
   },
   {
-   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)",
+   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named",
    "run": "bash bin/vex-guide-test.sh"
   },
   {
-   "name": "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)",
+   "name": "the live test's plan, test copy, fixture and wiring, offline",
    "run": "bash bin/vex-live-test-test.sh"
   },
   {
-   "name": "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)",
+   "name": "the live test's page and its driver are read by the action-pin checker",
    "run": "bash .github/agent/tests/vex-live-pins-test.sh"
   },
   {
@@ -534,10 +599,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -576,10 +641,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -601,7 +666,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/dependabot-reviewer-test.sh"
   },
   {
-   "name": "dependency lanes wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)",
+   "name": "dependency paths wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor path after the guard",
    "run": "bash bin/dependency-lanes-test.sh"
   },
   {
@@ -609,7 +674,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/dependabot-reviewer-gather-test.sh"
   },
   {
-   "name": "the scanner panel's judge \u2014 counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)",
+   "name": "the scanner panel's judge \u2014 counts and quorum, the VEX, seen by N of M, unique findings audited",
    "run": "bash bin/panel-test.sh"
   },
   {
@@ -621,19 +686,23 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash .github/agent/tests/auditor-variants-test.sh"
   },
   {
-   "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)",
+   "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags",
    "run": "bash bin/patch-decide-test.sh"
   },
   {
-   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)",
+   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012)",
    "run": "bash bin/audit-record-test.sh"
   },
   {
-   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
+   "name": "the review gate's judge of the merge queue's head fails closed (REQ-DEP-005-AC3)",
+   "run": "bash .github/agent/tests/queue-gate-judge-test.sh"
+  },
+  {
+   "name": "admission's tag signer \u2014 the maintainers' SSH key on any tag, patch tags included; a keyless signature is refused",
    "run": "bash bin/admission-tag-signer-test.sh"
   },
   {
-   "name": "release.yml's automatic patch wiring \u2014 decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)",
+   "name": "release.yml's automatic patch wiring \u2014 decide on main only, no tag signed or cut, failures open an issue",
    "run": "bash bin/release-patch-wiring-test.sh"
   },
   {
@@ -641,19 +710,19 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/acceptance-maven-413-test.sh"
   },
   {
-   "name": "release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)",
+   "name": "release.yml's notes commit runs exactly the committed signed-commit CLI (the literal path is judged under .github/agent/)",
    "run": "bash .github/agent/tests/release-notes-signed-test.sh"
   },
   {
-   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)",
+   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise",
    "run": "bash bin/go-freshness-wiring-test.sh"
   },
   {
-   "name": "the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)",
+   "name": "the workflow consolidation (mutation runs weekly inside go-freshness)",
    "run": "bash bin/workflow-consolidation-test.sh"
   },
   {
-   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)",
+   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011)",
    "run": "bash bin/job-isolation-test.sh"
   },
   {
@@ -661,11 +730,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/rescan-current-only-test.sh"
   },
   {
-   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)",
+   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception",
    "run": "bash bin/panel-wiring-test.sh"
   },
   {
-   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md (advisor 0084)",
+   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md",
    "run": "bash .github/agent/tests/k8s-harness-fence-test.sh"
   },
   {
@@ -715,7 +784,7 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {k} job is not named `{k}`")
             if sj.get("runs-on") != "ubuntu-latest":
                 bad.append(f"the {k} job does not run on exactly `ubuntu-latest`")
-            if sj.get("steps") != chain_shard_steps(n_):
+            if [_by_shape(s) for s in sj.get("steps") or []] != [_by_shape(s) for s in chain_shard_steps(n_)]:
                 bad.append(f"the {k} steps are not exactly the judged list (REQ-CI-001-AC1: every step of the one job in exactly one shard, unchanged, in order)")
         # REQ-CI-001-AC1/AC4, exactly once across the WHOLE workflow: a chain suite appears once more than it does in the other judged jobs (the pins-auditor
         # job runs one of them too) and nowhere else, so a copy kept in the allowlist job or in a renamed original job is refused
@@ -741,11 +810,21 @@ for jid, want_steps in SPLIT_STEPS.items():
         bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
     got = sj.get("steps", [])
     accepted = [want_steps]
-    if got not in accepted:
+    if [_by_shape(st) for st in got] not in [[_by_shape(st) for st in a] for a in accepted]:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
-        bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why) or 'a step differs in its command, env, uses, with or order'})")
+        if not why:      # the same names: say which step differs and in which keys
+            for _i, (_g, _w) in enumerate(zip(got, want_steps)):
+                _keys = sorted(k for k in set(_g) | set(_w) if _by_shape(_g).get(k) != _by_shape(_w).get(k))
+                if _keys:
+                    _nm = _g.get("name") or _g.get("uses")
+                    bad.append(f"the {jid} step {_i + 1} ({_nm}) differs in: {', '.join(_keys)}")
+                    break
+            else:
+                bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
+        else:
+            bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
 # the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
 # and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
@@ -881,6 +960,22 @@ PY
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
 
+# case_msg <name> <python edit> <text>: the judge refuses the copy and its message holds the text
+case_msg() {
+  local f="$work/$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  python3 - "$f" "$2" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ] && grep -qF -- "$3" <<<"$out"; then pass=$((pass+1)); echo "PASS $1 → bad, names: $3"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want bad naming: $3 ($out)"; fi
+}
+
 steps='d["jobs"]["allowlist"]["steps"]'
 pick='[s for s in '"$steps"' if (s.get("run") or "").startswith("python3 .github/agent/bin/check-action-pins.py")][0]'
 case_ the-real-hygiene      ok  ""
@@ -947,6 +1042,8 @@ case_ allowlist-shell-override  bad "$ck['shell'] = \"bash -c 'true' {0}\""
 case_ allowlist-workdir         bad "$ck['working-directory'] = 'bin'"
 case_ allowlist-env-removed     bad "$ck.pop('env')"
 case_ allowlist-env-changed     bad "$ck['env'] = {'GITHUB_HEAD_REPO': ''}"
+case_ allowlist-queue-ref-changed bad "$ck['env']['GITHUB_QUEUE_REF'] = 'other'"
+case_ allowlist-queue-token-gone  bad "$ck['env'].pop('GH_TOKEN')"
 case_ fetch-removed             bad "$steps[:] = [s for s in $steps if 'git fetch' not in (s.get('run') or '')]"
 case_ fetch-or-true             bad "$fe['run'] = $fe['run'].rstrip() + ' || true'"
 case_ fetch-if-false            bad "$fe['if'] = 'false'"
@@ -1008,7 +1105,7 @@ if m:
 print(r)
 PYA
 }
-for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+for r in "bash bin/suite-guard.sh files" "bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-no-keyless-tag-test.sh" "bash bin/chain-rekor-key-test.sh" "bash bin/chain-trust-files-test.sh" "bash bin/chain-manifest-test.sh" "bash bin/witness-kms-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/build-sandbox-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/verify-key-page-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
   ar=$(actual_of "$r"); n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$ar")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$ar'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$ar']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
@@ -1148,6 +1245,9 @@ case_ chain-split-setup-dropped   bad "${SC}${S4}['steps'].pop(0)"
 case_ chain-split-shard-missing   bad "${SC}d['jobs'].pop('allowlist-chain-3')"
 case_ chain-split-shard-extra     bad "${SC}d['jobs']['allowlist-chain-5'] = {'name': 'allowlist-chain-5', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ chain-split-guard-dropped   bad "${SC}${S4}['steps'][:] = [x for x in ${S4}['steps'] if 'floors-vs-base' not in (x.get('run') or '')]"
+case_ chain-split-floors-body-in-run bad "${SC}[x.__setitem__('run', 'bash bin/suite-guard.sh floors-vs-base --allow-lowered \"\${{ github.event.pull_request.body }}\" x y') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-env-gone bad "${SC}[x['env'].pop('PR_BODY') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
+case_ chain-split-floors-body-other-env bad "${SC}[x['env'].__setitem__('PR_BODY', '\${{ github.event.pull_request.title }}') for x in ${S4}['steps'] if 'floors-vs-base' in (x.get('run') or '')]"
 case_ chain-split-old-steps-left  bad "${SC}${GT}['steps'].append(dict(${S1}['steps'][-1]))"
 # AC2: the gate keeps the name, needs every shard, always runs, takes no checkout and no action, and fails on anything but success (incl. a missing or empty result)
 case_ chain-split-gate-renamed    bad "${SC}${GT}['name'] = 'allowlist-chain-gate'"
@@ -1217,7 +1317,24 @@ case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.s
 case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
 case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+case_ g6-removed                bad "${PA}del ps[ix('bash bin/audit-record-test.sh')]"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
+# a bump of an action that the judged jobs use (cache#790: setup-python 7.0.0 to 7.1.0) moves the digest in every judged
+# step; the digest value is judged by check-action-pins --verify-tags, pin-age and the daily audit, not by this list.
+# The action name and the full 40-hex shape of the ref stay exact.
+BUMP="for j in ('allowlist', 'allowlist-chain-1', 'allowlist-chain-2', 'allowlist-chain-3', 'allowlist-chain-4', "
+BUMP+="'allowlist-persona', 'allowlist-pins-auditor'): "
+BUMP+="[s.__setitem__('uses', '%s') for s in d['jobs'][j]['steps'] "
+BUMP+="if s.get('uses', '').startswith('actions/setup-python@')]"
+case_ uses-digest-bumped       ok  "${BUMP//%s/actions/setup-python@abababababababababababababababababababab}"
+case_ uses-tag-ref             bad "${BUMP//%s/actions/setup-python@v7}"
+case_ uses-short-digest        bad "${BUMP//%s/actions/setup-python@abababababababababababababababababababa}"
+case_ uses-upper-digest        bad "${BUMP//%s/actions/setup-python@ABABABABABABABABABABABABABABABABABABABAB}"
+case_ uses-other-action-name   bad "${BUMP//%s/evil/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97}"
+case_ uses-literal-marker       bad "${BUMP//%s/actions/setup-python@<commit>}"
+RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
+case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
+case_msg run-changed-names-key  "$RUNX" "differs in: run"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
@@ -1254,6 +1371,9 @@ case_ wf-concurrency-shared-ref  bad "d['concurrency'] = {'group': \"\${{ github
 case_ wf-concurrency-rerun-shares bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ wf-concurrency-workflow-name bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
+case_ job-regains-a-block        bad \
+  "d['jobs']['allowlist']['permissions'] = {'contents': 'read', 'pull-requests': 'read'}"
+case_ wf-permissions-gains-write bad "d['permissions'] = {'contents': 'read', 'pull-requests': 'write'}"
 case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-removed     bad "d.pop('permissions')"
 case_ runs-on-self-hosted        bad "d['jobs']['allowlist']['runs-on'] = 'self-hosted'"

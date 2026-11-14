@@ -72,8 +72,17 @@ case_() {
   # otherwise be judged "ok" and make an `ok` case pass without testing anything
   if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"  # the gate's committed programs
+  # every tree must carry the pinned gate
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
+  : > "$d/.github/agent/bin/check-action-pins.py"
+  mkdir -p "$d/bin" "$d/.github/agent/tests"
+  : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/bin/audit-record-judge.sh"
+  : > "$d/bin/audit-record-prepare.sh"
+  : > "$d/.github/agent/bin/auditor-signed-commit.py"  # the gate's committed programs
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
@@ -697,8 +706,16 @@ gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"
   take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
+  : > "$d/.github/agent/bin/check-action-pins.py"
+  mkdir -p "$d/bin" "$d/.github/agent/tests"
+  : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/bin/audit-record-judge.sh"
+  : > "$d/bin/audit-record-prepare.sh"
+  : > "$d/.github/agent/bin/auditor-signed-commit.py"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
   if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
@@ -1115,7 +1132,8 @@ case_out() {
   take "$1" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
   : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
            build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
@@ -1754,8 +1772,16 @@ mutant_() {   # name, python replace (old|||new), probe script, optional setup
   local name=$1 d="$work/mut-$1"
   take "mutant-$name" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
+  mkdir -p "$d/bin" "$d/.github/agent/tests"
+  : > "$d/.github/agent/bin/check-action-pins.py"
+  : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/bin/audit-record-judge.sh"
+  : > "$d/bin/audit-record-prepare.sh"
+  : > "$d/.github/agent/bin/auditor-signed-commit.py"
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   python3 - "$here/../bin/check-action-pins.py" "$d/mut.py" "$2" <<'PY'
 import sys
@@ -1946,6 +1972,27 @@ case_ r3c02-replace-workspace  bad "$(rb "printf 'docker run alpine\\n' > ci-ok.
 case_ r3c02-replace-bash-c     bad "$(rb "bash -c \"printf 'docker run alpine\\\\n' > ci-ok.sh\"; bash ci-ok.sh")" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-replace-by-script  bad "$(rb 'bash mutate.sh; bash ci-ok.sh')" "printf 'echo ok\\n' > ci-ok.sh; printf \"printf 'docker run alpine\\\\\\\\n' > ci-ok.sh\\n\" > mutate.sh"
 case_ r3c02-replace-harness    bad "$(rb "printf 'docker run alpine\\n' > bin/probe-test.sh; bash bin/probe-test.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+# the sandbox-wall probe is the ONE script the variable-program rule does not read (SEALED_PROBE): exactly this path, and only at the reviewed bytes of d7cab146
+# The three cases that copy the real file out of git need that commit in this clone: without it one named FAIL is recorded (never a pass or an abort)
+# and they are counted in ran= but skipped; the cases that write their own bytes run either way.
+probe_commit=d7cab1463cef8ac9fac38696dc13d1ff80778840
+probe_here=0; git -C "$here" cat-file -e "$probe_commit:bin/chain-sandbox-probe.sh" 2> /dev/null && probe_here=1
+if take sealed-probe-landing-commit; then
+  if [ "$probe_here" -eq 1 ]; then pass=$((pass+1)); echo "PASS sealed-probe-landing-commit → ${probe_commit:0:8} is in this clone"
+  else failn=$((failn+1)); echo "FAIL sealed-probe-landing-commit → ${probe_commit:0:8} is not in this clone"; fi
+fi
+probe_case() { if [ "$probe_here" -eq 1 ]; then case_ "$@"; else take "$1" || true; fi; }
+probe_real="mkdir -p bin; git -C \"\$here\" show $probe_commit:bin/chain-sandbox-probe.sh > bin/chain-sandbox-probe.sh"
+probe_case sealed-probe-ok          ok  "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real"
+case_ sealed-probe-fake-bytes  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/chain-sandbox-probe.sh"
+case_ sealed-probe-docker-pull bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'docker pull alpine\\n' > bin/chain-sandbox-probe.sh"
+case_ sealed-probe-pip-install bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "mkdir -p bin; printf 'pip install requests\\n' > bin/chain-sandbox-probe.sh"
+probe_case sealed-probe-extra-line  bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real; printf 'echo extra\\n' >> bin/chain-sandbox-probe.sh"
+# the exemption is the exact reviewed bytes: the same text with CRLF line endings is another file
+probe_case sealed-probe-crlf-copy bad "$(rb 'bash bin/chain-sandbox-probe.sh')" "$probe_real; sed -i 's/\$/\\r/' bin/chain-sandbox-probe.sh"
+case_ sealed-probe-other-name  bad "$(rb 'bash bin/other.sh')" "mkdir -p bin; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > bin/other.sh"
+case_ sealed-probe-other-dir   bad "$(rb 'bash tools/chain-sandbox-probe.sh')" "mkdir -p tools; printf 'SUDO=/usr/bin/sudo\\n\"\$SUDO\" true\\n' > tools/chain-sandbox-probe.sh"
+case_ sealed-probe-replaced    bad "$(rb "printf 'docker run alpine\\n' > bin/chain-sandbox-probe.sh; bash bin/chain-sandbox-probe.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/chain-sandbox-probe.sh"
 case_ r3c02-api-unrelated      bad "$(rb 'gh api "repos/$GITHUB_REPOSITORY/contents/ci-ok.sh?ref=main" --jq .content >/dev/null; printf "docker run alpine\\n" > "$RUNNER_TEMP/ci-ok.sh"; bash "$RUNNER_TEMP/ci-ok.sh"')" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-git-show-ref       bad "$(rb 'git show attacker:ci-ok.sh > "$RUNNER_TEMP/ci-ok.sh"; bash "$RUNNER_TEMP/ci-ok.sh"')" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-python-generated   bad "$(rb "printf 'import os\\n' > /tmp/fetch.py; python3 /tmp/fetch.py")"
@@ -2067,7 +2114,8 @@ real_repo=$(cd "$here/../../.." && pwd)
 realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
 cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
-cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"
+cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"; mkdir -p "$realcase/.github/agent/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$realcase/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
 : > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"; : > "$realcase/bin/audit-record-prepare.sh"; : > "$realcase/.github/agent/bin/auditor-signed-commit.py"
 python3 -c "
 s = open('$realcase/.github/workflows/auditor.yml').read()
@@ -2788,10 +2836,226 @@ case_ r25-bare-variable-still-ok ok "$(rb 'docker run --rm "$IMAGE_REF" true')"
 case_ r25-braced-array-variable-still-ok ok "$(rb 'docker run --rm "${IMAGES[0]}" true')"
 case_ r25-mixed-tag-destination-ok ok "$(rb "docker tag $PIN localhost/fa-\${v}")"
 
+# --- rc-5b B2 (handoff 0663): a `uses:` step that writes the tree is a writer, like a run: step. A committed script the job runs after one
+# is not the committed bytes. Closed list: actions/checkout (with repository, path or a ref other than the base sha), actions/download-artifact,
+# actions/cache and actions/cache/restore; the action name is read in any letter case; a path with ${{ }}, .. or an absolute path writes everywhere.
+# The plain default checkout, the base-sha fence form, upload-only steps and actions/cache/save write nothing into the tree.
+BASE_REF='${{ github.event.pull_request.base.sha }}'    # rc-5b 618 fix: assigned BEFORE the w-* cases that use it (under set -u an unset name made two cases test an empty fixture)
+mk_tool='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
+us() { printf '      - uses: %s@%s # v7.0.1\n%s\n' "$1" "$SHA" "${2:+        with:
+$2}"; }
+uw() {   # a workflow: a writer step, then the committed script
+  printf '%s\n    steps:\n%s\n      - run: bash bin/tool.sh\n' "$head" "$1"
+}
+case_ w-default-checkout-ok ok "$(uw "$(us actions/checkout)")" "$mk_tool"
+case_ w-checkout-repository-bad bad "$(uw "$(us actions/checkout "          repository: other/x")")" "$mk_tool"
+case_ w-checkout-repository-path-bad bad "$(uw "$(us actions/checkout "          repository: other/x
+          path: bin")")" "$mk_tool"
+case_ w-checkout-path-bad bad "$(uw "$(us actions/checkout "          path: bin")")" "$mk_tool"
+case_ w-checkout-path-elsewhere-ok ok "$(uw "$(us actions/checkout "          path: other")")" "$mk_tool"
+case_ w-checkout-ref-bad bad "$(uw "$(us actions/checkout "          ref: refs/heads/other")")" "$mk_tool"
+case_ w-checkout-upper-case-bad bad "$(uw "$(us Actions/Checkout "          repository: other/x")")" "$mk_tool"
+case_ w-checkout-mixed-case-bad bad "$(uw "$(us ACTIONS/checkout "          path: bin")")" "$mk_tool"
+case_ w-checkout-base-fence-ok ok "$(uw "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted")")" "$mk_tool"
+case_ w-checkout-base-fence-onto-bin-ok ok "$(uw "$(us actions/checkout "          ref: $BASE_REF
+          path: bin")")" "$mk_tool"
+case_ w-checkout-expression-path-bad bad "$(uw "$(us actions/checkout "          path: \${{ inputs.where }}")")" "$mk_tool"
+case_ w-checkout-dotdot-path-bad bad "$(uw "$(us actions/checkout "          path: ../x")")" "$mk_tool"
+case_ w-checkout-absolute-path-bad bad "$(uw "$(us actions/checkout "          path: /home/runner/work/x/x/bin")")" "$mk_tool"
+case_ w-download-artifact-default-bad bad "$(uw "$(us actions/download-artifact "          name: x")")" "$mk_tool"
+case_ w-download-artifact-path-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-download-artifact-upper-bad bad "$(uw "$(us Actions/Download-Artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-download-artifact-elsewhere-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: out")")" "$mk_tool"
+case_ w-download-artifact-expression-bad bad "$(uw "$(us actions/download-artifact "          path: \${{ matrix.dir }}")")" "$mk_tool"
+case_ w-cache-bad bad "$(uw "$(us actions/cache "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-bad bad "$(uw "$(us actions/cache/restore "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-list-bad bad "$(uw "$(us actions/cache/restore "          path: |
+            out
+            bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-upper-bad bad "$(uw "$(us Actions/Cache/Restore "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-elsewhere-bad bad "$(uw "$(us actions/cache/restore "          path: out
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-home-bad bad "$(uw "$(us actions/cache/restore "          path: ~/.cache/go-build
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-expression-bad bad "$(uw "$(us actions/cache/restore "          path: \${{ env.D }}
+          key: k")")" "$mk_tool"
+# --- rc-5b 618 fix round (Fable ruling, ops/audits/reviews/cache-618.md): everything tightens
+# 1. every actions/cache and cache/restore step writes everywhere (the glob and the file-path forms are not parsed)
+n=0
+for p in 'bi*' 'bin?' '[b]in' 'bin/tool.sh' '.github/agent/bi*' '~' '~/work/x/x/bin' '/home/runner/work/x/x/bin' '/tmp/x'; do
+  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: $p
+          key: k")")" "$mk_tool"
+done
+case_ w-cache-save-still-ok ok "$(uw "$(us actions/cache/save "          path: bi*
+          key: k")")" "$mk_tool"
+# 2. a parent of the workspace, the home directory and /github are the workspace; outside is /tmp, runner.temp and ~/<not work>
+n=0
+for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x '~/./work/r/r' '~/.' '~/work//r/r'; do
+  n=$((n+1)); case_ "w-download-artifact-path-$n-bad" bad "$(uw "$(us actions/download-artifact "          name: x
+          path: $p")")" "$mk_tool"
+done
+case_ w-download-artifact-home-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: ~/.cache/x")")" "$mk_tool"
+# 3. runner.temp is outside only when what follows has no expression, no $ and no ..
+case_ w-download-artifact-runner-temp-expression-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/\${{ '..' }}/x/bin")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-variable-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/\$D")")" "$mk_tool"
+# 4. a later writer into the base-sha fence directory itself (or over it) makes the script no longer main's copy
+mk_fence='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
+fence_wf() {  # fence checkout into trusted, a writer step ($1), then the script run from trusted
+  printf '%s\n    steps:\n%s\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted")" "$1"
+}
+case_ w-fence-then-nothing-ok ok "$(fence_wf '')" "$mk_fence"
+case_ w-fence-with-lfs-true-bad bad "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted
+          lfs: true")")" "$mk_fence"
+case_ w-fence-with-lfs-false-ok ok "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted
+          lfs: false")")" "$mk_fence"
+case_ w-fence-then-download-into-it-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted")")" "$mk_fence"
+case_ w-fence-then-download-into-it-slash-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted/")")" "$mk_fence"
+case_ w-fence-then-download-into-it-subdir-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted/bin")")" "$mk_fence"
+case_ w-fence-then-cache-restore-bad bad "$(fence_wf "$(us actions/cache/restore "          path: trusted
+          key: k")")" "$mk_fence"
+case_ w-fence-then-download-elsewhere-ok ok "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: /tmp/oci")")" "$mk_fence"
+# 5. a writer into /tmp or runner.temp replaces the copy of main's script a `git show` step wrote there
+tmp_copy() {  # the git show copy step, a writer step ($1), the run of the copy
+  printf '%s\n    steps:\n      - run: |\n          mkdir -p /tmp/policy\n          git show origin/main:bin/tool.sh > /tmp/policy/tool.sh\n%s\n      - run: bash /tmp/policy/tool.sh\n' "$head" "$1"
+}
+case_ w-tmp-copy-alone-ok ok "$(tmp_copy '')" "$mk_tool"
+case_ w-tmp-copy-then-download-over-it-bad bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/policy")")" "$mk_tool"
+case_ w-tmp-copy-then-download-over-its-parent-bad bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp")")" "$mk_tool"
+case_ w-tmp-copy-then-download-elsewhere-ok ok "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/oci")")" "$mk_tool"
+rt_copy() {
+  printf '%s\n    steps:\n      - run: |\n          git show origin/main:bin/tool.sh > "$RUNNER_TEMP/tool.sh"\n%s\n      - run: bash "$RUNNER_TEMP/tool.sh"\n' "$head" "$1"
+}
+case_ w-runner-temp-copy-alone-ok ok "$(rt_copy '')" "$mk_tool"
+case_ w-runner-temp-copy-then-download-bad bad "$(rt_copy "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}")")" "$mk_tool"
+# 7. a checkout with lfs not false puts the LFS objects' bytes where the committed pointer files are
+case_ w-checkout-lfs-true-bad bad "$(uw "$(us actions/checkout "          lfs: true")")" "$mk_tool"
+case_ w-checkout-lfs-expression-bad bad "$(uw "$(us actions/checkout "          lfs: \${{ inputs.lfs }}")")" "$mk_tool"
+case_ w-checkout-lfs-false-ok ok "$(uw "$(us actions/checkout "          lfs: false")")" "$mk_tool"
+# 9. a `with:` that is not a mapping on a writer writes everywhere
+case_ w-checkout-with-list-bad bad "$(uw "$(us actions/checkout "          - ref")")" "$mk_tool"
+case_ w-download-artifact-with-list-bad bad "$(uw "$(us actions/download-artifact "          - x")")" "$mk_tool"
+case_ w-cache-with-list-bad bad "$(uw "$(us actions/cache/restore "          - bin")")" "$mk_tool"
+wmsg='is changed by the job before it runs'
+# D4-D6 (seat D of the first look, ruled by the advisor): the script is judged at its LAST run; case-folded duplicate with: keys; a literal $RUNNER_TEMP
+case_ w-writer-between-two-runs-bad bad "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-writer-between-two-runs-elsewhere-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: out")
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-two-runs-no-writer-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-duplicate-path-keys-bad bad "$(uw "$(us actions/download-artifact "          path: bin
+          Path: out")")" "$mk_tool"
+case_ w-duplicate-path-keys-spaced-bad bad "$(uw "$(us actions/download-artifact "          path: bin
+          'path ': out")")" "$mk_tool"
+case_ w-download-artifact-literal-runner-temp-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \$RUNNER_TEMP/x")")" "$mk_tool"
+case_ w-download-artifact-literal-braced-runner-temp-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${RUNNER_TEMP}")")" "$mk_tool"
+# 618 round 3 (seat A): the script is also run THROUGH another committed script; the writer between the direct run and that run is a finding
+mk_via='mkdir -p lib && printf "#!/usr/bin/env bash\necho hi\n" > lib/b.sh && printf "#!/usr/bin/env bash\nbash lib/b.sh\n" > a.sh'
+case_ w-writer-between-direct-run-and-run-through-another-script-bad bad "$head
+    steps:
+      - run: bash lib/b.sh
+$(us actions/download-artifact "          path: lib")
+      - run: bash a.sh" "$mk_via"
+case_ w-direct-run-then-run-through-another-script-no-writer-ok ok "$head
+    steps:
+      - run: bash lib/b.sh
+      - run: bash a.sh" "$mk_via"
+case_ w-writer-elsewhere-between-direct-and-indirect-run-ok ok "$head
+    steps:
+      - run: bash lib/b.sh
+$(us actions/download-artifact "          path: out")
+      - run: bash a.sh" "$mk_via"
+# L1: a fence step whose with: holds case-folded duplicate keys is a writer of "." and is not admitted as main's copy
+case_ w-fence-with-duplicate-path-keys-bad bad "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: .
+          Path: trusted")")" "$mk_fence"
+case_out w-out-writer-between-two-runs bad "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")
+      - run: bash bin/tool.sh" "$wmsg" '' "$mk_tool"
+# 10. the finding is the write-before-run finding, not some other rule (case_ above reads the exit status only)
+case_out w-out-cache-restore-glob bad "$(uw "$(us actions/cache/restore "          path: bi*
+          key: k")")" "$wmsg" '' "$mk_tool"
+case_out w-out-download-artifact-parent-of-workspace bad "$(uw "$(us actions/download-artifact "          name: x
+          path: /home/runner")")" "$wmsg" '' "$mk_tool"
+case_out w-out-checkout-repository bad "$(uw "$(us actions/checkout "          repository: other/x")")" "$wmsg" '' "$mk_tool"
+case_out w-out-checkout-lfs bad "$(uw "$(us actions/checkout "          lfs: true")")" "$wmsg" '' "$mk_tool"
+case_out w-out-fence-overwritten bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted")")" "runs trusted/bin/tool.sh, which is not a committed file" '' "$mk_fence"   # no longer main's copy: the path is read as a plain one
+case_out w-out-tmp-copy-overwritten bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/policy")")" "$wmsg|copy|policy" '' "$mk_tool"
+case_out w-out-with-list bad "$(uw "$(us actions/checkout "          - ref")")" "$wmsg" '' "$mk_tool"
+case_out w-out-ok-plain-checkout ok "$(uw "$(us actions/checkout)")" '0 finding' "$wmsg" "$mk_tool"
+case_ w-download-artifact-tmp-ok ok "$(uw "$(us actions/download-artifact "          name: images
+          path: /tmp/oci/")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/attach")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-dotdot-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/../bin")")" "$mk_tool"
+case_ w-download-artifact-github-workspace-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: /github/workspace/bin")")" "$mk_tool"
+case_ w-checkout-tmp-path-ok ok "$(uw "$(us actions/checkout "          repository: other/x
+          path: /tmp/x")")" "$mk_tool"
+case_ w-cache-save-ok ok "$(uw "$(us actions/cache/save "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-upload-artifact-ok ok "$(uw "$(us actions/upload-artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-writer-after-the-run-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")" "$mk_tool"
+case_ w-writer-in-another-job-ok ok "on: push
+jobs:
+  one:
+    runs-on: ubuntu-latest
+    steps:
+$(us actions/download-artifact "          path: bin")
+  two:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-conditional-writer-bad bad "$head
+    steps:
+$(us actions/download-artifact "          path: bin")
+        if: \${{ inputs.x }}
+      - run: bash bin/tool.sh" "$mk_tool"
+
 # --- advisor 0198 (option A, fenced): a directory that an EARLIER step of the SAME job filled with actions/checkout of THIS repository at
 # exactly the pull request's base sha (`ref: ${{ github.event.pull_request.base.sha }}`, a literal path) is main's copy: a committed script
 # under it runs at a literal path in any interpreter (REQ-SUP-001's trusted checker). Every other shape stays refused.
-BASE_REF='${{ github.event.pull_request.base.sha }}'
 mk_trusted='mkdir -p bin && printf "print(1)\n" > bin/tool.py && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
 co() { printf '      - uses: actions/checkout@%s # v7.0.1\n        with:\n%s\n' "$SHA" "$1"; }
 case_ a-base-checkout-python-ok ok "$head
@@ -2809,6 +3073,22 @@ case_ a-base-checkout-dot-slash-ok ok "$head
 $(co "          ref: $BASE_REF
           path: trusted")
       - run: python3 ./trusted/bin/tool.py" "$mk_trusted"
+QUEUE_BASE_REF='${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}'
+case_ a-queue-base-checkout-python-ok ok "$head
+    steps:
+$(co "          ref: $QUEUE_BASE_REF
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-queue-head-checkout-bad bad "$head
+    steps:
+$(co "          ref: \${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-queue-base-only-checkout-bad bad "$head
+    steps:
+$(co "          ref: \${{ github.event.merge_group.base_sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
 case_ a-other-ref-bad bad "$head
     steps:
 $(co "          ref: \${{ github.event.pull_request.head.sha }}
@@ -3019,7 +3299,10 @@ case3_() {
   local name=$1 d="$work/$1"
   take "$name" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; printf '%s\n' "$2" > "$d/.github/workflows/w.yml"
-  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; mkdir -p "$d/.github/agent/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.github/agent/bin/queue-gate-judge.sh"   # the chain gate's queue-judge job runs it
+  : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"
+  : > "$d/.github/agent/tests/pin-wiring-test.sh"
   if [ -n "${3:-}" ]; then (cd "$d" && eval "$3"); fi
   local out rc=0; out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1) || rc=$?
   if [ "$rc" -ne 0 ] && grep -q 'REQ-REL-005-AC3' <<< "$out"; then pass=$((pass+1)); echo "PASS $name → AC3 finding"; else failn=$((failn+1)); echo "FAIL $name → no REQ-REL-005-AC3 finding"; fi
@@ -3085,14 +3368,18 @@ done
 case3_ ac3-unreadable-bad "$(dlj "bash bin/x-test.sh
 curl -fsSL \"unterminated $U")" "$DLS"
 
-# the one exact exclusion (auditor.yml, job audit, step 9, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
+# the one exact exclusion (auditor.yml, job audit, step 10, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import yaml
 wf = open(sys.argv[2]).read()
-run = yaml.safe_load(wf)["jobs"]["audit"]["steps"][9]["run"]
+import subprocess
+def chain_file(p): return subprocess.run(["git", "show", "d7cab1463cef8ac9fac38696dc13d1ff80778840:" + p], check=True, capture_output=True, text=True).stdout
+cwf = chain_file(".github/workflows/auditor.yml")
+run = yaml.safe_load(cwf)["jobs"]["audit"]["steps"][10]["run"]       # the chain's step 10
+mrun = yaml.safe_load(wf)["jobs"]["audit"]["steps"][9]["run"]        # main's step 9 (its text equals the chain's step 10)
 class Tree:
     entries = {"bin/x-test.sh": "file"}
     def __init__(self, files): self.files = files
@@ -3106,26 +3393,43 @@ def judge(file, job, idx, text, files=None):
     m.check_runs(file, [(f"{file}.jobs.{job}.steps[{idx}].run", text, None), (f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files if files is not None else {file: wf}))
     return [b for b in bad if "REQ-REL-005-AC3" in b]
 F = ".github/workflows/auditor.yml"
-assert not judge(F, "audit", 9, run), "the exact step is excluded"
-assert judge(F, "audit", 10, run), "the same text at another step index is a finding"
-assert judge(F, "other", 9, run), "the same text in another job is a finding"
-assert judge(".github/workflows/other.yml", "audit", 9, run, {".github/workflows/other.yml": wf}), "the same text in another file is a finding"
-assert judge(F, "audit", 9, run, {}), "a workflow file the tree cannot read keeps the finding"
-assert judge(F, "audit", 9, run + "\n# edited"), "an edited step is a finding"
-assert judge(F, "audit", 9, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
-assert judge(F, "audit", 9, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
+assert not judge(F, "audit", 10, run, {F: cwf}), "the chain's exact step 10 is excluded"
+assert not judge(F, "audit", 9, mrun), "main's exact step 9 is excluded"
+for other in (8, 11, 12):
+    assert judge(F, "audit", other, run, {F: cwf}), "the chain's text at index %d is a finding" % other
+assert judge(F, "other", 10, run, {F: cwf}), "the same text in another job is a finding"
+assert judge(F, "other", 9, mrun), "main's text in another job is a finding"
+assert judge(".github/workflows/other.yml", "audit", 10, run, {".github/workflows/other.yml": cwf}), "the same text in another file is a finding"
+assert judge(".github/workflows/other.yml", "audit", 9, mrun, {".github/workflows/other.yml": wf}), "main's text in another file is a finding"
+assert judge(F, "audit", 10, run, {}), "a workflow file the tree cannot read keeps the finding"
+assert judge(F, "audit", 10, run + "\n# edited", {F: cwf}), "an edited step is a finding"
+assert judge(F, "audit", 9, mrun + "\n# edited"), "an edited main step is a finding"
+assert judge(F, "audit", 10, run, {F: cwf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
+assert judge(F, "audit", 10, run, {F: cwf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
 D = ".github/workflows/dependabot-reviewer.yml"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
-dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
-for idx in (4, 8):
-    drun = dsteps[idx]["run"]
-    assert not judge(D, "review", idx, drun, {D: dwf}), "the exact identity-token step %d is excluded" % idx
-    assert judge(D, "review", idx + 1, drun, {D: dwf}), "the same text at another step index is a finding"
-    assert judge(D, "other", idx, drun, {D: dwf}), "the same text in another job is a finding"
-    assert judge(".github/workflows/x.yml", "review", idx, drun, {".github/workflows/x.yml": dwf}), "the same text in another file is a finding"
-    assert judge(D, "review", idx, drun + "\n# edited", {D: dwf}), "an edited step is a finding"
-    assert judge(D, "review", idx, drun, {D: dwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
-assert judge(D, "review", 4, dsteps[8]["run"], {D: dwf}), "one excluded step's key does not exclude the other's text"
+dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]                       # main's: step 8 is the excluded one
+cdwf = chain_file(".github/workflows/dependabot-reviewer.yml")
+csteps = yaml.safe_load(cdwf)["jobs"]["review"]["steps"]                      # the chain's: steps 4 and 7
+mdrun = dsteps[8]["run"]
+assert not judge(D, "review", 8, mdrun, {D: dwf}), "main's exact step 8 is excluded"
+for idx in (4, 7):
+    drun = csteps[idx]["run"]
+    assert drun != mdrun
+    assert not judge(D, "review", idx, drun, {D: cdwf}), "the chain's exact identity-token step %d is excluded" % idx
+    for other in (3, 5, 6, 9):
+        assert judge(D, "review", other, drun, {D: cdwf}), "the chain's step %d text at index %d is a finding" % (idx, other)
+    assert judge(D, "review", 8, drun, {D: cdwf}), "the chain's text at main's index is a finding"
+    assert judge(D, "other", idx, drun, {D: cdwf}), "the same text in another job is a finding"
+    assert judge(".github/workflows/x.yml", "review", idx, drun, {".github/workflows/x.yml": cdwf}), "the same text in another file is a finding"
+    assert judge(D, "review", idx, drun + "\n# edited", {D: cdwf}), "an edited step is a finding"
+    assert judge(D, "review", idx, drun, {D: cdwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
+for other in (3, 5, 6, 9):
+    assert judge(D, "review", other, mdrun, {D: dwf}), "main's text at index %d is a finding" % other
+assert judge(D, "review", 4, mdrun, {D: dwf}), "main's text at a chain index is a finding"
+assert judge(D, "other", 8, mdrun, {D: dwf}), "main's text in another job is a finding"
+assert judge(D, "review", 8, mdrun + "\n# edited", {D: dwf}), "an edited main step is a finding"
+assert judge(D, "review", 4, csteps[7]["run"], {D: cdwf}), "one excluded step's key does not exclude the other's text"
 PY
 fi
 
