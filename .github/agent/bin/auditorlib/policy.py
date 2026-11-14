@@ -1,6 +1,7 @@
 """Auditor policy constants — the thresholds and tables the code applies exactly.
 No vendor or model names live here; model ids come from the agent environment."""
 
+import hashlib
 import re
 
 # Vote lineage: which scanners share a vulnerability database lineage. The panel's four (scanner-panel rule 1)
@@ -89,7 +90,6 @@ def scope_id(vulnerability, product_id=None, subcomponents=None):
     The default scope (the plain product with no subcomponents) keeps the bare `#stmt-<cve>`
     id; any other scope appends a stable 16-hex-character hash of its scope key. The same scope yields the
     same @id on every run and two distinct scopes never collide."""
-    import hashlib
     prod, subs = scope_key(product_id, subcomponents)
     base = "%s#stmt-%s" % (VEX_BASE, vulnerability.lower())
     if prod == VEX_PRODUCT and not subs:
