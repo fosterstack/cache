@@ -318,5 +318,5 @@ std_case "R1 a golang stdlib finding at go1.27.2 is NOT covered by a generic std
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:generic/stdlib@1.27.2"
 
 echo "----"
-echo "inspector-gate:${pass} passed, ${fail} failed"
+echo "inspector-gate: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
