@@ -100,7 +100,7 @@ echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
 [ -z "${GH_VIEW_ERR:-}" ] || [ "$1 $2" != "release view" ] || { echo "$GH_VIEW_ERR" >&2; exit 1; }
 [ "$1 $2" != "release list" ] || { [ -z "${CONTROLS_RELEASES:-}" ] || cat "$CONTROLS_RELEASES"; exit 0; }
-if [ "$1" = api ]; then ref=${*##*ref=}; f="${CONTROLS_DOCS:-/nonexistent}/$ref"
+if [ "$1" = api ]; then all="$*"; ref=${all##*ref=}; f="${CONTROLS_DOCS:-/nonexistent}/$ref"
   [ ! -f "$f.err" ] || { cat "$f.err" >&2; exit 1; }
   [ -f "$f" ] && { cat "$f"; exit 0; }; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
 if [ "$1 $2" = "release create" ] || [ "$1 $2" = "release edit" ]; then a=("$@"); for i in "${!a[@]}"; do
@@ -784,11 +784,12 @@ def ctl_doc(*rows):
     return "# Controls\n\n| Version | Signed | Change |\n|---|---|---|\n" + "".join("| %s | 2026-11-%02d | %s |\n" % (v, 10 + i, c) for i, (v, c) in enumerate(rows))
 V1, V2 = (1, "First issue"), (2, CTL_TEXT)
 def ctl_run(this_doc, earlier=None, gen=False, tag="v0.3.0"):
-    """earlier: {tag: document, or an error text starting with 'ERR '}; the fake gh lists those tags and answers for each one"""
+    """earlier: {tag: document, or None for a 404, or an error text starting with 'ERR '}; the fake gh lists those tags and answers for each one"""
     t = full_assets(); cd = os.path.join(t, "cdocs"); os.makedirs(cd)
     if this_doc is not None:
         os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/controls.md"), "w").write(this_doc)
     for name, doc in (earlier or {}).items():
+        if doc is None: continue      # listed, but the fake has no document for it: gh answers 404
         open(os.path.join(cd, name + (".err" if doc.startswith("ERR ") else "")), "w").write(doc[4:] if doc.startswith("ERR ") else doc)
     open(os.path.join(t, "releases"), "w").write("".join(n + "\n" for n in (earlier or {})))
     env = {"GH_VIEW_ERR": "release not found", "CONTROLS_RELEASES": os.path.join(t, "releases"), "CONTROLS_DOCS": cd}
@@ -809,7 +810,7 @@ for what, gen, base in (("the fixed evidence text", False, FIXED), ("a generated
     nt = ctl_notice(t, base)
     check(rc == 0 and ctl_has(nt, "controls document", "changes in this release", "version 1", "version 2", CTL_TEXT) and len(nt.strip().split("\n")) <= 6,
           "REQ-REL-014-AC1 version 1 before and 2 now: the notes start with the notice (old version, new version, the change text) and %s follow unchanged" % what, "rc=%s %s notes=%r" % (rc, first(se), notes_of(t)))
-t, rc, so, se = ctl_run(ctl_doc(V1, V2), {"v0.2.0": "ERR gh: Not Found (HTTP 404)"})
+t, rc, so, se = ctl_run(ctl_doc(V1, V2), {"v0.2.0": None})
 nt = ctl_notice(t, FIXED)
 check(rc == 0 and ctl_has(nt, "controls document", "changes in this release", "none", "version 2", CTL_TEXT), "REQ-REL-014-AC1 an earlier release without the document (404): the notice gives the old version as none", "rc=%s %s notes=%r" % (rc, first(se), notes_of(t)))
 many = {"v0.2.10": ctl_doc(V1, V2), "v0.2.9": ctl_doc(V1), "v0.1.0": ctl_doc(V1), "v0.2.10-rc1": ctl_doc(V1, V2, (3, "x")), "v0.3.0": ctl_doc(V1, V2, (3, "x")),
