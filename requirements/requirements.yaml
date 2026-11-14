@@ -2176,27 +2176,27 @@ requirements:
       - id: REQ-REL-013-AC1
         given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
         when: stage admission and the patch release's ready step read the required checks from main
-        then: |-
-          each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array
-          a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds
+        then: >-
+          each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
+          a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
           the requirement is the two lists together
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC2
         given: a pull request or a push to main whose release-only-checks.json is not the seven entries pinned in bin/required-check-guard.sh on main
         when: the required-check guard runs
-        then: |-
-          the guard fails and prints each entry that differs
-          each entry is compared whole: its context, its integration_id and its scope
+        then: >-
+          the guard fails and prints each entry that differs;
+          each entry is compared whole: its context, its integration_id and its scope;
           the pin is main's copy of the guard, so a change to the file, the judge and the guard in one pull request is still red
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC3
         given: a head whose workflows are judged by the pin-wiring judge
         when: it judges the head
-        then: |-
-          it refuses a head with no release-only-checks.json (the landing form is judged by its own copy)
-          it refuses any job other than the one that produces a reserved name when that job carries the name
+        then: >-
+          it refuses a head with no release-only-checks.json (the landing form is judged by its own copy);
+          it refuses any job other than the one that produces a reserved name when that job carries the name;
           the reserved names are the seven above, each by job id, by literal name and by a name with an expression in it
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
