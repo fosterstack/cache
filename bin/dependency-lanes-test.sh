@@ -871,9 +871,11 @@ def run_text(workflow, job, pick):
 sweep = run_text("agent-review-gate.yml", "sweep", lambda s: "check_name=auditor-review-gate" in (s.get("run") or ""))
 cand = run_text("dependabot-reviewer.yml", "review", lambda s: s.get("id") == "candidates")
 # each workflow's own lookup, cut out whole: the sweep's `last="$(…)"` and the reviewer's function gate_of
-# matches: last="$(GH_TOKEN="$APP_TOKEN" gh api ...check_name=auditor-review-gate ...)"; refuses: a git/ref lookup
-(sweep_cmd,) = re.findall(r'last="\$\((GH_TOKEN="\$APP_TOKEN" gh api [^\n]*check_name=auditor-review-gate.*?)\)" \\\n',
-                          sweep, re.S)
+# matches: gate_runs="...check_name=auditor-review-gate" then last="$(GH_TOKEN=... gh api "${gate_runs}...")"
+# refuses: the same pair with a git/ref lookup instead of the gate check
+(gate_runs_line, sweep_lookup) = re.findall(r'(?m)^\s*(gate_runs="[^\n]*check_name=auditor-review-gate")\n'
+        r'\s*last="\$\((GH_TOKEN="\$APP_TOKEN" gh api "\$\{gate_runs\}.*?)\)" \\\n', sweep, re.S)[0]
+sweep_cmd = gate_runs_line + "\n" + sweep_lookup
 # matches: a line starting gate_of() { and ending at the next line that is only }; refuses: an indented gate_of() {
 (gate_of,) = re.findall(r'(?m)^(gate_of\(\) \{.*?\n\})\n', cand, re.S)
 stub = os.path.join(work, "window-stub"); os.makedirs(stub, exist_ok=True)
@@ -916,8 +918,9 @@ for name, script in (("the sweep", sweep_cmd), ("the reviewer", gate_of + "\ngat
         if got != "success":
             bad.append("%s answers %r over 99 runs (total_count %s): it must read them, the newest a success" % (
                     name, got, total))
-    if "per_page=100" not in asked or "filter=all" in asked:
-        bad.append("%s asks %r: it must ask per_page=100, and not filter=all" % (name, asked.strip()))
+    if "check_name=auditor-review-gate" not in asked or "per_page=100" not in asked or "filter=all" in asked:
+        bad.append("%s asks %r: it must ask for the gate's check, per_page=100, and not filter=all" % (
+                name, asked.strip()))
 print("gate window: " + ("the sweep and the reviewer read every age alike" if not bad else "; ".join(bad)))
 sys.exit(1 if bad else 0)
 PY
