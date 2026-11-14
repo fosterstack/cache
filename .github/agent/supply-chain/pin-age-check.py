@@ -906,7 +906,6 @@ def _added_unmeasured(root, base, head):
 # the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the
 # pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
-_BODY_FIELDS = ("body-first", "body-last", "body-sha256")
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
 # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
@@ -997,172 +996,42 @@ def _live_fetch_line_ok(flat, toolchain=False):
     return _LIVE_URL.fullmatch(operands[0]) is not None
 
 
-# REQ-SUP-001-AC16, the optional row fields body-first, body-last and body-sha256: a row for a line inside a quoted
-# here-document or a string names the first and last line of the span it was reviewed in and binds the sha256 of that
-# span (its lines joined by newlines). An edited span is another span and the row rules nothing.
-def _span_hash(lines):
-    return hashlib.sha256("\n".join(lines).encode("utf-8", "replace")).hexdigest()
+# REQ-SUP-001-AC16, the optional row field body-sha256: the row is a review of one whole file (and of the files it
+# sources by a literal path), so any edit to them stops the row matching.
+_SOURCE = re.compile(r"(?:^|[;&|({]|\b(?:then|do|else)[ \t])[ \t]*(?:source|\.)[ \t]+([^\s;&|)]+)", re.M)   # matches "x; . lib.sh", refuses "echo source lib.sh"
+_NON_LITERAL = re.compile(r"[$`\"'\\*?\[{~]")
 
 
-def _body_spans(lines, first, last, sha):
-    """The (start, end) of every run from a line `first` to any later line `last` whose text hashes to `sha`: hashed
-    only from lines equal to `first`, one line at a time, and compared only at lines equal to `last`."""
-    spans = []
-    for start, line in enumerate(lines):
-        if line != first:
+def _sourced(text):
+    """The operands of the source commands in text, or None when one is not a plain path."""
+    lines = [ln for ln in text.split("\n") if not ln.lstrip().startswith("#")]
+    ops = _SOURCE.findall("\n".join(lines))
+    return None if any(_NON_LITERAL.search(o) for o in ops) else ops
+
+
+def _files_hash(root, head, path):
+    """The sha256 of one line '<path> <sha256 of its bytes>' (or '<path> absent') per file: path first, then the files
+    it sources by literal path to any depth, in path order. None when a file cannot be read or a source operand is
+    not a plain path."""
+    lines, todo, seen = {}, [path], set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
             continue
-        h = hashlib.sha256(line.encode("utf-8", "replace"))
-        for end in range(start, len(lines)):
-            if end > start:
-                h.update(b"\n" + lines[end].encode("utf-8", "replace"))
-            if lines[end] == last and h.copy().hexdigest() == sha:
-                spans.append((start, end))
-    return spans
-
-
-# A row for a span is a human review of it, and two things the review cannot see are closed here. The wrapper function
-# an opener calls (`check python3 - <<'PY'`) may run its input: it is one of these, by the sha256 of its whole
-# flattened definition (a new wrapper is a change here: a human gate). A file the span writes may be run later: it may
-# only be read as data.
-_REVIEWED_WRAPPERS = {
-    "check": frozenset((
-        "d9f0551a0eefa0c75ab77d72fe9446ac100bf33458d956b500c865ccf33f2b43",   # persona-uat-agent-test.sh and others
-        "0eeb4484c724571050ef124103472beb31a6983886cd15e2f00c6e6e1a1f2629",   # persona-uat-test.sh
-    )),
-    # check-action-pins-test.sh, pin-wiring-test.sh, pin-audit-go-major-test.sh
-    "case_": frozenset(("3ba3075b9b3bce3c45b9af7eb1b0e88366ee0710955dc343ca6ddf35e6a094b4",)),
-    "judge": frozenset(("b5bd68dd1ef9c5be7fe26c3c9d3c970f5f8adc5b0cfc749bd34ff1eb177f5cea",)),
-    "py": frozenset(("042c3df4e8b93248712f320b1f47a9a7d3525229710aa44e7828d05012227125",)),
-}
-# Functions that may receive a written file's content as an argument, "$(cat FILE)", by the same hash of the definition.
-_REVIEWED_FUNCS = {"run": frozenset((
-    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-age-check-test.sh fixture
-    "004f644d043348ed9bf307882a5ffe652f7fb62628cf16b2cc1508b957796d46",   # bin/persona-uat-test.sh run()
-))}
-_READ_CAT = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
-_DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum md5sum od"
-    .split())
-_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))")
-_REDIRECT = re.compile(r"(?:^|[^\d<>&])(?:\d*>>?|&>>?)[ \t]*(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)")
-
-
-def _func_bodies(lines):
-    """{name: flattened definition text} of the shell functions the file defines, and how many times each is defined:
-    a definition runs from its line to the line where its braces close."""
-    out, count = {}, {}
-    for idx, ln in enumerate(lines):
-        m = _DEF_FUNC.match(ln)
-        if not m:
+        seen.add(f)
+        raw = _head_file(root, head, f)
+        if raw is None:
+            if f == path:
+                return None
+            lines[f] = f + " absent"
             continue
-        name = m.group(1) or m.group(2)
-        depth, body, opened = 0, [], False
-        for k in range(idx, len(lines)):
-            bare = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k])
-            bare = re.sub(r"(?:^|(?<=\s))#.*$", "", bare)
-            body.append(lines[k])
-            depth += bare.count("{") - bare.count("}")
-            opened = opened or "{" in bare
-            if opened and depth <= 0:
-                break
-        out[name] = " ".join(" ".join(body).split())
-        count[name] = count.get(name, 0) + 1
-    return out, count
-
-
-def _wrapper_reviewed(lines, opener):
-    """False when the opener's command word is a function the file defines and that function is not one reviewed
-    wrapper, defined once, with the reviewed text."""
-    m = re.match(r"\s*(?:function\s+)?([A-Za-z_][\w.-]*)", opener)
-    bodies, count = _func_bodies(lines)
-    if not m or m.group(1) not in bodies:
-        return True
-    name = m.group(1)
-    return count[name] == 1 and _line_hash(bodies[name]) in _REVIEWED_WRAPPERS.get(name, ())
-
-
-def _strip_comment(ln):
-    """The line without a trailing shell comment: a # starts one only outside quotes, at the start or after a space,
-    a tab or one of ; & | ( ."""
-    sq = dq = False
-    i = 0
-    while i < len(ln):
-        c = ln[i]
-        if sq:
-            sq = c != "'"
-        elif c == "\\":
-            i += 1
-        elif c == "'" and not dq:
-            sq = True
-        elif c == '"':
-            dq = not dq
-        elif c == "#" and not dq and (i == 0 or ln[i - 1] in " \t;&|("):
-            return ln[:i]
-        i += 1
-    return ln
-
-
-def _reads_only(seg):
-    """True when the (comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor,
-    and no -o or --output option, clustered or not."""
-    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![^\s;&|<>()])", " ", seg)
-    if re.search(r"\d*>|&>", flat):
-        return False
-    flat = re.sub(r"[\"'\\]", "", flat)
-    return not re.search(r"(?:^|[ \t])(?:-[A-Za-z]*o\S*|--output\S*)(?=[ \t=]|$)", flat)
-
-
-def _written_file_used_later(lines, start, end):
-    """True when a file the opener (line `start`) redirects its output to, or a variable that holds its name, is named
-    after the span's last line `end` in any way but: as the argument of a data-reading command that is alone on its
-    line; in a plain assignment; read through $(cat FILE) by a reviewed function. Running, sourcing, copying, a pipe
-    to anything else, a substitution and a program the checker does not know all refuse."""
-    names = {t.strip("'\"") for t in _REDIRECT.findall(lines[start])}
-    names -= {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty", ""}
-    names = {t for t in names if not t.startswith("&") and not t.startswith("/dev/fd/")}
-    if not names:
-        return False
-    assign = re.compile(r"(?:^|[;&|\s])([A-Za-z_]\w*)=(\"[^\"]*\"|'[^']*'|[^\s;&|]+)")
-    for _ in range(4):                        # a variable that holds the name, a few levels
-        for ln in lines:
-            for var, val in assign.findall(ln):
-                if any(t in val for t in names):
-                    names |= {"$" + var, "${" + var + "}"}
-    spell = set(names)
-    for t in list(names):
-        if not t.startswith("$"):
-            spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
-    rxs = [re.compile(re.escape(t) if t.startswith("$") else r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])")
-        for t in spell if t]
-    bodies, _ = _func_bodies(lines)
-    reviewed = {n for n, body in bodies.items() if _line_hash(body) in _REVIEWED_FUNCS.get(n, ())}
-    for ln in lines[end + 1:]:
-        ln = _strip_comment(ln)
-        if not any(rx.search(ln) for rx in rxs):
-            continue
-        if "`" in ln:
-            return True
-        stripped = _READ_CAT.sub(" ", ln)
-        content = stripped != ln                  # a mention is a $(cat FILE) read: its content goes to the command
-        if "$(" in stripped:
-            return True
-        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", stripped) if sg.strip()]
-        for seg in segs:
-            toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
-            if all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
-                continue                      # a plain assignment: the variable rule above follows the name
-            words = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*|\d*[<>]+.*", t)]
-            cmd = words[0].strip("'\"").split("/")[-1] if words else ""
-            if content and len(segs) == 1 and cmd in reviewed and not any(rx.search(stripped) for rx in rxs):
-                continue                          # the content goes to a reviewed function, once, alone on the line
-            if cmd not in _DATA_CONSUMERS or content or not _reads_only(seg):
-                return True
-    return False
-
-
-def _span_reviewed(lines, start, end):
-    """The two closed rules of a row for a span (AC16): its opener's wrapper is reviewed, and a file it writes is
-    never used later except as data."""
-    return _wrapper_reviewed(lines, lines[start]) and not _written_file_used_later(lines, start, end)
+        lines[f] = f + " " + hashlib.sha256(raw).hexdigest()
+        ops = _sourced(raw.decode("utf-8", "replace"))
+        if ops is None:
+            return None
+        todo += [os.path.normpath(o) for o in ops]
+    text = "".join(lines[f] + "\n" for f in [path] + sorted(set(lines) - {path}))
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 # the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
@@ -1267,18 +1136,9 @@ def _head_file(root, rev, f):
 
 
 def _body_proved(root, head, path, line_hash, row):
-    """A row without a span rules its line as it always did; a row with one rules it only when the head file holds
-    that span exactly once, with the row's hash, and every copy of the line sits inside it."""
-    if row[2] is None:
-        return True
-    raw = _head_file(root, head, path)
-    if raw is None:
-        return False
-    lines = raw.decode("utf-8", "replace").split("\n")
-    spans = _body_spans(lines, *row[2])
-    held = [i for i, ln in enumerate(lines) if _line_hash(" ".join(ln.split())) == line_hash]
-    return len(spans) == 1 and bool(held) and all(spans[0][0] <= i <= spans[0][1] for i in held) \
-        and _span_reviewed(lines, *spans[0])
+    """A row without a body hash rules its line as it always did; a row with one rules it only while the head's file
+    (and the files it sources) hash to it."""
+    return row[2] is None or _files_hash(root, head, path) == row[2]
 
 
 def _body_regressions(root, head, rulings):
@@ -1311,7 +1171,7 @@ def _no_constant(name):
 
 def load_ruled_text(path, required=False):
     """{(file, form, 64-hex segment hash, 64-hex whole-line hash):
-    (ruling, count, (first line, last line, sha256) or None)} from the file's unmeasured_text list. A missing default
+    (ruling, count, body sha256 or None)} from the file's unmeasured_text list. A missing default
     file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
@@ -1330,10 +1190,10 @@ def load_ruled_text(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if (not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", *_BODY_FIELDS}
+        if (not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "body-sha256"}
                 or not set(_RULED_FIELDS) <= set(r)):
             raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, "
-                "and body-first, body-last and body-sha256 together)")
+                "and body-sha256)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{64}", r["key"]):
@@ -1343,16 +1203,9 @@ def load_ruled_text(path, required=False):
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
-        body = None
-        if set(_BODY_FIELDS) & set(r):
-            if not set(_BODY_FIELDS) <= set(r) or r["form"] == LOCAL_CALL_FORM:
-                raise bad("has some of body-first, body-last, body-sha256 but not all, or is a local-call row")
-            first, last, sha = (r[f] for f in _BODY_FIELDS)
-            if not (isinstance(first, str) and isinstance(last, str) and first.strip() and last.strip()):
-                raise bad("has a body-first or body-last that is not text")
-            if not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)):
-                raise bad("has a body-sha256 that is not 64 lowercase hex")
-            body = (first, last, sha)
+        body = r.get("body-sha256")
+        if body is not None and (r["form"] == LOCAL_CALL_FORM or not re.fullmatch(r"[0-9a-f]{64}", str(body))):
+            raise bad("has a body-sha256 that is not 64 lowercase hex, or is a local-call row")
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
