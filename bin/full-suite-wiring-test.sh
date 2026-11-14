@@ -46,6 +46,8 @@ PROMOTION = ["coverage", "fips140-only", "analyze (go)", "allowlist-persona", "a
              "acceptance / acceptance-maven (1.2.3)", "reproducibility", "scan"]
 # deleted from the repository (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md)
 REMOVED = ["gosec", "dependency-review"]
+# the three paths that make every package run are the ones REQ-CI-001-AC4's text names
+EVERY = re.search(r"every package when (\S+), (\S+) or (\S+) changed", open(os.path.join(root, "requirements/requirements.yaml")).read()).groups()
 def job_stub(name): return {"name": name, "runs-on": "ubuntu-latest", "steps": []}
 def pol_entry(ctx, scope="push"): return {"context": ctx, "integration_id": 15368, "scope": scope}
 GONE = PROMOTION + REMOVED + ["acceptance-gradle", "acceptance-maven"]
@@ -184,8 +186,8 @@ def test_job_problems(job):
     if re.search(r"-race\b", text): bad.append("the test job runs with -race")
     if re.search(r"fips140", text, re.I): bad.append("the test job sets the fips settings")
     if not any("git diff" in r for _, r in runs(job)): bad.append("no step computes the packages from git diff")
-    for need in (r"go\\?\.mod", r"go\\?\.sum", "vendor/"):
-        if not re.search(need, text): bad.append("the package step does not mention %s (every package when it changes)" % need)
+    for need in EVERY:
+        if not re.search(re.escape(need).replace(r"\.", r"\\?\."), text): bad.append("the package step does not mention %s (every package when it changes)" % need)
     if "if" in job: bad.append("the test job has a job-level condition")
     # tools/requirements is its own Go module: vetted from inside it, never as a package of the root module
     if "go -C tools/requirements vet ./..." not in " ".join(text.split()):
