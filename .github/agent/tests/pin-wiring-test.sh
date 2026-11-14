@@ -660,13 +660,12 @@ PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = jid in PRODUCES.get(wf, ()) and nm == jid
     return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
-def could_render_reserved(nm):   # each `${{ ... }}` stands for any text; refused when the rest can spell a reserved name (fail closed)
-    parts = re.split(r"\$\{\{.*?\}\}", str(nm))
-    if len(parts) == 1:
-        return False
+def could_render_reserved(nm):   # a plain `${{ matrix.a.b }}` stands for any text; any other expression is refused (fail closed)
+    plain = r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}"
+    parts = re.split(plain, str(nm))[::2]
     if any("${{" in p or "}}" in p for p in parts):
         return True
-    return any(re.fullmatch(".*".join(re.escape(p) for p in parts), r) for r in RESERVED)
+    return len(parts) > 1 and any(re.fullmatch(".*".join(re.escape(p) for p in parts), r) for r in RESERVED)
 def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
     return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
