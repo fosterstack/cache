@@ -472,15 +472,24 @@ def direct_signers(base, files, frozen, allowed, bad):
             bad += ["AC1: chain-signers.json lists %r for %s, but that file makes no such call (remove the row)" % (t, rel) for t in sorted(tools, key=str) if (rel, t) not in called]
 
 def stage_grammars(base, files, frozen, rows, envn, bad):
-    """001-AC1: "every stage-*.yml is judged over a closed set of keys" (keys, env names, uses, run lines). Returns what each stage runs."""
+    """001-AC1: "every chain job of release.yml is judged over a closed set of keys" (keys, env names, uses, run lines). Returns what each stage runs.
+    The one release file is release.yml. A fixture tree may keep its chain-job fixtures in stage-*.yml files (the real tree has none: AC1 below refuses one):
+    their jobs are judged as chain jobs of release.yml, the file the grammar knows."""
     ran = {}
+    docs, fixture_jobs, fixture_keys, path = {}, {}, {}, None
     for f in files:
         rel = os.path.basename(f)
-        if not rel.startswith("stage-"): continue
+        if rel != "release.yml" and not rel.startswith("stage-"): continue
         try: d = yload(open(f).read()) or {}
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
-        e, r = _cts.stage_grammar(rel, d, rows, envn, os.path.relpath(f, base))
-        if os.path.relpath(f, base) not in frozen: bad += ["AC1 grammar: " + x for x in e]
+        if rel == "release.yml": docs[rel], path = d, os.path.relpath(f, base)
+        elif os.path.relpath(f, base) not in frozen: fixture_jobs.update(d.get("jobs") or {}); fixture_keys.update({k: v for k, v in d.items() if k != "jobs"})
+    if fixture_jobs and "release.yml" not in docs:
+        docs["release.yml"], path = {"jobs": {}}, ".github/workflows/release.yml"
+    for rel, d in docs.items():
+        d = dict(fixture_keys, **dict(d, jobs=dict(d.get("jobs") or {}, **fixture_jobs)))
+        e, r = _cts.stage_grammar(rel, d, rows, envn, path)
+        if path not in frozen: bad += ["AC1 grammar: " + x for x in e]
         ran[rel] = set(r)                      # the LISTED scripts a frozen file runs are still followed (unlisted ones are never scanned)
     return ran
 
@@ -585,7 +594,7 @@ def gen(d):
         if not os.environ.get("AMBIENT_RAW"):     # round 4 (4): file and job are required; said once, here
             for e in (doc["ambient_env"] if isinstance(doc["ambient_env"], list) else []):
                 if isinstance(e, dict):
-                    e.setdefault("file", ".github/workflows/stage-verify.yml"); e.setdefault("job", "j")
+                    e.setdefault("file", ".github/workflows/release.yml"); e.setdefault("job", "j")
     if os.path.exists(d + "/.envnames.json"): doc["env_names"] = json.load(open(d + "/.envnames.json"))
     if os.path.exists(d + "/.pinned.json"):      # PR 1b round 1: reviewed pinned steps
         doc["pinned_steps"] = json.load(open(d + "/.pinned.json"))
@@ -1128,9 +1137,13 @@ mk() {
   printf 'jobs: {}\n' > "$d/.github/workflows/customer-words-edited.yml"   # an added file that is not a signer
   printf 'jobs: {}\n' > "$d/.github/workflows/persona-uat.yml"      # the other added file: the persona proof has its own workflow file
   printf 'jobs:\n  b:\n    steps:\n      - run: |\n          set -euo pipefail\n          bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
-  { printf 'jobs:\n  d:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n'
+  { printf 'jobs:\n  hostile-verify:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n'
     for j in sign sign-rebuild sign-check sign-release; do      # Sign's four jobs: the only jobs of release.yml that sign provenance
-      printf '  %s:\n    permissions:\n      id-token: write\n    steps:\n      - run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json\n' "$j"; done; } > "$d/.github/workflows/release.yml"
+      printf '  %s:\n    runs-on: ubuntu-24.04\n    environment: sign\n' "$j"
+      printf '    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'      # the chain jobs are judged by the stage grammar: each sign job holds the KMS role's three literals as its job env
+      if [ "$j" = sign-release ]; then printf '    permissions:\n      contents: read\n      id-token: write\n      packages: write\n'
+      else printf '    permissions:\n      id-token: write\n'; fi
+      printf '    steps:\n      - run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json\n'; done; } > "$d/.github/workflows/release.yml"
   printf '#!/usr/bin/env bash\nset -euo pipefail\ncurl -fsSL "$1" -o x\nsha256sum -c x\n' > "$d/bin/install-scanner.sh"
   printf '#!/usr/bin/env python3\nprint("chain-verify")\n' > "$d/bin/chain-verify.py"
   printf '#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- bin/build-apk.sh "$1"\n' > "$d/bin/build-stage.sh"
@@ -1309,6 +1322,10 @@ scriptcase() { # scriptcase LABEL expect CONTENT [python edit_spec statements]
 }
 S0='#!/usr/bin/env bash\nset -euo pipefail\n'
 scriptcase s_ok ok "${S0}witness run --step build -- bin/build-apk.sh \"\$1\"\n" '' "the good script (tool witness, runs bin/build-apk.sh)"
+# the judge reads a listed script's COMMENTS as text too: a comment word that is a command name, and a command word built at run time, are findings (the real bin/check-phase.sh and bin/check-records-digests.sh)
+scriptcase s_cmt_source caught "${S0}# source of the list: the runner\nwitness run -- bin/build-apk.sh \"\$1\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness"]' "the comment word source is a command name not in tools (bin/check-phase.sh)"
+scriptcase s_cmt_make caught "${S0}# make the list of the records\nwitness run -- bin/build-apk.sh \"\$1\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness"]' "the comment word make is a command name not in tools (bin/check-records-digests.sh)"
+scriptcase s_uname caught "${S0}\$(uname -m) --version\nwitness run -- bin/build-apk.sh \"\$1\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness"]' "a command word built at run time with \$(uname -m) is not judged and is refused (bin/check-phase.sh)"
 scriptcase s_bash caught "${S0}bash bin/build-apk.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness"]' "starts another script with bash"
 scriptcase s_notruns caught "${S0}witness run -- bin/other.sh\n" 'rows["bin/other.sh"]={"path":"bin/other.sh","tools":[],"signs":False,"runs":[]}; open(d+"/bin/other.sh","w").write("#!/usr/bin/env bash\n")' "names a listed script that is not in its runs"
 cat > "$FXDIR/FXD_41" <<'FXEOF'
@@ -1599,13 +1616,13 @@ jobs:
     steps:
       - uses: actions/checkout@SHA
 EOF
-ycase y_idsok "download-artifact by the one literal artifact id of govulncheck-build, in the Check job (REQ-REL-011-AC1: the artifact cannot be swapped by name)" ok <<'EOF'
+ycase y_idsok "download-artifact by the one literal artifact id of check-govulncheck, in the Check job (REQ-REL-011-AC1: the artifact cannot be swapped by name)" ok <<'EOF'
 jobs:
   check:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
           path: govulncheck-dl
 EOF
 ycase y_idsother "download-artifact by artifact-ids with another expression" <<'EOF'
@@ -1614,7 +1631,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.digest }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.digest }}
           path: govulncheck-dl
 EOF
 ycase y_idsnum "download-artifact by a literal numeric artifact id" <<'EOF'
@@ -1633,7 +1650,7 @@ jobs:
       - uses: actions/download-artifact@SHA
         with:
           name: govulncheck
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
           path: govulncheck-dl
 EOF
 ycase y_idspattern "download-artifact by artifact-ids with a pattern beside it" <<'EOF'
@@ -1642,7 +1659,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
           pattern: '*'
           path: govulncheck-dl
 EOF
@@ -1652,7 +1669,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
           merge-multiple: true
           path: govulncheck-dl
 EOF
@@ -1662,7 +1679,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
           path: govulncheck-dl
 EOF
 ycase y_idsmore "download-artifact by artifact-ids with a second id" <<'EOF'
@@ -1671,7 +1688,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }},1
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }},1
           path: govulncheck-dl
 EOF
 ycase y_idsbin "download-artifact by the artifact-ids literal into bin/" <<'EOF'
@@ -1680,7 +1697,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
           path: bin
 EOF
 ycase y_idsnopath "download-artifact by the artifact-ids literal with no path" <<'EOF'
@@ -1689,7 +1706,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@SHA
         with:
-          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          artifact-ids: ${{ needs.check-govulncheck.outputs.artifact-id }}
 EOF
 ycase y_dlbin "download-artifact into bin (Opus P6): the downloaded content is not the hashed file" <<'EOF'
 jobs:
@@ -3552,7 +3569,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='c14c26876d2383ae4987a2695fd89ac014474fe97b99578f8d499b78142f93b9'
+FX_PIN='fc5e97cabb7884f8339fdb4e73cd47d41d12b9c3cfa153ec176c44a680dedf14'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3818,12 +3835,12 @@ d=$(cfix r_three3 './bin/build-apk.sh a\n./bin/build-apk.sh b\n./bin/build-apk.s
 # (5) the reviewed pinned step
 DG='echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 export DG
-yrep() { # yrep DIR OLD NEW : replace one text in the pinned-step stage file
-  python3 -c 'import sys;p=sys.argv[1]+"/.github/workflows/stage-build.yml";t=open(p).read();assert sys.argv[2] in t;open(p,"w").write(t.replace(sys.argv[2],sys.argv[3],1))' "$@"; }
+yrep() { # yrep DIR OLD NEW : replace one text in the pinned-step file (release.yml)
+  python3 -c 'import sys;p=sys.argv[1]+"/.github/workflows/release.yml";t=open(p).read();assert sys.argv[2] in t;open(p,"w").write(t.replace(sys.argv[2],sys.argv[3],1))' "$@"; }
 pfix() { # pfix NAME : a stage file with the AC2 digests step and its pinned_steps entry (the one ratified tuple)
   local d; d=$(mk "$1")
-  printf 'jobs:\n  assemble:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n' "$DG" > "$d/.github/workflows/stage-build.yml"
-  python3 -c 'import json,os,sys;json.dump([{"file":".github/workflows/stage-build.yml","job":"assemble","id":"digests","run":os.environ["DG"],"why":"REQ-CHAIN-004-AC2"}],open(sys.argv[1]+"/.pinned.json","w"))' "$d"
+  printf '  build-assemble:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n' "$DG" >> "$d/.github/workflows/release.yml"
+  python3 -c 'import json,os,sys;json.dump([{"file":".github/workflows/release.yml","job":"build-assemble","id":"digests","run":os.environ["DG"],"why":"REQ-CHAIN-004-AC2"}],open(sys.argv[1]+"/.pinned.json","w"))' "$d"
   gen "$d"; echo "$d"
 }
 d=$(pfix s_ok); expm ok "$d" - "round-1 (5) REQ-CHAIN-004-AC2: the digests step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) is admitted with its pinned_steps entry"
@@ -3831,8 +3848,8 @@ d=$(pfix s_none); rm "$d/.pinned.json"; gen "$d"; expm caught "$d" 'GITHUB_OUTPU
 d=$(pfix s_char); yrep "$d" 'digests.json)' 'digest.json)'; expm caught "$d" 'pinned' "round-1 (5): the step text changed by one character is refused"
 d=$(pfix s_redir); yrep "$d" '"$GITHUB_OUTPUT"' '"$GITHUB_OUTPUT" > x'; expm caught "$d" 'pinned' "round-1 (5): the step with a second redirection appended is refused"
 d=$(pfix s_id); yrep "$d" 'id: digests' 'id: digest'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step with another id is refused"
-d=$(pfix s_job); yrep "$d" '  assemble:' '  k:'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another job is refused"
-d=$(pfix s_file); mv "$d/.github/workflows/stage-build.yml" "$d/.github/workflows/stage-reproducibility.yml"; printf 'jobs: {}\n' > "$d/.github/workflows/stage-build.yml"; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another file is refused (and the entry for the first file is stale)"
+d=$(pfix s_job); yrep "$d" '  build-assemble:' '  k:'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another job is refused"
+d=$(pfix s_file); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["file"]=".github/workflows/stage-build.yml";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): an entry that names the old stage-build.yml is refused (the pin binds release.yml only; no stage file exists)"
 d=$(pfix s_key); yrep "$d" 'as the stage output' 'as the stage output
         shell: bash'; expm caught "$d" 'pinned' "round-1 (5): a pinned step with another key (shell) is refused"
 d=$(pfix s_env); yrep "$d" 'as the stage output' 'as the stage output
@@ -3888,8 +3905,8 @@ pfx() { # pfx NAME RUN-TEXT : a stage file whose digests step and whose pinned_s
   local d; d=$(mk "$1"); DG2="$2" python3 - "$d" <<'PY'
 import json, os, sys
 d = sys.argv[1]; run = os.environ["DG2"]
-open(d + "/.github/workflows/stage-build.yml", "w").write("jobs:\n  assemble:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: x\n        run: '" + run.replace("'", "''") + "'\n")
-json.dump([{"file": ".github/workflows/stage-build.yml", "job": "assemble", "id": "digests", "run": run, "why": "REQ-CHAIN-004-AC2"}], open(d + "/.pinned.json", "w"))
+open(d + "/.github/workflows/release.yml", "a").write("  build-assemble:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: x\n        run: '" + run.replace("'", "''") + "'\n")
+json.dump([{"file": ".github/workflows/release.yml", "job":"build-assemble", "id": "digests", "run": run, "why": "REQ-CHAIN-004-AC2"}], open(d + "/.pinned.json", "w"))
 PY
   gen "$d"; echo "$d"; }
 d=$(pfx m_ok 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'); expm ok "$d" - "round-2 (2): the AC2 text is admitted"
@@ -3916,12 +3933,12 @@ import importlib.util, json, os, sys, yaml
 spec = importlib.util.spec_from_file_location("cts", os.environ["CHAIN_ROOT"] + "/bin/chain-test-signers.py"); cts = importlib.util.module_from_spec(spec); spec.loader.exec_module(cts)
 base, path = sys.argv[1], sys.argv[2]
 rows, errs, envn = cts.load_scripts(base)
-d = cts.yload(open(base + "/.github/workflows/stage-build.yml").read())
-e, _ = cts.stage_grammar("stage-build.yml", d, rows, envn, path)
+d = cts.yload(open(base + "/.github/workflows/release.yml").read())
+e, _ = cts.stage_grammar("release.yml", d, rows, envn, path)
 print("; ".join(errs + e) or "ok"); sys.exit(1 if errs + e else 0)
 PY
-d=$(pfix m_path); out=$(python3 "$work/pinpath.py" "$d" .github/workflows/stage-build.yml 2>&1) && { pass=$((pass + 1)); echo "ok   round-2 (2): the pin binds the full repo path (control: the right path)"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) pin full path control -> ${out:0:300}"; }
-d=$(pfix m_path2); out=$(python3 "$work/pinpath.py" "$d" tools/ci/stage-build.yml 2>&1) && { failn=$((failn + 1)); echo "FAIL round-2 (2): a same-named stage file under another directory got the pin"; } || { grep -q 'GITHUB_OUTPUT' <<< "$out" && { pass=$((pass + 1)); echo "ok   round-2 (2): a same-named stage file under another directory gets no pin (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) other directory -> ${out:0:300}"; }; }
+d=$(pfix m_path); out=$(python3 "$work/pinpath.py" "$d" .github/workflows/release.yml 2>&1) && { pass=$((pass + 1)); echo "ok   round-2 (2): the pin binds the full repo path (control: the right path)"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) pin full path control -> ${out:0:300}"; }
+d=$(pfix m_path2); out=$(python3 "$work/pinpath.py" "$d" tools/ci/release.yml 2>&1) && { failn=$((failn + 1)); echo "FAIL round-2 (2): a same-named stage file under another directory got the pin"; } || { grep -q 'GITHUB_OUTPUT' <<< "$out" && { pass=$((pass + 1)); echo "ok   round-2 (2): a same-named stage file under another directory gets no pin (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) other directory -> ${out:0:300}"; }; }
 # (3) the forbidden families are prefixes (no underscore needed), plus the proxy / TLS / Go / signing tool names
 for nm in GITASKPASS GITHUBTOKEN GITHUB RUNNERX RUNNER NODERUNTIME NODE GIT1 PYTHON PYTHON3 PYTHONX HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy SSL_CERT_FILE SSL_CERT_DIR2 CURL_CA_BUNDLE CURLOPT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GOTOOLCHAIN WITNESS_X WITNESSX COSIGN_EXPERIMENTAL SIGSTORE_ID_TOKEN TUF_ROOT TERM TERMX NPM_CONFIG BUNDLE_X GEM_HOME XDG_HOME GLOBIGNORE CDPATH IFS PROMPT_COMMAND SHELLOPTS BASHOPTS PS1 LD_X LC_ALL BASH_X; do
   d=$(mk "n_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          %s: x\n        run: bash bin/build-stage.sh apk "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'never allowed' "round-2 (3): the env name $nm is forbidden in a step env"
@@ -4101,24 +4118,24 @@ d=$(cfix t3_x2 'tar --to-command=vi -xf a.tar b' '["tar"]'); edit_spec "$d" "$DE
 d=$(afix u4_file); python3 - "$d" <<'PY'
 import json, sys
 d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
-for e in a: e["file"] = ".github/workflows/stage-verify.yml"; e["job"] = "j"
+for e in a: e["file"] = ".github/workflows/release.yml"; e["job"] = "j"
 json.dump(a, open(d + "/.ambient.json", "w"))
 PY
 gen "$d"; expm ok "$d" - "round-3 (4): control: ambient entries bound to the right file and job are admitted"
 d=$(afix u4_job); python3 - "$d" <<'PY'
 import json, sys
 d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
-for e in a: e["file"] = ".github/workflows/stage-verify.yml"; e["job"] = "other"
+for e in a: e["file"] = ".github/workflows/release.yml"; e["job"] = "other"
 json.dump(a, open(d + "/.ambient.json", "w"))
 PY
 gen "$d"; expm caught "$d" 'bound to' "round-3 (4): a step in another job than the entry's is refused"
 d=$(afix u4_file2); python3 - "$d" <<'PY'
 import json, sys
 d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
-for e in a: e["file"] = ".github/workflows/stage-build.yml"; e["job"] = "j"
+for e in a: e["file"] = ".github/workflows/stage-verify.yml"; e["job"] = "j"
 json.dump(a, open(d + "/.ambient.json", "w"))
 PY
-gen "$d"; expm caught "$d" 'bound to' "round-3 (4): a step in another file than the entry's is refused"
+gen "$d"; expm caught "$d" 'release file' "round-3 (4): an entry bound to another file than release.yml (the old stage-verify.yml) is refused"
 d=$(afix u4_file3); python3 - "$d" <<'PY'
 import json, sys
 d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
@@ -4129,7 +4146,7 @@ gen "$d"; expm caught "$d" 'ambient_env' "round-3 (4): a file that is not a stag
 # (5) the pinned step is EXACTLY the ratified one
 d=$(pfix v5_noname); python3 - "$d" <<'PY'
 import sys
-p = sys.argv[1] + "/.github/workflows/stage-build.yml"; t = open(p).read().replace("        name: expose digests.json as the stage output\n", ""); open(p, "w").write(t)
+p = sys.argv[1] + "/.github/workflows/release.yml"; t = open(p).read().replace("        name: expose digests.json as the stage output\n", ""); open(p, "w").write(t)
 PY
 expm caught "$d" 'pinned' "round-3 (5): a pinned step without a name is refused (exactly name, id and run)"
 d=$(pfx v5_name 'echo "other=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-3 (5): another NAME is an entry error"
@@ -4177,7 +4194,7 @@ d=$(afix g4_a); AMBIENT_RAW=1 gen "$d"; expm caught "$d" 'ambient_env' "round-4 
 d=$(afix g4_b); python3 - "$d" <<'PY'
 import json, sys
 p = sys.argv[1] + "/.ambient.json"; a = json.load(open(p))
-for e in a: e["file"] = ".github/workflows/stage-verify.yml"
+for e in a: e["file"] = ".github/workflows/release.yml"
 json.dump(a, open(p, "w"))
 PY
 AMBIENT_RAW=1 gen "$d"; expm caught "$d" 'ambient_env' "round-4 (4): an entry with a file but no job is an entry error"
@@ -4210,7 +4227,7 @@ am g6_dot './bin/witnessed.sh apk bin/stage-apk.sh' caught 'witnessed.sh'
 am g6_x 'bash -x bin/witnessed.sh apk bin/stage-apk.sh' caught 'witnessed.sh'
 am g6_env 'env bash bin/witnessed.sh apk bin/stage-apk.sh' caught 'witnessed.sh'
 # (7) the pinned step occurs exactly once
-ydup() { python3 -c 'import os,sys;p=sys.argv[1]+"/.github/workflows/stage-build.yml";t=open(p).read();open(p,"w").write(t+sys.argv[2].replace("@@",os.environ["DG"]))' "$@"; }
+ydup() { python3 -c 'import os,sys;p=sys.argv[1]+"/.github/workflows/release.yml";t=open(p).read();open(p,"w").write(t+sys.argv[2].replace("@@",os.environ["DG"]))' "$@"; }
 d=$(pfix w7_same); ydup "$d" '      - id: digests
         name: again
         run: @@
@@ -5385,7 +5402,7 @@ wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2268
+EXPECT=2271
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
