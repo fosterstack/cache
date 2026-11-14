@@ -12,7 +12,12 @@ CAND=cand:local
 pass=0; fail=0
 # doc <deployment yaml line(s)> <service yaml line(s)>: the four documented headings, each with one yaml block
 doc() {
-  printf '## Secret (credentials)\n```yaml\nkind: Secret\n```\n## PersistentVolumeClaim\n```yaml\nkind: PersistentVolumeClaim\n```\n## Deployment\n```yaml\nkind: Deployment\n%s\n```\n## Service\n```yaml\nkind: Service\n%s\n```\n' "$1" "$2" > "$work/docs/kubernetes.md"
+  {
+    printf '## Secret (credentials)\n```yaml\nkind: Secret\n```\n'
+    printf '## PersistentVolumeClaim\n```yaml\nkind: PersistentVolumeClaim\n```\n'
+    printf '## Deployment\n```yaml\nkind: Deployment\n%s\n```\n' "$1"
+    printf '## Service\n```yaml\nkind: Service\n%s\n```\n' "$2"
+  } > "$work/docs/kubernetes.md"
 }
 check() { # name, want_rc (zero|nonzero), text the output must contain
   local out rc
