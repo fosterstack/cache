@@ -410,7 +410,7 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
                        ("build-baselayout-apk.sh", FAKE_BUILD_BASELAYOUT),
                        ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
-    # the four assemble kinds are cases of the ONE script bin/build-stage-assemble.sh (run with STEP and VERSION by the caller); kind only lays out the tree
+    # the four assemble kinds are cases of the ONE script bin/build-stage-assemble.sh (run with its STEP by the caller); kind only lays out the tree
     name = "assemble" if kind.endswith("assemble") else kind
     shutil.copy(script, d + "/bin/build-stage-%s.sh" % name); os.chmod(d + "/bin/build-stage-%s.sh" % name, 0o755)
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
