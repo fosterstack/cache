@@ -29,6 +29,7 @@ import copy, json, os, re, sys, tempfile, yaml
 root = os.environ["PERSONA_ROOT"]
 REL = os.path.join(root, ".github/workflows/release.yml")
 FRESH = os.path.join(root, ".github/workflows/go-freshness.yml")
+PERSONA = os.path.join(root, ".github/workflows/persona-uat.yml")
 TOOLS = os.path.join(root, "bin/persona-uat-tools.json")
 SRC = [os.path.join(root, "bin", f) for f in ("persona-uat.py", "persona-uat-agent.py", "persona-uat-provider.py")]
 
@@ -160,7 +161,7 @@ def step_kind(x, pre, weekly):
     return None
 
 def judge_prereqs(name, job, steps, bad):
-    weekly = name.startswith("weekly")
+    weekly = "weekly" in name
     pre = ""         # every harness command is a plain committed path (the pin checker reads only paths relative to the repository root): the root checkout is today's main in BOTH jobs
     ro = str(job.get("runs-on", ""))
     if not re.fullmatch(r"ubuntu-[0-9]{2}\.[0-9]{2}(-arm)?|ubuntu-latest", ro):
@@ -224,7 +225,7 @@ def common(name, job, bad):
     for si, st_ in enumerate(steps):
         if "${{" in str(st_.get("run", "")):
             bad.append(f"{name}: step {si} interpolates an expression into its run script (${{{{ }}}} inside run:): pass it through env: and quote the shell variable")
-    weekly = name.startswith("weekly")
+    weekly = "weekly" in name
     pre = ""                                              # the harness is the ROOT checkout (today's main) in both jobs; the weekly job's released docs are under release-docs/
     repo_dir = "release-docs" if weekly else "."
     if not literal_false(job.get("continue-on-error")):
@@ -232,7 +233,7 @@ def common(name, job, bad):
     if str(job.get("defaults", {}).get("run", {}).get("shell", "bash")) != "bash":
         bad.append(f"{name}: the job's default shell is not plain bash")
     for k in ("container", "services"):
-        if k in job and not (k == "services" and name == "release persona-uat"):     # the rc job's one registry service is judged in judge_release
+        if k in job and not (k == "services" and name == "persona-uat-rc"):     # the rc job's one registry service is judged in judge_release
             bad.append(f"{name}: the job declares {k}: the CI tools run only inside the driver, by digest, never as job {k}")
     drivers = [s for s in steps if "persona-uat.py" in str(s.get("run", "")) and not re.search(r"--(?:mint|remove)-identity", str(s.get("run", "")))]
     if len(drivers) != 1:
@@ -262,10 +263,10 @@ def common(name, job, bad):
     for flag in ("--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"):
         if opts.count(flag) != 1:
             bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
-    contract = {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"} | ({"--allow-listen"} if name == "release persona-uat" else set())
+    contract = {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"} | ({"--allow-listen"} if name == "persona-uat-rc" else set())
     if sorted(set(opts) - contract):
         bad.append(f"{name}: the driver is given options outside the contract (no --publish, no --gh: results stay private, no issue is opened): {sorted(set(opts) - contract)}")
-    if name == "release persona-uat":     # the registry service listens on the runner's loopback; the driver's stray-listener guard must know that one port and no other
+    if name == "persona-uat-rc":     # the registry service listens on the runner's loopback; the driver's stray-listener guard must know that one port and no other
         ports = [argv[i + 1] for i, t in enumerate(argv[:-1]) if t == "--allow-listen"]
         if ports != ["5000"]:
             bad.append(f"{name}: the driver must be given --allow-listen 5000 exactly once and no other allowed listener (found {ports}): the registry's port is the one listener that may exist")
@@ -354,7 +355,7 @@ def common(name, job, bad):
         blob = json.dumps(s_)
         if re.search(r"PRIVATE KEY|persona-uat\.key|-inkey|cms\s+-decrypt|PERSONA_UAT_(PRIVATE|KEY)|\.key\b", blob) or re.search(r"secrets\.(?!ANTHROPIC_(FEDERATION_RULE_ID|ORGANIZATION_ID|SERVICE_ACCOUNT_ID|WORKSPACE_ID)\b|PERSONA_UAT_(COMPLIANCE_)?MODEL\b)", blob):
             bad.append(f"{name}: a step writes or reads a private key or a secret that holds one (only the four ANTHROPIC_* identity secrets and the two model-id secrets may reach the job; the decryption key never touches CI)")
-    ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact") + (("actions/download-artifact",) if name == "release persona-uat" else ())   # the rc job downloads Build's images artifact
+    ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact") + (("actions/download-artifact",) if name == "persona-uat-rc" else ())   # the rc job downloads Build's images artifact
     for s in steps:
         u = str(s.get("uses", ""))
         if u and not PIN_USES.match(u):
@@ -370,15 +371,15 @@ def common(name, job, bad):
     for i, s in enumerate(steps):
         if s is d: continue
         isrun = "run" in s
-        is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
+        is_resolver = isrun and "gh release view" in str(s.get("run", "")) and weekly
         kind_run_text = str(s.get("run", ""))
         is_install = isrun and (is_kind_run(kind_run_text) or crane_re(pre).match(kind_run_text.strip()) is not None)
         is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
         is_pin = isrun and is_pin_pip(s)
-        is_load = isrun and name == "release persona-uat" and "crane push" in str(s.get("run", ""))      # judged in judge_rc_registry
-        is_cleanup = step_kind(s, pre, name.startswith("weekly")) == "cleanup"
-        is_refresher = step_kind(s, pre, name.startswith("weekly")) == "refresher"
+        is_load = isrun and name == "persona-uat-rc" and "crane push" in str(s.get("run", ""))      # judged in judge_rc_registry
+        is_cleanup = step_kind(s, pre, weekly) == "cleanup"
+        is_refresher = step_kind(s, pre, weekly) == "refresher"
         if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup:
             bad.append(f"{name}: a step after the driver other than the transcript upload and the identity token cleanup could alter the files before upload")
         if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher and not is_pin and not is_load:
@@ -467,9 +468,9 @@ def run_resolver(script):
         r = subprocess.run(["bash", "-e", d + "/script.sh"], env=env, capture_output=True, text=True)
         outs = open(d + "/out").read()
         if r.returncode != 0:
-            out.append("weekly persona-uat's resolver failed against recording gh/crane (wrong repository, wrong image reference, or a bad call): " + r.stderr.strip()[:200])
+            out.append("persona-uat-weekly's resolver failed against recording gh/crane (wrong repository, wrong image reference, or a bad call): " + r.stderr.strip()[:200])
         elif "tag=v0.2.1" not in outs.splitlines() or ("image=ghcr.io/own/cache@sha256:" + "d" * 64) not in outs.splitlines():
-            out.append("weekly persona-uat's resolver does not write tag=<release tag> and image=<registry>/<owner>/cache@<inspected digest> to GITHUB_OUTPUT: " + repr(outs))
+            out.append("persona-uat-weekly's resolver does not write tag=<release tag> and image=<registry>/<owner>/cache@<inspected digest> to GITHUB_OUTPUT: " + repr(outs))
     return out
 
 CLAIM_ALLOWLIST = ["sub", "aud", "ref", "job_workflow_ref", "environment", "repository", "repository_owner_id", "event_name", "iss"]
@@ -551,7 +552,7 @@ def judge_refresher(name, steps, d, bad):
     """the federated assertion lives about five minutes and a persona job runs up to two hours, every model call a new process. The refresher is its OWN step that starts a
     DETACHED process (nohup, output redirected, disowned) which re-mints from the runner's OIDC endpoint into the 0600 token file until the file is removed (the always() cleanup
     step) - after the identity step wrote the file, before the driver. The script body is EXECUTED (run_refresher), not read."""
-    refs = [(i, x) for i, x in enumerate(steps) if step_kind(x, "", name.startswith("weekly")) == "refresher"]
+    refs = [(i, x) for i, x in enumerate(steps) if step_kind(x, "", "weekly" in name) == "refresher"]
     if len(refs) != 1:
         bad.append(f"{name}: expected exactly one identity refresher step (a detached process that re-mints the token), found {len(refs)}"); return
     i, x = refs[0]
@@ -560,7 +561,7 @@ def judge_refresher(name, steps, d, bad):
         bad.append(f"{name}: the identity refresher runs BEFORE the identity step wrote the token file (it must come after the mint and before the driver)")
     if i > steps.index(d):
         bad.append(f"{name}: the identity refresher runs after the driver")
-    cl = [y for y in steps if step_kind(y, "", name.startswith("weekly")) == "cleanup"]
+    cl = [y for y in steps if step_kind(y, "", "weekly" in name) == "cleanup"]
     bad.extend(f"{name}: {p}" for p in run_refresher(str(x.get("run", "")), str(cl[0].get("run", "")) if len(cl) == 1 else CLEANUP_RUN))
     if len(cl) != 1 or steps[-1] is not cl[0] or norm(cl[0].get("if", "")) != "always()":
         bad.append(f"{name}: the job must end with exactly one `if: always()` step that removes RUNNER_TEMP/anthropic-identity-token (the token file is deleted at the end)")
@@ -698,8 +699,10 @@ def _atom(a, ctx):
     'TRUE' are both on. Enabling the personas by a differently cased value is the owner's act and is accepted; unset, empty, 'false' and '1' are off."""
     if re.fullmatch(r"vars\.PERSONA_UAT_ENABLED=='true'", a):
         return str(ctx["vars"].get("PERSONA_UAT_ENABLED", "")).lower() == "true"
-    if a == "!inputs.dry-run":
-        return not ctx.get("dry_run")
+    if a == "inputs.mode!='snapshot'":
+        return ctx.get("mode", "") != "snapshot"
+    if a == "inputs.digests!=''":
+        return ctx.get("digests", "") != ""
     m = re.fullmatch(r"github\.event\.schedule=='([^']*)'", a)
     if m: return ctx.get("schedule") == m.group(1)
     m = re.fullmatch(r"startsWith\(github\.ref,'([^']*)'\)", a)
@@ -712,45 +715,53 @@ def job_runs(j, ctx):
     """True when the job's `if:` (a conjunction of known atoms) holds in ctx"""
     return all(_atom(a, ctx) for a in norm(j.get("if", "true")).split("&&"))
 
-def judge_gate_others(name, wf, bad):
-    """no job other than persona-uat enters the persona-uat environment or mints/uses the model identity token (also when the workflow has no persona-uat job at all)"""
+PERSONA_FILE = "./.github/workflows/persona-uat.yml"
+PERSONA_JOBS = ("persona-uat-rc", "persona-uat-weekly")
+
+def judge_gate_others(name, wf, allowed, bad):
+    """outside `allowed`, no job of the workflow has a persona job's name, enters the persona-uat environment or mints/uses the model identity token (also when the workflow has no persona job at all)"""
     for jn, oj in (wf.get("jobs") or {}).items():
-        if jn == "persona-uat":
+        if jn in allowed:
             continue
+        if jn.startswith("persona-uat"):
+            bad.append(f"{name}: persona job {jn!r} outside persona-uat.yml (the persona jobs live there; release.yml only calls it, once)")
         dumped = json.dumps(oj)
         if "persona-uat" in str(oj.get("environment", "")) or "api.anthropic.com" in dumped or "ANTHROPIC_IDENTITY_TOKEN" in dumped:
             bad.append(f"{name} persona-uat gate: job {jn} enters the persona-uat environment or mints/uses the model identity token outside the gated job")
 
-def judge_gate(name, wf, j, bad):
+def judge_gate(name, j, bad):
     """the PERSONA_UAT_ENABLED gate (owner): the job runs only for the exact string 'true' (unset = off), on every trigger, and nothing mints a token or enters the persona-uat
-    environment when it is off: the condition is the JOB's own `if:`, and no other job of the workflow names the environment, mints an identity token or holds id-token: write"""
-    if name == "release":
-        trig = {"tag push": {"ref": "refs/tags/v1.2.3-rc.1", "ref_name": "v1.2.3-rc.1"}, "workflow_dispatch": {"ref": "refs/heads/main", "ref_name": "main"}}
+    environment when it is off: the condition is the JOB's own `if:`. `name` is the call in release.yml (call), or the persona-uat.yml job of the release-candidate leg (rc) or of the weekly leg (weekly)"""
+    rc_tag = {"ref": "refs/tags/v1.2.3-rc.1", "ref_name": "v1.2.3-rc.1"}
+    main = {"ref": "refs/heads/main", "ref_name": "main"}
+    if name == "call":
+        trig = {"tag push": rc_tag, "workflow_dispatch": main}
+    elif name == "rc":
+        trig = {"a call with digests": {"digests": "{}"}, "a call without digests": {}}
     else:
-        trig = {"schedule": {"schedule": "43 6 * * 1", "ref": "refs/heads/main", "ref_name": "main"}, "workflow_dispatch": {"ref": "refs/heads/main", "ref_name": "main"}}
+        trig = {"schedule": dict(main, schedule="43 6 * * 1"), "workflow_dispatch": main}
     try:
         for tn, base in trig.items():
-            trigger_ok = tn in ("tag push", "schedule")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
+            trigger_ok = tn in ("tag push", "schedule", "a call with digests")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
             for label, v in (("unset", None), ("empty", ""), ("false", "false"), ("TRUE", "TRUE"), ("True", "True"), ("1", "1"), ("true", "true"), (" true", " true"), ("yes", "yes")):
                 ctx = dict(base, vars={} if v is None else {"PERSONA_UAT_ENABLED": v})
                 got, want = job_runs(j, ctx), (str(v).lower() == "true" and trigger_ok)
                 if got != want:
                     bad.append(f"{name} persona-uat gate: on {tn} with PERSONA_UAT_ENABLED {label} the job {'runs' if got else 'is off'}, expected {'on' if want else 'off'}")
-        if name == "release":
-            dry = {"ref": "refs/tags/v1.2.3-rc.1", "ref_name": "v1.2.3-rc.1", "dry_run": True, "vars": {"PERSONA_UAT_ENABLED": "true"}}
-            if job_runs(j, dry):
-                bad.append("release persona-uat gate: a dry run on an rc tag with the gate on runs the job (an rc dry run publishes nothing and must not enter the persona-uat environment)")
-            final = {"ref": "refs/tags/v1.2.3", "ref_name": "v1.2.3", "vars": {"PERSONA_UAT_ENABLED": "true"}}
+        if name == "call":
+            on = {"PERSONA_UAT_ENABLED": "true"}
+            if job_runs(j, dict(rc_tag, mode="snapshot", vars=on)):
+                bad.append("call persona-uat gate: in snapshot mode on an rc tag with the gate on the call runs (the persona run is for release mode only)")
+            final = {"ref": "refs/tags/v1.2.3", "ref_name": "v1.2.3", "vars": on}
             if job_runs(j, final):
-                bad.append("release persona-uat gate: a final tag with the gate on runs the job (only a release candidate does)")
+                bad.append("call persona-uat gate: a final tag with the gate on runs the job (only a release candidate does)")
     except ValueError as e:
         bad.append(f"{name} persona-uat gate: the job's if has an expression this judge cannot evaluate ({e})")
-    if not norm(j.get("if", "")).startswith(GATE + "&&"):
-        bad.append(f"{name} persona-uat gate: the gate is not the job-level `if:` (it must be vars.PERSONA_UAT_ENABLED == 'true' on the job itself)")
+    if GATE not in norm(j.get("if", "")).split("&&"):
+        bad.append(f"{name} persona-uat gate: the gate is not in the job-level `if:` (it must be vars.PERSONA_UAT_ENABLED == 'true' on the job itself)")
     for sid, s_ in enumerate(j.get("steps", [])):
         if "PERSONA_UAT_ENABLED" in json.dumps(s_):
             bad.append(f"{name} persona-uat gate: step {sid} tests the gate: a step-level gate would let the job (and its environment) start first")
-    judge_gate_others(name, wf, bad)
 
 def judge_release(r, bad):
     workflow_defaults(r, "release.yml", bad)
@@ -761,48 +772,100 @@ def judge_release(r, bad):
         bad.append("release.yml's push tags are not exactly ['v*'] (a negation or tags-ignore could disable the release-candidate trigger)")
     pf = r.get("jobs", {}).get("patch-failed", {}) or {}
     pfn = pf.get("needs", [])
-    if "persona-uat" in ([pfn] if isinstance(pfn, str) else pfn):
-        bad.append("release.yml's patch-failed lists persona-uat in needs: a failed persona run would then open a public issue (results stay private: it only fails the job)")
-    j = r.get("jobs", {}).get("persona-uat")
-    if not j:
-        bad.append("release.yml has no persona-uat job: the release candidate's persona run (REQ-UAT-001-AC1) is missing")
-        judge_gate_others("release", r, bad)
+    if any(str(n).startswith("persona-uat") for n in ([pfn] if isinstance(pfn, str) else pfn)):
+        bad.append("release.yml's patch-failed lists a persona job in needs: a failed persona run would then open a public issue (results stay private: it only fails the job)")
+    judge_call(r, bad)
+
+def judge_call(r, bad):
+    """release.yml calls persona-uat.yml exactly once (REQ-UAT-001-AC1, AC6): a job-level `uses`, in release mode only, on a release-candidate tag, behind the gate, after build-assemble,
+    with the identity token for the persona federation and no write of any kind; the called file's job takes the digests as its input and its secrets from its own environment"""
+    jobs = r.get("jobs", {})
+    calls = sorted(n for n, j in jobs.items() if "persona-uat.yml" in str(j.get("uses", "")))
+    judge_gate_others("release.yml", r, calls, bad)
+    if len(calls) != 1 or calls != ["persona-uat-rc"]:
+        bad.append(f"release.yml must call persona-uat.yml from exactly one job, persona-uat-rc (found {calls})")
         return
-    d = common("release persona-uat", j, bad)
+    j = jobs["persona-uat-rc"]
+    if j.get("uses") != PERSONA_FILE:
+        bad.append(f"release.yml's persona-uat-rc does not call {PERSONA_FILE} (uses: {j.get('uses')!r})")
+    needs = j.get("needs", [])
+    needs = [needs] if isinstance(needs, str) else needs
+    if sorted(needs) != ["build-assemble"]:
+        bad.append(f"release.yml's persona-uat-rc needs are not exactly build-assemble (it tests the candidate Build made; it never waits for, or runs after, a stage that publishes): {sorted(needs)}")
+    if norm(j.get("if", "")) != "inputs.mode!='snapshot'&&" + GATE + "&&startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc')":
+        bad.append(f"release.yml's persona-uat-rc does not run only in release mode, for a release-candidate tag, behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
+    judge_gate("call", j, bad)
+    want = {"contents": "read", "id-token": "write"}
+    if j.get("permissions") != want:
+        bad.append(f"release.yml's persona-uat-rc permissions are not exactly {want}: no packages, no write of any kind (found {j.get('permissions')})")
+    if "secrets" in j:
+        bad.append(f"release.yml's persona-uat-rc passes secrets to the called file ({j['secrets']!r}): the persona secrets are those of its own environment, and nothing else is needed")
+    if j.get("with") != {"digests": "${{ needs.build-assemble.outputs.digests }}"}:
+        bad.append(f"release.yml's persona-uat-rc does not pass exactly Build's digests (with: {j.get('with')!r})")
+    if set(j) - {"uses", "needs", "if", "permissions", "with"}:
+        bad.append(f"release.yml's persona-uat-rc has keys beyond uses, needs, if, permissions and with: {sorted(set(j) - {'uses', 'needs', 'if', 'permissions', 'with'})}")
+
+def judge_persona_file(p, bad):
+    if not p:
+        bad.append("persona-uat.yml is missing: the persona jobs have no file (REQ-UAT-001-AC6)")
+        return
+    workflow_defaults(p, "persona-uat.yml", bad)
+    judge_workflow_env(p, "persona-uat.yml", bad)
+    on = p.get("on") if isinstance(p.get("on"), dict) else {}
+    crons = [c.get("cron") for c in (on.get("schedule") or [])]
+    if sorted(on) != ["schedule", "workflow_call"] or crons != ["43 6 * * 1"]:
+        bad.append(f"persona-uat.yml's triggers are not exactly the Monday cron and workflow_call (found {sorted(on)}, crons {crons})")
+    jobs = p.get("jobs") or {}
+    if sorted(jobs) != sorted(PERSONA_JOBS):
+        bad.append(f"persona-uat.yml's jobs are not exactly persona-uat-rc and persona-uat-weekly (found {sorted(jobs)})")
+    judge_gate_others("persona-uat.yml", p, PERSONA_JOBS, bad)
+    judge_rc(p, bad)
+    judge_weekly(p, bad)
+
+def judge_fresh(f, bad):
+    workflow_defaults(f, "go-freshness.yml", bad)
+    judge_workflow_env(f, "go-freshness.yml", bad)
+    judge_gate_others("go-freshness.yml", f, (), bad)
+    crons = [c.get("cron") for c in (f.get("on", {}).get("schedule") or [])] if isinstance(f.get("on"), dict) else []
+    if "43 6 * * 1" in crons:
+        bad.append("go-freshness.yml has the Monday persona cron again: it keeps only its daily freshness cron")
+
+def judge_rc(p, bad):
+    j = (p.get("jobs") or {}).get("persona-uat-rc")
+    if not j:
+        bad.append("persona-uat.yml has no persona-uat-rc job: the release candidate's persona run (REQ-UAT-001-AC1) is missing")
+        return
+    d = common("persona-uat-rc", j, bad)
     for s_ in j.get("steps", []):
         if "actions/github-script" in str(s_.get("uses", "")):
             bad.extend(run_identity(s_))
-    needs = j.get("needs", [])
-    needs = [needs] if isinstance(needs, str) else needs
-    if sorted(needs) != ["build"]:
-        bad.append(f"release persona-uat's needs are not exactly build (it tests the candidate Build made; it never waits for, or runs after, a stage that publishes): {sorted(needs)}")
-    if norm(j.get("if", "")) != GATE + "&&startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc')&&!inputs.dry-run":
-        bad.append(f"release persona-uat does not run only for a release-candidate tag, outside a dry run, behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
-    judge_gate("release", r, j, bad)
+    if "needs" in j:
+        bad.append("persona-uat-rc has needs: the called job gets Build's digests as its input, and a skipped dependency would skip every persona")
+    if norm(j.get("if", "")) != GATE + "&&inputs.digests!=''":
+        bad.append(f"persona-uat-rc does not run only behind the PERSONA_UAT_ENABLED gate, and only when called with Build's digests (if: {j.get('if')!r})")
+    judge_gate("rc", j, bad)
     env = j.get("environment")
     if (env if isinstance(env, str) else (env or {}).get("name")) != "persona-uat":
-        bad.append("release persona-uat does not run in the persona-uat environment")
-    p = j.get("permissions", {})
+        bad.append("persona-uat-rc does not run in the persona-uat environment")
+    perm = j.get("permissions", {})
     want = {"contents": "read", "id-token": "write"}
-    if p != want:
-        bad.append(f"release persona-uat permissions are not exactly {want}: no packages, no write of any kind (found {p})")
+    if perm != want:
+        bad.append(f"persona-uat-rc permissions are not exactly {want}: no packages, no write of any kind (found {perm})")
     judge_rc_registry(j, bad)
     if j.get("env"):
-        bad.append(f"release persona-uat declares no env of its own is the rule (found {sorted(j['env'])}): an inherited variable (BASH_FUNC_*, PATH, BASH_ENV) could change what the closed load script runs")
-    if r.get("env"):
-        bad.append(f"release.yml declares a workflow-level env ({sorted(r['env'])}): the closed rc load script would inherit it; the chain jobs name what they need on the step")
+        bad.append(f"persona-uat-rc declares no env of its own is the rule (found {sorted(j['env'])}): an inherited variable (BASH_FUNC_*, PATH, BASH_ENV) could change what the closed load script runs")
     if d is not None:
         run = str(d.get("run", ""))
         envimg = str((d.get("env") or {}).get("PERSONA_UAT_IMAGE", ""))
         arg = run.replace("\\\n", " ").split("--image", 1)[-1].split(" --", 1)[0]
-        if arg.strip() != '"$PERSONA_UAT_IMAGE"' or not re.fullmatch(r"localhost:5000/cache@\$\{\{\s*fromJSON\(\s*needs\.build\.outputs\.digests\s*\)\[\s*'image-production'\s*\]\s*\}\}", envimg.strip()):
-            bad.append("release persona-uat takes the image from something other than Build's own image-production digest on the runner's registry (localhost:5000/cache@fromJSON(needs.build.outputs.digests)['image-production'])")
+        if arg.strip() != '"$PERSONA_UAT_IMAGE"' or not re.fullmatch(r"localhost:5000/cache@\$\{\{\s*fromJSON\(\s*inputs\.digests\s*\)\[\s*'image-production'\s*\]\s*\}\}", envimg.strip()):
+            bad.append("persona-uat-rc takes the image from something other than Build's own image-production digest on the runner's registry (localhost:5000/cache@fromJSON(inputs.digests)['image-production'])")
         if mode_value(run) != "rc":
-            bad.append(f"release persona-uat does not run the driver with --mode rc exactly (parsed value {mode_value(run)!r})")
+            bad.append(f"persona-uat-rc does not run the driver with --mode rc exactly (parsed value {mode_value(run)!r})")
         steps = j.get("steps", [])
         loads = [s_ for s_ in steps if "crane push" in str(s_.get("run", ""))]
         if loads and steps.index(loads[0]) > steps.index(d):
-            bad.append("release persona-uat loads the registry AFTER running the driver")
+            bad.append("persona-uat-rc loads the registry AFTER running the driver")
 
 REG_IMG = re.compile(r"registry:2@sha256:[0-9a-f]{64}")
 DL_ACTION = re.compile(r"actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333")
@@ -812,108 +875,106 @@ def judge_rc_registry(j, bad):
     published on the loopback only; Build's images artifact; crane pushes only to localhost:5000; the pushed digest must equal the one Build attested; no registry credential, no other registry."""
     svc = j.get("services")
     if not isinstance(svc, dict) or list(svc) != ["registry"] or not isinstance(svc["registry"], dict):
-        bad.append(f"release persona-uat must declare exactly one service, registry (found {svc!r})")
+        bad.append(f"persona-uat-rc must declare exactly one service, registry (found {svc!r})")
     else:
         sv = svc["registry"]
         if not REG_IMG.fullmatch(str(sv.get("image", ""))):
-            bad.append(f"release persona-uat's registry service is not registry:2 pinned by a full sha256 digest ({sv.get('image')!r})")
+            bad.append(f"persona-uat-rc's registry service is not registry:2 pinned by a full sha256 digest ({sv.get('image')!r})")
         if sv.get("ports") != ["127.0.0.1:5000:5000"]:
-            bad.append(f"release persona-uat's registry service is not published on the loopback only (ports must be exactly ['127.0.0.1:5000:5000'], found {sv.get('ports')!r})")
+            bad.append(f"persona-uat-rc's registry service is not published on the loopback only (ports must be exactly ['127.0.0.1:5000:5000'], found {sv.get('ports')!r})")
         if set(sv) - {"image", "ports"}:
-            bad.append(f"release persona-uat's registry service has keys beyond image and ports (env, options, credentials or volumes): {sorted(set(sv) - {'image', 'ports'})}")
+            bad.append(f"persona-uat-rc's registry service has keys beyond image and ports (env, options, credentials or volumes): {sorted(set(sv) - {'image', 'ports'})}")
     steps = j.get("steps", [])
     dl = [s_ for s_ in steps if "actions/download-artifact" in str(s_.get("uses", ""))]
     if len(dl) != 1 or not DL_ACTION.search(str(dl[0].get("uses", ""))) or (dl[0].get("with") or {}) != {"name": "images", "path": "candidate/images"}:
-        bad.append("release persona-uat must download exactly Build's `images` artifact (the allowlisted download-artifact digest, name images, path candidate/images)")
+        bad.append("persona-uat-rc must download exactly Build's `images` artifact (the allowlisted download-artifact digest, name images, path candidate/images)")
     elif set(dl[0]) - {"uses", "with"}:
-        bad.append("release persona-uat's download step is not exactly uses + with (no if, continue-on-error or other key: a skipped download must fail the job, not pass it)")
+        bad.append("persona-uat-rc's download step is not exactly uses + with (no if, continue-on-error or other key: a skipped download must fail the job, not pass it)")
     loads = [s_ for s_ in steps if "crane push" in str(s_.get("run", ""))]
     if len(loads) != 1:
-        bad.append(f"release persona-uat must load Build's layout with exactly one crane push step (found {len(loads)})")
+        bad.append(f"persona-uat-rc must load Build's layout with exactly one crane push step (found {len(loads)})")
     else:
         ld = loads[0]
         lrun = "\n".join(l for l in str(ld.get("run", "")).splitlines() if not l.strip().startswith("#"))
         if dl and steps.index(dl[0]) > steps.index(ld):
-            bad.append("release persona-uat loads the layout BEFORE it downloads it")
+            bad.append("persona-uat-rc loads the layout BEFORE it downloads it")
         ci = [s_ for s_ in steps if re.fullmatch(r"\./bin/install-scanner\.sh crane\s*", str(s_.get("run", "")).strip())]
         if len(ci) != 1 or steps.index(ci[0]) > steps.index(ld):
-            bad.append("release persona-uat does not install the pinned crane (bin/install-scanner.sh crane) once, before the load step")
+            bad.append("persona-uat-rc does not install the pinned crane (bin/install-scanner.sh crane) once, before the load step")
         lnorm = "\n".join(l.rstrip() for l in str(ld.get("run", "")).splitlines() if l.strip() and not l.strip().startswith("#"))
         if set(ld) - {"name", "env", "run"} or lnorm != LOAD_RUN_EXPECTED:
-            bad.append("release persona-uat's load step is not exactly the closed load script (keys name, env, run only: no if, continue-on-error, shell or timeout; the script verbatim, fatal on a digest mismatch)")
-        if not expr_is((ld.get("env") or {}).get("DIGESTS", ""), "needs.build.outputs.digests"):
-            bad.append("release persona-uat's load step does not take the attested digests from needs.build.outputs.digests")
+            bad.append("persona-uat-rc's load step is not exactly the closed load script (keys name, env, run only: no if, continue-on-error, shell or timeout; the script verbatim, fatal on a digest mismatch)")
+        if not expr_is((ld.get("env") or {}).get("DIGESTS", ""), "inputs.digests"):
+            bad.append("persona-uat-rc's load step does not take the attested digests from inputs.digests")
         if "image-production" not in lrun or not re.search(r'\[ "\$got" = "\$want" \]', lrun):
-            bad.append("release persona-uat's load step does not compare the pushed digest with Build's image-production digest ([ \"$got\" = \"$want\" ] after crane digest)")
+            bad.append("persona-uat-rc's load step does not compare the pushed digest with Build's image-production digest ([ \"$got\" = \"$want\" ] after crane digest)")
         if set((ld.get("env") or {})) - {"DIGESTS"}:
-            bad.append(f"release persona-uat's load step takes env beyond DIGESTS: {sorted(set(ld.get('env') or {}) - {'DIGESTS'})}")
+            bad.append(f"persona-uat-rc's load step takes env beyond DIGESTS: {sorted(set(ld.get('env') or {}) - {'DIGESTS'})}")
         if "candidate/images/production" not in lrun:
-            bad.append("release persona-uat's load step does not push Build's production layout (candidate/images/production)")
+            bad.append("persona-uat-rc's load step does not push Build's production layout (candidate/images/production)")
     for si, st in enumerate(steps):
         run_ = "\n".join(l for l in str(st.get("run", "")).splitlines() if not l.strip().startswith("#"))
         for m in re.finditer(r"\bcrane\s+(\S+)([^\n;&|]*)", run_):
             sub, rest = m.group(1), m.group(2).split()
             targets = [t.strip("\"'") for t in rest if not t.startswith("-")]
             if sub not in ("push", "digest") or not targets or not targets[-1].startswith("localhost:5000/"):
-                bad.append(f"release persona-uat step {si}: crane {sub} {' '.join(rest)} is not a push/digest to localhost:5000 (nothing leaves the runner)")
+                bad.append(f"persona-uat-rc step {si}: crane {sub} {' '.join(rest)} is not a push/digest to localhost:5000 (nothing leaves the runner)")
         if re.search(r"\b(?:docker|buildx|skopeo|regctl|oras)\b", run_) and "persona-uat.py" not in run_:
-            bad.append(f"release persona-uat step {si} runs a container or registry client other than crane")
+            bad.append(f"persona-uat-rc step {si} runs a container or registry client other than crane")
     dumped = json.dumps(j)
     for needle, why in (("ghcr.io", "another registry"), ("GITHUB_TOKEN", "the job token"), ("github.token", "the job token"), ("crane auth", "a registry login"), ("docker login", "a registry login"),
                         ("--insecure", "an insecure flag")):
         if needle in dumped:
-            bad.append(f"release persona-uat names {needle} ({why}): it reads no registry credential and pushes nowhere but localhost")
+            bad.append(f"persona-uat-rc names {needle} ({why}): it reads no registry credential and pushes nowhere but localhost")
     for m in re.finditer(r"secrets\.(\w+)", dumped):
         if m.group(1) not in set(MODEL_SECRETS) | set(CREDS):
-            bad.append(f"release persona-uat reads secrets.{m.group(1)}: only the model names and the federation identifiers")
+            bad.append(f"persona-uat-rc reads secrets.{m.group(1)}: only the model names and the federation identifiers")
 
-def judge_weekly(f, bad):
-    workflow_defaults(f, "go-freshness.yml", bad)
-    judge_workflow_env(f, "go-freshness.yml", bad)
-    j = f.get("jobs", {}).get("persona-uat")
+def judge_weekly(p, bad):
+    j = (p.get("jobs") or {}).get("persona-uat-weekly")
     if not j:
-        bad.append("go-freshness.yml has no persona-uat job"); return
-    d = common("weekly persona-uat", j, bad)
+        bad.append("persona-uat.yml has no persona-uat-weekly job"); return
+    d = common("persona-uat-weekly", j, bad)
     for s_ in j.get("steps", []):
         if "actions/github-script" in str(s_.get("uses", "")):
             bad.extend(run_identity(s_))
-    cron = [c.get("cron") for c in (f.get("on", {}).get("schedule") or [])] if isinstance(f.get("on"), dict) else []
+    cron = [c.get("cron") for c in (p.get("on", {}).get("schedule") or [])] if isinstance(p.get("on"), dict) else []
     if norm(j.get("if", "")) != GATE + "&&" + norm("github.event.schedule == '43 6 * * 1'") or "43 6 * * 1" not in cron:
-        bad.append(f"weekly persona-uat does not run only on the Monday cron behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
-    judge_gate("weekly", f, j, bad)
+        bad.append(f"persona-uat-weekly does not run only on the Monday cron behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
+    judge_gate("weekly", j, bad)
     if "needs" in j:
-        bad.append("weekly persona-uat has needs: a skipped dependency (the daily check job is skipped on the Monday cron) would skip every persona")
+        bad.append("persona-uat-weekly has needs: a skipped dependency (the daily check job is skipped on the Monday cron) would skip every persona")
     env_ = j.get("environment")
     if (env_ if isinstance(env_, str) else (env_ or {}).get("name")) != "persona-uat":
-        bad.append("weekly persona-uat does not run in the persona-uat environment")
-    p = j.get("permissions", {})
-    want = {"contents": "read", "id-token": "write", "packages": "read"}
-    if any(p.get(k) != v for k, v in want.items()) or set(p) - set(want):
-        bad.append(f"weekly persona-uat permissions are not exactly {want} (found {p})")
+        bad.append("persona-uat-weekly does not run in the persona-uat environment")
+    perm = j.get("permissions", {})
+    want = {"contents": "read", "id-token": "write"}
+    if perm != want:
+        bad.append(f"persona-uat-weekly permissions are not exactly {want} (found {perm})")
     steps = j.get("steps", [])
     res = [s for s in steps if "gh release view" in str(s.get("run", ""))]
     if len(res) != 1:
-        bad.append("weekly persona-uat does not resolve the LATEST release's image digest (expected exactly one gh release view step)")
+        bad.append("persona-uat-weekly does not resolve the LATEST release's image digest (expected exactly one gh release view step)")
     else:
         r = res[0]; rrun = "\n".join(l for l in str(r.get("run", "")).splitlines() if not l.strip().startswith("#"))
         if not expr_is((r.get("env", {}) or {}).get("GH_REPO", ""), "github.repository") or not expr_is((r.get("env", {}) or {}).get("REGISTRY_OWNER", ""), "github.repository_owner"):
-            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs after the root checkout and the crane install, before the docs checkout)")
+            bad.append("persona-uat-weekly's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs after the root checkout and the crane install, before the docs checkout)")
         if not isinstance(r.get("env"), dict) or set(r["env"]) != {"GH_REPO", "REGISTRY_OWNER", "GH_TOKEN"}:
-            bad.append(f"weekly persona-uat's resolver step's env must be exactly GH_REPO, REGISTRY_OWNER and GH_TOKEN (found {sorted(r['env']) if isinstance(r.get('env'), dict) else repr(r.get('env'))})")
+            bad.append(f"persona-uat-weekly's resolver step's env must be exactly GH_REPO, REGISTRY_OWNER and GH_TOKEN (found {sorted(r['env']) if isinstance(r.get('env'), dict) else repr(r.get('env'))})")
         bad.extend(run_resolver(rrun))
         m = re.search(r"(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)", rrun)
         if not m:
-            bad.append("weekly persona-uat does not resolve the LATEST release's image digest (gh release view --json tagName -q .tagName, no fixed tag)")
+            bad.append("persona-uat-weekly does not resolve the LATEST release's image digest (gh release view --json tagName -q .tagName, no fixed tag)")
         else:
             var = m.group(1)
             if "if" in r or not literal_false(r.get("continue-on-error")):
-                bad.append("weekly persona-uat's resolver step is conditional or non-fatal: the weekly run could go on without an image")
+                bad.append("persona-uat-weekly's resolver step is conditional or non-fatal: the weekly run could go on without an image")
             insp = [l for l in rrun.splitlines() if re.search(r"\bcrane digest\b", l)]
             if not insp or not re.search(r"\$\{?" + re.escape(var) + r"\}?(?![\w])", insp[0]):
-                bad.append("weekly persona-uat does not read the digest of the release it just resolved (`crane digest` must use the resolved tag)")
+                bad.append("persona-uat-weekly does not read the digest of the release it just resolved (`crane digest` must use the resolved tag)")
             dm = re.search(r"(\w+)=\$\(\s*crane digest [^\n]*\)", rrun)
             if not dm:
-                bad.append("weekly persona-uat's resolver does not capture the digest with `crane digest <registry>/<owner>/cache:<tag>` (the chain's pinned tool; no buildx, no docker)")
+                bad.append("persona-uat-weekly's resolver does not capture the digest with `crane digest <registry>/<owner>/cache:<tag>` (the chain's pinned tool; no buildx, no docker)")
             # the resolver is EXACTLY these five lines, in this order (no other line, no second output line, nothing inside the quotes but the fixed references): a closed list
             RESOLVER_EXACT = (r'set -euo pipefail\n(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)\n'
                               r'(\w+)=\$\(crane digest "ghcr\.io/\$\{REGISTRY_OWNER\}/cache:\$\{\1#v\}"\)\n'
@@ -921,27 +982,27 @@ def judge_weekly(f, bad):
                               r'echo "image=ghcr\.io/\$\{REGISTRY_OWNER\}/cache@\$(?:\{\2\}|\2(?!\w))" >> "\$GITHUB_OUTPUT"')
             rlines = [l.strip() for l in rrun.splitlines() if l.strip()]
             if not re.fullmatch(RESOLVER_EXACT, "\n".join(rlines)):
-                bad.append("weekly persona-uat's resolver is not one of the five allowed shapes, exactly and in this order (set -euo pipefail; the gh release view read; the one crane digest read of ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}; the tag= output; the image= output built from that digest): any extra, repeated or altered line is refused")
+                bad.append("persona-uat-weekly's resolver is not one of the five allowed shapes, exactly and in this order (set -euo pipefail; the gh release view read; the one crane digest read of ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}; the tag= output; the image= output built from that digest): any extra, repeated or altered line is refused")
             if any(not re.fullmatch(r'\s*\w+=\$\(crane digest "[^"\n]*"\)\s*', l) for l in insp):
-                bad.append("weekly persona-uat's digest line must be one `crane digest` with no pipe or fallback, the whole line exactly NAME=$(crane digest \"<ref>\") (a failing crane must fail the step, never hand the driver another digest)")
+                bad.append("persona-uat-weekly's digest line must be one `crane digest` with no pipe or fallback, the whole line exactly NAME=$(crane digest \"<ref>\") (a failing crane must fail the step, never hand the driver another digest)")
             if not dm or not re.search(r"image=[^\n]*@\$\{?" + re.escape(dm.group(1)) + r"\}?(?![\w])[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
-                bad.append("weekly persona-uat's resolver does not write an image= output built from the digest it inspected")
+                bad.append("persona-uat-weekly's resolver does not write an image= output built from the digest it inspected")
             if not expr_is(r.get("env", {}).get("GH_TOKEN", ""), "github.token"):
-                bad.append("weekly persona-uat's resolver does not get GH_TOKEN = github.token")
+                bad.append("persona-uat-weekly's resolver does not get GH_TOKEN = github.token")
         if d is not None:
             if steps.index(r) > steps.index(d):
-                bad.append("weekly persona-uat resolves the latest release AFTER running the driver")
+                bad.append("persona-uat-weekly resolves the latest release AFTER running the driver")
             cos = [s for s in steps if "actions/checkout" in str(s.get("uses", "")) and str((s.get("with", {}) or {}).get("path", "")) == "release-docs"]
             if cos and (steps.index(cos[0]) < steps.index(r) or not re.fullmatch(r"\$\{\{\s*steps\." + re.escape(str(r.get("id"))) + r"\.outputs\.tag\s*\}\}", str(cos[0].get("with", {}).get("ref", "")).strip())):
-                bad.append("weekly persona-uat's checkout is not of the resolved release's tag (ref: steps.<resolver>.outputs.tag, after the resolver): the personas would read the wrong docs")
+                bad.append("persona-uat-weekly's checkout is not of the resolved release's tag (ref: steps.<resolver>.outputs.tag, after the resolver): the personas would read the wrong docs")
             if not re.search(r"tag=[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
-                bad.append("weekly persona-uat's resolver does not write its tag= output")
+                bad.append("persona-uat-weekly's resolver does not write its tag= output")
             run = str(d.get("run", ""))
             arg = run.split("--image", 1)[-1].split(" --", 1)[0].strip()
             if not r.get("id") or arg.strip() != '"$PERSONA_UAT_IMAGE"' or not re.fullmatch(r"\$\{\{\s*steps\." + re.escape(str(r.get("id"))) + r"\.outputs\.image\s*\}\}", str((d.get("env") or {}).get("PERSONA_UAT_IMAGE", "")).strip()):
-                bad.append("weekly persona-uat does not hand the resolved latest-release image digest to --image")
+                bad.append("persona-uat-weekly does not hand the resolved latest-release image digest to --image")
     if d is not None and mode_value(d.get("run", "")) != "weekly":
-        bad.append(f"weekly persona-uat does not run the driver with --mode weekly exactly (parsed value {mode_value(d.get('run', ''))!r})")
+        bad.append(f"persona-uat-weekly does not run the driver with --mode weekly exactly (parsed value {mode_value(d.get('run', ''))!r})")
 
 TOOL_KEYS = ["capture", "cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", "maven", "shell"]
 # each key's official image repository, as docker normalises it (docker.io/ and library/ stripped); an exact match, never a suffix match
@@ -988,19 +1049,29 @@ def judge_source(bad):
             if re.search(r"(docker\.io|ghcr\.io|quay\.io|gcr\.io|registry\.k8s\.io|library|jenkins|gitlab|kindest|sigstore|cosign|kubectl|gradle|maven)", m.group(1)) and "@sha256:" not in m.group(1):
                 bad.append(f"{os.path.relpath(p, root)} names an image not pinned by digest: {m.group(1)}")
 
-def judge(r, f, t):
+POLICY = os.path.join(root, ".github/policy/id-token-jobs.json")
+PERSONA_ID_TOKEN = {("persona-uat.yml", "persona-uat-rc"), ("persona-uat.yml", "persona-uat-weekly"), ("release.yml", "persona-uat-rc")}
+
+def judge_policy(pol, bad):
+    """the closed list of the jobs that hold id-token: write names the persona jobs where they now are, and no persona job where they no longer are"""
+    listed = {(e["workflow"], e["job"]) for e in pol["jobs"] if e["job"].startswith("persona-uat") or e["workflow"] == "persona-uat.yml"}
+    if listed != PERSONA_ID_TOKEN:
+        bad.append(f"id-token-jobs.json lists the persona jobs {sorted(listed)}, expected {sorted(PERSONA_ID_TOKEN)} (persona-uat.yml's two jobs and release.yml's one call)")
+
+def judge(r, f, p, t):
     bad = []
-    judge_release(r, bad); judge_weekly(f, bad); judge_tools(t, bad); judge_source(bad); judge_requirements(bad)
+    judge_release(r, bad); judge_persona_file(p, bad); judge_fresh(f, bad); judge_tools(t, bad); judge_source(bad); judge_requirements(bad)
     return bad
 
 R, F, T = load(REL), load(FRESH), json.load(open(TOOLS)) if os.path.exists(TOOLS) else None
+P = load(PERSONA) if os.path.exists(PERSONA) else None
 passed = failed = 0
 def result(ok, msg):
     global passed, failed
     if ok: passed += 1; print("ok  ", msg)
     else: failed += 1; print("FAIL", msg)
 
-bad = judge(R, F, T if T is not None else "missing")
+bad = judge(R, F, P, T if T is not None else "missing")
 result(not bad, "the real workflows, tools file and sources satisfy the persona UAT wiring" + ("" if not bad else ": " + "; ".join(bad)))
 
 # a known-good nine-entry tools file, so the tools mutations test the JUDGE and do not depend on the file in the tree
@@ -1076,7 +1147,7 @@ def synth_driver(weekly):
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
     env.update({c: "${{ secrets.%s }}" % c for c in CREDS})
     env["ANTHROPIC_IDENTITY_TOKEN_FILE"] = "${{ runner.temp }}/anthropic-identity-token"
-    env["PERSONA_UAT_IMAGE"] = "${{ steps.resolve.outputs.image }}" if weekly else "localhost:5000/cache@${{ fromJSON(needs.build.outputs.digests)['image-production'] }}"
+    env["PERSONA_UAT_IMAGE"] = "${{ steps.resolve.outputs.image }}" if weekly else "localhost:5000/cache@${{ fromJSON(inputs.digests)['image-production'] }}"
     img = '"$PERSONA_UAT_IMAGE"'
     return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
                                 f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"' + ("" if weekly else " --allow-listen 5000")}
@@ -1091,7 +1162,7 @@ def synth_persona_job(weekly):
     # the weekly job: the root checkout (it provides bin/install-scanner.sh), the pinned crane, the resolver, then the docs checkout; the rc job has the one checkout
     rc_load = [{"uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", "with": {"name": "images", "path": "candidate/images"}},
                {"run": "./" + pre + "bin/install-scanner.sh crane"},
-               {"name": "load", "env": {"DIGESTS": "${{ needs.build.outputs.digests }}"}, "run": RC_LOAD_RUN}]
+               {"name": "load", "env": {"DIGESTS": "${{ inputs.digests }}"}, "run": RC_LOAD_RUN}]
     head = ([co[0], {"run": "./" + pre + "bin/install-scanner.sh crane"}] + resolver + [co[1]]) if weekly else co + rc_load
     steps = (head + [{"run": KIND_RUN},
              {"run": PIN_PIP_RUN},
@@ -1099,27 +1170,28 @@ def synth_persona_job(weekly):
              {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, {"run": REFRESHER}, synth_driver(weekly),
              {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}},
              {"if": "${{ always() }}", "run": CLEANUP}])
-    j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write", "packages": "read"}, "steps": steps}
+    j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write"}, "steps": steps}
     if not weekly:
-        j["permissions"] = {"contents": "read", "id-token": "write"}
         j["services"] = {"registry": {"image": "registry:2@sha256:" + "b" * 64, "ports": ["127.0.0.1:5000:5000"]}}
     if weekly:
         j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event.schedule == '43 6 * * 1' }}"
     else:
-        j["needs"] = ["build"]
-        j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+        j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && inputs.digests != '' }}"
     return j
 RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
-    "build": {"steps": [{"run": "true"}]}, "release": {"needs": ["build"], "steps": [{"run": "true"}]},
-    "patch-failed": {"needs": ["build", "release"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
-    "persona-uat": synth_persona_job(False)}}
-FS = {"on": {"schedule": [{"cron": "43 6 * * 1"}]}, "jobs": {
-    "check": {"if": "${{ github.event.schedule != '43 6 * * 1' }}", "steps": [{"run": 'gh issue create --title "go freshness" --body x'}]},
-    "persona-uat": synth_persona_job(True)}}
+    "build-assemble": {"steps": [{"run": "true"}]}, "release": {"needs": ["build-assemble"], "steps": [{"run": "true"}]},
+    "patch-failed": {"needs": ["build-assemble", "release"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
+    "persona-uat-rc": {"needs": "build-assemble", "if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}",
+                       "permissions": {"contents": "read", "id-token": "write"}, "uses": PERSONA_FILE, "with": {"digests": "${{ needs.build-assemble.outputs.digests }}"}}}}
+FS = {"on": {"schedule": [{"cron": "23 6 * * *"}]}, "jobs": {
+    "check": {"if": "${{ github.event.schedule == '23 6 * * *' }}", "steps": [{"run": 'gh issue create --title "go freshness" --body x'}]}}}
+PS = {"on": {"schedule": [{"cron": "43 6 * * 1"}], "workflow_call": {"inputs": {"digests": {"type": "string", "default": ""}}}}, "jobs": {
+    "persona-uat-rc": synth_persona_job(False), "persona-uat-weekly": synth_persona_job(True)}}
+POLICY_GOOD = {"jobs": [{"workflow": w, "job": n} for w, n in sorted(PERSONA_ID_TOKEN)] + [{"workflow": "release.yml", "job": "sign"}]}
 SRC_OVER.update(CLEAN_SRC)
-bd = judge(RS, FS, TGOOD)
+bd = judge(RS, FS, PS, TGOOD)
 SRC_OVER.clear()
-result(not bd, "a COMPLETE known-good synthetic release.yml and go-freshness.yml pass the real entry point judge() (judge_release, judge_weekly, common, judge_prereqs, judge_install, the tools and source judges): a NameError or an ordering defect fails here" + ("" if not bd else ": " + "; ".join(bd)))
+result(not bd, "a COMPLETE known-good synthetic release.yml, persona-uat.yml and go-freshness.yml pass the real entry point judge() (judge_release, judge_weekly, common, judge_prereqs, judge_install, the tools and source judges): a NameError or an ordering defect fails here" + ("" if not bd else ": " + "; ".join(bd)))
 
 # the prerequisite judge on small jobs (named as the weekly or the rc job)
 def synth_job(weekly):
@@ -1161,24 +1233,31 @@ for weekly in (False, True):
     pm("identity step with another option", "options outside its allowlist", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).setdefault("with", {}).update({"github-token": "${{ secrets.X }}"}))
     pm("upload with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "upload-artifact" in str(x.get("uses", ""))).update({"working-directory": "/tmp"}))
 
-BASES = [("synthetic", RS, FS)]
-REAL_REL_JOB = bool(R.get("jobs", {}).get("persona-uat"))
-REAL_JOBS = bool(F.get("jobs", {}).get("persona-uat"))      # the weekly job is in the real go-freshness.yml; the rc job in release.yml is out until D (see judge_release)
+BASES = [("synthetic", RS, FS, PS)]
+REAL_JOBS = bool(P) and sorted(P.get("jobs") or {}) == sorted(PERSONA_JOBS)
 if REAL_JOBS:
-    BASES.append(("real", R, F))
+    BASES.append(("real", R, F, P))
 else:
-    result(False, "the real go-freshness.yml has no persona-uat job: every workflow mutation below ran against the synthetic known-good workflows only")
-result(REAL_REL_JOB, "the real release.yml has the persona-uat job (the release candidate's persona run, REQ-UAT-001-AC1, option D of the advisor ruling Oct 17)")
+    result(False, "the real persona-uat.yml does not hold the two persona jobs: every workflow mutation below ran against the synthetic known-good workflows only")
+result(REAL_JOBS, "the real persona-uat.yml holds the persona jobs, persona-uat-rc and persona-uat-weekly (REQ-UAT-001-AC1, AC6)")
+result(sorted(n for n, j in R.get("jobs", {}).items() if "persona-uat.yml" in str(j.get("uses", ""))) == ["persona-uat-rc"], "the real release.yml calls persona-uat.yml from its one job persona-uat-rc (REQ-UAT-001-AC1)")
+result(not any(str(n).startswith("persona-uat") for n in F.get("jobs", {})), "the real go-freshness.yml has no persona job (REQ-UAT-001-AC6)")
+good = []
+judge_policy(json.load(open(POLICY)), good)
+result(not good, "the real id-token policy lists the persona jobs where they are" + ("" if not good else ": " + "; ".join(good)))
+good = []
+judge_policy(POLICY_GOOD, good)
+result(not good, "the in-test known-good id-token policy is accepted by the policy judge" + ("" if not good else ": " + "; ".join(good)))
+# which: rc = the persona-uat-rc job and weekly (named fresh) = the persona-uat-weekly job, both in persona-uat.yml; call = release.yml's persona-uat-rc call; rel_wf, persona_wf and fresh_wf = the whole
+# of release.yml, persona-uat.yml and go-freshness.yml; split = release.yml and persona-uat.yml together
 def mutate(name, expect, fn, which="rel"):
-    for label, BR, BF in BASES:
-        if label == "real" and which in ("rel", "rel_patchfailed") and not BR.get("jobs", {}).get("persona-uat"):
-            continue      # the real release.yml has no rc job (option B): nothing there to mutate; the synthetic base still carries every mutation
+    for label, BR, BF, BP in BASES:
         if which in ("tools", "src") and label != "synthetic":
             continue
-        _mutate(f"[{label}] {name}", expect, fn, which, BR, BF)
+        _mutate(f"[{label}] {name}", expect, fn, which, BR, BF, BP)
 
-def _mutate(name, expect, fn, which, BR, BF):
-    r, f, t = copy.deepcopy(BR), copy.deepcopy(BF), copy.deepcopy(TGOOD if (which == "tools" or BR is RS) else T)
+def _mutate(name, expect, fn, which, BR, BF, BP):
+    r, f, p, t = copy.deepcopy(BR), copy.deepcopy(BF), copy.deepcopy(BP), copy.deepcopy(TGOOD if (which == "tools" or BR is RS) else T)
     srcs = copy.deepcopy(CLEAN_SRC)
     try:
         if which == "rel_top":
@@ -1192,24 +1271,31 @@ def _mutate(name, expect, fn, which, BR, BF):
         elif which == "rel_defaults_shell":
             r["defaults"] = {"run": {"shell": "pwsh"}}
         elif which == "rel_patchfailed":
-            r["jobs"]["patch-failed"]["needs"] = [n for n in r["jobs"]["patch-failed"]["needs"] if n != "persona-uat"]
+            r["jobs"]["patch-failed"]["needs"] = [n for n in r["jobs"]["patch-failed"]["needs"] if not n.startswith("persona-uat")]
         elif which == "rel_wf":
             fn(r)
         elif which == "fresh_wf":
             fn(f)
+        elif which == "persona_wf":
+            fn(p)
+        elif which == "split":
+            fn(r, p)
+        elif which == "absent":
+            p = None
         else:
-            {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t), "src": lambda: fn(srcs)}[which]()
+            {"rel": lambda: fn(p["jobs"]["persona-uat-rc"]), "fresh": lambda: fn(p["jobs"]["persona-uat-weekly"]), "call": lambda: fn(r["jobs"]["persona-uat-rc"]),
+             "tools": lambda: fn(t), "src": lambda: fn(srcs)}[which]()
     except Exception as e:     # the base lacks the thing being mutated
         result(False, f"mutation could not be applied ({name}): {type(e).__name__}: {e}"); return
     # round-trip through YAML text so the mutated document is valid YAML, not just a dict
-    for doc in (r, f):
+    for doc in (r, f, p):
         yaml.load(yaml.dump(doc, Dumper=D), Loader=L)
-    if (r, f, srcs) == (BR, BF, CLEAN_SRC) and (which != "tools" or t == TGOOD):
+    if (r, f, p, srcs) == (BR, BF, BP, CLEAN_SRC) and (which != "tools" or t == TGOOD):
         result(False, f"mutation changed nothing ({name})"); return
     SRC_OVER.clear()
     if which == "src" or BR is RS:
         SRC_OVER.update(srcs)
-    found = judge(r, f, t)
+    found = judge(r, f, p, t)
     SRC_OVER.clear()
     result(any(expect in b for b in found), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in found) else f"; saw {found}"))
 
@@ -1224,9 +1310,9 @@ def drv(job): return next(s for s in job["steps"] if "persona-uat.py" in str(s.g
 def up(job): return next(s for s in job["steps"] if "upload-artifact" in str(s.get("uses", "")))
 
 # release job
-mutate("rc job no longer waits for build", "needs are not exactly build", lambda j: j.update(needs=[]))
-mutate("rc job runs for every tag", "does not run only for a release-candidate tag", lambda j: j.update({"if": "${{ startsWith(github.ref, 'refs/tags/v') }}"}))
-mutate("rc job's predicate gains && false", "does not run only for a release-candidate tag", lambda j: j.update({"if": str(j["if"]).rstrip("} ") + " && false }}"}))
+mutate("rc job gets a needs (the digests are its input, not a dependency)", "persona-uat-rc has needs", lambda j: j.update(needs=["build-assemble"]))
+mutate("rc job runs whenever the gate is on, with or without digests", "does not run only behind the PERSONA_UAT_ENABLED gate, and only when called", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' }}"}))
+mutate("rc job's predicate gains && false", "does not run only behind the PERSONA_UAT_ENABLED gate, and only when called", lambda j: j.update({"if": str(j["if"]).rstrip("} ") + " && false }}"}))
 mutate("rc job continue-on-error", "continue-on-error on the job", lambda j: j.update({"continue-on-error": "true"}))
 mutate("rc driver step continue-on-error", "the driver step has continue-on-error", lambda j: drv(j).update({"continue-on-error": "true"}))
 mutate("rc driver step if: false", "the driver step has an if", lambda j: drv(j).update({"if": "false"}))
@@ -1239,7 +1325,7 @@ mutate("rc job uses a kind action", "is not on the persona job's allowlist", lam
 mutate("rc job runs docker itself", "uses docker or buildx", lambda j: j["steps"].insert(0, {"run": "docker run -d jenkins/jenkins:lts"}))
 mutate("rc secrets set at job level", "set at job level", lambda j: j.setdefault("env", {}).update(ANTHROPIC_WORKSPACE_ID="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
 mutate("rc image argument is the raw digests JSON", "takes the image from something other than Build's own image-production digest",
-       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.build\.outputs\.digests\)\['image-production'\]", "needs.build.outputs.digests", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
+       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(inputs\.digests\)\['image-production'\]", "inputs.digests", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
 mutate("rc driver run interpolates an expression", "interpolates an expression into its run script", lambda j: drv(j).update(run=drv(j)["run"].replace('"$PERSONA_UAT_IMAGE"', '"${{ github.ref_name }}"')))
 mutate("weekly driver run interpolates an expression", "interpolates an expression into its run script", lambda j: drv(j).update(run=drv(j)["run"].replace('"$PERSONA_UAT_IMAGE"', '"${{ steps.resolve.outputs.image }}"')), "fresh")
 mutate("rc other step interpolates an expression", "interpolates an expression into its run script", lambda j: j["steps"].insert(0, {"run": 'echo "${{ github.event.head_commit.message }}"'}))
@@ -1256,7 +1342,7 @@ mutate("rc upload runs before the driver", "immediately after the driver", _uplo
 mutate("rc a setup step runs before the driver", "a run step before the driver other than", lambda j: j["steps"].insert(j["steps"].index(drv(j)), {"run": "echo hi"}))
 mutate("rc driver step ends with || true", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
 mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than Build's own image-production digest",
-       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.build\.outputs\.digests\)\['image-production'\]", "github.ref_name", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
+       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(inputs\.digests\)\['image-production'\]", "github.ref_name", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
 mutate("rc job leaves the persona-uat environment", "persona-uat environment", lambda j: j.update(environment="release"))
 mutate("rc model id hard-coded", "PERSONA_UAT_MODEL is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j).setdefault("env", {}).update(PERSONA_UAT_MODEL="m-1"))
 mutate("rc owner variables moved off the driver step onto the upload step", "is not exactly secrets.PERSONA_UAT_MODEL",
@@ -1286,7 +1372,7 @@ mutate("rc job copies to another registry", "is not a push/digest to localhost:5
 mutate("rc job logs in to a registry", "is not a push/digest to localhost:5000", lambda j: j["steps"].insert(0, {"run": "crane auth login ghcr.io -u x -p y"}))
 mutate("rc job pushes to localhost on another port", "is not a push/digest to localhost:5000", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(run="crane push candidate/images/production localhost:5001/cache:rc"))
 mutate("rc job compares nothing after the push", "does not compare the pushed digest", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(run='crane push candidate/images/production localhost:5000/cache:rc\necho image-production'))
-mutate("rc job takes the digests from somewhere else", "does not take the attested digests from needs.build.outputs.digests", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(env={"DIGESTS": "${{ needs.check.outputs.digests }}"}))
+mutate("rc job takes the digests from somewhere else", "does not take the attested digests from inputs.digests", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(env={"DIGESTS": "${{ needs.check.outputs.digests }}"}))
 mutate("rc job pushes a different layout (fips)", "does not push Build's production layout", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).update(run=next(x for x in j["steps"] if "crane push" in str(x.get("run", "")))["run"].replace("candidate/images/production", "candidate/images/fips")))
 mutate("rc job downloads another artifact", "must download exactly Build's `images` artifact", lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", ""))).update({"with": {"name": "dist", "path": "candidate/images"}}))
 mutate("rc job downloads with an unlisted digest", "must download exactly Build's `images` artifact", lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", ""))).update({"uses": "actions/download-artifact@" + "d" * 40}))
@@ -1308,17 +1394,17 @@ mutate("rc driver allows another listener port", "must be given --allow-listen 5
 mutate("rc driver allows a second listener port", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"] + " --allow-listen 22"))
 mutate("weekly driver allows a listener", "outside the contract", lambda j: drv(j).update(run=drv(j)["run"] + " --allow-listen 5000"), "fresh")
 mutate("rc job grants packages read", "permissions are not exactly", lambda j: j["permissions"].update(packages="read"))
-mutate("rc job reads the job token", "names github.token", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(DIGESTS="${{ needs.build.outputs.digests }}", T="${{ github.token }}"))
+mutate("rc job reads the job token", "names github.token", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(DIGESTS="${{ inputs.digests }}", T="${{ github.token }}"))
 mutate("rc job reads a registry secret", "reads secrets.GHCR_TOKEN", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(P="${{ secrets.GHCR_TOKEN }}"))
-mutate("rc job needs release as well", "needs are not exactly build", lambda j: j.update(needs=["build", "release"]))
-mutate("rc job runs in a dry run", "gate: a dry run on an rc tag", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}))
-mutate("rc job also runs on a final tag", "a final tag with the gate on runs the job", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}))
+mutate("call needs release as well", "needs are not exactly build-assemble", lambda j: j.update(needs=["build-assemble", "release"]), "call")
+mutate("call runs in snapshot mode (no mode guard)", "in snapshot mode on an rc tag", lambda j: j.update({"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}), "call")
+mutate("call also runs on a final tag", "a final tag with the gate on runs the job", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') }}"}), "call")
 mutate("rc checkout keeps credentials", "persist-credentials must be false", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40, "with": {}}))
 mutate("rc image is a literal, not an expression", "takes the image from something other than Build's own image-production digest",
-       lambda j: set_image(j, "localhost:5000/cache@fromJSON(needs.build.outputs.digests)['image-production']"))
+       lambda j: set_image(j, "localhost:5000/cache@fromJSON(inputs.digests)['image-production']"))
 mutate("rc image is a fixed digest", "takes the image from something other than Build's own image-production digest",
        lambda j: set_image(j, "ghcr.io/x/cache@sha256:" + "c" * 64))
-mutate("rc gains a skipped dependency (decide)", "needs are not exactly build", lambda j: j.update(needs=list(j["needs"]) + ["decide"]))
+mutate("call gains a skipped dependency (decide)", "needs are not exactly build-assemble", lambda j: j.update(needs=["build-assemble", "decide"]), "call")
 mutate("rc upload may fail without failing the job", "without retaining its transcripts", lambda j: up(j).update({"continue-on-error": "true"}))
 mutate("rc driver step carries an extra credential", "outside the contract", lambda j: drv(j).setdefault("env", {}).update(AWS_SECRET_ACCESS_KEY="x"))
 mutate("rc identity step writes one file and the driver reads another", "which is the file the driver step reads",
@@ -1336,7 +1422,7 @@ mutate("rc pinned-pip step loses --require-hashes", "expected exactly one pinned
        lambda j: next(s for s in j["steps"] if is_pin_pip(s)).update(run=PIN_PIP_RUN.replace(" --require-hashes", "")))
 mutate("rc SDK install runs before the checkout", "expected exactly one hash-pinned SDK install",
        lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "persona-uat-requirements" in str(s.get("run", "")))))
-mutate("persona-uat is added to patch-failed.needs (a persona failure would open a public issue)", "lists persona-uat in needs", lambda d: d["jobs"]["patch-failed"].update(needs=["image", "promotion", "persona-uat"]), "rel_wf")
+mutate("persona-uat is added to patch-failed.needs (a persona failure would open a public issue)", "lists a persona job in needs", lambda d: d["jobs"]["patch-failed"].update(needs=["image", "promotion", "persona-uat-rc"]), "rel_wf")
 def _tokvar(script):
     m = re.search(r"(?:const|let|var)\s+(\w+)\s*=\s*await\s+core\.getIDToken", script)
     return m.group(1) if m else "token"
@@ -1370,15 +1456,49 @@ mutate("rc job without the gate", "behind the PERSONA_UAT_ENABLED gate", lambda 
 mutate("weekly job without the gate", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": WKIF}), "fresh")
 mutate("rc gate compares another value", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": str(j["if"]).replace("== 'true'", "!= 'false'")}))
 mutate("weekly gate compares another value", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": str(j["if"]).replace("== 'true'", "!= 'false'")}), "fresh")
-mutate("rc gate OR-ed with the trigger", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": str(j["if"]).replace("' && startsWith", "' || startsWith")}))
+mutate("rc gate OR-ed with the trigger", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": str(j["if"]).replace("' && inputs.digests", "' || inputs.digests")}))
 mutate("rc gate moved to a step (the environment would be entered first)", "behind the PERSONA_UAT_ENABLED gate", lambda j: (j.update({"if": RCIF}), j["steps"][0].update(GATEST)))
 mutate("weekly gate moved to a step (the environment would be entered first)", "behind the PERSONA_UAT_ENABLED gate", lambda j: (j.update({"if": WKIF}), j["steps"][0].update(GATEST)), "fresh")
 mutate("rc gate also tested in a step", "tests the gate", lambda j: j["steps"][0].update(GATEST))
 mutate("weekly gate also tested in a step", "tests the gate", lambda j: j["steps"][0].update(GATEST), "fresh")
 mutate("rc workflow: another job enters the persona-uat environment", "outside the gated job", lambda d: d["jobs"].update(other={"environment": "persona-uat", "steps": [{"run": "true"}]}), "rel_wf")
-mutate("weekly workflow: another job enters the persona-uat environment", "outside the gated job", lambda d: d["jobs"].update(other={"environment": "persona-uat", "steps": [{"run": "true"}]}), "fresh_wf")
+mutate("persona-uat.yml: another job enters the persona-uat environment", "outside the gated job", lambda d: d["jobs"].update(other={"environment": "persona-uat", "steps": [{"run": "true"}]}), "persona_wf")
 mutate("rc workflow: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "rel_wf")
-mutate("weekly workflow: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "fresh_wf")
+mutate("persona-uat.yml: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "persona_wf")
+mutate("go-freshness.yml: another job enters the persona-uat environment", "outside the gated job", lambda d: d["jobs"].update(other={"environment": "persona-uat", "steps": [{"run": "true"}]}), "fresh_wf")
+mutate("go-freshness.yml: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "fresh_wf")
+# the wiring of the persona jobs after the reorganisation: the call in release.yml, the persona jobs in persona-uat.yml, none in go-freshness.yml (REQ-UAT-001-AC1, AC6)
+mutate("release.yml calls persona-uat.yml a second time", "exactly one job", lambda r: r["jobs"].update({"persona-uat-again": copy.deepcopy(r["jobs"]["persona-uat-rc"])}), "rel_wf")
+mutate("the call is renamed", "exactly one job, persona-uat-rc", lambda r: r["jobs"].update({"persona-uat": r["jobs"].pop("persona-uat-rc")}), "rel_wf")
+mutate("the call is not job-level `uses` of persona-uat.yml", "does not call", lambda j: j.update(uses="./.github/workflows/persona-uat.yml@main"), "call")
+mutate("call holds contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"), "call")
+mutate("call holds packages: write", "permissions are not exactly", lambda j: j["permissions"].update(packages="write"), "call")
+mutate("call holds no id-token", "permissions are not exactly", lambda j: j["permissions"].pop("id-token"), "call")
+mutate("call passes the secrets on (secrets: inherit)", "passes secrets to the called file", lambda j: j.update(secrets="inherit"), "call")
+mutate("call passes something else than Build's digests", "does not pass exactly Build's digests", lambda j: j.update({"with": {"digests": "${{ needs.release.outputs.digests }}"}}), "call")
+mutate("call loses the rc tag condition", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' }}"}), "call")
+mutate("call loses the gate", "does not run only in release mode", lambda j: j.update({"if": "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"}), "call")
+mutate("call in release mode only is spelled as a snapshot test the wrong way round", "does not run only in release mode", lambda j: j.update({"if": str(j["if"]).replace("!=", "==")}), "call")
+mutate("go-freshness.yml gets a persona job back", "outside persona-uat.yml", lambda f: f["jobs"].update({"persona-uat": {"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' }}", "runs-on": "ubuntu-24.04", "steps": [{"run": "true"}]}}), "fresh_wf")
+mutate("go-freshness.yml gets the Monday persona cron back", "Monday persona cron", lambda f: f["on"]["schedule"].append({"cron": "43 6 * * 1"}), "fresh_wf")
+mutate("persona-uat.yml is missing", "persona-uat.yml is missing", lambda: None, "absent")
+mutate("the persona jobs are split out of persona-uat.yml into release.yml", "outside persona-uat.yml", lambda r, p: r["jobs"].update({"persona-uat": p["jobs"].pop("persona-uat-rc")}), "split")
+mutate("the weekly job is split out of persona-uat.yml into release.yml", "outside persona-uat.yml", lambda r, p: r["jobs"].update({"persona-uat-weekly": p["jobs"].pop("persona-uat-weekly")}), "split")
+mutate("persona-uat.yml loses its workflow_call trigger", "triggers are not exactly", lambda p: p["on"].pop("workflow_call"), "persona_wf")
+mutate("persona-uat.yml gets a push trigger", "triggers are not exactly", lambda p: p["on"].update(push={"tags": ["v*"]}), "persona_wf")
+mutate("persona-uat.yml gets a third persona job", "jobs are not exactly", lambda p: p["jobs"].update({"persona-uat-extra": copy.deepcopy(p["jobs"]["persona-uat-rc"])}), "persona_wf")
+mutate("persona-uat.yml loses the rc job", "has no persona-uat-rc job", lambda p: p["jobs"].pop("persona-uat-rc"), "persona_wf")
+mutate("persona-uat.yml loses the weekly job", "has no persona-uat-weekly job", lambda p: p["jobs"].pop("persona-uat-weekly"), "persona_wf")
+mutate("the weekly job holds packages: write", "permissions are not exactly", lambda j: j["permissions"].update(packages="write"), "fresh")
+mutate("the rc job holds packages: write", "permissions are not exactly", lambda j: j["permissions"].update(packages="write"))
+mutate("the rc job holds contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"))
+def policy_case(name, expect, fn):
+    pol = copy.deepcopy(POLICY_GOOD); fn(pol); bd = []
+    judge_policy(pol, bd)
+    result(any(expect in b for b in bd), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
+policy_case("id-token policy still lists go-freshness.yml's persona job", "id-token-jobs.json lists the persona jobs", lambda pol: pol["jobs"].append({"workflow": "go-freshness.yml", "job": "persona-uat"}))
+policy_case("id-token policy lacks the weekly job of persona-uat.yml", "id-token-jobs.json lists the persona jobs", lambda pol: pol["jobs"].remove({"workflow": "persona-uat.yml", "job": "persona-uat-weekly"}))
+policy_case("id-token policy lacks the call in release.yml", "id-token-jobs.json lists the persona jobs", lambda pol: pol["jobs"].remove({"workflow": "release.yml", "job": "persona-uat-rc"}))
 mutate("weekly job resolves a fixed release tag", "does not resolve the LATEST release's image digest",
        lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run="gh release view v0.2.0 --json tagName; crane digest x"), "fresh")
 mutate("weekly driver is handed a fixed image", "does not hand the resolved latest-release image digest",
@@ -1468,7 +1588,7 @@ mutate("weekly crane install carries an env", "crane install step has a custom s
 mutate("weekly resolver has no GH_REPO", "needs env GH_REPO", lambda j: _resolver(j)["env"].pop("GH_REPO"), "fresh")
 mutate("weekly docs checkout of another repository", "checkout of another repository", lambda j: _docs_checkout(j)["with"].update(repository="evil/cache"), "fresh")
 mutate("rc checkout takes ref main", "release-candidate checkout is not of the candidate commit", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(ref="main"))
-mutate("rc job-level if: false", "does not run only for a release-candidate tag", lambda j: j.update({"if": "false"}))
+mutate("rc job-level if: false", "does not run only behind the PERSONA_UAT_ENABLED gate, and only when called", lambda j: j.update({"if": "false"}))
 mutate("rc checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}))
 mutate("rc SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
 mutate("rc runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}))
@@ -1555,7 +1675,7 @@ mutate("source: privileged=True", "starts a privileged container", lambda srcs: 
 
 # --- round 3: environment at EVERY scope (workflow, job, step) and the checkout/SDK prerequisites -----------------------------------------------------
 VEND = "cla" + "ude-fixture"        # a model name, assembled so no file names one
-for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
+for lab, w in (("release.yml", "rel_wf"), ("persona-uat.yml", "persona_wf"), ("go-freshness.yml", "fresh_wf")):
     mutate(f"{lab}: workflow-level env sets BASH_ENV", "env must be empty", lambda d: d.update(env={"BASH_ENV": "$(true)"}), w)
     mutate(f"{lab}: workflow-level env sets PATH", "env must be empty", lambda d: d.update(env={"PATH": "/tmp/x:/usr/bin"}), w)
     mutate(f"{lab}: workflow-level env sets a proxy", "env must be empty", lambda d: d.update(env={"HTTPS_PROXY": "http://x:1"}), w)
@@ -1571,6 +1691,7 @@ for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
     mutate(f"{lab}: workflow-level env holds a cloud credential", "workflow-level env", lambda d: d.update(env={"AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}"}), w)
     mutate(f"{lab}: workflow-level env carries the job token under another name", "workflow-level env", lambda d: d.update(env={"X": "${{ github.token }}"}), w)
 mutate("go-freshness.yml gets a workflow-level default shell", "workflow-level default shell", lambda d: d.update(defaults={"run": {"shell": "pwsh"}}), "fresh_wf")
+mutate("persona-uat.yml gets a workflow-level default shell", "workflow-level default shell", lambda d: d.update(defaults={"run": {"shell": "pwsh"}}), "persona_wf")
 mutate("rc upload with NO artifact name (the action defaults to 'artifact')", "no artifact name", lambda j: up(j)["with"].pop("name"))
 mutate("weekly upload with NO artifact name", "no artifact name", lambda j: up(j)["with"].pop("name"), "fresh")
 mutate("rc upload under another fixed name than the decrypt script downloads", "decrypt script downloads", lambda j: up(j)["with"].update(name="persona-uat-results"))
@@ -1710,7 +1831,7 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the compliance model id in the identity step's script", "names a model id", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).setdefault("with", {}).update(script=IDENT + "// ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}"), w)
     mutate(f"{lab} the model id in the driver's command text", "names a model id or a secret", lambda j: drv(j).update(run=drv(j)["run"] + ' --model "${{ secrets.PERSONA_UAT_MODEL }}"'), w)
     mutate(f"{lab} a model id reaches the artifact name", "artifact name", lambda j: up(j)["with"].update(name="persona-uat-${{ secrets.PERSONA_UAT_MODEL }}"), w)
-for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
+for lab, w in (("release.yml", "rel_wf"), ("persona-uat.yml", "persona_wf"), ("go-freshness.yml", "fresh_wf")):
     mutate(f"{lab}: workflow-level env holds the model id as a secret", "workflow-level env", lambda d: d.update(env={"PERSONA_UAT_MODEL": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
     mutate(f"{lab}: workflow-level env holds the compliance model id", "workflow-level env", lambda d: d.update(env={"PERSONA_UAT_COMPLIANCE_MODEL": "${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}"}), w)
     mutate(f"{lab}: workflow-level env aliases a model secret", "workflow-level env", lambda d: d.update(env={"X": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
