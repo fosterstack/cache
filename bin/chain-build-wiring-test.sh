@@ -621,7 +621,7 @@ hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
 hm fout    "AC2 the signed record written to another path" '--out "witness-${step#snapshot-}/$step-collection.json"' '--out out/x.json'
-hm fopen   "AC2 the step list is open" 'release-verify' '*'
+hm fopen   "AC2 the step list is open" 'release-apks' '*'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value' '| jq -r .value | tee /tmp/leak'
 hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
 hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
@@ -652,8 +652,8 @@ hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads w
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \
        '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
-hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-verify|' \
-    'in snapshot-evil|release-verify|'
+hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-apks|' \
+    'in snapshot-evil|release-apks|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -691,9 +691,10 @@ lm lcopy    "WIT1 the key copied into the record directory (it would be uploaded
 lm lcat     "WIT1 the key printed" 'rc=0' 'rc=0\ncat "$kd/key.pem"'
 lm lsigned  "WIT1 the record written under the signed name (it must end in .local.json: only Sign signs a trusted one)" '$step-collection.local.json' '$step-collection.json'
 lm lopen    "WIT1 the step list open" 'apk|build|rapk|rebuild|snapshot-apk' '*|apk'
-lm lrelease "WIT1 another Release step in the list (only release-verify, release-assets and release-postverify run locally; the rest keep the KMS helper)" 'snapshot-rebuild|release-verify|release-assets|release-postverify|scanners' 'snapshot-rebuild|release-verify|release-assets|release-postverify|release-sign|scanners'
+lm lrelease "WIT1 another Release step in the list (only release-verify, release-publish, release-assets and release-postverify run locally; release-apks and release-sign keep the KMS helper)" 'snapshot-rebuild|release-verify|release-publish|release-assets|release-postverify|scanners' 'snapshot-rebuild|release-verify|release-publish|release-assets|release-postverify|release-sign|scanners'
+lm lnorp    "WIT1 release-publish missing from the list (the release job runs it under the throwaway key, it holds no KMS role)" 'release-verify|release-publish|release-assets' 'release-verify|release-assets'
 lm larm64   "WIT1 an arm64 step in the list (Check has no arm64 step: its steps are scanners, acceptance and runtime on both chips)" '|scanners|acceptance|runtime)' '|scanners|acceptance|runtime|arm64)'
-lm lnorv    "WIT1 release-assets missing from the list (release-evidence runs it under the throwaway key, it holds no KMS role)" 'release-verify|release-assets|release-postverify' 'release-verify|release-postverify'
+lm lnorv    "WIT1 release-assets missing from the list (release-evidence runs it under the throwaway key, it holds no KMS role)" 'release-publish|release-assets|release-postverify' 'release-publish|release-postverify'
 lm lnopv    "WIT1 release-postverify missing from the list (release-evidence runs it under the throwaway key)" 'release-assets|release-postverify|scanners' 'release-assets|scanners'
 lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
@@ -1332,7 +1333,7 @@ text = ("name: Release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\n
         + job("release-compare", "[check, sign, sign-rebuild, sign-check]") + job("release-verify", "release-compare")
         + job("release", "[release-verify, release-compare]", AFTER_IF, {"contents": "write", "packages": "write"}, "release",
               "    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
-        + job("sign-release", "release", AFTER_IF, {"contents": "read", "id-token": "write", "packages": "write"}, "sign", KMS)
+        + job("sign-release", "[build-assemble, release]", AFTER_IF, {"contents": "read", "id-token": "write", "packages": "write"}, "sign", KMS)
         + job("release-evidence", "sign-release", AFTER_IF, {"contents": "write"})
         + """  decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
@@ -1402,7 +1403,8 @@ gr n19 "005-AC5 release-compare also lists build-assemble (build is reached thro
 gr n20 "005-AC5 release-verify does not need release-compare" '  release-verify:\n    needs: release-compare' '  release-verify:\n    needs: check' "release-verify must need exactly"
 gr n21 "005-AC5 release does not need release-verify" 'needs: [release-verify, release-compare]' 'needs: [release-compare]' "release must need exactly"
 gr n22 "005-AC5 release does not need release-compare" 'needs: [release-verify, release-compare]' 'needs: [release-verify]' "release must need exactly"
-gr n23 "005-AC5 sign-release does not wait for release (it would sign what is not published)" '  sign-release:\n    needs: release' '  sign-release:\n    needs: release-verify' "sign-release must need exactly"
+gr n23 "005-AC5 sign-release does not wait for release (it would sign what is not published)" '  sign-release:\n    needs: [build-assemble, release]' '  sign-release:\n    needs: [build-assemble, release-verify]' "sign-release must need exactly"
+gr n23b "ruling Q-e sign-release does not need build-assemble (it reads Build's digest list through that job's output)" '  sign-release:\n    needs: [build-assemble, release]' '  sign-release:\n    needs: release' "sign-release must need exactly"
 gr n24 "005-AC5 release-evidence does not wait for sign-release (it would attach evidence the signatures are not part of)" '  release-evidence:\n    needs: sign-release' '  release-evidence:\n    needs: release' "release-evidence must need exactly"
 gr n25 "005-AC5 release-evidence waits for release too (it has one need, sign-release)" '  release-evidence:\n    needs: sign-release' '  release-evidence:\n    needs: [release, sign-release]' "release-evidence must need exactly"
 # if: gate G on build-freeze only, guard S on the sign jobs, S and the candidate rule on release, sign-release and release-evidence (REQ-CHAIN-005-AC5, REQ-CHAIN-007-AC14), `inputs.mode != 'snapshot'` on the Check jobs, none elsewhere
@@ -1424,7 +1426,7 @@ gr i15 "005-AC5 sign-rebuild without the guard S" "  sign-rebuild:\n    needs: [
 gr i16 "005-AC5 sign-check without the guard S" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check]\n" "sign-check must carry exactly the if"
 gr i17 "005-AC5 sign-check with the candidate rule too (only the jobs after the signatures carry it)" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n" "  sign-check:\n    needs: [build-assemble, check]\n    if: \${{ $GUARD_S$RCS }}\n" "sign-check must carry exactly the if"
 gr i18 "005-AC5 release without the candidate rule (a release candidate would enter the environment release)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: $SIGNIF\n" "release must carry exactly the if"
-gr i19 "005-AC5 sign-release without the candidate rule (a release candidate would enter the environment sign again)" "  sign-release:\n    needs: release\n    if: \${{ $GUARD_S$RCS }}\n" "  sign-release:\n    needs: release\n    if: $SIGNIF\n" "sign-release must carry exactly the if"
+gr i19 "005-AC5 sign-release without the candidate rule (a release candidate would enter the environment sign again)" "  sign-release:\n    needs: [build-assemble, release]\n    if: \${{ $GUARD_S$RCS }}\n" "  sign-release:\n    needs: [build-assemble, release]\n    if: $SIGNIF\n" "sign-release must carry exactly the if"
 gr i20 "005-AC5 release-evidence without the candidate rule" "  release-evidence:\n    needs: sign-release\n    if: \${{ $GUARD_S$RCS }}\n" "  release-evidence:\n    needs: sign-release\n    if: $SIGNIF\n" "release-evidence must carry exactly the if"
 gr i21 "005-AC5 release without the guard S (a branch run would not be refused by its own if)" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ !contains(github.ref_name, '-') }}\n" "release must carry exactly the if"
 gr i22 "005-AC5 release runs when a stage failed (if: always())" "  release:\n    needs: [release-verify, release-compare]\n    if: \${{ $GUARD_S$RCS }}\n" "  release:\n    needs: [release-verify, release-compare]\n    if: always()\n" "release must carry exactly the if"
@@ -1440,8 +1442,8 @@ AFTERIF="\${{ $GUARD_S$RCS }}"
 gr e-sign   "ruling 1 sign is in another environment than sign (the KMS role's trust names the environment sign)" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign:\n    needs: build-assemble\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign must be in the environment sign"
 gr e-signr  "ruling 1 sign-rebuild is in another environment than sign" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-rebuild:\n    needs: [build-assemble, rebuild-assemble]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-rebuild must be in the environment sign"
 gr e-signc  "ruling 1 sign-check is in another environment than sign" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-check:\n    needs: [build-assemble, check]\n    if: $SIGNIF\n    runs-on: ubuntu-24.04\n    environment: other\n" "sign-check must be in the environment sign"
-gr e-signrel "ruling 1 sign-release is in the environment release (it is in the environment sign)" "  sign-release:\n    needs: release\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-release:\n    needs: release\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: release\n" "sign-release must be in the environment sign"
-gr e-signnone "ruling 1 sign-release without an environment" "  sign-release:\n    needs: release\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-release:\n    needs: release\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n" "sign-release must be in the environment sign"
+gr e-signrel "ruling 1 sign-release is in the environment release (it is in the environment sign)" "  sign-release:\n    needs: [build-assemble, release]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-release:\n    needs: [build-assemble, release]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: release\n" "sign-release must be in the environment sign"
+gr e-signnone "ruling 1 sign-release without an environment" "  sign-release:\n    needs: [build-assemble, release]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n    environment: sign\n" "  sign-release:\n    needs: [build-assemble, release]\n    if: $AFTERIF\n    runs-on: ubuntu-24.04\n" "sign-release must be in the environment sign"
 gr e1  "ruling 1 release-compare in the environment sign" '  release-compare:\n' '  release-compare:\n    environment: sign\n' "release-compare must be in no environment"
 gr e2  "ruling 1 release in the environment sign (it is in the environment release)" '    environment: release\n' '    environment: sign\n' "release must be in the environment release"
 gr e3  "ruling 2 release-evidence in the environment sign" '  release-evidence:\n' '  release-evidence:\n    environment: sign\n' "release-evidence must be in no environment"
@@ -3673,7 +3675,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1332
+EXPECT=1334
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
