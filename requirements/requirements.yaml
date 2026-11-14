@@ -2827,7 +2827,7 @@ requirements:
       - id: REQ-SUP-001-AC1
         given: "Dependabot's configuration"
         when: "it is read"
-        then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) wait 7 days (a 7-day cooldown, default-days 7 and nothing else), the product's gomod entry for the root is unchanged, and no docker entry exists (rule 61: there is no Dockerfile)"
+        then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) wait 7 days (a 7-day cooldown, default-days 7 and nothing else), the product's gomod entry for the root is unchanged, and no docker entry exists (the repository has no container build file for it to watch)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC2
