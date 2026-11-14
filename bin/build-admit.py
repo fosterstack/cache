@@ -47,8 +47,9 @@ RC_BYTES = "bin/chain-bytes-sha.py"
 RC_TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SIGNER = "bin/admission-tag-signer.py"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
-# gate 7 (REQ-REL-012-AC7): main's judge, its helper and the writers policy, read from origin/main into a scratch root and never taken from the tagged commit
+# gate 7 (REQ-REL-012-AC7): main's judge, its helper, the writers policy and (when main has it) the owner-decision items, read from origin/main into a scratch root and never taken from the tagged commit
 AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
+AUDIT_ITEMS = ".auditor/accepted-items.json"      # the judge also reads it when main has it: an open owner-decision item holds the tag
 POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER)
 
 
@@ -274,8 +275,10 @@ def check_audit_approval(ctx):
     The decision is main's judge (bin/audit-record-judge.sh --release), the only place that knows what a patch tag is: it reads no record
     for one. Exit 0 passes; exit 1 (no or bad record, no or ambiguous line), exit 3 (a GitHub API error) and anything else refuse."""
     root = os.path.join(ctx.tmp, "audit-root")
-    for path in AUDIT_FILES:
+    for path in AUDIT_FILES + (AUDIT_ITEMS,):
         data = git_show("origin/main:" + path)
+        if data is None and path == AUDIT_ITEMS:
+            continue
         if data is None:
             raise Refusal("audit-approval", "%s is not on origin/main, so the whole-release audit cannot be judged" % path)
         os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
