@@ -2713,11 +2713,14 @@ permissions:
 jobs:
   build:
     permissions:
-      contents: read
+      contents: write
+      packages: write
+      attestations: write
+      id-token: write
       checks: read
       statuses: read
       pull-requests: read
-    uses: ./.github/workflows/stage-build.yml
+    uses: ./.github/workflows/release.yml
     with:
       mode: snapshot
   scanners:
@@ -2737,71 +2740,39 @@ jobs:
         run: echo anything at all, including secrets ${{ secrets.X }}
 EOF
 cl() { replace "$work/caller.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" callers "$work/$1.yml"; return 0; }
-# scan.yml also calls Rebuild in snapshot mode (the PR gate keeps rule 31's two-assembly check); the judge keys that on the file name
-mkdir -p "$work/scanfx" "$work/rescanfx"
-python3 - "$work" <<'PY'
-import sys
-w = sys.argv[1]
-t = open(w + "/caller.yml").read()
-rebuild = """  rebuild:
-    needs: build
-    permissions:
-      contents: read
-    uses: ./.github/workflows/stage-reproducibility.yml
-    with:
-      mode: snapshot
-"""
-open(w + "/scanfx/scan.yml", "w").write(t.replace("  scanners:", rebuild + "  scanners:", 1))
-open(w + "/rescanfx/main-candidate-rescan.yml", "w").write(t)
-PY
-sc() { replace "$work/scanfx/scan.yml" "$work/scanfx/$1.yml" "$3" "$4" && cp "$work/scanfx/$1.yml" "$work/scanfx/scan.yml.$1" \
-        && mkdir -p "$work/scanfx/$1" && cp "$work/scanfx/$1.yml" "$work/scanfx/$1/scan.yml" && expect caught "$2" "$5" callers \
-            "$work/scanfx/$1/scan.yml";
-        return 0;
-        }
-expect ok "AC14 fixture: build calls stage-build.yml with mode: snapshot, exactly the stage's permissions; the scanner and manifests jobs are not read" "" \
+expect ok "AC14 fixture: build calls release.yml with mode: snapshot, exactly the stage's permissions; the scanner and manifests jobs are not read" "" \
        callers "$work/caller.yml"
 cl c1  "AC14 mode: release" "mode: snapshot" "mode: release" "must pass exactly with"
 cl c2  "AC14 an extra input (hostile)" "      mode: snapshot" "      mode: snapshot\n      hostile: true" "must pass exactly with"
 cl c3  "AC14 no input at all (the stage's default is release)" "    with:\n      mode: snapshot\n" "" "must pass exactly with"
 cl c4  "AC14 secrets: inherit" "      mode: snapshot" "      mode: snapshot\n    secrets: inherit" "keys outside"
-cl c5 "AC14 an if on the call" "    uses: ./.github/workflows/stage-build.yml" \
-    "    if: github.event_name == 'push'\n    uses: ./.github/workflows/stage-build.yml" "keys outside"
-cl c6 "AC14 the old wider grants (packages and attestations write)" "      pull-requests: read\n    uses" \
-    "      pull-requests: read\n      packages: write\n      attestations: write\n    uses" \
-       "exactly the permissions"
-cl c7  "AC14 narrower grants than the stage requests (a startup_failure with zero jobs)" "      statuses: read\n" "" "exactly the permissions"
-cl c8 "AC14 a call of the deleted stage-image.yml" "  scanners:" \
-    "  assemble:\n    needs: build\n    uses: ./.github/workflows/stage-image.yml\n  scanners:" "stage-image.yml"
-cl c9 "AC14 a call of stage-sign.yml (a proof workflow never signs)" "  scanners:" \
-    "  sign:\n    needs: build\n    uses: ./.github/workflows/stage-sign.yml\n  scanners:" "stage-sign.yml"
-cl c10 "AC14 a call of stage-promote.yml (a proof workflow never releases)" "  scanners:" \
-    "  release:\n    needs: build\n    uses: ./.github/workflows/stage-promote.yml\n  scanners:" \
-       "stage-promote.yml"
-cl c11 "AC14 a call of stage-reproducibility.yml in a file that is not scan.yml's shape (a bare call: no mode, no needs)" "  scanners:" \
-    "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  scanners:" "rebuild must pass"
-cl c12 "AC14 a second call of stage-build.yml" "  scanners:" \
-    "  build2:\n    uses: ./.github/workflows/stage-build.yml\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
+cl c5 "AC14 an if on the call" "    uses: ./.github/workflows/release.yml" \
+    "    if: github.event_name == 'push'\n    uses: ./.github/workflows/release.yml" "keys outside"
+cl c6 "AC14 a grant beyond the ceiling (actions: write)" "      pull-requests: read\n    uses" \
+    "      pull-requests: read\n      actions: write\n    uses" "static ceiling"
+cl c7 "AC14 a missing grant (id-token: write gone: GitHub refuses the called file's jobs, startup_failure)" "      id-token: write\n" "" "static ceiling"
+cl c8 "AC14 a call of a stage file (the five stage files are deleted)" "  scanners:" \
+    "  assemble:\n    needs: build\n    uses: ./.github/workflows/stage-build.yml\n  scanners:" "allowlist"
+cl c9 "AC14 a call of a stage-sign.yml (a proof workflow never signs)" "  scanners:" \
+    "  sign:\n    needs: build\n    uses: ./.github/workflows/stage-sign.yml\n  scanners:" "allowlist"
+cl c10 "AC14 a rebuild caller job (release.yml's snapshot mode runs Rebuild itself)" "  scanners:" \
+    "  rebuild:\n    needs: build\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
+cl c11 "AC14 a call of persona-uat.yml" "  scanners:" "  persona:\n    uses: ./.github/workflows/persona-uat.yml\n  scanners:" "allowlist"
+cl c12 "AC14 a second call of release.yml" "  scanners:" \
+    "  build2:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
 cl c13 "AC14 the workflow can be called (REQ-SCAN-015)" "  pull_request:\n" "  pull_request:\n  workflow_call:\n" "workflow_call"
 # THE ALLOWLIST (step-6 round 1): any other job-level `uses` is refused whatever its form
 SB="fosterstack/cache/.github/workflows"
-cl a1 "AC14 allowlist: build calls stage-build.yml with an @ref" "uses: ./.github/workflows/stage-build.yml" \
-    "uses: ./.github/workflows/stage-build.yml@main" "must call exactly"
-cl a2  "AC14 allowlist: build calls the repository-qualified stage-build.yml" "uses: ./.github/workflows/stage-build.yml" \
-       "uses: $SB/stage-build.yml@1111111111111111111111111111111111111111" "must call exactly"
-cl a3  "AC14 allowlist: a second job build2 calls stage-build.yml in release mode" "  scanners:" \
-       "  build2:\n    uses: ./.github/workflows/stage-build.yml\n    with:\n      mode: release\n  scanners:" "allowlist"
-cl a4  "AC14 allowlist: a repository-qualified stage-build.yml under another job name" "  scanners:" \
-       "  other:\n    uses: $SB/stage-build.yml@1111111111111111111111111111111111111111\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
+cl a1 "AC14 allowlist: build calls release.yml with an @ref" "uses: ./.github/workflows/release.yml" \
+    "uses: ./.github/workflows/release.yml@main" "must call exactly"
+cl a2  "AC14 allowlist: build calls the repository-qualified release.yml" "uses: ./.github/workflows/release.yml" \
+       "uses: $SB/release.yml@1111111111111111111111111111111111111111" "must call exactly"
+cl a3  "AC14 allowlist: a second job build2 calls release.yml in release mode" "  scanners:" \
+       "  build2:\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: release\n  scanners:" "allowlist"
+cl a4  "AC14 allowlist: a repository-qualified release.yml under another job name" "  scanners:" \
+       "  other:\n    uses: $SB/release.yml@1111111111111111111111111111111111111111\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
 cl a5  "AC14 allowlist: a repository-qualified stage-sign.yml" "  scanners:" "  other:\n    uses: $SB/stage-sign.yml@main\n  scanners:" "allowlist"
-cl a6  "AC14 allowlist: release.yml itself" "  scanners:" "  other:\n    uses: ./.github/workflows/release.yml\n  scanners:" "allowlist"
-cl a7  "AC14 allowlist: stage-authorize.yml" "  scanners:" "  other:\n    uses: ./.github/workflows/stage-authorize.yml\n  scanners:" "allowlist"
-cl a8  "AC14 allowlist: stage-verify.yml" "  scanners:" "  other:\n    uses: ./.github/workflows/stage-verify.yml\n  scanners:" "allowlist"
-cl a9 "AC14 allowlist: stage-acceptance-predicate.yml" "  scanners:" \
-    "  other:\n    uses: ./.github/workflows/stage-acceptance-predicate.yml\n  scanners:" "allowlist"
-cl a10 "AC14 allowlist: stage-promote.yml with an @ref" "  scanners:" "  other:\n    uses: ./.github/workflows/stage-promote.yml@v1\n  scanners:" "allowlist"
-cl a11 "AC14 allowlist: stage-reproducibility.yml under a name that is not rebuild" "  scanners:" \
-       "  reproducibility:\n    uses: ./.github/workflows/stage-reproducibility.yml\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
+cl a8  "AC14 allowlist: any other local workflow file" "  scanners:" "  other:\n    uses: ./.github/workflows/ci.yml\n  scanners:" "allowlist"
 cl a12 "AC14 allowlist: a job-level uses of an action-like reference" "  scanners:" \
     "  other:\n    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n  scanners:" "allowlist"
 printf '' > "$work/empty.yml"
@@ -2812,43 +2783,18 @@ printf 'on:\n  pull_request:\njobs:\n' > "$work/jobsnull.yml"
 expect caught "AC14 an empty jobs key is refused" "jobs must be a non-empty mapping" callers "$work/jobsnull.yml"
 printf 'on:\n  pull_request:\njobs:\n  build: nonsense\n' > "$work/jobscalar.yml"
 expect caught "AC14 a job that is not a mapping is refused" "is not a mapping" callers "$work/jobscalar.yml"
-# REQ-CHAIN-006-AC10 (PR 3): scan.yml no longer calls an acceptance stage (stage-acceptance-artifacts.yml is gone; the Linux-only archive set is checked by Check, REQ-PLAT-001-AC1)
-ACC="  artifact-acceptance:\n    needs: build\n    permissions:\n      contents: read\n      packages: read\n    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist\n"
-replace "$work/caller.yml" "$work/a13.yml" "  scanners:" "${ACC}  scanners:" \
-  && expect caught "AC14 allowlist: an artifact-acceptance call of the deleted stage is refused (PR 3 removed it)" "allowlist" callers "$work/a13.yml"
-mkdir -p "$work/a14"; cp "$work/a13.yml" "$work/a14/main-candidate-rescan.yml"
-expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-acceptance call" "allowlist" callers "$work/a14/main-candidate-rescan.yml"
-expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
-expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
+# AC14's stale artifact-acceptance call is gone: the same call of any acceptance file is refused as one more job-level uses
+cl a13 "AC14 allowlist: an artifact-acceptance job calling a stage-acceptance file is refused" "  scanners:" \
+    "  artifact-acceptance:\n    needs: build\n    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n  scanners:" "allowlist"
+expect ok "AC14 fixture scan.yml and main-candidate-rescan.yml: build only" "" callers "$work/caller.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
-SCAN_REBUILD="  rebuild:\n    needs: build\n    permissions:\n      contents: read\n"
-SCAN_REBUILD="$SCAN_REBUILD    uses: ./.github/workflows/stage-reproducibility.yml\n    with:\n      mode: snapshot\n"
-sc s1 "AC14 scan.yml without the Rebuild call (the PR gate would lose rule 31's two-assembly check)" \
-      "$SCAN_REBUILD" "" "must also call Rebuild"
-sc s2 "AC14 scan.yml's rebuild in release mode" "      mode: snapshot\n  scanners:" "      mode: release\n  scanners:" "rebuild must pass exactly"
-sc s3 "AC14 scan.yml's rebuild with an extra input" "      mode: snapshot\n  scanners:" "      mode: snapshot\n      hostile: true\n  scanners:" \
-    "rebuild must pass exactly"
-sc s4 "AC14 scan.yml's rebuild that needs nothing (it could run before Build)" "  rebuild:\n    needs: build\n" "  rebuild:\n" "must need exactly build"
-sc s5 "AC14 scan.yml's rebuild with contents: write" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
-      "      contents: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
-sc s6 "AC14 scan.yml's rebuild with a packages write grant" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
-      "      contents: read\n      packages: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
-sc s7 "AC14 scan.yml's rebuild with secrets" "      mode: snapshot\n  scanners:" "      mode: snapshot\n    secrets: inherit\n  scanners:" "keys outside"
-mkdir -p "$work/rescanfx2"; cp "$work/scanfx/scan.yml" "$work/rescanfx2/main-candidate-rescan.yml"
-expect caught "AC14 main-candidate-rescan.yml calls Rebuild too (it needs none)" "calls Build only" callers "$work/rescanfx2/main-candidate-rescan.yml"
 # (B) the callers' grants are a STATIC CEILING: read only, whatever the stage asks for (the building jobs hold no identity token)
-cl w1 "AC14 ceiling: contents: write on the build call" "      contents: read\n      checks: read" "      contents: write\n      checks: read" "static ceiling"
-cl w2 "AC14 ceiling: packages: write on the build call" "      pull-requests: read\n    uses" "      pull-requests: read\n      packages: write\n    uses" \
-    "static ceiling"
-cl w3 "AC14 ceiling: attestations: write on the build call" "      pull-requests: read\n    uses" \
-    "      pull-requests: read\n      attestations: write\n    uses" "static ceiling"
-cl w6 "AC14 ceiling: id-token: write on the build call (the building jobs hold no identity token, so the caller may not grant one: owner Oct 22)" "      pull-requests: read\n    uses" \
-    "      pull-requests: read\n      id-token: write\n    uses" "exactly the permissions"
-sc s8 "AC14 scan.yml's rebuild with id-token: write (the building jobs hold none)" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
-      "      contents: read\n      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "exactly the permissions"
+cl w1 "AC14 ceiling: contents narrowed to read on the build call" "      contents: write\n" "      contents: read\n" "static ceiling"
+cl w2 "AC14 ceiling: packages write gone from the build call" "      packages: write\n" "" "static ceiling"
+cl w3 "AC14 ceiling: attestations write gone from the build call" "      attestations: write\n" "" "static ceiling"
 cl w4 "AC14 ceiling: checks: write on the build call" "      checks: read" "      checks: write" "static ceiling"
 cl w5 "AC14 ceiling: statuses: write on the build call" "      statuses: read" "      statuses: write" "static ceiling"
-cl w6 "AC14 ceiling: pull-requests: write on the build call" "      pull-requests: read" "      pull-requests: write" "static ceiling"
+cl w7 "AC14 ceiling: pull-requests: write on the build call" "      pull-requests: read" "      pull-requests: write" "static ceiling"
 replace "$work/caller.yml" "$work/c15.yml" "echo anything at all, including secrets" "echo changed" \
   && expect ok "AC14 an edit inside the manifests job (cache's REQ-REL-004-AC5) does not change the verdict" "" callers "$work/c15.yml"
 replace "$work/caller.yml" "$work/c16.yml" "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact" \
@@ -3562,8 +3508,8 @@ then ok "REQ-REL-010-AC4/AC5 a script row without a runs list is no runner of bi
 else bad "REQ-REL-010-AC4/AC5 the runs-row check on rows without runs or with a foreign runner"
 fi
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
-expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
-expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
+expect ok "AC14 the real scan.yml calls release.yml in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
+expect ok "AC14 the real main-candidate-rescan.yml calls release.yml in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
