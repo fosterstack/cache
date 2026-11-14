@@ -902,9 +902,11 @@ FXD_46=${FXD_46//@@SIGNLINE@@/$SIGNLINE}
 caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "$FXD_46"
 caught "AC1 a job with two permissions: keys (the second the benign one)" '    permissions:\n      contents: read\n      id-token: write' '    permissions: write-all\n    permissions:\n      contents: read\n      id-token: write'
 caught "AC1 two top-level permissions: keys (the second the benign one)" 'permissions:\n  contents: read\njobs' "permissions: write-all\npermissions:\n  contents: read\njobs"
-caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
-caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh cosign' 'run: '$'\u00a0''bash bin/install-scanner.sh cosign'
-caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE"$'\u200b'
+# UTF-8 bytes, not $'\u...': bash leaves \u as text under LC_ALL=C
+NBSP=$(printf '\xc2\xa0'); ZWSP=$(printf '\xe2\x80\x8b')
+caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE$NBSP"
+caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh cosign' "run: ${NBSP}bash bin/install-scanner.sh cosign"
+caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE$ZWSP"
 okmut() { if mutate "$1" "$2" "$3"; then expect ok "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi; }
 caught "AC1 Sign judge: runs-on ubuntu-. is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.'
 caught "AC1 Sign judge: runs-on ubuntu-24..04 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-24..04'
@@ -3462,7 +3464,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='80b23e1c4c961241d91b353f012c4863cc7c68bc3d5d2a495df98b4b329f6529'
+FX_PIN='989e09128fd5ed03a80cb85ca7a297ff97a12f96fb2da68688d3c4211aec23f0'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
