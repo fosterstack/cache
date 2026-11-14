@@ -60,6 +60,14 @@ def name_version(purl_or_id):
     return name.lower(), ver
 
 
+def vex_versions(purl, name, ver):
+    """The versions a statement may write for a finding. Scanners write the Go standard library's version go1.27.2 where the statement's
+    pkg:golang/stdlib@1.27.2 has no prefix, so that package (a golang stdlib purl, or no purl) also tries the version without its prefix;
+    every other package keeps its version as written."""
+    go_stdlib = purl.partition("@")[0] == "pkg:golang/stdlib" if purl else name == "stdlib"
+    return [ver, ver[2:]] if go_stdlib and re.match(r"go\d", ver) else [ver]
+
+
 def same_pkg(a, b):
     """Names match exactly, or — when one side carries no namespace (busybox
     vs the busybox of another namespace) — by last path segment. Versions must be equal, except that a
@@ -270,7 +278,8 @@ def main(argv):
             if not pkg[0]:
                 pkg = ((c.get("name") or "?").lower(), c.get("version") or "")
             row = f"{vid} {pkg[0]}@{pkg[1]} ({sev})"
-            (suppressed if covered(idx, vid, pkg, image) else blocking).append(row)
+            is_covered = any(covered(idx, vid, (pkg[0], ver), image) for ver in vex_versions(c.get("purl"), pkg[0], pkg[1]))
+            (suppressed if is_covered else blocking).append(row)
     print(f"inspector {label}: {n_pkg} packages, {len(blocking)} finding(s), "
           f"{len(suppressed)} covered by the published VEX")
     for r in suppressed:
