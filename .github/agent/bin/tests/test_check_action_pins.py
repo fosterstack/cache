@@ -872,7 +872,7 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"   # main's gate workflow
-GATE_B = "f4b7f06c2c2025eb8587521ac974093b3ddf8265d85c259971624ca9ff0f3abe"   # the same file after this change
+GATE_B = "474800cf840be013282a83decd20b20ba8fc05ed359d15c6fca31f70e77d2d8e"   # the same file after this change
 # this change's edits to the gate workflow (old text, new text): its header, its notice and its sweep summary no
 # longer say that a run Dependabot triggered has no App credentials, and its sweep judges a green Dependabot head
 # again, for the reviewer's verdict only (publishing only when the conclusion differs); either variant is derived
@@ -911,7 +911,8 @@ GATE_HUNKS = (
      '            if [ "$last" = success ]; then\n'
      "              # a green Dependabot head did not change: only the reviewer's verdict "
      'can have\n'
-     '              GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; rc=$?\n'
+     '              rc=0\n'
+     '              GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT" || rc=$?\n'
      '              if [ "$rc" = 0 ]; then continue; fi\n'
      '              # a GitHub API error is no verdict: publish nothing, fail the run\n'
      '              if [ "$rc" = 3 ]; then fail=1; continue; fi\n'
@@ -935,6 +936,12 @@ GATE_HUNKS = (
      'had no App credentials)." >/dev/null || fail=1\n',
      '              -f "output[summary]=Judged by the scheduled sweep." >/dev/null || '
      'fail=1\n'),
+    # the judge's reader asks for the head's pull requests and check runs: both jobs that run it hold those scopes
+    ('    permissions:\n      contents: read\n    outputs:\n',
+     '    permissions:\n      contents: read\n      checks: read\n      pull-requests: read\n    outputs:\n'),
+    ('    environment: agent\n    permissions:\n      contents: read\n      pull-requests: read\n    steps:\n',
+     '    environment: agent\n    permissions:\n      contents: read\n      pull-requests: read\n'
+     '      checks: read\n    steps:\n'),
 )
 
 
