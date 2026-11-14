@@ -775,9 +775,10 @@ def sr_expect_check(root, runners=CHECK_RUNNERS):
     names = []
     for runner in runners:
         dirs = ["%s/rec-check/%s/%s" % (root, runner, f) for f in sorted(os.listdir("%s/rec-check/%s" % (root, runner)))]
-        out = subprocess.run(["bash", REPO_ROOT + "/bin/check-records-digests.sh", runner] + dirs, capture_output=True, text=True)
-        assert out.returncode == 0, out.stderr
-        put(root, "rec-digests/%s/check-records.json" % runner, out.stdout.encode())
+        os.makedirs("%s/rec-digests/%s" % (root, runner), exist_ok=True)
+        outfile = "%s/rec-digests/%s/check-records.json" % (root, runner)
+        out = subprocess.run(["bash", REPO_ROOT + "/bin/check-records-digests.sh", runner, outfile] + dirs, capture_output=True, text=True)
+        assert out.returncode == 0 and out.stdout == "", out.stderr
         names.append("rec-digests/%s/check-records.json" % runner)
     return names
 
@@ -991,12 +992,17 @@ def rrd_tree(name):
     for leg, body in (("ubuntu-24.04", b"x86 record"), ("ubuntu-24.04-arm", b"arm record")):
         put(t, "rec-rapk/%s/rapk-collection.local.json" % leg, body)
     put(t, "witness-rebuild/verdict.json", b"{}"); put(t, "witness-rebuild/rebuild-collection.local.json", b"rec")
-    outs = {leg: rrd(["--rapk", leg, "rec-rapk/" + leg], t)[1] for leg in ("ubuntu-24.04", "ubuntu-24.04-arm")}
+    outs = {}
+    for leg in ("ubuntu-24.04", "ubuntu-24.04-arm"):
+        rrd(["--rapk", leg, "rec-rapk/" + leg, leg + ".out.json"], t)
+        outs[leg] = open(t + "/" + leg + ".out.json").read().strip()
     return t, outs
 def rrd_check(t, outs, **kw):
+    """--check takes the two files the legs uploaded: write each leg's text to its file (x86 / arm override the text), then pass the paths."""
     x = kw["x86"] if "x86" in kw else outs["ubuntu-24.04"]
     a = kw["arm"] if "arm" in kw else outs["ubuntu-24.04-arm"]
-    return rrd(["--check", x, a], t)
+    open(t + "/x86.json", "w").write(x); open(t + "/arm.json", "w").write(a + "\n")
+    return rrd(["--check", kw.get("x86_path", "x86.json"), kw.get("arm_path", "arm.json")], t)
 def rrd_case(label, rc_want, words, res):
     rc, out, err = res
     ok = (rc == 0) if rc_want == 0 else (rc == rc_want and "Traceback" not in err and all(w in err for w in words))
@@ -1017,7 +1023,8 @@ rrd_case("rebuild-records-digests --check: a leg's folder with no file is refuse
 t, outs = rrd_tree("rrd6"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
 t, outs = rrd_tree("rrd4b"); put(t, "rec-rapk/ubuntu-24.04/.hidden", b"x")
 rrd_case("rebuild-records-digests --check: a hidden extra file in a leg's folder is refused (it is a file of the folder)", 1, ("ubuntu-24.04:", ".hidden"), rrd_check(t, outs))
-rrd_case("rebuild-records-digests --rapk lists a hidden file too", 0, (), (lambda r: (0 if ".hidden" in r[1] else 1, r[1], r[2]))(rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04"], t)))
+rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04", "hid.json"], t)
+rrd_case("rebuild-records-digests --rapk lists a hidden file too", 0, (), (0 if ".hidden" in open(t + "/hid.json").read() else 1, "", ""))
 t, outs = rrd_tree("rrd5b"); os.remove(t + "/rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json")
 rrd_case("rebuild-records-digests --check: an EMPTY leg folder is refused with 'no file in'", 1, ("no file in",), rrd_check(t, outs))
 t, outs = rrd_tree("rrd6b"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
@@ -1030,11 +1037,24 @@ rrd_case("rebuild-records-digests --check: an output that is JSON but not an obj
 rrd_case("rebuild-records-digests --check: the other runner's output given for this leg (it names the other runner) is refused", 1, ("ubuntu-24.04:", "changed"), rrd_check(t, outs, x86=outs["ubuntu-24.04-arm"]))
 rrd_case("rebuild-records-digests --check: the legs' outputs swapped between the two variables are refused", 1, ("changed",), rrd_check(t, outs, x86=outs["ubuntu-24.04-arm"], arm=outs["ubuntu-24.04"]))
 rrd_case("rebuild-records-digests --check: an output that names a folder besides the leg's own is refused", 1, ("changed",), rrd_check(t, outs, x86=json.dumps(dict(json.loads(outs["ubuntu-24.04"]), **{"witness-rebuild": {"verdict.json": "sha256:" + "0" * 64}}))))
-rrd_case("rebuild-records-digests --check takes exactly the two outputs (one, none or three arguments: exit 2)", 2, ("usage",), rrd(["--check", "x"], t, {}))
+rrd_case("rebuild-records-digests --check takes exactly the two files (one, none or three arguments: exit 2)", 2, ("usage",), rrd(["--check", "x"], t, {}))
 rrd_case("rebuild-records-digests --check with no argument at all (exit 2)", 2, ("usage",), rrd(["--check"], t, {}))
 rrd_case("rebuild-records-digests --check with a third argument (exit 2)", 2, ("usage",), rrd(["--check", "a", "b", "c"], t, {}))
 rrd_case("rebuild-records-digests --check does not read the environment (the old variables alone do not pass)", 2, ("usage",), rrd(["--check"], t, {"RAPK_RECORDS": outs["ubuntu-24.04"], "RAPK_ARM_RECORDS": outs["ubuntu-24.04-arm"]}))
-rrd_case("rebuild-records-digests --rapk takes a plain runner name (exit 2)", 2, ("usage",), rrd(["--rapk", "../x", "rec-rapk/ubuntu-24.04"], t, {}))
+rrd_case("rebuild-records-digests --check: a path that does not exist is refused, naming the file", 1, ("nowhere.json",), rrd_check(t, outs, x86_path="nowhere.json"))
+rrd_case("rebuild-records-digests --check: the arm path that does not exist is refused, naming the file", 1, ("nowhere.json",), rrd_check(t, outs, arm_path="nowhere.json"))
+os.makedirs(t + "/adir.json", exist_ok=True)
+rrd_case("rebuild-records-digests --check: a path that is a folder, not a regular file, is refused, naming it", 1, ("adir.json",), rrd_check(t, outs, x86_path="adir.json"))
+rrd_case("rebuild-records-digests --check: a file with no trailing newline and one with it are both read (accepted)", 0, (), rrd_check(t, outs))
+rc, out, err = rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04", "o.json"], t)
+check("rebuild-records-digests --rapk writes its list to the file and prints nothing on stdout", rc == 0 and out == "" and json.loads(open(t + "/o.json").read()) == json.loads(outs["ubuntu-24.04"]), "exit %s, stdout %r" % (rc, out[:80]))
+open(t + "/o.json", "w").write("old text")
+rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04", "o.json"], t)
+check("rebuild-records-digests --rapk overwrites an existing file", open(t + "/o.json").read().strip() == outs["ubuntu-24.04"], "")
+rrd_case("rebuild-records-digests --rapk with the old three arguments (no file) is exit 2 usage", 2, ("usage",), rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04"], t, {}))
+rrd_case("rebuild-records-digests --rapk with a fifth argument is exit 2 usage", 2, ("usage",), rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04", "o.json", "p.json"], t, {}))
+rrd_case("rebuild-records-digests --rapk: a folder that is not a plain folder is refused", 1, ("not a plain folder",), rrd(["--rapk", "ubuntu-24.04", "rec-rapk/none", "o.json"], t, {}))
+rrd_case("rebuild-records-digests --rapk takes a plain runner name (exit 2)", 2, ("usage",), rrd(["--rapk", "../x", "rec-rapk/ubuntu-24.04", "o.json"], t, {}))
 
 # Check's records: three per runner (ubuntu-24.04, ubuntu-24.04-arm), named <runner>/<folder>, each runner's results in check-results-<runner>, one expect-digests list per runner
 def ck_rec(d, runner, step, prods=None, material=None, **kw):
@@ -1245,7 +1265,7 @@ d, _ = sr_tree("rl17", "release"); os.makedirs(d + "/staged")
 rc, out, err = run_env(sr_args("release", d), d, GOODENV)
 check("sign-records release: an existing --out is a usage error (exit 2), nothing overwritten", rc == 2 and "Traceback" not in err and os.listdir(d + "/staged") == [], "exit %s" % rc)
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 285
+EXPECT = 294
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
