@@ -43,7 +43,7 @@ COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm"
 VERIFY_PAIRS = dict(BUILD_PAIRS, **dict(CHECK_PAIRS, **{"apk-compare": "apk-compare"}))   # what release-verify reads, and where (the last: the compare job's result file, the only trace of Rebuild's apks that reaches these jobs)
 RELEASE_PAIRS = dict(VERIFY_PAIRS, **{"dist": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm"})   # release and sign-release: the verified records, then what the later steps use; Build's artifacts only, never a rapk
 EVIDENCE_PAIRS = dict(BUILD_PAIRS, **dict(CHECK_PAIRS, **{"dist": "dist", "release-checksums": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm",
-                                                          "release-apks": "release-apks", "release-metadata": "release-metadata", "release-evidence-signatures": "release-evidence", "release-policy": "."}))   # release-evidence: what sign-release made, and the policy release-verify made
+                                                          "release-apks": "release-apks", "release-metadata": "release-metadata", "release-evidence-signatures": "release-evidence", "release-policy": "release-policy"}))   # release-evidence: what sign-release made, and the policy release-verify made
 # the three jobs after release-verify: what each may hold, run and upload (REQ-CHAIN-007-AC1, AC2, AC3; ruling 1 and 2 of cache#921)
 JOBS = {
     "release": dict(needs={"release-verify", "release-compare"}, environment="release", perm={"contents": "write", "packages": "write"}, installs=["witness", "cosign", "crane"], steps=["release-verify", "release-publish"],
@@ -51,7 +51,8 @@ JOBS = {
                     ups=[("witness-release", "witness-release-verify\nwitness-release-publish")]),
     "sign-release": dict(needs={"build-assemble", "release"}, environment="sign", perm={"contents": "read", "id-token": "write", "packages": "write"}, installs=["witness", "cosign", "crane", "aws-cli"], steps=["release-apks", "release-sign"],
                          helper="witnessed.sh", local="", pairs=dict(RELEASE_PAIRS, **{"witness-release": "rec-release"}), concurrency=None, env="fed", pre=["digests", "records", "staged"],
-                         ups=[("signed-witness-release", "signed"), ("release-evidence-signatures", "release-evidence"), ("witness-release-signatures", "witness-release-apks\nwitness-release-sign"), ("release-apks", "release-apks"), ("release-metadata", "release-metadata"),
+                         early=("signed-witness-release", "signed"),
+                         ups=[("release-evidence-signatures", "release-evidence"), ("witness-release-signatures", "witness-release-apks\nwitness-release-sign"), ("release-apks", "release-apks"), ("release-metadata", "release-metadata"),
                               ("release-checksums", "dist/checksums.txt")]),
     "release-evidence": dict(needs={"sign-release"}, environment=None, perm={"contents": "write"}, installs=["witness", "cosign", "crane"], steps=["release-assets", "release-postverify"],
                              helper="witnessed-local.sh", local=".local", pairs=EVIDENCE_PAIRS, concurrency=None, env=None,
@@ -221,7 +222,7 @@ def verify_job(j):
             bad.append("verify job: artifact %s must be downloaded to %s (where release-verify reads it), got %r" % (nm, want, dl.get(nm)))
     res = [i for i, k in enumerate(kinds) if k == "RE"]
     if len(ws) != 1 or res != [ws[0] + 1]:
-        bad.append("verify job: right after release-verify the job must check its own Witness record for a token (%s, no if), exactly once: %s" % (RECORD_ENV_VERIFY, kinds))
+        bad.append("verify job: right after release-verify the job must check its own Witness record for a token (%s, no if), exactly once: %s" % (RECORD_ENV_VERIFY_LOCAL, kinds))
     if not ups or ups != list(range(len(kinds) - len(ups), len(kinds))):
         bad.append("verify job: only uploads may follow the record check, and there must be at least one")
     upl = [(x.get("with") or {}) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/upload-artifact@")]
@@ -303,7 +304,7 @@ def release_job(name, j):
         bad.append("%s: permissions must be exactly %s: %s" % (lab, spec["perm"], j.get("permissions")))
     if spec["concurrency"] and j.get("concurrency") != spec["concurrency"]:
         bad.append("%s must carry exactly the concurrency %s (one publication at a time, never cancelled), got %r" % (lab, spec["concurrency"], j.get("concurrency")))
-    kinds, ups, wrun = [], [], r"bash bin/%s (release-[a-z]+) bin/\1\.sh" % re.escape(spec["helper"])
+    kinds, ups, early, wrun = [], [], [], r"bash bin/%s (release-[a-z]+) bin/\1\.sh" % re.escape(spec["helper"])
     for s in j.get("steps") or []:
         nk = len(kinds)
         if set(s) - {"name", "uses", "with", "run", "env", "if"}:
@@ -316,10 +317,13 @@ def release_job(name, j):
         elif u.startswith("actions/download-artifact@"):
             kinds.append("down")
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in spec["pairs"] or set(w) != {"name", "path"} or (w.get("path") != w.get("path", ".").strip()) or (
-                    re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".").strip()) and (w.get("name"), w.get("path")) != ("release-policy", ".")):
+                    re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".").strip())):
                 bad.append("%s: download-artifact must be digest-pinned, name in %s, an explicit path with no surrounding whitespace (the action trims it) outside bin/ and .github/: %s" % (lab, sorted(spec["pairs"]), w))
         elif u.startswith("actions/upload-artifact@"):
-            kinds.append("up"); ups.append((w.get("name"), w.get("path")))
+            if any(k.startswith("W:") for k in kinds):
+                kinds.append("up"); ups.append((w.get("name"), w.get("path")))
+            else:
+                kinds.append("up:early"); early.append((w.get("name"), w.get("path")))      # an upload before the first witnessed step
             if not PIN.match(u.split(" ")[0]) or set(w) != {"name", "path"}:
                 bad.append("%s: upload-artifact must be digest-pinned with a name and a path only: %s" % (lab, w))
         elif u:
@@ -345,6 +349,9 @@ def release_job(name, j):
     pre = ["pre:" + k for k in spec.get("pre", [])]
     if [k for k in kinds if k.startswith("pre:")] != pre or (pre and ds and kinds[ds[-1] + 1:ds[-1] + 1 + len(pre)] != pre):
         bad.append("%s: right after the downloads it must run exactly %s (the digest list, the records check of the release stage, the signing of the staged records), in this order, before any witnessed step: got %s" % (lab, pre, kinds))
+    gap = kinds[ds[-1] + 1 + len(pre):kinds.index("W:" + spec["steps"][0])] if ds and "W:" + spec["steps"][0] in kinds else None
+    if early != ([spec["early"]] if spec.get("early") else []) or (spec.get("early") and gap != ["up:early"]):
+        bad.append("%s: the upload of %s must come right after the signing of the staged records succeeded and before the witnessed steps, and no other upload may come before them: got %s" % (lab, spec.get("early"), kinds))
     if kinds[:len(head)] != head:
         bad.append("%s: steps must start with checkout and the installs of %s, in this order: got %s" % (lab, ", ".join(spec["installs"]), kinds[:len(head)]))
     if not ds or ds != list(range(len(head), len(head) + len(ds))):
