@@ -58,8 +58,7 @@ jobs:
           LABEL: scheduled-failure
         run: |
           set -euo pipefail
-          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="The scheduled run failed on ${GITHUB_SHA}: ${url}"
+          body="The scheduled run failed on ${GITHUB_SHA}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           n=$(gh issue list --state open --label "$LABEL" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n 1)
           if [ -n "$n" ]; then
             gh issue comment "$n" --body "$body"
