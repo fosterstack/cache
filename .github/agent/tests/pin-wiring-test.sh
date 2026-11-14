@@ -661,12 +661,23 @@ PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = jid in PRODUCES.get(wf, ()) and nm == jid
     return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
+def spells(parts, name):   # parts in order: the first starts name, the last ends it, text between
+    stop = len(name) - len(parts[-1])
+    if not name.startswith(parts[0]) or not name.endswith(parts[-1]) or stop < len(parts[0]):
+        return False
+    at = len(parts[0])
+    for part in parts[1:-1]:
+        found = name.find(part, at, stop)
+        if found < 0:
+            return False
+        at = found + len(part)
+    return True
 def could_render_reserved(nm):   # a plain `${{ matrix.a.b }}` stands for any text; any other expression is refused (fail closed)
     plain = r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}"
     parts = re.split(plain, str(nm))[::2]
     if any("${{" in p or "}}" in p for p in parts):
         return True
-    return len(parts) > 1 and any(re.fullmatch(".*".join(re.escape(p) for p in parts), r) for r in RESERVED)
+    return len(parts) > 1 and any(spells(parts, r) for r in RESERVED)
 def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
     return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
@@ -675,7 +686,7 @@ for jid_, j_ in d.get("jobs", {}).items():
     nm = j_.get("name", jid_)
     if takes_reserved("ci.yml", jid_, nm):
         bad.append(f"the job {jid_} produces the reserved check name {nm}")
-    if jid_ not in PROTECTED and could_render_reserved(nm):
+    if could_render_reserved(nm):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
     if writes_checks(j_.get("permissions")):
         bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
