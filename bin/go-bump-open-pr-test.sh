@@ -441,12 +441,12 @@ guard_scan() { python3 -I -c "$GUARD_PY" scan "$@"; }   # guard_scan <repo root>
 guard_dead() { python3 -I -c "$GUARD_PY" dead "$@"; }   # guard_dead <repo root> [allowed sha256 ...]: the ones that match no line
 # each hash covers one line, named here by its file and the start of the line
 ALLOW=(
-  93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9  # .github/agent/bin/auditor-open-pr.py: shim("git commit -m auditor:%s" % change)
+  93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9  # auditor-open-pr.py: shim("git commit -m auditor:%s" % change)
   7c3e3df9b151afb150c82b8a64eb67d69d60c0c2ccbf0b9ac97f54624218f818  # bin/melange-apko-lib.sh: GIT_COMMITTER_EMAIL=t@example.test GIT_COMMITTER_DATE=... git co
   933049755c9dd2e918eccd8dd86a093de078ec3c7d82a817b3e5aef6bb6c36e6  # bin/chain-verify.py: refuse(stage, "commit: the record's git commit %s is not the run's commit %s" ...
-  983018d69395400814caa6f3599d037b91deafc7be3d33db32e712225ac90290  # .github/agent/bin/auditor-signed-commit.py: main requires signed commits; `git commit` in a runner is unsigned. ...
-  a8d65fd5764e2010f75f86de97cdd4e74d1e5aa88c45bd0c97954b2d3b6fe992  # .github/agent/bin/auditorlib/signed_commit.py: main's ruleset requires signed commits, and a commit made by `git commit` ...
-  bd19eca3ff27b1131b153768cb7e7bc3f980ecb72c093736b85673c9f0256bcd  # .github/agent/bin/auditorlib/signed_commit.py: "the commit cannot be made through the API (and a git commit would be unsigned)"
+  983018d69395400814caa6f3599d037b91deafc7be3d33db32e712225ac90290  # auditor-signed-commit.py: main requires signed commits; `git commit` in a runner is unsigned. ...
+  a8d65fd5764e2010f75f86de97cdd4e74d1e5aa88c45bd0c97954b2d3b6fe992  # auditorlib/signed_commit.py: main's ruleset requires signed commits, and a commit made by `git commit` ...
+  bd19eca3ff27b1131b153768cb7e7bc3f980ecb72c093736b85673c9f0256bcd  # auditorlib/signed_commit.py: "the commit cannot be made through the API (and a git commit would be unsigned)"
 )
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
 if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC9, plain forms)"; pass=$((pass+1))
