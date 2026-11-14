@@ -47,16 +47,23 @@ EVIDENCE_PAIRS = dict(BUILD_PAIRS, **dict(CHECK_PAIRS, **{"dist": "dist", "relea
 # the three jobs after release-verify: what each may hold, run and upload (REQ-CHAIN-007-AC1, AC2, AC3; ruling 1 and 2 of cache#921)
 JOBS = {
     "release": dict(needs={"release-verify", "release-compare"}, environment="release", perm={"contents": "write", "packages": "write"}, installs=["witness", "cosign", "crane"], steps=["release-verify", "release-publish"],
-                    helper="witnessed.sh", local="", pairs=RELEASE_PAIRS, concurrency={"group": "release-publish", "cancel-in-progress": "false"}, env=None,
+                    helper="witnessed-local.sh", local=".local", pairs=RELEASE_PAIRS, concurrency={"group": "release-publish", "cancel-in-progress": "false"}, env=None,
                     ups=[("witness-release", "witness-release-verify\nwitness-release-publish")]),
-    "sign-release": dict(needs={"release"}, environment="sign", perm={"contents": "read", "id-token": "write", "packages": "write"}, installs=["witness", "cosign", "crane", "aws-cli"], steps=["release-apks", "release-sign"],
-                         helper="witnessed.sh", local="", pairs=RELEASE_PAIRS, concurrency=None, env="fed",
-                         ups=[("release-evidence-signatures", "release-evidence"), ("witness-release-signatures", "witness-release-apks\nwitness-release-sign"), ("release-apks", "release-apks"), ("release-metadata", "release-metadata"),
+    "sign-release": dict(needs={"build-assemble", "release"}, environment="sign", perm={"contents": "read", "id-token": "write", "packages": "write"}, installs=["witness", "cosign", "crane", "aws-cli"], steps=["release-apks", "release-sign"],
+                         helper="witnessed.sh", local="", pairs=dict(RELEASE_PAIRS, **{"witness-release": "rec-release"}), concurrency=None, env="fed", pre=["digests", "records", "staged"],
+                         ups=[("signed-witness-release", "signed"), ("release-evidence-signatures", "release-evidence"), ("witness-release-signatures", "witness-release-apks\nwitness-release-sign"), ("release-apks", "release-apks"), ("release-metadata", "release-metadata"),
                               ("release-checksums", "dist/checksums.txt")]),
     "release-evidence": dict(needs={"sign-release"}, environment=None, perm={"contents": "write"}, installs=["witness", "cosign", "crane"], steps=["release-assets", "release-postverify"],
                              helper="witnessed-local.sh", local=".local", pairs=EVIDENCE_PAIRS, concurrency=None, env=None,
                              ups=[("witness-release-evidence", "witness-release-assets\nwitness-release-postverify")]),
 }
+# ruling Q-e: sign-release signs the release stage's two local records (downloaded as witness-release into rec-release/) before its own witnessed steps, as sign-check signs Check's
+DIGESTS_RUN = "printf '%s' \"$DIGESTS\" > digests.json"
+DIGESTS_ENV = {"DIGESTS": "${{ needs.build-assemble.outputs.digests }}"}
+RECORDS_RUN = ("env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage release --template .github/policy/release-policy.template.json "
+               "--digests digests.json --out staged --record-dir rec-release/witness-release-verify --record-dir rec-release/witness-release-publish")
+STAGED_RUN = "bash bin/witness-sign-staged.sh staged signed"
+PRE_RUNS = {"digests": DIGESTS_RUN, "records": RECORDS_RUN, "staged": STAGED_RUN}
 COMPARE_UPLOAD = {"name": "apk-compare", "path": "apk-compare", "if-no-files-found": "error"}   # the compare job's one upload: a small result file, and a missing file fails the job
 COMPARE_RUN = "bash bin/release-compare.sh"
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
@@ -82,7 +89,7 @@ def fed_env():
 # the jobs of the chain by their needs (REQ-CHAIN-007-AC11; rulings 1, 2 and 8 of cache#921): job -> exactly the jobs it needs
 NEEDS_OF = {"build-apk": {"build-freeze"}, "build-assemble": {"build-apk"}, "sign": {"build-assemble"}, "rebuild-apk": {"build-assemble"}, "rebuild-assemble": {"rebuild-apk"}, "sign-rebuild": {"build-assemble", "rebuild-assemble"},
             "check": {"check-govulncheck", "build-assemble", "sign"}, "sign-check": {"build-assemble", "check"}, "release-compare": {"check", "sign", "sign-rebuild", "sign-check"}, "release-verify": {"release-compare"},
-            "release": {"release-verify", "release-compare"}, "sign-release": {"release"}, "release-evidence": {"sign-release"}}
+            "release": {"release-verify", "release-compare"}, "sign-release": {"build-assemble", "release"}, "release-evidence": {"sign-release"}}
 CHAIN_JOBS = ["build-freeze", "check-govulncheck"] + list(NEEDS_OF)
 NEEDS_SKIPPED = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)")   # a status function in an if lets a job run after a failed predecessor
 # the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
@@ -319,6 +326,11 @@ def release_job(name, j):
             bad.append("%s: uses not allowed in the Release stage: %s" % (lab, u))
         elif r in ["bash bin/install-scanner.sh " + t for t in INSTALLS]:   # the form the closed stage grammar accepts (bash PATH ARGS), as Build, Sign and Check run it
             kinds.append("install:" + r.split()[-1])
+        elif r in PRE_RUNS.values() and spec.get("pre"):
+            pk = [k for k, v in PRE_RUNS.items() if v == r][0]
+            kinds.append("pre:" + pk)
+            if (s.get("env") or None) != (DIGESTS_ENV if pk == "digests" else None):
+                bad.append("%s: the %s step must carry %s as its env and nothing else" % (lab, pk, DIGESTS_ENV if pk == "digests" else "no env"))
         elif re.fullmatch(wrun, r):
             kinds.append("W:" + r.split()[2])
         elif re.fullmatch(r"python3 -I bin/chain-verify\.py record-env --record witness-(release-[a-z]+)/\1-collection%s\.json" % re.escape(spec["local"]), r):   # the job checks each of its own Witness records for a token before they are uploaded (REQ-CHAIN-007-AC12)
@@ -330,6 +342,9 @@ def release_job(name, j):
     head = ["checkout"] + ["install:" + t for t in spec["installs"]]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
+    pre = ["pre:" + k for k in spec.get("pre", [])]
+    if [k for k in kinds if k.startswith("pre:")] != pre or (pre and ds and kinds[ds[-1] + 1:ds[-1] + 1 + len(pre)] != pre):
+        bad.append("%s: right after the downloads it must run exactly %s (the digest list, the records check of the release stage, the signing of the staged records), in this order, before any witnessed step: got %s" % (lab, pre, kinds))
     if kinds[:len(head)] != head:
         bad.append("%s: steps must start with checkout and the installs of %s, in this order: got %s" % (lab, ", ".join(spec["installs"]), kinds[:len(head)]))
     if not ds or ds != list(range(len(head), len(head) + len(ds))):
@@ -408,6 +423,8 @@ def credentials(path):
             name = m.group(1) if m else None
             blob = yaml.dump(s)
             if not seen and name is None:
+                if n == "sign-release" and r == DIGESTS_RUN and env == DIGESTS_ENV:
+                    continue      # sign-release's one step with an env: the digest list from Build's job output, as sign-check's
                 if env is not None or CRED_RE.search(blob) or has_expression(s):
                     bad.append("a step up to %s has an env or names a secret or token: %s" % ("release-verify" if n == "release" else "the first witnessed step of " + n, r or s.get("uses", "")))
                 continue
