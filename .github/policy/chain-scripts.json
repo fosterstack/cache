@@ -524,7 +524,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "4ebdf86843bb66bcf53e26c0e751fe2a27d2ba4385712e3e8fb94069bfaceeae",
+      "sha256": "c8db744b8e56c19a1c3e33e46eabba7c973507ba409c8e46ce6dcc286d3cd2d8",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -699,7 +699,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
-      "sha256": "7f5680fa99c677d6ccb051d03c1497814b0407a068ec4dff6c369d455b47ca81"
+      "sha256": "532ec7371f299d3e29f70af776cca3e329156a4517aa328958b4150e635c034d"
     },
     {
       "path": "bin/chain_items.py",
@@ -1993,7 +1993,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010; a stdlib version the build does not ship is left out); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "38961e8c98b84b6565a97f9130d892a6a1d7cf8233ce1db72cbb32dba63cd272",
+      "sha256": "360c411dfbe03f7bef6bff80ab6684b0afbe53e33ae780ac7a2f82165dfb8cad",
       "exceptions": [
         {
           "rule": "deny",
@@ -2133,7 +2133,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "cc925933fbabeaea319781585b3d35f6ef6541e921e43d1471b55a6c88dee1df",
+      "sha256": "6570ad403dd3d32883037fdc8ccfd23ce418e0cafbc3f4d1a6a5fffebe4940b4",
       "tools": [
         "at",
         "gh",
@@ -2176,7 +2176,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "afbc31c079e85c60922c9ec3996f7c1f68031c4ea0d6a691f6e948cad36ed712",
+      "sha256": "2694ef1e128f5d750eab681d13ad209406579ed558b85ba809f180c0f5ca4a24",
       "tools": [
         "at",
         "python3"
@@ -2209,7 +2209,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "090ff2f8671e5ab332cebaafb8346e4ef5de77922992fe968d9817dfeac41c81",
+      "sha256": "054a2ee03874d57f74b8486ef225ecbee85b60089745289efddb6ebb902d781c",
       "exceptions": [
         {
           "rule": "deny",
@@ -2602,7 +2602,7 @@
       "runs": [],
       "signs": false,
       "reason": "the OCI layout digest tool assemble-image.sh runs",
-      "sha256": "ec2344e00188598cba80da00e280158daaf0ad59200a16ead3474a2779701d91",
+      "sha256": "5569a3e0e15798c4552306d6fee1fc1215974a478e653d9d4129ec46d1064890",
       "exceptions": [
         {
           "rule": "script-name",
