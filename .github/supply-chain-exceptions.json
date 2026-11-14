@@ -2462,6 +2462,62 @@
       "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
       "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "06914a5f616c30790eed63e135a5782ad5f9eb2a8cb7d1cdaf99b7aa1bfe3464",
+      "line": "06914a5f616c30790eed63e135a5782ad5f9eb2a8cb7d1cdaf99b7aa1bfe3464",
+      "ruling": "text, not a command: test stub, no download"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "473741d62d39a5a1f7d09ebc9346e7ba5d4cda23adab46d801ad7bfadbe7690f",
+      "line": "473741d62d39a5a1f7d09ebc9346e7ba5d4cda23adab46d801ad7bfadbe7690f",
+      "ruling": "text, not a command: test stub, no download"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "b5f8c4482ee23f8d71cda17155576fc7b6da3d79eef77d031f8654a8645160d9",
+      "line": "b5f8c4482ee23f8d71cda17155576fc7b6da3d79eef77d031f8654a8645160d9",
+      "ruling": "text, not a command: test stub, no download"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "f0148d5019c25c2bdbe182e21a593bc4c628564b114bfbaf0fa573286cde1a69",
+      "line": "f0148d5019c25c2bdbe182e21a593bc4c628564b114bfbaf0fa573286cde1a69",
+      "ruling": "text, not a command: test stub, no download"
+    },
+    {
+      "file": "bin/chain-install-crane-test.sh",
+      "form": "a download",
+      "key": "5e57c89c7555a4e7a913fc7e1eca9a2614fbe2b5c8d9c1b1ed47a3b4d8cc6c35",
+      "line": "5e57c89c7555a4e7a913fc7e1eca9a2614fbe2b5c8d9c1b1ed47a3b4d8cc6c35",
+      "ruling": "text, not a command: test stub, no download"
+    },
+    {
+      "file": "bin/chain-install-crane-test.sh",
+      "form": "a download",
+      "key": "f99da1eec84c65c4c34ab0af303e4a3468b6be5f0b329d6710582831d052d62c",
+      "line": "f99da1eec84c65c4c34ab0af303e4a3468b6be5f0b329d6710582831d052d62c",
+      "ruling": "text, not a command: test stub, no download"
+    },
+    {
+      "file": "bin/chain-install-witness-test.sh",
+      "form": "a download",
+      "key": "5e57c89c7555a4e7a913fc7e1eca9a2614fbe2b5c8d9c1b1ed47a3b4d8cc6c35",
+      "line": "5e57c89c7555a4e7a913fc7e1eca9a2614fbe2b5c8d9c1b1ed47a3b4d8cc6c35",
+      "ruling": "text, not a command: test stub, no download"
+    },
+    {
+      "file": "bin/chain-install-witness-test.sh",
+      "form": "a download",
+      "key": "f99da1eec84c65c4c34ab0af303e4a3468b6be5f0b329d6710582831d052d62c",
+      "line": "f99da1eec84c65c4c34ab0af303e4a3468b6be5f0b329d6710582831d052d62c",
+      "ruling": "text, not a command: test stub, no download"
     }
   ],
   "_format_file_pins": "REQ-SUP-001-AC34 (advisor ruling Oct 23, a fix to an existing coded check): one row per checksum file for an UPSTREAM artifact that the pin-age check cannot date by itself (the inventory gives such a file the version '(file)'). file: the repository path as git names it; content: the 64-hex sha256 of path + NUL + the file's text, exactly the #content: part of the item's key in the check's output (a changed file is another content and the row rules nothing); upstream: an https URL of the artifact's publisher that carries the sum; version: the upstream release the sum belongs to; published: the release's server-side publication time (ISO 8601; a time in the future or an offset that does not exist lends no age). The row only dates the file: the 7 days still apply. Read from the base branch only: a row a pull request brings does nothing until merged.",
