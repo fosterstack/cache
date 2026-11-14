@@ -91,6 +91,12 @@ def required_contexts(root):
         return None
 
 
+def checks_result(job, needed):
+    """True when a step of JOB reads needs.NEEDED.result in its run text or its env."""
+    ref = "needs.%s.result" % needed
+    return any(isinstance(st, dict) and any(ref in str(v) for v in [st.get("run"), *(st.get("env") or {}).values()]) for st in job.get("steps") or [])
+
+
 def counting_steps(root, floors, names):
     """{suite name: PATH} of the counting steps of ROOT/.github/workflows/ci.yml that are trusted (REQ-CI-005), and the number of malformed ones.
     A counting step is trusted only if it is the WHOLE run text of its step (one line: no here-document, `exit` or branch around it), the step has no key but name and run,
@@ -109,16 +115,19 @@ def counting_steps(root, floors, names):
             raise TypeError("jobs is not a mapping")
     except Exception as e:
         die("%s cannot be read as a workflow (%s)" % (wf, e))
+    # a workflow-level shell or BASH_ENV can blank every counting step: no step of such a workflow is trusted
+    defaults, env = doc.get("defaults"), doc.get("env")
+    if (isinstance(defaults, dict) and "shell" in (defaults.get("run") or {})) or (isinstance(env, dict) and "BASH_ENV" in env):
+        die("%s sets a workflow-level defaults.run.shell or env BASH_ENV, which can blank a counting step" % wf)
     required = required_contexts(root)
     got, bad, seen = {}, 0, {}
     for jname, job in jobs.items():
         if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
             continue
         plain_job = set(job) <= {"name", "runs-on", "steps"}
-        # a counting step is trusted only in a job whose failure turns the run red: a required check, or a job a required check needs
+        # a counting step is trusted only in a job whose failure turns the run red: a required check, or a job a required check reads the result of (needs.JOB.result)
         gated = required is not None and (str(job.get("name", jname)) in required or any(
-            isinstance(o, dict) and (str(o.get("name", on)) in required) and jname in (o.get("needs") if isinstance(o.get("needs"), list) else [o.get("needs")])
-            for on, o in jobs.items()))
+            str(o.get("name", on)) in required and checks_result(o, jname) for on, o in jobs.items() if isinstance(o, dict)))
         for st in job["steps"]:
             if not isinstance(st, dict) or not isinstance(st.get("run"), str):
                 continue

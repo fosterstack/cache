@@ -524,6 +524,15 @@ for name, old, new, frag in (
     probs = adm_problems(admit_src.replace(old, new)); check("build-admit.py: a copy with %s is refused" % name,
         any(frag in x for x in probs), probs)
 
+# a sha with a trailing newline is not 40 lower-case hex (a `$` match would let it through)
+NL = HEAD + "\n"
+ok, why = judge(ref=mut(REF, ["ref"], "refs/heads/audit/" + NL), commit=mut(COMMIT, ["parents"], [{"sha": NL}]), head=NL)
+check("verify_record: a head sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = judge(ref=mut(REF, ["object", "sha"], REC + "\n"), commit=mut(COMMIT, ["sha"], REC + "\n"))
+check("verify_record: a record sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = plan_rel(head=NL); check("plan release: a head sha with a trailing newline is refused", not ok, (ok, why))
+ok, why = plan(pr=mut(PR, ["head", "sha"], NL), head=NL)
+check("plan: a head sha with a trailing newline is refused", not ok, (ok, why))
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -262,6 +262,31 @@ freeze3, reqs3 = T._load_baselines(out3)
 v, why = T.baseline("v0.2.2", freeze3, reqs3, REQ)
 check("B03 the latest approved baseline's unreadable requirements refuses outright, no fallback to v0.2.0",
       v is None and "could not be read" in why, (v, why))
+# git runs through one helper, and only verify-tag is given the allowed-signers file: a stub git on PATH records every argv
+stub_dir = tempfile.mkdtemp(); calls = os.path.join(stub_dir, "calls")
+open(os.path.join(stub_dir, "git"), "w").write("""#!/usr/bin/env python3
+import json, sys
+open(%r, "a").write(json.dumps(sys.argv[1:]) + "\\n")
+a = sys.argv[1:]
+if "-t" in a: print("tag")
+elif "tag" in a and "-l" in a: print("v0.2.0")
+elif "cat-file" in a: sys.stdout.write("object 0\\ntype commit\\ntag v0.2.0\\n\\nm\\n-----BEGIN SSH SIGNATURE-----\\nA\\n-----END SSH SIGNATURE-----\\n")
+elif "show" in a: print("x: 1")
+""" % calls)
+os.chmod(os.path.join(stub_dir, "git"), 0o755)
+old_path = os.environ["PATH"]; os.environ["PATH"] = stub_dir + os.pathsep + old_path
+try:
+    T.owner_baselines("v0.2.1", "/repo", "/signers", os.path.join(stub_dir, "out"))
+finally:
+    os.environ["PATH"] = old_path
+argvs = [json.loads(l) for l in open(calls)]
+with_c = [a for a in argvs if any(x.startswith("gpg.ssh.allowedSignersFile=") for x in a)]
+check("git stub: owner_baselines ran git at all, with a verify-tag call", any("verify-tag" in a for a in argvs), argvs)
+check("allowedSignersFile is passed to verify-tag", bool(with_c) and all("verify-tag" in a for a in with_c), with_c)
+check("allowedSignersFile is passed to no other git call", not [a for a in argvs if "verify-tag" not in a and a in with_c], with_c)
+check("the git() helper is back and runs git in the repo", callable(getattr(T, "git", None)))
+check("hashlib is no longer imported", not hasattr(T, "hashlib"))
+check("the route parser carries no allow_abbrev flag", "allow_abbrev" not in open(sys.argv[1]).read())
 try:
     T.main(["baseline", "--tag", "v0.2.2", "--releases-dir", rd, "--requirements", rq]); got = "accepted"
 except SystemExit:

@@ -1,42 +1,47 @@
 #!/usr/bin/env bash
-# Scanner-panel rule 12 (owner RATIFIED Oct 2; REQ-SCAN-012; read-back approved, advisor 0098): the live test of our VEX
-# files and of docs/using-our-vex.md against the real services. Runs only in the `live-test` environment, one run at a
-# time (concurrency group vex-live-test), from the release-candidate job of release.yml and the main-push job of ci.yml,
-# as the federated live-test identities.
+# Scanner-panel rule 12 (REQ-SCAN-012): the live test of our VEX files and of docs/using-our-vex.md against the real
+# services. Runs only in the `live-test` environment, one run at a time (concurrency group vex-live-test), from the
+# release-candidate job of release.yml and the main-push job of ci.yml, as the federated live-test identities.
 #
 #   bin/vex-live-run.sh run       sweep the test resources; every guide command block exactly as written (settings
-#                                  blocks take the test's values); our images and the pinned fixture copied by digest to
-#                                  the two test repositories (at most 50 pushes); the fixture's finding shown before and
-#                                  suppressed by our files after, in Inspector, Google and Grype (Docker Scout is not tested here: see REQ-REL-010)
-#   bin/vex-live-run.sh cleanup   sweep again: the two test repositories emptied, every live-test Inspector filter and
-#                                  every VEX note on the test repository's images deleted — and proven gone
+#                                 blocks take the test's values); our images and the pinned fixture copied by digest to
+#                                 the three test repositories (ECR, GAR, Docker Hub; at most 50 pushes); the fixture's
+#                                 finding shown before and suppressed by our files after, in Inspector, Google, Grype
+#                                 and Docker Scout (the Scout leg, REQ-REL-010-AC6)
+#   bin/vex-live-run.sh cleanup   sweep again: the test repositories emptied, every live-test Inspector filter and
+#                                 every VEX note on the test repository's images deleted, and proven gone
 #
-# Inputs (env): MODE (rc|main), ECR, GAR (the test repositories), GITHUB_REF_NAME (rc), GH_TOKEN (main: the releases),
+# Inputs (env): MODE (rc|release|main), ECR and GAR (the test repositories), GITHUB_WORKSPACE, GITHUB_RUN_ID,
+# RUNNER_TEMP, GITHUB_REF_NAME (rc and release: the tag), GITHUB_REPOSITORY and GH_TOKEN (main: the releases),
+# CANDIDATE_DIR (rc: Build's artifacts), and for the Scout leg DH_REPO (the private Docker Hub test repository),
+# DOCKERHUB_USERNAME, DOCKERHUB_SCOUT_TOKEN (read-only Scout login), DOCKERHUB_TEST_USERNAME, DOCKERHUB_TEST_PUSH_TOKEN.
 REGION=us-east-1
 MAX_PUSHES=50
 PUSHES=0
-here_lt=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TEST_FILTER_PREFIX=fosterstack-cache-livetest-
 
-push_copy() {   # <src> <dst>: one push, journaled BEFORE it starts (a copy that dies midway is still swept); the 51st
-  PUSHES=$((PUSHES + 1))   # fails the run (REQ-SCAN-012-AC4). The sweep empties the test repositories regardless.
-  if [ "$PUSHES" -gt "$MAX_PUSHES" ]; then
-    echo "::error::more than ${MAX_PUSHES} pushes in one live-test run" >&2
-    return 1
-  fi
-  printf '%s\n' "$2" >> "${PUSHED_LOG:-/dev/null}" || return 1   # a push that could not be journaled does not happen
-  crane copy "$1" "$2"
-}
-
-copy_candidate() {   # <layout dir> <dst ref> <attested digest>: a release candidate publishes nothing, so each image is pushed from Build's OCI layout
-  local layout=$1 dst=$2 want=$3 got   # directory; the digest that comes out must be the one Build attested, never a digest read from a registry
-  [[ "$want" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the attested digest of ${dst} is malformed" >&2; return 1; }
+# Journaled BEFORE the push, so a copy that dies midway is still swept; a push that cannot be journaled does not happen.
+# The 51st push fails the run (REQ-SCAN-012-AC4).
+journal_push() {   # <dst ref>
   PUSHES=$((PUSHES + 1))
   if [ "$PUSHES" -gt "$MAX_PUSHES" ]; then
     echo "::error::more than ${MAX_PUSHES} pushes in one live-test run" >&2
     return 1
   fi
-  printf '%s\n' "$dst" >> "${PUSHED_LOG:-/dev/null}" || return 1   # journaled BEFORE the push, so a push that dies midway is still swept; unjournaled, it does not happen
+  printf '%s\n' "$1" >> "${PUSHED_LOG:?}"
+}
+
+push_copy() {   # <src> <dst>
+  journal_push "$2" || return 1
+  crane copy "$1" "$2"
+}
+
+# A release candidate publishes nothing, so each image is pushed from Build's OCI layout directory; the digest that
+# comes out must be the one Build attested, never a digest read from a registry.
+copy_candidate() {   # <layout dir> <dst ref> <attested digest>
+  local layout=$1 dst=$2 want=$3 got
+  [[ "$want" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the attested digest of ${dst} is malformed" >&2; return 1; }
+  journal_push "$dst" || return 1
   crane push "$layout" "$dst" || return 1
   got=$(crane digest "$dst") || return 1
   [ "$got" = "$want" ] || { echo "::error::${dst} came out as ${got}, Build attested ${want}" >&2; return 1; }
@@ -53,19 +58,20 @@ ca_delete() {
   python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" ca DELETE "$1"
 }
 
-notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note on images under that prefix, all pages;
-  local project page parsed token="" names="" more   # every step is checked: a failure anywhere fails the enumeration,
-  project=$(cut -d/ -f2 <<<"$GAR") || return 1        # never an empty answer (Codex #169 r2/r3, SEC-169-08)
+# The names of every VULNERABILITY_ASSESSMENT note on images under a prefix, all pages; every step is checked:
+# a failure anywhere fails the enumeration, never an empty answer (SEC-169-08).
+notes_of() {   # <uri prefix>
+  local project page parsed token="" more
+  project=$(cut -d/ -f2 <<<"$GAR") || return 1
   [ -n "$project" ] || return 1
   while :; do
     page=$(ca_get "https://containeranalysis.googleapis.com/v1/projects/${project}/notes?filter=kind%3D%22VULNERABILITY_ASSESSMENT%22&pageSize=1000${token:+&pageToken=${token}}") || return 1
     parsed=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind notes --prefix "$1" <<<"$page") || return 1
     more=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" field names <<<"$parsed") || return 1
-    [ -z "$more" ] || names="${names}${more}"$'\n'
+    [ -z "$more" ] || printf '%s\n' "$more" || return 1
     token=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" field next <<<"$parsed") || return 1
     [ -n "$token" ] || break
   done
-  printf '%s' "$names" || return 1
 }
 
 # The sweep empties the dedicated test resources. Every resource family is cleaned on its own: a failing listing or delete in one family never stops the others, every
@@ -213,8 +219,10 @@ check_removal_scope() {   # the page's removal block deletes every Inspector fil
   [ "$all" = "$test" ] || { echo "::error::the guide's removal would delete Inspector filters that are not live-test ones" >&2; return 1; }
 }
 
-compare_release_files() {   # <tag> <committed openvex>: the three downloaded forms equal the committed OpenVEX file and the generator's output (in regen/); the test replaces them
-  local tag=$1 committed=$2   # with its own copies only after this
+# The three downloaded forms equal the committed OpenVEX file and the generator's output (in regen/); the test
+# replaces them with its own copies only after this.
+compare_release_files() {   # <tag> <committed openvex>
+  local tag=$1 committed=$2
   cmp -s fosterstack-cache.openvex.json "$committed" \
     || { echo "::error::the release's OpenVEX file is not the committed one" >&2; return 1; }
   cmp -s "regen/fosterstack-cache-${tag}.inspector-filters.json" "fosterstack-cache-${tag}.inspector-filters.json" \
@@ -223,8 +231,10 @@ compare_release_files() {   # <tag> <committed openvex>: the three downloaded fo
     || { echo "::error::the release's CSAF file is not the generator's output" >&2; return 1; }
 }
 
-select_release() {   # the release under test: MODE rc = the release candidate tag (vX.Y.Z-rcN, nothing published); MODE release = the final tag just
-  skip=""            # published (vX.Y.Z); MODE main = the newest published release with the rule-10 files, or an announced skip while none exists
+# The release under test: MODE rc = the release candidate tag (vX.Y.Z-rcN, nothing published); MODE release = the final
+# tag just published (vX.Y.Z); MODE main = the newest published release with the rule-10 files, or an announced skip.
+select_release() {
+  skip=""
   case "${MODE:?}" in
     rc)
       [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ ]] || { echo "::error::MODE rc needs a tag vX.Y.Z-rcN, got '${GITHUB_REF_NAME:-}'" >&2; return 1; }
@@ -266,9 +276,19 @@ scout_leg() {
   return "$rc"
 }
 
+# Nothing is pushed to Docker Hub unless its API says the test repository is private (is_private exactly true).
+hub_repo_private() {
+  local answer
+  answer=$(curl -fsS "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
+    || { echo "::error::cannot read the visibility of ${DH_REPO} from Docker Hub" >&2; return 1; }
+  jq -e '.is_private == true' >/dev/null 2>&1 <<<"$answer" \
+    || { echo "::error::${DH_REPO} is not private on Docker Hub: nothing is pushed" >&2; return 1; }
+}
+
 # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as an attestation made by our index tool, in the Docker Hub test repository; (2) our production image
 scout_leg_run() {
-  scout_preflight || return 1                               # there too (AC6), and, after a publication, the published index by tag and by exact digest
+  scout_preflight || return 1
+  hub_repo_private || return 1
   local vexfile="$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" dh="index.docker.io/${DH_REPO}" author prod fx_f target ref what
   author=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" scout-author --openvex "$vexfile") || return 1
   prod=$(jq -er '.production.index' images.json) || return 1
@@ -330,11 +350,10 @@ scout_leg_run() {
   HUB_SCOUT_IN=0
   echo "Docker Scout leg passed: ${CVE} on the fixture, ${target:-no statement of ours reported} on our production image"
 }
-[ "${VEX_LIVE_TEST_LIB:-}" = 1 ] && return 0
+(return 0 2>/dev/null) && return 0   # sourced: define the functions, run nothing
 
 set -euo pipefail
-root=$(cd "$here_lt/.." && pwd)
-: "${ECR:?}" "${GAR:?}"
+: "${ECR:?}" "${GAR:?}" "${GITHUB_WORKSPACE:?}"
 work="${RUNNER_TEMP:?}/vex-live-test"
 mkdir -p "$work"
 cd "$work"
@@ -360,9 +379,9 @@ echo "release under test: ${tag} (${MODE})"
 # --- the guide's blocks; settings take the test's values, commands run as written (REQ-SCAN-012-AC5). A release candidate publishes nothing (v0.3), so
 #     the blocks the cannot-run list names (digest, download, verify) are left out of its plan and run in the post-publish run (MODE release) instead
 if [ "$MODE" = rc ]; then
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --pins "$root/docs/using-our-vex.live-blocks.json" --skip-cannot-run "$root/docs/using-our-vex.cannot-run.json" --out-dir plan > plan.txt
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$GITHUB_WORKSPACE/docs/using-our-vex.md" --pins "$GITHUB_WORKSPACE/docs/using-our-vex.live-blocks.json" --skip-cannot-run "$GITHUB_WORKSPACE/docs/using-our-vex.cannot-run.json" --out-dir plan > plan.txt
 else
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --pins "$root/docs/using-our-vex.live-blocks.json" --out-dir plan > plan.txt
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$GITHUB_WORKSPACE/docs/using-our-vex.md" --pins "$GITHUB_WORKSPACE/docs/using-our-vex.live-blocks.json" --out-dir plan > plan.txt
 fi
 python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "VER=${tag#v}"
 echo '{}' > images.json
@@ -372,8 +391,8 @@ if [ "$MODE" = rc ]; then
   : "${CANDIDATE_DIR:?the candidate Build artifacts}"
   python3 "$GITHUB_WORKSPACE/bin/release-metadata.py" images --digests "$CANDIDATE_DIR/digests.json" --images-dir "$CANDIDATE_DIR/images" \
     --items "$CANDIDATE_DIR/items.json" --out images.json
-  cp "$root/.vex/fosterstack-cache.openvex.json" ./fosterstack-cache.openvex.json
-  python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" --out-dir . >/dev/null
+  cp "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" ./fosterstack-cache.openvex.json
+  python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" --out-dir . >/dev/null
   prod=$(jq -r '.production.index' images.json)
 else
   guide digest
@@ -391,9 +410,9 @@ else
 fi
 if [ "$MODE" = release ]; then   # a just-published release: the downloaded files are the generator's output for the committed file and the published images
   mkdir -p regen
-  python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json \
+  python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" --images images.json \
     --version "$tag" --out-dir regen >/dev/null
-  compare_release_files "$tag" "$root/.vex/fosterstack-cache.openvex.json"
+  compare_release_files "$tag" "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json"
 fi
 
 # --- push by digest to the two test repositories: our two images and the fixture (REQ-SCAN-012-AC2)
@@ -460,14 +479,14 @@ jq -n --slurpfile g grype.before.json --slurpfile o google.before.json \
     grype: ([$g[0].matches[] | {key: .vulnerability.id, value: .vulnerability.severity}] | from_entries),
     inspector: $i,
     google: [$o[0].occurrences[] | .noteName | split("/") | last]}' > reports.json
-CVE=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" pick-cve --reports reports.json --openvex "$root/.vex/fosterstack-cache.openvex.json")
+CVE=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" pick-cve --reports reports.json --openvex "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json")
 echo "the fixture's finding under test: ${CVE}"
 # the package Inspector found it in, and the decoy: our Inspector rules always name a package (owner Oct 16), and the same CVE in another package stays visible
-python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" pick-scope --reports reports.json --cve "$CVE" --openvex "$root/.vex/fosterstack-cache.openvex.json" > scope.json
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" pick-scope --reports reports.json --cve "$CVE" --openvex "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" > scope.json
 
 # --- the files the guide's commands load: the shipped statements plus the fixture's, the Inspector copy tagged and
 #     test-prefixed and checked to differ in nothing else (advisor 0098)
-python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" test-files --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" \
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" test-files --openvex "$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" \
   --fixture-digest "$FIX" --cve "$CVE" --scope scope.json --grype-repository "${GAR}/cache" --out-dir .
 
 # --- Grype: the guide's command as written, then the fixture without and with our file, judged

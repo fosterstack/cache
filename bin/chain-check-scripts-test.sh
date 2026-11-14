@@ -183,7 +183,7 @@ mkdig() { python3 "$work/mkdig.py" "$1"; }
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
 cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py \
   "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh \
-  "$root"/bin/layout-archive.sh "$fx/bin/" 2> /dev/null || true
+  "$root"/bin/layout-archive.sh "$root"/bin/guide_plan_judge.py "$fx/bin/" 2> /dev/null || true
 mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
@@ -230,6 +230,7 @@ mkfake() { # mkfake NAME EXIT PACKAGES  -> a scanner that logs its argv and prin
 echo "$1 \$*" >> "\$FAKE_LOG"
 case "\${1:-}" in --version|version) echo "$1 9.9.9"; exit 0;; esac
 if [ "$1" = grype ]; then
+  echo "grype-dbdir \${GRYPE_DB_CACHE_DIR:-unset}" >> "\$FAKE_LOG"
   gcfg=""; gprev2=""
   for ga in "\$@"; do [ "\$gprev2" != -c ] || gcfg=\$ga; gprev2=\$ga; done
   if [ -z "\$gcfg" ]; then echo "grype-config none" >> "\$FAKE_LOG"; elif [ -f "\$gcfg" ] && [ ! -s "\$gcfg" ]; then echo "grype-config empty" >> "\$FAKE_LOG"; else echo "grype-config other" >> "\$FAKE_LOG"; fi
@@ -326,12 +327,12 @@ if grep -E '^grype .*-o json .*-o cyclonedx-json=' "$work/log" > /dev/null 2>&1 
 FOUR=(fscache_0.3.0_linux_amd64.tar.gz fscache_0.3.0_linux_arm64.tar.gz fscache-fips_0.3.0_linux_amd64.tar.gz fscache-fips_0.3.0_linux_arm64.tar.gz)
 mkdist() { rm -f "$fx"/dist/*; for f in "$@"; do printf 'archive %s\n' "$f" > "$fx/dist/$f"; done; mkdig "$fx"; }
 mkdist "${FOUR[@]}"; want_ok "PLAT-001-AC1 exactly the four Linux archives: the scan runs" "${SCAN[@]}"
-mkdist "${FOUR[@]}" fscache_0.3.0_linux_riscv64.tar.gz; want_fail "PLAT-001-AC1 a fifth Linux archive fails" "exactly the four" "${SCAN[@]}"
+mkdist "${FOUR[@]}" fscache_0.3.0_linux_riscv64.tar.gz; want_fail "PLAT-001-AC1 a fifth Linux archive fails" "four Linux archives" "${SCAN[@]}"
 mkdist "${FOUR[@]}" fscache_0.3.0_darwin_arm64.tar.gz; want_fail "PLAT-001-AC1 a darwin archive fails" darwin "${SCAN[@]}"
 mkdist "${FOUR[@]}" fscache_0.3.0_windows_amd64.zip; want_fail "PLAT-001-AC1 a windows archive of any kind fails" windows "${SCAN[@]}"
 mkdist "${FOUR[@]}" fscache_0.3.0_Darwin_amd64.zip; want_fail "PLAT-001-AC1 a darwin file in any case fails" darwin "${SCAN[@]}"
-mkdist "${FOUR[@]:0:3}"; want_fail "PLAT-001-AC1 a missing archive fails" "exactly the four" "${SCAN[@]}"
-mkdist "${FOUR[@]:0:3}" fscache-fips_0.4.0_linux_arm64.tar.gz; want_fail "PLAT-001-AC1 four files that are not the four archives of one version fail" "exactly the four" "${SCAN[@]}"
+mkdist "${FOUR[@]:0:3}"; want_fail "PLAT-001-AC1 a missing archive fails" "no archive" "${SCAN[@]}"
+mkdist "${FOUR[@]:0:3}" fscache-fips_0.4.0_linux_arm64.tar.gz; want_fail "PLAT-001-AC1 four files that are not the four archives of one version fail" "version" "${SCAN[@]}"
 # the platform lines of the documents (factual lines only): the README table lists no darwin or windows binary, the next release's notes say so once with the container-image pointer
 docs_root="$(cd "$(dirname "$0")/.." && pwd)"
 if ! grep -E '^\| (FIPS binaries|Binaries) .*(darwin|windows)' "$docs_root/README.md" > /dev/null 2>&1; then ok "PLAT-001-AC1 the README binary table lists no darwin or windows platform"; else bad "PLAT-001-AC1 the README binary table lists no darwin or windows platform"; fi
@@ -659,6 +660,11 @@ rm -f "$fx/out/scan-results.json"; FAKE_DB_RC=1 run "${SCAN[@]}"
 if [ "$rc" = 1 ] && grep -Fq "could not fetch" <<< "$out" && ! grep -q '^grype .*archive' "$work/log" && ! jq -e 'any(.scanners[]?; .verdict == "pass")' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 a database that cannot be fetched fails closed: nothing is scanned and nothing is recorded as clean"; else bad "AC15 fetch failure -> rc=$rc: ${out:0:140}"; fi
 FAKE_DB_FROM="https://mirror.example.com/databases/v6/db.tar.zst?checksum=sha256%3A$GDB_SUM" want_fail "AC15 a database from a host that is not grype's own fails closed" "own database host" "${SCAN[@]}"
 FAKE_DB_BUILT="" want_fail "AC15 a database status without a build date fails closed" "date" "${SCAN[@]}"
+FAKE_DB_BUILT=2026-10-11T00:00:00Z want_fail "AC15 a grype database built a day after now fails closed" "future" "${SCAN[@]}"
+# an inherited GRYPE_DB_CACHE_DIR (a planted database) is not used: every grype call gets one directory under the script's own temp dir
+st=$(mktemp -d "$work/st.XXXXXX"); GRYPE_DB_CACHE_DIR="$work/planted" TMPDIR="$st" want_ok "AC15 a grype database directory in the environment does not stop the scan" "${SCAN[@]}"
+dbdirs=$(grep '^grype-dbdir ' "$work/log" | sort -u)
+if awk -v d="grype-dbdir $st/" '{n++; if (index($0, d) != 1) bad=1} END{exit !(n > 0 && !bad)}' <<< "$dbdirs"; then ok "AC15 GRYPE_DB_CACHE_DIR is not inherited: every grype call uses a directory under the script's tmp"; else bad "AC15 grype was given [$(tr '\n' ' ' <<< "$dbdirs")], wanted one directory under $st"; fi
 FAKE_DB_FROM="https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9.tar.zst" want_fail "AC15 a database status without a digest fails closed" "digest" "${SCAN[@]}"
 printf '{"scanners":["osv-scanner"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"
 want_ok "AC15 osv-scanner with fresh offline databases (newest record modified 4 h before now): the scan proceeds" "${SCAN[@]}"
@@ -671,6 +677,7 @@ if jq -e '[.scanners[] | select(.name == "osv-scanner")] | length == 1 and (.[0]
 pre="$work/precache"; mkdir -p "$pre/Go"; : > "$pre/Go/all.zip"
 OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$pre" want_rc "AC15 a pre-set osv cache directory (here a populated one) is refused before anything runs (the databases must be downloaded fresh in this job)" 2 "${SCAN[@]}"
 FAKE_OSV_MODIFIED=2026-10-07T00:00:00Z want_fail "AC15 an osv database whose newest record is 72 h old fails closed (not refreshed)" "older than 48 hours" "${SCAN[@]}"
+FAKE_OSV_MODIFIED=2026-10-11T00:00:00Z want_fail "AC15 an osv database whose newest record is modified a day after now fails closed" "future" "${SCAN[@]}"
 FAKE_OSV_ZIP=none want_fail "AC15 no osv database zip in the cache after the run fails closed" "no osv database" "${SCAN[@]}"
 FAKE_OSV_ZIP=empty want_fail "AC15 an osv database zip without records fails closed" "no record" "${SCAN[@]}"
 FAKE_OSV_ZIP=nomodified want_fail "AC15 an osv database whose records carry no modified date fails closed" "modified" "${SCAN[@]}"
@@ -680,6 +687,23 @@ FAKE_OSV_ZIP_DIRS="Go Debian" want_ok "AC15 rc-5a E: a reported Debian:12 is cov
 FAKE_OSV_ZIP_DIRS="Go Debian Debian:11" want_fail "AC15 rc-5a E: a stray zip for another release (Debian:11) beside the covering Debian zip is still refused as not a target" "not one the scan targets" "${SCAN[@]}"
 FAKE_OSV_ZIP_DIRS="Go Debian:11" want_fail "AC15 rc-5a E: a zip for another release of the family (Debian:11) does not cover a reported Debian:12" "no osv database zip for" "${SCAN[@]}"
 FAKE_OSV_ECOS="Go" want_fail "AC15 rc-5a E: a reported ecosystem (Debian:12) with no osv database zip fails closed, even when another ecosystem has one" "no osv database zip for" "${SCAN[@]}"
+# check-osv-db.py on its own: a future date is refused, and records that mix a time zone and none give a named error, not a traceback
+od="$work/osvdb"; mkdir -p "$od/cache/Go"; printf 'Go\n' > "$od/ecos"
+osvdb() { # osvdb MODIFIED... : a zip of one record per date; runs the check at FAKE_NOW with a 48 h limit
+  python3 - "$od/cache/Go/all.zip" "$@" <<'PYZ'
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    for i, m in enumerate(sys.argv[2:]):
+        z.writestr("GO-%d.json" % i, json.dumps({"id": "GO-%d" % i, "modified": m}))
+PYZ
+  rc=0; out=$(python3 -I "$root/bin/check-osv-db.py" "$od/cache" "$od/ecos" "$FAKE_NOW" 172800 2>&1) || rc=$?
+}
+osvdb 2026-10-09T20:00:00Z 2026-10-09T21:00:00Z
+if [ "$rc" = 0 ]; then ok "AC15 check-osv-db accepts fresh records that all carry a time zone"; else bad "AC15 check-osv-db on fresh records -> rc=$rc: ${out:0:140}"; fi
+osvdb 2026-10-09T20:00:00Z 2026-10-11T00:00:00Z
+if [ "$rc" = 1 ] && grep -Fqi future <<< "$out" && ! grep -q Traceback <<< "$out"; then ok "AC15 check-osv-db refuses a record modified in the future"; else bad "AC15 check-osv-db future date -> rc=$rc: ${out:0:140}"; fi
+osvdb 2026-10-09T20:00:00Z 2026-10-09T21:00:00
+if [ "$rc" = 1 ] && grep -Eqi 'time ?zone|offset|naive' <<< "$out" && ! grep -q 'Traceback\|TypeError' <<< "$out"; then ok "AC15 check-osv-db names mixed time-zone and naive dates instead of raising TypeError"; else bad "AC15 check-osv-db mixed dates -> rc=$rc: ${out:0:160}"; fi
 rm -f "$fx/out/scan-results.json"; FAKE_OSV_DB_RC=3 run "${SCAN[@]}"
 if [ "$rc" = 1 ] && grep -Fq "osv-scanner could not run" <<< "$out" && ! jq -e 'any(.scanners[]?; .verdict == "pass")' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 an osv database download failure (non-zero exit) fails closed and nothing is recorded as clean"; else bad "AC15 osv download failure -> rc=$rc: ${out:0:140}"; fi
 printf '{"scanners":["grype","osv-scanner"]}\n' > "$fx/.github/policy/scanners.json"
@@ -835,7 +859,8 @@ done
 # archive and the image serves cache traffic on this runner's architecture). The -debug clause has no subject (owner Oct 9). The arm64 binaries and images
 # need an arm64 runner, which the one-job Check does not have (reported in round 2); only the amd64 halves run here.
 # The "binaries" are small real HTTP servers (python3) so the script's curl calls are real; GOFIPS140 is read from a fake `go version -m`.
-fa="$work/fa"; mkdir -p "$fa/bin" "$fa/images" "$fa/out" "$fa/real"
+fa="$work/fa"; mkdir -p "$fa/bin" "$fa/images" "$fa/out" "$fa/real" "$fa/build/locks"
+printf 'v1.0.0-c2097c7c\n' > "$fa/build/locks/fips-module.txt"   # the module id the check reads, as the tree has it
 cat > "$fa/server.py" <<'PYS'
 import http.server, json, os, sys
 store = {}
@@ -917,7 +942,7 @@ case "$1" in
     for ((i=2; i<=$#; i++)); do a=${!i}; j=$((i+1)); case "$a" in --entrypoint) ep=${!j};; --name) nm=${!j};; -d) detach=1;; fscache:*) img=$a;; localhost/fscache-*-image) img=${a#localhost/fscache-}; img=fscache:${img%-image};; esac; done
     if [ -n "$ep" ]; then
       case " ${FAKE_SHELL:-} " in *" ${img#fscache:}:$ep "*) exit 0;; esac
-      exit 1
+      exit "${FAKE_NOSHELL_RC:-127}"
     fi
     [ "$detach" = 1 ] || exit 0
     port=$((41000 + $(ls "$FAKE_DIR" | grep -c '^srv-')))
@@ -936,6 +961,8 @@ arun() { # arun [VAR=val ...] -- SCRIPT ARGS : the artifact check in its own tre
   local envs=(FAKE_NONE=1); while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
   rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"; cp "$fa/server.py" "$work/fakedir/server.py"; : > "$work/log"; rc=0
   cp "$root"/bin/check-artifacts.sh "$root"/bin/check-image-platforms.py "$root"/bin/check-bind.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/loopback-get.sh "$fa/bin/" 2> /dev/null || true
+  # the copy of check-artifacts.sh differs from the real one on its TEST-SUBST GO_TOOL line only: that line names the fake go
+  awk -v g="$fake2/go" '/^GO_TOOL=.*#[ \t]*TEST-SUBST/{print "GO_TOOL=" g "   # TEST-SUBST"; next} 1' "$root/bin/check-artifacts.sh" > "$fa/bin/check-artifacts.sh"
   out=$( (cd "$fa" && env "${envs[@]}" PATH="$fake2:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$work/fakedir" bash "bin/$1" "${@:2}") 2>&1) || rc=$?
 }
 aok() { local l=$1; shift; arun "$@"; if [ "$rc" = 0 ]; then ok "$l"; else bad "$l -> rc=$rc: ${out:0:200}"; fi; }
@@ -964,8 +991,12 @@ for v in production fips; do
   if members_only "$work/fakedir/members-$v" "$fa/images/$v"; then ok "AC33 check-artifacts loads the $v layout from its named members only"; else bad "AC33 check-artifacts handed docker load [$MO_WHY]: $(tr '\n' ' ' < "$work/fakedir/members-$v" 2> /dev/null | cut -c1-200)"; fi
 done
 unplant_stray "$fa/images/production"; unplant_stray "$fa/images/fips"
+# the bind comes first: an archive that is not the recorded one is refused by it, and nothing was extracted or run
+mkarch "$fa/dist"; printf 'not a gzip\n' > "$fa/dist/fscache_0.3.0_linux_amd64.tar.gz"
+afail "ART the bind runs before any archive is extracted: an archive that is not Build's is refused by it" "not the archive Build recorded" -- "${ART[@]}"
+if ! grep -Eq '^(docker (load|run)|go) ' "$work/log" && ! ls "$work"/fakedir/srv-* "$work"/fakedir/pid-* > /dev/null 2>&1; then ok "ART nothing ran behind the refused archive"; else bad "ART something ran behind the refused archive"; fi
 mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz"
-afail "PLAT-001-AC1 a missing amd64 archive fails naming it" fscache-fips -- "${ART[@]}"
+afail "PLAT-001-AC1 a missing amd64 archive fails naming it" archive-fips-linux-amd64 -- "${ART[@]}"
 mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fips.bad"; mkdir -p "$fa/bad"; cp "$fa/real/fscache-fips.bad" "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
 tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
 afail "PLAT-001-AC1 a binary that exits at once does not execute: fails naming healthz" healthz -- "${ART[@]}"
@@ -1015,7 +1046,7 @@ afail "ART F1 an archive that is not the one Build recorded (a runnable binary, 
 if ! grep -Eq '^docker (load|run)' "$work/log" && ! ls "$work"/fakedir/srv-* > /dev/null 2>&1; then ok "ART F1 the foreign archive's binary was not executed"; else bad "ART F1 something ran behind the refused archive"; fi
 mkarch "$fa/dist"
 mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_arm64.tar.gz"
-afail "AC17 --arch arm64 with the arm64 -fips archive missing fails naming it" fscache-fips -- "${ART[@]}" --arch arm64
+afail "AC17 --arch arm64 with the arm64 -fips archive missing fails naming it" archive-fips-linux-arm64 -- "${ART[@]}" --arch arm64
 mkarch "$fa/dist"
 arun -- "${ART[@]}" --arch riscv64; if [ "$rc" = 2 ] && grep -Fq arch <<< "$out"; then ok "AC17 an architecture other than amd64 and arm64 is a usage error (exit 2)"; else bad "AC17 --arch riscv64 -> rc=$rc: ${out:0:120}"; fi
 mkarch "$fa/dist"
@@ -1023,6 +1054,14 @@ afail "AC17 --arch arm64: the fips binary reporting off fails" "fips build" FAKE
 mkarch "$fa/dist"
 mkarch "$fa/dist"
 afail "FIPS-001-AC1 the fips binary embeds no module selection fails" GOFIPS140 FAKE_GOFIPS_FIPS= -- "${ART[@]}"
+# the module id is read from build/locks/fips-module.txt, not written in the script
+printf 'v1.0.0-aaaaaaaa\n' > "$fa/build/locks/fips-module.txt"
+aok "FIPS-001-AC1 the id the tree pins (fips-module.txt) is the one the binary must embed" FAKE_GOFIPS_FIPS=v1.0.0-aaaaaaaa -- "${ART[@]}"
+afail "FIPS-001-AC1 a binary embedding another id than fips-module.txt names fails" GOFIPS140 -- "${ART[@]}"
+printf 'v1.0.0-c2097c7c\n' > "$fa/build/locks/fips-module.txt"
+arun -- "${ART[@]}"
+diff "$root/bin/check-artifacts.sh" "$fa/bin/check-artifacts.sh" > "$work/ca-diff" || true; subst_lines=$(grep -c '^>' "$work/ca-diff" || true)
+if [ "$rc" = 0 ] && grep -Eq '^go version -m .*/fscache-fips$' "$work/log" && grep -Eq '^go version -m .*/fscache$' "$work/log" && [ "$subst_lines" = 1 ] && grep -Eq '^GO_TOOL=/usr/local/bin/fscache-go/bin/go +# TEST-SUBST' "$root/bin/check-artifacts.sh" && ! grep -Eq '(^|[^A-Za-z_])PATH=|export +PATH|(^|[^A-Za-z_./"$])go +version' "$root/bin/check-artifacts.sh"; then ok "FIPS-001-AC1 the build info of both binaries is read by GO_TOOL (the pinned Go at its absolute path), the script sets no PATH and runs no bare go"; else bad "FIPS-001-AC1 build-info reads did not run through GO_TOOL, or the script sets PATH or runs a bare go: $(grep '^go ' "$work/log" | head -2)"; fi
 afail "FIPS-001-AC1 the fips binary embedding the version alone (v1.0.0) fails" GOFIPS140 FAKE_GOFIPS_FIPS=v1.0.0 -- "${ART[@]}"
 afail "FIPS-001-AC1 the fips binary embedding a longer id (v1.0.0-c2097c7c9) fails" GOFIPS140 FAKE_GOFIPS_FIPS=v1.0.0-c2097c7c9 -- "${ART[@]}"
 afail "FIPS-001-AC1 another module version than v1.0.0 fails" v1.0.0 FAKE_GOFIPS_FIPS=v1.26.0 -- "${ART[@]}"
@@ -1042,6 +1081,11 @@ afail "FIPS-002-AC1 round 2 the standard note off plus a trailing newline fails"
 afail "FIPS-002-AC1 the standard default reporting active fails" "standard" FAKE_STD_NOTE='active (x)' -- "${ART[@]}"
 afail "FIPS-001-AC2 the forced-standard build claiming the validated module fails" "forced" FAKE_FORCED_NOTE='active (Go validated module v1.0.0, CMVP cert #5247)' -- "${ART[@]}"
 afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" FAKE_FORCED_NOTE=off -- "${ART[@]}"
+for nsrc in 1 2 125 128; do
+  arun FAKE_NOSHELL_RC=$nsrc -- "${ART[@]}"
+  if [ "$rc" = 1 ]; then ok "PLAT-003-AC1 a docker run that fails with $nsrc is not 'no shell': the check fails"; else bad "PLAT-003-AC1 docker exit $nsrc passed as no shell: rc=$rc ${out:0:100}"; fi
+done
+aok "PLAT-003-AC1 docker exit 126 (found, not executable) means no shell" FAKE_NOSHELL_RC=126 -- "${ART[@]}"
 afail "PLAT-003-AC1 a shell at /bin/sh in the production image fails naming production" production FAKE_SHELL="production:/bin/sh" -- "${ART[@]}"
 afail "PLAT-003-AC1 a shell at /busybox/sh in the -fips image fails naming fips" fips FAKE_SHELL="fips:/busybox/sh" -- "${ART[@]}"
 afail "PLAT-003-AC1 a shell at another path (/usr/bin/bash) fails" shell FAKE_SHELL="production:/usr/bin/bash" -- "${ART[@]}"
@@ -1074,8 +1118,8 @@ plat_want_fail "PLAT-002-AC1 F1 a platform entry whose config blob is missing is
 # exactly in the cannot-run list (then not-run, exit 0, covered by Release's post-publish verification, rule 79 amended Oct 10), or the check fails closed ("unlisted command
 # needs a registry"). A command runs only when every operand is a local file or a placeholder Check fills with a local
 # value (<TAG>).
-# A LISTED command is Release's: it carries exactly one key flag whose value is <RELEASE_KEY> (a runnable one names a
-# local key file, fx.pub). `$` is refused anywhere but inside single quotes ("$TAG", "${TAG}", "$(x)"). The registry
+# A LISTED command is Release's: it carries exactly one key flag whose value is release.rsa.pub (a runnable one names a
+# local key file, release.rsa.pub). `$` is refused anywhere but inside single quotes ("$TAG", "${TAG}", "$(x)"). The registry
 # text below is in the GUIDE
 # FIXTURE only; the check script names no registry. The -fips tag form is cache-3f's to verify (the fixture's `<TAG>-fips` is a guess
 # of nothing: it only has to look like a registry reference).
@@ -1094,7 +1138,7 @@ EOF
 chmod +x "$fake/cosign" "$fake/gh"
 printf 'abc  cache_linux_amd64.tar.gz\n' > "$fx/checksums.txt";
 printf '{}\n' > "$fx/checksums.txt.bundle";
-printf 'key\n' > "$fx/fx.pub"
+printf 'key\n' > "$fx/release.rsa.pub"
 REPO=registry.example/fosterstack/cache
 grun() { # grun SCRIPT ARGS...  like run, with the candidate's environment of a release run
   : > "$work/log"; rc=0
@@ -1103,6 +1147,15 @@ grun() { # grun SCRIPT ARGS...  like run, with the candidate's environment of a 
 }
 gwant_ok() { local l=$1; grun "${GUIDE[@]}"; if [ "$rc" = 0 ]; then ok "$l"; else bad "$l -> rc=$rc: ${out:0:160}"; fi; }
 gwant_fail() { local l=$1 w=$2; grun "${GUIDE[@]}"; if [ "$rc" = 1 ] && grep -Fqi -- "$w" <<< "$out"; then ok "$l (caught: ${out:0:70})"; else bad "$l -> rc=$rc, wanted exit 1 naming '$w': ${out:0:160}"; fi; }
+# grefuse LABEL FRAGMENT: the judge refuses the guide (exit 1) and the message names the command (FRAGMENT is a distinctive piece of it);
+# the messages are the judge's own, so only the refusal and the command are checked, never the wording
+grefuse() { local l=$1 w=$2; grun "${GUIDE[@]}"; if [ "$rc" = 1 ] && grep -Fq -- "$w" <<< "$out" && grep -Fqi 'refused' <<< "$out"; then ok "$l (caught: ${out:0:70})"; else bad "$l -> rc=$rc, wanted exit 1 refusing a command with '$w': ${out:0:160}"; fi; }
+# gplan_row LABEL: the planner (run alone) plans the current guide with exit 0 and every row it holds says run by postverify
+gplan_row() { local p; p=$(mktemp -d "$work/plan.XXXXXX"); rc=0
+  (cd "$fx" && GITHUB_REF_NAME=v0.3.0 python3 -I "$root/bin/check-guide-plan.py" guide.md guide.cannot-run.json \
+    "sha256:$(printf 'a%.0s' $(seq 64))" "$p/plan" "sha256:$(printf 'b%.0s' $(seq 64))") > "$p/out" 2>&1 || rc=$?
+  if [ "$rc" = 0 ] && jq -e -s 'length > 0 and all(.[]; .run == null and (.reason | contains("run by postverify before publishing")))' \
+    "$p/plan" > /dev/null 2>&1; then ok "$1"; else bad "$1 -> rc=$rc: $(head -c 160 "$p/out")"; fi; }
 GUIDE=(check-guide.sh --guide guide.md --digests digests.json --images images --out out)
 FENCE='```'
 DEFS='# Verify a FosterStack Cache release
@@ -1110,22 +1163,21 @@ DEFS='# Verify a FosterStack Cache release
 - `<IMAGE_REF>`: the image, by digest
 - `<IMAGE_REF_FIPS>`: the -fips image, by digest
 - `<TAG>`: the release tag, for example v0.3.0
-- `<RELEASE_KEY>`: the release public key file
 '
 g() { printf '%s\n' "$DEFS" "$1" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"; }
 lst() { python3 -c 'import json,sys; json.dump([{"command": c, "reason": "needs the candidate image in a registry; Check holds it as a file"} for c in sys.argv[1:]], open(sys.argv[0] if False else "'"$fx"'/guide.cannot-run.json","w"))' "$@"; }
 ISS=https://token.actions.githubusercontent.com
-L1="cosign verify-blob --key fx.pub --type slsa-<TAG> --bundle checksums.txt.bundle checksums.txt"
-L2="jq -n '\"<TAG>\"'"
-R1="cosign verify <IMAGE_REF> --key <RELEASE_KEY> | jq -e '.[0].critical.image'"
-R2="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> oci://<IMAGE_REF>"
-R3="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> <IMAGE_REF>"
-RF="cosign verify <IMAGE_REF_FIPS> --key <RELEASE_KEY>"
-RL="cosign verify ghcr.io/fosterstack/cache:<TAG>-fips --key <RELEASE_KEY>"
+L1="cosign verify-blob --key release.rsa.pub --type slsa-<TAG> --bundle checksums.txt.bundle checksums.txt"
+L2="jq -e '\"a\"' checksums.txt.bundle"
+R1="cosign verify <IMAGE_REF> --key release.rsa.pub | jq -e '.[0].critical.image'"
+R2="cosign verify-attestation --type slsaprovenance1 --key release.rsa.pub oci://<IMAGE_REF>"
+R3="cosign verify-attestation --type slsaprovenance1 --key release.rsa.pub <IMAGE_REF>"
+RF="cosign verify <IMAGE_REF_FIPS> --key release.rsa.pub"
+RL="cosign verify ghcr.io/fosterstack/cache:<TAG>-fips --key release.rsa.pub"
 D64=$(printf 'a%.0s' $(seq 64))
-RO="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> oci://ghcr.io/fosterstack/cache@sha256:$D64"
+RO="cosign verify-attestation --type slsaprovenance1 --key release.rsa.pub oci://ghcr.io/fosterstack/cache@sha256:$D64"
 # the same command with a local key file: what Check could run if it were not a registry command
-U() { printf '%s' "${1//<RELEASE_KEY>/fx.pub}"; }
+U() { printf '%s' "$1"; }
 blk() { local b=""; for c in "$@"; do b="$b${FENCE}sh
 $c
 ${FENCE}
@@ -1140,38 +1192,39 @@ ${FENCE}"
 rm -f "$fx/out/guide-results.json"
 gwant_ok "AC7 commands on local files and local placeholders run: cosign verify-blob on the checksums file, jq (a text block is prose)"
 if [ -f "$fx/out/guide-results.json" ] && jq -e '(.commands | length) == 2 and all(.commands[]; .outcome == "pass")' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 the results file lists each of the two commands with its outcome"; else bad "AC7 guide-results.json shape"; fi
-if grep -Fq "cosign verify-blob --key fx.pub --type slsa-v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log";
+if grep -Fq "cosign verify-blob --key release.rsa.pub --type slsa-v0.3.0" "$work/log" && ! grep -q '<[A-Z_]*>' "$work/log";
 then ok "AC7 <TAG> is substituted in a runnable verify command (no placeholder left)";
 else bad "AC7 substitution: $(tr '\n' ' ' < "$work/log" | cut -c1-200)";
 fi
-g "$(blk "$R1" "$R2" "$R3" "$RF" "$RL" "$RO")"; lst "$R1" "$R2" "$R3" "$RF" "$RL" "$RO"; rm -f "$fx/out/guide-results.json"
+g "$(blk "$R1" "$R3" "$RF")"; lst "$R1" "$R3" "$RF"; rm -f "$fx/out/guide-results.json"
 gwant_ok "AC7 registry commands listed exactly in the cannot-run list are not run and do not fail the check (exit 0; covered by Release's post-publish verification)"
-if [ -f "$fx/out/guide-results.json" ] && jq -e '(.commands | length) == 6 and all(.commands[]; .outcome == "not-run" and (.reason | length > 0))' "$fx/out/guide-results.json" > /dev/null 2>&1 && ! grep -Eq '^(cosign|gh) ' "$work/log"; then ok "AC7 each listed registry command is recorded as not-run with its reason and never run"; else bad "AC7 listed registry commands: $(tr '\n' ' ' < "$work/log" | cut -c1-160)"; fi
-if [ "$(grep -c 'NOT RUN' <<< "$out")" = 6 ] && [ "$(grep -c 'run right after publishing' <<< "$out")" = 6 ]; then ok "AC7 each not-run line says the command is run right after publishing (Release's post-publish verification), not skipped"; else bad "AC7 not-run lines name the post-publish step: ${out:0:300}"; fi
-for c in "$R1" "$R2" "$R3";
+if [ -f "$fx/out/guide-results.json" ] && jq -e '(.commands | length) == 3 and all(.commands[]; .outcome == "not-run" and (.reason | length > 0))' "$fx/out/guide-results.json" > /dev/null 2>&1 && ! grep -Eq '^(cosign|gh) ' "$work/log"; then ok "AC7 each listed registry command is recorded as not-run with its reason and never run"; else bad "AC7 listed registry commands: $(tr '\n' ' ' < "$work/log" | cut -c1-160)"; fi
+if [ "$(grep -c 'NOT RUN' <<< "$out")" = 3 ] && [ "$(grep -c 'run right after publishing' <<< "$out")" = 3 ]; then ok "AC7 each not-run line says the command is run right after publishing (Release's post-publish verification), not skipped"; else bad "AC7 not-run lines name the post-publish step: ${out:0:300}"; fi
+for c in "$R1" "$R3";
 do g "$(blk "$(U "$c")")";
 gwant_fail "AC7 an unlisted verify command on <IMAGE_REF> fails closed: ${c:0:40}" "unlisted command needs a registry";
 done
 g "$(blk "$(U "$RF")")";
 gwant_fail "AC7 an unlisted -fips verify command on <IMAGE_REF_FIPS> fails closed" "unlisted command needs a registry"
-g "$(blk "$(U "$RL")")";
-gwant_fail "AC7 an unlisted -fips verify command on a literal registry reference (host/path:tag) fails closed" \
-  "unlisted command needs a registry"
-g "$(blk "$(U "$RO")")";
-gwant_fail "AC7 an unlisted verify command on an oci:// target fails closed" "unlisted command needs a registry"
-g "$(blk "$RL")"; lst "$RL"; gwant_ok "AC7 the literal -fips registry command, listed, is not run (exit 0)"
+# a literal image reference (host/path:tag, oci://, @sha256:) is refused by the judge, listed or not: only <IMAGE_REF> and <IMAGE_REF_FIPS> name an image
+for c in "$R2" "$RL" "$RO" "cosign verify ghcr.io/fosterstack/cache@sha256:$D64 --key release.rsa.pub" \
+         "cosign verify fosterstack/cache:<TAG> --key release.rsa.pub" "cosign verify localhost:5000/x --key release.rsa.pub" \
+         "cosign verify a@sha256:$D64 --key release.rsa.pub"; do
+  g "$(blk "$c")"; grefuse "AC7 a literal image reference is refused, unlisted: ${c:0:60}" "cosign verify"
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 a literal image reference is refused, listed too: ${c:0:60}" "cosign verify"
+done
 # round 1 F8 (Codex B6): the syntax and the placeholders are judged BEFORE the cannot-run list excuses a command (a listed command is run unattended by
 # Release after publishing, so an excused `$(...)`, `;` or unsupported placeholder would be run there)
-X1="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \"\$(id)\""
-X2="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \$IDENT"
-X3="cosign verify <IMAGE_REF> --key <RELEASE_KEY>; jq -n 1"
-X4="cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \`id\`"
-for c in "$X1" "$X2" "$X3" "$X4"; do g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 F8 a listed command with shell syntax is refused, not excused: ${c:0:70}" "shell syntax"; done
+X1="cosign verify <IMAGE_REF> --key release.rsa.pub --type \"\$(id)\""
+X2="cosign verify <IMAGE_REF> --key release.rsa.pub --type \$IDENT"
+X3="cosign verify <IMAGE_REF> --key release.rsa.pub; jq -e 1"
+X4="cosign verify <IMAGE_REF> --key release.rsa.pub --type \`id\`"
+for c in "$X1" "$X2" "$X3" "$X4"; do g "$(blk "$c")"; lst "$c"; grefuse "AC7 F8 a listed command with shell syntax is refused, not excused: ${c:0:70}" "cosign verify"; done
 printf '%s\n' "$DEFS" '- `<RELEASE_URL>`: the release page' "${FENCE}sh" \
-  "cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type <RELEASE_URL>" "$FENCE" > "$fx/guide.md"
-lst "cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type <RELEASE_URL>"
-gwant_fail "AC7 F8 a listed command with a placeholder Check and Release cannot substitute is refused, not excused" "unsupported placeholder"
-# F13 (customer guide in the key form): the planner reads the REAL page, and <RELEASE_KEY> is allowed only in a listed
+  "cosign verify <IMAGE_REF> --key release.rsa.pub --type <RELEASE_URL>" "$FENCE" > "$fx/guide.md"
+lst "cosign verify <IMAGE_REF> --key release.rsa.pub --type <RELEASE_URL>"
+grefuse "AC7 F8 a listed command with a placeholder Check and Release cannot substitute is refused, not excused" "--type"
+# F13 (customer guide in the key form): the planner reads the REAL page, and release.rsa.pub is allowed only in a listed
 # command
 rp=$(mktemp -d "$work/realpage.XXXXXX"); rc=0
 python3 -I "$root/bin/check-guide-plan.py" "$root/docs/verify-release.md" "$root/docs/verify-release.cannot-run.json" \
@@ -1180,112 +1233,143 @@ python3 -I "$root/bin/check-guide-plan.py" "$root/docs/verify-release.md" "$root
 if [ "$rc" = 0 ];
 then ok "AC7 F13 the planner plans the real docs/verify-release.md with its real cannot-run list (rc 0)"
 else bad "AC7 F13 the planner refuses the real page -> rc=$rc: $(head -c 200 "$rp/out")"; fi
-KR="cosign verify-blob --key <RELEASE_KEY> --bundle checksums.txt.bundle checksums.txt"
+KR="cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt"
 printf '%s\n' "$DEFS" "$(blk "$KR")" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
-gwant_fail \
-  "AC7 F13 <RELEASE_KEY> in a command not on the cannot-run list is refused: Check never holds the verified key" \
-  "RELEASE_KEY"
+gwant_ok "AC7 F13 a verify-blob command on local files with --key release.rsa.pub runs (the key file is next to the page's files)"
 printf '%s\n' "$DEFS" "$(blk "$KR")" > "$fx/guide.md"; lst "$KR"
-gwant_ok "AC7 F13 <RELEASE_KEY> in a command on the cannot-run list is planned as not-run (Release fills it)"
-# round 1 (F1, F2, F4): a LISTED command is Release's, so it carries exactly one key flag whose value is <RELEASE_KEY>;
-# no command skips or
-# redirects the public log; gh attestation verify is not a verify form. Each refusal names its own reason.
+gwant_fail "AC7 F13 the same runnable command on the cannot-run list is refused (a runnable command is run, never excused)" "$KR"
+KP="cosign verify-blob --key <RELEASE_KEY> --bundle checksums.txt.bundle checksums.txt"
+g "$(blk "$KP")"; grefuse "AC7 F13 the <RELEASE_KEY> placeholder is refused, unlisted: only release.rsa.pub names the key" "--bundle"
+g "$(blk "$KP")"; lst "$KP"; grefuse "AC7 F13 the <RELEASE_KEY> placeholder is refused, listed too" "--bundle"
+# round 1 (F1, F2, F4): a verify form carries exactly one --key, whose value is release.rsa.pub, listed or not; no command skips or
+# redirects the public log; gh attestation verify is not a verify form. The refusal names the command.
 CB="--bundle checksums.txt.bundle checksums.txt"
 kfail() {
-  local l=$1 c=$2 w=$3; g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 F1 a listed command with $l is refused" "$w"
+  local l=$1 c=$2 w=$3; g "$(blk "$c")"; lst "$c"; grefuse "AC7 F1 a listed command with $l is refused" "$w"
+  g "$(blk "$c")"; grefuse "AC7 F1 an unlisted command with $l is refused too" "$w"
 }
-kfail "a key file by name" "cosign verify-blob --key fx.pub $CB" "its key flag names"
-kfail "a KMS reference" "cosign verify-blob --key awskms:///alias/x $CB" "its key flag names"
-kfail "a URL in --key=" "cosign verify-blob --key=https://example.org/k.pub $CB" "its key flag names"
-kfail "a second key flag beside the placeholder" "cosign verify-blob --key <RELEASE_KEY> --key fx.pub $CB" \
-  "exactly one key flag"
-kfail "no key flag" "cosign verify-blob $CB" "exactly one key flag"
+kfail "a key file by another name" "cosign verify-blob --key other.pub $CB" "other.pub"
+kfail "a KMS reference" "cosign verify-blob --key awskms:///alias/x $CB" "awskms"
+kfail "a URL in --key=" "cosign verify-blob --key=https://example.org/k.pub $CB" "example.org"
+kfail "a second key flag beside the first" "cosign verify-blob --key release.rsa.pub --key release.rsa.pub $CB" "--key release.rsa.pub --key"
+kfail "no key flag" "cosign verify-blob $CB" "cosign verify-blob --bundle"
 kfail "an identity instead of a key" \
-  "cosign verify-blob --certificate-identity x --certificate-oidc-issuer $ISS $CB" "exactly one key flag"
+  "cosign verify-blob --certificate-identity x --certificate-oidc-issuer $ISS $CB" "--certificate-identity"
 kfail "no key flag in the second segment of a pipe" \
-  "cosign verify-blob --key <RELEASE_KEY> $CB | cosign verify-blob $CB" "exactly one key flag"
+  "cosign verify-blob --key release.rsa.pub $CB | cosign verify-blob $CB" "| cosign verify-blob"
 # J1 (round 6): shlex keeps the newline of a backslash-newline in the next word, bash removes both, so a flag after one
 # reaches cosign unseen:
 # a listed entry holding a backslash before a newline or CR is refused by name (the guide's own line join never leaves
 # one in a page command)
-NLM="a newline outside quotes"
+NLM="cannot-run entry"   # the entry holds a newline outside quotes, so it is not the guide's command text and is named as an entry
 for nl in $'\n' $'\r'; do
-  c="cosign verify-blob --key <RELEASE_KEY> $CB \\${nl}--insecure-ignore-tlog"
-  g "$(blk "cosign verify-blob --key <RELEASE_KEY> $CB")";
+  c="cosign verify-blob --key release.rsa.pub $CB \\${nl}--insecure-ignore-tlog"
+  g "$(blk "cosign verify-blob --key release.rsa.pub $CB")";
   lst "$c";
   gwant_fail "AC7 J1 a listed entry with a backslash and a newline or CR before a flag is refused" "$NLM"
-  c="cosign verify-blob --key <RELEASE_KEY> $CB \\${nl}--key awskms:///x"
-  g "$(blk "cosign verify-blob --key <RELEASE_KEY> $CB")";
+  c="cosign verify-blob --key release.rsa.pub $CB \\${nl}--key awskms:///x"
+  g "$(blk "cosign verify-blob --key release.rsa.pub $CB")";
   lst "$c";
   gwant_fail "AC7 J1 a listed entry with a backslash and a newline or CR before a second key is refused" "$NLM"
 done
 # H1 (round 5): cosign reads --key, --bundle and --type WITH their value; a key-looking word after a value-taking flag
 # is that value
-NV="has no value: the next word is a flag"
-kfail "--key as the value of --bundle" "cosign verify-blob --bundle --key <RELEASE_KEY> checksums.txt" "$NV"
-kfail "--key as the value of --type" "cosign verify-blob --type --key <RELEASE_KEY> checksums.txt" "$NV"
-kfail "--bundle as the value of --key" "cosign verify-blob --key --bundle checksums.txt.bundle checksums.txt" "$NV"
-kfail "a trailing --bundle" "cosign verify-blob --key <RELEASE_KEY> checksums.txt --bundle" "$NV"
+kfail "--key as the value of --bundle" "cosign verify-blob --bundle --key release.rsa.pub checksums.txt" "--bundle --key"
+kfail "--key as the value of --type" "cosign verify-blob --type --key release.rsa.pub checksums.txt" "--type --key"
+kfail "--bundle as the value of --key" "cosign verify-blob --key --bundle checksums.txt.bundle checksums.txt" "--key --bundle"
+kfail "a trailing --bundle" "cosign verify-blob --key release.rsa.pub checksums.txt --bundle" "checksums.txt --bundle"
 # G1 (round 4): bash expands an unquoted brace, glob or tilde AFTER the check reads the words, so each is refused by
 # name, listed or not
 BR="a brace, glob or tilde outside quotes"
 for tail in "--insecure-ignore-{tlog,tlog}" "{--key,awskms:///alias/x}" "--bundle a.bun*" "a?.json" "a[12].json" \
   "~/k.pub" "}";
 do
-  c="cosign verify-blob --key <RELEASE_KEY> $CB $tail"
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 G1 a listed command with $tail is refused" "$BR"
-  g "$(blk "$(U "$c")")"; gwant_fail "AC7 G1 an unlisted command with $tail is refused too" "$BR"
+  c="cosign verify-blob --key release.rsa.pub $CB $tail"
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 G1 a listed command with $tail is refused" "$tail"
+  g "$(blk "$(U "$c")")"; grefuse "AC7 G1 an unlisted command with $tail is refused too" "$tail"
 done
 # G2 (round 4): a listed verify carries only --key, --bundle, --type and --check-claims; every other flag is refused by
 # name
 for tail in "--rekor-url https://example.org" "--rekor-url=x" "--trusted-root x.json" "--custom-trusted-root x.json" \
             "--insecure-ignore-tlog" "--insecure-ignore-tlo''g" "--private-infrastructure" "-o json"; do
-  c="cosign verify-blob --key <RELEASE_KEY> $CB $tail"
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 G2 a listed command with $tail is refused" "outside the closed set"
+  c="cosign verify-blob --key release.rsa.pub $CB $tail"
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 G2 a listed command with $tail is refused" "${tail%% *}"
 done
-c="cosign verify-blob-attestation --key <RELEASE_KEY> --type slsaprovenance1 --check-claims=false $CB"
+c="cosign verify-blob-attestation --key release.rsa.pub --type slsaprovenance1 --check-claims=false $CB"
 g "$(blk "$c")";
-lst "$c";
+rm -f "$fx/guide.cannot-run.json";
 gwant_ok "AC7 G2 --key, --bundle, --type and --check-claims (with =value) are the whole allowed set"
+for cc in "" "=true" "=false"; do
+  c="cosign verify-blob-attestation --key release.rsa.pub --type slsaprovenance1 --check-claims$cc $CB"
+  g "$(blk "$c")"; gwant_ok "AC7 G2 --check-claims${cc:-' (bare, means true)'} on verify-blob-attestation is accepted, unlisted"
+done
+for cc in "" "=true"; do
+  c="cosign verify-blob --key release.rsa.pub --check-claims$cc $CB"
+  g "$(blk "$c")"; gwant_ok "AC7 G2 --check-claims${cc:-' (bare)'} on verify-blob is accepted"
+done
+c="cosign verify-blob --key release.rsa.pub --check-claims=false $CB"
+g "$(blk "$c")"; grefuse "AC7 G2 --check-claims=false is refused on verify-blob (only verify-blob-attestation may carry it)" "--check-claims=false"
+c="cosign verify <IMAGE_REF> --key release.rsa.pub --check-claims=false"
+g "$(blk "$c")"; lst "$c"; grefuse "AC7 G2 --check-claims=false is refused on verify" "--check-claims=false"
+c="cosign verify-attestation --key release.rsa.pub --type slsaprovenance1 --check-claims=false <IMAGE_REF>"
+g "$(blk "$c")"; lst "$c"; grefuse "AC7 G2 --check-claims=false is refused on verify-attestation" "--check-claims=false"
+c="cosign verify-blob --key release.rsa.pub --certificate-identity x $CB"
+g "$(blk "$c")"; grefuse "AC7 G2 --certificate-identity is no allowed flag" "--certificate-identity"
 GHV="gh attestation verify oci://<IMAGE_REF> --owner fosterstack"
 g "$(blk "$GHV")";
 lst "$GHV";
 gwant_fail "AC7 F2 a listed gh attestation verify is refused: no verify form (it verifies by identity)" \
-  "not a verify form"
-g "$(blk "$GHV")"; gwant_fail "AC7 F2 an unlisted gh attestation verify is refused: it is no verify form" "verify forms"
-g "$(blk "cosign verify-blob --key fx.pub --type fail-me --bundle checksums.txt.bundle checksums.txt")"
+  "gh attestation verify"
+g "$(blk "$GHV")"; gwant_fail "AC7 F2 an unlisted gh attestation verify is refused: it is no verify form" "gh attestation verify"
+g "$(blk "cosign verify-blob --key release.rsa.pub --type fail-me --bundle checksums.txt.bundle checksums.txt")"
 gwant_fail "AC7 a runnable command that exits non-zero fails the script naming it" "fail-me"
-g "$(blk "cosign verify-blob --key fx.pub --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
-gwant_fail "AC7 a command on a file that is not local to Check is not runnable and fails unless listed" "not runnable"
+g "$(blk "cosign verify-blob --key release.rsa.pub --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
+# rule 79: a file-subject command whose file Check lacks is run by Release's postverify, so it is no failure and needs no list entry
+gwant_ok "AC7 a verify-blob on a file that is not local to Check is planned as run by postverify before publishing (exit 0, unlisted)"
+gplan_row "AC7 that plan row has run null and says it is run by postverify before publishing"
+g "$(blk "jq -e '.a' not-here.json")"; gwant_ok "AC7 a jq over a file that is not local to Check is planned for postverify too (exit 0)"
+# an image-reference subject still needs the list; a non-local operand of another kind still fails closed
+g "$(blk "cosign verify <IMAGE_REF> --key release.rsa.pub")"
+gwant_fail "AC7 an image-reference command not on the list still fails (postverify class is for file subjects only)" "unlisted command needs a registry"
+g "$(blk "gh release download <TAG> --pattern not-here.txt")"
+gwant_fail "AC7 a command that is no allowed form stays refused even with a non-local operand" "not one of the verify forms"
+g "$(blk "cosign verify-blob --key release.rsa.pub --bundle not-here.bundle not-here.txt | jq -e '.a' not-here.json")"
+grefuse "AC7 a jq file operand after a verify pipe stays refused (closed jq grammar)" "not-here.json"
 # PR 3 fix7 (found by running the planner read-only on cache's draft docs/verify-release.md):
 # (1) the verify-form judgement of a LISTED command splits on `|` outside single and double quotes only (a pipe inside a quoted jq filter is jq's);
 #     every F8 check still holds, and a chain to anything that is not a verify form or jq is still refused.
 JQF="jq -e --arg ref <IMAGE_REF> '.payload | @base64d | fromjson | .subject[0].digest.sha256 == \$ref'"
-Q1="cosign verify-attestation --type slsaprovenance1 --key <RELEASE_KEY> <IMAGE_REF> | $JQF"
+Q1="cosign verify-attestation --type slsaprovenance1 --key release.rsa.pub <IMAGE_REF> | $JQF"
 g "$(blk "$Q1")"; lst "$Q1"
 gwant_ok "AC7 fix7 a listed verify command piped to a jq filter that itself holds pipes inside single quotes is one verify form (not refused as 'not a verify form')"
 if jq -e '(.commands | length) == 1 and .commands[0].outcome == "not-run"' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 fix7 the quoted-pipe jq command is recorded as not-run"; else bad "AC7 fix7 quoted-pipe results"; fi
 g "$(blk "$(U "$Q1")")";
 gwant_fail "AC7 fix7 the same command unlisted still fails closed (it needs a registry)" \
   "unlisted command needs a registry"
-g "$(blk "jq -n '\"a\" | length'")"; gwant_ok "AC7 fix7 a runnable jq whose filter holds a quoted pipe runs"
-QD="cosign verify <IMAGE_REF> --key <RELEASE_KEY> | jq -e \".[0] | .critical\""
+g "$(blk "jq -e '\"a\" | length' checksums.txt.bundle")"; gwant_ok "AC7 fix7 a runnable jq whose filter holds a quoted pipe runs"
+QD="cosign verify <IMAGE_REF> --key release.rsa.pub | jq -e \".[0] | .critical\""
 g "$(blk "$QD")"; lst "$QD"; gwant_ok "AC7 fix7 a pipe inside double quotes (no expansion) is jq's too"
-CHAIN_TO_DL="jq -n '.a | .b' | jq -n '.c' | curl http://example.com/x"
-for c in "cosign verify <IMAGE_REF> --key <RELEASE_KEY> | sh" \
-         "jq -n '.a | .b' | rm -rf x" \
+CHAIN_TO_DL="jq -e '.a | .b' | jq -e '.c' | curl http://example.com/x"
+for c in "cosign verify <IMAGE_REF> --key release.rsa.pub | sh" \
+         "jq -e '.a | .b' | rm -rf x" \
          "$CHAIN_TO_DL" \
-         "jq -n \\'.a | rm -rf x" \
-         "jq -n '.a | .b"; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a chain to a command that is not a verify form or jq (or an unterminated quote) is still refused: ${c:0:60}" "verify form"
+         "jq -e \\'.a | rm -rf x" \
+         "jq -e '.a | .b" \
+         "jq -e '.a' |" \
+         "| jq -e '.a'" \
+         "jq -e '.a' | | jq -e '.b'"; do
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 fix7 a chain to a command that is not a verify form or jq (an unterminated quote, an empty pipe segment) is refused: ${c:0:60}" "${c##*| }"
 done
-for c in "jq -n '.a | .b' ; rm -rf x" \
-         "jq -n '.a | .b' \$(id)" \
-         "jq -n '.a | .b' \"\$(id)\"" \
-         "jq -n \".a | \`id\`\"" \
-         "jq -n '.a | .b' && rm -rf x" \
-         "jq -n '.a | .b' > /etc/x"; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a quoted pipe cannot smuggle shell syntax past the F8 checks: ${c:0:60}" "shell syntax"
+for c in "jq -e '.a | .b' ; rm -rf x" \
+         "jq -e '.a | .b' \$(id)" \
+         "jq -e '.a | .b' \"\$(id)\"" \
+         "jq -e \".a | \`id\`\"" \
+         "jq -e '.a | .b' && rm -rf x" \
+         "jq -e '.a | .b' > /etc/x" \
+         "jq -e '.a | .b' < /etc/x" \
+         "jq -e '.a' \\\$x" \
+         "jq -e '.a' (x)"; do
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 fix7 a quoted pipe cannot smuggle shell syntax past the judge: ${c:0:60}" "${c: -6}"
 done
 # (2) a value of --bundle, --certificate, --cert, --signature, --sig, --key, --certificate-chain, --rekor-url is a file operand unless it is a URL: a command whose
 #     only file operand is such a value, not local to Check, is not runnable at Check (it may be listed; Release runs it with the downloaded files).
@@ -1293,38 +1377,40 @@ BA="cosign verify-blob-attestation --type slsaprovenance1"
 FX2=0
 for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X" "--cert=X" "--signature X" "--signature=X" "--sig X" "--sig=X" \
          "--key X" "--key=X" "--certificate-chain X" "--certificate-chain=X"; do
-  case "$f" in --key*) kf="";; *) kf=" --key <RELEASE_KEY>";; esac
+  case "$f" in --key*) kf="";; *) kf=" --key release.rsa.pub";; esac
   c="$BA$kf ${f//X/provenance.intoto.jsonl.bundle}"
   g "$(blk "$(U "$c")")";
-  gwant_fail \
-    "AC7 fix7 a file-valued flag whose file is not local to Check makes the command not runnable (unlisted): ${f%% *}" \
-    "not runnable"
-  # a listed command's key flag is <RELEASE_KEY>, so the key value cannot be this file
+  # only --bundle is in the closed flag set (and --key must be release.rsa.pub): every other file-valued flag is refused by the judge
+  case "$f" in --bundle*) ;;
+    *) grefuse "AC7 fix7 a file-valued flag outside the closed set (or a key that is not release.rsa.pub) is refused: ${f%% *}" "${f%%[ =]*}"; continue;; esac
+  gwant_ok "AC7 fix7 a file-valued flag whose file is not local to Check is run by postverify, no failure (unlisted): ${f%% *}"
+  # a listed command's key flag is release.rsa.pub, so the key value cannot be this file
   case "$f" in --key*) continue;; esac
   # only --bundle is in a listed command's closed flag set; the other file-valued flags are refused there (G2), so no
   # listed half
   case "$f" in --bundle*) ;; *) continue;; esac
-  g "$(blk "$c")"; lst "$c"; gwant_ok "AC7 fix7 the same command listed with its reason is not run and is recorded as not-run (exit 0): $f"
-  if ! grep -q '^cosign' "$work/log"; then ok "AC7 fix7 the listed flag-value command was not run: $f"; else bad "AC7 fix7 the listed flag-value command ran: $f"; fi
+  # the cannot-run list holds image-reference commands only: a file-subject entry is refused by name
+  g "$(blk "$c")"; lst "$c"
+  gwant_fail "AC7 fix7 the same file-subject command listed is refused, naming the entry: $f" "provenance.intoto.jsonl.bundle"
 done
-c="$BA --key fx.pub --bundle=https://example.com/provenance.bundle checksums.txt"
+c="$BA --key release.rsa.pub --bundle=https://example.com/provenance.bundle checksums.txt"
 g "$(blk "$c")"; gwant_ok "AC7 fix7 a URL value of --bundle is not a file operand: the command (local blob) runs"
-c="$BA --key fx.pub --bundle checksums.txt.bundle checksums.txt"
+c="$BA --key release.rsa.pub --bundle checksums.txt.bundle checksums.txt"
 g "$(blk "$c")"; gwant_ok "AC7 fix7 a --bundle value that is a local file runs"
-c="$BA --key <RELEASE_KEY> --bundle provenance.intoto.jsonl.bundle"
+c="cosign verify <IMAGE_REF> --key release.rsa.pub"
 g "$(blk "$c")"; printf '[{"command": "%s ", "reason": "run after publishing"}]\n' "$c" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 fix7 a flag-value command listed with text that does not match exactly is refused" "not in the guide"
 g "$(blk "$c")"; printf '[{"command": "%s", "reason": " "}]\n' "$c" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 fix7 a flag-value command listed without a reason is refused" "cannot-run entry"
-g "$(blk "$(U "$c")")"; rm -f "$fx/guide.cannot-run.json"
-gwant_fail "AC7 fix7 a flag-value command neither runnable nor listed is refused" "not runnable"
-g "$(blk "jq -n \"\$TAG\"")"; gwant_fail "AC7 \$ inside double quotes (\"\$TAG\") is refused" "shell syntax"
-g "$(blk "jq -n \"\${TAG}\"")"; gwant_fail "AC7 \${...} inside double quotes is refused" "shell syntax"
-g "$(blk "jq -n \"\$(id)\"")"; gwant_fail "AC7 a command substitution inside double quotes is refused" "shell syntax"
-g "$(blk "jq -n '\"\$x\"'")"; gwant_ok "AC7 a \$ inside single quotes is text and runs"
+c="$BA --key release.rsa.pub --bundle provenance.intoto.jsonl.bundle"
+g "$(blk "$c")"; gwant_ok "AC7 fix7 a flag-value command neither runnable nor listed is run by postverify, not refused"
+g "$(blk "jq -e \"\$TAG\" checksums.txt.bundle")"; grefuse "AC7 \$ inside double quotes (\"\$TAG\") is refused" '"$TAG"'
+g "$(blk "jq -e \"\${TAG}\" checksums.txt.bundle")"; grefuse "AC7 \${...} inside double quotes is refused" '"${TAG}"'
+g "$(blk "jq -e \"\$(id)\" checksums.txt.bundle")"; grefuse "AC7 a command substitution inside double quotes is refused" '"$(id)"'
+g "$(blk "jq -e '\"\$x\"' checksums.txt.bundle")"; gwant_ok "AC7 a \$ inside single quotes is text and runs"
 g "Nothing to run here."
 gwant_fail "AC7 a guide with no command fails (a vacuous pass is not a pass)" "command"
-g "$(for i in $(seq 11); do blk "jq -n 1"; done)"
+g "$(for i in $(seq 11); do blk "jq -e 1 checksums.txt.bundle"; done)"
 gwant_fail "AC7 a guide with more than ten commands fails" "ten"
 BLK_DL="curl -sSf https://example.com/x"
 g "$(blk "$BLK_DL")"
@@ -1332,37 +1418,82 @@ FXD_2="curl"
 gwant_fail "AC7 a tool other than cosign, gh and jq fails naming it" "$FXD_2"
 g "$(blk "cosign sign <IMAGE_REF>")"
 gwant_fail "AC7 a cosign subcommand that is not a verify fails" "cosign sign"
-g "$(blk "jq -n 1; jq -n 2")"
-gwant_fail "AC7 shell syntax other than a pipe (;) fails" "shell syntax"
-g "$(blk "jq -n '\"<DIGEST_REF>\"'")"
+g "$(blk "jq -e 1; jq -e 2")"
+grefuse "AC7 shell syntax other than a pipe (;) fails" "jq -e 1; jq -e 2"
+g "$(blk "jq -e '\"<DIGEST_REF>\"' checksums.txt.bundle")"
 gwant_fail "AC7 a placeholder the guide does not define fails" "undefined"
-printf '%s\n' "$DEFS" '- `<TAG>`: again' "${FENCE}sh" "jq -n 1" "$FENCE" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
+printf '%s\n' "$DEFS" '- `<TAG>`: again' "${FENCE}sh" "jq -e 1 checksums.txt.bundle" "$FENCE" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a placeholder defined twice fails" "twice"
-printf '%s\n' "$DEFS" '- `<RELEASE_URL>`: the release page' "${FENCE}sh" "jq -n '\"<RELEASE_URL>\"'" "$FENCE" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
+printf '%s\n' "$DEFS" '- `<RELEASE_URL>`: the release page' "${FENCE}sh" "cosign verify-blob --key release.rsa.pub --type <RELEASE_URL> --bundle checksums.txt.bundle checksums.txt" "$FENCE" > "$fx/guide.md"; rm -f "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a defined placeholder Check has no local value for fails (unsubstituted)" "unsubstituted"
 R4="gh release download <TAG> --repo fosterstack/cache --pattern checksums.txt"
 g "$(blk "$L2" "$R4")"
-gwant_fail "AC7 a command outside the runnable set fails when the cannot-run list does not name it" "not runnable"
+gwant_fail "AC7 a command outside the runnable set fails when the cannot-run list does not name it" "not one of the verify forms"
 printf '[{"command": "%s", "reason": "needs the published GitHub release, which exists only after Release"}]\n' "$R4" > "$fx/guide.cannot-run.json"
-gwant_fail "AC7 a cannot-run entry that is not one of the verify forms fails (Release runs only verify forms from this list; the list is the one exact-text list)" "not a verify form"
+gwant_fail "AC7 a cannot-run entry that is not one of the verify forms fails (Release runs only verify forms from this list; the list is the one exact-text list)" "not one of the verify forms"
 # round 2 (Codex B): a backslash-escaped quote is a literal character, so a $ after it is outside single quotes and is refused
-for c in "cosign verify <IMAGE_REF> --key <RELEASE_KEY> --type \\'x\${HOME}y\\'" "jq -n \\'\$TAG\\'"; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 round 2 an escaped quote does not open a quoted region: a \$ after it is refused: ${c:0:70}" "shell syntax"
+for c in "cosign verify <IMAGE_REF> --key release.rsa.pub --type \\'x\${HOME}y\\'" "jq -e \\'\$TAG\\'"; do
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 round 2 an escaped quote does not open a quoted region: a \$ after it is refused: ${c:0:70}" "\\'"
 done
 # round 4 (both seats): the command words are compared one word at a time, so a quoted "cosign verify" (one word holding a space) is not the verify form
 for c in "\"cosign verify\" | jq ." "'gh attestation' verify | jq ."; do
-  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 round 4 a listed command whose quoted word holds a space is not a verify form (compared word by word): ${c:0:60}" "not a verify form"
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 round 4 a listed command whose quoted word holds a space is not a verify form (compared word by word): ${c:0:60}" "| jq ."
 done
 for c in "cosign verify-evil x" "cosign verifyx y" "gh attestation verify-evil z" "jqx ."; do
   g "$(blk "$L2" "$c")"; printf '[{"command": "%s", "reason": "x"}]\n' "$c" > "$fx/guide.cannot-run.json"
-  gwant_fail "AC7 round 2 a cannot-run entry whose first words only START with a verify form is not a verify form (the form is compared by whole words): $c" "not a verify form"
+  gwant_fail "AC7 round 2 a cannot-run entry whose first words only START with a verify form is not a verify form (the form is compared by whole words): $c" "not one of the verify forms"
 done
-g "$(blk "$L2" "jq -n 1")"; printf '[{"command": "jq -n 1", "reason": "x"}]\n' > "$fx/guide.cannot-run.json"
-gwant_fail "AC7 a runnable command in the cannot-run list fails (it is run, never excused)" "runnable"
+g "$(blk "$L2" "jq -e 1 checksums.txt.bundle")"; printf '[{"command": "jq -e 1 checksums.txt.bundle", "reason": "x"}]\n' > "$fx/guide.cannot-run.json"
+gwant_fail "AC7 a runnable command in the cannot-run list fails (it is run, never excused)" "jq -e 1 checksums.txt.bundle"
 g "$(blk "$L2")"; printf '[{"command": "%s", "reason": "x"}]\n' "$R1" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a cannot-run entry that is not a command of the guide fails (a stale list)" "not in the guide"
+# ruling 2: the cannot-run list keeps only image-reference commands; a file-subject entry is refused naming it
+for c in "cosign verify-blob --key release.rsa.pub --bundle x.bundle x" \
+         "cosign verify-blob-attestation --key release.rsa.pub --bundle x.bundle --check-claims=false" \
+         "jq -e '.a' x.bundle"; do
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 ruling 2 a file-subject entry in the cannot-run list is refused by name: ${c:0:50}" "$c"
+done
+g "$(blk "$R1" "cosign verify-blob --key release.rsa.pub --bundle x.bundle x")"; lst "$R1" "cosign verify-blob --key release.rsa.pub --bundle x.bundle x"
+gwant_fail "AC7 ruling 2 one file-subject entry among image entries refuses the list" "cosign verify-blob --key release.rsa.pub --bundle x.bundle x"
+g "$(blk "$R1" "$RF")"; lst "$R1" "$RF"; gwant_ok "AC7 ruling 2 a list of image-reference entries only is accepted"
+# the real tree: the real list holds only image-reference commands
+if jq -e 'length > 0 and all(.[]; .command | test("<IMAGE_REF(_FIPS)?>"))' "$root/docs/verify-release.cannot-run.json" > /dev/null; then
+  ok "AC7 ruling 2 the real cannot-run list holds only image-reference commands"
+else bad "AC7 ruling 2 the real cannot-run list holds a command that is not an image-reference one"; fi
 rm -f "$fx/guide.md" "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a missing guide file fails" "guide"
+# the judge's own rules (the one command judge Check and Release share): # outside quotes, a quoted or escaped operator character, a backslash
+# before $ ` newline or end, an empty pipe segment, jq's closed grammar, and the <TAG> form
+JB="cosign verify-blob --key release.rsa.pub $CB"
+for c in "$JB # a comment" "$JB '|' x" "$JB \\| x" "$JB \\; x" "$JB \"a;b\"" "$JB 'a&b'" "$JB \\> x" "$JB \"<\"" "$JB '('" \
+         "$JB \\\$x" "$JB \\\`x" "$JB \\" "$JB {a,b}" "$JB a*" "$JB a?" "$JB a[1]" "$JB ~x" "$JB | | jq -e ."; do
+  g "$(blk "$c")"; grefuse "AC7 judge: refused, unlisted: ${c: -22}" "$JB"
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 judge: refused, listed too: ${c: -22}" "$JB"
+done
+JQ0="jq -e '\"a\"' checksums.txt.bundle"
+g "$(blk "$JQ0")"; gwant_ok "AC7 judge: jq -e with one filter and a plain file operand runs"
+for fl in -e -r -c -S --exit-status --raw-output --compact-output --sort-keys; do
+  g "$(blk "jq $fl '.' checksums.txt.bundle")"; gwant_ok "AC7 judge: the jq flag $fl is in the closed grammar"
+done
+g "$(blk "jq -e --arg k v '.' checksums.txt.bundle")"; gwant_ok "AC7 judge: jq --arg NAME VALUE is in the closed grammar"
+g "$(blk "jq -e --arg k '.' checksums.txt.bundle")"; grefuse "AC7 judge: jq --arg with a missing value is refused" "--arg k"
+for c in "jq -n '.a' checksums.txt.bundle" "jq -e --rawfile k checksums.txt '.' checksums.txt.bundle" "jq -e -f x.jq checksums.txt.bundle" \
+         "jq -e -L lib '.' checksums.txt.bundle" "jq -e --slurp '.' checksums.txt.bundle" "jq -e '\\(1)' checksums.txt.bundle" \
+         "jq -e '.a # c' checksums.txt.bundle" "jq -e '.a' '.b' checksums.txt.bundle" "jq -e checksums.txt.bundle" \
+         "jq -e '.a' ../checksums.txt.bundle" "jq -e '.a' /etc/passwd" "jq -e '.a' sub/checksums.txt.bundle" "jq -e '.a' -"; do
+  g "$(blk "$c")"; grefuse "AC7 judge: jq outside the closed grammar is refused, unlisted: ${c:0:60}" "jq -"
+  g "$(blk "$c")"; lst "$c"; grefuse "AC7 judge: jq outside the closed grammar is refused, listed too: ${c:0:60}" "jq -"
+done
+# <TAG> must fullmatch vX.Y.Z or vX.Y.Z-rcN (read from GITHUB_REF_NAME)
+tagrun() { local t=$1; : > "$work/log"; rc=0
+  out=$( (cd "$fx" && PATH="$fake:$PATH" FAKE_LOG="$work/log" CANDIDATE_REPOSITORY="$REPO" GITHUB_REF_NAME="$t" \
+          GITHUB_REPOSITORY=fosterstack/cache GITHUB_REF="refs/tags/$t" bash "bin/${GUIDE[0]}" "${GUIDE[@]:1}") 2>&1) || rc=$?; }
+g "$(blk "$L1")"
+for t in v0.3.0 v10.20.30 v0.3.0-rc1 v0.3.0-rc12; do tagrun "$t"; if [ "$rc" = 0 ]; then ok "AC7 judge: <TAG> $t is accepted"; else bad "AC7 judge: <TAG> $t -> rc=$rc: ${out:0:160}"; fi; done
+for t in v0.3.0-rc.1 0.3.0 v0.3 v0.3.0-rc v0.3.0-beta1 v0.3.0-rc1-fips 'v0.3.0
+' 'v0.3.0 x' 'v0.3.0;id' '$(id)'; do
+  tagrun "$t"; if [ "$rc" != 0 ]; then ok "AC7 judge: <TAG> ${t//$'\n'/<nl>} is refused (rc=$rc)"; else bad "AC7 judge: <TAG> ${t//$'\n'/<nl>} was accepted"; fi
+done
 # ---- REQ-CHAIN-006-AC5: the interface only (the gap is stated in the header) ------------------------------------------------
 want_rc "AC5 an unknown suite name is a named refusal (exit 2)" 2 check-acceptance.sh nosuch --digests digests.json --images images --out out
 want_rc "AC5 no suite name is a named refusal (exit 2)" 2 check-acceptance.sh --digests digests.json --images images --out out
@@ -1495,9 +1626,10 @@ arun64() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && env "$@" PATH="$dp/bin:$
 arun64 X=1
 if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start " ] && [ "$(grep -c '^check-artifacts' "$work/dplog")" = 1 ] \
    && grep -q '^check-artifacts --arch arm64 --digests witness-build/digests.json ' "$work/dplog" && grep -n '' "$work/dplog" | awk -F: '/verify stage-start/{a=$1} /check-artifacts/{c=$1} END{exit !(a<c)}';  then ok "AC17 the arm64 target makes the policy, verifies Build's record, verifies Sign's provenance, then runs the arm64 artifact checks on the digest file it verified (rule 58)"; else bad "AC17 arm64 target ran: $(tr '\n' '|' < "$work/dplog" | cut -c1-300)"; fi
-# (c) the stage-start the arm64 leg runs is the one the dispatcher runs: the same line, naming Build's record only
-if [ "$(grep -c 'chain-verify.py stage-start' "$root/bin/check-phase-arm64.sh")" = 1 ] && [ "$(grep 'chain-verify.py stage-start' "$root/bin/check-phase-arm64.sh")" = "$(grep 'chain-verify.py stage-start' "$root/bin/check-stage.sh")" ] \
-   && ! grep -q 'provenance' "$root/bin/check-phase-arm64.sh" "$root/bin/check-stage.sh"; then ok "AC17 the arm64 target's stage-start is the dispatcher's own line, and neither script names Sign's provenance"; else bad "AC17 the stage-start lines differ, or a Check script names Sign's provenance"; fi
+# (c) one copy: the stage-start line is written once between the arm64 target and the dispatcher, and neither script names Sign's provenance
+ss_count=$(cat "$root/bin/check-phase-arm64.sh" "$root/bin/check-stage.sh" | grep -c 'chain-verify.py stage-start')
+if [ "$ss_count" = 1 ] \
+   && ! grep -q 'provenance' "$root/bin/check-phase-arm64.sh" "$root/bin/check-stage.sh"; then ok "AC17 the stage-start line exists once for the arm64 target and the dispatcher, and neither script names Sign's provenance"; else bad "AC17 the stage-start line is repeated, or a Check script names Sign's provenance"; fi
 arm_stops() { # arm_stops LABEL ENV... : the target fails and nothing of the candidate is loaded or run
   local l=$1; shift; arun64 "$@"
   if [ "$rc" != 0 ] && ! grep -Eq '^(check-artifacts|docker)' "$work/dplog"; then ok "$l"; else bad "$l -> rc=$rc, log: $(tr '\n' '|' < "$work/dplog" | cut -c1-200)"; fi; }
@@ -1517,6 +1649,15 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+# ---- bin/check-records-digests.sh: the list of the records a Check job made (REQ-REL-011-AC1) ----------------------------------
+crd="$work/crd"; mkdir -p "$crd/witness-a" "$crd/witness-empty" "$crd/witness-link"; printf 'x\n' > "$crd/witness-a/a.json"; ln -s a.json "$crd/witness-link/l.json"
+crun() { rc=0; out=$( (cd "$crd" && bash "$root/bin/check-records-digests.sh" "$@") 2>&1) || rc=$?; }
+crun witness-a; want=$(printf 'x\n' | sha256sum | cut -d' ' -f1)
+if [ "$rc" = 0 ] && [ "$out" = "{\"witness-a\":{\"a.json\":\"sha256:$want\"}}" ]; then ok "REL-011-AC1 a folder is listed by its name with the sha256 of each file"; else bad "REL-011-AC1 records list -> rc=$rc: ${out:0:140}"; fi
+for c in empty link missing; do
+  crun witness-$c
+  if [ "$rc" = 1 ] && grep -Fq "witness-$c" <<< "$out"; then ok "REL-011-AC1 the list refuses a bad folder ($c), naming it"; else bad "REL-011-AC1 records list of a $c folder -> rc=$rc: ${out:0:140}"; fi
+done
 # ---- ruling G (advisor Oct 12): bin/check-govulncheck.py, the source scan of the product module, whose output Release reads from Check's record -----------------------
 # `govulncheck -json ./...` runs once in the scanners step with the pinned Go (the fixed path /usr/local/bin/fscache-go/bin first on PATH, GOTOOLCHAIN=local,
 # GOFLAGS=-mod=vendor and GOPROXY=off, so the scan reads the exact bytes the build uses; never a flag or toolchain of the caller's environment); the raw stream is written byte for byte to OUT/govulncheck.json, which the Witness
@@ -1528,7 +1669,7 @@ printf 'module example.com/a\n' > "$gvt/go.mod"; mkdir -p "$gvt/vendor"; printf 
 printf '{"scanners":["grype","osv-scanner"],"source_scanners":["govulncheck"],"pr_gate":["grype","inspector"]}\n' > "$gvt/.github/policy/scanners.json"
 # the shipped main package is read from the recipes the build compiles from (build/melange.yaml and build/melange-fips.yaml: exactly one `go build`, CGO_ENABLED set), never from `go list`
 mkdir -p "$gvt/build"
-gv_recipe() { # gv_recipe NAME PACKAGE FILE [CGO]: a copy of the real recipe of that file's kind (the grammar pins the template's other lines), with the package and CGO_ENABLED set
+gv_recipe() { # gv_recipe NAME PACKAGE FILE [CGO]: a copy of the real recipe of that file's kind, with the package and CGO_ENABLED set
   local src="$root/build/melange.yaml"; case "$3" in *-fips.yaml) src="$root/build/melange-fips.yaml" ;; esac
   sed -e "s#fscache \./cmd/fscache\$#fscache $2#" -e "s#^    CGO_ENABLED: .*#    CGO_ENABLED: \"${4:-0}\"#" "$src" > "$3"; }
 gv_recipes() { gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" "${1:-0}"; gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml" "${1:-0}"; }
@@ -1638,74 +1779,15 @@ for rc_ in 'no go build line|printf "package:\n  name: x\nenvironment:\n  enviro
   if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the build recipe is read strictly, fail closed before any scan: ${rc_%%|*}"; else bad "G recipe case '${rc_%%|*}' accepted: rc=$rc"; fi
   gv_recipes
 done
-# the closed line grammar: each mutation below is a shape the grammar must refuse before any scan (fail closed), in the standard recipe or the FIPS one
-gvfl_=$'      export GOFIPS140=v1.0.0\n'
-gvcases_=(
-  'a trailing comment on the build line|sed -i.bak "s/\(go build .*\)$/\1 # x/" "$gvt/build/melange.yaml"'
-  'a semicolon after the build line|sed -i.bak "s/\(go build .*\)$/\1 ; true/" "$gvt/build/melange.yaml"'
-  'an ampersand after the build line|sed -i.bak "s/\(go build .*\)$/\1 \&\& true/" "$gvt/build/melange.yaml"'
-  'a redirect and pipe on the build line|sed -i.bak "s/\(go build .*\)$/\1 > \/x/" "$gvt/build/melange.yaml"'
-  'a second package on the build line|sed -i.bak "s/\(go build .*\)$/\1 .\/cmd\/other/" "$gvt/build/melange.yaml"'
-  'a -tags flag|sed -i.bak "s/go build -trimpath/go build -tags x -trimpath/" "$gvt/build/melange.yaml"'
-  'an inline runs go build|printf "  - runs: go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'an absolute-path go|printf "      \/usr\/local\/go\/bin\/go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'an extra export of a Go setting|printf "      export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
-  'an export CGO_ENABLED line|printf "      export CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"'
-  'CGO_ENABLED named in a trailing description line|printf "      echo CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"'
-  'a command substitution on a go line|printf "      go version -m \$(id)\n" >> "$gvt/build/melange.yaml"'
-  'a backtick on a go line|printf "      go version -m \`id\`\n" >> "$gvt/build/melange.yaml"'
-  'a go command other than the two|printf "      go env -w GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
-  'a go word built by a command substitution|printf "      g\$(printf o) build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'a quoted go word|printf "      g'"'"'o'"'"' build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'a backslash go word|printf "      g\\\\o build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'a command word from a variable|printf "      \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'a substitution on a line with no go word|printf "      echo \$(id)\n" >> "$gvt/build/melange.yaml"'
-  'GOFIPS140 in the standard recipe|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange.yaml"'
-  'the FIPS recipe without the GOFIPS140 export|sed -i.bak "/export GOFIPS140=v1.0.0/d" "$gvt/build/melange-fips.yaml"'
-  'the FIPS recipe with another GOFIPS140 value|sed -i.bak "s#export GOFIPS140=v1.0.0#export GOFIPS140=off#" "$gvt/build/melange-fips.yaml"'
-  'the FIPS recipe without the proof line|sed -i.bak "/^      grep -Eqx /d" "$gvt/build/melange-fips.yaml"'
-  'the FIPS recipe with GOFIPS140 twice|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange-fips.yaml"'
-  'a fifth environment key|sed -i.bak "s/^    GOPROXY: \"off\"$/    GOPROXY: \"off\"\n    GOAMD64: v3/" "$gvt/build/melange.yaml"'
-  'CGO_ENABLED set twice in the environment block|sed -i.bak "s/^    CGO_ENABLED: \"0\"$/    CGO_ENABLED: \"0\"\n    CGO_ENABLED: \"1\"/" "$gvt/build/melange.yaml"'
-  'CGO_ENABLED with a value other than 0 or 1|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" 2'
-  'a quoted expansion as the command word|printf "      G=go\n      \"\$G\" build -tags x -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'an expansion after a wrapper word|printf "      env \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'a glob as the command word|printf "      \/usr\/local\/go\/bin\/g? build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
-  'eval of a built string|printf "      eval \"g\"\"o build -o \/x .\/cmd\/other\"\n" >> "$gvt/build/melange.yaml"'
-  'a template line changed (the install directory)|sed -i.bak "s#^  - runs: mkdir -p /usr/local/#  - runs: mkdir -p /usr/local/x#" "$gvt/build/melange.yaml"'
-  'a template line removed (the git set-up)|sed -i.bak "/safe.directory/d" "$gvt/build/melange.yaml"'
-  'a template line added in a second step|printf "  - runs: true\n" >> "$gvt/build/melange.yaml"'
-  'an extra subpackage with a quoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - \"runs\": |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
-  'an extra subpackage with an unquoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - runs: |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
-  'a second package key after the pipeline holding nested content|printf "package:\n  extra: |\n    export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
-  'a second environment key after the pipeline|printf "environment:\n  contents:\n    packages:\n      - x=1\n" >> "$gvt/build/melange.yaml"'
-  'a no-break-space comment line that the shell runs|printf '"'"'      \302\240# || export GOFLAGS=-tags=audit_unscanned\n'"'"' >> "$gvt/build/melange.yaml"'
-  'an em-space comment line that the shell runs|printf '"'"'      \342\200\203# || export GOFLAGS=-tags=audit_unscanned\n'"'"' >> "$gvt/build/melange.yaml"'
-  'an ideographic-space comment line that the shell runs|printf '"'"'      \343\200\200# || export GOFLAGS=-tags=audit_unscanned\n'"'"' >> "$gvt/build/melange.yaml"'
-  'a subpackages key after the pipeline|printf "subpackages:\n  - name: x\n" >> "$gvt/build/melange.yaml"'
-  'a pipeline key under the package keys|sed -i.bak "s#^  epoch: 0#  epoch: 0\n  pipeline: x#" "$gvt/build/melange.yaml"'
-  'a package list line that is not a package|sed -i.bak "s#^      - busybox=#      - evil; true\n      - busybox=#" "$gvt/build/melange.yaml"'
-  'a runs step before the pipeline|sed -i.bak "s#^pipeline:#  extra:\n    - runs: true\npipeline:#" "$gvt/build/melange.yaml"'
-)
-for rc_ in "${gvcases_[@]}"; do
-  eval "${rc_#*|}"; rm -f "$gvt"/build/*.bak
-  gvrun GV_OUT=clean -- "${GVARGS[@]}"
-  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: ${rc_%%|*}"; else bad "G grammar case '${rc_%%|*}' accepted: rc=$rc $out"; fi
-  gv_recipes
-done
-# Recipe lines whose text names a shell keyword the pin-age rule reads as a declaration are DATA in the fixture file beside this test (one tab-separated record per case:
-# label, the line appended to the standard recipe), read with `read` and never sourced, evaluated or run; the file carries no execute bit.
-while IFS=$'\t' read -r gvlabel_ gvline_; do
-  [ -n "$gvlabel_" ] || continue
-  printf '%s\n' "$gvline_" >> "$gvt/build/melange.yaml"
-  gvrun GV_OUT=clean -- "${GVARGS[@]}"
-  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: $gvlabel_"; else bad "G grammar case '$gvlabel_' accepted: rc=$rc $out"; fi
-  gv_recipes
-done < "$root/bin/chain-check-scripts-fixtures.txt"
-# a package-pin bump (the refresh rewrites the `- pkg=ver` lines) is not a change of the grammar: it still scans
+# the template's other lines are gen-recipes.py --check's to guard: a changed one does not stop the scan, which reads only the build line and CGO_ENABLED
+sed -i.bak "s#^  - runs: mkdir -p /usr/local/#  - runs: mkdir -p /usr/local/x#" "$gvt/build/melange.yaml"; rm -f "$gvt"/build/*.bak
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && [ "$(grep -c '^govulncheck -json ' "$work/gvlog")" = 6 ]; then ok "G a changed template line in a recipe does not stop the scan (six runs): only the build line is read"; else bad "G a changed template line was refused: rc=$rc $out"; fi
+gv_recipes
+# a package-pin bump (the refresh rewrites the `- pkg=ver` lines) still scans
 gv_recipes; sed -i.bak 's#^      - busybox=1.38.0-r3#      - busybox=1.39.0-r1#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && grep -q 'busybox=1.39.0-r1' "$gvt/build/melange.yaml" && [ "$(grep -c '^govulncheck -json ' "$work/gvlog")" = 6 ]; then ok "G a package-pin bump in the recipes still passes the closed grammar (six runs)"; else bad "G a package-pin bump was refused or the scan did not run: rc=$rc $out"; fi
+if [ "$rc" = 0 ] && grep -q 'busybox=1.39.0-r1' "$gvt/build/melange.yaml" && [ "$(grep -c '^govulncheck -json ' "$work/gvlog")" = 6 ]; then ok "G a package-pin bump in the recipes still scans (six runs)"; else bad "G a package-pin bump was refused or the scan did not run: rc=$rc $out"; fi
 gv_recipes
 # the package and CGO_ENABLED come from the recipes, never hard-coded: another path and CGO "1" reach the scan's target and environment
 gv_recipes 1; sed -i.bak 's#fscache ./cmd/fscache$#fscache ./cmd/other#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
@@ -1768,7 +1850,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=592
+EXPECT=702
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -1,29 +1,34 @@
-"""Release's post-publish verification (v0.3.0 rule 79 as amended by the owner, Oct 10; REQ-CHAIN-006-AC7).
+"""Release's post-publish verification (v0.3.0 rule 79 as amended by the owner, Oct 10; REQ-CHAIN-007-AC20).
 
-Reads docs/verify-release.cannot-run.json (rows {command, reason}, the exact-text list Check also reads) and runs
-each command against what was just published, in BOTH registries (ghcr.io/fosterstack/cache, then
-docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
+Reads the guide docs/verify-release.md and docs/verify-release.cannot-run.json (rows {command, reason}, the exact-text
+list of image-reference commands Check also reads). It runs every file-subject command of the guide on the staged
+copy of the release assets, then the list's image commands, against what was published, in BOTH registries
+(ghcr.io/fosterstack/cache, then docker.io/fosterstack/cache; the same digests). A command naming <IMAGE_REF> or <IMAGE_REF_FIPS> runs once per
 registry, with the image-production / image-fips digest of witness-build/digests.json filled in; any other command
-runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME.
+runs once. <TAG> = $GITHUB_REF_NAME, which must be vX.Y.Z (a release candidate publishes nothing to verify).
 
-Every command is judged before any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify,
-verify-attestation, verify-blob, verify-blob-attestation) and jq, with at least one verify
-form, no other shell syntax ($ only inside single quotes), and no placeholder left unfilled. Every verify form carries
-exactly one key flag whose value is release.rsa.pub (the public key of the release key manifest, placed by place_release_key) and no flag but
---key, --bundle, --type and --check-claims. Before any command runs, the
-release's key manifest (release-key-manifest.json and .sig in release-published/) is checked with the committed root
-key by the verifier's check_manifest (REQ-CHAIN-008-AC3); release.rsa.pub is written from the manifest's public_key
-only (AC5), and a manifest that does not pass runs nothing (AC4). A command that fails
-fails the run (exit 1) after all have run. The step holds no token and no registry credential.
+Every command is judged before any runs (a refusal runs nothing) by bin/guide_plan_judge.py, the judge Check
+uses: a pipe of the verify forms and jq in a closed grammar, no other shell syntax, no literal image reference,
+no placeholder left unfilled. Every verify form carries exactly one key flag whose value is release.rsa.pub (the
+public key of the release key manifest, placed by place_release_key). Before any command runs, the release's key
+manifest (release-key-manifest.json and .sig in release-published/) is checked with the committed root key by the
+verifier's check_manifest (REQ-CHAIN-008-AC3); release.rsa.pub is written from the manifest's public_key only
+(AC5), and a manifest that does not pass runs nothing (AC4). A command that fails fails the run (exit 1) after all
+have run. The step holds no token and no registry credential.
 
 Every command runs with release-published/ (the assets just downloaded from the published release) as its working
-directory, so the guide's bare file names resolve as a customer's do (REQ-CHAIN-007-AC20). A command made only of jq is
-accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run
-time only after that verify exited 0. Every command runs without a shell: the words the judge read are the argv,
-so nothing (brace, glob, tilde, variable, backslash-newline) is expanded after the check.
+directory, so the guide's bare file names resolve as a customer's do. A command made only of jq is accepted only
+when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run time
+only after that verify exited 0. Every command runs without a shell: the words the judge read are the argv, so
+nothing is expanded after the check.
 """
-import hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
+import collections, hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import guide_plan_judge   # noqa: E402
+from guide_plan_judge import JQ_FILE, MARK, PH   # noqa: E402
 
+GUIDE = "docs/verify-release.md"
 LIST = "docs/verify-release.cannot-run.json"
 ASSETS = "release-published"   # gh release download -D release-published: the files a customer downloads
 VERIFIER = "bin/chain-verify.py"   # holds the bundle and manifest checks
@@ -32,20 +37,13 @@ LISTED = ".github/policy/chain-scripts.json"   # the sha256 of every file of the
 DIGESTS = "witness-build/digests.json"
 # Constants: releases publish identical digests to both, and no input names a repository.
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
-# v0.3.0 yes, v0.3.0-rc1 no: a release candidate publishes nothing to verify
-TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
-PH = re.compile(r"<([A-Z][A-Z0-9_]*)>")   # <TAG> yes, <tag> no
+# v0.3.0 yes, v0.3.0-rc1 and "v0.3.0\n" no
+TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 # sha256: and 64 lowercase hex digits yes; sha256:abc and an upper-case digest no
-DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-# a filled placeholder is one plain word: ghcr.io/fosterstack/cache@sha256:ab12 yes; "a b" and "$(id)" no
-SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
-HOST = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]+(:[0-9]+)?/")   # ghcr.io/x yes, x/y no: a registry host written out
-FORMS = (("cosign", "verify"), ("cosign", "verify-attestation"), ("cosign", "verify-blob"),
-         ("cosign", "verify-blob-attestation"))
-# A verify form carries only --key, --bundle, --type and --check-claims (read_flags below): any other flag
-# (--rekor-url, --trusted-root, --insecure-ignore-tlog, ...) changes which log or trust root the default check reads,
-# or skips it.
-SYNTAX = "();<>|&"   # a shell word made only of these is an operator; "|" alone is the one we allow
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+# a command the judge accepted: its pipe segments filled for this registry, the files a jq-only command reads
+# (None for a verify command), the names its verify forms name, and their --bundle files
+Run = collections.namedtuple("Run", "registry command argvs files names bundles")
 
 
 def refuse(msg):
@@ -53,344 +51,21 @@ def refuse(msg):
     sys.exit(1)
 
 
-def PHM(m):
-    """A placeholder as a marker no plain file name can equal (never PH_X, which a file could be called)."""
-    return "‹" + m.group(1) + "›"
-
-
-def words_of(c, mark):
-    """The shell words of a command with each placeholder replaced by mark(match); ValueError if it cannot be split."""
-    lexer = shlex.shlex(PH.sub(mark, c), posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    return list(lexer)
-
-
-def operator_in(words, empty_counts):
-    """The first word that is shell syntax other than a pipe, or None. An empty word ('') counts only when
-    empty_counts: all() of nothing is true, which jq_files keeps as a refusal."""
-    return next((w for w in words if w != "|" and (w or empty_counts) and all(ch in SYNTAX for ch in w)), None)
-
-
-def split_pipe(words):
-    """The words as one list per pipe segment."""
-    segs = [[]]
-    for w in words:
-        if w == "|":
-            segs.append([])
-        else:
-            segs[-1].append(w)
-    return segs
-
-
-def quote_error(c):
-    """Why a shell would run something else than the words we judge (a backquote, an expansion, a comment, a newline),
-    or None. We walk the quotes ourselves because shlex does not know a shell's expansions."""
-    if "`" in c:
-        return "a backquote"
-    quote, i = None, 0
-    while i < len(c):
-        ch = c[i]
-        # A backslash before a newline or CR is refused first: shlex keeps that newline in the next word, bash removes
-        # both, so
-        # a flag after it would reach cosign unseen by the judge.
-        if ch == "\\" and quote != "'" and i + 1 < len(c) and c[i + 1] in "\n\r":
-            return "a newline outside quotes (bash runs what follows as another command)"
-        # A backslash outside single quotes turns the next character into a literal: it never opens or closes a quote.
-        if ch == "\\" and quote != "'" and i + 1 < len(c) and c[i + 1] != "$":
-            i += 2
-            continue
-        if quote:
-            if ch == quote:
-                quote = None
-            elif ch == "$" and quote == '"':
-                return "an expansion ($) inside double quotes"
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "$":
-            return "an expansion ($) outside single quotes"
-        elif ch == "#":
-            return "a # outside quotes (a shell comment would hide what follows from this check and not from bash)"
-        elif ch in "\n\r":
-            return "a newline outside quotes (bash runs what follows as another command)"
-        i += 1
-    return None
-
-
-def literal_repository(words):
-    """The first word that names a registry by hand, or None; only <IMAGE_REF> and <IMAGE_REF_FIPS> may name one."""
-    for w in words:
-        w = w[len("oci://"):] if w.startswith("oci://") else w
-        if "://" not in w and (HOST.match(w) or "@sha256:" in w):
-            return w
-    return None
-
-
-def form_error(c, jq_only=False):
-    """None when the command is a pipe of verify forms and jq with at least one verify form, else why not.
-    With jq_only the command is a pure jq pipe (judged by jq_files after this): only the character-level refusals
-    apply, because jq opens no network and no repository."""
-    why = quote_error(c)
-    if why:
-        return why
-    try:
-        words = words_of(c, lambda m: "PH_" + m.group(1))
-    except ValueError as e:
-        return "unparseable: %s" % e
-    op = operator_in(words, empty_counts=False)
-    if op is not None:
-        return "shell syntax other than a pipe: %s" % op
-    repo = None if jq_only else literal_repository(words)
-    if repo is not None:
-        return ("it names a repository literally (%s); only the two constant repositories, "
-                "through <IMAGE_REF> and <IMAGE_REF_FIPS>" % repo)
-    verify = False
-    for seg in split_pipe(words):
-        if not seg:
-            return "an empty pipe segment"
-        if seg[0] == "jq":
-            continue
-        if not any(tuple(seg[:len(f)]) == f for f in FORMS):
-            return "`%s` is not a verify form or jq" % " ".join(seg[:3])
-        verify = True
-    return None if (verify or jq_only) else "no verify form in it"
-
-
-def read_flags(words):
-    """Reads the words after the verify form as cosign does: --key, --bundle and --type take a value (the =value part,
-    else the next word, which is never a flag: it does not start with "-"); --check-claims takes only its =value
-    spelling and never the next word; any other word starting with "-" is a flag outside the closed set. Returns (the
-    values of the key flags, the first value-taking flag with no value, the first flag outside the set)."""
-    keys, novalue, unknown, i = [], None, None, 0
-    while i < len(words):
-        flag, eq, value = words[i].partition("=")
-        if not words[i].startswith("-"):
-            i += 1
-        elif flag in ("--key", "--bundle", "--type"):
-            if eq:
-                val, i = value, i + 1
-            elif i + 1 < len(words) and not words[i + 1].startswith("-"):
-                val, i = words[i + 1], i + 2
-            else:
-                val, i = "", i + 1
-            if val == "" or val.startswith("-"):
-                novalue = novalue or flag
-            elif flag == "--key":
-                keys.append(val)
-        elif flag == "--check-claims":
-            i += 1
-        else:
-            unknown, i = unknown or flag, i + 1
-    return keys, novalue, unknown
-
-
-def key_error(c):
-    """None when every verify segment of the (already judged) command has exactly one key flag (--key X or --key=X)
-    whose value is release.rsa.pub and no flag outside --key, --bundle, --type and --check-claims; else why not. The words
-    are the shell's
-    (a quoted spelling like --insecure-ignore-tlo''g is the flag); the placeholder is a marker no file name equals."""
-    for seg in split_pipe(words_of(c, PHM)):
-        if seg[0] == "jq":
-            continue
-        keys, novalue, unknown = read_flags(seg[2:])
-        if novalue:
-            return "the %sflag %s has no value: the next word is a flag" % (
-                "key " if novalue == "--key" else "", novalue)
-        if len(keys) != 1:
-            return "it needs exactly one key flag whose value is release.rsa.pub (found %d)" % len(keys)
-        if keys[0] != "release.rsa.pub":
-            return "its key flag names %r, not release.rsa.pub" % keys[0]
-        if unknown:
-            return "the flag %s is outside the closed set (--key, --bundle, --type, --check-claims)" % unknown
-    return None
-
-
-# ---- jq-only commands (REQ-CHAIN-007-AC20): a CLOSED grammar, fail closed -----------------------------------------
-# A jq-only command is accepted only when it is spelled in this small grammar and every file it reads is a plain file
-# name that an EARLIER verify form of the list named as a file operand (and, at run time, only after that verify exited
-# 0). Whatever the grammar does not name is refused, so no option, module, program file, glob or combined flag can
-# get jq to read what nothing verified.
-JQ_FLAGS = ("-e", "-r", "-c", "-S", "--exit-status", "--raw-output", "--compact-output", "--sort-keys")   # whole words
-# the name after --arg: ref yes; 1x and a-b no
-JQ_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-JQ_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")   # provenance.bundle.json yes; ../x, a/b, *.json, $X, <TAG> no
-# the jq word at the start of the text: "fromjson | .a" gives fromjson; ".a" and "1x" give none
-JQ_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-JQ_KEYWORDS = {"if", "then", "elif", "else", "end", "and", "or", "as"}
-JQ_BUILTINS = {
-    "any", "all", "not", "select", "map", "length", "keys", "has", "contains", "startswith", "endswith", "ltrimstr",
-    "rtrimstr", "split", "join", "tostring", "tonumber", "type", "fromjson", "tojson", "first", "last", "empty", "add",
-    "unique", "sort", "min", "max", "test", "ascii_downcase", "ascii_upcase", "values", "nulls", "arrays", "objects",
-    "strings", "numbers", "booleans", "to_entries", "from_entries", "with_entries", "paths", "flatten", "reverse",
-    "index", "indices", "isvalid", "error", "ascii", "walk"}
-JQ_FORMATS = {"@base64d", "@base64", "@json", "@text"}
-# The flags of the verify forms whose value is a file. The value of any other flag (an identity, an issuer, a type)
-# never counts as a file the command verified.
-FILE_FLAGS = {"--bundle"}   # the closed set of flags leaves only --bundle naming a file
-
-
-def jq_filter_why(f, names):
-    """None when the filter uses only keywords, allowed builtins, field names, declared variables and allowed formats;
-    else why not. `names` are the --arg names; `EXPR as $x` adds x."""
-    if "\\(" in f:
-        return "a string interpolation"
-    if PH.search(f):
-        return "a placeholder inside the filter"
-    i, n = 0, len(f)
-    while i < n:
-        ch = f[i]
-        if ch == '"':
-            i += 1
-            while i < n and f[i] != '"':
-                i += 2 if f[i] == "\\" else 1
-            if i >= n:
-                return "an unterminated string"
-            i += 1
-        elif ch == "#":
-            return "a comment"
-        elif ch == "@":
-            m = re.match(r"@[A-Za-z0-9_]+", f[i:])   # "@base64d | x" gives @base64d; "@ x" gives none
-            if not m or m.group(0) not in JQ_FORMATS:
-                return "the format %s" % (m.group(0) if m else "@")
-            i += len(m.group(0))
-        elif ch == "$":
-            m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)", f[i:])   # "$ref == 1" gives ref; "$1" and "$ " give none
-            if not m:
-                return "the variable $"
-            if re.search(r"\bas\s+$", f[:i]):   # text before the $ ends in "as ": ".a as $x" yes; ".a | $x" no
-                names = names | {m.group(1)}
-            elif m.group(1) not in names or m.group(1) == "ENV":
-                return "the variable %s (only an --arg name or a name bound by `as`)" % m.group(0)
-            i += len(m.group(0))
-        elif JQ_WORD.match(f[i:]):
-            word = JQ_WORD.match(f[i:]).group(0)
-            after_dot = f[:i].rstrip(" ").endswith(".")   # .name is a field of the input, not a call
-            if not after_dot and word not in JQ_KEYWORDS | JQ_BUILTINS | {"true", "false", "null"}:
-                return "the word %s" % word
-            i += len(word)
-        elif ch.isdigit() or ch in " .[]{}()|,;:+-*/%=<>!?":
-            i += 1
-        else:
-            return "the character %r" % ch
-    return None
-
-
-def all_jq(c):
-    """True when every pipe segment of the command is a jq call and nothing else (no semicolon, redirect, background
-    job or subshell)."""
-    try:
-        words = words_of(c, PHM)
-    except ValueError:
-        return False
-    if operator_in(words, empty_counts=False) is not None:
-        return False
-    return bool(words) and all(seg and seg[0] == "jq" for seg in split_pipe(words))
-
-
-def jq_words(words, first, files):
-    """Reads the words of one jq call: [flags | --arg NAME VALUE]... 'filter' [FILE...]. Only the first call of a pipe
-    may name files (appended to `files`). Returns why not, or None."""
-    i, names, filt = 0, set(), None
-    while i < len(words):
-        w = words[i]
-        if filt is not None:
-            if not first:
-                return "a later jq of a pipe names a file (%s)" % w
-            if not JQ_FILE.match(w):
-                return "the file operand %r is not a plain file name of release-published/" % w
-            files.append(w)
-            i += 1
-        elif w in JQ_FLAGS:
-            i += 1
-        elif w == "--arg":
-            if i + 2 >= len(words) or not JQ_NAME.match(words[i + 1]):
-                return "--arg needs a plain name and a value"
-            names.add(words[i + 1])
-            i += 3
-        elif w.startswith("-"):
-            return "the jq option %s is not in the closed set" % w
-        else:
-            why = jq_filter_why(w, names)
-            if why:
-                return "the jq filter uses %s, which is not in the closed grammar" % why
-            filt = w
-            i += 1
-    return None if filt is not None else "a jq with no filter"
-
-
-def jq_files(c):
-    """(files, None, argv per segment) for a command made ONLY of jq in the closed grammar, else (None, why, None).
-    `files` are the files the first jq reads."""
-    try:
-        words = words_of(c, PHM)
-    except ValueError as e:
-        return None, "unparseable: %s" % e, None
-    op = operator_in(words, empty_counts=True)
-    if op is not None:
-        return None, "shell syntax other than a pipe: %s" % op, None
-    segs, files = split_pipe(words), []
-    for n, seg in enumerate(segs):
-        if not seg or seg[0] != "jq":
-            return None, "not a jq-only command", None
-        why = jq_words(seg[1:], n == 0, files)
-        if why:
-            return None, why, None
-    if not files:
-        return None, "it reads no file (stdin is not a verified input)", None
-    return files, None, segs
-
-
-def file_operands(words):
-    """The files named by the words after a verify form: the value of a file flag and every positional word. The word
-    after an unknown flag is taken as its value, so it never licenses a file."""
-    out, i = set(), 0
-    while i < len(words):
-        w = words[i]
-        if not w.startswith("-"):
-            out.add(w)
-            i += 1
-            continue
-        flag, equals, value = w.partition("=")
-        if equals:
-            if flag in FILE_FLAGS:
-                out.add(value)
-            i += 1
-            continue
-        has_next = i + 1 < len(words)
-        if flag in FILE_FLAGS and has_next:
-            out.add(words[i + 1])
-        i += 2 if has_next else 1
-    return out
-
-
-def verify_files(c):
-    """The files an (already judged) command names as operands of its verify forms."""
-    try:
-        words = words_of(c, PHM)
-    except ValueError:
-        return set()
-    out = set()
-    for seg in split_pipe(words):
-        form = next((f for f in FORMS if tuple(seg[:len(f)]) == f), None)
-        if form:
-            out |= file_operands(seg[len(form):])
-    return out
-
-
-def run_pipe(segs):
+def run_pipe(argvs):
     """Runs the argv of each segment of a pipe WITHOUT a shell: the words the judge read are the argv, so nothing
-    (brace, glob, tilde, variable, backslash-newline) can change them after the check. Every command of the pipe must
-    exit 0 (pipefail); a command that cannot start fails the run."""
+    can change them after the check. Every command of the pipe must exit 0 (pipefail); a command that cannot start
+    fails the run."""
     procs, prev = [], subprocess.DEVNULL
     try:
-        for n, argv in enumerate(segs):
-            last = n == len(segs) - 1
+        for n, argv in enumerate(argvs):
+            last = n == len(argvs) - 1
             p = subprocess.Popen(argv, stdin=prev, stdout=None if last else subprocess.PIPE, cwd=ASSETS)
             if prev is not subprocess.DEVNULL:
                 prev.close()
             prev = p.stdout
             procs.append(p)
     except OSError as e:
-        print("release-postverify: %s cannot be started (%s)" % (segs[len(procs)][0], type(e).__name__),
+        print("release-postverify: %s cannot be started (%s)" % (argvs[len(procs)][0], type(e).__name__),
               file=sys.stderr)
         for p in procs:
             p.kill()
@@ -401,18 +76,25 @@ def run_pipe(segs):
     return next((rc for rc in codes if rc != 0), 0)
 
 
-def run_jq(run):
-    """Runs a judged jq-only command (see run_pipe)."""
-    files, why, segs = jq_files(run)
-    if files is None:
-        print("release-postverify: %s" % why, file=sys.stderr)
-        return 1
-    return run_pipe(segs)
-
-
-def run_verify(run):
-    """Runs a judged command made of verify forms (see run_pipe): the argv are the shell words the judge read."""
-    return run_pipe(split_pipe(words_of(run, PHM)))
+def read_guide_file_commands():
+    """The guide's file-subject commands (every command that does not verify an image reference), in guide order:
+    Check does not run them on the candidate and leaves them to this step, on the staged copy."""
+    try:
+        with open(GUIDE) as f:
+            lines = f.read().replace("\r", "").split("\n")
+    except OSError as e:
+        refuse("the guide %s cannot be read: %s" % (GUIDE, e))
+    cmds, why = guide_plan_judge.guide_commands(lines)
+    if why:
+        refuse(why)
+    files = []
+    for c in cmds:
+        segs, _, why = guide_plan_judge.judge(c)
+        if why:
+            refuse("`%s` is not an allowed verify form (%s)" % (c, why))
+        if not guide_plan_judge.image_subject(segs):
+            files.append(c)
+    return files
 
 
 def read_commands():
@@ -447,62 +129,65 @@ def read_digests():
         refuse("the digest list %s cannot be read: %s" % (DIGESTS, e))
     for key in ("image-production", "image-fips"):
         d = digests.get(key) if isinstance(digests, dict) else None
-        if not (isinstance(d, str) and DIGEST.match(d)):
+        if not (isinstance(d, str) and DIGEST.fullmatch(d)):
             refuse("the digest list %s has no valid %s digest (sha256:<64 lowercase hex>): nothing is run"
                    % (DIGESTS, key))
     return digests
 
 
+def verify_names(segs):
+    """(the names the verify forms of a judged command name as files, their --bundle files), placeholders as markers."""
+    names, bundles = set(), []
+    for s in segs:
+        if s[0] != "jq":
+            flags, operands, _ = guide_plan_judge.read_verify(s)
+            bundles += [v for f, v in flags if f == "--bundle"]
+            names |= set(operands) | set(bundles)
+    return names, bundles
+
+
 def judge(c, verified):
-    """Refuses the command unless it is an allowed verify form; returns the files a jq-only command reads (else None).
-    `verified` are the file sets of the verify forms before it in the list."""
-    if all_jq(c):
-        why = form_error(c, jq_only=True)
-        if why:
-            refuse("`%s` is not an allowed verify form (%s)" % (c, why))
-        files, why, _ = jq_files(c)
-        if files is None:
-            refuse("`%s` is not an allowed verify form (a jq-only command needs an earlier verify of its file: %s)"
-                   % (c, why))
-        for f in files:
-            if not any(f in names for names in verified):
-                refuse("`%s` is not an allowed verify form (no verify form in it): "
-                       "no earlier command of the list is a verify form that names %s" % (c, f))
-        return files
-    why = form_error(c) or key_error(c)
+    """Refuses the command unless the shared judge accepts it; returns (segments, files a jq-only command reads
+    or None, names its verify forms name, their --bundle files). `verified` are the name sets of the verify
+    forms before it in the list: a jq-only command may read only files they name."""
+    segs, files, why = guide_plan_judge.judge(c)
     if why:
         refuse("`%s` is not an allowed verify form (%s)" % (c, why))
-    verified.append(verify_files(c))
-    return None
-
-
-def fill(c, values):
-    """The command with every placeholder replaced; a placeholder with no value, or a value that is not one plain
-    word, is refused."""
-    run = c
-    for u in sorted(set(PH.findall(c))):
-        if u not in values:
-            refuse("`%s` uses <%s>, which the post-publish step cannot fill (unsubstituted placeholder)" % (c, u))
-        if not SAFE.match(values[u]):
-            refuse("the value for <%s> is not a plain reference: %r" % (u, values[u]))
-        run = run.replace("<%s>" % u, values[u])
-    return run
+    if files is None:
+        return (segs, None) + verify_names(segs)
+    if not files:
+        refuse("`%s` is not an allowed verify form (it reads no file: stdin is not a verified input)" % c)
+    for f in files:
+        if not any(f in names for names in verified):
+            refuse("`%s` is not an allowed verify form (no verify form in it): "
+                   "no earlier command of the list is a verify form that names %s" % (c, f))
+    return segs, files, set(), []
 
 
 def make_plan(cmds, digests, tag):
-    """[(registry, command, filled command, files a jq-only command reads)]: one pass per registry, in order."""
-    base = {"TAG": tag}
+    """[Run]: one pass per registry, in order. Each command is judged once."""
+    judged, verified = [], []
+    for c in cmds:
+        segs, files, names, bundles = judge(c, verified)
+        verified.append(names)
+        judged.append((c, segs, files, names, bundles))
     plan = []
     for reg in REPOSITORIES:
-        values = dict(base, IMAGE_REF="%s@%s" % (reg, digests["image-production"]),
-                      IMAGE_REF_FIPS="%s@%s" % (reg, digests["image-fips"]))
-        verified = []
-        for c in cmds:
-            files = judge(c, verified)
-            has_image = set(PH.findall(c)) & {"IMAGE_REF", "IMAGE_REF_FIPS"}
-            if reg != REPOSITORIES[0] and not has_image:
+        values = {"TAG": tag, "IMAGE_REF": "%s@%s" % (reg, digests["image-production"]),
+                  "IMAGE_REF_FIPS": "%s@%s" % (reg, digests["image-fips"])}
+
+        def fill(word, c):
+            def value(m):
+                if m.group(1) not in values:
+                    refuse("`%s` uses <%s>, which the post-publish step cannot fill (unsubstituted placeholder)"
+                           % (c, m.group(1)))
+                return values[m.group(1)]
+            return MARK.sub(value, word)
+        for c, segs, files, names, bundles in judged:
+            if reg != REPOSITORIES[0] and not set(PH.findall(c)) & {"IMAGE_REF", "IMAGE_REF_FIPS"}:
                 continue   # no image placeholder: the same command, run once
-            plan.append((reg, c, fill(c, values), files))
+            argvs = [[fill(w, c) for w in s] for s in segs]
+            plan.append(Run(reg, c, argvs, files, names, [fill(b, c) for b in bundles]))
     return plan
 
 
@@ -510,60 +195,35 @@ def run_plan(plan):
     """Runs the plan; returns [(registry, command, exit code)] of the runs that failed."""
     failed = []
     passed = set()   # files named by the verify forms that have exited 0 so far: a jq-only command may read only these
-    for reg, c, run, files in plan:
-        if files is not None and not all(f in passed for f in files):
-            failed.append((reg, c, 1))
+    for r in plan:
+        if r.files is not None and not all(f in passed for f in r.files):
+            failed.append((r.registry, r.command, 1))
             print("::error::post-publish verification failed against %s: `%s` was not run: "
-                  "the earlier verify of %s did not pass" % (reg, c, ", ".join(files)), file=sys.stderr, flush=True)
-            continue
-        print("release-postverify: [%s] $ %s" % (reg, run), flush=True)
-        if files is not None:
-            rc = run_jq(run)
-        else:
-            rc = run_verify(run)
-        if rc != 0:
-            failed.append((reg, c, rc))
-            print("::error::post-publish verification failed against %s: `%s` exited %d" % (reg, c, rc),
+                  "the earlier verify of %s did not pass" % (r.registry, r.command, ", ".join(r.files)),
                   file=sys.stderr, flush=True)
-        elif files is None:
-            passed |= verify_files(c)
+            continue
+        print("release-postverify: [%s] $ %s" % (r.registry, " | ".join(shlex.join(a) for a in r.argvs)), flush=True)
+        rc = run_pipe(r.argvs)
+        if rc != 0:
+            failed.append((r.registry, r.command, rc))
+            print("::error::post-publish verification failed against %s: `%s` exited %d" % (r.registry, r.command, rc),
+                  file=sys.stderr, flush=True)
+        elif r.files is None:
+            passed |= r.names
     return failed
 
 
-def bundle_files(c):
-    """The --bundle values of the verify forms of a (filled) command: the bundle files this run reads. Not
-    file_operands' walk: that one takes the word after an unknown flag as its value, which is the safe reading when it
-    decides which files jq may read and the unsafe one here, where a boolean flag before --bundle would hide it. Here
-    every --bundle word takes the next word and every --bundle=X word its value; a --bundle with no word after it is
-    refused."""
-    try:
-        words = words_of(c, PHM)
-    except ValueError:
-        return []
-    out = set()
-    for seg in split_pipe(words):
-        form = next((f for f in FORMS if tuple(seg[:len(f)]) == f), None)
-        rest = seg[len(form):] if form else []
-        for i, w in enumerate(rest):
-            if w == "--bundle" and i + 1 < len(rest):
-                out.add(rest[i + 1])
-            elif w == "--bundle":
-                refuse("`%s`: --bundle has no file name after it" % c)
-            elif w.startswith("--bundle="):
-                out.add(w.partition("=")[2])
-    return sorted(out)
-
-
 def load_verifier():
-    """bin/chain-verify.py as a module, never run as a program: its bytes must carry the sha256 listed for it in
-    .github/policy/chain-scripts.json, and those same bytes are compiled and run (no bytecode cache stands in)."""
+    """bin/chain-verify.py as a module, never run as a program. It decides which key signs every listed command, so
+    its bytes must carry the sha256 listed for it in .github/policy/chain-scripts.json (an edited verifier that
+    accepts any manifest is refused), and those same bytes are compiled and run (no bytecode cache stands in)."""
     try:
         with open(VERIFIER, "rb") as f:
             src = f.read()
         with open(LISTED, "rb") as f:
             listed = {r["path"]: r["sha256"] for r in json.load(f)["scripts"]}
     except (OSError, ValueError, KeyError, TypeError) as e:
-        refuse("%s cannot be loaded (%s): a bundle is named and cannot be checked" % (VERIFIER, type(e).__name__))
+        refuse("%s cannot be loaded (%s)" % (VERIFIER, type(e).__name__))
     if listed.get(VERIFIER) != hashlib.sha256(src).hexdigest():
         refuse("%s does not match its sha256 in %s: refusing to run it" % (VERIFIER, LISTED))
     mod = types.ModuleType("chain_verify")
@@ -572,8 +232,7 @@ def load_verifier():
         exec(compile(src, mod.__file__, "exec"), mod.__dict__)
     except (Exception, SystemExit) as e:
         # SystemExit: the verifier's own helper loader exits when a helper fails its sha256
-        refuse("%s cannot be loaded (%s: %s): a bundle is named and cannot be checked"
-               % (VERIFIER, type(e).__name__, e))
+        refuse("%s cannot be loaded (%s: %s)" % (VERIFIER, type(e).__name__, e))
     return mod
 
 
@@ -583,15 +242,14 @@ BUNDLE_KEYS = {"mediaType", "verificationMaterial", "messageSignature", "dsseEnv
 MATERIAL_KEYS = {"publicKey", "tlogEntries", "timestampVerificationData"}
 
 
-def refuse_certificate_bundles(plan):
+def refuse_certificate_bundles(plan, check):
     """Every --bundle operand of the filled commands must be a plain file name. A named file that is present is read as
     strict JSON and refused unless it is a bundle signed with a key: a certificate is refused by the check
-    bin/chain-verify.py holds, then any key outside the two allowed sets. A list that names no present bundle loads
-    nothing, and a named file that is absent is not read: the command that names it fails the run
-    (REQ-CHAIN-007-AC20)."""
+    bin/chain-verify.py holds, then any key outside the two allowed sets. A named file that is absent is not read:
+    the command that names it fails the run (REQ-CHAIN-007-AC20)."""
     names = []
-    for _reg, _c, run, _files in plan:
-        names += [n for n in bundle_files(run) if n not in names]
+    for r in plan:
+        names += [n for n in r.bundles if n not in names]
     root = os.path.realpath(ASSETS)
     present = []
     for n in names:
@@ -602,9 +260,6 @@ def refuse_certificate_bundles(plan):
             refuse("%s: resolves outside %s/" % (n, ASSETS))
         if os.path.lexists(path):
             present.append((n, path))
-    if not present:
-        return
-    check = load_verifier()
     for n, path in present:
         try:
             with open(path, "rb") as f:
@@ -622,6 +277,19 @@ def refuse_certificate_bundles(plan):
                    % (n, key, ", ".join(sorted(MATERIAL_KEYS))))
         for key in sorted(set(bundle) - BUNDLE_KEYS):
             refuse("%s: %s is not allowed at the top of a bundle (%s)" % (n, key, ", ".join(sorted(BUNDLE_KEYS))))
+
+
+def refuse_missing_files(plan):
+    """Every file a command names (its verify operands, --bundle files and the files a jq reads) must be a plain
+    name that the staged copy holds; a command whose file is missing fails the run before anything is run."""
+    for r in plan:
+        for n in sorted((set(r.names) | set(r.files or [])) - set(guide_plan_judge.IMAGE_MARKS)):
+            if not JQ_FILE.fullmatch(n):
+                refuse("%s: not a plain file name in %s/ (letters, digits, . _ - only)" % (n, ASSETS))
+            if not os.path.lexists(os.path.join(ASSETS, n)):
+                refuse("%s is named by `%s` and the staged copy %s/ does not hold it" % (n, r.command, ASSETS))
+
+
 def copy_keeping_links(src, dst):
     """Copies a file; a link is copied as a link and a directory as an empty directory, so the verifier refuses each
     as it would in place. A missing file is left missing, for the verifier to name."""
@@ -633,11 +301,10 @@ def copy_keeping_links(src, dst):
         shutil.copyfile(src, dst)
 
 
-def place_release_key():
+def place_release_key(check):
     key_file = ASSETS + "/release.rsa.pub"
     if os.path.lexists(key_file):
         refuse("%s exists: a published asset must not stand in for the key of the manifest" % key_file)
-    check = load_verifier()
     with tempfile.TemporaryDirectory() as keys_dir:
         for name, src in zip(check.MANIFEST_FILES, (ROOT_KEY, ASSETS + "/" + check.MANIFEST_FILES[1],
                                                    ASSETS + "/" + check.MANIFEST_FILES[2])):
@@ -652,15 +319,17 @@ def place_release_key():
 
 def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
-    if not TAG.match(tag):
+    if not TAG.fullmatch(tag):
         refuse("refused at tag: %r is not vX.Y.Z" % tag)
-    cmds = read_commands()
+    cmds = read_guide_file_commands() + read_commands()
     plan = make_plan(cmds, read_digests(), tag)
     if not os.path.isdir(ASSETS):
-        refuse("%s/ is not a directory: the assets of the published release are not here, so no listed command can "
-               "resolve its files; nothing is run" % ASSETS)
-    refuse_certificate_bundles(plan)
-    place_release_key()
+        refuse("%s/ is not a directory: the staged assets are not here, so no command can resolve its files; "
+               "nothing is run" % ASSETS)
+    refuse_missing_files(plan)
+    check = load_verifier()
+    refuse_certificate_bundles(plan, check)
+    place_release_key(check)
     failed = run_plan(plan)
     if failed:
         refuse("post-publish verification failed: %d of %d runs failed: %s"

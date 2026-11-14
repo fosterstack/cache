@@ -88,7 +88,8 @@ def cmd_classify(args):
 
 
 def cmd_find_issue(args):
-    """The number of the open issue (a pull request is not one) of this repository that carries the label and has exactly this title or the same title with the prefix in front, or nothing. EVERY page is read
+    """The number of the open issue (a pull request is not one) of this repository that carries the label and has
+    exactly this title or the same title with the prefix in front, or nothing. EVERY page is read
     (`gh api --paginate`, 100 per page): a single default page of 30 would miss a tracking issue on a later page and open a duplicate every day. Any failure to
     read the list is an error (exit 1), never "no issue"."""
     import subprocess
@@ -182,8 +183,6 @@ def _parse_product(pid):
             raise ValueError("a qualifier on the Go product %r" % pid)
         if "@" in base:
             return ("go-versioned",)   # a version-pinned module cannot be tied to the release being scanned: it never applies
-        if pid != "pkg:golang/github.com/fosterstack/cache":
-            raise ValueError("the Go product %r has a suffix (another module's name, a trailing newline): the exact product only" % pid)
         return ("go",)
     names = {"pkg:oci/cache": OUR_OCI_REPOS[0], "pkg:oci/cache-candidates": OUR_OCI_REPOS[1]}
     if base not in names:
@@ -429,8 +428,7 @@ def _shape_ok(scanner, report):
 
 
 def _normalize(scanner, report, platform, bad=None):
-    """Normalize a single child's report into a flat finding list, keeping
-    the platform and project (targetFile / Target) context on each one."""
+    """Normalize a single child's report into a flat finding list, keeping the platform and project context on each one."""
     out = []
     if scanner == "grype":
         for m in report.get("matches") or []:
@@ -502,24 +500,21 @@ def _osv_finding(v, pkg, src, platform):
 
 def _osv_severity(v):
     """OSV records severity inconsistently; prefer a database_specific label,
-    fall back to a CVSS vector's presence, else unknown."""
+    else unknown (a CVSS vector alone gives no label)."""
     ds = v.get("database_specific") or {}
     if isinstance(ds, dict) and isinstance(ds.get("severity"), str) and ds.get("severity").strip():
         return ds["severity"].lower()
-    if v.get("severity"):
-        return "unknown"
     return "unknown"
 
 
 def _merge_raw(scanner, valid_reports):
     """Merge the valid per-child reports into one scanner-shaped aggregate
-    for the retained raw-report evidence."""
-    if scanner == "grype":
-        matches = []
-        for r in valid_reports:
-            matches.extend(r.get("matches") or [])
-        return {"matches": matches}
-    return {}
+    for the retained raw-report evidence: the evidence holds what was read, never {}."""
+    key = "matches" if scanner == "grype" else "results"
+    merged = []
+    for r in valid_reports:
+        merged.extend(r.get(key) or [])
+    return {key: merged}
 
 
 # --------------------------------------------------------------------------
@@ -545,7 +540,7 @@ def cmd_statement(args):
                 children.append(json.loads(line))
 
     op_fail = False
-    if args.expect_children is not None and len(children) != args.expect_children:
+    if len(children) != args.expect_children:
         # a child's record is written after its scan: a scan that died before writing its line leaves a manifest shorter than the enumeration
         err("the manifest holds %d child record(s) but %d child(ren) were enumerated; the rescan is incomplete, never clean" % (len(children), args.expect_children))
         op_fail = True
@@ -554,14 +549,11 @@ def cmd_statement(args):
     consistent = True   # every child exited clean, or exited with the findings code AND the report really held findings
     valid_reports = []
     scanned_platforms = []
-    max_rc = 0
 
     for child in children:
         platform = child.get("platform")
-        code = int(child.get("exit", 0))
+        code = child.get("exit")   # no exit code (absent or null) is not a clean exit: it never completed
         report_path = child.get("report")
-        if code > max_rc:
-            max_rc = code
         if platform:
             scanned_platforms.append(platform)
 
@@ -575,7 +567,7 @@ def cmd_statement(args):
                 report = None
         valid = report is not None and _shape_ok(scanner, report)
 
-        completed = code in contract["clean"] or code in contract["finding"]
+        completed = isinstance(code, int) and not isinstance(code, bool) and (code in contract["clean"] or code in contract["finding"])
         if not completed:
             # An operational-failure exit code: incomplete coverage, even if
             # the tool still emitted well-shaped JSON (B04e). Do NOT harvest
@@ -638,7 +630,7 @@ def cmd_statement(args):
 
     has_findings = len(findings) > 0
     all_clean_exit = bool(children) and all(
-        int(c.get("exit", 0)) in contract["clean"] for c in children)
+        c.get("exit") in contract["clean"] for c in children)
 
     # Findings and completeness are INDEPENDENT (B04e): an incomplete run is
     # always verdict=error even when a real CVE was also found; the CVE is
@@ -746,7 +738,7 @@ def main(argv):
     ps.add_argument("--meta")
     ps.add_argument("--vex")
     ps.add_argument("--scope-file")
-    ps.add_argument("--expect-children", type=int, help="how many children the workflow enumerated; fewer records than that is an incomplete rescan")
+    ps.add_argument("--expect-children", type=int, required=True, help="how many children the workflow enumerated; fewer records than that is an incomplete rescan")
     ps.add_argument("--release", default="")
     ps.add_argument("--variant", default="")
     ps.add_argument("--digest", default="")

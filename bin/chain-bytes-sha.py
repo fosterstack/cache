@@ -124,7 +124,7 @@ def chain_paths(repo, commit):
         refuse("%s has no `scripts` list" % SCRIPTS)
     for r in rows:
         p = r.get("path") if isinstance(r, dict) else None
-        if not isinstance(p, str) or not SCRIPT_PATH.fullmatch(p) or p in (".", ".."):
+        if not isinstance(p, str) or not SCRIPT_PATH.fullmatch(p) or p.split("/")[1] in (".", ".."):
             refuse("%s lists the path %r, which is not a file directly under bin/" % (SCRIPTS, p))
         paths.add(p)
     return sorted(close_over(repo, commit, paths))

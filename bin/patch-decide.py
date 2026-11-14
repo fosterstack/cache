@@ -28,6 +28,7 @@ import argparse, datetime, html, json, os, re, subprocess, sys, unicodedata
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 # data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15); every other path under .vex/ and .auditor/ stays fix-class
 NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
+# ".auditor/proposals/p.json" matches; ".auditor/proposals/a/p.json" and ".auditor/proposals/p.txt" do not
 NEUTRAL_PROPOSALS = re.compile(r"^\.auditor/proposals/[^/]+\.json$")
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
@@ -52,7 +53,7 @@ def load_base_inputs(path=None):
         raise ValueError("the base-input list %s has no non-empty base_inputs list" % path)
     seen = set()
     for it in items:
-        if not isinstance(it, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*", it) or "\\" in it:
+        if not isinstance(it, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*", it):
             raise ValueError("the base-input list %s names %r, which is not a plain relative file path" % (path, it))
         if it in seen:
             raise ValueError("the base-input list %s names %s twice" % (path, it))
@@ -66,8 +67,8 @@ def _base_inputs(given=None):
     if "list" not in _BASE_INPUTS:
         _BASE_INPUTS["list"] = load_base_inputs()
     return _BASE_INPUTS["list"]
+# "v0.3.1" matches; "v0.3.1-rc.1" and "0.3.1" do not
 SEMVER = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
 def _sep(*words):
     """An alternation of names in which - _ or . may split any two letters: open-ai, co_here, deep.seek are the same
     names (Sonnet #159 r2, BLOCKER-1)."""
@@ -117,7 +118,9 @@ def _changed_lines(diff):
     return [ln for ln in (diff or "").splitlines() if ln[:1] in "+-" and ln[1:].strip()]
 
 
+# "require (" matches; "require x v1.0.0" does not
 GO_BLOCK = re.compile(r"^(require|replace|exclude|retract|tool|ignore|godebug)\s*\($")
+# "golang.org/x/net v0.33.0 // indirect" matches; "golang.org/x/net" does not
 GO_REQ = re.compile(r"^(\S+)\s+(v\S+)(\s*//\s*indirect)?$")
 
 
@@ -183,10 +186,12 @@ def _go_sum_ok(diff, moved):
     return all(signs != {"+", "-"} for signs in seen.values())
 
 
+# "docs/a.md" and "x.yaml" match; "x.sh" does not
 DATA_FILE = re.compile(r"\.(md|txt|json|ya?ml|toml|csv)$")
 
 
 # REQ-REL-009 AC1 (owner RATIFIED Oct 3, item h): an executable test is never patch-neutral
+# "bin/a-test.sh", "x_test.go" and "tests/test_a.py" match; "bin/a.sh" does not
 TEST_FILE = re.compile(r"(-tests?\.sh|_test\.go|(^|/)test_[^/]*\.py|-check\.py)$|^\.github/agent/(bin/)?tests/")
 
 
@@ -195,10 +200,11 @@ def _reviewed_workflow(f):
     return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
 
 
+# "#!/bin/sh" on any line matches; "echo #!" does not
 SHEBANG_LINE = re.compile(r"(?m)^#!")
 
 
-def _not_data(f, diff, mode, old_mode, contents=None):
+def _not_data(f, mode, old_mode, contents=None):
     """why a neutral-named path is not data (None when it is): its file types before and after, and its committed content.
     A script line is a shebang line (`#!` at the start of ANY line); it is looked for in the whole new content and in the
     whole old content (what a commit deletes or replaces), read from the blobs in `contents`; a record without them is not proven data (fail closed)."""
@@ -239,7 +245,7 @@ def classify(commit, base_inputs=None):
     for f in files:
         if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
             # neutral only as DATA, proven from the committed content and the old and new file types (REQ-REL-009 AC15)
-            bad = _not_data(f, diffs.get(f), modes.get(f), old_modes.get(f), (commit.get("contents") or {}).get(f))
+            bad = _not_data(f, modes.get(f), old_modes.get(f), (commit.get("contents") or {}).get(f))
             if bad:
                 kinds.add("dirty"); why.append(bad); hard = True       # no label turns this into a fix
             else:
@@ -346,13 +352,18 @@ def _clean_md(s):
 
 
 PUNCT = r"!-/:-@\[-`{-~"                         # every ASCII punctuation character (CommonMark: each may be escaped)
+# one punctuation character, to be backslash-escaped
 ESC = re.compile(r"([%s])" % PUNCT)
+# "a\\<b" matches (every punctuation character escaped); "a<b" does not
 ESCAPED = re.compile(r"(?:\\[%s]|[^%s])*\Z" % (PUNCT, PUNCT))
+# "\\<" matches, giving "<"
 UNESC = re.compile(r"\\([%s])" % PUNCT)
 MARKS = ("(redacted)", "\\(redacted\\)")         # the marker as the notes print it, and as it renders after one escape
 FREE_PRE = re.compile(r"- |#{1,6} ")             # a bullet or an ATX heading stays one
 # the marker the code writes and the one the notes print, as written or in its Markdown-escaped form, any case
+# "<redacted>" and "(redacted)" match, also with a backslash before each bracket
 MARKER_FORM = re.compile(r"(?i)<redacted>|\(redacted\)|\\<redacted\\>|\\\(redacted\\\)")
+# "\\u0041" and "\\n" match
 JSON_ESC = re.compile(r'\\(?:u([0-9A-Fa-f]{4})|(["\\/bfnrt]))')
 JSON_CHAR = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 
@@ -433,7 +444,9 @@ def _clean_lines(s):
 # and indentation (a definition can open inside a list item, '-  [x]: /u', or after an item that starts blank,
 # '-\n    [x]: /u'), and a '[' label left open at the line end is refused too (a label may span lines): wider than
 # CommonMark, fail closed. 'Letter' after '<' is any Unicode letter (str.isalpha).
+# "[a]: x" and "> - [a]:" match (a link reference definition, in a quote or list); "a [b]" does not
 REFDEF = re.compile(r"(?:[ \t]*(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)))*[ \t]*\[(?:[^\]\\]|\\.)*(?:\]:|$)")
+# "&amp;", "&#105;" and "&#x69;" match; "a & b" does not
 CHARREF = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
 SIG_DELIM = "-----BEGIN "
 
@@ -480,6 +493,7 @@ def _no_dup_bullets(text, name):
             seen[k] = n
 
 
+# "## Title" and "#" match; "#tag" does not
 ATX = re.compile(r"#{1,6}(?:[ \t]|$)")
 
 
@@ -540,6 +554,7 @@ def _oneline(s):
 # literally by every renderer, decoding back to exactly that value (fail closed). The guarantee covers the renderers'
 # built-in forms; an autolink a repository configures in its own settings (a custom prefix such as "TICKET-") is a
 # repository setting outside this code and is not covered (Codex #300 r5, A R4-2: documented, not handled).
+# "golang.org/x/net" and "pkg:oci/a" match; "a b" and "_a" do not
 BARE = re.compile(r"(?:(?:pkg|urn|cpe):)?[A-Za-z][A-Za-z0-9._/-]*\Z")
 NOT_BARE = re.compile(r"-----|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|//|(?i:www)\.|(?i:(?<![A-Za-z0-9])gh(?:sa)?-)|"
                       r"(?<![A-Za-z0-9])[0-9a-fA-F]{7,}(?![A-Za-z0-9])")
@@ -569,8 +584,10 @@ def _lit(v, before_colon=False):
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
+# "(decided 2026-10-02)." matches; "(decided soon)" does not
 CITED = re.compile(r"\(decided ([0-9]{4}-[0-9]{2}-[0-9]{2})\)\.?\Z")
-INTERNAL_REF = re.compile(r"(?i)(?<![^\W_])(?:advisor|handoff)s?[\W_]*\d")
+# "advisor 51" and "handoff-7" match; "advisory 5" does not
+INTERNAL_REF = re.compile(r"(?i)(?<![A-Za-z0-9])(?:advisor|handoff)s?[\W_]*\d")
 
 
 def _entries(text):
@@ -729,27 +746,7 @@ def notes(version, fixes, vex_changes, behavior=(), fix_locs=None, behavior_locs
     return text
 
 
-def _precedence(tag):
-    """Semantic-version precedence including our -rc.N prereleases: vX.Y.Z-rc.N sorts below vX.Y.Z."""
-    m = VERSION.match(tag or "")
-    if not m:
-        return None
-    x, y, z, rc = m.groups()
-    return (int(x), int(y), int(z), 1, 0) if rc is None else (int(x), int(y), int(z), 0, int(rc))
-
-
-def floating(version, released):
-    """The floating tags a CI patch moves (amendment, owner Oct 2): :X.Y always; :X and :latest only when it outranks
-    every released version, prereleases included (Codex #158 r1, B05)."""
-    v = _semver(version)
-    mine = _precedence(version)
-    others = [o for o in (_precedence(t) for t in released) if o]
-    out = ["%d.%d" % v[:2]]
-    if all(mine >= o for o in others):
-        out += ["%d" % v[0], "latest"]
-    return out
-
-
+# "go1.26.5", "v0.21.0" and "1.27" match; "v1" does not
 GO_VERSION = re.compile(r"^(?:go|v)?(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
 
 
@@ -1082,47 +1079,6 @@ def unpublished(entries, published_text):
     return [e for e in entries if _entry_line(e).rstrip() not in pub]
 
 
-PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
-
-
-RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"   # decide's git identity (release.yml)
-
-
-def tag_notes(raw):
-    """AC8: the notes a generated patch tag carries (`git cat-file tag` output), or None for any other tag (an owner's
-    release keeps the fixed release text). The heading must name the tag itself; the signature block is dropped. A
-    generated tag's notes holding a refused form on any line, or two bullets of one release block publishing the same
-    line, are refused (ValueError naming the line of the
-    tag message; REQ-REL-009-AC14, advisor step 5: tag-notes exits 2 like notes and changelog)."""
-    head, _, body = raw.partition("\n\n")
-    tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
-    tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
-    # the signature is the LAST signature-shaped block (Sonnet #159 r2b); everything before it is the notes region
-    cut = body.rfind(SIG_DELIM)
-    if cut < 0:
-        return None
-    body, sig = body[:cut], body[cut + len(SIG_DELIM):]
-    # only the release workflow's own patch tag: its tagger and an x509 signature (no job signs one now: handoff 0713
-    # P8) — an owner's tag is SSH-signed
-    # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
-    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
-        return None
-    # the generated heading ends in LF and nothing else: CR, CRLF, VT, FF, FS, GS, RS, NEL, LS or PS after it is refused
-    # (as in round 3; Codex #300 r5, B low)
-    head_, lf_, _ = body.partition("\n")
-    m = PATCH_HEAD.fullmatch(head_) if lf_ else None
-    if not (m and m.group(1) == tag):
-        return None
-    # a generated patch tag from here. Exactly one signature-shaped block, genuinely last (Codex #159 fresh r2d): a
-    # '-----BEGIN ' anywhere in the notes region — a second block, before or after a real one, or a delimiter in a note
-    # line — is refused with the line named (exit 2, as notes and changelog; Codex #300 r8, A (c) / B F4), never read
-    _refuse_text(body, "tag message")
-    _no_dup_bullets(body, "tag message")
-    out = _clean_lines(body)
-    _refuse_continued_marker(out, "tag message")
-    return out
-
-
 def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHANGELOG.md", "docs/next-release-notes.md")):
     """AC8: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
     entries these notes published — an entry added since stays). The three inputs are notes sources (REQ-REL-009-AC14):
@@ -1238,11 +1194,11 @@ def _git(*args, cwd="."):
 
 
 def _blob(spec, cwd):
-    """a file's text at a revision (git show rev:path); non-UTF-8 bytes read as binary; a read that fails is "\0unreadable" (not text),
-    never None: the caller asks only for blobs that exist, so a failure is not an absence"""
+    """a file's text at a revision (git show rev:path); non-UTF-8 bytes read as binary; a read that fails is None: the caller asks only for blobs
+    that exist, so _not_data reports it as unreadable, not as NUL bytes"""
     p = subprocess.run(["git", "-C", cwd, "show", spec], capture_output=True)
     if p.returncode != 0:
-        return "\0unreadable"
+        return None
     try:
         return p.stdout.decode("utf-8")
     except UnicodeDecodeError:
@@ -1377,10 +1333,15 @@ GO_BLOCKS = GO_DIRECTIVES - {"go", "toolchain", "module"}
 _N = r"(?:0|[1-9][0-9]*)"
 _PRE = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 _BUILD = r"[0-9A-Za-z-]+"
+# "v1.2.3", "v1.2.3-rc.1" and "v1.2.3+meta" match; "1.2.3" does not
 GO_SEMVER = re.compile(r"v%s\.%s\.%s(?:-%s(?:\.%s)*)?(?:\+%s(?:\.%s)*)?" % (_N, _N, _N, _PRE, _PRE, _BUILD, _BUILD))
+# "1.27", "1.27.1" and "1.27rc1" match; "1.027" does not
 GO_RELEASE = re.compile(r"[1-9][0-9]*\.(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?(?:[a-z]+[0-9]+)?")
+# "default" and "go1.27.1" match; "1.27.1" does not
 GO_TOOLCHAIN = re.compile(r"default|go" + GO_RELEASE.pattern)
+# "panicnil=1" matches; "panicnil" does not
 GO_GODEBUG = re.compile(r"[A-Za-z0-9_.-]+=[A-Za-z0-9_.+-]*")
+# "require", "(" and "v1.0.0" are each one token
 GO_TOKEN = re.compile(r"[()\[\]{},]|[^ \t()\[\]{},]+")
 GO_RESERVED = "stdlib"
 
@@ -1496,6 +1457,163 @@ def gomod_versions(text, name="go.mod"):
     return out
 
 
+def cmd_rc_proof(a):
+    # the helper is the one definition of the chain-file set and of the marker's checks; an unreadable or mismatching
+    # marker: no patch decision (never a skip). -I: a module planted on PYTHONPATH or in the cwd is never imported by it
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-bytes-sha.py")
+    r = subprocess.run([sys.executable, "-I", helper, "check-marker", "--marker", a.marker, "--commit", a.commit,
+                        "--repo", a.repo], capture_output=True, text=True)
+    if r.returncode != 0:
+        why = (r.stderr.strip().splitlines() or ["the marker does not validate"])[0].replace("refused at marker: ", "")
+        print(_clean("refused at marker: no patch decision: " + why), file=sys.stderr)
+        return 1
+    print("rc-proof: the marker %s validates for %s" % (a.marker, a.commit))
+    return 0
+
+
+def cmd_base_moved(a):
+    try:
+        listed = load_base_inputs(a.base_inputs)
+        # a release that is not a tag here is an error, never "nothing moved"; the diff names the tag by its full ref,
+        # so a branch or another ref of the same name is not taken instead
+        _git("rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % a.since, cwd=a.repo)
+        diff = _git("diff", "--name-only", "--no-renames", "refs/tags/%s..HEAD" % a.since, "--", *listed, cwd=a.repo)
+        moved = [f for f in diff.splitlines() if f in listed]
+    except (ValueError, subprocess.CalledProcessError) as e:
+        print("base-moved: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
+        return 2
+    if moved:
+        print("base input moved since %s:" % a.since)
+        for f in sorted(moved):
+            print("  " + f)
+    else:
+        print("no base input moved since %s" % a.since)
+    return 0
+
+
+def cmd_variants(a):
+    m = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", a.version)
+    if not m:
+        print("patch-decide: version %r is not X.Y.Z" % a.version, file=sys.stderr)
+        return 2
+    debug = [a.version + "-debug"] if (int(m.group(1)), int(m.group(2))) < (0, 3) else []
+    tags = [a.version] + debug + [a.version + "-fips"]
+    print("\n".join(tags))
+    return 0
+
+
+def cmd_notes(a):
+    try:
+        rel, docs = {}, {}
+        for v in a.variant_grype:
+            name, _, path = v.partition("=")
+            why = _refused_value(name)
+            if why:
+                raise ValueError("--variant-grype %s: the variant name: %s" % (path, why))
+            docs[name] = (path, json.load(open(path)))
+            rel[name] = grype_findings(docs[name][1])
+        base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
+        nn = open(a.next_notes).read() if os.path.exists(a.next_notes) else ""     # no file: no entries
+        ents = behavior_entries(nn, a.next_notes, located=True)
+        old = json.load(open(a.vex_old)) if a.vex_old else None
+        if a.vex_old and old is None:       # a supplied file holding null is not "no old document"
+            raise ValueError("VEX old document %s: null" % a.vex_old)
+        gomod_text = open(a.gomod).read()
+        head = {"go": gomod_versions(gomod_text, a.gomod), "base_findings": base}
+        fixes = fixed_findings(rel, head)
+        fix_locs = check_fix_sources(fixes, docs, a.gomod, gomod_text, head)
+        # every source is refused before any entry is dropped as already published (REQ-REL-009-AC14 (5)): a fix line
+        # and any entry publishing the same line, both named (one set across them)
+        _no_collision([(_clean_free(_fix_raw(f)), loc) for f, loc in zip(fixes, fix_locs)]
+                      + [(_entry_line(e), loc) for e, loc in ents])
+        keep = set(unpublished([e for e, _ in ents], open(a.published).read()))
+        ents = [(e, loc) for e, loc in ents if e in keep]
+        text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=[e for e, _ in ents],
+                     fix_locs=fix_locs, behavior_locs=[loc for _, loc in ents])
+    except (ValueError, OSError, KeyError, TypeError) as e:
+        print("notes: %s — no notes, no patch" % _clean(str(e)), file=sys.stderr)
+        return 2
+    with open(a.out, "w") as fh:
+        fh.write(text)
+    return 0
+
+
+def cmd_changelog(a):
+    cl_path = a.changelog
+    old_cl = open(cl_path, newline="").read() if os.path.exists(cl_path) else None
+    has_nn = os.path.exists(a.next_notes)
+    try:
+        new_cl, new_nn = changelog(open(a.notes).read(), old_cl, open(a.next_notes).read() if has_nn else "",
+                                   names=(a.notes, cl_path, a.next_notes))
+    except ValueError as e:
+        print("changelog: %s — nothing written" % _clean(str(e)), file=sys.stderr)
+        return 2
+    with open(cl_path, "w") as fh:
+        fh.write(new_cl)
+    if has_nn:
+        with open(a.next_notes, "w") as fh:
+            fh.write(new_nn)
+    return 0
+
+
+def cmd_ready(a):
+    verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)))
+    print(verdict, _clean(why))
+    return 0
+
+
+def cmd_removed(a):
+    try:
+        release = [f for p in a.release_grype for f in grype_findings(json.load(open(p)))]
+    except (ValueError, OSError) as e:
+        print("removed: the release scan is unusable: %s" % e, file=sys.stderr)
+        return 2
+    try:
+        base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
+    except (ValueError, OSError):
+        base = None                     # an unusable base scan removes no deb finding
+    try:
+        gov = gomod_versions(open(a.gomod).read(), a.gomod)
+    except (ValueError, OSError) as e:      # a go.mod the parser refuses: unknown, never "nothing removed"
+        print("removed: %s" % e, file=sys.stderr)
+        return 2
+    found = removed_critical_high(release, {"go": gov, "base_findings": base})
+    with open(a.out, "w") as fh:
+        json.dump(found, fh, indent=1)
+    return 0
+
+
+def cmd_decide(a):
+    tags = [t for t in _git("tag", "-l", "v*", cwd=a.repo).split()]
+    released = [t for t in json.load(open(a.released)) if _semver(t) and t in tags]
+    since = max(released, key=_semver) if released else None
+    labels = json.load(open(a.labels)) if a.labels else {}
+    commits = gather_commits(since, a.repo, labels=lambda sha: labels.get(sha, [])) if since else []
+    removed = None if a.removed_unknown else json.load(open(a.removed)) if a.removed else []
+    event = "schedule" if a.event == "workflow_dispatch" else a.event
+    # no published release yet: the first release is the owner's, whatever tags a failed attempt left
+    try:
+        base_inputs = load_base_inputs(a.base_inputs)  # unreadable: exit 2, no decision, never an empty list
+    except ValueError as e:
+        print("decide: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
+        return 2
+    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed, base_inputs)
+    dec["since"] = since
+    # decision.json feeds a public issue (the "not patch-clean" list): every string in it is redacted as stdout is
+    dec = {k: ([_clean(x) for x in v] if isinstance(v, list) else _clean(v) if isinstance(v, str) else v)
+           for k, v in dec.items()}
+    with open(a.out, "w") as fh:
+        json.dump(dec, fh, indent=1)
+    print(_clean("patch decision: %s — %s" % ("cut " + dec["version"] if dec["cut"] else "no cut", dec["reason"])))
+    for w in dec["not_clean"]:
+        print(_clean("  not patch-clean: " + w))
+    return 0
+
+
+COMMANDS = {"decide": cmd_decide, "base-moved": cmd_base_moved, "rc-proof": cmd_rc_proof, "ready": cmd_ready,
+            "removed": cmd_removed, "notes": cmd_notes, "variants": cmd_variants, "changelog": cmd_changelog}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="patch-decide")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1539,155 +1657,12 @@ def main(argv=None):
     n.add_argument("--out", required=True)
     vv = sub.add_parser("variants", help="the image tags of release X.Y.Z that exist: X.Y.Z, X.Y.Z-fips, and X.Y.Z-debug only before v0.3.0 (the owner dropped debug for v0.3.0)")
     vv.add_argument("--version", required=True)
-    sub.add_parser("tag-notes", help="stdin: git cat-file tag; stdout: a generated patch tag's notes, else exit 1")
     c = sub.add_parser("changelog")
     c.add_argument("--notes", required=True)
     c.add_argument("--changelog", required=True)
     c.add_argument("--next-notes", required=True)
     a = ap.parse_args(argv)
-    if a.cmd == "rc-proof":
-        # the helper is the ONE definition of the chain-file set and of the marker's checks (bin/chain-bytes-sha.py, next to this file); no marker, no helper,
-        # an unreadable or mismatching marker: no patch decision (never a skip)
-        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-bytes-sha.py")
-        if not os.path.isfile(helper):
-            print("refused at marker: %s is missing, so the rc-proof marker %s cannot be checked: no patch decision" % (helper, a.marker), file=sys.stderr)
-            return 1
-        r = subprocess.run([sys.executable, helper, "check-marker", "--marker", a.marker, "--commit", a.commit, "--repo", a.repo], capture_output=True, text=True)
-        if r.returncode != 0:
-            print(_clean("refused at marker: no patch decision: " + (r.stderr.strip().splitlines() or ["the marker does not validate"])[0].replace("refused at marker: ", "")), file=sys.stderr)
-            return 1
-        print("rc-proof: the marker %s validates for %s" % (a.marker, a.commit))
-        return 0
-    if a.cmd == "base-moved":
-        try:
-            listed = load_base_inputs(a.base_inputs)
-            _git("rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % a.since, cwd=a.repo)       # a release that is not a tag here is an error, never "nothing moved"
-            moved = [f for f in _git("diff", "--name-only", "--no-renames", "%s..HEAD" % a.since, "--", *listed, cwd=a.repo).splitlines() if f in listed]
-        except (ValueError, subprocess.CalledProcessError) as e:
-            print("base-moved: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
-            return 2
-        if moved:
-            print("base input moved since %s:" % a.since)
-            for f in sorted(moved):
-                print("  " + f)
-        else:
-            print("no base input moved since %s" % a.since)
-        return 0
-    if a.cmd == "variants":
-        m = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", a.version)
-        if not m:
-            print("patch-decide: version %r is not X.Y.Z" % a.version, file=sys.stderr)
-            return 2
-        tags = [a.version] + ([a.version + "-debug"] if (int(m.group(1)), int(m.group(2))) < (0, 3) else []) + [a.version + "-fips"]
-        print("\n".join(tags))
-        return 0
-    if a.cmd == "notes":
-        try:
-            rel, docs = {}, {}
-            for v in a.variant_grype:
-                name, _, path = v.partition("=")
-                why = _refused_value(name)
-                if why:
-                    raise ValueError("--variant-grype %s: the variant name: %s" % (path, why))
-                docs[name] = (path, json.load(open(path)))
-                rel[name] = grype_findings(docs[name][1])
-            base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
-            nn = open(a.next_notes).read() if os.path.exists(a.next_notes) else ""     # no file: no entries
-            ents = behavior_entries(nn, a.next_notes, located=True)
-            old = json.load(open(a.vex_old)) if a.vex_old else None
-            if a.vex_old and old is None:       # a supplied file holding null is not "no old document" (Codex #300 r2, B)
-                raise ValueError("VEX old document %s: null" % a.vex_old)
-            gomod_text = open(a.gomod).read()
-            head = {"go": gomod_versions(gomod_text, a.gomod), "base_findings": base}
-            fixes = fixed_findings(rel, head)
-            fix_locs = check_fix_sources(fixes, docs, a.gomod, gomod_text, head)
-            # every source is refused before any entry is dropped as already published (REQ-REL-009-AC14 (5)): a fix line
-            # and any entry publishing the same line, both named (one set across them; Codex #300 r8, B medium)
-            _no_collision([(_clean_free(_fix_raw(f)), loc) for f, loc in zip(fixes, fix_locs)]
-                          + [(_entry_line(e), loc) for e, loc in ents])
-            keep = set(unpublished([e for e, _ in ents], open(a.published).read()))
-            ents = [(e, loc) for e, loc in ents if e in keep]
-            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=[e for e, _ in ents],
-                         fix_locs=fix_locs, behavior_locs=[loc for _, loc in ents])
-        except (ValueError, OSError, KeyError, TypeError) as e:
-            print("notes: %s — no notes, no patch" % _clean(str(e)), file=sys.stderr)
-            return 2
-        with open(a.out, "w") as fh:
-            fh.write(text)
-        return 0
-    if a.cmd == "tag-notes":
-        try:
-            t = tag_notes(sys.stdin.read())
-        except ValueError as e:             # a generated patch tag's notes holding a refused form (REQ-REL-009-AC14)
-            print("tag-notes: %s — no notes" % _clean(str(e)), file=sys.stderr)
-            return 2
-        if t is None:
-            return 1
-        sys.stdout.write(t)
-        return 0
-    if a.cmd == "changelog":
-        cl_path = a.changelog
-        old_cl = open(cl_path, newline="").read() if os.path.exists(cl_path) else None    # line ends as stored (r5)
-        has_nn = os.path.exists(a.next_notes)
-        try:
-            new_cl, new_nn = changelog(open(a.notes).read(), old_cl, open(a.next_notes).read() if has_nn else "",
-                                       names=(a.notes, cl_path, a.next_notes))
-        except ValueError as e:
-            print("changelog: %s — nothing written" % _clean(str(e)), file=sys.stderr)
-            return 2
-        with open(cl_path, "w") as fh:
-            fh.write(new_cl)
-        if has_nn:
-            with open(a.next_notes, "w") as fh:
-                fh.write(new_nn)
-        return 0
-    if a.cmd == "ready":
-        verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)))
-        print(verdict, _clean(why))
-        return 0
-    if a.cmd == "removed":
-        try:
-            release = [f for p in a.release_grype for f in grype_findings(json.load(open(p)))]
-        except (ValueError, OSError) as e:
-            print("removed: the release scan is unusable: %s" % e, file=sys.stderr)
-            return 2
-        try:
-            base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
-        except (ValueError, OSError):
-            base = None                     # an unusable base scan removes no deb finding
-        try:
-            gov = gomod_versions(open(a.gomod).read(), a.gomod)
-        except (ValueError, OSError) as e:      # a go.mod the parser refuses: unknown, never "nothing removed"
-            print("removed: %s" % e, file=sys.stderr)
-            return 2
-        found = removed_critical_high(release, {"go": gov, "base_findings": base})
-        with open(a.out, "w") as fh:
-            json.dump(found, fh, indent=1)
-        return 0
-    tags = [t for t in _git("tag", "-l", "v*", cwd=a.repo).split()]
-    released = [t for t in json.load(open(a.released)) if _semver(t) and t in tags]
-    since = max(released, key=_semver) if released else None
-    labels = json.load(open(a.labels)) if a.labels else {}
-    commits = gather_commits(since, a.repo, labels=lambda sha: labels.get(sha, [])) if since else []
-    removed = None if a.removed_unknown else json.load(open(a.removed)) if a.removed else []
-    event = "schedule" if a.event == "workflow_dispatch" else a.event
-    # no published release yet: the first release is the owner's, whatever tags a failed attempt left
-    try:
-        base_inputs = load_base_inputs(a.base_inputs)      # an unreadable list is exit 2 and no decision (never a silent empty list)
-    except ValueError as e:
-        print("decide: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
-        return 2
-    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed, base_inputs)
-    dec["since"] = since
-    # decision.json feeds a public issue (the "not patch-clean" list): every string in it is redacted as stdout is
-    dec = {k: ([_clean(x) for x in v] if isinstance(v, list) else _clean(v) if isinstance(v, str) else v)
-           for k, v in dec.items()}
-    with open(a.out, "w") as fh:
-        json.dump(dec, fh, indent=1)
-    print(_clean("patch decision: %s — %s" % ("cut " + dec["version"] if dec["cut"] else "no cut", dec["reason"])))
-    for w in dec["not_clean"]:
-        print(_clean("  not patch-clean: " + w))
-    return 0
+    return COMMANDS[a.cmd](a)
 
 
 if __name__ == "__main__":

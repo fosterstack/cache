@@ -15,19 +15,13 @@ fi
       exit 1
     fi
     name=$(basename "$d")
-    n=0
-    for f in "$d"/*; do
+    for f in "$d"/*; do   # an empty folder leaves the pattern itself, which is no regular file
       if [ ! -f "$f" ] || [ -L "$f" ]; then
         echo "check-records-digests: not a regular file: $f" >&2
         exit 1
       fi
       sum=$(openssl dgst -sha256 -r "$f" | cut -d' ' -f1)
       printf '%s\t%s\t%s\n' "$name" "$(basename "$f")" "$sum"
-      n=1
     done
-    if [ "$n" = 0 ]; then
-      echo "check-records-digests: no file in $d" >&2
-      exit 1
-    fi
   done
 } | jq -S -c -R -n 'reduce (inputs | split("\t")) as $r ({}; .[$r[0]][$r[1]] = ("sha256:" + $r[2]))'

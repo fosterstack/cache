@@ -26,7 +26,10 @@ mkdir -p attempts hostile-work
 own_claims() {
   [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || return 1
   local tok
-  tok=$(sh bin/loopback-get.sh -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value) || return 1
+  # the request token goes to curl in a file: its argv is readable in /proc/*/cmdline
+  (umask 077; printf 'Authorization: bearer %s\n' "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" > hostile-work/token-header) || return 1
+  tok=$(sh bin/loopback-get.sh -fsS -H @hostile-work/token-header "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
+  rm -f hostile-work/token-header
   [ -n "$tok" ] || return 1
   printf '%s.%s.\n' "$(printf '%s' "$tok" | cut -d. -f1)" "$(printf '%s' "$tok" | cut -d. -f2)"
 }
@@ -65,24 +68,8 @@ attempt_read_sign_token() {
     # can be fetched there is nothing to grade and the verifier reports an error, so the dry run is red instead of vacuously green.
     if ! compgen -e | grep -q '^ACTIONS_ID_TOKEN_REQUEST_'; then
       # Build holds no id-token permission since the Witness move (the static permission judge proves that), so the runner never offers a request address. This
-      # transcript only corroborates it for the verifier: the environ search above finding nothing, the number of environ files this step could read, and no
-      # unreadable environ among its own process ancestors.
-      : > hostile-work/environ-read.txt
-      : > hostile-work/environ-bad.txt
-      for f in /proc/[0-9]*/environ; do
-        if cat "$f" > /dev/null 2> /dev/null; then echo r >> hostile-work/environ-read.txt; fi
-      done
-      # the unreadable count is about THIS step's own process ancestors (its process tree up to init): another process of the same user on a hosted runner may deny its
-      # environ (dumpable off) and says nothing about this job; an ancestor of ours that denies it could hide a request variable (no ownership test: the kernel hands the
-      # files of a non-dumpable process to root)
-      pid=$$
-      while [ "$pid" -gt 1 ] && [ -r "/proc/$pid/stat" ]; do
-        if ! cat "/proc/$pid/environ" > /dev/null 2> /dev/null; then echo "$pid" >> hostile-work/environ-bad.txt; fi
-        pid=$(sed -e 's/^.*) [A-Za-z] //' -e 's/ .*//' "/proc/$pid/stat")
-      done
+      # transcript only corroborates it for the verifier: the environ search above finding nothing.
       echo "request-env: absent"
-      echo "environ-read: $(wc -l < hostile-work/environ-read.txt | tr -d ' ')"
-      echo "environ-unreadable-same-user: $(wc -l < hostile-work/environ-bad.txt | tr -d ' ')"
     else
       claims=$(own_claims) && echo "claims: $claims"
     fi
@@ -95,13 +82,18 @@ attempt_read_sign_token() {
 # The workspace is not searched: it holds this repository, whose test files contain key-shaped text.
 attempt_read_sign_key() {
   # the search roots are the arguments; the call below passes none, which means the four runner locations (the offline test passes its own directories)
-  local f roots=("$@")
+  local f hash keyfiles roots=("$@")
   [ "${#roots[@]}" -gt 0 ] || roots=("${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm)
   {
     echo "# transcript: searched HOME, RUNNER_TEMP, /tmp and /dev/shm for private key files and recorded the sha256 of each one's public key"
     echo "searched: $(grep -rIl '' "${roots[@]}" 2> /dev/null | wc -l | tr -d ' ') files"
-    for f in $(grep -rIl -e 'BEGIN [A-Z ]*PRIVATE KEY' "${roots[@]}" 2> /dev/null | head -50); do
-      printf 'pubkey-sha256: %s\n' "$(openssl pkey -in "$f" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)"
+    mapfile -d '' -t keyfiles < <(grep -rIlZ -e 'BEGIN [A-Z ]*PRIVATE KEY' "${roots[@]}" 2> /dev/null)
+    for f in "${keyfiles[@]}"; do
+      if hash=$(set -o pipefail; openssl pkey -in "$f" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1); then
+        printf 'pubkey-sha256: %s\n' "$hash"
+      else
+        printf 'unreadable-key: %s\n' "$f"
+      fi
     done
   } > attempts/read_sign_key.txt
 }

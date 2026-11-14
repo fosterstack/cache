@@ -45,6 +45,12 @@ tmp=$(mktemp -d)
 kd=$(mktemp -d "$rt/probe-keydir.XXXXXX")
 trap 'rm -rf "$tmp" "$kd" 2>/dev/null || "$SUDO" rm -rf "$tmp" "$kd" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 printf 'dummy, not a key\n' >"$kd/dummy"
+# the paths are pasted into recipe shell lines: one with a space, &, |, \ or a quote would change what the recipe runs
+for path in "$RECORD" "$kd"; do
+  case $path in
+    *[[:space:]\&\|\\\'\"]*) echo "chain-sandbox-probe.sh: refused path $path (space, &, |, \\ or quote)" >&2; exit 2 ;;
+  esac
+done
 mkdir -p "$tmp/recipes" "$tmp/cache" "$tmp/src"
 for w in control read-record write-record read-keydir read-token network; do
   sed -e "s|@BUSYBOX@|$busybox|" -e "s|@RECORD@|$RECORD|" -e "s|@KEYDIR@|$kd|" \
