@@ -6,6 +6,9 @@
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
+# the script runs its Python by the relative path bin/refresh-inputs.py: a run of a copy has the copy tree's root (above its bin/) as the working directory
+rfroot() { local a; for a in "$@"; do case $a in */bin/refresh-inputs.sh) cd "${a%/bin/refresh-inputs.sh}" || return; return;; esac; done; }
+run_s2() { : >"$CALLS"; ( rfroot "$@"; PATH="$stubs2:$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null ); echo $? >"$work/rc"; }   # adds a git stub: used for the refresh job only
 # The production script names its tools by fixed path (TEST-SUBST lines). The suite runs a COPY, beside the real helpers, in which exactly those lines
 # point at dispatchers that exec the tool by NAME on the run's PATH (so the stubs of run_s, run_s2, ...), and checks the copy differs in no other line.
 RF_PROD="$RF"
@@ -312,7 +315,7 @@ case "$*" in *ls-remote*"refs/heads/${GIT_STUB_EXISTING:-none}") echo "deadbeef	
 exit 0
 G
 chmod +x "$work/stubs3/git"
-run_s3() { : >"$CALLS"; PATH="$work/stubs3:$stubs2:$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
+run_s3() { : >"$CALLS"; ( rfroot "$@"; PATH="$work/stubs3:$stubs2:$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null ); echo $? >"$work/rc"; }
 mkrepo; run_s3 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 first=$(grep -E '^git( -C [^ ]+)? checkout -b ' "$CALLS" | head -1 | sed 's/.*checkout -b //')
 mkrepo; run_s3 env GIT_STUB_EXISTING="$first" "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -500,7 +503,7 @@ case "$*" in "pr list"*"--state closed"*) ;; "pr list"*) [ -z "${GH_STUB_FAIL:-}
 exit 0
 G
 chmod +x "$work/stubs4/git" "$work/stubs4/gh"
-run_s4() { : >"$CALLS"; PATH="$work/stubs4:$stubs2:$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
+run_s4() { : >"$CALLS"; ( rfroot "$@"; PATH="$work/stubs4:$stubs2:$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null ); echo $? >"$work/rc"; }
 mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 first=$(grep -E '^git( -C [^ ]+)? checkout -b ' "$CALLS" | head -1 | sed 's/.*checkout -b //')
 t "rule 44" "refresh: the branch name is made of the change itself (refresh/<8 hex>), not of the date, so the same change has the same name every day" bash -c "echo '$first' | grep -Eq '^refresh/[0-9a-f]{8}\$'"
