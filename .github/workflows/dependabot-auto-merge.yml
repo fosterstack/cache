@@ -220,7 +220,7 @@ jobs:
           set -euo pipefail
           run_url="repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer"
           verdict=$(gh api "$run_url&filter=all&per_page=100" \
-              --jq 'if .total_count != (.check_runs | length) then error("the check runs are cut") else . end
+              --jq 'if (.check_runs | length) >= 100 then error("the check runs are cut") else . end
                     | [.check_runs[] | select(.app.slug == "fosterstack-automation")]
                     | sort_by(.id) | last | .conclusion // "none"')
           if [ "$verdict" = failure ]; then
@@ -256,14 +256,14 @@ jobs:
             echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
           run_url="repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer"
           if ! verdict=$(gh api "$run_url&filter=all&per_page=100" \
-              --jq 'if .total_count != (.check_runs | length) then error("the check runs are cut") else . end
+              --jq 'if (.check_runs | length) >= 100 then error("the check runs are cut") else . end
                     | [.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last
                     | "\(.conclusion // "none") \(.external_id // "")"'); then
             disarm; echo "::error::could not read the reviewer's verdict on ${head:0:7}"; exit 1
           fi
           read -r verdict external_id <<<"$verdict"
           success_counts=false
-          [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ] && success_counts=true
+          if [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ]; then success_counts=true; fi
           if [ "$success_counts" = true ]; then
             # a success counts only with the reviewer's version on main, computed by main's own script. Every failed
             # or empty read turns auto-merge off and fails the step
@@ -283,16 +283,18 @@ jobs:
             version=$(bash "$RUNNER_TEMP/dependabot-reviewer-version.sh" "$main") ||
               fail "could not compute the reviewer's version"
             [ -n "$version" ] || fail "the reviewer's version is empty"
-            [ "$external_id" = "$version" ] || { verdict=none; success_counts=false; }
+            [ "$external_id" = "$version" ] || success_counts=false
           fi
           if [ "$success_counts" = true ]; then
             echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
+          elif [ "$verdict" = failure ]; then
+            if [ "$armed" = true ]; then
+              gh pr merge --disable-auto "$PR_URL"
+              echo "auto-merge turned off: the reviewer failed the current head (${head:0:7})"
+            else echo "the reviewer failed the current head (${head:0:7}); auto-merge is not armed"; fi
           elif [ "$armed" != true ]; then
             if [ "$WAITS_FOR_VERDICT" = true ]; then echo "auto-merge is not armed; nothing to turn off"
             else echo "a patch or minor bump needs no verdict; auto-merge is not armed"; fi
-          elif [ "$verdict" = failure ]; then
-            gh pr merge --disable-auto "$PR_URL"
-            echo "auto-merge turned off: the reviewer failed the current head (${head:0:7})"
           elif [ "$WAITS_FOR_VERDICT" = true ]; then
             gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
           else echo "a patch or minor bump needs no verdict: this workflow's arm stands"; fi
