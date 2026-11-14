@@ -88,41 +88,88 @@ else
   echo "$out" | sed 's/^/    /'; fail=$((fail+1))
 fi
 
-# The pin step, byte for byte: it fetches the guard from main (repository, path, ?ref=main), never the pull request's
-# own copy, and runs that fetch once over both policy files. Any other line, comment or order is refused.
-python3 - "$repo/.github/workflows/ci.yml" "$w/pin-run.sh" "$w/pin-bad.txt" <<'PY'
-import sys, yaml
+# The pin step, whole: every key and its text, byte for byte. It fetches the guard from main (repository, path,
+# ?ref=main), never the pull request's own copy, and runs that fetch once over both policy files. Any other key,
+# line, comment or order is refused.
+cat > "$w/pin-extract.py" <<'PY'
+import json, sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]["steps"]
 pin = [s for s in steps if "release-only-checks.json" in (s.get("run") or "") and "required-check-guard.sh" in s["run"]]
 assert len(pin) == 1, f"{len(pin)} steps of the required-check guard job run the guard over release-only-checks.json"
-open(sys.argv[2], "w").write(pin[0]["run"])
-open(sys.argv[3], "w").write(",".join(k for k in ("if", "continue-on-error", "shell", "working-directory") if k in pin[0]))
+open(sys.argv[3], "w").write(pin[0]["run"])
+with open(sys.argv[2], "w") as out:
+    for k, v in pin[0].items():
+        if isinstance(v, str) and "\n" in v:
+            out.write(f"{k}: |\n" + "".join(f"  {line}\n" for line in v.splitlines()))
+        else:
+            out.write(f"{k}: {json.dumps(v)}\n")
 PY
-cat > "$w/pin-want.sh" <<'WANT'
-set -euo pipefail
-gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
-  | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
-[ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
-bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
+cat > "$w/pin-want.txt" <<'WANT'
+name: "this tree's policy lists vs the ruleset on main and the pin in main's guard"
+env: {"GH_TOKEN": "${{ github.token }}"}
+run: |
+  set -euo pipefail
+  gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+    | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
+  [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
+  bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
 WANT
-pin_case() { # name run_file want (0 = identical to the pinned text, 1 = differs)
-  if diff -u "$w/pin-want.sh" "$2" > "$w/pin.diff" 2>&1; then got=0; else got=1; fi
+python3 "$w/pin-extract.py" "$repo/.github/workflows/ci.yml" "$w/pin-step.txt" "$w/pin-run.sh" ||
+  { echo "FAIL: ci.yml has no single pin step"; fail=$((fail+1)); }
+pin_case() { # name step_file want (0 = identical to the pinned text, 1 = differs)
+  if diff -u "$w/pin-want.txt" "$2" > "$w/pin.diff" 2>&1; then got=0; else got=1; fi
   if [ "$got" -eq "$3" ]; then echo "ok: $1"; pass=$((pass+1))
   else echo "FAIL: $1 (differs=$got, want differs=$3)"; sed 's/^/    /' "$w/pin.diff"; fail=$((fail+1)); fi
 }
-pin_case "the pin step is the pinned text, byte for byte" "$w/pin-run.sh" 0
-if [ -s "$w/pin-bad.txt" ]; then echo "FAIL: the pin step sets $(cat "$w/pin-bad.txt")"; fail=$((fail+1)); fi
-sed 's|guard.sh?ref=main|guard.sh?ref=${GITHUB_HEAD_REF}|' "$w/pin-run.sh" > "$w/pin-run-moved.sh"
-pin_case "a pin step fetching the guard at the pull request's branch is refused" "$w/pin-run-moved.sh" 1
-{ echo 'set -euo pipefail'
-  echo '# gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '"'.content'"' \'
-  echo 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=${GITHUB_HEAD_REF}" --jq .content \'
-  echo '  | base64 -d > "$RUNNER_TEMP/other.sh"'
-  echo "printf 'exit 0' > \"\${RUNNER_TEMP}/required-check-guard.sh\""
-  tail -n 1 "$w/pin-want.sh"; } > "$w/pin-run-redirect.sh"
-pin_case "a comment holding the fetch text over a fetch elsewhere is refused" "$w/pin-run-redirect.sh" 1
-sed '$i echo hi' "$w/pin-run.sh" > "$w/pin-run-extra.sh"
-pin_case "an extra line in the pin step is refused" "$w/pin-run-extra.sh" 1
+pin_case "the pin step is the pinned text, byte for byte" "$w/pin-step.txt" 0
+sed 's|guard.sh?ref=main|guard.sh?ref=${GITHUB_HEAD_REF}|' "$w/pin-step.txt" > "$w/pin-moved.txt"
+pin_case "a pin step fetching the guard at the pull request's branch is refused" "$w/pin-moved.txt" 1
+cat > "$w/pin-redirect.txt" <<'BAD'
+name: "this tree's policy lists vs the ruleset on main and the pin in main's guard"
+env: {"GH_TOKEN": "${{ github.token }}"}
+run: |
+  set -euo pipefail
+  # gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+  gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=${GITHUB_HEAD_REF}" --jq .content \
+    | base64 -d > "$RUNNER_TEMP/other.sh"
+  printf 'exit 0' > "${RUNNER_TEMP}/required-check-guard.sh"
+  bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
+BAD
+pin_case "a comment holding the fetch text over a fetch elsewhere is refused" "$w/pin-redirect.txt" 1
+sed '$i \  echo hi' "$w/pin-step.txt" > "$w/pin-extra.txt"
+pin_case "an extra line in the pin step is refused" "$w/pin-extra.txt" 1
+cat > "$w/pin-mutate.py" <<'PY'
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+for s in wf["jobs"]["required-check-guard"]["steps"]:
+    if "release-only-checks.json" in (s.get("run") or "") and "required-check-guard.sh" in s["run"]:
+        s.update(yaml.safe_load(sys.argv[3]))
+yaml.safe_dump(wf, open(sys.argv[2], "w"))
+PY
+pin_key_case() { # name key_yaml: the pin step with one more key is refused
+  python3 "$w/pin-mutate.py" "$repo/.github/workflows/ci.yml" "$w/ci-mut.yml" "$2"
+  python3 "$w/pin-extract.py" "$w/ci-mut.yml" "$w/pin-mut.txt" /dev/null
+  pin_case "$1" "$w/pin-mut.txt" 1
+}
+pin_key_case "a GUARD_RULES_JSON env key on the pin step is refused" \
+  '{env: {GH_TOKEN: x, GUARD_RULES_JSON: .github/policy/own.json}}'
+pin_key_case "a made-up key on the pin step is refused" '{made-up-key: 1}'
+
+# No step of the guard job may write to GITHUB_PATH, GITHUB_ENV or BASH_ENV: that is how an earlier step puts a fake gh
+# in front of the pinned step. (The allowlist job's twin check is in pin-wiring-test.sh; it does not read this job.)
+cat > "$w/job-hooks.py" <<'PY'
+import json, sys, yaml
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]
+if len(sys.argv) > 2:
+    job["steps"].insert(1, {"run": 'echo /tmp/fake >> "$GITHUB_PATH"'})
+sys.exit(any(h in json.dumps(job) for h in ("BASH_ENV", "GITHUB_ENV", "GITHUB_PATH")))
+PY
+if python3 "$w/job-hooks.py" "$repo/.github/workflows/ci.yml"; then
+  echo "ok: the guard job writes no GITHUB_PATH, GITHUB_ENV or BASH_ENV"; pass=$((pass+1))
+else echo "FAIL: the guard job mentions GITHUB_PATH, GITHUB_ENV or BASH_ENV"; fail=$((fail+1)); fi
+if python3 "$w/job-hooks.py" "$repo/.github/workflows/ci.yml" mutate; then
+  echo "FAIL: a GITHUB_PATH write in the guard job was accepted"; fail=$((fail+1))
+else echo "ok: a GITHUB_PATH write in the guard job is refused"; pass=$((pass+1)); fi
 
 # The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
 # committed under GitHub's default `bash -e` with a recording gh stub (round-1 blocker:
