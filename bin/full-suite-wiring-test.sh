@@ -287,6 +287,63 @@ def ci_problems(w):
 verdict("ci.yml: the seven-context layout, the changed-packages test job, the one-step selection in the allowlist job",
         ci_problems(ci), True)
 
+# bin/run-selected-tests.sh itself: a copy in a scratch tree with stand-ins for the selector and the scanner installer
+RUNNER_TEXT = open(os.path.join(root, RUNNER)).read()
+def runner_run(select_body, text):
+    """returns (exit code, the log the stand-ins and suites wrote, stderr)"""
+    cwd = os.path.join(work, "run%d" % len(os.listdir(work))); os.makedirs(cwd + "/bin")
+    mkexec(cwd + "/" + RUNNER, text)
+    mkexec(cwd + "/bin/select-tests.sh", "#!/usr/bin/env bash\n" + select_body)
+    mkexec(cwd + "/bin/install-scanner.sh", "#!/usr/bin/env bash\necho \"install $*\" >> \"$LOG\"\n")
+    log = cwd + "/log"; open(log, "w").close()
+    r = subprocess.run(["bash", RUNNER, "origin/main", "HEAD"], capture_output=True, text=True, cwd=cwd, env=dict(os.environ, LOG=log))
+    return r.returncode, open(log).read(), r.stderr[-200:]
+def say(word): return "echo %s >> \"$LOG\"" % word
+def lines_of(*cmds): return "printf '%s\\n' " + " ".join("'" + c + "'" for c in cmds) + "\n"
+VEX = "bash bin/vex-both-scanners-test.sh"
+VEX_SELECT = lines_of(say("one"), VEX, say("three"))
+def runner_problems(text):
+    bad = []
+    rc, log, err = runner_run(lines_of(say("one"), say("two words"), say("three")), text)
+    if rc != 0 or log != "one\ntwo words\nthree\n": bad.append("the selected lines are not run in order: rc=%s log=%r err=%r" % (rc, log, err))
+    rc, log, err = runner_run("echo 'no entry for newdir/x' >&2; exit 1\n", text)
+    if rc == 0: bad.append("a selector that fails does not fail the script")
+    rc, log, err = runner_run("exit 0\n", text)
+    if rc != 0 or log != "": bad.append("a change that selects nothing does not pass quietly: rc=%s log=%r" % (rc, log))
+    return bad
+def vex_cases(text):
+    bad = []
+    def run(select_body):
+        cwd = os.path.join(work, "run%d" % len(os.listdir(work))); os.makedirs(cwd + "/bin")
+        mkexec(cwd + "/" + RUNNER, text)
+        mkexec(cwd + "/bin/select-tests.sh", "#!/usr/bin/env bash\n" + select_body)
+        mkexec(cwd + "/bin/install-scanner.sh", "#!/usr/bin/env bash\necho \"install $*\" >> \"$LOG\"\n")
+        mkexec(cwd + "/bin/vex-both-scanners-test.sh", "#!/usr/bin/env bash\necho vex-suite >> \"$LOG\"\n")
+        log = cwd + "/log"; open(log, "w").close()
+        r = subprocess.run(["bash", RUNNER, "origin/main", "HEAD"], capture_output=True, text=True, cwd=cwd, env=dict(os.environ, LOG=log))
+        return r.returncode, open(log).read(), r.stderr[-200:]
+    rc, log, err = run(lines_of(say("one"), VEX, say("three")))
+    if rc != 0 or log != "install grype\none\nvex-suite\nthree\n": bad.append("grype is not installed before the selected suites run: rc=%s log=%r err=%r" % (rc, log, err))
+    rc, log, err = run(lines_of(say("one")))
+    if rc != 0 or log != "one\n": bad.append("grype is installed though the vex suite is not selected: rc=%s log=%r" % (rc, log))
+    rc, log, err = run(lines_of(say("one"), "false", say("three")))
+    if rc == 0 or "three" in log: bad.append("a failing suite does not stop and fail the script: rc=%s log=%r" % (rc, log))
+    rc, log, err = run(lines_of(say("one"), "false; echo after >> \"$LOG\"", say("three")))
+    if rc == 0 or "after" in log: bad.append("a suite is not run under bash -e: rc=%s log=%r" % (rc, log))
+    return bad
+verdict("bin/run-selected-tests.sh: the lines run in order, a failing selector fails it, nothing selected passes", runner_problems(RUNNER_TEXT), True)
+verdict("bin/run-selected-tests.sh: grype is installed before the suites when the vex suite is selected, and only then, a failing suite fails it", vex_cases(RUNNER_TEXT), True)
+def runner_mutant(label, a, b):
+    m = RUNNER_TEXT.replace(a, b)
+    if m == RUNNER_TEXT: check("bin/run-selected-tests.sh: a copy with %s can be made" % label, False, "text not found"); return
+    check("bin/run-selected-tests.sh: a copy with %s is refused" % label, runner_problems(m) + vex_cases(m) != [], "accepted")
+runner_mutant("the grype install gone", "  ./bin/install-scanner.sh grype\n", "  :\n")
+runner_mutant("the grype install always run", "if grep -qxF 'bash bin/vex-both-scanners-test.sh' <<< \"${suites}\"; then", "if true; then")
+runner_mutant("a failing suite ignored", 'bash -euo pipefail -c "${suite}";', 'bash -euo pipefail -c "${suite}" || true;')
+runner_mutant("suites run without -e", "bash -euo pipefail -c", "bash -c")
+runner_mutant("a failing selector ignored", 'suites=$(bash bin/select-tests.sh "$1" "$2")', 'suites=$(bash bin/select-tests.sh "$1" "$2" || true)')
+runner_mutant("the lines run out of order", 'done <<< "${suites}"', 'done < <(tac <<< "${suites}")')
+
 # the test job's package step, run in a throwaway git repository:
 # the base commit holds FILES, then CHANGE(sh) makes the second commit
 GO_SRC = "package p\n\nfunc One() int {\n\treturn 1\n}\n\nfunc Two() int {\n\treturn 2\n}\n"
