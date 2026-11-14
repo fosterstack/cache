@@ -144,7 +144,8 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
             continue
         name = j.get("name") or jid
         axes = ((j.get("strategy") or {}).get("matrix") or {}).values()
-        for rendered in [f"{name} ({v})" for v in next(iter(axes), [])] or [name]:   # a matrix job is named per value
+        values = next(iter(axes), [])   # a matrix job is named per value of its first axis
+        for rendered in [f"{name} ({v})" for v in values] or [name]:
             names.setdefault(rendered, set()).update(events)
 for policy_file in ("required-checks.json", "release-only-checks.json"):
     for rc in json.load(open(os.path.join(root, ".github/policy", policy_file)))["required_checks"]:
