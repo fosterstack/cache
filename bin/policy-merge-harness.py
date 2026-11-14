@@ -36,7 +36,7 @@ def run_step(files):
     g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
     for cmd in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "c"], ["push", "-q", origin, "main"]):
-        subprocess.run(g + cmd if cmd[0] == "commit" else ["git"] + cmd, cwd=seed, check=True)
+        subprocess.run(g + cmd, cwd=seed, check=True)
     subprocess.run(["git", "clone", "-q", origin, clone], check=True)
     # no check runs: the release step, once it accepts the lists, waits; the stub ends that wait with 99
     open(f"{stub}/gh", "w").write("#!/bin/bash\nexit 0\n")
