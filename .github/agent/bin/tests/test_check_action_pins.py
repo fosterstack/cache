@@ -872,7 +872,7 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 
 GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"   # main's gate workflow
-GATE_B = "97dee114a2bdae12b79e2fcabe925df52f80c4b66881908a48afc2a26cafeb77"   # the same file after this change
+GATE_B = "b2a8427209cf9341dfedac1d6c49edf26228ab06172fb5ea37e6e04921f15ff2"   # the same file after this change
 # this change's edits to the gate workflow (old text, new text): its header, its notice and its sweep summary no
 # longer say that a run Dependabot triggered has no App credentials, and its sweep judges a green Dependabot head
 # again, for the reviewer's verdict only (publishing only when the conclusion differs); either variant is derived
@@ -919,6 +919,12 @@ GATE_HUNKS = (
      '"PR #${n} ${sha:0:7}: still failure"; continue; fi\n',
      '            if [ "$last" = "$conclusion" ]; then echo "PR #${n} ${sha:0:7}: still '
      '${conclusion}"; continue; fi\n'),
+    ('check-runs?check_name=auditor-review-gate" \\\n'
+     '              --jq "[.check_runs[] | select(.app.slug == \\"${APP_SLUG}\\")] | sort_by(.completed_at) | last\n',
+     'check-runs?check_name=auditor-review-gate&per_page=100" \\\n'
+     '              --jq "if .total_count != (.check_runs | length) then error(\\"the check runs are cut\\") '
+     'else . end\n'
+     '                    | [.check_runs[] | select(.app.slug == \\"${APP_SLUG}\\")] | sort_by(.completed_at) | last\n'),
     ('              -f "output[summary]=Judged by the scheduled sweep (the PR\'s own run '
      'had no App credentials)." >/dev/null || fail=1\n',
      '              -f "output[summary]=Judged by the scheduled sweep." >/dev/null || '
