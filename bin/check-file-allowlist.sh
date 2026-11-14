@@ -170,8 +170,7 @@ ALLOW_PATTERNS=(
   # suite), and the Check suites with their shape judge
   '^bin/loopback-get\.sh$'
   '^bin/loopback-get-test\.sh$'
-  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
-  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/check-(scan|fips|artifacts|acceptance|guide|phase)\.sh$'
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
