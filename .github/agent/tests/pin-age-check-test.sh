@@ -2330,18 +2330,17 @@ PY
 BHL='echo "curl $*" >>"$CALLS"'
 BHO="cat >stub <<'EOF'"
 # bhx PATH CONTENT [PATH CONTENT]...: the body hash of those files (the first is the row's file; the rest by path); a CONTENT of @absent
-# stands for a file that is no file of the tree: BHABS picks how the hash holds it (none: no line, absent: '<path> absent', empty: the sum of nothing)
+# stands for a file that is no file of the tree: it adds the line '<path> absent' (no newline inside the line)
 bhx() {
   python3 - "$@" <<'PY'
 import hashlib, os, sys
 args = sys.argv[1:]
 pairs = list(zip(args[0::2], args[1::2]))
 first, rest = pairs[0], sorted(pairs[1:])
-enc = os.environ.get("BHABS", "none")
 out = ""
 for path, text in [first] + rest:
     if text == "@absent":
-        out += {"none": "", "absent": path + " absent\n", "empty": path + " " + hashlib.sha256(b"").hexdigest() + "\n"}[enc]
+        out += path + " absent\n"
     else:
         out += path + " " + hashlib.sha256(text.encode()).hexdigest() + "\n"
 print(hashlib.sha256(out.encode()).hexdigest())
@@ -2414,9 +2413,11 @@ bhyes "control: a file that sources bin/lib.sh by a literal path is bound with i
   "$(bhh bin/bh.sh "$FS" bin/lib.sh "$LIB")" bin/bh.sh "$FS" bin/lib.sh "$LIB"
 bhyes "control: the source keyword binds the sourced file like the dot" \
   "$(bhh bin/bh.sh "${FS/. bin/source bin}" bin/lib.sh "$LIB")" bin/bh.sh "${FS/. bin/source bin}" bin/lib.sh "$LIB"
+NL=$'\n'
+BHSEMI="#!/bin/sh${NL}true; . bin/lib.sh${NL}if true; then . bin/lib2.sh; fi${NL}for i in 1; do source bin/lib3.sh; done${NL}${BHL}${NL}"
 bhyes "control: a source after a semicolon, after then and after do binds the sourced file too" \
-  "$(bhh bin/bh.sh $'#!/bin/sh\ntrue; . bin/lib.sh\nif true; then . bin/lib2.sh; fi\nfor i in 1; do source bin/lib3.sh; done\n'"$BHL"$'\n' bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB")" \
-  bin/bh.sh $'#!/bin/sh\ntrue; . bin/lib.sh\nif true; then . bin/lib2.sh; fi\nfor i in 1; do source bin/lib3.sh; done\n'"$BHL"$'\n' bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB"
+  "$(bhh bin/bh.sh "$BHSEMI" bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB")" \
+  bin/bh.sh "$BHSEMI" bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB"
 bhno "the sourced file is changed since the row was reviewed (a function redefined in it)" \
   "$(bhh bin/bh.sh "$FS" bin/lib.sh "$LIB")" bin/bh.sh "$FS" bin/lib.sh $'helper() { :; }\necho() { :; }\n'
 bhno "a row that hashes the sourcing file alone: the sourced file is part of the text, so the row does not match" \
@@ -2429,14 +2430,10 @@ bhno "a sourced file added since the row was reviewed (the row holds the file al
   "$(bhh bin/bh.sh "$F0")" bin/bh.sh $'#!/bin/sh\n. bin/lib.sh\n'"$BHL"$'\n' bin/lib.sh "$LIB"
 bhno "a literal source that was a file when the row was reviewed is no file of the tree now (binds as absent)" \
   "$(bhh bin/bh.sh "$FS" bin/lib.sh "$LIB")" bin/bh.sh "$FS"
-for enc in none absent empty; do   # the hash of a literal operand that is no file of the tree: some one encoding of "absent" rules the line
-  BHABS=$enc bhrun "bhabs-$enc" "$(BHABS=$enc bhh bin/bh.sh "$FS" bin/lib.sh @absent)" bin/bh.sh "$FS"
-  echo "$rc" >"$work/bhabs-$enc.rc"
-done
-CASE="AC16 body rows: a literal source operand that is no file of the tree binds as absent and still rules its line (one of the absent encodings holds: exit 0, ruled)"
-check grep -qx 0 "$work/bhabs-none.rc" "$work/bhabs-absent.rc" "$work/bhabs-empty.rc"
+bhyes "a literal source operand that is no file of the tree binds as absent ('bin/lib.sh absent') and still rules its line" \
+  "$(bhh bin/bh.sh "$FS" bin/lib.sh @absent)" bin/bh.sh "$FS"
 bhno "an absent literal source that is a file at the head (the row was written when it was absent)" \
-  "$(BHABS=none bhh bin/bh.sh "$FS" bin/lib.sh @absent)" bin/bh.sh "$FS" bin/lib.sh "$LIB"
+  "$(bhh bin/bh.sh "$FS" bin/lib.sh @absent)" bin/bh.sh "$FS" bin/lib.sh "$LIB"
 # a source by a non-literal operand rules nothing
 for op in '"$DIR/lib.sh"' '$DIR/lib.sh' '"$(dirname "$0")/lib.sh"' '$(dirname $0)/lib.sh' '`dirname $0`/lib.sh' 'bin/*.sh' 'bin/lib.{sh,env}' '"bin/lib.sh"' "'bin/lib.sh'" 'bin/li\b.sh'; do
   FN=$'#!/bin/sh\n. '"$op"$'\n'"$BHL"$'\n'
