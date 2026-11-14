@@ -1142,6 +1142,17 @@ open(d + "/own-list.json", "w").write(json.dumps({x: {f: "sha256:" + hashlib.sha
 sr("sign-records: --stage rebuild given Build's apk/build records (listed as they are) is refused (a record's step must be a step of the stage)", d, "rebuild", 1, ["step"], args=sr_args("rebuild", d, ["witness-build", "witness-apk-ubuntu-24.04"], expect="own-list.json"))
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
+# REQ-CHAIN-002-AC2: the policy made from the committed template names the one release file in every stage, and no stage-*.yml file
+_pd = work + "/polmake"; os.makedirs(_pd)
+_pr = subprocess.run([sys.executable, CV, "policy", "make", "--template", REPO_TEMPLATE, "--tag", "v0.3.0", "--out", _pd + "/policy.json"], capture_output=True, text=True, cwd=_pd, timeout=120, env={"PATH": os.environ["PATH"], "HOME": work})
+_pol = json.load(open(_pd + "/policy.json")) if _pr.returncode == 0 else {}
+_stages = _pol.get("stages", [])
+_text = json.dumps(_pol)
+check("policy make: the policy made from the committed template exits 0 and has stages", _pr.returncode == 0 and bool(_stages), _pr.stderr[:200])
+check("policy make: every stage of the made policy names .github/workflows/release.yml, and no stage-*.yml is named anywhere in it (REQ-CHAIN-002-AC2)",
+      bool(_stages) and ".github/workflows/release.yml" in _text and "stage-" not in _text
+      and all(".github/workflows/release.yml" in json.dumps(_s) for _s in _stages if isinstance(_s, dict)), "stages %s" % json.dumps(_stages)[:300])
+
 # ---- sign-records --stage release (ruling Q-e: sign-release signs the release stage's two local records, as sign, sign-rebuild and sign-check sign theirs) ----------
 VF, PF = rel_dir("release-verify"), rel_dir("release-publish")
 def rr(d, step, **kw):      # rewrite one release record in place (name, products and the rest as coll_record takes them)
@@ -1174,9 +1185,19 @@ sr("sign-records release: a snapshot collection name is refused", d, "release", 
 d, _ = sr_tree("rl5c", "release"); os.rename(d + "/" + VF + "/release-verify-collection.local.json", d + "/" + VF + "/snapshot-release-verify-collection.local.json")
 sr("sign-records release: a snapshot step file name is refused", d, "release", 1, ["snapshot"])
 d, _ = sr_tree("rl6", "release"); os.rename(d + "/" + PF, d + "/rec-release/witness-release-extra")
-sr("sign-records release: a record folder not named witness-<its step> is refused", d, "release", 1, [], args=sr_args("release", d, [VF, "rec-release/witness-release-extra"]))
+sr("sign-records release: a record folder not named witness-<its step> is refused, in the words the other sign stages use", d, "release", 1,
+   ["record: the folder witness-release-extra holds the release-publish record; Release's folders are witness-release-publish witness-release-verify, each named for its step"],
+   args=sr_args("release", d, [VF, "rec-release/witness-release-extra"]))
 d, _ = sr_tree("rl6b", "release"); os.rename(d + "/" + VF, d + "/rec-release/tmp"); os.rename(d + "/" + PF, d + "/" + VF); os.rename(d + "/rec-release/tmp", d + "/" + PF)
-sr("sign-records release: the two records in each other's folders (a folder not named witness-<its record's step>) are refused", d, "release", 1, [])
+sr("sign-records release: the two records in each other's folders (a folder not named witness-<its record's step>) are refused, in the words the other sign stages use", d, "release", 1,
+   ["record: the folder witness-release-verify holds the release-publish record; Release's folders are witness-release-publish witness-release-verify, each named for its step"])
+# Q-h: the release material is checked against Build's digests only; a flag that would do nothing is an error, and nothing is staged
+d, _ = sr_tree("rl6c", "release"); put(d, "expect.json", b"{}")
+sr("sign-records release: --expect-digests is refused (the release stage takes no list of records)", d, "release", 1,
+   ["flag: --expect-digests is not taken by the release stage"], args=sr_args("release", d) + ["--expect-digests", "expect.json"])
+d, _ = sr_tree("rl6d", "release"); os.makedirs(d + "/artifacts")
+sr("sign-records release: --artifacts-dir is refused (the release stage receives no artifacts)", d, "release", 1,
+   ["flag: --artifacts-dir is not taken by the release stage"], args=sr_args("release", d) + ["--artifacts-dir", "artifacts"])
 d, _ = sr_tree("rl7", "release"); rr(d, "release-verify", env_vars={"GH_TOKEN": "x"})
 sr("sign-records release: a record that names a token variable is refused (record-env)", d, "release", 1, ["env", "GH_TOKEN"])
 d, _ = sr_tree("rl7b", "release"); rr(d, "release-publish", env_vars={"DOCKERHUB_TOKEN": "x"})
@@ -1224,7 +1245,7 @@ d, _ = sr_tree("rl17", "release"); os.makedirs(d + "/staged")
 rc, out, err = run_env(sr_args("release", d), d, GOODENV)
 check("sign-records release: an existing --out is a usage error (exit 2), nothing overwritten", rc == 2 and "Traceback" not in err and os.listdir(d + "/staged") == [], "exit %s" % rc)
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 281
+EXPECT = 285
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
