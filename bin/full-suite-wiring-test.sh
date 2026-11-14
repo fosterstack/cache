@@ -6,9 +6,10 @@
 #   AC1  the required list is exactly seven contexts (auditor-review-gate, gosec and dependency-review not among them,
 #        and no job makes gosec or dependency-review), none of them skippable by a job-level condition;
 #        the promotion list holds the eleven of the full suite
-#   AC4  ci.yml's test job vets, builds and tests only the changed packages (no -race, no fips settings); its allowlist job runs, in ONE step,
-#        the suites bin/select-tests.sh selects, through the committed script bin/run-selected-tests.sh that the step names by its literal path
-#        (the step is run here with a stand-in for that script), the allowlist of every tracked file and the action-pin checks;
+#   AC4  ci.yml's test job vets, builds and tests only the changed packages (no -race, no fips settings); its allowlist job writes the suites
+#        bin/select-tests.sh selects to a file and a step output, runs the single-file ones through the committed script bin/run-selected-tests.sh
+#        (one plain line each, run here in a scratch tree), runs each of the four multi-file suites as its own step with an if: on that output,
+#        and runs the allowlist of every tracked file and the action-pin checks (the contract is written above the AC4 cases below);
 #        the test job's package step is run in a throwaway git repository (testdata, renames, tools/requirements)
 #   AC5  full-suite.yml: a daily schedule, workflow_dispatch and workflow_call only; the five moved jobs under their
 #        old names, each running its whole suite; one call of acceptance.yml; the whole wiring and selection
@@ -36,10 +37,7 @@ ci = load(WF + "ci.yml")
 fs = load(WF + "full-suite.yml") if os.path.exists(os.path.join(root, WF + "full-suite.yml")) else None
 POLICY = json.load(open(os.path.join(root, ".github/policy/required-checks.json")))
 
-# the fifth quick check is read from the committed list by its stem: this file never spells that folder name
-FIFTH = next((e["context"] for e in POLICY["required_checks"] if e["context"].startswith("vend")), "")
-VENDORED_DIR = next((d for d in sorted(os.listdir(root)) if d.startswith("vend")), "")
-REQUIRED = ["test", "lint", "requirements", "allowlist", FIFTH, "govulncheck", "pin-age"]
+REQUIRED = ["test", "lint", "requirements", "allowlist", "vendor", "govulncheck", "pin-age"]
 PROMOTION = ["coverage", "fips140-only", "analyze (go)", "allowlist-persona", "allowlist-chain",
              "allowlist-pins-auditor",
              "acceptance / acceptance-gradle", "acceptance / acceptance-maven (1.2.0)",
@@ -183,7 +181,7 @@ def test_job_problems(job):
     if re.search(r"-race\b", text): bad.append("the test job runs with -race")
     if re.search(r"fips140", text, re.I): bad.append("the test job sets the fips settings")
     if not any("git diff" in r for _, r in runs(job)): bad.append("no step computes the packages from git diff")
-    for need in (r"go\\?\.mod", r"go\\?\.sum", VENDORED_DIR + "/"):
+    for need in (r"go\\?\.mod", r"go\\?\.sum", "vendor/"):
         if not re.search(need, text): bad.append("the package step does not mention %s (every package when it changes)" % need)
     if "if" in job: bad.append("the test job has a job-level condition")
     # tools/requirements is its own Go module: vetted from inside it, never as a package of the root module
@@ -193,6 +191,50 @@ def test_job_problems(job):
         if "tools/requirements" in l:
             bad.append("tools/requirements is vetted as a package of the root module: %s" % l.strip())
     return bad
+# The contract of the suites that a pull request selects (REQ-CI-001-AC4, ruling F1):
+#   step `select` (id: select) of the allowlist job runs bin/select-tests.sh "origin/<base>" HEAD, writes its lines to a file under
+#     $RUNNER_TEMP and sets the step output `suites` to those lines (the multi-line form name<<DELIMITER); a selector that fails fails the step;
+#   step `the suites that are one test file` runs, from the repository root, `bash bin/run-selected-tests.sh <that file>`: ONE argument, the file;
+#   bin/run-selected-tests.sh holds one single-line `if grep -qxF '<exact command>' "$selected"; then <that command>; fi` for each suite that is one
+#     committed test file (the pattern is the command line as test-paths.json spells it); the vex-both-scanners line first runs ./bin/install-scanner.sh grype;
+#     the lines run in SCRIPT order whatever the file's order, the first failing suite stops the script with its failure, an empty file passes and runs
+#     nothing, a selected line that neither a line of the script nor a step covers fails the script and is named on stderr; the four commands that have
+#     their own steps are covered by those steps, so the script lets them pass and runs nothing for them;
+#   each of those four suites is a step of the job whose `if:` is contains(steps.select.outputs.suites, '<the suite's exact command>').
+SEL_ID, SEL_OUT = "select", "suites"
+PATHS = json.load(open(os.path.join(root, ".github/policy/test-paths.json")))
+SUITES = list(dict.fromkeys(s for e in PATHS["entries"] for s in e["suites"]))
+STEP_SUITES = {"pip": [s for s in SUITES if s.startswith("for r in ")],
+               "panel": [s for s in SUITES if "test_panel_sdk_probe.py" in s],
+               "vex-scope": [s for s in SUITES if "vex-scope-test.sh" in s],
+               "jwt": [s for s in SUITES if "golang-jwt" in s]}
+check("test-paths.json holds one command for each of the four suites that are their own steps", all(len(v) == 1 for v in STEP_SUITES.values()), STEP_SUITES)
+STEP_SUITES = {k: (v[0] if v else "") for k, v in STEP_SUITES.items()}
+SINGLE = [s for s in SUITES if s not in STEP_SUITES.values()]
+VEX_BOTH = "bash bin/vex-both-scanners-test.sh"
+STEP_MUST = {"pip": ["--dry-run", "adjudicator-requirements.txt", "coverage-requirements.txt", "test-requirements.txt"],
+             "panel": ["python3 -m venv", "PANEL_SDK_TEST_REQUIRED=1", "test_panel_sdk_probe.py -v", "adjudicator-requirements.txt"],
+             "vex-scope": ["./bin/install-scanner.sh grype", "bash bin/vex-scope-test.sh"],
+             "jwt": ["! grep -q golang-jwt go.sum"]}
+def suite_file(suite): return os.path.normpath(re.search(r"[\w./-]+\.(?:sh|py)\b", suite).group(0))
+def suite_record(suite): return ("1" if suite.startswith("GRADLE_SUM_ONLINE=1 ") else "") + ":" + suite_file(suite)
+
+def if_literal(step):
+    """the command a step's if: names: contains(steps.select.outputs.suites, '<command>'), or None for any other condition"""
+    cond = re.sub(r"^\$\{\{\s*(.*?)\s*\}\}$", r"\1", str(step.get("if", "")).strip(), flags=re.S)
+    m = re.fullmatch(r"contains\(\s*steps\.%s\.outputs\.%s\s*,\s*'((?:[^']|'')*)'\s*\)" % (SEL_ID, SEL_OUT), cond, re.S)
+    return m.group(1).replace("''", "'") if m else None
+def step_outputs(text):
+    out, lines, i = {}, text.splitlines(), 0
+    while i < len(lines):
+        m = re.match(r"([\w-]+)<<(\S+)$", lines[i])
+        if m:
+            end = next((j for j in range(i + 1, len(lines)) if lines[j] == m.group(2)), len(lines))
+            out[m.group(1)] = "\n".join(lines[i + 1:end]); i = end + 1
+        else:
+            k, _, v = lines[i].partition("="); out[k] = v; i += 1
+    return out
+
 ALLOW_CHECK = "git ls-files | ./bin/check-file-allowlist.sh"
 AGENT = ".github/" + "agent/"
 PINS = "python3 " + AGENT + "bin/check-action-pins.py --verify-tags ."
@@ -200,30 +242,52 @@ TESTSH = re.compile(r"[\w./-]*-tests?\.sh\b")
 GUARD = "bash bin/scan-no-workflow-call-test.sh"
 GUARD_NAME = "scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)"
 RUNNER = "bin/run-selected-tests.sh"
-RUNNER_CALL = re.compile(r"^\s*(?:bash\s+)?" + re.escape(RUNNER) + r"(?:\s|$)")
-def sel_steps(job): return [s for s, r in runs(job) if RUNNER in r]
+RUNNER_CALL = re.compile(r"^\s*(?:bash\s+)?" + re.escape(RUNNER) + r"\s+\S+\s*$")
+SHELL_C = r"\b(?:ba|z|da)?sh\s+(?:-\w+\s+)*-\w*c\b|\beval\b"
+def sel_steps(job): return [s for s, r in runs(job) if "select-tests.sh" in r]
+def runner_steps(job): return [s for s, r in runs(job) if RUNNER in r]
+def suite_steps(job): return [s for s in job.get("steps") or [] if if_literal(s) in STEP_SUITES.values()]
 def runner_call_problems(step):
-    """the step runs the script by its literal path: a command line that starts with it, no shell -c, eval or variable standing for the program"""
+    """the step runs the script by its literal path with one argument: no shell -c, eval or variable standing for the program"""
     lines = [l for l in (step.get("run") or "").splitlines() if l.strip() and not l.lstrip().startswith("#")]
     bad = []
-    if not any(RUNNER_CALL.match(l) for l in lines): bad.append("no command line of the step runs %s by its literal path" % RUNNER)
-    if any(re.search(r"\b(?:ba|z|da)?sh\s+(?:-\w+\s+)*-\w*c\b|\beval\b", l) for l in lines): bad.append("the step runs a command through a shell -c or eval")
+    if not any(RUNNER_CALL.match(l) for l in lines): bad.append("no command line of the step runs %s by its literal path with one file argument" % RUNNER)
+    if any(re.search(SHELL_C, l) for l in lines): bad.append("the step runs a command through a shell -c or eval")
+    return bad
+def suite_step_problems(job):
+    bad = []
+    for key, suite in STEP_SUITES.items():
+        hit = [s for s in job.get("steps") or [] if if_literal(s) == suite]
+        if len(hit) != 1: bad.append("%s: %d steps have an if: that names its exact command (one wanted)" % (key, len(hit))); continue
+        run = hit[0].get("run") or ""
+        for need in STEP_MUST[key]:
+            if need not in run: bad.append("%s: its step does not write %r literally" % (key, need))
+        if key == "pip" and re.search(r"\bfor\b|\$r\b", run): bad.append("pip: the step loops over the files and does not write one command for each")
+        if RUNNER in run or re.search(SHELL_C, run): bad.append("%s: its step runs through the script or a shell -c" % key)
+        if "continue-on-error" in hit[0]: bad.append("%s: its step may fail" % key)
     return bad
 def allowlist_static(job):
     bad = []
     text = " ".join(re.sub(r"\s+", " ", r) for _, r in runs(job))
     if ALLOW_CHECK not in text: bad.append("the allowlist of every tracked file is gone: " + ALLOW_CHECK)
     if PINS not in text: bad.append("the action-pin check is gone: " + PINS)
-    ss = sel_steps(job)
+    sel, ss = sel_steps(job), runner_steps(job)
+    if len(sel) != 1 or sel[0].get("id") != SEL_ID: bad.append("no single step with id %s runs bin/select-tests.sh (%d steps)" % (SEL_ID, len(sel)))
     if len(ss) != 1: bad.append("the selected suites are not run in exactly one step (%d steps name %s)" % (len(ss), RUNNER))
     for s in ss: bad += runner_call_problems(s)
+    for s in sel + ss:
+        if "pull_request" not in str(s.get("if", "")): bad.append("step %r does not run on pull requests only" % s.get("name"))
+    bad += suite_step_problems(job)
+    order = job.get("steps") or []
+    if sel and ss and any(s in order and order.index(s) < order.index(sel[0]) for s in ss + suite_steps(job)):
+        bad.append("a step that reads the selection comes before the step that writes it")
     guards = [s for s, r in runs(job) if r.strip() == GUARD]
     if len(guards) != 1: bad.append("the allowlist job does not have exactly one scanner guard step running %s (%d)" % (GUARD, len(guards)))
     for g in guards:
         if g.get("name") != GUARD_NAME: bad.append("the scanner guard step is not named %r" % GUARD_NAME)
         if any(k in g for k in ("if", "continue-on-error", "shell", "env")): bad.append("the scanner guard step is conditional or weakened: " + ", ".join(k for k in ("if", "continue-on-error", "shell", "env") if k in g))
     for s, r in runs(job):
-        if s not in ss and s not in guards and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
+        if s not in sel + ss + guards + suite_steps(job) and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
     return bad
 def run_step(step, extra_env, ctx, cwd, job=None):
     """run a step's script the way the runner does: bash -e (bash --noprofile --norc -eo pipefail when it sets shell: bash), expressions resolved"""
@@ -241,32 +305,38 @@ def run_step(step, extra_env, ctx, cwd, job=None):
     cmd = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"] if shell.startswith("bash") else ["bash", "-e", "-c"]
     return subprocess.run(cmd + [subst(step.get("run") or "")], capture_output=True, text=True, env=env, cwd=cwd)
 def mkexec(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "w").write(text); os.chmod(path, 0o755)
 def selection_problems(job):
-    """run the one selection step with a stand-in for bin/run-selected-tests.sh (which runs what bin/select-tests.sh selects)"""
-    ss = sel_steps(job)
-    if len(ss) != 1: return ["no single selection step"]
-    step = ss[0]; bad = []
+    """run the select step with a stand-in for bin/select-tests.sh, then the runner step with a stand-in for the script"""
+    sel, ss = sel_steps(job), runner_steps(job)
+    if len(sel) != 1 or len(ss) != 1: return ["no single select step and single runner step"]
     ctx = {"github.base_ref": "main", "github.event.pull_request.base.sha": "b" * 40, "github.event.pull_request.head.sha": "c" * 40,
            "github.sha": "c" * 40, "github.event_name": "pull_request", "github.head_ref": "feature"}
-    def scenario(exit_code, ctx=ctx, event="pull_request"):
-        cwd = os.path.join(work, "sel%d" % len(os.listdir(work))); os.makedirs(cwd + "/bin")
-        subprocess.run("git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m c && git update-ref refs/remotes/origin/main HEAD", shell=True, cwd=cwd, check=True, capture_output=True)
-        mkexec(cwd + "/" + RUNNER, "#!/usr/bin/env bash\necho \"$@\" >> \"$ARGS\"\nexit %d\n" % exit_code)
-        r = run_step(step, {"ARGS": cwd + "/args", "GITHUB_EVENT_NAME": event, "GITHUB_BASE_REF": ctx.get("github.base_ref", "")}, ctx, cwd, job)
-        return r, (open(cwd + "/args").read() if os.path.exists(cwd + "/args") else "")
-    r, args = scenario(0)
-    if r.returncode != 0: bad.append("the step fails though the script succeeds: rc=%s err=%r" % (r.returncode, r.stderr[-200:]))
-    if not args.strip(): bad.append("the step never calls %s" % RUNNER)
-    elif not any(a in ("origin/main", "main") or "b" * 40 in a for a in args.split()): bad.append("the base is not the pull request's base: %s got %r" % (RUNNER, args.strip()))
-    r, args = scenario(1)
-    if r.returncode == 0: bad.append("a failing script (a failing selected suite, or a selector that fails on an unmatched path) does not fail the step")
-    # on a push there is no pull request base: the step is skipped or selects nothing
-    pctx = dict(ctx, **{"github.base_ref": "", "github.event.pull_request.base.sha": "", "github.event_name": "push"})
-    cond = str(step.get("if", ""))
-    if "pull_request" not in cond and "base_ref" not in cond:
-        r, args = scenario(0, ctx=pctx, event="push")
-        if r.returncode != 0 or args.strip(): bad.append("on a push the step runs the script or fails: rc=%s args=%r" % (r.returncode, args))
+    def scenario(lines, select_rc=0, runner_rc=0):
+        cwd = os.path.join(work, "sel%d" % len(os.listdir(work))); os.makedirs(cwd + "/tmp")
+        mkexec(cwd + "/bin/select-tests.sh", "#!/usr/bin/env bash\necho \"$@\" > \"$SELECT_ARGS\"\nprintf '%%s' \"$SELECTED\"\nexit %d\n" % select_rc)
+        mkexec(cwd + "/" + RUNNER, "#!/usr/bin/env bash\ncat \"$1\" > \"$SAW\"\nexit %d\n" % runner_rc)
+        env = {"SELECTED": "".join(l + "\n" for l in lines), "SELECT_ARGS": cwd + "/select-args", "SAW": cwd + "/saw", "RUNNER_TEMP": cwd + "/tmp",
+               "GITHUB_OUTPUT": cwd + "/out", "GITHUB_EVENT_NAME": "pull_request", "GITHUB_BASE_REF": "main"}
+        open(cwd + "/out", "w").close()
+        r1 = run_step(sel[0], env, ctx, cwd, job)
+        r2 = run_step(ss[0], env, ctx, cwd, job) if r1.returncode == 0 else None
+        read = lambda p: open(cwd + "/" + p).read() if os.path.exists(cwd + "/" + p) else None
+        return r1, r2, step_outputs(read("out")).get(SEL_OUT), read("saw"), read("select-args")
+    bad = []
+    want = ["bash bin/a-test.sh", "python3 bin/b.py"]
+    r1, r2, out, saw, args = scenario(want)
+    if r1.returncode != 0 or r2 is None or r2.returncode != 0: bad.append("the select step or the runner step fails on a selection: %s %s" % (r1.stderr[-200:], r2 and r2.stderr[-200:]))
+    if out is None or out.splitlines() != want: bad.append("the step output %s is not the selected lines: %r" % (SEL_OUT, out))
+    if saw is None or saw.splitlines() != want: bad.append("the runner does not get a file of the selected lines, one per line: %r" % saw)
+    if not args or not any(a in ("origin/main", "main") or "b" * 40 in a for a in args.split()): bad.append("the selection is not made against the pull request's base: %r" % args)
+    r1, r2, out, saw, args = scenario([])
+    if r1.returncode != 0 or r2 is None or r2.returncode != 0 or (out or "") != "" or saw != "": bad.append("an empty selection does not pass with an empty output and an empty file: out=%r saw=%r" % (out, saw))
+    r1, r2, out, saw, args = scenario(want, select_rc=1)
+    if r1.returncode == 0: bad.append("a selector that fails (a changed path with no entry) does not fail the select step")
+    r1, r2, out, saw, args = scenario(want, runner_rc=1)
+    if r2 is None or r2.returncode == 0: bad.append("a failing script does not fail the runner step")
     return bad
 def ci_problems(w):
     jobs = w.get("jobs") or {}
@@ -282,67 +352,96 @@ def ci_problems(w):
     bad += test_job_problems(jobs.get("test") or {"steps": []})
     al = jobs.get("allowlist") or {"steps": []}
     bad += allowlist_static(al)
-    if not bad or all("exactly one step" not in b for b in bad): bad += selection_problems(al)
+    if not bad: bad += selection_problems(al)
     return bad
-verdict("ci.yml: the seven-context layout, the changed-packages test job, the one-step selection in the allowlist job",
+verdict("ci.yml: the seven-context layout, the changed-packages test job, the select step, the one script step and the four suite steps in the allowlist job",
         ci_problems(ci), True)
 
-# bin/run-selected-tests.sh itself: a copy in a scratch tree with stand-ins for the selector and the scanner installer
+# bin/run-selected-tests.sh: run from the root of a scratch tree that holds a stand-in file for every suite (each records which ran in $LOG)
+# and a stand-in bin/install-scanner.sh; FAIL names the suite file (or `install`) whose stand-in exits 1
+TREE = os.path.join(work, "tree")
+for suite in SUITES:
+    m = re.search(r"[\w./-]+\.(?:sh|py)\b", suite)
+    if m and suite not in (STEP_SUITES["pip"], STEP_SUITES["panel"], STEP_SUITES["jwt"]):
+        record = '"${GRADLE_SUM_ONLINE:-}:%s" >> "$LOG"' % suite_file(suite)
+        fails = '[ "${FAIL:-}" != "%s" ] || exit 1' % suite_file(suite)
+        mkexec(os.path.join(TREE, suite_file(suite)), "#!/usr/bin/env bash\necho %s\n%s\n" % (record, fails))
+mkexec(TREE + "/bin/install-scanner.sh", "#!/usr/bin/env bash\necho \"install $*\" >> \"$LOG\"\n[ \"${FAIL:-}\" != install ] || exit 1\n")
+for suite in SUITES:     # .py stand-ins are run by python3, not by bash
+    if suite not in (STEP_SUITES["pip"], STEP_SUITES["jwt"]) and suite_file(suite).endswith(".py") and os.path.exists(os.path.join(TREE, suite_file(suite))):
+        mkexec(os.path.join(TREE, suite_file(suite)), "import os, sys\nopen(os.environ['LOG'], 'a').write(os.environ.get('GRADLE_SUM_ONLINE', '') + ':%s\\n')\nsys.exit(1 if os.environ.get('FAIL') == '%s' else 0)\n" % (suite_file(suite), suite_file(suite)))
+subprocess.run("git init -q && git add -A", shell=True, cwd=TREE, check=True, capture_output=True)
 RUNNER_TEXT = open(os.path.join(root, RUNNER)).read()
-def runner_run(select_body, text):
-    """returns (exit code, the log the stand-ins and suites wrote, stderr)"""
-    cwd = os.path.join(work, "run%d" % len(os.listdir(work))); os.makedirs(cwd + "/bin")
-    mkexec(cwd + "/" + RUNNER, text)
-    mkexec(cwd + "/bin/select-tests.sh", "#!/usr/bin/env bash\n" + select_body)
-    mkexec(cwd + "/bin/install-scanner.sh", "#!/usr/bin/env bash\necho \"install $*\" >> \"$LOG\"\n")
-    log = cwd + "/log"; open(log, "w").close()
-    r = subprocess.run(["bash", RUNNER, "origin/main", "HEAD"], capture_output=True, text=True, cwd=cwd, env=dict(os.environ, LOG=log))
-    return r.returncode, open(log).read(), r.stderr[-200:]
-def say(word): return "echo %s >> \"$LOG\"" % word
-def lines_of(*cmds): return "printf '%s\\n' " + " ".join("'" + c + "'" for c in cmds) + "\n"
-VEX = "bash bin/vex-both-scanners-test.sh"
-VEX_SELECT = lines_of(say("one"), VEX, say("three"))
-def runner_problems(text):
+def runner_run(text, lines, fail=""):
+    """returns (exit code, the lines the stand-ins logged, stdout and stderr)"""
+    n = len(os.listdir(work)); selected = os.path.join(work, "selected%d" % n); log = os.path.join(work, "log%d" % n)
+    open(selected, "w").write("".join(l + "\n" for l in lines)); open(log, "w").close()
+    mkexec(os.path.join(TREE, RUNNER), text)
+    r = subprocess.run(["bash", RUNNER, selected], capture_output=True, text=True, cwd=TREE, timeout=60, env=dict(os.environ, LOG=log, FAIL=fail))
+    return r.returncode, open(log).read().splitlines(), r.stdout + r.stderr
+FORBIDDEN = [(r"\bcd\b", "a cd"), (r"\bcase\b", "a case statement"), (SHELL_C, "a shell -c or eval"),
+             (r"^\s*[\"{]?\$", "a variable standing for the program"), (r"\b(?:bash|sh|python3)\s+\"?\$", "a variable standing for the file run")]
+GREP_LINE = re.compile(r"^if grep -qxF '([^']+)' \"\$\w+\"; then (.+); fi$")
+def runner_shape_problems(text):
     bad = []
-    rc, log, err = runner_run(lines_of(say("one"), say("two words"), say("three")), text)
-    if rc != 0 or log != "one\ntwo words\nthree\n": bad.append("the selected lines are not run in order: rc=%s log=%r err=%r" % (rc, log, err))
-    rc, log, err = runner_run("echo 'no entry for newdir/x' >&2; exit 1\n", text)
-    if rc == 0: bad.append("a selector that fails does not fail the script")
-    rc, log, err = runner_run("exit 0\n", text)
-    if rc != 0 or log != "": bad.append("a change that selects nothing does not pass quietly: rc=%s log=%r" % (rc, log))
+    for line in (l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")):
+        for rx, what in FORBIDDEN:
+            if re.search(rx, line): bad.append("the script has %s: %s" % (what, line.strip()))
+        if line.startswith("if "):
+            m = GREP_LINE.match(line)
+            if not m: bad.append("an if line is not the plain one-line if that reads the file: %s" % line.strip())
+            elif m.group(1) in STEP_SUITES.values(): bad.append("the script has a line for a suite that is its own step: %s" % m.group(1))
+            elif suite_file(m.group(1)) not in m.group(2): bad.append("the line does not run the command it greps for: %s" % line.strip())
     return bad
-def vex_cases(text):
-    bad = []
-    def run(select_body):
-        cwd = os.path.join(work, "run%d" % len(os.listdir(work))); os.makedirs(cwd + "/bin")
-        mkexec(cwd + "/" + RUNNER, text)
-        mkexec(cwd + "/bin/select-tests.sh", "#!/usr/bin/env bash\n" + select_body)
-        mkexec(cwd + "/bin/install-scanner.sh", "#!/usr/bin/env bash\necho \"install $*\" >> \"$LOG\"\n")
-        mkexec(cwd + "/bin/vex-both-scanners-test.sh", "#!/usr/bin/env bash\necho vex-suite >> \"$LOG\"\n")
-        log = cwd + "/log"; open(log, "w").close()
-        r = subprocess.run(["bash", RUNNER, "origin/main", "HEAD"], capture_output=True, text=True, cwd=cwd, env=dict(os.environ, LOG=log))
-        return r.returncode, open(log).read(), r.stderr[-200:]
-    rc, log, err = run(lines_of(say("one"), VEX, say("three")))
-    if rc != 0 or log != "install grype\none\nvex-suite\nthree\n": bad.append("grype is not installed before the selected suites run: rc=%s log=%r err=%r" % (rc, log, err))
-    rc, log, err = run(lines_of(say("one")))
-    if rc != 0 or log != "one\n": bad.append("grype is installed though the vex suite is not selected: rc=%s log=%r" % (rc, log))
-    rc, log, err = run(lines_of(say("one"), "false", say("three")))
-    if rc == 0 or "three" in log: bad.append("a failing suite does not stop and fail the script: rc=%s log=%r" % (rc, log))
-    rc, log, err = run(lines_of(say("one"), "false; echo after >> \"$LOG\"", say("three")))
-    if rc == 0 or "after" in log: bad.append("a suite is not run under bash -e: rc=%s log=%r" % (rc, log))
+def runner_problems(text, stop=False):
+    """stop: return at the first problem (the mutated copies need no more)"""
+    bad = runner_shape_problems(text)
+    if bad and stop: return bad
+    for s in SINGLE:
+        if bad and stop: return bad
+        rc, log, out = runner_run(text, [s])
+        if rc != 0 or log != (["install grype"] if s == VEX_BOTH else []) + [suite_record(s)]: bad.append("%r selected alone: rc=%s ran %s" % (s, rc, log))
+    if bad and stop: return bad
+    a, b = SINGLE[0], SINGLE[-1]
+    rc1, log1, _ = runner_run(text, [a, b]); rc2, log2, _ = runner_run(text, [b, a])
+    if rc1 != 0 or rc2 != 0 or log1 != log2 or sorted(log1) != sorted([suite_record(a), suite_record(b)]):
+        bad.append("the order of the lines is not the script's whatever the file's order: %s then %s" % (log1, log2))
+    for fail in (a, b):
+        rc, log, out = runner_run(text, [a, b], fail=suite_file(fail))
+        if rc == 0 or not log or log[-1] != suite_record(fail): bad.append("a failing suite %r does not fail the script and stop it: rc=%s ran %s" % (fail, rc, log))
+    rc, log, out = runner_run(text, SINGLE, fail="install")
+    if rc == 0 or any(suite_file(VEX_BOTH) in l for l in log): bad.append("a failed grype install does not fail the script before the suite: rc=%s" % rc)
+    for unknown in ("bash bin/no-such-test.sh", "bash bin/panel-test.sh --other-argument"):
+        rc, log, out = runner_run(text, [unknown])
+        if rc == 0 or unknown not in out or log: bad.append("an unknown selected command %r does not fail the script and get named: rc=%s out=%r" % (unknown, rc, out[-200:]))
+    for s in STEP_SUITES.values():
+        rc, log, out = runner_run(text, [s])
+        if rc != 0 or log: bad.append("a suite that is its own step is run or refused by the script: %r rc=%s ran %s" % (s, rc, log))
+    rc, log, out = runner_run(text, [])
+    if rc != 0 or log: bad.append("an empty selection does not pass quietly: rc=%s ran %s" % (rc, log))
     return bad
-verdict("bin/run-selected-tests.sh: the lines run in order, a failing selector fails it, nothing selected passes", runner_problems(RUNNER_TEXT), True)
-verdict("bin/run-selected-tests.sh: grype is installed before the suites when the vex suite is selected, and only then, a failing suite fails it", vex_cases(RUNNER_TEXT), True)
-def runner_mutant(label, a, b):
-    m = RUNNER_TEXT.replace(a, b)
-    if m == RUNNER_TEXT: check("bin/run-selected-tests.sh: a copy with %s can be made" % label, False, "text not found"); return
-    check("bin/run-selected-tests.sh: a copy with %s is refused" % label, runner_problems(m) + vex_cases(m) != [], "accepted")
-runner_mutant("the grype install gone", "  ./bin/install-scanner.sh grype\n", "  :\n")
-runner_mutant("the grype install always run", "if grep -qxF 'bash bin/vex-both-scanners-test.sh' <<< \"${suites}\"; then", "if true; then")
-runner_mutant("a failing suite ignored", 'bash -euo pipefail -c "${suite}";', 'bash -euo pipefail -c "${suite}" || true;')
-runner_mutant("suites run without -e", "bash -euo pipefail -c", "bash -c")
-runner_mutant("a failing selector ignored", 'suites=$(bash bin/select-tests.sh "$1" "$2")', 'suites=$(bash bin/select-tests.sh "$1" "$2" || true)')
-runner_mutant("the lines run out of order", 'done <<< "${suites}"', 'done < <(tac <<< "${suites}")')
+verdict("bin/run-selected-tests.sh: one plain line for each single-file suite of test-paths.json, grype before the vex suite and only there, an unknown name fails",
+        runner_problems(RUNNER_TEXT), True)
+def before_first_if(text, line): return re.sub(r"^(if grep)", lambda m: line + "\n" + m.group(1), text, count=1, flags=re.M)
+def runner_mutant(label, make):
+    m = make(RUNNER_TEXT)
+    if m == RUNNER_TEXT: check("bin/run-selected-tests.sh: a copy with %s can be made" % label, False, "nothing to change in the script"); return
+    check("bin/run-selected-tests.sh: a copy with %s is refused" % label, runner_problems(m, stop=True) != [], "accepted")
+def other_file(t): return re.sub(r"(grep -qxF 'bash bin/panel-test\.sh'[^\n]*?; then [^\n]*?)bin/panel-test\.sh", r"\1bin/panel-wiring-test.sh", t)
+runner_mutant("the grype install gone", lambda t: re.sub(r"\./bin/install-scanner\.sh grype\s*(?:&&|;|\n)\s*", "", t))
+runner_mutant("the grype install always run", lambda t: before_first_if(t, "./bin/install-scanner.sh grype"))
+runner_mutant("a failing suite ignored by || true", lambda t: re.sub(r"; fi$", " || true; fi", t, flags=re.M))
+runner_mutant("the suites run without -e", lambda t: re.sub(r"^set -[^\n]*\n", "", t, flags=re.M))
+runner_mutant("the line of a suite dropped (a selected suite silently not run)", lambda t: re.sub(r"^.*grep -qxF 'bash bin/panel-test\.sh'.*\n", "", t, flags=re.M))
+runner_mutant("an unknown selected name accepted", lambda t: re.sub(r"\b(?:exit|return)\s+[1-9]\d*", "exit 0", t))
+runner_mutant("a line that runs another file than its grep names", other_file)
+runner_mutant("a cd added", lambda t: before_first_if(t, "cd ."))
+runner_mutant("a case statement added", lambda t: before_first_if(t, "case x in x) ;; esac"))
+runner_mutant("an eval added", lambda t: before_first_if(t, "eval :"))
+runner_mutant("a bash -c added", lambda t: before_first_if(t, "bash -c :"))
+runner_mutant("a variable program added", lambda t: before_first_if(t, "prog=true\n$prog"))
+runner_mutant("the vex-scope suite merged back into the script",
+              lambda t: before_first_if(t, "if grep -qxF '%s' \"$1\"; then ./bin/install-scanner.sh grype; bash bin/vex-scope-test.sh; fi" % STEP_SUITES["vex-scope"]))
 
 # the test job's package step, run in a throwaway git repository:
 # the base commit holds FILES, then CHANGE(sh) makes the second commit
@@ -415,9 +514,27 @@ def wrong_base(step):
     new = re.sub(r"\"?origin/\$\{?BASE\}?\"?", "HEAD~1", step["run"])
     if new == step["run"]: raise ValueError("the step does not diff against origin/${BASE}")
     step["run"] = new
-def sel_edit(d, fn):
-    for s in d["jobs"]["allowlist"]["steps"]:
-        if RUNNER in (s.get("run") or ""): fn(s)
+def step_edit(d, pick, fn):
+    hit = [s for s in d["jobs"]["allowlist"]["steps"] if pick(s)]
+    if not hit: raise ValueError("no such step")
+    for s in hit: fn(s)
+def runner_edit(d, fn): step_edit(d, lambda s: RUNNER in (s.get("run") or ""), fn)
+def select_edit(d, fn): step_edit(d, lambda s: "select-tests.sh" in (s.get("run") or ""), fn)
+def suite_edit(d, key, fn): step_edit(d, lambda s: if_literal(s) == STEP_SUITES[key], fn)
+def set_run(text): return lambda s: s.__setitem__("run", text)
+def drop_steps(d, pick): d["jobs"]["allowlist"]["steps"] = [s for s in d["jobs"]["allowlist"]["steps"] if not pick(s)]
+ARG = '"${RUNNER_TEMP}/selected-suites"'
+def names(suite): return lambda s: s.__setitem__("if", "${{ contains(steps.%s.outputs.%s, '%s') }}" % (SEL_ID, SEL_OUT, suite.replace("'", "''")))
+suite_mutants = []
+for key, suite in STEP_SUITES.items():
+    other = [v for v in STEP_SUITES.values() if v != suite][0]
+    suite_mutants += [
+        ("the %s step losing its if" % key, lambda d, key=key: suite_edit(d, key, lambda s: s.pop("if"))),
+        ("the %s step's if naming a single-file suite" % key, lambda d, key=key: suite_edit(d, key, names("bash bin/panel-test.sh"))),
+        ("the %s step's if naming the suite of another step" % key, lambda d, key=key, other=other: suite_edit(d, key, names(other))),
+        ("the %s step merged back into the script path" % key, lambda d, key=key: suite_edit(d, key, set_run("bash bin/run-selected-tests.sh " + ARG))),
+        ("the %s step gone" % key, lambda d, suite=suite: drop_steps(d, lambda s: if_literal(s) == suite)),
+    ]
 mutants("ci.yml", ci_problems, ci, [
     ("the test job back to -race", lambda d: swap_all_go(d, lambda r: re.sub(r"(go test)", r"\1 -race", r))),
     ("the test job on the fips settings", lambda d: swap_all_go(d, lambda r: re.sub(r"(go test)", r"GOFIPS140=v1.0.0 GODEBUG=fips140=only \1", r))),
@@ -438,8 +555,17 @@ mutants("ci.yml", ci_problems, ci, [
     ("no vet inside tools/requirements",
      lambda d: swap_all_go(d, lambda r: re.sub(r"[^\n]*go -C tools/requirements vet[^\n]*", ":", r))),
     ("allowlist-chain back in ci.yml", lambda d: d["jobs"].__setitem__("allowlist-chain", {"name": "allowlist-chain", "runs-on": "ubuntu-latest", "steps": []})),
-    ("no selection step", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if RUNNER not in (s.get("run") or "")])),
-    ("two selection steps", lambda d: add_step(d, "allowlist", {"name": "again", "run": "bash bin/run-selected-tests.sh origin/main HEAD"})),
+    ("no select step", lambda d: drop_steps(d, lambda s: "select-tests.sh" in (s.get("run") or ""))),
+    ("no step that runs the script", lambda d: drop_steps(d, lambda s: RUNNER in (s.get("run") or ""))),
+    ("two steps that run the script", lambda d: add_step(d, "allowlist", {"name": "again", "if": "${{ github.event_name == 'pull_request' }}", "run": "bash bin/run-selected-tests.sh " + ARG})),
+    ("the select step without its id", lambda d: select_edit(d, lambda s: s.pop("id"))),
+    ("the select step setting no output named suites", lambda d: select_edit(d, lambda s: s.__setitem__("run", s["run"].replace("GITHUB_OUTPUT", "GITHUB_ENV")))),
+    ("the select step swallowing a failing selector", lambda d: select_edit(d, lambda s: s.__setitem__("run", "set +e\n" + s["run"] + "\nexit 0"))),
+    ("the select step run on pushes too", lambda d: select_edit(d, lambda s: s.pop("if"))),
+    ("the script step run on pushes too", lambda d: runner_edit(d, lambda s: s.pop("if"))),
+    ("the script given another file than the one written", lambda d: runner_edit(d, lambda s: s.__setitem__("run", re.sub(r"(run-selected-tests\.sh\s+).*", r"\1/nonexistent", s["run"])))),
+    ("the script given no file", lambda d: runner_edit(d, lambda s: s.__setitem__("run", "bash bin/run-selected-tests.sh"))),
+    ("the script step before the select step", lambda d: d["jobs"]["allowlist"]["steps"].insert(0, d["jobs"]["allowlist"]["steps"].pop(next(i for i, s in enumerate(d["jobs"]["allowlist"]["steps"]) if RUNNER in (s.get("run") or ""))))),
     ("a suite run directly in the allowlist job", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash bin/branch-sweep-test.sh"})),
     ("an auditor suite run directly", lambda d: add_step(d, "allowlist", {"name": "direct", "run": "bash " + AGENT + "tests/auditor-matrix-test.sh"})),
     ("the scanner guard step gone", lambda d: d["jobs"]["allowlist"].__setitem__("steps", [s for s in d["jobs"]["allowlist"]["steps"] if (s.get("run") or "").strip() != GUARD])),
@@ -449,14 +575,14 @@ mutants("ci.yml", ci_problems, ci, [
     ("the scanner guard step twice", lambda d: add_step(d, "allowlist", {"name": GUARD_NAME, "run": GUARD})),
     ("the allowlist check of tracked files gone", lambda d: [s.__setitem__("run", s["run"].replace("./bin/check-file-allowlist.sh", "true")) for s in d["jobs"]["allowlist"]["steps"] if s.get("run")]),
     ("the pin check gone", lambda d: [s.__setitem__("run", s["run"].replace("--verify-tags", "")) for s in d["jobs"]["allowlist"]["steps"] if s.get("run")]),
-    ("the script run with its failure swallowed by || true", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "bash bin/run-selected-tests.sh origin/${{ github.base_ref }} HEAD || true"))),
-    ("the script run with its failures swallowed", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "set +e\nbash bin/run-selected-tests.sh origin/${{ github.base_ref }} HEAD\nexit 0"))),
-    ("the script named only in an echo", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "echo bin/run-selected-tests.sh origin/${{ github.base_ref }} HEAD"))),
-    ("the script reached through a variable", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "runner=bin/run-selected-tests.sh\nbash \"${runner}\" origin/${{ github.base_ref }} HEAD"))),
-    ("the script run through bash -c", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "bash -c \"bash bin/run-selected-tests.sh origin/${{ github.base_ref }} HEAD\""))),
-    ("the selected lines run by the step itself through bash -c", lambda d: sel_edit(d, lambda s: s.__setitem__("run", "suites=$(bash bin/select-tests.sh origin/${{ github.base_ref }} HEAD)\n# bin/run-selected-tests.sh\nwhile read -r suite; do bash -c \"${suite}\"; done <<< \"${suites}\""))),
-    ("the selection against the parent commit, not the pull request's base", lambda d: sel_edit(d, wrong_base)),
-])
+    ("the script run with its failure swallowed by || true", lambda d: runner_edit(d, set_run("bash bin/run-selected-tests.sh " + ARG + " || true"))),
+    ("the script run with its failures swallowed", lambda d: runner_edit(d, set_run("set +e\nbash bin/run-selected-tests.sh " + ARG + "\nexit 0"))),
+    ("the script named only in an echo", lambda d: runner_edit(d, set_run("echo bin/run-selected-tests.sh " + ARG))),
+    ("the script reached through a variable", lambda d: runner_edit(d, set_run("runner=bin/run-selected-tests.sh\nbash \"${runner}\" " + ARG))),
+    ("the script run through bash -c", lambda d: runner_edit(d, set_run("bash -c \"bash bin/run-selected-tests.sh " + ARG + "\""))),
+    ("the selected lines run by the step itself through bash -c", lambda d: runner_edit(d, set_run("# bin/run-selected-tests.sh\nwhile read -r suite; do bash -c \"${suite}\"; done < " + ARG))),
+    ("the selection against the parent commit, not the pull request's base", lambda d: select_edit(d, wrong_base)),
+] + suite_mutants)
 
 # ------------------------------------------------------------------------------------------------------------------ AC5: full-suite.yml
 MOVED = {"coverage": [r"go test .*-covermode=atomic.*\./\.\.\.", r"coverage-gate"],
