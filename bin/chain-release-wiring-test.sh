@@ -73,7 +73,7 @@ APK_D = (("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "ap
 VER_D = BUILD_D + CHECK_D + (("provenance", "provenance"), ("apk-compare", "apk-compare"))      # what release-verify reads: the records of Build, Rebuild and both Check chips, Check's results, the provenance and the comparison
 REL_D = VER_D + (("dist", "dist"), ("images", "images")) + APK_D                                   # release and sign-release: the verified records, then what the later steps use
 EV_D = BUILD_D + CHECK_D + (("provenance", "provenance"), ("dist", "dist"), ("release-checksums", "dist"), ("images", "images")) + APK_D + (
-    ("release-apks", "release-apks"), ("release-metadata", "release-metadata"), ("release-evidence-signatures", "release-evidence"), ("release-policy", "."))   # release-evidence: and what sign-release made
+    ("release-apks", "release-apks"), ("release-metadata", "release-metadata"), ("release-evidence-signatures", "release-evidence"), ("release-policy", "release-policy"))   # release-evidence: and what sign-release made
 def up_paths(name, *paths): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: |-\n" + "".join(f"            {p}\n" for p in paths)
 def up_checked(name, path=None): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {path or name}\n          if-no-files-found: error\n"
 def head(): return f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
@@ -100,8 +100,8 @@ stage = ("name: 'Release'\non:\n  workflow_call:\npermissions: {}\njobs:\n"
          + "    permissions:\n      contents: read\n      id-token: write\n      packages: write\n    steps:\n" + head()
          + inst("witness") + inst("cosign") + inst("crane") + inst("aws-cli") + down_list(*REL_D, ("witness-release", "rec-release"))      # the pinned aws CLI, installed job-locally after the three, before the downloads; then the release stage's two local records
          + PRE      # ruling Q-e: the digest list, the check of the release stage's local records, the signing of the staged payloads, before the job's own witnessed steps
+         + up("signed-witness-release").replace("path: signed-witness-release", "path: signed")      # Q-f (REQ-CHAIN-007-AC1): uploaded right after witness-sign-staged succeeded, before the witnessed steps
          + wit("release-apks", {}) + wit("release-sign", REG) + renv("release-apks") + renv("release-sign")
-         + up("signed-witness-release").replace("path: signed-witness-release", "path: signed")
          + up("release-evidence-signatures").replace("path: release-evidence-signatures", "path: release-evidence") + up_paths("witness-release-signatures", "witness-release-apks", "witness-release-sign")
          + up("release-apks") + up("release-metadata") + up("release-checksums").replace("path: release-checksums", "path: dist/checksums.txt")
          + "  release-evidence:\n    needs: sign-release\n" + RC_COND + "    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n    steps:\n" + head()
@@ -264,7 +264,15 @@ m s_srec_third '= --record-dir rec-release/witness-release-publish\n' ' --record
 m s_srec_oid  '=env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage release' 'python3 -I -B bin/chain-verify.py sign-records --stage release' 'right after the downloads' "Q-e the records check keeps the identity-token request variables (the env -u prefix is gone)"
 m s_wr_dl     '(  sign-release:\n.*?)      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2\n        with:\n          name: witness-release\n          path: rec-release\n' '\1' 'sign-release job: its downloads' "Q-e sign-release does not download witness-release"
 m s_wr_dlpath '=name: witness-release\n          path: rec-release\n' 'name: witness-release\n          path: witness-release\n' 'sign-release job: its downloads' "Q-e sign-release downloads witness-release outside rec-release/"
-m s_swr_up    '(  sign-release:\n.*?)      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: signed-witness-release\n          path: signed\n' '\1' 'upload exactly' "Q-e sign-release does not upload signed-witness-release"
+m s_swr_up    '(  sign-release:\n.*?)      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: signed-witness-release\n          path: signed\n' '\1' 'right after the signing of the staged records' "Q-e sign-release does not upload signed-witness-release"
+# Q-f: the upload of signed-witness-release sits between witness-sign-staged and the witnessed steps
+SWR='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: signed-witness-release\n          path: signed\n'
+STG='      - name: sign the staged release records\n        run: bash bin/witness-sign-staged.sh staged signed\n'
+m s_swr_late   '(  sign-release:\n.*?)'"$SWR"'(.*?      - name: release-sign record holds no token\n        run: [^\n]*\n)' '\1\2'"$SWR" 'before the witnessed steps' "Q-f sign-release uploads signed-witness-release after its witnessed steps, not before them"
+m s_swr_mid    '(  sign-release:\n.*?)'"$SWR"'(.*?bin/witnessed.sh release-apks[^\n]*\n)' '\1\2'"$SWR" 'Witness steps only' "Q-f sign-release uploads signed-witness-release between its two witnessed steps"
+m s_swr_early  '(  sign-release:\n.*?)'"$STG"'(.*?)'"$SWR" '\1'"$SWR"'\2'"$STG" 'right after the downloads' "Q-f sign-release uploads signed-witness-release before witness-sign-staged ran (an unsigned tree would be uploaded)"
+m s_swr_twice  '(  sign-release:\n.*?'"$SWR"')' '\1'"$SWR" 'right after the signing of the staged records' "Q-f sign-release uploads signed-witness-release twice"
+m s_pol_dot    '=          name: release-policy\n          path: release-policy\n' '          name: release-policy\n          path: .\n' 'download-artifact' "T3 release-evidence downloads release-policy into the working directory, not its own folder"
 
 m s_re_loc  '=record-env --record witness-release-assets/release-assets-collection.local.json' 'record-env --record witness-release-assets/release-assets-collection.json' 'none of checkout' "AC12 (R4) release-evidence checks the signed form of a record its throwaway-key step never made"
 m s_re_path '=record-env --record witness-release-publish/release-publish-collection.local.json' 'record-env --record witness-release-publish/release-verify-collection.local.json' 'none of checkout' "AC12 (R4) a record check that reads another step's record"
@@ -862,7 +870,7 @@ rm -f "$work/awstree/.github/workflows/w.yaml"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh "aws-cli"\n' > "$work/awstree/.github/workflows/q.yml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
 if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
-EXPECT=447
+EXPECT=452
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
