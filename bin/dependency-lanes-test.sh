@@ -138,7 +138,8 @@ elif kind == "guard":
     job = d.get("jobs", {}).get("required-check-guard", {})
     if "if" in job or "continue-on-error" in job:
         bad.append("the guard job is conditional")
-    hit = [s for s, r in runs(job) if r.strip() == "bash bin/required-check-guard.sh .github/policy/required-checks.json"]
+    guard_call = 'bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json'
+    hit = [s for s, r in runs(job) if r.strip().splitlines()[-1:] == [guard_call]]
     if len(hit) != 1 or any(k in hit[0] for k in ("if", "continue-on-error", "shell")):
         bad.append("the guard step is missing, conditional or re-shelled")
 elif kind == "automerge":
@@ -253,8 +254,8 @@ pycase reviewer-py-edits-file  bad 'open("go.mod", "w").write("module changed")'
 case_ guard    $H guard-real               ok  ""
 case_ guard    $H guard-pr-filtered        bad "d['on']['pull_request'] = {'paths': ['bin/**']}"
 case_ guard    $H guard-job-if             bad "d['jobs']['required-check-guard']['if'] = 'false'"
-case_ guard    $H guard-step-continue      bad "[s.__setitem__('continue-on-error', 'true') for s in $gs if s.get('run','').strip().startswith('bash bin/required-check-guard.sh .github')]"
-case_ guard    $H guard-step-removed       bad "$gs[:] = [s for s in $gs if not s.get('run','').strip().startswith('bash bin/required-check-guard.sh .github')]"
+case_ guard    $H guard-step-continue      bad "[s.__setitem__('continue-on-error', 'true') for s in $gs if 'release-only-checks.json' in s.get('run','')]"
+case_ guard    $H guard-step-removed       bad "$gs[:] = [s for s in $gs if 'release-only-checks.json' not in s.get('run','')]"
 case_ automerge $A automerge-real          ok  ""
 case_ automerge $A automerge-target        bad "d['on'] = 'pull_request_target'"
 case_ automerge $A automerge-any-author    bad "d['jobs']['auto-merge']['if'] = 'true'"
