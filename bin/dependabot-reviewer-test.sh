@@ -1877,6 +1877,9 @@ import re, sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"]
 code = "\n".join(s.get("run") or "" for s in steps)
 read = r'gh api "\$run_url&filter=all&per_page=100" \\\n\s*--jq "((?:[^"\\]|\\.)*)"'
+# the pattern takes this reader and refuses the same one without filter=all
+assert re.findall(read, 'gh api "$run_url&filter=all&per_page=100" \\\n  --jq ".x"') == [".x"]
+assert not re.findall(read, 'gh api "$run_url&per_page=100" \\\n  --jq ".x"')
 filters = {" ".join(f.split()) for f in re.findall(read, code)}
 count = len(re.findall(read, code))
 print("ok" if count == 3 and len(filters) == 1 else "%d readers, %d different filters" % (count, len(filters)))
