@@ -3,7 +3,7 @@
 # Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175): Dependabot waits 7 days on the github-actions and pip entries only (AC1);
 # the pull request check is a job that runs on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it
 # can be the owner's required check without ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; the one job that re-runs
-# held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; CI runs the three tests. Read from the PARSED files:
+# held PRs has actions: write and nothing else (AC6); REQ-SUP-001 is pipeline-only for automatic patches; the three suites are selected by the changed-path map and run whole by full-suite.yml. Read from the PARSED files:
 # the real files must pass and every mutation (made through the parsed document) must be rejected FOR THE REASON NAMED.
 #   .github/workflows/supply-chain.yml: jobs `pin-age` (pull_request), `daily-audit` (schedule), `rerun-held` (schedule)
 set -euo pipefail
@@ -17,6 +17,7 @@ root = os.environ["SC_ROOT"]
 WF = os.path.join(root, ".github/workflows/supply-chain.yml")
 DB = os.path.join(root, ".github/dependabot.yml")
 CI = os.path.join(root, ".github/workflows/ci.yml")
+FULL = os.path.join(root, ".github/workflows/full-suite.yml")
 ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout", "actions/upload-artifact")
@@ -229,17 +230,44 @@ def judge_db(d):
             bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
     return bad
 
-def judge_rest():
+SUITES = ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh")
+# the pin tools and the workflows are the changes the map must tie to the three suites (REQ-SUP-001 Wiring): each suite is selected by at least one of them
+TOOL_CHANGES = (".github/agent/supply-chain/pin-age-check.py", ".github/agent/supply-chain/pin-audit.py", ".github/workflows/ci.yml")
+
+def selected(selector, tmap, changed):
+    """the lines bin/select-tests.sh prints for a change to `changed`, from this selector and this map, in a scratch repository"""
+    import subprocess, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        for rel, text in (("bin/select-tests.sh", selector), (".github/policy/test-paths.json", tmap), (changed, "a\n")):
+            os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True); open(os.path.join(d, rel), "w").write(text)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+        for a in (["init", "-q", "."], ["add", "-A"], ["commit", "-qm", "base"]):
+            subprocess.run(git + a, cwd=d, check=True, capture_output=True)
+        open(os.path.join(d, changed), "a").write("b\n")
+        for a in (["add", "-A"], ["commit", "-qm", "change"]):
+            subprocess.run(git + a, cwd=d, check=True, capture_output=True)
+        p = subprocess.run(["bash", "bin/select-tests.sh", "HEAD~1", "HEAD"], cwd=d, capture_output=True, text=True)
+    return p.stdout.splitlines() if p.returncode == 0 else []
+
+def judge_rest(src=None, tmap=None, selector=None, full=None, ci=None):
     bad = []
-    ns = {}
-    src = open(ADM).read()
+    src = open(ADM).read() if src is None else src
     m = re.search(r"PIPELINE_ONLY = frozenset\(\[(.*?)\]\)", src, re.S)
     if not m or "REQ-SUP-001" not in m.group(1):
         bad.append("REQ-SUP-001 is not in PIPELINE_ONLY (left off, it is product by default and freezes automatic patches)")
-    ci = open(CI).read()
-    for t in ("pin-age-check-test.sh", "pin-audit-test.sh", "supply-chain-wiring-test.sh"):
-        if f"bash .github/agent/tests/{t}" not in ci:
-            bad.append(f"ci.yml does not run .github/agent/tests/{t}")
+    tmap = open(os.path.join(root, ".github/policy/test-paths.json")).read() if tmap is None else tmap
+    selector = open(os.path.join(root, "bin/select-tests.sh")).read() if selector is None else selector
+    full = load(FULL) if full is None else full
+    ci = open(CI).read() if ci is None else ci
+    for t in SUITES:
+        line = f"bash .github/agent/tests/{t}"
+        if not any(line in selected(selector, tmap, changed) for changed in TOOL_CHANGES):
+            bad.append(f"the changed-path map does not select .github/agent/tests/{t} for a change to the workflows or the pin tools")
+        runs = [x for j in (full.get("jobs") or {}).values() for x in j.get("steps") or [] if t in str(x.get("run", ""))]
+        if len(runs) != 1 or str(runs[0].get("run", "")).strip() != line or any(k in runs[0] for k in ("if", "continue-on-error", "shell", "working-directory", "env")):
+            bad.append(f"full-suite.yml does not run .github/agent/tests/{t} whole, exactly once, unconditionally")
+        if t in ci:
+            bad.append(f"ci.yml runs .github/agent/tests/{t} by name, not through the selection")
     return bad
 
 real_wf, real_db = None, None
@@ -266,7 +294,30 @@ result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b el
 b = judge_db(real_db)
 result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on gomod and docker" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
-result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "REQ-SUP-001 is pipeline-only, the map selects the three tests and full-suite.yml runs them whole" + ("" if not b else ": " + "; ".join(b)))
+def mut_rest(name, want, **kw):
+    b = judge_rest(**kw)
+    result(any(want in x for x in b), f"caught: {name} (reason: {want!r})" + ("" if any(want in x for x in b) else "; saw " + repr(b)))
+real_map = open(os.path.join(root, ".github/policy/test-paths.json")).read()
+def full_without(t):
+    d = load(FULL)
+    for j in d["jobs"].values(): j["steps"] = [x for x in j.get("steps") or [] if t not in str(x.get("run", ""))]
+    return d
+def full_with(t, k, v):
+    d = load(FULL)
+    for j in d["jobs"].values():
+        for x in j.get("steps") or []:
+            if t in str(x.get("run", "")): x[k] = v
+    return d
+real_ci = open(CI).read()
+assert "pin-audit-test.sh" in real_map and "pin-audit-test.sh" not in real_ci
+mut_rest("the map no longer names pin-audit-test.sh", "map does not select .github/agent/tests/pin-audit-test.sh for a change to the workflows or the pin tools", tmap=real_map.replace("pin-audit-test.sh", "other-test.sh"))
+mut_rest("the selector prints nothing", "map does not select .github/agent/tests/pin-age-check-test.sh for a change to the workflows or the pin tools", selector="#!/usr/bin/env bash\nexit 0\n")
+mut_rest("full-suite.yml no longer runs pin-age-check-test.sh", "full-suite.yml does not run .github/agent/tests/pin-age-check-test.sh", full=full_without("pin-age-check-test.sh"))
+mut_rest("full-suite.yml's supply-chain-wiring step is conditional", "full-suite.yml does not run .github/agent/tests/supply-chain-wiring-test.sh", full=full_with("supply-chain-wiring-test.sh", "if", "false"))
+mut_rest("full-suite.yml's pin-audit step may fail", "full-suite.yml does not run .github/agent/tests/pin-audit-test.sh", full=full_with("pin-audit-test.sh", "continue-on-error", True))
+mut_rest("ci.yml names pin-audit-test.sh", "ci.yml runs .github/agent/tests/pin-audit-test.sh by name", ci=real_ci + "\n      - run: bash .github/agent/tests/pin-audit-test.sh\n")
+mut_rest("REQ-SUP-001 off PIPELINE_ONLY", "not in PIPELINE_ONLY", src="PIPELINE_ONLY = frozenset(['REQ-X'])")
 
 def mut_wf(name, expect, fn):
     if real_wf is None:

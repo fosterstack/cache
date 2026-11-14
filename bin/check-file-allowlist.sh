@@ -264,6 +264,11 @@ ALLOW_PATTERNS=(
   '^docs/verify-release\.md$'
   '^docs/verify-release\.cannot-run\.json$'
   '^bin/verify-release-guide-test\.sh$'
+  # The test selector and the suites that judge the quick/full split of CI, REQ-CI-001.
+  '^bin/select-tests\.sh$'
+  '^bin/run-selected-tests\.sh$'
+  '^bin/select-tests-test\.sh$'
+  '^bin/full-suite-wiring-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

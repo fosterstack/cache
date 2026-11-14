@@ -377,7 +377,7 @@ mappings:
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
+      - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) before a release-candidate tag, nightly on main and on v* tags (full suite, REQ-CI-001), blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml: bin/install-scanner-test.sh asserts an unverifiable/undownloadable/unknown scanner exits non-zero and is labeled a PIPELINE failure (never a finding or clean pass)" }
@@ -428,37 +428,70 @@ mappings:
   - ac: REQ-REL-012-AC1
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, its refusals, the wrapper with a fake gh, the writer, the admission step's pinned text with mutants)" }
   - ac: REQ-REL-012-AC2
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, its refusals, the wrapper with a fake gh, the writer, the admission step's pinned text with mutants)" }
   - ac: REQ-REL-012-AC3
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the judge, its refusals, and the wrapper with a fake gh)" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:coverage — runs the auditor matrix, whose cases read agent-review-gate.yml: no record judge in the verdict job or the sweep, the record job takes the word release only" }
   - ac: REQ-REL-012-AC4
     evidence:
-      - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with all five checks" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:coverage — runs the auditor matrix, whose req18-ac3-verdict-runs-and-propagates case runs the verdict job and the sweep with the four checks" }
   - ac: REQ-REL-012-AC5
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix (the record job's pinned shape and mutants) and the signed-commit unit tests (the audit/ lane guard)" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:coverage — runs the auditor matrix (the record job's pinned shape and mutants) and the signed-commit unit tests (the audit/ lane guard)" }
   - ac: REQ-REL-012-AC6
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — runs the auditor matrix, whose record case runs the sweep step with an old failure, with and without a record branch" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:coverage — runs the auditor matrix, whose sweep cases run the step with an old failure that still fails and one that changed" }
   - ac: REQ-REL-012-AC7
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, its refusals, the wrapper with a fake gh, the writer, the admission step's pinned text with mutants)" }
   - ac: REQ-REL-012-AC8
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, its refusals, the wrapper with a fake gh, the writer, the admission step's pinned text with mutants)" }
+  - ac: REQ-CI-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml — the eight required contexts run on a pull request" }
+  - ac: REQ-CI-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/workflow-consolidation-test.sh over the real workflows" }
+  - ac: REQ-CI-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/select-tests-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/select-tests-test.sh" }
+  - ac: REQ-CI-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:test — the changed packages only" }
+  - ac: REQ-CI-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/full-suite-wiring-test.sh" }
+  - ac: REQ-CI-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/full-suite-wiring-test.sh" }
+  - ac: REQ-CI-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/full-suite-wiring-test.sh" }
+  - ac: REQ-CI-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/workflow-consolidation-test.sh over the real workflows" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -855,9 +888,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC28
-    evidence:
-      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
-  - ac: REQ-SUP-001-AC29
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-REPO-001-AC1

@@ -15,7 +15,12 @@
     "scope: 'push' means the check runs on main commits and release",
     "admission requires it green on the exact tagged SHA; 'pull_request'",
     "means it only ever runs on PRs, so admission requires it green on",
-    "the head of the merged PR that produced the tagged commit (F02)."
+    "the head of the merged PR that produced the tagged commit (F02).",
+    "required_checks are the seven quick checks of every pull request (REQ-CI-001-AC1); the ruleset on main lists exactly these.",
+    "auditor-review-gate is not listed: its job still judges Dependabot pull requests (REQ-CI-001-AC8).",
+    "gosec and dependency-review are not listed: the CI trim deleted their jobs (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md).",
+    "promotion_checks are the full suite (REQ-CI-001-AC5): they run nightly and before a release-candidate tag, never on a pull request,",
+    "and stage-admission requires every one green on the exact tagged commit for a release-candidate tag; the ruleset does not list them."
   ],
   "required_checks": [
     {
@@ -29,7 +34,17 @@
       "scope": "push"
     },
     {
-      "context": "gosec",
+      "context": "requirements",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "allowlist",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "vendor",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -39,12 +54,24 @@
       "scope": "push"
     },
     {
-      "context": "analyze (go)",
+      "context": "pin-age",
+      "integration_id": 15368,
+      "scope": "pull_request"
+    }
+  ],
+  "promotion_checks": [
+    {
+      "context": "coverage",
       "integration_id": 15368,
       "scope": "push"
     },
     {
-      "context": "allowlist",
+      "context": "fips140-only",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "analyze (go)",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -64,32 +91,17 @@
       "scope": "push"
     },
     {
-      "context": "dependency-review",
-      "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
-      "context": "fips140-only",
+      "context": "acceptance / acceptance-gradle",
       "integration_id": 15368,
       "scope": "push"
     },
     {
-      "context": "acceptance-gradle",
+      "context": "acceptance / acceptance-maven (1.2.0)",
       "integration_id": 15368,
       "scope": "push"
     },
     {
-      "context": "acceptance-maven (1.2.0)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "acceptance-maven (1.2.3)",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "requirements",
+      "context": "acceptance / acceptance-maven (1.2.3)",
       "integration_id": 15368,
       "scope": "push"
     },
@@ -99,27 +111,7 @@
       "scope": "push"
     },
     {
-      "context": "coverage",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "scan",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
-      "context": "pin-age",
-      "integration_id": 15368,
-      "scope": "pull_request"
-    },
-    {
-      "context": "auditor-review-gate",
-      "integration_id": 5054756,
-      "scope": "pull_request"
-    },
-    {
-      "context": "vendor",
       "integration_id": 15368,
       "scope": "push"
     }

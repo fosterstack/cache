@@ -41,18 +41,18 @@ on:
   workflow_dispatch:
     inputs:
       audit_pr:
-        description: 'Write the passed-audit record (REQ-REL-012) for this pull request number; with audit_head'
+        description: 'The word release: write the tag-time passed-audit record (REQ-REL-012) for the commit audit_head; nothing else is accepted'
         type: string
         default: ''
       audit_head:
-        description: 'The pull request head sha the record is for (40 lower-case hex); empty = run the sweep'
+        description: 'The commit sha the release record is for (40 lower-case hex); empty = run the sweep'
         type: string
         default: ''
 
 permissions: {}
 
 concurrency:
-  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && format('record-{0}', inputs.audit_pr)) || 'sweep' }}
+  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && format('record-{0}', inputs.audit_head)) || 'sweep' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
@@ -105,9 +105,6 @@ jobs:
           # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
           # of the PR's own CI that overwrites the guard on disk changes nothing
           PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
-          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main's judge and main's writers policy read the record
-          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else
-          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
           [ "$verdict" = success ]
 
@@ -147,18 +144,18 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record for this head passed."
-          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi
+          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge and the scanner guard passed."
+          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge or the scanner guard failed (or the judge did not finish) — see the run log."; fi
           gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
             -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
             -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" >/dev/null
 
-  # REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes
-  # nothing else from the pull request. Main's copy of bin/audit-record-write.sh re-reads the pull request (open, into main, this head) and makes ONE signed commit on audit/<head sha>,
-  # through the App's token scoped to contents write and pull-requests read (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.
+  # REQ-REL-012 (release process rule 7): the writer of the tag-time passed-audit record. Dispatched with the word release and a commit sha that main contains; it takes nothing else.
+  # Main's copy of bin/audit-record-prepare.sh checks the dispatcher and the commit and makes ONE signed commit on audit/<sha> (the signed-commit CLI, through the App's token scoped
+  # to contents write and pull-requests read; the lane guard allows audit/ and only audit/<that sha>). A pull request's record is its cleared row, read outside this repository.
   record:
     name: agent review gate — passed-audit record writer
-    if: github.event_name == 'workflow_dispatch' && inputs.audit_head != ''
+    if: github.event_name == 'workflow_dispatch' && inputs.audit_pr == 'release' && inputs.audit_head != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: agent
@@ -179,7 +176,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: read
 
-      - name: may a record be written? (the pull request is open, into main, with this exact head; no passing record yet)
+      - name: may a record be written? (the dispatcher is named, main contains the commit; no passing record yet)
         id: prep
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -191,7 +188,7 @@ jobs:
           state=$(bash bin/audit-record-prepare.sh "$AUDIT_PR" "$AUDIT_HEAD" | tail -n 1)
           echo "state=${state}" >> "$GITHUB_OUTPUT"
 
-      - name: make the signed record commit (one commit on audit/<head>, parented on the head)
+      - name: make the signed record commit (one commit on audit/<sha>, parented on the commit)
         if: steps.prep.outputs.state == 'proceed'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -247,20 +244,17 @@ jobs:
             case "$n$sha" in *[!0-9a-f]*) echo "::error::unexpected PR list line"; fail=1; continue ;; esac
             # the App's latest verdict on this head: none -> judge; success -> done; a failure from the
             # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand the
-            # head) and publish only if it has turned to success, so a head that still fails is not
-            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
+            # head); an older failure is judged once an hour (its age modulo an hour is under one sweep
+            # interval of ten minutes); either way only a verdict that changed is published, so a head that
+            # still fails is not re-posted
             last="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
               --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
-                      elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end")" \
+                      elif (now - (.completed_at | fromdate)) < 21600 then \"failure\"
+                      elif ((now - (.completed_at | fromdate)) % 3600) < 600 then \"stale\" else \"wait\" end")" \
               || { fail=1; continue; }
             case "$last" in success) continue ;; esac
-            # an older failure waits for a push or a re-run, EXCEPT when the head has a passed-audit record branch now (REQ-REL-012: the record is written after the review clears, which can be
-            # hours after the first "no record" verdict, and no event of the pull request re-runs its gate): one cheap lookup, then it is judged again like a recent failure
-            if [ "$last" = stale ]; then
-              GH_TOKEN="$LIST_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/audit/${sha}" > /dev/null 2>&1 || continue
-              last=failure
-            fi
+            case "$last" in wait) continue ;; stale) last=failure ;; esac
             git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }
             [ "$(git rev-parse "refs/remotes/pr/${n}")" = "$sha" ] || continue     # moved: next sweep
             conclusion=failure
@@ -268,9 +262,8 @@ jobs:
                && git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
                && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \
-               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then
-              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh; then
+              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge and scanner guard
             fi
             if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} ${sha:0:7}: still failure"; continue; fi
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \

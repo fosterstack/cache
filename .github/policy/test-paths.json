@@ -1,0 +1,525 @@
+{
+ "comment": [
+  "REQ-CI-001-AC3: the suites a pull request runs, by the files it changes, read by bin/select-tests.sh.",
+  "paths are bash case patterns (* matches slashes); suites are shell commands, run in this order once each; a changed file that matches no entry fails the run.",
+  "The last entry covers every tracked path by directory, with no suite of its own: the Go packages are tested by the test job, the rest by the entries above.",
+  "full-suite.yml runs every suite named here, whole, nightly and before a release-candidate tag."
+ ],
+ "entries": [
+  {
+   "paths": [
+    ".github/workflows/*",
+    ".github/policy/*",
+    ".github/dependabot.yml"
+   ],
+   "suites": [
+    "bash bin/workflow-consolidation-test.sh",
+    "bash bin/full-suite-wiring-test.sh",
+    "bash bin/select-tests-test.sh",
+    "bash bin/persona-uat-wiring-test.sh",
+    "bash bin/dependency-lanes-test.sh",
+    "bash bin/release-patch-wiring-test.sh",
+    "bash bin/go-freshness-wiring-test.sh",
+    "bash bin/job-isolation-test.sh",
+    "bash bin/rescan-current-only-test.sh",
+    "bash bin/panel-wiring-test.sh",
+    "bash bin/admission-tag-signer-test.sh",
+    "bash bin/acceptance-maven-413-test.sh",
+    "bash bin/audit-record-test.sh",
+    "python3 bin/check-workflow-permissions.py",
+    "bash .github/agent/tests/pin-wiring-test.sh",
+    "bash .github/agent/tests/pip-pin-test.sh",
+    "bash .github/agent/tests/supply-chain-wiring-test.sh",
+    "bash .github/agent/tests/k8s-harness-fence-test.sh",
+    "bash .github/agent/tests/release-notes-signed-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/select-tests.sh",
+    "bin/select-tests-test.sh",
+    "bin/full-suite-wiring-test.sh"
+   ],
+   "suites": [
+    "bash bin/select-tests-test.sh",
+    "bash bin/full-suite-wiring-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/persona-uat*",
+    "bin/persona-uat-*"
+   ],
+   "suites": [
+    "bash bin/persona-uat-agent-test.sh",
+    "bash bin/persona-uat-wiring-test.sh",
+    "bash bin/persona-uat-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/check-file-allowlist*"
+   ],
+   "suites": [
+    "bash bin/check-file-allowlist-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/branch-sweep.py",
+    "bin/branch_sweep_test.py",
+    "bin/branch-sweep-test.sh",
+    "bin/local-prune.sh",
+    ".github/branch-keep.json"
+   ],
+   "suites": [
+    "bash bin/branch-sweep-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/fixtures/*",
+    ".github/agent/tests/govulncheck-fixtures-test.sh"
+   ],
+   "suites": [
+    "bash .github/agent/tests/govulncheck-fixtures-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/check-workflow-permissions.py"
+   ],
+   "suites": [
+    "python3 bin/check-workflow-permissions.py"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/bin/check-action-pins.py",
+    ".github/agent/bin/tests/test_check_action_pins.py",
+    ".github/agent/tests/check-action-pins-test.sh"
+   ],
+   "suites": [
+    "bash .github/agent/tests/check-action-pins-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/tests/pin-wiring*",
+    ".github/agent/bin/check-action-pins.py"
+   ],
+   "suites": [
+    "bash .github/agent/tests/pin-wiring-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/*requirements*.txt",
+    ".github/agent/tests/pip-pin-test.sh"
+   ],
+   "suites": [
+    "bash .github/agent/tests/pip-pin-test.sh",
+    "for r in .github/agent/adjudicator-requirements.txt .github/agent/coverage-requirements.txt .github/agent/test-requirements.txt; do python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: --target \"$RUNNER_TEMP/resolve-check\" -r \"$r\"; done"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/supply-chain/*",
+    ".github/agent/bin/pin-*",
+    ".github/agent/bin/tests/test_pin*",
+    ".github/agent/bin/tests/test_s2*",
+    ".github/agent/tests/pin-*",
+    ".github/agent/tests/s2-*",
+    ".github/supply-chain-exceptions.json"
+   ],
+   "suites": [
+    "bash .github/agent/tests/pin-age-check-test.sh",
+    "bash .github/agent/tests/pin-audit-test.sh",
+    "bash .github/agent/tests/supply-chain-wiring-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/*"
+   ],
+   "suites": [
+    "bash .github/agent/tests/auditor-variants-test.sh",
+    "bash .github/agent/tests/auditor-parser-tests.sh",
+    "bash .github/agent/tests/auditor-matrix-test.sh",
+    "bash .github/agent/tests/auditor-labels-test.sh",
+    "bash .github/agent/tests/release-notes-signed-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "requirements/*",
+    "test-evidence/*",
+    "docs/quality/*"
+   ],
+   "suites": [
+    "bash .github/agent/tests/auditor-matrix-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties"
+   ],
+   "suites": [
+    "GRADLE_SUM_ONLINE=1 bash .github/agent/tests/auditor-matrix-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/adjudicator-requirements.txt",
+    ".github/agent/bin/tests/test_panel_sdk_probe.py",
+    ".github/agent/bin/*panel*",
+    "bin/panel.py"
+   ],
+   "suites": [
+    "set -euo pipefail; v=\"$RUNNER_TEMP/panel-sdk\"; python3 -m venv \"$v\"; \"$v/bin/python\" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt; \"$v/bin/pip\" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt; PANEL_SDK_TEST_REQUIRED=1 \"$v/bin/python\" .github/agent/bin/tests/test_panel_sdk_probe.py -v"
+   ]
+  },
+  {
+   "paths": [
+    ".github/agent/*",
+    "bin/*",
+    "docs/*",
+    "tools/*",
+    "build/*",
+    "bench/*",
+    "requirements/*",
+    "test-evidence/*",
+    ".github/workflows/*",
+    ".github/policy/*"
+   ],
+   "suites": [
+    "git ls-files | python3 .github/agent/bin/auditor-layout-check.py"
+   ]
+  },
+  {
+   "paths": [
+    "docs/*",
+    "*.md",
+    "bin/check-version-literals.sh",
+    ".github/agent/docs/*"
+   ],
+   "suites": [
+    "./bin/check-version-literals.sh"
+   ]
+  },
+  {
+   "paths": [
+    "docs/*",
+    "bench/*",
+    ".github/agent/tests/docs-snippets-test.sh"
+   ],
+   "suites": [
+    "bash .github/agent/tests/docs-snippets-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "go.sum",
+    ".vex/*"
+   ],
+   "suites": [
+    "! grep -q golang-jwt go.sum || { echo \"golang-jwt has entered go.sum: the VEX statement for CVE-2024-51744 claims component_not_present and needs review (.vex/README.md)\" >&2; exit 1; }"
+   ]
+  },
+  {
+   "paths": [
+    "bin/apk-tool.py",
+    "bin/gen-recipes.py",
+    "bin/apko-lock.sh",
+    "bin/go-module-sbom.py",
+    "bin/build-helpers-test.sh",
+    "build/*"
+   ],
+   "suites": [
+    "bash bin/build-helpers-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "go.mod",
+    "go.sum",
+    "vendor/*",
+    "bin/vendor-check.sh",
+    "bin/vendoring-test.sh"
+   ],
+   "suites": [
+    "bash bin/vendoring-test.sh </dev/null"
+   ]
+  },
+  {
+   "paths": [
+    "bin/build-apk*",
+    "bin/release-sign-apks.sh",
+    "bin/melange-apko-lib.sh",
+    "bin/install-build-tools.sh",
+    "build/*"
+   ],
+   "suites": [
+    "bash bin/build-apk-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/refresh-inputs*",
+    "bin/verify-go*",
+    "build/*"
+   ],
+   "suites": [
+    "bash bin/refresh-inputs-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/archive-*"
+   ],
+   "suites": [
+    "bash bin/archive-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/gen-recipes.py",
+    "build/*"
+   ],
+   "suites": [
+    "python3 bin/gen-recipes.py --check"
+   ]
+  },
+  {
+   "paths": [
+    "go.mod",
+    "go.sum",
+    "vendor/*",
+    "dependency-provenance.json",
+    "bin/vendor-provenance*",
+    "bin/vendor-check.sh"
+   ],
+   "suites": [
+    "bash bin/vendor-provenance-test.sh </dev/null"
+   ]
+  },
+  {
+   "paths": [
+    "bin/assemble-image*",
+    "bin/lock-proof.sh",
+    "bin/sealed-proof.sh",
+    "bin/melange-apko-lib.sh",
+    "build/*"
+   ],
+   "suites": [
+    "bash bin/assemble-image-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/analyze-egress-trace*",
+    "bin/net-probe.py"
+   ],
+   "suites": [
+    "bash bin/analyze-egress-trace-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/install-scanner*",
+    "bin/grype-scan.sh",
+    ".grype.yaml"
+   ],
+   "suites": [
+    "bash bin/install-scanner-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/inspector-gate*"
+   ],
+   "suites": [
+    "bash bin/inspector-gate-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/vex-scope-test.sh",
+    "bin/install-scanner.sh",
+    ".vex/*"
+   ],
+   "suites": [
+    "./bin/install-scanner.sh grype && bash bin/vex-scope-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/vex-both-scanners*",
+    "bin/inspector-gate*",
+    "bin/grype-scan.sh",
+    ".vex/*"
+   ],
+   "suites": [
+    "bash bin/vex-both-scanners-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/vex-forms*",
+    ".vex/*"
+   ],
+   "suites": [
+    "bash bin/vex-forms-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/scout-root-cause*",
+    "bin/scout-selfcheck.py",
+    "bin/scout-vex-scan.sh"
+   ],
+   "suites": [
+    "bash bin/scout-root-cause-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/scout-older-versions*"
+   ],
+   "suites": [
+    "bash bin/scout-older-versions-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/go-bump-open-pr*"
+   ],
+   "suites": [
+    "bash bin/go-bump-open-pr-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/dependabot-reviewer*",
+    ".github/policy/dependabot-reviewer-prompt.txt",
+    ".github/dependabot.yml"
+   ],
+   "suites": [
+    "bash bin/dependabot-reviewer-test.sh",
+    "bash bin/dependabot-reviewer-gather-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/required-check-guard.sh",
+    "bin/dispatch-fixer.sh"
+   ],
+   "suites": [
+    "bash bin/dependency-lanes-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/panel.py",
+    "bin/panel-test.sh",
+    ".vex/*",
+    ".github/policy/scanner*.json"
+   ],
+   "suites": [
+    "bash bin/panel-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/vex-index*",
+    ".vex/*"
+   ],
+   "suites": [
+    "bash bin/vex-index-test.sh </dev/null"
+   ]
+  },
+  {
+   "paths": [
+    "bin/patch-decide*",
+    ".github/policy/*"
+   ],
+   "suites": [
+    "bash bin/patch-decide-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/audit-record*",
+    ".github/policy/audit-writers.json"
+   ],
+   "suites": [
+    "bash bin/audit-record-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/admission-tag-signer*",
+    ".github/policy/allowed_signers"
+   ],
+   "suites": [
+    "bash bin/admission-tag-signer-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/acceptance-maven-413*",
+    "bench/*"
+   ],
+   "suites": [
+    "bash bin/acceptance-maven-413-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/rescan-statement.py",
+    "bin/rescan-current-only-test.sh"
+   ],
+   "suites": [
+    "bash bin/rescan-current-only-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "bin/panel-wiring-test.sh",
+    "bin/panel.py"
+   ],
+   "suites": [
+    "bash bin/panel-wiring-test.sh"
+   ]
+  },
+  {
+   "paths": [
+    "cmd/*",
+    "internal/*",
+    "tools/*",
+    "bin/*",
+    "build/*",
+    "bench/*",
+    "docs/*",
+    "requirements/*",
+    "test-evidence/*",
+    "vendor/*",
+    ".github/*",
+    ".auditor/*",
+    ".githooks/*",
+    ".vex/*",
+    "*.md",
+    "LICENSE",
+    "go.mod",
+    "go.sum",
+    "dependency-provenance.json",
+    ".gitignore",
+    ".golangci.yml",
+    ".goreleaser.yaml",
+    ".gremlins.yaml",
+    ".grype.yaml"
+   ],
+   "suites": []
+  }
+ ]
+}

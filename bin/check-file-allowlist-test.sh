@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 53 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 56 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -102,8 +102,9 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
+bin/select-tests.sh bin/select-tests-test.sh bin/full-suite-wiring-test.sh bin/run-selected-tests.sh
 """.split())
-if len(DECLARED) != 53: errs.append("declared list is not 53 paths: %d" % len(DECLARED))
+if len(DECLARED) != 57: errs.append("declared list is not 57 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -113,7 +114,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 157, 6   # 157: + ^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$ (REQ-REL-012, the audit record writer); 156: + ^bin/vendor-provenance-records\.py$ (REQ-VEND-001-AC15, the records step); 155: + ^bin/job-isolation-test\.sh$ (REQ-REL-011, owner Oct 21 isolation rule); 154: + ^bin/release-layout\.py$ (the rescan checks its attested layouts with the chain's own layout check, handoff 0521); 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$ (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 161, 6   # 161: + the exact path bin/run-selected-tests.sh (REQ-CI-001-AC4); 160: + three exact paths bin/select-tests.sh, bin/select-tests-test.sh, bin/full-suite-wiring-test.sh (REQ-CI-001); 157: + ^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$ (REQ-REL-012, the audit record writer); 156: + ^bin/vendor-provenance-records\.py$ (REQ-VEND-001-AC15, the records step); 155: + ^bin/job-isolation-test\.sh$ (REQ-REL-011, owner Oct 21 isolation rule); 154: + ^bin/release-layout\.py$ (the rescan checks its attested layouts with the chain's own layout check, handoff 0521); 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$ (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -787,6 +788,10 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-mis
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
 
+passfam "feature/x" "REQ-CI-001: the test selector, the script that runs what it selects, and the two suites that judge the quick/full split" \
+  "bin/select-tests.sh" "bin/select-tests-test.sh" "bin/full-suite-wiring-test.sh" "bin/run-selected-tests.sh"
+runeach fail "feature/x" "REQ-CI-001: near-miss siblings of the selector refused" \
+  "bin/select-tests.py" "bin/select-test.sh" "bin/select-tests.sh.bak" "bin/run-selected-tests.py" "bin/run-selected-test.sh" "bin/run-selected-tests.sh.bak" "bin/Run-Selected-Tests.sh"
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
 echo "----"

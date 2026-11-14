@@ -968,6 +968,7 @@ def _line_id(tainted, line):
 # names vendor/ is therefore refused until a security-tier change lists it here: a human gate on every new consumer, with no shell syntax to spell around.
 _VENDOR_NAMING_FILES = frozenset("""
 .github/workflows/ci.yml
+.github/workflows/full-suite.yml
 .github/workflows/release.yml
 bin/assemble-image-test.sh
 bin/build-apk-test.sh

@@ -3,7 +3,6 @@ name: CodeQL
 on:
   push:
     branches: [main]
-  pull_request:
   schedule:
     # Daily, so drift in CodeQL's own query packs still gets applied to
     # the current tree even on weeks with no code changes.
@@ -40,3 +39,30 @@ jobs:
         uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
       - name: perform CodeQL analysis
         uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+
+  # REQ-CI-001-AC6: a failed scheduled run opens a fix item (an issue with a fixed title and label, or a comment on the open one) and blocks nothing;
+  # no pull request check reads it. The job holds issues: write and nothing else.
+  report-failure:
+    name: report-failure
+    needs: [analyze]
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: open the fix item, or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "The scheduled CodeQL analysis failed"
+          LABEL: scheduled-failure
+        run: |
+          set -euo pipefail
+          body="The scheduled run failed on ${GITHUB_SHA}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          n=$(gh issue list --state open --label "$LABEL" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n 1)
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh label create "$LABEL" --description "A scheduled run failed" --color D93F0B 2>/dev/null || true
+            gh issue create --title "$TITLE" --label "$LABEL" --body "$body"
+          fi

@@ -235,7 +235,7 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest" --paginate \
-            --jq '[.check_runs[] | {name, conclusion, app_id: .app.id, id, head_sha}]' | jq -s 'add' > /tmp/sha-check-runs.json
+            --jq '[.check_runs[] | {name, conclusion, app_id: .app.id, id, head_sha, details_url}]' | jq -s 'add' > /tmp/sha-check-runs.json
           gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/status" \
             --jq '[.statuses[] | {context, state, id}]' > /tmp/sha-statuses.json
 
@@ -253,15 +253,36 @@ jobs:
             echo '[]' > /tmp/pr-check-runs.json
           fi
 
-          jq -c '.required_checks[]' /tmp/policy/required-checks.json | while read -r req; do
+          # A release-candidate tag (-rc.N) is the promotion: the full suite's promotion_checks must be green on the tagged commit too (REQ-CI-001-AC7).
+          # A promotion context counts only from the workflow file that produces it: the check run's workflow run must have that path.
+          rc=0; case "${GITHUB_REF_NAME}" in *-rc.*) rc=1 ;; esac
+          jq -c --argjson rc "$rc" '.required_checks[], (if $rc == 1 then (.promotion_checks[] | .promotion = true) else empty end)' /tmp/policy/required-checks.json | while read -r req; do
             ctx=$(jq -r '.context' <<<"$req")
             app=$(jq -r '.integration_id' <<<"$req")
             scope=$(jq -r '.scope // "push"' <<<"$req")
             case "$scope" in
               push)
-                hit=$(jq -r --arg c "$ctx" --argjson a "$app" \
-                  '[.[] | select(.name == $c and .app_id == $a and .conclusion == "success")] | first | .id // empty' /tmp/sha-check-runs.json)
-                [ -n "$hit" ] || { echo "::error::required check '${ctx}' (app ${app}) is not green on the tagged commit" >&2; exit 1; }
+                want=
+                if [ "$(jq -r '.promotion // false' <<<"$req")" = true ]; then
+                  case "$ctx" in
+                    "analyze (go)") want=codeql.yml ;;
+                    reproducibility|scan) want=scan.yml ;;
+                    *) want=full-suite.yml ;;
+                  esac
+                fi
+                hit=
+                while IFS=$'\t' read -r id url; do
+                  if [ -n "$want" ]; then
+                    run_id=${url#"https://github.com/${GITHUB_REPOSITORY}/actions/runs/"}
+                    run_id=${run_id%%/*}
+                    [[ "$run_id" =~ ^[0-9]+$ ]] || continue
+                    path=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .path </dev/null) || continue
+                    [ "$path" = ".github/workflows/${want}" ] || continue
+                  fi
+                  hit=$id; break
+                done < <(jq -r --arg c "$ctx" --argjson a "$app" \
+                  '.[] | select(.name == $c and .app_id == $a and .conclusion == "success") | [.id, .details_url // ""] | @tsv' /tmp/sha-check-runs.json)
+                [ -n "$hit" ] || { echo "::error::required check '${ctx}' (app ${app}) is not green on the tagged commit${want:+ from ${want}}" >&2; exit 1; }
                 jq -n --arg c "$ctx" --arg id "$hit" --arg sha "${GITHUB_SHA}" \
                   '{context: $c, source: "check-run-on-tagged-sha", evidence_sha: $sha, id: ($id|tonumber), conclusion: "success"}'
                 ;;
@@ -278,7 +299,7 @@ jobs:
                 ;;
             esac
           done | jq -s '.' > /tmp/verified-checks.json
-          n_req=$(jq '.required_checks | length' /tmp/policy/required-checks.json)
+          n_req=$(jq --argjson rc "$rc" '.required_checks + (if $rc == 1 then .promotion_checks else [] end) | length' /tmp/policy/required-checks.json)
           n_got=$(jq 'length' /tmp/verified-checks.json)
           [ "$n_got" = "$n_req" ] || { echo "::error::verified ${n_got} of ${n_req} required checks" >&2; exit 1; }
           echo "all ${n_got} required checks green (app-pinned, scope-aware)"

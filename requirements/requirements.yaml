@@ -456,7 +456,7 @@ requirements:
       - id: REQ-TLS-001-AC5
         given: the -fips build (GOFIPS140, default runtime mode), started with a valid P-256 certificate
         when: a client offers only TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305 at TLS 1.2, then a client offers TLS 1.3 with AES-GCM
-        then: the first handshake fails and the second succeeds. The same test file passes in ci.yml's existing fips140-only job, which already runs the full suite under GODEBUG=fips140=only (REQ-FIPS-003)
+        then: the first handshake fails and the second succeeds. The same test file passes in full-suite.yml's fips140-only job, which already runs the full suite under GODEBUG=fips140=only (REQ-FIPS-003)
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-TLS-001-AC6
@@ -1350,14 +1350,14 @@ requirements:
       against a GOFIPS140 build, and a depguard allowlist shall permit only
       in-boundary crypto imports; the two are described publicly as the
       executing and static halves, neither complete alone.
-    source: [SECURITY.md "Approved-only cryptography", .github/workflows/ci.yml fips140-only, .golangci.yml]
+    source: [SECURITY.md "Approved-only cryptography", .github/workflows/full-suite.yml fips140-only, .golangci.yml]
     tier: community
     introduced: v0.1.0
     confidence: documented
     acceptance_criteria:
       - id: REQ-FIPS-003-AC1
-        given: the CI configuration
-        when: a commit lands
+        given: .github/workflows/full-suite.yml
+        when: it runs (nightly on main and before a release-candidate tag)
         then: the fips140-only job runs the full race-enabled suite under the validated module in only-mode
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
@@ -1502,8 +1502,8 @@ requirements:
     title: Continuous scan gate and toolchain freshness
     statement: >
       A newly disclosed vulnerability shall be caught before release, not on
-      tag day: the full scanner set shall run as a required check on every
-      pull request, every push to main, and every tag; scanner installers
+      tag day: the full scanner set shall run in the full suite (REQ-CI-001),
+      before a release-candidate tag and nightly on main, and on every tag; scanner installers
       shall be pinned by checksum so a scanner that cannot run fails the
       pipeline rather than passing silently; main's latest candidate shall be
       rescanned daily; and the Go toolchain shall be kept on its latest patch
@@ -1515,9 +1515,9 @@ requirements:
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-REL-004-AC1
-        given: any pull request, push to main, or tag
-        when: the required scan check runs
-        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
+        given: a release-candidate tag, the nightly run on main, or a tag
+        when: the scan check runs
+        then: "The scan check runs Grype and Amazon Inspector before a release-candidate tag, nightly on main, and on tags, as part of the full suite (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 2, which replaces the earlier every-pull-request run); it does not run on pull requests. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-004-AC2
@@ -1594,7 +1594,7 @@ requirements:
       - id: REQ-REL-005-AC1
         given: any pull request into main, and any push to main
         when: the required checks run
-        then: "Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check."
+        then: "Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check, which is the action-pin step of the allowlist job in ci.yml on every pull request; pin-wiring-test.sh, selected by the changed-path map for a workflow change and run whole by full-suite.yml, holds that step in place."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-005-AC2
@@ -1841,7 +1841,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 25 approved files (maintainers approved amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, the release manager approved Oct 5, new-file amendment Oct 3)"
+        then: "it holds exactly the 26 approved files (maintainers approved amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, the release manager approved Oct 5, new-file amendment Oct 3; full-suite.yml added by REQ-CI-001, Nov 12)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2088,75 +2088,141 @@ requirements:
         status: approved
 
   - id: REQ-REL-012
-    title: A pull request into the release carries a passed-audit record for its exact head
+    title: A release tag carries a passed-audit record; a pull request's record is its cleared row
     statement: >
-      A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release
-      process decision 6, maintainers approved Oct 23 2026:
-      "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
-      audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
-      .github/policy/audit-writers.json of the base checkout, adding only the file audit-record, which is the record
-      itself. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier
-      record no longer applies. The verdict is part of the
-      existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
-      cannot edit or skip it, and a retarget re-runs it.
-    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
+      A pull request into the release (main) carries a passed-audit record for its exact head, or it cannot merge
+      (release process rule 6, maintainers approved Oct 23 2026). That record is the clearing row for the exact head
+      that the merge automation reads outside this repository; this repository holds no copy of it and no check of it,
+      so the review gate (agent-review-gate.yml) judges four things only: action pins, the allowlist guard, the
+      pin-wiring judge and the scanner guard. A release tag that is not a patch tag needs a passed audit of the whole
+      release and the owner's approval of it (rule 7); that stays checked here, at source admission. The tag-time record
+      is the branch audit/<tagged commit sha>: one commit whose only parent is that commit, verified by GitHub,
+      authored by a writer named in .github/policy/audit-writers.json of the base checkout, adding only the file
+      audit-record, which is the record itself. Nothing is stored in the tagged commit's own files.
+    source: [.github/workflows/agent-review-gate.yml, .github/workflows/stage-admission.yml, bin/audit-record-judge.sh, bin/audit-record.py, bin/audit-record-prepare.sh, bin/audit-record-request.sh, .github/policy/audit-writers.json]
     tier: community
     introduced: v0.3.0
-    origin: release process decision 6 (Oct 23 2026)
+    origin: release process decisions 6 and 7 (Oct 23 2026); the per-pull-request record removed Nov 12 2026 (the cleared row is the record, rule 6)
     confidence: implementation-only
     notes: >
-      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
-      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
-      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
-      release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
-      something.
+      The record commit adds one file, audit-record, because the API can only make a commit that changes something.
+      The record job of agent-review-gate.yml stays as the writer of the tag-time record, dispatched with the word
+      release and a commit sha; no other word or pull request number is accepted.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
-        given: "a pull request whose base is main, and the head sha it has now"
-        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        given: "a commit sha and, for a release tag, main's copy of bin/audit-record-judge.sh, bin/audit-record.py and .github/policy/audit-writers.json"
+        when: "the judge reads the record of that commit"
+        then: "it passes only if the branch audit/<sha> exists and holds one commit whose only parent is that sha, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise it fails"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC2
-        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
+        given: "a record that is missing, for another commit, stale (a parent that is not the commit, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a sha that is not 40 lower-case hex"
         when: "the judge decides"
         then: "it fails closed and says why (an API error says it is one); no doubt passes"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC3
-        given: "a pull request whose base is not main"
-        when: "the judge runs"
-        then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
+        given: "agent-review-gate.yml, its verdict job and its scheduled sweep"
+        when: "the files and the workflow are read"
+        then: "neither runs bin/audit-record-judge.sh or reads a branch audit/<sha>; the pull request path of the writer is gone (bin/audit-record.py has no pull request plan, bin/audit-record-prepare.sh and bin/audit-record-request.sh accept only the word release); and the check's summary texts name no record"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC4
         given: "the verdict job and the sweep of agent-review-gate.yml"
         when: "the auditor matrix runs them as written with stand-ins for the checks"
-        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
+        then: "each publishes success only when the four checks (action pins, allowlist guard, pin-wiring judge, scanner guard) all exit 0, and runs main's copy of them over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC5
-        given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (which the automation runs once the pull request's review has cleared: it checks the pull request is open into main at exactly that head and requests nothing otherwise; the ops runner's --cleared step may call it)"
+        given: "a workflow dispatch of agent-review-gate.yml with audit_pr set to the word release and a commit sha, sent by bin/audit-record-request.sh (which checks that main contains the commit and requests nothing otherwise)"
         when: "the record job runs"
-        then: "it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
+        then: "it takes nothing else from the dispatch, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for an audit), leaves a record that already passes alone, and otherwise makes ONE signed commit on audit/<sha> parented on that sha, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the judge of AC1; the signed-commit guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC6
-        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
-        when: "the scheduled sweep runs"
-        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
+        given: "a pull request into main whose last auditor-review-gate verdict from the App is a failure older than six hours"
+        when: "the scheduled sweep runs (once an hour for such a head)"
+        then: "it judges the head again with the four checks and publishes only a verdict that changed: a head that still fails is not posted again, so no open pull request waits for a push or a hand re-run; the sweep's existing bound applies (the 200 open pull requests into main that gh lists first)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC7
         given: "a release tag that reaches source admission and is not a patch tag (a vX.Y.0 tag or a release candidate), whose signature the earlier admission step verified"
         when: "the whole-release audit step of stage-admission.yml runs main's copy of the judge and of the writers policy over it"
-        then: "admission continues only if the tagged commit has the same passed-audit record as a pull request into main (the branch audit/<tagged sha>) AND the release manager's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither"
+        then: "admission continues only if the tagged commit has a passed-audit record as AC1 defines it (the branch audit/<tagged sha>) AND the release manager's signed tag message carries exactly one line Audit-approved: <the record commit's sha>, naming that very record; a missing, stale, forged, unverified or differently-approved record, an ambiguous or missing approval line, or a GitHub API error stops admission; a patch tag (vX.Y.Z with Z of 1 or more) needs neither; a pull request into main is not judged here, its record being the cleared row"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC8
         given: "a dispatch of the record job with the word release as the pull request and a commit sha"
         when: "the writer's prepare script runs"
-        then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the signed commit on audit/<sha> of AC5; bin/audit-record-request.sh makes the request after the same check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-CI-001
+    title: Quick checks on each pull request, the full suite at promotion
+    statement: >
+      On each pull request the required checks are quick: static checks and only the tests for the files the change
+      touched, a few minutes in total (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 1, owner Nov 10 2026:
+      "you run a full test suite end to end etc on code promotions not CI"). The full suite (coverage, fips140-only,
+      the CodeQL analysis, both acceptance suites, reproducibility, the scan and the long wiring suites) never runs on a
+      pull request; it runs before a release-candidate tag and nightly on main (rule 2). A failed nightly run opens a
+      fix item and never blocks a merge (rule 3).
+    source: [.github/workflows/ci.yml, .github/workflows/full-suite.yml, .github/workflows/scan.yml, .github/workflows/codeql.yml, .github/workflows/acceptance.yml, .github/workflows/stage-admission.yml, .github/policy/required-checks.json, .github/policy/test-paths.json, bin/select-tests.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: owner ratified Nov 10 2026; the cache half built Nov 12 2026
+    confidence: implementation-only
+    notes: >
+      The merge queue does not exist on main and no workflow has the merge_group trigger, so none is added; the quick
+      workflows would run the same checks there if it came. The ruleset change that drops the removed contexts is the
+      owner's, applied at the merge.
+    acceptance_criteria:
+      - id: REQ-CI-001-AC1
+        given: "a pull request into main"
+        when: "the workflows run on the pull_request event"
+        then: "the required contexts that run are exactly test, lint, requirements, allowlist, vendor, govulncheck and pin-age, each with no job-level condition that can skip it, and .github/policy/required-checks.json lists exactly those seven as required_checks; auditor-review-gate, gosec and dependency-review are not in it or in promotion_checks (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md), and no workflow has a job that produces gosec or dependency-review, and neither are the contexts allowlist-persona, allowlist-chain, allowlist-pins-auditor, fips140-only, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), reproducibility, coverage and scan; analyze (go) is in promotion_checks only"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC2
+        given: "every workflow file"
+        when: "bin/workflow-consolidation-test.sh judges them"
+        then: "none of the jobs named in AC1 as removed runs on pull_request, in ci.yml, acceptance.yml, scan.yml, codeql.yml or any other workflow; ci.yml triggers only on push to main and pull_request; acceptance.yml triggers only on workflow_call; codeql.yml has no pull_request; scan.yml triggers only on schedule, workflow_dispatch and tags v* and still cannot be called (REQ-SCAN-015); no workflow gains a merge_group trigger"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC3
+        given: "bin/select-tests.sh run with a base and a head commit, and the committed map .github/policy/test-paths.json of path globs to suite commands"
+        when: "it reads the changed files from git diff --name-only BASE...HEAD, a renamed file counting as both its old path and its new path"
+        then: "it prints, one per line, in the map's order and without repeats, the suite commands of every map entry that a changed file matches; a changed file that matches no entry fails it (exit 1, the path named) so a new directory forces a map entry; an entry may list its paths as covered by no suite (docs), which selects nothing; a base or head that is not a commit fails it"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC4
+        given: "the test job of ci.yml on a pull request"
+        when: "it runs"
+        then: "it runs go vet, the static build (CGO_ENABLED=0) and go test over only the packages of the changed Go files (every package when go.mod, go.sum or vendor/ changed), without -race and without the fips settings; a changed file under a package's testdata/ directory selects that package, a renamed Go file selects both its old and its new package, and a change under tools/requirements, which is its own Go module, is vetted with go -C tools/requirements vet ./... and never as a package of the root module; the allowlist job first writes the suite commands bin/select-tests.sh selects for the changed files to a file, one per line, and as a step output that lists them, and then runs them in two forms: the suites that are one committed test file run in one step through one committed script, bin/run-selected-tests.sh, which takes that file and holds one plain literal line for each such suite (an if that reads the file for the suite's exact command line and runs that command), with no case statement, cd, shell -c, eval or variable program, so check-action-pins reads every line and has no exclusion for the step; a selected command that no line of the script and no step covers fails the step and is named; each suite that is more than one committed test file (the pip resolve check of the three requirements files, the scanner-panel SDK probe, the vex-scope suite with the installed grype, and the golang-jwt tripwire) is its own step of the job, its commands written literally, with an if: that reads the step output for that suite's exact command, so a pull request that selects none of them does not run them; every command bin/select-tests.sh can print has a line or a step; the job also runs the allowlist check of every tracked file, the action-pin checks (docs/ratify/2026-11-11-no-release-age-hold.md:15) and the scanner guard step (REQ-SCAN-015-AC2), the one suite step that stays in the job by name; when the selected suites include bin/vex-both-scanners-test.sh its line first installs the pinned grype with bin/install-scanner.sh, so the suite runs where the scanner is"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC5
+        given: ".github/workflows/full-suite.yml"
+        when: "its triggers and jobs are read"
+        then: "it triggers only on a daily schedule, workflow_dispatch and workflow_call; it holds coverage, fips140-only and the three allowlist shards under their old job names, each running its whole suite, and calls acceptance.yml; the whole suites bin/full-suite-wiring-test.sh and bin/select-tests-test.sh run in it too (docs/ratify/2026-11-10-full-suite-at-promotion.md rule 2: the full suite, whole); the scan and the CodeQL analysis keep their own workflows, whose daily schedule is the nightly run"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC6
+        given: "a scheduled run of full-suite.yml, scan.yml or codeql.yml on main that fails"
+        when: "the run ends"
+        then: "an issue with a fixed title and a fixed label is opened, or commented on when one is already open, naming the run; a green run opens nothing; nothing required on a pull request reads the issue"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC7
+        given: "a release-candidate tag reaching stage-admission.yml, and the promotion_checks list in .github/policy/required-checks.json (the contexts of the full suite, with their scope)"
+        when: "admission reads the checks of the exact tagged commit"
+        then: "it continues only if every context in promotion_checks has a successful run on that commit, and that run comes from the one workflow file that produces the context (analyze (go) from codeql.yml, reproducibility and scan from scan.yml, every other context from full-suite.yml; a check run of the same name from any other workflow, or one that no workflow run backs, does not count); a missing, red, older-commit or wrong-source run stops admission and names the context; no promotion context's name is produced by a job of ci.yml or by two jobs of one workflow; a promotion context counts only from the job of its one bound workflow file, and a job of the same name in another file (release.yml's acceptance and reproducibility) may exist and never counts, since stage-admission refuses it by path; and each of those workflows (full-suite.yml, scan.yml, codeql.yml) triggers on a schedule, on workflow_dispatch or on a push to main, so a successful run on a commit can exist before its release-candidate tag is pushed, and a run started by the tag push alone is too late"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC8
+        given: "a pull request into main, and the job auditor-review-gate of agent-review-gate.yml"
+        when: "the workflows run on the pull_request event"
+        then: "the job still runs and judges a Dependabot pull request as before (docs/ratify/2026-11-11-dependabot-reviewer-only.md rule 4), but it is not a required context: .github/policy/required-checks.json does not list it in required_checks or promotion_checks"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2679,6 +2745,7 @@ requirements:
       AC14 residual (semver): bounds that SemVer 2.0.0 forbids (a numeric pre-release identifier with a leading zero such as 3.0.0-01, an empty identifier in the pre-release or the build metadata) are unparsable and read as affected, so the record is a hit. Go pseudo-versions with a zero-time stamp (0.0.0-00010101000000-000000000000) are one valid alphanumeric identifier, because it contains a hyphen, and parse normally.
       AC16/AC17 history: the AC16 and AC17 first accepted for this requirement (a lexer telling text from commands, pull request 272, closed: an open-ended class) are WITHDRAWN; the AC16 above replaces both, and there is no AC17 (the gap is deliberate). AC18 (literal downloads in install-build-tools.sh) belongs to pull request 271.
       AC16 design: the scan stays strict. A row is {file, form, key, line, ruling} plus an optional count (default 1): key is the scan's own 64-hex sha256 prefix (for a download, of the one command segment that names curl or wget), and line is the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in (the automated reviewer, pull request 273 round 1: a segment hash alone ruled the same segment inside another line that pipes it to sh); an item is ruled only when every occurrence in the head sits in a line a row names, and a row covers at most count occurrences of that line, so a second copy of a ruled line fails unless the row counts it. Editing the line other than in spaces and tabs (which the scan normalises) voids the row; changing only a row's ruling prose does not void it (the prose is the reason, not the identity). An occurrence is ADDED when the head has more of its (file, form, key, whole line) than the base (the automated reviewer, pull request 273 round 2: counting by key alone let an edit that kept the download segment, such as a ruled echo rewritten to pipe into sh, pass as no addition); a replay of the 150 first-parent commits of main from 7c6077b (Sep 11) to 09b30af (Oct 10) found no commit that this newly fails. A row never matches a line holding whitespace other than a space or a tab, or a line joined from a backslash-newline continuation: bash reads those differently from the flattening (automated review round 1); count is at most 100. Intended: editing only a row's ruling prose does not void it, and a space- or tab-only edit of the line stays ruled. The exceptions file must be strict JSON: NaN, Infinity and -Infinity (which Python's reader accepts) and a repeated key stop the check (exit 2). AC16 delta accepted by the reviewer Oct 10 (automated review round 3, P7): the given names the command hash (key) and the whole-line hash (line); the then states the count limit and the edited-line, whitespace and continuation failures. Limit of line identity (automated review round 3, P4; the maintainers' decision, Oct 10): shell CONTEXT is not part of a line's identity, so moving a line out of a heredoc (above its opener) or commenting the opener out keeps (file, form, key, line) and is no addition. Therefore a row is only ever written for a line that is HARMLESS IN ANY CONTEXT: read as a shell command it runs no download (a comment, an echo or printf, a cat into a file, Python source or a package list that bash cannot parse), and the reviewer reviews each row for exactly that; a row for a line that would download when run is the reviewer's to refuse. The test holds the text of each committed row's line and checks it is harmless that way. Allowed row forms (reviewer, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ followed by at most nine path arguments "$NAME" or "$NAME/path" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (the automated reviewer, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole "$1".."$9"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN ["$N"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only "$N" (the automated reviewer, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- "$N"; test and [ only the file tests -f -s -e -d -r on a positional "$N" (never a literal path or a substitution: the automated reviewer, pull request 289 round 6), = and !=, and count comparisons between digits and "$(grep -c ...)" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions "$(grep -c OPTION... -- PATTERN "$N")" and "$(cat -- "$N")" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (the automated reviewer, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (the automated reviewer, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (maintainers, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. The test decides form (2) with a quote-aware parser (harness_form.py in the test) and proves each refused variant as its own case. The rows are read from the exceptions file beside the checkout the script runs from (in CI trusted/, the base branch), never from the pull request's tree; a missing default file is no rows; a malformed list (not a list, a row that is not an object, a missing, empty or extra field, a key or line that is not 16 lowercase hex, a JSON object that repeats a key, a count that is not a whole number from 1 to 100, a repeated row) stops the check with exit 2.
+      Wiring: the pin-age job runs on every pull request; the suites pin-age-check-test.sh, pin-audit-test.sh and supply-chain-wiring-test.sh are selected by the changed-path map (REQ-CI-001-AC3) for a change to the workflows or the pin tools, and full-suite.yml runs them whole.
       AC15 limit: the pins nested inside an action are not counted as held, so a ruling for a pin that is only nested can be dormant, never dead.
       AC15 expectation (Oct 9): the three cosign rulings (GO-2024-2718, GO-2024-2719, GO-2023-2181) are ALIVE now because main pinned cosign 3.1.3 inside the 90-day history window (until commit 8a7512d); they become dormant (or dead, if a cosign 3.1.3 pin has appeared and they decide nothing) about 2026-12-14, 90 days after that pin left main, unless a cosign 3.1.3 pin is held again (pull request 249).
       Finding (Oct 9): with the corrected table paths, the existing package-name filter of the audit already clears cosign 3.1.3 against GO-2026-4309. The real work of AC14 is (1) the corrected table (goreleaser, osv and golangci-lint need their /v2 path), (2) GitHub names matched under both the bare and the /vMAJOR path so the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
@@ -2747,7 +2814,7 @@ requirements:
       - id: REQ-SUP-001-AC13
         given: "a workflow job that runs pip install"
         when: "the workflows are read"
-        then: "an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown"
+        then: "an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown; bin/select-tests.sh selects pip-pin-test.sh for a change to the workflows and full-suite.yml runs it whole"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC14
@@ -2826,12 +2893,6 @@ requirements:
         given: "the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties)"
         when: "the wrapper downloads its Gradle distribution"
         then: "the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the release manager's plain form for a tool download: exact version and checksum"
-        verification: { method: unit, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC29
-        given: "acceptance.yml run with an image-ref (release-chain mode)"
-        when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
-        then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the release manager's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-UAT-001
@@ -3001,9 +3062,9 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC20
-        given: "the required allowlist job in ci.yml"
-        when: "it is read"
-        then: "it runs bin/branch-sweep-test.sh"
+        given: "the changed-path map .github/policy/test-paths.json, the allowlist job in ci.yml and full-suite.yml"
+        when: "a pull request changes a file the map ties to bin/branch-sweep-test.sh, and when the full suite runs"
+        then: "the allowlist job runs bin/branch-sweep-test.sh among the suites bin/select-tests.sh selects for that change (REQ-CI-001-AC3), and full-suite.yml runs it whole"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC21
@@ -3053,13 +3114,13 @@ requirements:
     acceptance_criteria:
       - id: REQ-AUD-018-AC1
         given: "any tracked file in the repository"
-        when: "the layout check (auditor-layout-check.py, run by the allowlist job in ci.yml) reads the file list"
-        then: "All auditor code, prompts, fixtures and tests live under the auditor directory and nowhere else; the only auditor-related files outside it are the workflow files (.github/workflows/), the allowlist entries, the auditor's generated outputs, and (amendment, the release manager Oct 2) the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml, which name test paths as metadata; and (amendment, the release manager Oct 3) the patch-release classifier bin/patch-decide.py and its test bin/patch-decide-test.sh, which name the auditor directory as data and hold no auditor code."
+        when: "the layout check (auditor-layout-check.py, selected by the changed-path map for a change to the auditor or the allowlist and run whole by full-suite.yml) reads the file list"
+        then: "All auditor code, prompts, fixtures and tests live under the auditor directory and nowhere else; the only auditor-related files outside it are the workflow files (.github/workflows/), the allowlist entries, the auditor's generated outputs, and (amendment, the release manager Oct 2) the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml, which name test paths as metadata; and (amendment, the release manager Oct 3) the patch-release classifier bin/patch-decide.py and its test bin/patch-decide-test.sh, which name the auditor directory as data and hold no auditor code; and the changed-path map .github/policy/test-paths.json (REQ-CI-001-AC3), which names the auditor's test paths as data and holds no auditor code."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-AUD-018-AC2
         given: "the Python in the auditor directory"
-        when: "the required coverage job runs the auditor coverage gate (coverage-gate.sh)"
+        when: "the coverage job of full-suite.yml (nightly and before a release-candidate tag) runs the auditor coverage gate (coverage-gate.sh)"
         then: "The Python under the auditor directory is held to the 100% coverage gate in CI, except the listed exclusions, the same as the Go."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved

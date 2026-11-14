@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3, REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC8
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -64,7 +64,7 @@ PY
 case_() {
   local f="$work/$1.yml"
   cp "$root/.github/workflows/go-freshness.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -95,8 +95,10 @@ case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
-# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); dependency-review runs only on pull requests (the
-# only scope it is required on); every required check in .github/policy/required-checks.json is still produced by a
+# top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc);
+# gosec and dependency-review are deleted: no job makes them and they are in neither list
+# (docs/ratify/2026-11-13-ci-trim-keeps-codeql.md); ci.yml never calls the full suite; auditor-review-gate is in
+# neither list; every required check in .github/policy/required-checks.json is still produced by a
 # top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
 # (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
@@ -110,9 +112,13 @@ MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as i
     "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
                              "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
 }
 jobs = d.get("jobs") or {}
+for jid, j in jobs.items():
+    if jid in ("gosec", "dependency-review") or (j.get("name") or jid) in ("gosec", "dependency-review"):
+        bad.append("ci.yml has the job %s, which was deleted" % jid)
+    if str(j.get("uses", "")).endswith("full-suite.yml"):
+        bad.append("ci.yml calls the full suite from the job %s (it never runs on a pull request)" % jid)
 for jid, (name, perms, env, needs, cond) in MOVED.items():
     j = jobs.get(jid)
     if j is None:
@@ -143,12 +149,24 @@ for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
         if "uses" in j:
             continue
         names.setdefault(j.get("name") or jid, set()).update(events)
-for rc in json.load(open(os.path.join(root, ".github/policy/required-checks.json")))["required_checks"]:
+pol = json.load(open(os.environ.get("CI_POLICY") or os.path.join(root, ".github/policy/required-checks.json")))
+for key in ("required_checks", "promotion_checks"):
+    if any(e["context"] == "auditor-review-gate" for e in pol.get(key) or []):
+        bad.append("auditor-review-gate is listed in %s (REQ-CI-001-AC8)" % key)
+for key in ("required_checks", "promotion_checks"):
+    for gone in ("gosec", "dependency-review"):
+        if any(e["context"] == gone for e in pol.get(key) or []):
+            bad.append("%s is listed in %s but no workflow makes it" % (gone, key))
+SIX = ["test", "lint", "requirements", "allowlist", "govulncheck", "pin-age"]
+ctxs = [e["context"] for e in pol["required_checks"]]
+if len(ctxs) != 7 or len(set(ctxs)) != 7 or not set(SIX) <= set(ctxs):
+    bad.append("required_checks are not exactly the seven quick checks")
+# the gate's check run is published by the `publish` job of agent-review-gate.yml (`-f name=auditor-review-gate`), not made by a job of that name
+if "-f name=auditor-review-gate" not in json.dumps((yaml.load(open(os.path.join(root, ".github/workflows/agent-review-gate.yml")), Loader=yaml.BaseLoader).get("jobs") or {}).get("publish")):
+    bad.append("agent-review-gate.yml no longer publishes the auditor-review-gate check run (it still judges Dependabot pull requests)")
+for rc in pol["required_checks"]:
     ev = "push" if rc["scope"] == "push" else "pull_request"
-    if rc["integration_id"] != 15368:
-        continue                                    # the review gate's App check, published by the App, not a job
-    if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
-            not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
+    if rc["context"] not in names or ev not in names[rc["context"]]:
         bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
@@ -157,7 +175,7 @@ PY
 case_ci() {
   local f="$work/ci-$1.yml"
   cp "$root/.github/workflows/ci.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -174,7 +192,33 @@ case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file all
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
 case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
 case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
-case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
+STUB="'runs-on': 'x', 'steps': []"
+case_ci dependency-review-back   bad "d['jobs']['dependency-review'] = {'name': 'dependency-review', $STUB}"
+case_ci gosec-back               bad "d['jobs']['gosec'] = {'name': 'gosec', $STUB}"
+case_ci full-suite-called        bad "d['jobs']['full'] = {'uses': './.github/workflows/full-suite.yml'}"
+# the policy file is judged by the same judge, over a copy edited by python (CI_POLICY)
+case_policy() {
+  local f="$work/pol-$1.json"
+  python3 - "$root/.github/policy/required-checks.json" "$f" "$3" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+exec(sys.argv[3])
+json.dump(d, open(sys.argv[2], "w"))
+PY
+  if out=$(CI_POLICY="$f" judge_ci "$root/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS policy:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL policy:$1 → $got, want $2 ($out)"; fi
+}
+ENTRY="'integration_id': 15368"
+DR="{'context': 'dependency-review', $ENTRY, 'scope': 'pull_request'}"
+GOSEC="{'context': 'gosec', $ENTRY, 'scope': 'push'}"
+case_policy dependency-review-required bad "d['required_checks'].append($DR)"
+case_policy gosec-required              bad "d['required_checks'].append($GOSEC)"
+case_policy gosec-promoted              bad "d['promotion_checks'].append($GOSEC)"
+case_policy dependency-review-promoted  bad "d['promotion_checks'].append({'context': 'dependency-review', 'integration_id': 15368, 'scope': 'push'})"
+case_policy gate-back-in-required       bad "d['required_checks'].append({'context': 'auditor-review-gate', 'integration_id': 5054756, 'scope': 'pull_request'})"
+case_policy gate-back-in-required-15368 bad "d['required_checks'].append({'context': 'auditor-review-gate', 'integration_id': 15368, 'scope': 'pull_request'})"
+case_policy gate-in-promotion           bad "d['promotion_checks'].append({'context': 'auditor-review-gate', 'integration_id': 15368, 'scope': 'push'})"
 case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
@@ -238,7 +282,7 @@ PY
 case_rescan() {
   local f="$work/mcr-$1.yml"
   cp "$root/.github/workflows/main-candidate-rescan.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -270,18 +314,22 @@ import os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
+text = open(sys.argv[1]).read()
+for word in ("image-ref", "IMAGE_REF", "ghcr.io"):
+    if word in text:
+        bad.append("acceptance.yml still carries %s (it has no registry mode)" % word)
 on = d.get("on") or {}
-if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" not in on:
-    bad.append("acceptance.yml's events changed: %s" % list(on))
+if sorted(on) != ["workflow_call"]:
+    bad.append("acceptance.yml's events are not workflow_call alone (REQ-CI-001-AC2): %s" % list(on))
 outs = (on.get("workflow_call") or {}).get("outputs") or {}
 if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.acceptance-gradle.outputs.results }}",
                                                    "maven-results": "${{ jobs.acceptance-maven.outputs.results }}"}:
     bad.append("the workflow_call outputs are not both suites' results: %s" % outs)
 jobs = d.get("jobs") or {}
 g, m = jobs.get("acceptance-gradle") or {}, jobs.get("acceptance-maven") or {}
-if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read", "packages": "read"}:
+if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read"}:
     bad.append("acceptance-gradle changed: %s" % {k: g.get(k) for k in ("name", "permissions")})
-if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read", "packages": "read"} or \
+if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read"} or \
         (m.get("strategy") or {}).get("matrix", {}).get("extension-version") != ["1.2.0", "1.2.3"]:
     bad.append("acceptance-maven changed: %s" % {k: m.get(k) for k in ("name", "permissions", "strategy")})
 if m.get("env") != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):
@@ -295,6 +343,8 @@ rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loade
 calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", "")) and "stage-" not in str(v.get("uses", ""))]
 if calls != ["acceptance"] or rel["acceptance"].get("uses") != "./.github/workflows/acceptance.yml":
     bad.append("release.yml does not call acceptance.yml once: %s" % calls)
+elif "image-ref" in (rel["acceptance"].get("with") or {}):
+    bad.append("release.yml still passes image-ref to acceptance.yml")
 pred = (rel.get("acceptance-predicate") or {}).get("with") or {}
 if pred.get("gradle-results") != "${{ needs.acceptance.outputs.gradle-results }}" or \
         pred.get("maven-results") != "${{ needs.acceptance.outputs.maven-results }}":
@@ -306,7 +356,7 @@ PY
 case_acc() {
   local f="$work/acc-$1.yml"
   cp "$root/.github/workflows/acceptance.yml" "$f" 2>/dev/null || : > "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -323,7 +373,13 @@ case_acc gradle-renamed        bad "d['jobs']['acceptance-gradle']['name'] = 'gr
 case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['matrix']['extension-version'] = ['1.2.3']"
 case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
 case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
-case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
+case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
+case_acc dispatch-added        bad "d['on']['workflow_dispatch'] = ''"
+case_acc image-ref-input       bad "d['on']['workflow_call'].setdefault('inputs', {})['image-ref'] = {'type': 'string'}"
+case_acc packages-read-back    bad "d['jobs']['acceptance-gradle']['permissions']['packages'] = 'read'"
+case_acc ghcr-login-back       bad "d['jobs']['acceptance-gradle']['steps'].append({'run': 'docker login ghcr.io'})"
+case_acc image-ref-env-back    bad "d['jobs']['acceptance-gradle']['steps'].append({'run': 'docker run \"\${IMAGE_REF}\"'})"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -336,9 +392,11 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-# exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
-if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
-    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
+# exactly: a schedule (the nightly run), workflow_dispatch and tags v* (REQ-CI-001-AC2): no pull_request, no push to a branch, no workflow_call
+# (REQ-SCAN-015 keeps it uncallable)
+if sorted(on) != ["push", "schedule", "workflow_dispatch"] or on["push"] != {"tags": ["v*"]} or on["workflow_dispatch"] != "" \
+        or len(on["schedule"]) != 1 or not str(on["schedule"][0].get("cron", "")).strip():
+    bad.append("scan.yml's events are not exactly one schedule, workflow_dispatch and tags v*: %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
 if builds != ["build"]:
@@ -426,7 +484,7 @@ PY
 case_scan() {
   local f="$work/scan-$1.yml"
   cp "$root/.github/workflows/scan.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY' || :
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -440,7 +498,13 @@ PY
 }
 case_scan real                   ok  ""
 case_scan tags-dropped           bad "d['on']['push'].pop('tags')"
-case_scan event-added            bad "d['on']['workflow_dispatch'] = ''"
+case_scan call-added             bad "d['on']['workflow_call'] = ''"
+case_scan merge-group-added      bad "d['on']['merge_group'] = ''"
+case_scan push-main-added        bad "d['on']['push']['branches'] = ['main']"
+case_scan schedule-dropped       bad "d['on'].pop('schedule')"
+case_scan dispatch-dropped       bad "d['on'].pop('workflow_dispatch')"
+case_scan second-schedule        bad "d['on']['schedule'].append({'cron': '5 5 * * *'})"
+case_scan pr-added               bad "d['on']['pull_request'] = ''"
 case_scan second-build           bad "d['jobs']['build-b'] = dict(d['jobs']['build'])"
 case_scan b-uploads-oci          bad "d['jobs']['assemble-b']['with']['upload-oci'] = 'true'"
 case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
@@ -479,7 +543,7 @@ case_scan compare-no-guard       bad "import re; s = d['jobs']['reproducibility'
 # the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
 # stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
-go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
+full-suite.yml go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
 stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
 supply-chain.yml"
@@ -487,8 +551,8 @@ judge_set() {  # $1: the directory's entries as a JSON list (every entry, not on
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 25:
-    print("the ratified list is not 25 files"); sys.exit(1)
+if len(want) != 26:
+    print("the ratified list is not 26 files"); sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 if odd or extra or missing or len(got) != len(set(got)):
@@ -509,7 +573,91 @@ case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
 case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
 case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
 case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"
+case_set full-suite-gone   bad "$(edit_set 's.remove("full-suite.yml")')"
 case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# REQ-CI-001-AC1, AC2 (owner Nov 10 2026: the full suite runs at promotion, not on pull requests): none of the removed contexts is made by a job of
+# a workflow that runs on pull_request; ci.yml triggers only push to main and pull_request; acceptance.yml only workflow_call; codeql.yml has no
+# pull_request; scan.yml only schedule, workflow_dispatch and tags v*, and cannot be called; no workflow has merge_group.
+judge_events() {  # $1: a directory of the workflow files
+  python3 - "$1" <<'PY'
+import os, sys, yaml
+d = sys.argv[1]
+W = {n: yaml.load(open(os.path.join(d, n)), Loader=yaml.BaseLoader) for n in sorted(os.listdir(d)) if n.endswith(".yml")}
+GONE = {"gosec", "dependency-review", "analyze", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor",
+        "fips140-only", "acceptance-gradle",
+        "acceptance-maven", "reproducibility", "coverage", "scan"}
+bad = []
+def events(w):
+    on = w.get("on") or {}
+    return list(on) if isinstance(on, dict) else ([on] if isinstance(on, str) else list(on))
+for n, w in W.items():
+    ev = events(w)
+    if "merge_group" in ev: bad.append("%s has a merge_group trigger" % n)
+    if "pull_request" in ev:
+        for jid, j in (w.get("jobs") or {}).items():
+            nm = (j.get("name") or jid).split(" (")[0]
+            if nm in GONE or jid in GONE: bad.append("%s runs %s on pull_request" % (n, jid))
+            if str(j.get("uses", "")).endswith(("acceptance.yml", "scan.yml", "full-suite.yml")):
+                bad.append("%s calls %s on pull_request" % (n, j["uses"]))
+    for jid, j in (w.get("jobs") or {}).items():
+        if jid in ("gosec", "dependency-review") or (j.get("name") or jid) in ("gosec", "dependency-review"):
+            bad.append("%s has the deleted job %s" % (n, jid))
+def on_of(n): return (W.get(n) or {}).get("on")
+if "-f name=auditor-review-gate" not in str(((W.get("agent-review-gate.yml") or {}).get("jobs") or {}).get("publish")): bad.append("agent-review-gate.yml no longer publishes the auditor-review-gate check run (REQ-CI-001-AC8)")
+import re
+for jid in ("judge", "sweep"):   # the jobs that run and judge: turned off by an `if` that cannot be true, they judge nothing
+    cond = str((((W.get("agent-review-gate.yml") or {}).get("jobs") or {}).get(jid) or {}).get("if", ""))
+    if "github.event_name" not in cond or re.search(r"\bfalse\b|\b0\b", cond): bad.append("agent-review-gate.yml job %s can no longer run: if is [%s] (REQ-CI-001-AC8)" % (jid, cond))
+if on_of("ci.yml") != {"push": {"branches": ["main"]}, "pull_request": ""}: bad.append("ci.yml's events are not push to main and pull_request: %s" % on_of("ci.yml"))
+if list(on_of("acceptance.yml") or []) != ["workflow_call"]: bad.append("acceptance.yml's events are not workflow_call alone: %s" % list(on_of("acceptance.yml") or []))
+c = on_of("codeql.yml") or {}
+if "pull_request" in c or "schedule" not in c: bad.append("codeql.yml has a pull_request trigger or lost its schedule: %s" % list(c))
+sc = on_of("scan.yml") or {}
+if sorted(sc) != ["push", "schedule", "workflow_dispatch"] or sc.get("push") != {"tags": ["v*"]}: bad.append("scan.yml's events are not schedule, workflow_dispatch and tags v*: %s" % sc)
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_events() {  # name want python-edit-of-(W: file name -> parsed workflow)
+  local dir="$work/ev-$1"; rm -rf "$dir"; mkdir -p "$dir"; cp "$root"/.github/workflows/*.yml "$dir/"
+  if [ -n "$3" ]; then python3 - "$dir" "$3" <<'PY' || :
+import os, sys, yaml
+d, edit = sys.argv[1], sys.argv[2]
+W = {n: yaml.load(open(os.path.join(d, n)), Loader=yaml.BaseLoader) for n in os.listdir(d) if n.endswith(".yml")}
+exec(edit)
+for n, w in W.items(): yaml.safe_dump(w, open(os.path.join(d, n), "w"), sort_keys=False)
+PY
+  fi
+  if out=$(judge_events "$dir" 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS ev:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL ev:$1 → $got, want $2 ($out)"; fi
+}
+case_events real                 ok  ""
+case_events gosec-in-ci          bad "W['ci.yml']['jobs']['gosec'] = {'name': 'gosec', 'runs-on': 'x', 'steps': []}"
+case_events coverage-in-ci       bad "W['ci.yml']['jobs']['coverage'] = {'name': 'coverage', 'runs-on': 'x', 'steps': []}"
+case_events depreview-back       bad "W['ci.yml']['jobs']['dependency-review'] = {'name': 'dependency-review', $STUB}"
+case_events gosec-in-full-suite  bad "W['full-suite.yml']['jobs']['gosec'] = {'name': 'gosec', $STUB}"
+case_events full-suite-called-on-pr bad "W['ci.yml']['jobs']['full'] = {'uses': './.github/workflows/full-suite.yml'}"
+case_events gate-publish-removed bad "W['agent-review-gate.yml']['jobs'].pop('publish')"
+case_events gate-judge-if-false  bad "W['agent-review-gate.yml']['jobs']['judge']['if'] = '\${{ false }}'"
+case_events gate-sweep-if-false  bad "W['agent-review-gate.yml']['jobs']['sweep']['if'] = '\${{ false }}'"
+case_events scan-in-supply-chain bad "W['supply-chain.yml']['jobs']['scan'] = {'runs-on': 'x', 'steps': []}"
+case_events analyze-in-supply    bad "W['supply-chain.yml']['jobs']['analyze'] = {'name': 'analyze (go)', 'runs-on': 'x', 'steps': []}"
+case_events repro-in-dependabot  bad "W['dependabot-auto-merge.yml']['jobs']['reproducibility'] = {'runs-on': 'x', 'steps': []}"
+case_events acceptance-called-on-pr bad "W['ci.yml']['jobs']['acc'] = {'uses': './.github/workflows/acceptance.yml'}"
+case_events ci-merge-group       bad "W['ci.yml']['on']['merge_group'] = ''"
+case_events gate-merge-group     bad "W['agent-review-gate.yml']['on']['merge_group'] = ''"
+case_events ci-dispatch          bad "W['ci.yml']['on']['workflow_dispatch'] = ''"
+case_events ci-no-pr             bad "W['ci.yml']['on'].pop('pull_request')"
+case_events acceptance-pr        bad "W['acceptance.yml']['on']['pull_request'] = ''"
+case_events acceptance-push      bad "W['acceptance.yml']['on']['push'] = {'branches': ['main']}"
+case_events codeql-pr            bad "W['codeql.yml']['on']['pull_request'] = ''"
+case_events codeql-no-schedule   bad "W['codeql.yml']['on'].pop('schedule')"
+case_events scan-pr              bad "W['scan.yml']['on']['pull_request'] = ''"
+case_events scan-push-main       bad "W['scan.yml']['on']['push']['branches'] = ['main']"
+case_events scan-callable        bad "W['scan.yml']['on']['workflow_call'] = ''"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR concurrency (advisor, Oct 22: superseded pull-request runs starved the merge train). ci, scan, supply-chain, acceptance and codeql each carry ONE

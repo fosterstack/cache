@@ -6,7 +6,7 @@ The implementation under test is found under BRANCH_SWEEP_ROOT (default: the rep
                         parse_keep(text, now) -> (kept_names, errors)
                         main(argv, env, runner, now) -> exit code
   bin/local-prune.sh    the lane's local prune
-  .github/workflows/reserved-branch-guard.yml, .github/workflows/ci.yml, .github/branch-keep.json
+  .github/workflows/reserved-branch-guard.yml, .github/workflows/ci.yml, .github/workflows/full-suite.yml, .github/policy/test-paths.json, bin/select-tests.sh, .github/branch-keep.json
 
 Runner contract (injected into main): runner(method, path) -> (http_status, body_text, headers) where path has no
 leading slash ("repos/o/r/branches?per_page=100&page=2") and header names are lower-case.
@@ -1162,6 +1162,7 @@ def eval_if(expr, event, ref, default="main"):
 
 GUARD = "reserved-branch-guard.yml"
 CI = "ci.yml"
+FULL = "full-suite.yml"
 
 
 def wf(name=GUARD):
@@ -1345,8 +1346,10 @@ class Wiring(unittest.TestCase):  # AC18-AC20
     def test_the_log_is_uploaded_as_a_retained_artifact(self):
         d, _ = wf()
         _, j = sweep_job(d)
-        ci = open(os.path.join(ROOT, ".github", "workflows", CI)).read()
-        pinned = re.findall(r"actions/upload-artifact@([0-9a-f]{40})", ci)
+        pinned = []
+        for name in sorted(os.listdir(os.path.join(ROOT, ".github", "workflows"))):
+            if name != GUARD:
+                pinned += re.findall(r"actions/upload-artifact@([0-9a-f]{40})", open(os.path.join(ROOT, ".github", "workflows", name)).read())
         self.assertTrue(pinned)
         ups = [s for s in j["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
         self.assertEqual(len(ups), 1)
@@ -1380,13 +1383,37 @@ class Wiring(unittest.TestCase):  # AC18-AC20
         self.assertIn("github.token", blob)
         self.assertNotIn("--force", blob)
 
-    def test_ac20_ci_allowlist_job_runs_the_suite(self):
+    def test_ac20_the_map_selects_the_suite_for_a_change_to_the_sweep(self):
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, "bin")), os.makedirs(os.path.join(td, ".github", "policy"))
+            shutil.copy(os.path.join(ROOT, "bin", "select-tests.sh"), os.path.join(td, "bin", "select-tests.sh"))
+            shutil.copy(os.path.join(ROOT, ".github", "policy", "test-paths.json"), os.path.join(td, ".github", "policy", "test-paths.json"))
+            open(os.path.join(td, "bin", "branch-sweep.py"), "w").write("# one\n")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+            for a in (["init", "-q", "."], ["add", "-A"], ["commit", "-qm", "base"]):
+                subprocess.run(git + a, cwd=td, check=True, capture_output=True)
+            open(os.path.join(td, "bin", "branch-sweep.py"), "a").write("# two\n")
+            for a in (["add", "-A"], ["commit", "-qm", "change"]):
+                subprocess.run(git + a, cwd=td, check=True, capture_output=True)
+            p = subprocess.run(["bash", "bin/select-tests.sh", "HEAD~1", "HEAD"], cwd=td, capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIn("bash bin/branch-sweep-test.sh", p.stdout.splitlines())
+
+    def test_ac20_ci_allowlist_job_runs_the_selection_and_no_suite_by_name(self):
         d, _ = wf(CI)
         steps = d["jobs"]["allowlist"]["steps"]
-        hit = [s for s in steps if re.search(r"\bbash bin/branch-sweep-test\.sh\b", s.get("run") or "")]
+        self.assertEqual([s for s in steps if re.search(r"\bbranch-sweep-test\.sh\b", s.get("run") or "")], [])
+        sel = [s for s in steps if "bin/run-selected-tests.sh" in (s.get("run") or "")]
+        self.assertEqual(len(sel), 1)
+        self.assertNotEqual(str(sel[0].get("continue-on-error", "false")).lower(), "true")
+
+    def test_ac20_full_suite_runs_the_suite_whole(self):
+        d, _ = wf(FULL)
+        hit = [s for j in d["jobs"].values() for s in j.get("steps") or [] if re.search(r"\bbash bin/branch-sweep-test\.sh\b", s.get("run") or "")]
         self.assertEqual(len(hit), 1)
         self.assertNotIn("if", hit[0])
         self.assertNotEqual(str(hit[0].get("continue-on-error", "false")).lower(), "true")
+        self.assertNotIn("select-tests", hit[0]["run"])
 
 
 FAKE_GH = """#!/usr/bin/env python3
