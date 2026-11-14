@@ -581,7 +581,7 @@ def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE + RELEASE_SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
+            'case "$step" in release-apks|release-sign) ;; '      # ruling Q-e: the other four steps of Release run under the local helper
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
             'mkdir -p "witness-${step#snapshot-}"',
             ': "${AWS_ROLE_ARN:?witnessed: AWS_ROLE_ARN is missing}"',
@@ -624,7 +624,7 @@ def witnessed_lines():
             'exit "$rc"']
 
 
-LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|release-assets|release-postverify|scanners|acceptance|runtime"
+LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|release-publish|release-assets|release-postverify|scanners|acceptance|runtime"
 
 
 def local_lines():
@@ -1369,7 +1369,7 @@ CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
     "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
     "release-verify": dict(needs=["release-compare"], perm=PERM_READ, if_=None, env=None),
     "release": dict(needs=["release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role (ruling 1)
-    "sign-release": dict(needs=["release"], perm={"contents": "read", "id-token": "write", "packages": "write"}, if_=AFTER_IF, env="sign"),
+    "sign-release": dict(needs=["build-assemble", "release"], perm={"contents": "read", "id-token": "write", "packages": "write"}, if_=AFTER_IF, env="sign"),
     "release-evidence": dict(needs=["sign-release"], perm={"contents": "write"}, if_=AFTER_IF, env=None),      # no environment, no KMS role, no identity token (ruling 2)
 }
 CHAIN = sorted(CHAIN_SPEC)
