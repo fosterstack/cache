@@ -2110,7 +2110,7 @@ CASE="every committed row that carries a body hash has body-sha256 alone (no bod
 "'<path> <sha256 of the file>': the row's file first, then the files it sources by a literal path, by path"
 check python3 - "$root" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import hashlib, json, os, re, sys
-SRC = re.compile(r"(?:^|[;&|({]|\bthen\b|\bdo\b|\belse\b)\s*(?:source|\.)\s+([^\s;&|)]+)")
+SRC = re.compile(r"(?:^[ \t]*|[;&|({][ \t]*|\b(?:then|do|else)[ \t]+)(?:source|\.)[ \t]+([^\s;&|)]+)", re.M)
 def sourced(text):
     return [os.path.normpath(m.group(1)) for l in text.split("\n") if not l.lstrip().startswith("#")
             for m in SRC.finditer(l) if not re.search(r"""[$"'\\`*?\[\]{}~]""", m.group(1))]
@@ -2329,6 +2329,8 @@ PY
 # the sha256 of the lines '<path> <sha256 of the file's bytes>' (the row's file first, then the files it sources by a literal path, by path, each
 # line ending in a newline) equals it. Any change to a reviewed file is a change of its text: the row stops matching. No other field (no
 # context, no proof, no body-first, no body-last) is part of a row. ---
+# cpu_ms: the user+sys CPU time, in ms, of every child this shell has run so far (a box under load cannot fail a bound set on CPU time)
+cpu_ms() { local -a f; read -ra f < <(sed 's/^.*) //' /proc/$$/stat); echo $(( (f[13] + f[14]) * 1000 / $(getconf CLK_TCK) )); }
 BHL='echo "curl $*" >>"$CALLS"'
 BHO="cat >stub <<'EOF'"
 # bhx PATH CONTENT [PATH CONTENT]...: the body hash of those files (the first is the row's file; the rest by path); a CONTENT of @absent
@@ -2356,7 +2358,7 @@ bhrun() {
   newcase "$n" "$code"
   bhrow "$n" "$extra"
 }
-bhrow() { # NAME EXTRA: case NAME is built; its row is the real scan's plus the EXTRA json fields; bh_ms = wall time
+bhrow() { # NAME EXTRA: case NAME is built; its row is the real scan's plus the EXTRA json fields; bh_ms = CPU time (user+sys) of the checker
   rtrows "$work/$1" "$work/bh-$1.tmp.json" all
   python3 - "$work/bh-$1.tmp.json" "$work/bh-$1.json" "$2" <<'PY'
 import json, sys
@@ -2366,10 +2368,10 @@ assert len(d["unmeasured_text"]) == 1, d
 d["unmeasured_text"][0].update(json.loads(extra))
 json.dump(d, open(out, "w"))
 PY
-  rc=0; local t0; t0=$(date +%s%N)
+  rc=0; local t0; t0=$(cpu_ms)
   python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" \
     --exceptions "$work/bh-$1.json" >"$work/bh.out" 2>&1 || rc=$?
-  bh_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+  bh_ms=$(( $(cpu_ms) - t0 ))
 }
 bhyes() { # NAME EXTRA PATH TEXT...: the line is ruled
   bhrun "$@"; CASE="AC16 body rows: $1: ruled (exit 0)"
@@ -2475,7 +2477,7 @@ check test "$rc" -eq 0; check grep -q 'ruled text' "$work/rt.out"
 # a row binds
 RDL=$'#!/bin/sh\n: $(cat "'"$(printf '$x%.0s' $(seq 60))"$'\n'
 newcase redos "$(pyw bin/redos.sh "$RDL")"
-t0=$(date +%s%N); runck redos '{"times": {}}'; redos_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+t0=$(cpu_ms); runck redos '{"times": {}}'; redos_ms=$(( $(cpu_ms) - t0 ))
 CASE="row 5: a line of \$(cat \" and 60 repeated \$x with no closing quote goes through the whole checker (exit 0) in under one second"
 check test "$rc" -eq 0; check test "$redos_ms" -lt 1000
 bhyes "row 5: the same backtracking line below a ruled line of a file bound by its whole hash: ruled, with the whole check under one second" \
