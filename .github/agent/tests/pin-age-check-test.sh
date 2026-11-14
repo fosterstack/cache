@@ -2414,7 +2414,7 @@ bhyes "control: a file that sources bin/lib.sh by a literal path is bound with i
 bhyes "control: the source keyword binds the sourced file like the dot" \
   "$(bhh bin/bh.sh "${FS/. bin/source bin}" bin/lib.sh "$LIB")" bin/bh.sh "${FS/. bin/source bin}" bin/lib.sh "$LIB"
 NL=$'\n'
-BHSEMI="#!/bin/sh${NL}true; . bin/lib.sh${NL}if true; then . bin/lib2.sh; fi${NL}for i in 1; do source bin/lib3.sh; done${NL}${BHL}${NL}"
+BHSEMI="#!/bin/sh${NL}true; . bin/lib.sh ${NL}if true; then . bin/lib2.sh; fi${NL}for i in 1; do source bin/lib3.sh; done${NL}${BHL}${NL}"
 bhyes "control: a source after a semicolon, after then and after do binds the sourced file too" \
   "$(bhh bin/bh.sh "$BHSEMI" bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB")" \
   bin/bh.sh "$BHSEMI" bin/lib.sh "$LIB" bin/lib2.sh "$LIB" bin/lib3.sh "$LIB"
