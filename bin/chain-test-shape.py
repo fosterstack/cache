@@ -1,6 +1,7 @@
 """Test infrastructure (not product code), shared by bin/chain-build-wiring-test.sh and bin/chain-rebuild-test.sh: the judges for
-the shape of the Build and Rebuild stage files, the stage scripts, the job graph of release.yml and the environment record of
-a Witness collection. Each judge prints `ok` or the list of faults and exits 1 on any fault; the tests first prove every judge on a
+the shape of the Build and Rebuild stage files, the stage scripts, the job graph of release.yml and the environment
+record of a Witness collection.
+Each judge prints `ok` or the list of faults and exits 1 on any fault; the tests first prove every judge on a
 known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then apply it to the real repository (RED until
 PR 2 is implemented).
 
@@ -13,7 +14,7 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
   lockflow STAGE_YML...                     REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: no stage file names apko
-  listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
+  listed CHAIN_SCRIPTS.json ROOT            the stage scripts are rows of chain-scripts.json with their real sha256
   callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls stage-build.yml with mode: snapshot and nothing else
   graph FILE                                REQ-CHAIN-005-AC5: the chain jobs of release.yml
   workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml,
@@ -122,7 +123,7 @@ def expected_lines(kind):
         return ([H, "python3 -I bin/build-admit.py run", "unset GH_TOKEN"] + SDE + [apk_cmd("standard"),
             apk_cmd("fips"), baselayout_cmd(),
                 version_check("standard"), version_check("fips"), items_apk(), ADMISSION_COPY])
-    if kind == "assemble":     # one script for Build and Rebuild, release and snapshot: STEP is apk, rapk, snapshot-apk or snapshot-rapk
+    if kind == "assemble":     # one script for all four kinds: STEP is apk, rapk, snapshot-apk or snapshot-rapk
         return ASSEMBLE_LINES
     if kind == "snapshot-apk":       # no admission, no version check, no tag: the version is the fixed snapshot one
         return ([H] + SNAPSHOT_TAG_LINES + SDE
@@ -263,12 +264,15 @@ SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Re
 SNAP = "snapshot-"
 CASE = 'case "$step" in'
 ASSEMBLE_LINES = (
-    [H, "step=$1", "dir=${step#%s}" % SNAP, "version=${GITHUB_REF_NAME#v}", CASE, "  %s*) version=%s ;;" % (SNAP, SNAPSHOT_VERSION), "esac", CASE, "  rapk)", "    " + POLICY, "    " + START + " ;;", "esac"]
+    [H, "step=$1", "dir=${step#%s}" % SNAP, "version=${GITHUB_REF_NAME#v}", CASE,
+     "  %s*) version=%s ;;" % (SNAP, SNAPSHOT_VERSION), "esac", CASE, "  rapk)", "    " + POLICY,
+     "    " + START + " ;;", "esac"]
     + ['python3 -I bin/chain-verify.py bind --local --step "$step" --record "rec-$dir/%s/$step-collection.local.json" '
        '--dir "$dir/%s" --as out' % (r, r) for r, a in RUNNERS]
     + [CASE, "  apk)", "    " + ADMISSION_BASELINE + " ;;", "esac", "mkdir -p melange-repo"]
     + ['cp -R "$dir/%s/%s" melange-repo/%s' % (r, a, a) for r, a in RUNNERS]
-    + ["mkdir -p keyring", "cp %s keyring/wolfi-signing.rsa.pub" % KEYRING_WOLFI, "cp %s keyring/assembly.rsa.pub" % ASSEMBLY_PUB]
+    + ["mkdir -p keyring",
+      "cp %s keyring/wolfi-signing.rsa.pub" % KEYRING_WOLFI, "cp %s keyring/assembly.rsa.pub" % ASSEMBLY_PUB]
     + SDE + [image_cmd("production", '"$version"'), image_cmd("fips", '"$version"')] + vex_attach()
     + [archives('"$version"'), "digests=()", CASE, "  apk | snapshot-apk) digests=(--digests digests.json) ;;", "esac",
        'python3 -I bin/chain-verify.py items-merge --fragment "$dir/ubuntu-24.04/items-apk.json" '
@@ -301,7 +305,9 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
     ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="freeze",
     down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True, probe=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", args="apk", snap_args="snapshot-apk", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
+    ("build", "assemble"): dict(kind="assemble", step="build", args="apk", snap_args="snapshot-apk",
+        perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,),
+        expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
     ("rebuild", "rapk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
@@ -310,7 +316,9 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
     ("rebuild", "rapk-arm"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04-arm", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
         up=[("rapk-ubuntu-24.04-arm", "out"), ("witness-rapk-ubuntu-24.04-arm", "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="assemble", step="rebuild", args="rapk", snap_args="snapshot-rapk", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
+    ("rebuild", "assemble"): dict(kind="assemble", step="rebuild", args="rapk", snap_args="snapshot-rapk",
+        perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,),
+        mode=True, expose_records=True, check_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
