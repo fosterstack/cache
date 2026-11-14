@@ -3841,7 +3841,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$FAKE_LOG"' \
 chmod +x "$rp/fake/crane"
 rc=0; out=$(cd "$rp" && PATH="$rp/fake:$PATH" FAKE_LOG="$rp/log" FAKE_STATE="$rp/pushed" WRONG="$DF" \
   DOCKERHUB_USERNAME=u DOCKERHUB_TOKEN=t GH_TOKEN=g GITHUB_REF_NAME=v1.2.3 bash bin/release-publish.sh 2>&1) || rc=$?
-# the regex matches the log line "push ghcr.io/fosterstack/cache:1.2.3" and refuses "auth ghcr.io"; grep -c exits 1 at 0
+# the regex matches the log line "push images/production ghcr.io/fosterstack/cache:1.2.3" and refuses "auth login ghcr.io -u ..."; grep -c exits 1 at 0
 pushes=$(grep -c '^push ' "$rp/log" || true)
 if [ "$rc" = 1 ] \
    && grep -Fq "ghcr.io/fosterstack/cache:1.2.3 differs: the registry shows $DF, Build attested $DA" <<< "$out" \
