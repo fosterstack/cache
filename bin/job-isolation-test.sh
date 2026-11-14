@@ -151,8 +151,10 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
         stext = "\n".join(steps_text(s_) for s_ in (j.get("steps") or []))
         stext = re.sub(r"['\"\\]", "", re.sub(r"\\\n[ \t]*", "", stext))   # quotes, backslashes and continuations are not part of the word the shell runs (bin/witnessed-"local".sh is witnessed-local.sh)
         if re.search(r"\bwitnessed-local\.sh\b", stext):
-            if w:
-                bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and holds %s: only Sign holds an identity token" % (key[0], jn, ", ".join(w)))
+            # ruling Q-e: the release job publishes under witnessed-local.sh, so it keeps its environment release and packages write, but never an identity token or a KMS role
+            wl = [x for x in w if x not in ("an environment", "packages: write")] if key == ("release.yml", "release") else w
+            if wl:
+                bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and holds %s: only Sign holds an identity token" % (key[0], jn, ", ".join(wl)))
             if re.search(r"\bwitnessed\.sh\b", stext):
                 bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and also runs the keyless witnessed.sh: a build-side job signs with the throwaway key only" % (key[0], jn))
         if w:   # fail closed: a credential job never names a script through a variable: a path word with a variable or a substitution after bash/sh/source/./, a variable assigned a path under bin/, or an env value under bin/ (any of them could hide the wrapper or a build from the rules above)
@@ -333,6 +335,13 @@ edit("release.yml", lambda s: in_job(s, "'$job'", r"(    permissions:\n)", r"\1 
   mutate "release.yml job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
 edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", regex=True))'
 done
+# ruling Q-e: the release job records release-verify and release-publish with witnessed-local.sh (environment release and packages write allowed, no identity token), never the keyless witnessed.sh
+want_msg="records its steps with witnessed-local.sh (a build-side job) and holds id-token: write"
+mutate "release.yml job release is granted id-token: write (it runs witnessed-local.sh)" '
+edit("release.yml", lambda s: in_job(s, "release", r"(    permissions:\n)", r"\1      id-token: write\n", regex=True))'
+want_msg="also runs the keyless witnessed.sh"
+mutate "release.yml job release runs bin/witnessed.sh (keyless) beside witnessed-local.sh" '
+edit("release.yml", lambda s: in_job(s, "release", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", regex=True))'
 for job in build-freeze build-apk build-assemble rebuild-apk rebuild-assemble check-govulncheck check; do
   want_msg="is a build-side job of release.yml and holds"
   mutate "release.yml build-side job $job holds the environment sign" '
