@@ -462,7 +462,9 @@ mappings:
   - ac: REQ-REL-012-AC9
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the Dependabot cases: whose head it is, the reviewer's verdict on the head and on the heads it only updates, no verdict as no pass, and the judge with a fake gh over a real git repository whose heads merge main in, carry a writer's commit, or carry more than the merge)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the auditor matrix, whose rel012-ac9 case holds the verdict job and the sweep to checks: read and pull-requests: read" }
   - ac: REQ-REL-012-AC10
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
