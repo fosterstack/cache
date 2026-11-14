@@ -721,10 +721,13 @@ verdicts() { # <[[conclusion, external_id (left out: none), app slug], ...]> old
                                          app: {slug: (.value[2] // "fosterstack-automation")}}
                                          + (if (.value | length) > 1 then {external_id: .value[1]} else {} end)]}'
 }
-# verdicts, but GitHub says there are 31 runs and the page holds 30: 29 neutral ones, then <last run>
-verdicts_cut() {
-  verdicts "$(jq -c '. + ['"$1"']' <<<"$(jq -nc '[range(29) | ["neutral"]]')")" | jq -c '.total_count = 31'
+# <count> <last run>: a page of <count> runs, <count> - 1 neutral ones, then <last run>; 100 is a full page, which a
+# reader treats as cut
+verdicts_page() {
+  verdicts "$(jq -c '. + ['"$2"']' <<<"$(jq -nc --argjson n "$(($1 - 1))" '[range($n) | ["neutral"]]')")"
 }
+# a page whose total_count is larger than the runs it holds: no reader looks at it
+more_than_read() { jq -c '.total_count = 150'; }
 # every gh log line that asks for the reviewer's check runs asks for every run (filter=all) and 100 of them at a time,
 # and there is at least one
 asks_all_runs() {
@@ -1164,14 +1167,19 @@ cancel_one "$(verdicts "[[\"success\",\"$OLD3\",\"s\"]]")" no \
   "a success carrying the version of the three files joined is no success: the arm comes off"
 cancel_one "$(verdicts "[[\"success\",\"$OLD3S\",\"s\"]]")" no \
   "a success carrying the version of the three files' sha256sum lines is no success: the arm comes off"
-# a cut answer (31 runs, 30 read) is no verdict: whatever the newest run read says, the arm comes off
-cancel_one "$(verdicts_cut "[\"success\",\"$VER\",\"s\"]")" no \
-  "a success of the current version among 30 of 31 runs is no success: the arm comes off"
+# a full page of 100 runs may have been cut: it is no verdict, whatever the newest run read says, and the arm comes off
+cancel_one "$(verdicts_page 100 "[\"success\",\"$VER\",\"s\"]")" no \
+  "a success of the current version among 100 runs is no success: the arm comes off"
 asks_all_runs "cancellation: the check runs are asked with filter=all, 100 at a time"
-cancel_one "$(verdicts_cut "[\"success\",\"$OLDVER\",\"s\"]")" no \
-  "a success of another version among 30 of 31 runs is no success: the arm comes off"
-cancel_one "$(verdicts_cut '["success",null,"s"]')" no \
-  "a plain success among 30 of 31 runs is no success: the arm comes off"
+cancel_one "$(verdicts_page 100 "[\"success\",\"$OLDVER\",\"s\"]")" no \
+  "a success of another version among 100 runs is no success: the arm comes off"
+cancel_one "$(verdicts_page 100 '["success",null,"s"]')" no \
+  "a plain success among 100 runs is no success: the arm comes off"
+# 99 runs are the whole answer, whatever total_count says
+cancel_one "$(verdicts_page 99 "[\"success\",\"$VER\",\"s\"]" | more_than_read)" yes \
+  "a success of the current version among 99 runs is read: the arm is recorded"
+cancel_one "$(verdicts_page 99 "[\"success\",\"$OLDVER\",\"s\"]")" no \
+  "a success of another version among 99 runs is read: the arm comes off"
 for what in prompt-changed workflow-changed checks-changed guard-changed; do
   mkalt "$w/alt" "$what"
   CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$VER\",\"s\"]]")" no \
@@ -1266,7 +1274,8 @@ case "$1 $2" in
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *)
     [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   # the review gate's own check on a head (the App's latest): GATE99, none unless set; no gate check on any other head
-  "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate&per_page=100") [ "${GATELOOKUP:-}" = fail ] && exit 1
+  "api repos/o/r/commits/sha99/check-runs?check_name=auditor-review-gate&per_page=100")
+              [ "${GATELOOKUP:-}" = fail ] && exit 1
               # the step's own filter, run for real
               if [ -n "${GATE99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done;
                 jq -r "$f" <<<"$GATE99_JSON"
@@ -1409,7 +1418,12 @@ also "candidates: a stale gate failure over a failure verdict is not published a
 # is the line
 runs_json() {
   jq -cn --argjson r "$1" \
-  '{total_count: ($r | length), check_runs: [$r[] | {conclusion: .[0], completed_at: .[1], app: {slug: (.[2] // "fosterstack-automation")}}]}'; }
+  '{total_count: ($r | length), check_runs: [$r[] | {conclusion: .[0], completed_at: .[1],
+                                                    app: {slug: (.[2] // "fosterstack-automation")}}]}'; }
+# <count> <last run>: <count> - 1 gate failures from nine hours ago, then <last run>, as runs_json reads them
+gate_page() {
+  runs_json "$(jq -cn --argjson n "$(($1 - 1))" --arg t "$OLDER" --argjson last "$2" \
+    '[range($n) | ["failure", $t]] + [$last]')"; }
 RECENT=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); OLD=$(date -u -d '-7 hours' +%Y-%m-%dT%H:%M:%SZ);
   OLDER=$(date -u -d '-9 hours' +%Y-%m-%dT%H:%M:%SZ)
 PRIOR99=success GATE99_JSON=$(runs_json "[[\"failure\",\"$OLD\"]]") cand "91 none," 0 \
@@ -1430,6 +1444,16 @@ also "candidates: another app's check is not the gate's: nothing published" "-ch
 PRIOR99=failure GATE99_JSON=$(runs_json "[[\"failure\",\"$OLDER\"],[\"success\",\"$RECENT\"]]") cand "91 none," 0 \
   "real check runs: a gate success newer than its failure, over a failure verdict"
 also "candidates: the gate success over the failure verdict is failed again" "+$GFAIL .*verdict on this head is failure"
+# a full page of 100 gate runs may have been cut: the gate's check cannot be read, the step fails; 99 runs are the
+# whole answer, whatever total_count says
+PRIOR99=success GATE99_JSON=$(gate_page 100 "[\"success\",\"$RECENT\"]") cand '*' nz \
+  "real check runs: 100 gate runs, the newest a success, over a success verdict -> the step fails"
+PRIOR99=success GATE99_JSON=$(gate_page 99 "[\"success\",\"$RECENT\"]" | jq -c '.total_count = 150') cand "91 none," 0 \
+  "real check runs: 99 gate runs, total_count 150, the newest a success, over a success verdict"
+also "candidates: the newest of 99 gate runs is the success: left alone" "-check-runs -f name=auditor-review-gate"
+PRIOR99=success GATE99_JSON=$(gate_page 99 "[\"failure\",\"$OLD\"]") cand "91 none," 0 \
+  "real check runs: 99 gate runs, the newest a failure seven hours old, over a success verdict"
+also "candidates: the stale failure among 99 gate runs is published again" "+$GREFRESH"
 
 # REQ-DEP-001-AC14: a success counts only if its external_id is the version of the reviewer as this run checked it out
 # (the sha256 of the sha256sum lines of the five files). A success of another version, or with none, is no verdict:
@@ -1452,15 +1476,23 @@ ONLY=99 PRIOR99_JSON=$(verdicts "[$CUR_OK]") cand "" 0 \
 also "candidates: nothing is published over a current success" "-check-runs -f name=dependabot-reviewer"
 ONLY=99 PRIOR99_JSON=$(verdicts "[$OLD_OK,$CUR_OK]") cand "" 0 \
   "a success of another version replaced by a newer one of the current version is a success"
-# a cut answer (total_count 31, 30 runs read) is no verdict: the head is not passed over as a success; the lookup fails
-# (skipped, the step fails) or reads none (the head is taken up)
+# a full page of 100 runs may have been cut: it is no verdict, the head is not passed over as a success; the lookup
+# fails (skipped, the step fails) or reads none (the head is taken up)
 for what in "[\"success\",\"$VER\"]" "[\"success\",\"$OLDVER\"]" '["success"]'; do
-  ONLY=99 PRIOR99_JSON=$(verdicts_cut "$what") cand '*' any "30 of 31 runs read, the newest $what"
+  ONLY=99 PRIOR99_JSON=$(verdicts_page 100 "$what") cand '*' any "100 runs read, the newest $what"
   if [ -z "$CAND_GOT" ] && [ "$CAND_RC" = 0 ]; then
-    echo "FAIL: candidates: 30 of 31 runs read, the newest $what: counted as a success (nothing taken up, no failure)"
+    echo "FAIL: candidates: 100 runs read, the newest $what: counted as a success (nothing taken up, no failure)"
     fail=$((fail+1))
-  else echo "ok: candidates: 30 of 31 runs read, the newest $what: not counted as a success"; pass=$((pass+1)); fi
+  else echo "ok: candidates: 100 runs read, the newest $what: not counted as a success"; pass=$((pass+1)); fi
 done
+# 99 runs are the whole answer, whatever total_count says: the newest decides as it does over one run
+ONLY=99 PRIOR99_JSON=$(verdicts_page 99 "$CUR_OK" | more_than_read) cand "" 0 \
+  "99 runs read, the newest a success of the current version: still a success, not read again"
+also "candidates: nothing is published over a current success among 99 runs" "-check-runs -f name=dependabot-reviewer"
+ONLY=99 PRIOR99_JSON=$(verdicts_page 99 "$OLD_OK" | more_than_read) cand "99 none," 0 \
+  "99 runs read, the newest a success of another version: read"
+ONLY=99 PRIOR99_JSON=$(verdicts_page 99 '["failure"]' | more_than_read) cand "" 0 \
+  "99 runs read, the newest a failure: a failure verdict"
 asks_all_runs "candidates: the check runs are asked with filter=all, 100 at a time"
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"failure\",\"$OLDVER\"]]") cand "" 0 \
   "a failure of another version is still a failure verdict"
@@ -1846,13 +1878,21 @@ PRIOR90_JSON=$(verdicts "[[\"success\",\"$OLD3\"]]") settle "$BOTH" '90 sha90\n'
 PRIOR90_JSON=$(verdicts "[[\"success\",\"$OLD3S\"]]") settle "$BOTH" '90 sha90\n' 0 \
   "a success carrying the version of the three files' sha256sum lines"
 also "settle: it is no verdict: the lane's arm is put back" "$REARM90"
-# a cut answer is no verdict: a lane-armed patch is not left as "passed" on 30 of 31 runs; the step fails or re-arms
+# a full page of 100 runs may have been cut: it is no verdict, a lane-armed patch is not left as "passed"; the step
+# fails or re-arms
 for what in "[\"success\",\"$VER\"]" "[\"success\",\"$OLDVER\"]" '["success"]'; do
-  PRIOR90_JSON=$(verdicts_cut "$what") settle "$BOTH" '90 sha90\n' any "30 of 31 runs read, the newest $what"
+  PRIOR90_JSON=$(verdicts_page 100 "$what") settle "$BOTH" '90 sha90\n' any "100 runs read, the newest $what"
   if [ "$SETTLE_RC" = 0 ] && ! grep -q "pr merge --auto" "$w/gh.log"; then
-    echo "FAIL: settle: 30 of 31 runs read, the newest $what: left as a success (rc 0, nothing armed)"; fail=$((fail+1))
-  else echo "ok: settle: 30 of 31 runs read, the newest $what: not taken for a success"; pass=$((pass+1)); fi
+    echo "FAIL: settle: 100 runs read, the newest $what: left as a success (rc 0, nothing armed)"; fail=$((fail+1))
+  else echo "ok: settle: 100 runs read, the newest $what: not taken for a success"; pass=$((pass+1)); fi
 done
+# 99 runs are the whole answer, whatever total_count says
+PRIOR90_JSON=$(verdicts_page 99 "$CUR_OK" | more_than_read) settle "$BOTH" '90 sha90\n' 0 \
+  "99 runs read, the newest a success of the current version"
+also "settle: a success of the current version among 99 runs is left as the act step left it" "-pr merge"
+PRIOR90_JSON=$(verdicts_page 99 "$OLD_OK" | more_than_read) settle "$BOTH" '90 sha90\n' 0 \
+  "99 runs read, the newest a success of another version"
+also "settle: a success of another version among 99 runs is no verdict: the lane's arm is put back" "$REARM90"
 asks_all_runs "settle: the check runs are asked with filter=all, 100 at a time"
 for what in prompt-changed workflow-changed checks-changed guard-changed; do
   mkalt "$w/alt" "$what"
