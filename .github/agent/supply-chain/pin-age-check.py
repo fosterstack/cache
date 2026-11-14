@@ -1204,7 +1204,7 @@ def load_ruled_text(path, required=False):
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
         body = r.get("body-sha256")
-        if body is not None and (r["form"] == LOCAL_CALL_FORM or not re.fullmatch(r"[0-9a-f]{64}", str(body))):
+        if "body-sha256" in r and (r["form"] == LOCAL_CALL_FORM or not re.fullmatch(r"[0-9a-f]{64}", str(body))):
             raise bad("has a body-sha256 that is not 64 lowercase hex, or is a local-call row")
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
