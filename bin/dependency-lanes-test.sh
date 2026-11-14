@@ -28,10 +28,11 @@ def in_order(text, *subs):
     return all(i >= 0 for i in at) and at == sorted(at) and len(set(at)) == len(at)
 def flat(text):
     """the run text with backslash-newlines removed and whitespace collapsed, so a wrapped command reads as one line"""
-    return re.sub(r"\s+", " ", text.replace("\\\n", " "))
+    return " ".join(text.replace("\\\n", " ").split())
 def gate_again(text):
     """gate_stands is called for a failure verdict and for every verdict that is none or neutral (one call on the
     verdict read, or one call for each)"""
+    # matches: gate_stands "$n" "$sha" failure; refuses: gate_stands "$n" failure (no sha)
     said = set(re.findall(r'gate_stands "\$n" "\$sha" ("\$prior"|\w+)', text))
     return "failure" in said and ('"$prior"' in said or {"none", "neutral"} <= said)
 if kind == "reviewer":
@@ -69,7 +70,7 @@ if kind == "reviewer":
     # step names EVERY update of a bump (in its check and in the issue of a held one), never the majors only
     cand = [r for st, r in runs(job) if st.get("id") == "candidates"]
     acts = [r for st, r in runs(job) if st.get("id") == "act"]
-    if len(cand) != 1 or re.search(r"select\(\.major|the patch/minor lane's\"; continue", cand[0]):
+    if len(cand) != 1 or "select(.major" in cand[0] or "the patch/minor lane's\"; continue" in cand[0]:
         bad.append("the candidate step leaves a pull request out for its update kind")
     if len(acts) != 1 or """names=$(jq -r '[.[]|"\\(.name) \\(.from)→\\(.to)"]|join(", ")'""" not in acts[0] \
             or "select(.major)" in acts[0]:
@@ -80,6 +81,7 @@ if kind == "reviewer":
         a = acts[0]
         g = 'python3 bin/dependabot-reviewer.py gather --pr "$n" --sha "$sha" --updates "$W/updates-$n.json" --out "$d"'
         h = 'if [ "$head_now" != "$sha" ]; then'
+        # matches: if [ "$head_now" != "$sha" ]; then echo x; continue fi; refuses: gh pr merge before continue fi
         moved = (r'if \[ "\$head_now" != "\$sha" \]; then'
                  r'(?:(?! fi |gather|decide|gh pr merge|gh api|--auto).)*; continue fi')
         if not in_order(flat(a), g, "decide --reader", h, 'case "$decision" in') or not re.search(moved, flat(a)):
@@ -89,6 +91,7 @@ if kind == "reviewer":
     # App token, with the gate's own fields; no step ever publishes a gate success; without the gate failure the
     # reviewer's own check does not go up
     alltext = "\n".join(r for _, r in runs(job))
+    # matches: gh api ".../check-runs" -f name=auditor-review-gate; refuses: ... -f name=dependabot-reviewer
     gate_cmds = re.findall(r"gh api \"repos/\$\{GITHUB_REPOSITORY\}/check-runs\" -f "
             r"name=auditor-review-gate(?:[^\n]*\\\n)*[^\n]*", alltext)
     if len(gate_cmds) != 3 or any("-f status=completed -f conclusion=failure -f details_url=\"$RUN_URL\"" not in c
@@ -96,6 +99,7 @@ if kind == "reviewer":
                                   for c in gate_cmds):
         bad.append("the review gate's check is not published exactly as a failure in the gate's own form (three "
                 "places: candidates, act, cancellation)")
+    # matches: name=auditor-review-gate -f conclusion=success; refuses: name=auditor-review-gate -f conclusion=failure
     if re.search(r"name=auditor-review-gate(?:(?!name=dependabot-reviewer)[\s\S]){0,400}?conclusion=(?!failure)",
             alltext):
         bad.append("a step publishes the review gate's check with a conclusion that is not failure")
@@ -103,6 +107,7 @@ if kind == "reviewer":
         a = acts[0]
         own = 'GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer'
         gate = 'GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate'
+        # matches: publish() { if [ "$2" != success ]; then <gate> >/dev/null || return 1 fi <own>; refuses: || true
         m = re.search(r'publish\(\) \{[^\n]*\n\s*if \[ "\$2" != success \]; then\n\s*' + re.escape(gate)
                       + r'(?:[^\n]*\\\n)*[^\n]*>/dev/null \|\| return 1\n\s*fi\n\s*' + re.escape(own), a)
         if not m or a.count("name=dependabot-reviewer") != 1 or a.count("name=auditor-review-gate") != 1:
@@ -111,6 +116,7 @@ if kind == "reviewer":
     if len(cand) == 1:
         c = cand[0]
         first = 'if ! gate_fail "$sha" "The Dependabot reviewer is $again"; then'
+        # matches: <first>, one line, then lookup_failed=1; continue; refuses: <first> then a bare continue
         if c.count("conclusion=neutral") != 1 or not in_order(c, first, "conclusion=neutral") \
                 or not re.search(re.escape(first) + r"\n[^\n]*\n\s*lookup_failed=1; continue\n", c) \
                 or 'GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate' \
@@ -119,6 +125,7 @@ if kind == "reviewer":
             bad.append("the candidate step does not fail the review gate's check before its neutral, or does not fail "
                     "it again over a failure, neutral or no verdict")
     canc = [r for st, r in runs(job) if (st.get("name") or "").startswith("on cancellation")]
+    # the regex matches: the gate publish >/dev/null \ && \ the reviewer publish; refuses the reviewer publish first
     if len(canc) != 1 or canc[0].count("conclusion=neutral") != 1 \
             or not in_order(canc[0], "check-runs\" -f name=auditor-review-gate",
                     "check-runs\" -f name=dependabot-reviewer") \
@@ -135,6 +142,7 @@ if kind == "reviewer":
                 "update of kind not-major)")
     # REQ-DEP-001-AC13: a success verdict (read or carried) over a stale gate failure has the failure published again,
     # by the gate's own six-hour line
+    # matches: if [ "$prior" = success ]; then gate_refresh "$n" "$sha" ||; refuses: if [ "$prior" = none ]; then
     if len(cand) == 1 and (not re.search(r'if \[ "\$prior" = success \]; then\n\s+gate_refresh "\$n" "\$sha" \|\|',
             cand[0])
                            or '[ "$g" = stale ] || return 0' not in cand[0] or "(now - (.completed_at | fromdate)) < "
@@ -291,6 +299,7 @@ elif kind == "automerge":
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
     # REQ-DEP-003-AC3: the arm step reads the reviewer's verdict on the head it arms first, and leaves a failed head
     # unarmed
+    # matches: if [ "$verdict" = failure ]; then exit 0; fi gh pr merge --auto --squash; refuses: merge first
     elif "set -euo pipefail" not in runs(job)[arm[0]][1] \
             or "commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer" not in runs(job)[arm[0]][1] \
             or not re.search(r'if \[ "\$verdict" = failure \]; then .*?exit 0;? fi;? gh pr merge --auto --squash',
@@ -307,6 +316,7 @@ elif kind == "automerge":
                 "allow")
     elif (disarm[0][1].get("env") or {}).get("WAITS_FOR_VERDICT") != major:
         bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
+    # matches: if ! v=$(gh pr view 1 --json headRefOid,autoMergeRequest); then <disarm> exit 1; refuses: no disarm
     elif not in_order(disarm[0][2], "gh pr view", "--json headRefOid,autoMergeRequest",
             "check-runs?check_name=dependabot-reviewer", "contents/") \
             or not re.search(r"if ! \w+=\$\(gh pr view [^\n]*--json headRefOid,autoMergeRequest[^\n]*\); "
@@ -417,6 +427,7 @@ case_ reviewer $R reviewer-moved-head-acts bad "[s.__setitem__('run', s['run'].r
 \"\$sha\" ]; then', 'if false; then')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-gate-not-first  bad "[s.__setitem__('run', s['run'].replace('if [ \"\$2\" != success ]; \
 then', 'if false; then')) for s in $rs if s.get('id') == 'act']"
+# the sub in the next case matches: it is not passed."x>/dev/null || return 1; refuses: ... >/dev/null || true
 case_ reviewer $R reviewer-gate-soft       bad "[s.__setitem__('run', __import__('re').sub(r'(it is not \
 passed\\.\"[^|]*>/dev/null) \\|\\| return 1', r'\\1 || true', s['run'])) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-gate-success    bad "$rs.append({'run': 'gh api \"repos/\${GITHUB_REPOSITORY}/check-runs\" \
@@ -428,6 +439,7 @@ case_ reviewer $R reviewer-no-gate-again   bad "[s.__setitem__('run', s['run'].r
 failure ||', 'true ||')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-cancel-no-gate  bad "[s.__setitem__('run', s['run'].replace('name=auditor-review-gate', \
 'name=dependabot-reviewer', 1)) for s in $rs if (s.get('name') or '').startswith('on cancellation')]"
+# the sub in the next case matches: python3 bin/dependabot-reviewer.py same-diff x "$sha"; refuses: python3 other.py
 case_ reviewer $R reviewer-carry-unproven  bad "[s.__setitem__('run', __import__('re').sub(r'(?s)python3 \
 bin/dependabot-reviewer\\.py same-diff.*?\"\\\$sha\"', 'true', s['run'])) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-carry-forced    bad "[s.__setitem__('run', s['run'].replace('if [ \"\$prior\" = none ] && [ \
@@ -507,7 +519,7 @@ last = [s["run"] for s in steps if "gh pr merge --disable-auto" in (s.get("run")
 arm = [s["run"] for s in steps if "gh pr merge --auto --squash" in (s.get("run") or "")][0]
 def runs_of(verdict, total=None):
     """the App's check runs, oldest first, as GitHub lists them: a conclusion alone is a run of the current version;
-    total: the total_count GitHub reports (default: the runs given; larger: the answer is cut)"""
+    total: the total_count GitHub reports (default: the runs given); no reader looks at it"""
     if verdict == "none": verdict = []
     if isinstance(verdict, str): verdict = [verdict]
     out = []
@@ -584,6 +596,25 @@ for waits in ("false", "true"):
     rc, log = go(last, "failure", armed="false", waits=waits)
     if rc != 0 or "--disable-auto" in log:
         bad.append("a failed head that is not armed (waits=%s): nothing to do (rc %s)\n%s" % (waits, rc, log))
+# a plain bump that is not armed and has no failure on its head: the step says it needs no verdict and is not armed
+for verdict in ("none", "neutral", "success"):
+    rc, log = go(last, verdict, armed="false", waits="false")
+    if rc != 0 or "--disable-auto" in log or "needs no verdict" not in LASTOUT \
+            or "auto-merge is not armed" not in LASTOUT:
+        bad.append("a plain bump not armed, verdict %s: nothing turned off, and the step says it needs no verdict and "
+                "auto-merge is not armed (rc %s)\n%s%s" % (verdict, rc, LASTOUT, log))
+# the reviewer's failure comes before the not-armed line: it is never said to need no verdict
+for waits in ("false", "true"):
+    rc, log = go(last, "failure", armed="false", waits=waits)
+    if "needs no verdict" in LASTOUT or "reviewer failed the current head" not in LASTOUT \
+            or "auto-merge is not armed" not in LASTOUT:
+        bad.append("a failed head not armed (waits=%s): the step says the reviewer failed the current head and "
+                "auto-merge is not armed, never that it needs no verdict\n%s" % (waits, LASTOUT))
+    rc, log = go(last, "failure", armed="true", waits=waits)
+    if "pr merge --disable-auto" not in log or "turned off" not in LASTOUT or "the reviewer failed" not in LASTOUT \
+            or "needs no verdict" in LASTOUT:
+        bad.append("a failed head armed (waits=%s): auto-merge is turned off and the step says the reviewer failed "
+                "(rc %s)\n%s%s" % (waits, rc, LASTOUT, log))
 # REQ-DEP-001-AC14: a success counts only with the version of the reviewer on main now (main's copy, through the
 # contents API, sha256 of its content)
 for what, runs in (("another version", [("success", OLDVER)]), ("no external_id", [("success", None)]),
@@ -720,24 +751,33 @@ for path in PATHS:
             bad.append("the read of %s %s before it fails, with an old version's success on an armed major: the step "
                     "must turn auto-merge off and fail, never say it stands (rc %s)\n%s%s" % (path, what, rc, LASTOUT,
                     log))
-# every reader of the reviewer's checks asks for 100 at a time and fails closed on a cut answer (total_count over
-# the runs read): a success among 30 of 31 runs is no verdict
+# every reader of the reviewer's checks asks for 100 at a time and fails closed on a full page, which GitHub may have
+# cut: a success among 100 runs is no verdict; 99 runs are the whole answer, whatever total_count says
 for step_name, step in (("last step", last), ("arm step", arm)):
     rc, log = go(step, "none", armed="false" if step_name == "arm step" else "true")
     if not any("check-runs?check_name=dependabot-reviewer" in l and "filter=all" in l and "per_page=100" in l
                for l in log.splitlines()):
         bad.append("the %s does not ask for filter=all and per_page=100\n%s" % (step_name, log))
-cut = [("neutral", VER)] * 29
 for what, newest in (("the current version", VER), ("an old version", OLDVER), ("no external_id", None)):
-    rc, log = go(last, cut + [("success", newest)], total=31, waits="true", armed="true")
-    # the stub gh runs the real jq filter: its error is gh's nonzero exit, as a cut answer is for the real gh
+    full = [("neutral", VER)] * 99 + [("success", newest)]
+    rc, log = go(last, full, waits="true", armed="true")
+    # the stub gh runs the real jq filter: its error is gh's nonzero exit, as a failed read is for the real gh
     if rc == 0 or "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
-        bad.append("30 of 31 check runs read, the newest a success of %s: the last step must turn auto-merge off and "
+        bad.append("100 check runs read, the newest a success of %s: the last step must turn auto-merge off and "
                 "fail (rc %s)\n%s%s" % (what, rc, LASTOUT, log))
-    rc, log = go(arm, cut + [("success", newest)], total=31, armed="false")
+    rc, log = go(arm, full, armed="false")
     if rc == 0 or "pr merge --auto" in log:
-        bad.append("30 of 31 check runs read, the newest a success of %s: the arm step must arm nothing and fail (rc "
+        bad.append("100 check runs read, the newest a success of %s: the arm step must arm nothing and fail (rc "
                 "%s)\n%s" % (what, rc, log))
+for total in (None, 150):
+    whole = [("neutral", VER)] * 98 + [("success", VER)]
+    rc, log = go(last, whole, total=total, waits="true", armed="true")
+    if rc != 0 or "--disable-auto" in log or "auto-merge stands" not in LASTOUT:
+        bad.append("99 check runs read (total_count %s), the newest a success of the current version: auto-merge "
+                "stands (rc %s)\n%s%s" % (total, rc, LASTOUT, log))
+    rc, log = go(arm, whole, total=total, armed="false")
+    if rc != 0 or "pr merge --auto --squash --match-head-commit HEAD1" not in log:
+        bad.append("99 check runs read (total_count %s): the arm step arms the head (rc %s)\n%s" % (total, rc, log))
 # REQ-DEP-001-AC14, REQ-DEP-003-AC3: the head and the arm state are one read of the pull request; when it fails the arm
 # is turned off and the step fails
 for verdict in ("success", "failure"):
@@ -831,8 +871,10 @@ def run_text(workflow, job, pick):
 sweep = run_text("agent-review-gate.yml", "sweep", lambda s: "check_name=auditor-review-gate" in (s.get("run") or ""))
 cand = run_text("dependabot-reviewer.yml", "review", lambda s: s.get("id") == "candidates")
 # each workflow's own lookup, cut out whole: the sweep's `last="$(…)"` and the reviewer's function gate_of
+# matches: last="$(GH_TOKEN="$APP_TOKEN" gh api ...check_name=auditor-review-gate ...)"; refuses: a git/ref lookup
 (sweep_cmd,) = re.findall(r'last="\$\((GH_TOKEN="\$APP_TOKEN" gh api [^\n]*check_name=auditor-review-gate.*?)\)" \\\n',
                           sweep, re.S)
+# matches: a line starting gate_of() { and ending at the next line that is only }; refuses: an indented gate_of() {
 (gate_of,) = re.findall(r'(?m)^(gate_of\(\) \{.*?\n\})\n', cand, re.S)
 stub = os.path.join(work, "window-stub"); os.makedirs(stub, exist_ok=True)
 open(os.path.join(stub, "gh"), "w").write("""#!/usr/bin/env bash
@@ -862,13 +904,18 @@ for name, runs in cases:
         bad.append("%s: the sweep reads %r, the reviewer reads %r" % (name, a, b))
 if seen != {"none", "success", "failure", "stale"}:
     bad.append("the cases did not reach all four answers: %s" % sorted(seen))
-# both read the gate's check 100 a time, the latest of each name (no filter=all), and a cut answer (30 runs read of
-# 31, the gate's success on the second page) is a failed read: neither answers
+# both read the gate's check 100 a time, the latest of each name (no filter=all); a full page of 100 runs may have
+# been cut, so it is a failed read: neither answers; 99 runs are the whole answer, whatever total_count says
 for name, script in (("the sweep", sweep_cmd), ("the reviewer", gate_of + "\ngate_of abc")):
-    got = answer(script, [aged("failure", 24)] * 30, total=31)
+    got = answer(script, [aged("failure", 24)] * 100)
     asked = open(os.path.join(work, "window-runs.json.asked")).read()
     if not got.startswith("error:"):
-        bad.append("%s answers %r over 30 of 31 runs read: it must fail the read" % (name, got))
+        bad.append("%s answers %r over a full page of 100 runs: it must fail the read" % (name, got))
+    for total in (None, 150):
+        got = answer(script, [aged("failure", 24)] * 98 + [aged("success", 1)], total=total)
+        if got != "success":
+            bad.append("%s answers %r over 99 runs (total_count %s): it must read them, the newest a success" % (
+                    name, got, total))
     if "per_page=100" not in asked or "filter=all" in asked:
         bad.append("%s asks %r: it must ask per_page=100, and not filter=all" % (name, asked.strip()))
 print("gate window: " + ("the sweep and the reviewer read every age alike" if not bad else "; ".join(bad)))
