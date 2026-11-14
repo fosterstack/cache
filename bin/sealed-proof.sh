@@ -36,7 +36,8 @@ here=$(cd "$here_" && pwd)
 die() { echo "sealed-proof.sh: $1" >&2; exit "${2:-1}"; }
 
 [[ $HOST_OS == *linux* ]] ||
-  die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+  die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools,"\
+" which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/sealed-proof.sh ...  from there
 [ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] ||
   die "usage: run bin/sealed-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
@@ -71,7 +72,8 @@ done
 datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc)' "$SOURCE_DATE_EPOCH" 2>/dev/null ||
   die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date" 2
 { [ -n "${ImageOS:-}" ] && [ -n "${ImageVersion:-}" ] && [ "$ImageOS" != unknown ] &&
-  [ "$ImageVersion" != unknown ]; } || die "ImageOS and ImageVersion are not set: the runner image cannot be recorded (rule 42); refusing" 2
+  [ "$ImageVersion" != unknown ]; } ||
+  die "ImageOS and ImageVersion are not set: the runner image cannot be recorded (rule 42); refusing" 2
 bwords=(); while IFS= read -r -d '' w; do bwords+=("$w"); done < <("$PY3" -I -B -c 'import shlex,sys
 for w in shlex.split(sys.argv[1]): sys.stdout.write(w+"\0")' "$bargs")
 awords=(); while IFS= read -r -d '' w; do awords+=("$w"); done < <("$PY3" -I -B -c 'import shlex,sys
@@ -126,7 +128,8 @@ if [ "$inside_rc" = 0 ]; then
   die "the probe reached outside from inside 'sudo unshare -n': the network cut leaks (escaped)"
 fi
 [ "$inside_rc" = 1 ] ||
-  die "control inconclusive: inside the namespace the probe exited $inside_rc, not 1 (the status of a probe that could not reach out); a killed, unstartable or erroring probe proves nothing (probe)"
+  die "control inconclusive: inside the namespace the probe exited $inside_rc, not 1"\
+" (the status of a probe that could not reach out); a killed, unstartable or erroring probe proves nothing (probe)"
 
 cp -RP "$src" "$tmp/src-copy"; inside_tmp "$tmp/src-copy"   # the throwaway copies and their guards come FIRST, before any driver runs
 cp -RP "$archive" "$tmp/arch-nopkg"; inside_tmp "$tmp/arch-nopkg"
@@ -167,7 +170,8 @@ if [ -n "$expect" ]; then
   fi
 fi
 [ -z "$digests_out" ] || [ -z "$expect" ] || { [ ! "$digests_out" -ef "$expect" ] ||
-  die "--digests-out and --expect are the same file (or hard links of one): the comparison would be made against the digests just written" 2; }
+  die "--digests-out and --expect are the same file (or hard links of one):"\
+" the comparison would be made against the digests just written" 2; }
 if [ -n "$digests_out" ]; then
   # the destination is compared by its PHYSICAL location (dot components, doubled slashes, relative spellings and symlinked directories resolve away) and
   # by inode against every regular file the proof wrote
@@ -195,7 +199,9 @@ case $vendor_reason in
   *"$tmp/src-copy/vendor is missing"*) ;;
   *)
     tail -3 "$tmp/neg1.log" >&2
-    die "the build failed with vendor/ deleted, but its own last message is not the 'vendor is missing' refusal (got: ${vendor_reason:-none}); an unrelated failure proves nothing about rule 41 (vendor)";;
+    m="the build failed with vendor/ deleted, but its own last message is not the 'vendor is missing' refusal"
+    m+=" (got: ${vendor_reason:-none}); an unrelated failure proves nothing about rule 41 (vendor)"
+    die "$m";;
 esac
 # rule 41, build level: one package the build declares (a line of --melange-lock) is deleted from a copy of the repository the build was given
 # (--repo): the real build must fail and say which package it could not select
@@ -204,14 +210,17 @@ for ((i = 0; i + 1 < ${#bwords[@]}; i++)); do
   case ${bwords[$i]} in --repo) brepo=${bwords[$((i + 1))]};; --melange-lock) block=${bwords[$((i + 1))]};; --arch) barch=${bwords[$((i + 1))]};; esac
 done
 [ -n "$brepo" ] && [ -n "$block" ] && [ -n "$barch" ] ||
-  die "--build-args must give --repo, --melange-lock and --arch: the proof removes a declared package from the build repository (rule 41)" 2
+  die "--build-args must give --repo, --melange-lock and --arch:"\
+" the proof removes a declared package from the build repository (rule 41)" 2
 bpin=$(grep -E '^[A-Za-z0-9][A-Za-z0-9._+-]*=[A-Za-z0-9][A-Za-z0-9._+~-]*$' "$block" | LC_ALL=C sort | head -n 1) || true
 [ -n "$bpin" ] || die "the melange lock $block has no package=version line to remove from the build repository" 2
 bvictim=$barch/${bpin%%=*}-${bpin#*=}.apk
 [ -f "$brepo/$bvictim" ] && [ ! -L "$brepo/$bvictim" ] ||
   die "the build's first declared package $bvictim is not a regular file in the build repository $brepo"
-[ -f "$brepo/$barch/APKINDEX.tar.gz" ] && [ ! -L "$brepo/$barch/APKINDEX.tar.gz" ] && [ -s "$brepo/$barch/APKINDEX.tar.gz" ] ||
-  die "the build repository $brepo has no regular, non-empty $barch/APKINDEX.tar.gz: the record must name the index the build used"
+[ -f "$brepo/$barch/APKINDEX.tar.gz" ] && [ ! -L "$brepo/$barch/APKINDEX.tar.gz" ] &&
+  [ -s "$brepo/$barch/APKINDEX.tar.gz" ] ||
+  die "the build repository $brepo has no regular, non-empty $barch/APKINDEX.tar.gz:"\
+" the record must name the index the build used"
 build_index=$("$PY3" -I -B -c '
 import hashlib, sys
 print("sha256:" + hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$brepo/$barch/APKINDEX.tar.gz") ||
@@ -229,7 +238,8 @@ bwords_restored=("${bwords[@]}")
 for ((i = 0; i + 1 < ${#bwords_restored[@]}; i++)); do
   [ "${bwords_restored[$i]}" = --repo ] && bwords_restored[$((i + 1))]=$tmp/repo-restored
 done
-if ! "$BASHBIN" bin/build-apk.sh "${bwords_restored[@]}" --source-dir "$src" --out "$tmp/neg-build3" >"$tmp/neg4.log" 2>&1; then
+if ! "$BASHBIN" bin/build-apk.sh "${bwords_restored[@]}" --source-dir "$src" --out "$tmp/neg-build3" \
+  >"$tmp/neg4.log" 2>&1; then
   tail -3 "$tmp/neg4.log" >&2
   die "the build failed again with the package restored: the failure without $bvictim proves nothing (inconclusive)"
 fi
@@ -242,7 +252,8 @@ fi
 package_reason=$(grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/neg2.log" | grep -F -- "$(basename "$victim")" | tail -n 1 || true)
 if [ -z "$package_reason" ]; then
   tail -3 "$tmp/neg2.log" >&2
-  die "the image assembly failed with a package deleted, but its message does not name $(basename "$victim") (an unrelated failure proves nothing about rule 41; package)"
+  m="the image assembly failed with a package deleted, but its message does not name $(basename "$victim")"
+  die "$m (an unrelated failure proves nothing about rule 41; package)"
 fi
 
 # ---- rule 42: the record ----
