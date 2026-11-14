@@ -9,7 +9,8 @@ build/locks/melange.lock, build/locks/fips-module.txt (relative to the repositor
 The third recipe (the file-only base layout, 0710) comes from its own template: the only placeholder is @PACKAGES@ (one whole line, the same pins as the other
 recipes) and the template has its own pin, BASELAYOUT_TEMPLATE_SHA256; @VERSION@ is left as written.
 Two DATA files feed the template, and they are the only thing the daily refresh job ever edits: the melange lock (the package pins of the build environment) and the
-FIPS module file (the certified Go Cryptographic Module, vX.Y.Z-<8 hex>). Both have a closed line grammar; anything else is refused. The generator holds no FIPS constant.
+FIPS module file (the certified Go Cryptographic Module, vX.Y.Z-<8 hex>). Both have a closed line grammar; anything else is refused. The generator holds no module
+version: the wording of the two FIPS lines (the GOFIPS140 export and the proof) is in generate(), the version in them comes from the FIPS module file.
 The template is plain text with a CLOSED set of named placeholders and nothing else is substituted or parsed:
   @NAME@          package name (fscache, or fscache-fips)
   @DESCRIPTION@   package description
@@ -17,17 +18,19 @@ The template is plain text with a CLOSED set of named placeholders and nothing e
   @FIPS_EXPORT@   a whole line: the GOFIPS140 setting in the FIPS recipe, the line is dropped in the standard one
   @FIPS_PROOF@    a whole line block: the proof that the binary records the certified module, dropped in the standard one
   @VERSION@       left as written (build-apk.sh replaces it with the apk version)
-The template must hold no GOFIPS140 (the two FIPS constants live HERE), no tab, carriage return or NUL, and be UTF-8; each of the four named placeholders appears
-exactly once, FIPS_EXPORT and FIPS_PROOF each alone on a line. Nothing is parsed or compared as YAML, so there is no parser difference to exploit.
+The template must hold no GOFIPS140 (the two FIPS lines are written in generate()), no tab, carriage return or NUL, and be UTF-8; each of the five named
+placeholders appears exactly once, FIPS_EXPORT and FIPS_PROOF each alone on a line. Nothing is parsed or compared as YAML, so there is no parser difference to exploit.
 What the generator does NOT do: it does not read or judge the shell in the template. Behaviour parity of the two builds rests on the template being reviewed and
 pinned (TEMPLATE_SHA256 below: --check fails if the template changes, naming the pin; a change must update the pin in the same reviewed change), and the final control
 is build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs), which is mandatory in CI.
 --check exits 0 when all three committed files equal the generator's output byte for byte, 1 when a file differs (the diff is printed) or the template breaks a rule,
-2 when a file is missing or unreadable. --write writes the three files.
+2 when a file is missing or unreadable. --write writes the three files. --emit DIR writes the same three contents as melange.yaml, melange-fips.yaml and
+melange-baselayout.yaml in DIR.
 """
 import argparse
 import difflib
 import hashlib
+import itertools
 import os
 import re
 import sys
@@ -84,7 +87,8 @@ def bad(msg, code=1):
     sys.exit(code)
 
 
-def read_template(path):
+def read_text(path):
+    """a template file: its bytes and its UTF-8 text, with no tab, carriage return or NUL"""
     try:
         raw = open(path, "rb").read()
     except OSError as e:
@@ -93,11 +97,15 @@ def read_template(path):
         if ch in raw:
             bad("the template %s holds %s; refusing" % (path, name))
     try:
-        text = raw.decode("utf-8")
+        return raw, raw.decode("utf-8")
     except UnicodeDecodeError:
         bad("the template %s is not UTF-8 text" % path)
+
+
+def read_template(path):
+    raw, text = read_text(path)
     if "GOFIPS140" in text:
-        bad("the template %s mentions GOFIPS140: the FIPS lines live in the generator's two constants only" % path)
+        bad("the template %s mentions GOFIPS140: the FIPS lines are written by the generator only" % path)
     for tok in re.findall(r"@[A-Za-z0-9_]*@", text):
         if tok[1:-1] not in NAMED + LITERAL:
             bad("the template %s holds the placeholder %s, which is not one of the named set (%s)" % (path, tok, ", ".join(NAMED)))
@@ -135,17 +143,7 @@ def read_template(path):
 
 def read_baselayout_template(path):
     """the base-layout template: plain UTF-8 text with one @PACKAGES@ line and the literal @VERSION@, and its pin"""
-    try:
-        raw = open(path, "rb").read()
-    except OSError as e:
-        bad("cannot read the template %s: %s" % (path, e), 2)
-    for ch, name in ((b"\t", "a tab"), (b"\r", "a carriage return"), (b"\0", "a NUL byte")):
-        if ch in raw:
-            bad("the template %s holds %s; refusing" % (path, name))
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        bad("the template %s is not UTF-8 text" % path)
+    raw, text = read_text(path)
     for tok in re.findall(r"@[A-Za-z0-9_]*@", text):
         if tok not in ("@PACKAGES@", "@VERSION@"):
             bad("the template %s holds the placeholder %s, which is not @PACKAGES@ or @VERSION@" % (path, tok))
@@ -163,7 +161,7 @@ def generate_baselayout(text, packages):
 
 
 def generate(text, variant, packages, module):
-    """module is the certified Go Cryptographic Module, vX.Y.Z-<8 hex>, from the FIPS module data file: the generator holds no FIPS constant of its own"""
+    """module is the certified Go Cryptographic Module, vX.Y.Z-<8 hex>, from the FIPS module data file"""
     fips = variant == "fips"
     name, desc = ("fscache-fips", "the cache server, built with the Go FIPS 140-3 module") if fips else ("fscache", "the cache server")
     export = "      export GOFIPS140=" + module.split("-")[0]
@@ -201,17 +199,20 @@ def main():
     a = ap.parse_args()
     text = read_template(a.template)
     bl_text = read_baselayout_template(a.baselayout_template)
-    if os.path.abspath(a.regular) == os.path.abspath(a.fips):
-        bad("--regular and --fips name the same file; refusing (one recipe would silently replace the other)", 2)
+    flags = {"--regular": a.regular, "--fips": a.fips, "--baselayout": a.baselayout}
+    for (flag1, path1), (flag2, path2) in itertools.combinations(flags.items(), 2):
+        if os.path.abspath(path1) == os.path.abspath(path2):
+            bad("%s %s and %s %s name the same file; refusing (one recipe would silently replace another)"
+                % (flag1, path1, flag2, path2), 2)
     packages, module = read_packages(a.melange_lock), read_fips_module(a.fips_module)
-    want = {a.regular: generate(text, "regular", packages, module), a.fips: generate(text, "fips", packages, module),
-            a.baselayout: generate_baselayout(bl_text, packages)}
+    regular, fips = generate(text, "regular", packages, module), generate(text, "fips", packages, module)
+    baselayout = generate_baselayout(bl_text, packages)
+    want = {a.regular: regular, a.fips: fips, a.baselayout: baselayout}
     if a.emit:
-        for fn, variant in (("melange.yaml", "regular"), ("melange-fips.yaml", "fips")):
+        named = {"melange.yaml": regular, "melange-fips.yaml": fips, "melange-baselayout.yaml": baselayout}
+        for fn, content in named.items():
             with open(os.path.join(a.emit, fn), "w", encoding="utf-8") as f:
-                f.write(generate(text, variant, packages, module))
-        with open(os.path.join(a.emit, "melange-baselayout.yaml"), "w", encoding="utf-8") as f:
-            f.write(generate_baselayout(bl_text, packages))
+                f.write(content)
         return
     if a.write:
         for path, content in want.items():

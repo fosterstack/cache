@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only apk inspection for the build (v0.3.0 rules 14, 15, 22).
 
-An apk is up to three concatenated gzip streams: an optional signature (a tar with .SIGN.RSA.<key>), the control
+An apk is up to three concatenated gzip streams: an optional signature (a tar with .SIGN.RSA256.<key>), the control
 section (.PKGINFO, .melange.yaml) and the data section (the files).
 
   apk-tool.py digest APK                  prints sha256:<hex> of the CONTROL and DATA sections together (the apk's identity; the signature
@@ -11,9 +11,8 @@ section (.PKGINFO, .melange.yaml) and the data section (the files).
   apk-tool.py signer APK                  prints the signing key's name (<key file name>.rsa.pub) or
                                           "unsigned"
   apk-tool.py verify APK PUBKEY           cryptographically verifies the apk's signature against the public key file PUBKEY (the signature member
-                                          is an RSA signature over the compressed CONTROL stream: .SIGN.RSA.<name> is SHA-1, .SIGN.RSA256.<name>
-                                          SHA-256); prints verified:<name> and exits 0 only when the signature is valid for that key.
-                                          exit 1 if unsigned, the signature does not verify, or its algorithm is not RSA/RSA256; 2 unreadable
+                                          is an RSA signature over the compressed CONTROL stream: .SIGN.RSA256.<name>, SHA-256 only); prints verified:<name> and exits 0 only when the signature is valid for that key.
+                                          exit 1 if unsigned, the signature does not verify, or the member is not .SIGN.RSA256.<name>; 2 unreadable
   apk-tool.py control APK OUT             writes the CONTROL stream of APK to OUT exactly as stored (the gzip bytes the signature covers); OUT must not
                                           exist yet
   apk-tool.py attach-signature APK SIG OUT
@@ -93,6 +92,7 @@ def norm(n):
 ALLOWED_TYPES = (b"0", b"5")   # regular file and directory only: a symlink or hard link could make a later name overwrite usr/bin/fscache (apko follows it)
 NUMERIC_FIELDS = (("mode", 100, 108), ("uid", 108, 116), ("gid", 116, 124), ("size", 124, 136), ("mtime", 136, 148), ("checksum", 148, 156), ("devmajor", 329, 337), ("devminor", 337, 345))
 PAX_KEY = "APK-TOOLS.checksum.SHA1"
+SIGN_PREFIX = ".SIGN.RSA256."
 
 
 def validate_tar(path, raw):
@@ -115,8 +115,6 @@ def validate_tar(path, raw):
             refuse("%s: a symlink or hard link entry in a tar section; refusing (a name under a link could overwrite another file)" % path)
         for fname, lo, hi in NUMERIC_FIELDS:
             f = blk[lo:hi]
-            if f[0:1] >= b"\x80" and fname == "size":
-                refuse("%s: a tar header with a base-256 size; refusing" % path)
             if not re.fullmatch(rb" *[0-7]*[\0 ]*", f):
                 refuse("%s: the numeric field %s of a tar header is not plain octal (Go and Python read other forms differently); refusing" % (path, fname))
         want = sum(blk[:148]) + 32 * 8 + sum(blk[156:])
@@ -288,6 +286,11 @@ def cmd_attach_signature(a):
     _write_new(a[2], gz.getvalue() + ctrl[0] + data[0])
 
 
+def signer_key(member_name):
+    """The key name of a .SIGN.RSA256.<key name> member (what melange writes), or "" for any other name."""
+    return member_name.removeprefix(SIGN_PREFIX) if member_name.startswith(SIGN_PREFIX) else ""
+
+
 def cmd_signer(a):
     sig = sections(a[0])[0]
     names = [n for n in members(sig[1])] if sig else []
@@ -296,17 +299,16 @@ def cmd_signer(a):
         return
     if len(names) != 1:
         refuse("%s has %d signature members; exactly one is expected (which one counts?)" % (a[0], len(names)))
-    m = re.fullmatch(r"\.SIGN\.RSA(?:256|512)?\.(.+)", names[0])   # melange writes .SIGN.RSA256.<key name>
-    if not m:
+    key = signer_key(names[0])
+    if not key:
         refuse("unrecognised signature member %s in %s" % (names[0], a[0]))
-    print(m.group(1))
+    print(key)
 
 
 def _openssl():
     """The OpenSSL this check trusts: a fixed location, never whatever the caller's search path holds (REQ-BUILDAPK-001-AC4)."""
-    for p in ("/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"):
-        if os.access(p, os.X_OK):
-            return p
+    if os.access("/usr/bin/openssl", os.X_OK):
+        return "/usr/bin/openssl"
     refuse("openssl is not installed at a fixed location (/usr/bin/openssl)")
 
 
@@ -320,10 +322,9 @@ def cmd_verify(a):
         refuse("%s: the signature segment has bytes after its one member (end-of-archive blocks): apk-tools reads the signature, control and data streams as one tar and would stop before .PKGINFO; refusing" % a[0], 1)
     if len(names) != 1:
         refuse("%s is %s: nothing to verify" % (a[0], "unsigned" if not names else "signed by %d members" % len(names)), 1)
-    m = re.fullmatch(r"\.SIGN\.(RSA|RSA256)\.(.+)", names[0])
-    if not m:
-        refuse("%s: the signature member %s is not .SIGN.RSA.<name> or .SIGN.RSA256.<name>" % (a[0], names[0]), 1)
-    alg = {"RSA": "sha1", "RSA256": "sha256"}[m.group(1)]
+    key = signer_key(names[0])
+    if not key:
+        refuse("%s: the signature member %s is not .SIGN.RSA256.<name>" % (a[0], names[0]), 1)
     # the signature covers the control stream, whose .PKGINFO names the data stream by its sha256 (datahash): the data is part of what was signed only
     # through that line, so exactly one datahash must be present and must equal the sha256 of the stream as stored
     pkginfo = members(ctrl[1]).get(".PKGINFO", b"").decode("utf-8", "replace")
@@ -345,14 +346,14 @@ def cmd_verify(a):
                 f.write(b)
         openssl = _openssl()
         try:
-            r = subprocess.run([openssl, "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature",
+            r = subprocess.run([openssl, "dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature",
                 os.path.join(d, "sig.bin"), os.path.join(d, "ctrl.bin")], capture_output=True, text=True,
                 stdin=subprocess.DEVNULL, env={"LC_ALL": "C", "PATH": "/nonexistent"})
         except OSError as e:
             refuse("cannot run openssl: %s" % e)
     if r.returncode != 0 or "Verified OK" not in r.stdout:
         refuse("%s: the signature member %s does not verify against %s" % (a[0], names[0], a[1]), 1)
-    print("verified:" + m.group(2))
+    print("verified:" + key)
 
 
 def member(path, name):

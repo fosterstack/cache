@@ -88,7 +88,6 @@ fails "rule 22" "apk-tool same: an apk with different contents differs (exit non
 t "rule 22" "apk-tool same: an unsigned apk with the same contents is the same" python3 "$AT" same "$pr/a.apk" "$pr/unsigned.apk"
 t "rule 22" "apk-tool signer: assembly" bash -c "test \"\$(python3 '$AT' signer '$pr/a.apk')\" = assembly.rsa.pub"
 t "rule 22" "apk-tool signer: release" bash -c "test \"\$(python3 '$AT' signer '$pr/b.apk')\" = release.rsa.pub"
-t "rule 22" "apk-tool signer: a real melange apk names its signature .SIGN.RSA256.<key>; the key name is still assembly.rsa.pub" bash -c "test \"\$(python3 '$AT' signer '$pr/rsa256.apk')\" = assembly.rsa.pub"
 t "rule 22" "apk-tool signer: unsigned" bash -c "test \"\$(python3 '$AT' signer '$pr/unsigned.apk')\" = unsigned"
 t "rule 14" "apk-tool binary-check: the binary file equals usr/bin/fscache in the apk" python3 "$AT" binary-check "$pr/a.apk" "$pr/binA"
 fails "rule 14" "apk-tool binary-check: a different binary fails and prints the digests" '[0-9a-f]{64}' python3 "$AT" binary-check "$pr/a.apk" "$pr/binC"
@@ -800,7 +799,8 @@ P
 r8="$work/r8"
 fails "rule 22" "apk-tool: a PAX record with another key and a 40-hex value is refused by the PAX rule (not only by the value shape)" 'PAX key' python3 "$AT" digest "$r8/pax-key40.apk"
 fails "rule 22" "apk-tool: the right PAX key with a value that is not 40 lowercase hex digits is refused" 'PAX key' python3 "$AT" digest "$r8/pax-val.apk"
-fails "rule 22" "apk-tool: a base-256 size field is refused by name" 'base-256' python3 "$AT" digest "$r8/base256.apk"
+fails "rule 22" "apk-tool: a base-256 size field is refused: the numeric field is not plain octal" 'not plain octal' \
+  python3 "$AT" digest "$r8/base256.apk"
 fails "rule 22" "apk-tool: a section ending inside a header block is refused (by the section parser; the walker's own short-block check is defence in depth behind it)" 'malformed tar section' python3 "$AT" digest "$r8/short.apk"
 
 # ---- snapshot-8 round 8 (Sonnet P2): every numeric field is plain octal, the header checksum is verified, links are refused (Go and Python read the rest alike) ----
@@ -837,7 +837,10 @@ P
 r9="$work/r9"
 t "rule 14" "apk-tool: a plain, well-formed data section is still accepted after the field checks" python3 "$AT" digest "$r9/plain-ok.apk"
 for n in mode uid gid mtime devmajor devminor size chk; do
-  fails "rule 22" "apk-tool: a high-bit first byte in the $n field (Go reads base-256, Python ends the archive) is refused (by the walker, or by the section parser where Python rejects it first)" 'numeric field|base-256|malformed|checksum' python3 "$AT" digest "$r9/hi-$n.apk"
+  fails "rule 22" "apk-tool: a high-bit first byte \
+in the $n field (Go reads base-256, Python ends the archive) is refused \
+(by the walker, or by the section parser where Python rejects it first)" \
+    'numeric field|malformed|checksum' python3 "$AT" digest "$r9/hi-$n.apk"
 done
 for n in mode uid gid mtime devmajor devminor; do
   fails "rule 22" "apk-tool: a sign character in the $n field is refused (plain octal only)" 'numeric field' python3 "$AT" digest "$r9/sign-$n.apk"
@@ -938,7 +941,44 @@ gen_with --write; t "rule 21" "...after --write the new pin is in both recipes a
 gdata; printf 'v1.1.0-deadbeef\n' >"$work/gd/fips"; gen_with --write
 t "rule 21" "gen-recipes: the FIPS module file feeds the export line and the proof line of the FIPS recipe only (the generator holds no FIPS constant)" bash -c "grep -q 'export GOFIPS140=v1.1.0\$' '$work/gd/b.yaml' && grep -q -F \"GOFIPS140=v1\\\\.1\\\\.0-deadbeef'\" '$work/gd/b.yaml' && ! grep -q GOFIPS140 '$work/gd/a.yaml' && ! grep -q 'c2097c7c' '$work/gd/b.yaml'"
 t "rule 21" "gen-recipes: no FIPS version or hash constant remains in the generator" bash -c "! grep -n 'c2097c7c\|v1\.0\.0' '$GR'"
-gdata; gen_with --emit "$work/gd" ; t "rule 21" "gen-recipes --emit DIR writes melange.yaml and melange-fips.yaml there and touches no committed file" bash -c "test -s '$work/gd/melange.yaml' && test -s '$work/gd/melange-fips.yaml' && cmp -s '$work/gd/melange.yaml' '$work/gd/a.yaml' || true"
+# --emit must write the very text --write commits, so the daily job's files equal the committed ones
+emit_same_as_write() {
+  rm -rf "$work/gd/em"; mkdir "$work/gd/em"
+  gdata; gen_with --write; gen_with --emit "$work/gd/em" || return 1
+  cmp -s "$work/gd/a.yaml" "$work/gd/em/melange.yaml" || return 1
+  cmp -s "$work/gd/b.yaml" "$work/gd/em/melange-fips.yaml" || return 1
+  cmp -s "$work/gd/c.yaml" "$work/gd/em/melange-baselayout.yaml" || return 1
+  # the later --regular/--fips/--baselayout replace the ones gen_with passes first
+  gen_with --regular "$work/gd/em/melange.yaml" --fips "$work/gd/em/melange-fips.yaml" \
+    --baselayout "$work/gd/em/melange-baselayout.yaml" --check
+}
+t "rule 21" "gen-recipes --emit DIR writes the same bytes as --write, and --check accepts them" emit_same_as_write
+same_refused() { # flag1 flag2 mode: both flags name one file; exit 2, the flags named, nothing written
+  rm -rf "$work/gd/same"; mkdir "$work/gd/same"; gdata
+  local mode=$3 r
+  [ "$mode" != --emit ] || mode="--emit $work/gd/same/out"
+  [ "$mode" = "--emit $work/gd/same/out" ] && mkdir "$work/gd/same/out"
+  gen_with $1 "$work/gd/same/x.yaml" $2 "$work/gd/same/x.yaml" $mode >"$work/gd/same/log" 2>&1; r=$?
+  [ "$r" = 2 ] && grep -q -e "$1" "$work/gd/same/log" && grep -q -e "$2" "$work/gd/same/log" || return 1
+  [ -z "$(ls -A "$work/gd/same" | grep -v '^log$' | grep -v '^out$')" ] &&
+    [ -z "$(ls -A "$work/gd/same/out" 2>/dev/null)" ]
+}
+for m_ in --check --write --emit; do
+  t "rule 21" "gen-recipes $m_: --baselayout naming the --regular file is refused (exit 2, nothing written)" \
+    same_refused --baselayout --regular $m_
+  t "rule 21" "gen-recipes $m_: --baselayout naming the --fips file is refused (exit 2, nothing written)" \
+    same_refused --baselayout --fips $m_
+done
+emit_named_files() {
+  rm -rf "$work/gd/em2"; mkdir "$work/gd/em2"
+  gdata; gen_with --write; gen_with --emit "$work/gd/em2" || return 1
+  cmp -s "$work/gd/a.yaml" "$work/gd/em2/melange.yaml" || return 1
+  cmp -s "$work/gd/b.yaml" "$work/gd/em2/melange-fips.yaml" || return 1
+  cmp -s "$work/gd/c.yaml" "$work/gd/em2/melange-baselayout.yaml" || return 1
+  ! cmp -s "$work/gd/em2/melange-baselayout.yaml" "$work/gd/em2/melange.yaml" || return 1
+  ! cmp -s "$work/gd/em2/melange-fips.yaml" "$work/gd/em2/melange.yaml"
+}
+t "rule 21" "gen-recipes --emit DIR pairs each of the three files with its own text by name" emit_named_files
 for bad in "no-final-newline" "crlf" "dup" "badline" "empty" "upper" "nonascii"; do
   gdata
   case $bad in

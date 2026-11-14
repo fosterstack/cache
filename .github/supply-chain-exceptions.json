@@ -189,13 +189,6 @@
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
-      "key": "59026aa06d9188a1b90b3ccd57dd0fc2c05bdf90654072b8740477e87155080f",
-      "line": "ae6bd1d131a9b936d04293423176cb708db160c96d54f70da43617a3a04c781e",
-      "ruling": "text, not a command: a shell comment explaining that tools such as curl are replaced by STUBS on PATH that record their argv in a call log"
-    },
-    {
-      "file": "bin/melange-apko-lib.sh",
-      "form": "a download",
       "key": "64612fb9a9fe82bebee266d20bfd151d4aab8c5a1d02f1a3dfadde2b97938277",
       "line": "ddbd6b256451601130eba3c0ddea455186ed7fc00869ae26c95a3f856ca9ad77",
       "ruling": "text, not a command: the curl STUB's error branch (written as data by a quoted heredoc); echoes 'stub curl: 22 <url>' to stderr and exits 22, it downloads nothing"
@@ -1794,22 +1787,22 @@
     {
       "file": "bin/go-bump-open-pr.sh",
       "form": "a download",
-      "key": "953689ae64856c73b377ed46e8fa9caf842119547c28b44d505cc7ab9331a2a4",
-      "line": "122789dd18ce1f7e0c9d9e34f02d10435f6ba715ccc666bd8a8409e44da163f4",
+      "key": "d9cbfa065b269d05ee09a08e4136ded6b73601bbece6d37c38671afbeb116f9f",
+      "line": "9deac0d1003e47ede2bbb0c688862ad337321257308adfb4f41c232b3846c188",
       "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
     },
     {
       "file": "bin/go-bump-open-pr.sh",
       "form": "a download",
-      "key": "9216ecefa744f0521f512c89a19f3fa14fc754f16b31bd010d0fcc4d523121ce",
-      "line": "33cb527c703c825a14170872548ce54e176df30ca86f7e86eac54a823e885320",
+      "key": "cd911d5ab586a8b1faf8e800a9191ad8196ecd7fd2ecf78b49757196d4f36131",
+      "line": "7d12504f59f46f70f485dbe1d91ad4e2f3462dad855fa6d7abf9f089214e357b",
       "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
     },
     {
       "file": "bin/acceptance-egress.sh",
       "form": "a system package install",
-      "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
-      "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
+      "key": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
+      "line": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
       "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     },
     {

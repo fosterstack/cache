@@ -10,6 +10,8 @@
   oci-digest.py check-keys REC DIR        the keyring directory holds exactly the recorded keys
   oci-digest.py check-index REC ARCHIVE   print "<arch><TAB><path>" of the recorded package index per architecture
   oci-digest.py render-date EPOCH         print EPOCH as YYYY-MM-DDTHH:MM:SSZ
+  oci-digest.py base-lock-victim LOCK SCRIPT   print <arch>/<name>-<version>.apk of the first package of the base lock;
+                                          the proofs damage it (a refusal is printed with the script's name)
 
 The decisions of the image assembler (so that its script is straight-line text). Each prints its answer, or the refusal
 "<script name>: <reason>" on standard error with the exit status the script had for it:
@@ -24,7 +26,6 @@ The decisions of the image assembler (so that its script is straight-line text).
   oci-digest.py check-keydir DIR          DIR holds the two key files
   oci-digest.py check-melrepo DIR PKG APKVER      our apk and an APKINDEX.tar.gz for both architectures are in the
     melange repository
-  oci-digest.py check-workdir DIR         none of the three links of the run exists yet in DIR
   oci-digest.py prepare-render RENDER TMP   prints the render directory: RENDER (made, or empty and not a link) or
     TMP/render
   oci-digest.py check-out OUT VARIANT     OUT is a directory that can be listed and holds none of the variant's own
@@ -90,7 +91,6 @@ def read_members(t):
 def check_manifests(mans, where):
     if not isinstance(mans, list) or not mans or not all(isinstance(m, dict) for m in mans):
         fail("%s: manifests must be a non-empty list of objects (exactly one amd64 and one arm64 manifest, each with a platform architecture)" % where)
-    """exactly one linux/amd64 and one linux/arm64 manifest, each a manifest of the OCI manifest media type with a platform architecture and os linux"""
     archs = []
     for m in mans:
         need(m, "digest", where + " entry")
@@ -134,7 +134,6 @@ def check_manifest_blob(members, raw, layout, what, platform_arch=None):
         fail("%s is not JSON" % what)
     cfg = man.get("config") if isinstance(man, dict) else None
     cdig = need(cfg, "digest", what + " config")
-    want_arch = None if platform_arch is None else platform_arch
     hexd = sha256_hex(cdig, what + " config")
     if cfg.get("mediaType") != CONFIG_MT:
         fail("the config descriptor of %s has the media type %r, not %s" % (what, cfg.get("mediaType"), CONFIG_MT))
@@ -150,8 +149,8 @@ def check_manifest_blob(members, raw, layout, what, platform_arch=None):
     except (ValueError, AttributeError):
         fail("the config blob %s of %s is not JSON" % (cname, what))
     cfg_os = json.loads(members[cname]).get("os")
-    if want_arch is not None and cfg_arch != want_arch:
-        fail("the config of %s says architecture %r but the index lists the manifest as %r (the config must name its architecture)" % (what, cfg_arch, want_arch))
+    if platform_arch is not None and cfg_arch != platform_arch:
+        fail("the config of %s says architecture %r but the index lists the manifest as %r (the config must name its architecture)" % (what, cfg_arch, platform_arch))
     if cfg_os != "linux":
         fail("the config of %s says os %r, not linux" % (what, cfg_os))
     if man.get("schemaVersion") != 2:
@@ -174,13 +173,6 @@ def check_manifest_blob(members, raw, layout, what, platform_arch=None):
             fail("the layer descriptor %s of %s says size %r but the blob holds %d bytes" % (lhex, what, layer.get("size"), len(members[found[0]])))
 
 
-def blob_in(members, digest, what):
-    algo, _, hexd = digest.partition(":")
-    if algo != "sha256" or len(hexd) != 64:
-        fail("%s: unsupported digest %r" % (what, digest))
-    return hexd
-
-
 def apko_layout(members, path):
     raw = members["index.json"]
     try:
@@ -195,7 +187,7 @@ def apko_layout(members, path):
     check_manifests(mans, "index.json")
     lines = ["index sha256:" + hashlib.sha256(raw).hexdigest()]
     for m in mans:
-        hexd = blob_in(members, need(m, "digest", "a manifest entry in index.json"), "a per-architecture manifest")
+        hexd = sha256_hex(need(m, "digest", "a manifest entry in index.json"), "a per-architecture manifest")
         name = "sha256:" + hexd
         if name not in members:
             fail("%s is missing from the image tar (a per-architecture manifest)" % name)
@@ -219,7 +211,7 @@ def standard_layout(members, path):
     idx_digest = need(entries[0], "digest", "the index entry in index.json")
     if entries[0].get("mediaType") != INDEX_MT:
         fail("the index entry in index.json has the media type %r, not %s" % (entries[0].get("mediaType"), INDEX_MT))
-    name = "blobs/sha256/" + blob_in(members, idx_digest, "the index")
+    name = "blobs/sha256/" + sha256_hex(idx_digest, "the index")
     if name not in members:
         fail("%s is missing from the layout (the index)" % name)
     if hashlib.sha256(members[name]).hexdigest() != idx_digest.split(":")[1]:
@@ -239,7 +231,7 @@ def standard_layout(members, path):
     for m in mans:
         if m.get("mediaType") != MANIFEST_MT:
             fail("manifest %s has the media type %r, not %s" % (m.get("digest"), m.get("mediaType"), MANIFEST_MT))
-        mn = "blobs/sha256/" + blob_in(members, m["digest"], "a per-architecture manifest")
+        mn = "blobs/sha256/" + sha256_hex(m["digest"], "a per-architecture manifest")
         if mn not in members:
             fail("%s is missing from the layout (a per-architecture manifest)" % mn)
         if hashlib.sha256(members[mn]).hexdigest() != m["digest"].split(":")[1]:
@@ -584,6 +576,7 @@ def verify_apk(path, e):
         if got != want:
             die("%s: %s section does not match the lock (%s-%s, lock says %s-%s)" % (fname, part, kind, got, kind, want))
         spans.append((part, lo, hi))
+    span = {part: (lo, hi) for part, lo, hi in spans}
     pos = 0
     for part, lo, hi in spans:
         if lo != pos:
@@ -591,16 +584,18 @@ def verify_apk(path, e):
         pos = hi + 1
     if pos != len(raw):
         die("%s: the lock's ranges end at byte %d but the file has %d bytes; bytes after the last range (or a short file) are not accepted: size/length mismatch, the end of the file is not covered" % (fname, pos, len(raw)))
-    ctl = [(n, lo, hi) for n, lo, hi in spans if n == "control"][0]; dat = [(n, lo, hi) for n, lo, hi in spans if n == "data"][0]
+    control_lo, control_hi = span["control"]
+    data_lo, data_hi = span["data"]
     try:
         import io, tarfile, zlib
-        pk = tarfile.open(fileobj=io.BytesIO(zlib.decompressobj(31).decompress(raw[ctl[1]:ctl[2] + 1], 16 * 1024 * 1024))).extractfile(".PKGINFO").read().decode()
+        control = zlib.decompressobj(31).decompress(raw[control_lo:control_hi + 1], 16 * 1024 * 1024)
+        pk = tarfile.open(fileobj=io.BytesIO(control)).extractfile(".PKGINFO").read().decode()
         dhs = re.findall(r"^datahash = ([0-9a-f]{64})$", pk, re.M)
         ok(len(dhs) == 1)
         dh = dhs[0]
     except Exception:
         die("%s: the control section has no readable .PKGINFO datahash (exactly one datahash line is required)" % fname)
-    if hashlib.sha256(raw[dat[1]:dat[2] + 1]).hexdigest() != dh:
+    if hashlib.sha256(raw[data_lo:data_hi + 1]).hexdigest() != dh:
         die("%s: the data stream does not hash to the datahash in its control section" % fname)
 
 
@@ -698,8 +693,6 @@ def check_config(path):
             refuse("line %d is outside the closed plain grammar (no quoting, escapes, brackets, block scalars or other YAML constructs): %r" % (n, ln.strip()[:60]))
         if re.match(r"\s*#", ln) or not ln.strip():
             continue
-        if "://" in ln:
-            refuse("line %d names a live repository or address" % n)
         km = re.match(r"\s*(?:- )?(%s):" % KEY, ln)
         if km and "repositor" in km.group(1).lower() and km.group(1) != "repositories":
             refuse("line %d has a repository-like key other than 'repositories'" % n)
@@ -724,7 +717,6 @@ VARIANTS = {"production": {"pkg": "fscache", "config": "build/apko.yaml",
 ROOT_NAMES = ("--archive", "--melange-repo", "--keyring-dir", "--out", "--render-dir")
 ARCH_NAMES = ("x86_64", "aarch64")
 KEY_FILES = ("wolfi-signing.rsa.pub", "assembly.rsa.pub")
-LINK_NAMES = ("archive", "melange-repo", "keyring")
 
 
 class Refused(Exception):
@@ -805,15 +797,6 @@ def check_melrepo(melrepo, pkg, apkver):
             raise Refused("the melange repository %s has no %s/APKINDEX.tar.gz" % (melrepo, arch))
 
 
-def check_workdir(workdir):
-    for name in LINK_NAMES:
-        path = "%s/%s" % (workdir, name)
-        if os.path.lexists(path):
-            what = "a symlink, left by another run or a crashed one" if os.path.islink(path) else "not a symlink"
-            raise Refused("%s already exists (%s)); refusing to replace it: remove it by hand if no other assembly is "
-                "running" % (path, what))
-
-
 def prepare_render(render, tmp):
     """The directory the config is rendered in: the given one (made if it is not there) or a private one under TMP."""
     if not render:
@@ -885,6 +868,33 @@ def pick_sbom(folder):
     return chosen
 
 
+VICTIM_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-")
+
+
+def base_lock_victim(lock, script):
+    """The first package of the base lock by name and architecture. Its name and version become a path, so only plain
+    characters are accepted."""
+    try:
+        packages = json.load(open(lock))["contents"]["packages"]
+        first = min(packages, key=lambda p: (p["name"], p["architecture"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        print("%s: %s is not a lock whose contents.packages name each package and its architecture" % (script, lock),
+              file=sys.stderr)
+        sys.exit(2)
+    if first["architecture"] not in ("x86_64", "aarch64"):
+        print("%s: the base lock's first package has the architecture %r, not x86_64 or aarch64" %
+              (script, first["architecture"]), file=sys.stderr)
+        sys.exit(2)
+    for field in ("name", "version"):
+        value = first.get(field)
+        plain = isinstance(value, str) and not set(value) - VICTIM_CHARS
+        if not plain or value in ("", ".") or value.startswith("-") or ".." in value:
+            print("%s: the base lock's first package has the %s %r; only letters, digits and ._+- are accepted"
+                  % (script, field, value), file=sys.stderr)
+            sys.exit(2)
+    return "%s/%s-%s.apk" % (first["architecture"], first["name"], first["version"])
+
+
 # name -> (function, fewest words, most words); the answer a function returns is printed
 DECISIONS = {
     "variant-field": (variant_field, 2, 2),
@@ -895,7 +905,6 @@ DECISIONS = {
     "check-inputs": (check_inputs, 6, 6),
     "check-keydir": (check_keydir, 1, 1),
     "check-melrepo": (check_melrepo, 3, 3),
-    "check-workdir": (check_workdir, 1, 1),
     "prepare-render": (prepare_render, 2, 2),
     "check-out": (check_out, 2, 2),
     "apko-verdict": (apko_verdict, 3, 3),
@@ -949,6 +958,8 @@ def main():
     elif len(a) == 3 and a[0] == "check-index":
         for arch, path in sorted(check_index(a[1], a[2]).items()):
             print("%s\t%s" % (arch, path))
+    elif len(a) == 3 and a[0] == "base-lock-victim":
+        print(base_lock_victim(a[1], a[2]))
     elif len(a) == 2 and a[0] == "render-date":
         try:
             print(datetime.datetime.fromtimestamp(int(a[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -958,7 +969,7 @@ def main():
         print("\n".join(read_digests(a[0])[0]))
     else:
         print("usage: oci-digest.py TAR | unpack TAR DIR DIGEST MANIFESTS | make-view REC ARCHIVE VIEW | "
-            "render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH "
+            "render-config CONFIG OUT VERSION | check-keys REC DIR | check-index REC ARCHIVE | render-date EPOCH | base-lock-victim LOCK SCRIPT "
             "| " + " | ".join(sorted(DECISIONS)) + " ...", file=sys.stderr)
         sys.exit(2)
 

@@ -30,9 +30,11 @@ case ${BASH_SOURCE[0]} in */*) here_=${BASH_SOURCE[0]%/*};; *) here_=.;; esac   
 here=$(cd "$here_" && pwd)
 die() { echo "lock-proof.sh: $1" >&2; exit "${2:-2}"; }
 
-[[ $HOST_OS == *linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+[[ $HOST_OS == *linux* ]] ||
+  die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/lock-proof.sh ...  from there
-[ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] || die "usage: run bin/lock-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
+[ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] ||
+  die "usage: run bin/lock-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
 
 out= archive=
 while [ $# -gt 0 ]; do
@@ -44,10 +46,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$out" ] && [ -d "$archive" ] || die "--out and --archive (a directory) are required"
-for v_ in "$out" "$archive"; do [ "$(printf '%s' "$v_" | LC_ALL=C tr -d '\040-\176'; printf x)" = x ] || die "$v_ holds a control character or a byte outside printable ASCII; refusing, the path arguments are plain ASCII text" 2; done
+for v_ in "$out" "$archive"; do
+  [ "$(printf '%s' "$v_" | LC_ALL=C tr -d '\040-\176'; printf x)" = x ] ||
+    die "$v_ holds a control character or a byte outside printable ASCII; the path arguments are plain ASCII text" 2
+done
 a_=$archive; while [ "${a_%/}" != "$a_" ] && [ "$a_" != / ]; do a_=${a_%/}; done
 o_=$out; while [ "${o_%/}" != "$o_" ] && [ "$o_" != / ]; do o_=${o_%/}; done
-for x_ in "$a_" "$o_"; do q_=$x_; while [[ $q_ == ./* ]]; do q_=${q_#./}; done; while [[ $q_ == ../* ]]; do q_=${q_#../}; done; case "/$q_/" in */./*|*/../*) die "$x_ has a . or .. component after another component (it could hide a symlinked root); give the real path" 2;; esac; done
+for x_ in "$a_" "$o_"; do
+  q_=$x_
+  while [[ $q_ == ./* ]]; do q_=${q_#./}; done
+  while [[ $q_ == ../* ]]; do q_=${q_#../}; done
+  case "/$q_/" in
+    */./*|*/../*) die "$x_ has a . or .. component after another component (it could hide a symlinked root)" 2;;
+  esac
+done
 [ ! -L "$o_" ] || die "--out $out is a symlink; refusing (the results would be written through it)" 2
 [ ! -L "$a_" ] || die "--archive $archive is a symlink; refusing (the copies of the proof would be made through it)"
 [ -x "$here/assemble-image.sh" ] || die "assembly script not executable: $here/assemble-image.sh"
@@ -60,7 +72,6 @@ pass=("$@")
 for ((i = 0; i + 1 < ${#pass[@]}; i++)); do   # the directories the assembler is given: absolute, as the working directory changes
   case ${pass[$i]} in --melange-repo|--keyring-dir) pass[$((i + 1))]=$(absdir "${pass[$((i + 1))]}");; esac
 done
-for a in "${pass[@]}"; do case $a in --archive|--out|--render-dir|--apko-config|--base-lock|--index-record|--key-record) die "$a after --: this option is supplied by the proof; a forwarded value could be printed back by the assembler and mistaken for a reason" 2;; esac; done
 variant= version= melrepo= keydir=
 # the assembler's four options, each with its value; the assembler takes them in a fixed order
 for ((i = 0; i < ${#pass[@]}; i += 2)); do
@@ -88,9 +99,15 @@ srccfg=$dcfg
 tmp=$(mktemp -d)
 cleanup() { local rc=$?; set +e; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1; exit $rc; }
 trap cleanup EXIT
-[ ! -e "$out/lock-proof.json" ] && [ ! -L "$out/lock-proof.json" ] || die "$out/lock-proof.json already exists (or is a link): refusing to write through or over it; give an empty --out" 2
+[ ! -e "$out/lock-proof.json" ] && [ ! -L "$out/lock-proof.json" ] ||
+  die "$out/lock-proof.json already exists (or is a link); give an empty --out" 2
 mkdir -p "$out"
-inside_tmp() { case "$(cd -P -- "$1" && pwd -P)" in "$(cd -P -- "$tmp" && pwd -P)"/*) ;; *) die "internal: $1 is not inside the proof's own temp directory; refusing to modify it" 2;; esac; }   # before any rm or write
+inside_tmp() {   # called before any rm or write
+  case "$(cd -P -- "$1" && pwd -P)" in
+    "$(cd -P -- "$tmp" && pwd -P)"/*) ;;
+    *) die "internal: $1 is not inside the proof's own temp directory; refusing to modify it" 2;;
+  esac
+}
 
 # mkrepo <name> [config]: a throwaway repository root: bin/ linked to the real one, build/ copied (the live-packages case changes the config of ITS copy)
 mkrepo() {
@@ -107,32 +124,36 @@ run() { # <name> <archive> [temp config]: the assembler runs from its own reposi
 }
 
 # the victim: the first package of the BASE LOCK by (name, architecture)
-victim=$("$PY3" -I -B - "$baselock" "lock-proof.sh" <<'PY'
-import json, re, sys
-e = sorted(json.load(open(sys.argv[1]))["contents"]["packages"], key=lambda e: (e["name"], e["architecture"]))[0]
-def bad(what, v): print("%s: the base lock's first package has an unacceptable %s %r (closed rule: architecture exactly x86_64 or aarch64; name and version only [A-Za-z0-9._+-], never . or .. and never starting with -); refusing before any copy" % (sys.argv[2], what, v), file=sys.stderr); sys.exit(2)
-if e["architecture"] not in ("x86_64", "aarch64"): bad("architecture", e["architecture"])
-for k in ("name", "version"):
-    v = e[k]
-    if not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9._+-]+", v) or v in (".", "..") or v.startswith("-") or ".." in v: bad(k, v)
-print("%s/%s-%s.apk" % (e["architecture"], e["name"], e["version"]))
-PY
-) || die "cannot read the base lock $baselock"
+victim=$("$PY3" -I -B bin/oci-digest.py base-lock-victim "$baselock" lock-proof.sh) ||
+  die "cannot read the base lock $baselock"
 # 0. the positive control
 run control "$archive"
-[ "$rc" = 0 ] || { tail -5 "$tmp/control.log" >&2; die "positive control failed: the untouched archive and config did not assemble (exit $rc); a proof that cannot succeed proves nothing" 1; }
+if [ "$rc" != 0 ]; then
+  tail -5 "$tmp/control.log" >&2
+  die "positive control failed: the untouched archive and config did not assemble (exit $rc); a proof that cannot succeed proves nothing" 1
+fi
 
 [ ! -L "$archive/$victim" ] || die "the victim $victim in the archive is a symlink; refusing (the proof must never write through a link)"
-[ -f "$archive/$victim" ] || die "the base lock's first package $victim is not in the archive (the positive control passed, so this is a bad lock-proof setup)"
+[ -f "$archive/$victim" ] ||
+  die "the base lock's first package $victim is not in the archive (the positive control passed, so this is a bad lock-proof setup)"
 vname=$(basename "$victim"); arch_dir=$(dirname "$victim")
 vre=$(printf '%s' "$vname" | sed 's/[][\.*^$+?(){}|/]/\\&/g')   # the name as a literal inside a regular expression
 
-cp -RP "$archive" "$tmp/a-missing-package"; inside_tmp "$tmp/a-missing-package"; inside_tmp "$(dirname "$tmp/a-missing-package/$victim")"; rm -f "$tmp/a-missing-package/$victim"
+cp -RP "$archive" "$tmp/a-missing-package"
+inside_tmp "$tmp/a-missing-package"
+inside_tmp "$(dirname "$tmp/a-missing-package/$victim")"
+rm -f "$tmp/a-missing-package/$victim"
 
-cp -RP "$archive" "$tmp/a-missing-index"; inside_tmp "$tmp/a-missing-index"; inside_tmp "$tmp/a-missing-index/$arch_dir"; [ ! -e "$tmp/a-missing-index/$arch_dir/index" ] || inside_tmp "$tmp/a-missing-index/$arch_dir/index"; rm -rf "$tmp/a-missing-index/$arch_dir/APKINDEX.tar.gz" "$tmp/a-missing-index/$arch_dir"/index/APKINDEX-*.tar.gz   # the pointer AND the named index
+cp -RP "$archive" "$tmp/a-missing-index"
+inside_tmp "$tmp/a-missing-index"
+inside_tmp "$tmp/a-missing-index/$arch_dir"
+[ ! -e "$tmp/a-missing-index/$arch_dir/index" ] || inside_tmp "$tmp/a-missing-index/$arch_dir/index"
+# both the pointer and the index it names
+rm -rf "$tmp/a-missing-index/$arch_dir/APKINDEX.tar.gz" "$tmp/a-missing-index/$arch_dir"/index/APKINDEX-*.tar.gz
 
 cp -RP "$archive" "$tmp/a-tampered"; inside_tmp "$tmp/a-tampered"; inside_tmp "$(dirname "$tmp/a-tampered/$victim")"
-[ ! -L "$tmp/a-tampered/$victim" ] && [ -f "$tmp/a-tampered/$victim" ] || die "internal: the copied victim $tmp/a-tampered/$victim is not a regular file (a link was put in its place); refusing to write through it"
+[ ! -L "$tmp/a-tampered/$victim" ] && [ -f "$tmp/a-tampered/$victim" ] ||
+  die "internal: the copied victim $tmp/a-tampered/$victim is not a regular file; refusing to write through it"
 "$PY3" -I -B - "$tmp/a-tampered/$victim" <<'PY'
 import sys
 p = sys.argv[1]; b = bytearray(open(p, "rb").read())
@@ -147,7 +168,8 @@ expect() { # <name> <archive> <temp config or -> <reason regex>
   run "$name" "$2" "$([ "$3" = - ] || echo "$3")"
   [ "$rc" != 0 ] || die "case $name did not fail: the assembly accepted a bad input" 1
   [ "$rc" = 2 ] || die "case $name failed with exit $rc, not the named refusal exit 2 (the exit code must say it was a refusal)" 1
-  grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/$name.log" | grep -Eqi -- "$4" || die "case $name was refused (exit 2) but not for its own reason: the message does not match /$4/ (reason must be the case's own); got: $(tail -1 "$tmp/$name.log")" 1
+  grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/$name.log" | grep -Eqi -- "$4" ||
+    die "case $name was refused (exit 2) but not for its own reason: no message matches /$4/; got: $(tail -1 "$tmp/$name.log")" 1
   results+=("$name|$(grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/$name.log" | grep -Ei -m1 -- "$4" | cut -c1-400)")
 }
 

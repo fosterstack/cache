@@ -5,8 +5,6 @@
 #                     --keyring-dir DIR --out DIR
 # The six options come in exactly this order: any other shape is refused (exit 2).
 #
-# This file is straight-line text: no case, loop, function or subshell. The checks are subcommands of bin/oci-digest.py,
-# which print the refusal themselves and choose the exit status.
 # It runs from the repository root only (exit 2 elsewhere):
 # every helper is named by its literal repo-root-relative path (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py).
 # The config, the base lock, the index record and the key record are the committed ones of the variant: there is no
@@ -116,13 +114,10 @@ idxrec=build/locks/archive-index.sha256
 "$PY3" -I -B bin/oci-digest.py check-melrepo "$melrepo" fscache-baselayout "$apkver"
 workdir=$WORKDIR
 lock=$workdir/.assemble.lock
-[ ! -e "$lock" ] || { echo "assemble-image.sh: another assembly is in progress (the lock $lock exists);" \
-  "wait for it or remove the lock if no run is active" >&2; exit 2; }
-"$PY3" -I -B bin/oci-digest.py check-workdir "$workdir"
 
 # ---- 2. render ----
 tmp=$(mktemp -d)
-made=
+made=()
 trap 'rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1 || true' EXIT
 rdir=$("$PY3" -I -B bin/oci-digest.py prepare-render "$render" "$tmp")
 rendered=$rdir/$(basename "$config")
@@ -139,19 +134,26 @@ view=$rdir/archive-view
 "$SUDO" mkdir -p "$workdir" || { echo "assemble-image.sh: cannot create $workdir" >&2; exit 2; }
 "$SUDO" mkdir "$lock" || { echo "assemble-image.sh: another assembly is in progress" \
   "(could not take $lock)" >&2; exit 2; }
-# the cleanup now also removes the lock and the links this run made (and only those: $made grows as each link is made)
-trap '{ "$SUDO" rm -f $made; "$SUDO" rmdir "$lock"; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"; } || true' EXIT
-# no -f: a link that is already there (another run won the race after the pre-checks) is an error
+# made grows as each link is made
+cleanup() {
+  "$SUDO" rm -f "${made[@]}"
+  "$SUDO" rmdir "$lock"
+  rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp"
+}
+trap 'cleanup || true' EXIT
+# no -f: a link that is already there (another run's, or a leftover) is an error
 "$SUDO" ln -sT "$view" "$workdir/archive" || { echo "assemble-image.sh: cannot make the link $workdir/archive" \
   "(it exists: another assembly?); stopping" >&2; exit 2; }
-made="$made $workdir/archive"
+made+=("$workdir/archive")
 "$SUDO" ln -sT "$melrepo" "$workdir/melange-repo" || { echo "assemble-image.sh: cannot make the link" \
   "$workdir/melange-repo (it exists: another assembly?); stopping" >&2; exit 2; }
-made="$made $workdir/melange-repo"
+made+=("$workdir/melange-repo")
 "$SUDO" ln -sT "$keydir" "$workdir/keyring" || { echo "assemble-image.sh: cannot make the link $workdir/keyring" \
   "(it exists: another assembly?); stopping" >&2; exit 2; }
-made="$made $workdir/keyring"
+made+=("$workdir/keyring")
 mkdir -p "$tmp/apko-cache"
+# the apko calls get the same closed environment as the melange call (build/sealed-env.json), nothing inherited
+mapfile -d '' -t sealed < <("$PY3" -I -B bin/build-apk-helper.py sealed-env build/sealed-env.json)
 
 # ---- 3. the full lock ----
 # A sealed apko call: network cut with unshare -n, the render directory as the working directory (apko records the
@@ -159,7 +161,7 @@ mkdir -p "$tmp/apko-cache"
 # shows a network error is checked with the probe (rule 40).
 full=$tmp/$variant.full.lock.json
 cd "$rdir"
-"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" lock "$(basename "$rendered")" \
+"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$APKO" lock "$(basename "$rendered")" \
   --cache-dir "$tmp/apko-cache" --output "$full" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?
 cd "$root"
 cat "$tmp/apko.err" >&2
@@ -187,7 +189,7 @@ cp "$full" "$out/$variant.full.lock.json"
 # ---- 5. one offline build for both architectures ----
 mkdir -p "$tmp/sbom"   # apko renames its SBOMs into --sbom-path and does not create it (real-run finding)
 cd "$rdir"
-"$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" build "$(basename "$rendered")" \
+"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$APKO" build "$(basename "$rendered")" \
   "$pkg:$version" "$tmp/$variant.tar" --offline --cache-dir "$tmp/apko-cache" --lockfile "$full" --vcs=false \
   --sbom-path "$tmp/sbom" --build-date "$build_date" >"$tmp/apko.err" 2>&1 && rc=0 || rc=$?
 cd "$root"

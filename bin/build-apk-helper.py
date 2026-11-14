@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""The three pieces of the apk build driver that were inline Python or a hand-built environment, as one listed file (advisor
-ruling Oct 12, handoff 0393: the release chain's judge admits no inline Python, no assignment of a protected variable and no
-interpreter run on a variable path).
+"""The pieces of the apk build driver that were inline Python or a hand-built environment, as one listed file
+(advisor ruling Oct 12, handoff 0393: the release chain's judge admits no inline Python, no assignment of a protected
+variable and no interpreter run on a variable path).
 
   build-apk-helper.py recipe-facts RECIPE GOARCH OUTFILE
-      writes name=, file=, sha= (this architecture's toolchain fetch) and one pin= line per pinned build package; exit 1 when the
-      recipe cannot be read or has not exactly one such fetch for GOARCH.
+      writes name=, file=, sha= (this architecture's toolchain fetch) and one pin= line per pinned build package;
+      exit 1 when the recipe cannot be read or has not exactly one such fetch for GOARCH.
   build-apk-helper.py sealed-env DATAFILE
-      prints the closed list of the privileged melange call's variables as NAME=value items, each ended by a NUL byte: the entries
-      of DATAFILE's "closed", then each of its "from_environment" names read from this process (exit 1 when one is missing).
-      Nothing else is ever passed: there is no test mode, no inherited name and no prefix rule (REQ-BUILDAPK-001-AC3). DATAFILE is read as a
-      closed object: any other key or value type is refused (exit 1).
+      prints the closed list of the privileged melange call's variables as NAME=value items, each ended by a NUL
+      byte: the entries of DATAFILE's "closed", then each of its "from_environment" names read from this process
+      (exit 1 when one is missing). Nothing else is ever passed: there is no test mode, no inherited name and no
+      prefix rule (REQ-BUILDAPK-001-AC3). DATAFILE is read as a closed object: any other key or value type is
+      refused (exit 1).
 
 
   build-apk-helper.py sealed-call [--sealed-env FILE] ARG...
@@ -34,7 +35,7 @@ interpreter run on a variable path).
                                         go-archive melange-lock out render-dir apk-cache-dir); a directory is printed
                                         absolute
   abs-file FILE                         FILE as an absolute path
-  exclude-file EXCLUDE_FILE DIR         adds the job's nine paths to the checkout's exclude file, each once
+  exclude-file EXCLUDE_FILE DIR         adds the job's ten paths to the checkout's exclude file, each once
                                         (exit 1 refused)
   melange-verdict RC PROBE              the status of the melange call (and of the network probe, empty if none ran):
     0, 1 or 4
@@ -60,12 +61,14 @@ def recipe_facts(recipe, goarch, outfile):
     try:
         d = yaml.safe_load(open(recipe))
         name = d["package"]["name"]
-        fetches = [s["with"] for s in d.get("pipeline", []) if s.get("uses") == "fetch" and ("linux-%s." % goarch) in s["with"]["uri"]]
+        fetches = [s["with"] for s in d.get("pipeline", [])
+                   if s.get("uses") == "fetch" and ("linux-%s." % goarch) in s["with"]["uri"]]
         if len(fetches) != 1:
             return 1
         pins = [str(p) for p in d["environment"]["contents"]["packages"]]
         with open(outfile, "w") as f:
-            f.write("name=%s\nfile=%s\nsha=%s\n" % (name, fetches[0]["uri"].rsplit("/", 1)[1], fetches[0]["expected-sha256"]))
+            fetch = fetches[0]
+            f.write("name=%s\nfile=%s\nsha=%s\n" % (name, fetch["uri"].rsplit("/", 1)[1], fetch["expected-sha256"]))
             f.write("".join("pin=%s\n" % p for p in pins))
     except (OSError, KeyError, TypeError, AttributeError, yaml.YAMLError):
         return 1
@@ -105,14 +108,14 @@ def sealed_env(datafile):
 def read_fips_module(path):
     """GOFIPS140=<the module id> read from the file, or None when the file or its grammar is refused."""
     try:
-        # open without following a symlink, take the handle's own word that it is a regular file, and read THAT handle:
-        # check_revision's isfile and islink test of the
-        # path cannot be raced between that test and this open (O_NONBLOCK so a fifo cannot hang the open)
+        # open without following a symlink, take the handle's own word that it is a regular file, and read THAT handle,
+        # so the path cannot be swapped between a test and the open (O_NONBLOCK so a fifo cannot hang the open)
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 return None
-            raw = os.read(fd, 4097).decode("ascii")   # one byte over the longest line the grammar could ever allow: a longer file is refused, never cut
+            # one byte over the longest line the grammar could ever allow: a longer file is refused, never cut
+            raw = os.read(fd, 4097).decode("ascii")
             if len(raw) > 4096:
                 return None
         finally:
@@ -120,7 +123,8 @@ def read_fips_module(path):
     except (OSError, UnicodeDecodeError):
         return None
     num = r"(?:0|[1-9][0-9]*)"
-    if not raw.endswith("\n") or raw.count("\n") != 1 or not re.fullmatch(r"v%s\.%s\.%s-[0-9a-f]{8}" % (num, num, num), raw[:-1]):
+    grammar = r"v%s\.%s\.%s-[0-9a-f]{8}" % (num, num, num)
+    if not raw.endswith("\n") or raw.count("\n") != 1 or not re.fullmatch(grammar, raw[:-1]):
         return None
     return "GOFIPS140=" + raw[:-1]
 
@@ -130,20 +134,22 @@ MELANGE_FLAGS = ("--arch", "--runner", "--namespace", "--signing-key", "--keyrin
     "--build-date", "--cache-dir", "--source-dir", "--out-dir", "--apk-cache-dir")
 
 
+ENV_PATH, UNSHARE_PATH, MELANGE_PATH = "/usr/bin/env", "/usr/bin/unshare", "/usr/local/bin/melange"
+
+
 def sealed_call(call, expected_env=None):
     """None when the call is the sealed one, else the first reason. expected_env: the NAME=value items the sealed
     environment file yields, in order (None: only their form is judged)."""
-    if len(call) < 6 or os.path.basename(call[0]) != "env" or not os.path.isabs(call[0]) or call[1] != "-i":
+    if len(call) < 6 or call[0] != ENV_PATH or call[1] != "-i":
         return "the call does not start with an absolute path to env and -i"
     i = 2
     while i < len(call) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", call[i], re.S):
         i += 1
     if expected_env is not None and call[2:i] != expected_env:
         return "the environment of the call is not exactly the items of the sealed environment file"
-    if (i + 3 >= len(call) or os.path.basename(call[i]) != "unshare" or not os.path.isabs(call[i])
-            or call[i + 1] != "-n"):
+    if i + 3 >= len(call) or call[i] != UNSHARE_PATH or call[i + 1] != "-n":
         return "the call is not run under an absolute unshare -n (the network namespace is not cut)"
-    if os.path.basename(call[i + 2]) != "melange" or not os.path.isabs(call[i + 2]) or call[i + 3] != "build":
+    if call[i + 2] != MELANGE_PATH or call[i + 3] != "build":
         return "the program under unshare -n is not an absolute path to melange build"
     args = call[i + 4:]
     if not args or args[0].startswith("-"):
@@ -173,8 +179,7 @@ def sealed_call(call, expected_env=None):
 
 PREFIX = "build-apk.sh: "
 VALUE_OPTIONS = ("--variant", "--arch", "--version", "--source-dir", "--repo", "--keyring", "--go-archive",
-    "--melange-lock",
-                 "--out", "--render-dir", "--apk-cache-dir")
+                 "--melange-lock", "--out", "--render-dir", "--apk-cache-dir")
 EXCLUDE_PATHS = ("/archive/", "/host-tools/", "/out/", "/witness-apk/", "/admission.json", "/build-in/",
                  "/witness-build/", "/witness-rapk/", "/policy.json", "/freeze/")
 PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
@@ -220,12 +225,15 @@ def parse_options(args, allowed=None):
     return opts
 
 
-def check_args(uname_s, uname_m, *args):
-    """Every refusal that comes before a tool runs, in the order the script made them. Prints sde or build."""
+def check_linux(uname_s):
     if uname_s != "Linux":
         raise Refused("refusing to run on %s: this script uses sudo, unshare and the sealed build tools, which run on "
-            "Linux "
-                      "only (inside a Linux container or on a GitHub runner), never on the Mac itself" % uname_s)
+                      "Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" % uname_s)
+
+
+def check_args(uname_s, uname_m, *args):
+    """Every refusal that comes before a tool runs, in the order the script made them. Prints sde or build."""
+    check_linux(uname_s)
     opts = parse_options(args)
     src = opts.get("source-dir", "")
     if not src:
@@ -241,17 +249,20 @@ def check_args(uname_s, uname_m, *args):
 
 
 def check_variant_arch_version(uname_m, opts):
-    arch = opts.get("arch", "")
-    version = opts.get("version", "")
     if opts.get("variant") not in ("standard", "fips"):
         raise Refused("--variant must be standard or fips")
+    check_arch_version(uname_m, opts)
+
+
+def check_arch_version(uname_m, opts):
+    arch = opts.get("arch", "")
+    version = opts.get("version", "")
     if arch not in ("x86_64", "aarch64"):
         raise Refused("--arch must be an apk architecture name: x86_64 or aarch64 (not '%s')" % arch)
     host = {"amd64": "x86_64", "arm64": "aarch64"}.get(uname_m, uname_m)
     if arch != host:
         raise Refused("refusing to build %s on a %s host: each architecture builds natively on its own runner, no "
-            "emulation"
-                      % (arch, host))
+                      "emulation" % (arch, host))
     # exactly the chain's grammar (the tag minus its v) and the one fixed snapshot version (REQ-CHAIN-004-AC12)
     if not (re.fullmatch(VERSION_GRAMMAR, version) or version == "0.0.0-rc.1"):
         raise Refused("--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 "
@@ -360,8 +371,7 @@ def melange_verdict(rc, probe):
         raise Refused("melange build failed (exit %s)" % rc, 1)
     if probe == "101":
         raise Refused("a network attempt was made inside the sealed melange call (the probe confirms the namespace "
-            "has no route); "
-                      "the build must use only declared inputs", 4)
+                      "has no route); the build must use only declared inputs", 4)
     raise Refused("melange failed with a network error, but the probe says the namespace is not sealed (exit %s); "
                   "fix the seal first" % probe, 1)
 
@@ -394,8 +404,7 @@ def check_buildinfo(path, version):
             break
     if mainver != "v" + version:
         raise Refused("the binary's main module version is '%s', not v%s: the build is not stamped with the version "
-            "being built "
-                      "(a tag at the source HEAD is needed)" % (mainver or "none", version), 1)
+                      "being built (a tag at the source HEAD is needed)" % (mainver or "none", version), 1)
 
 
 def check_revision(path, head, variant, module_file):
@@ -412,14 +421,10 @@ def check_revision(path, head, variant, module_file):
         return
     # REQ-BUILDAPK-001-AC4: the module is the one build/locks/fips-module.txt names, read with the grammar the daily
     # refresh reads it with
-    if not os.path.isfile(module_file) or os.path.islink(module_file):
-        raise Refused("build/locks/fips-module.txt is missing, not a regular file or a symlink: "
-                      "the module the fips binary must record is unknown", 1)
     wanted = read_fips_module(module_file)
     if wanted is None:
         raise Refused("build/locks/fips-module.txt must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain "
-            "newline; "
-                      "refusing", 1)
+                      "newline; refusing", 1)
     if recorded != wanted:
         raise Refused("the fips binary must record exactly one %s (the module build/locks/fips-module.txt names) "
                       "and nothing else (found: %s)" % (wanted, recorded or "none"), 1)
@@ -434,14 +439,8 @@ def split_first_line(text):
 def go_verdict(rc, go_out, buildinfo, go_err):
     """rc: the exit status of go version -m on the packaged binary (127: no Go toolchain found)."""
     if rc == "127":
-        if os.environ.get("GITHUB_ACTIONS"):
-            raise Refused("no Go toolchain on PATH in CI: the buildinfo.txt cross-check against the packaged binary "
-                "cannot be "
-                          "skipped there; the runner must have Go (put it on the search path)", 1)
-        print(PREFIX + "note: buildinfo.txt not verified against the binary (no Go toolchain found); the check is "
-            "skipped",
-              file=sys.stderr)
-        return
+        raise Refused("no Go toolchain found: the buildinfo.txt cross-check against the packaged binary cannot be "
+                      "skipped; the build host must have Go installed", 1)
     if rc != "0":
         try:
             with open(go_err, "rb") as f:
@@ -449,14 +448,12 @@ def go_verdict(rc, go_out, buildinfo, go_err):
         except OSError:
             said = ""
         raise Refused("'go version -m' failed on the packaged binary (exit %s: %s); the build information cannot be "
-            "checked, "
-                      "refusing" % (rc, said), 1)
+                      "checked, refusing" % (rc, said), 1)
     go_first, go_rest = split_first_line(read_text(go_out).rstrip("\n"))
     info_first, info_rest = split_first_line(read_text(buildinfo))
     if go_first != info_first:
         raise Refused("the Go toolchain in buildinfo.txt (%s) differs from the one go version -m reports for the "
-            "packaged binary (%s)"
-                      % (info_first, go_first), 1)
+                      "packaged binary (%s)" % (info_first, go_first), 1)
     if go_rest != info_rest:
         raise Refused("buildinfo.txt in the apk differs from 'go version -m' of the packaged binary: "
                       "the recorded build information is not the binary's own", 1)
@@ -466,30 +463,18 @@ def go_verdict(rc, go_out, buildinfo, go_err):
 
 BASELAYOUT_PREFIX = "build-baselayout-apk.sh: "
 BASELAYOUT_OPTIONS = ("--arch", "--version", "--source-dir", "--repo", "--keyring", "--melange-lock", "--out",
-    "--render-dir", "--apk-cache-dir")
+                      "--render-dir", "--apk-cache-dir")
 BASELAYOUT_PACKAGE = "fscache-baselayout"
 
 
 def baselayout_check_args(uname_s, uname_m, *args):
     """Every refusal of the base-layout driver that comes before a tool runs. Prints build."""
-    if uname_s != "Linux":
-        raise Refused("refusing to run on %s: this script uses sudo, unshare and the sealed build tools, which run on "
-            "Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" % uname_s)
+    check_linux(uname_s)
     opts = parse_options(args, BASELAYOUT_OPTIONS)
     src = opts.get("source-dir", "")
     if not src:
         raise Refused("--source-dir is required")
-    arch = opts.get("arch", "")
-    version = opts.get("version", "")
-    if arch not in ("x86_64", "aarch64"):
-        raise Refused("--arch must be an apk architecture name: x86_64 or aarch64 (not '%s')" % arch)
-    host = {"amd64": "x86_64", "arm64": "aarch64"}.get(uname_m, uname_m)
-    if arch != host:
-        raise Refused("refusing to build %s on a %s host: each architecture builds natively on its own runner, no "
-            "emulation" % (arch, host))
-    if not (re.fullmatch(VERSION_GRAMMAR, version) or version == "0.0.0-rc.1"):
-        raise Refused("--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 "
-                      "(numbers without leading zeros; not '%s')" % version)
+    check_arch_version(uname_m, opts)
     check_environment()
     repo = opts.get("repo")
     keyring = opts.get("keyring", "")
@@ -514,7 +499,7 @@ def baselayout_check_args(uname_s, uname_m, *args):
 def baselayout_arg(name, *args):
     """One value of the base-layout driver's options, as the script uses it (the names of arg, without variant, goarch
     and go-archive)."""
-    parse_options(args, BASELAYOUT_OPTIONS)   # called for its refusals: an option the base-layout driver does not know stops here
+    parse_options(args, BASELAYOUT_OPTIONS)   # called for its refusals: an unknown option stops here
     if name in ("goarch", "variant", "go-archive"):
         raise Refused("unknown value name " + name, 2)
     return arg(name, *(a for a in args))
@@ -543,7 +528,8 @@ def baselayout_line_ok(words):
     if words[0] == "mkdir":
         return len(words) >= 3 and words[1] == "-p" and all(baselayout_destination(w) for w in words[2:])
     if words[0] == "chmod":
-        return len(words) >= 3 and bool(BASELAYOUT_MODE.fullmatch(words[1])) and all(baselayout_destination(w) for w in words[2:])
+        return (len(words) >= 3 and bool(BASELAYOUT_MODE.fullmatch(words[1]))
+                and all(baselayout_destination(w) for w in words[2:]))
     sources = words[1:-1]
     return len(words) >= 3 and words[-1] == DESTDIR_TOKEN + "/etc/" and all(
         BASELAYOUT_SOURCE.fullmatch(w) and w.split("/")[-1] not in (".", "..") for w in sources)
@@ -560,21 +546,22 @@ def baselayout_step_lines(step, recipe):
         if line == "":
             continue
         if not BASELAYOUT_LINE_CHARS.fullmatch(line.replace(DESTDIR_TOKEN, "")):
-            raise Refused("the recipe %s has a line with a character that chains or expands (a shell word), or a separator the "
-                "shell does not split on (only letters, digits, . _ - / and single spaces are allowed): %r" % (recipe, line))
+            raise Refused("the recipe %s has a line with a character that chains or expands (a shell word), or a "
+                          "separator the shell does not split on (only letters, digits, . _ - / and single spaces "
+                          "are allowed): %r" % (recipe, line))
         words = line.split(" ")
         if "" in words:
-            raise Refused("the recipe %s has a line outside the allowed form (an empty word: a leading, trailing or double "
-                "space): %r" % (recipe, line))
+            raise Refused("the recipe %s has a line outside the allowed form (an empty word: a leading, trailing or "
+                          "double space): %r" % (recipe, line))
         if any(DESTDIR_TOKEN in w and w != DESTDIR_TOKEN and not w.startswith(DESTDIR_TOKEN + "/") for w in words):
             raise Refused("the recipe %s has the destdir token inside a word (it must stand alone or start a path "
-                "${{targets.destdir}}/...): %s" % (recipe, line))
+                          "${{targets.destdir}}/...): %s" % (recipe, line))
         if words[0] not in BASELAYOUT_COMMANDS:
             raise Refused("the recipe %s runs %s: only mkdir, chmod and cp are allowed" % (recipe, words[0]))
         if not baselayout_line_ok(words):
-            raise Refused("the recipe %s has a line outside the allowed form (mkdir -p, chmod MODE, or cp build/baselayout/etc/NAME "
-                "to ${{targets.destdir}}/etc/; every destination under ${{targets.destdir}}/ with no . or .. part): %s"
-                % (recipe, line))
+            raise Refused("the recipe %s has a line outside the allowed form (mkdir -p, chmod MODE, or cp "
+                          "build/baselayout/etc/NAME to ${{targets.destdir}}/etc/; every destination under "
+                          "${{targets.destdir}}/ with no . or .. part): %s" % (recipe, line))
 
 
 def baselayout_source(src):
@@ -596,23 +583,27 @@ def baselayout_source(src):
 
 def baselayout_facts(recipe, outfile):
     """The recipe must be the base-layout package and nothing more: a closed set of keys, a build environment of package
-    pins, and pipeline steps that only run mkdir, chmod and cp. Writes name= and one pin= line per build-environment package.
-    Everything is read inside the try, so a wrong shape is a refusal and never a traceback."""
+    pins, and pipeline steps that only run mkdir, chmod and cp. Writes name= and one pin= line per build-environment
+    package. Everything is read inside the try, so a wrong shape is a refusal and never a traceback."""
     import yaml
     try:
         d = yaml.safe_load(open(recipe, encoding="utf-8"))
-        if not isinstance(d, dict) or not isinstance(d.get("package"), dict) or d["package"].get("name") != BASELAYOUT_PACKAGE:
-            raise Refused("the recipe %s is not for the package %s: this driver builds only the base layout" % (recipe, BASELAYOUT_PACKAGE))
+        if (not isinstance(d, dict) or not isinstance(d.get("package"), dict)
+                or d["package"].get("name") != BASELAYOUT_PACKAGE):
+            raise Refused("the recipe %s is not for the package %s: this driver builds only the base layout"
+                          % (recipe, BASELAYOUT_PACKAGE))
         if set(d) != {"package", "environment", "pipeline"}:
             raise Refused("the recipe %s must have exactly the keys package, environment and pipeline" % recipe)
         pkg = d["package"]
         if not set(pkg) <= set(BASELAYOUT_PACKAGE_KEYS):
-            raise Refused("the recipe %s has a package section with keys other than %s" % (recipe, ", ".join(BASELAYOUT_PACKAGE_KEYS)))
+            raise Refused("the recipe %s has a package section with keys other than %s"
+                          % (recipe, ", ".join(BASELAYOUT_PACKAGE_KEYS)))
         env = d["environment"]
         if not isinstance(env, dict) or set(env) != {"contents"} or not isinstance(env["contents"], dict) \
                 or set(env["contents"]) != {"packages"} or not isinstance(env["contents"]["packages"], list) \
                 or not all(isinstance(p, str) for p in env["contents"]["packages"]):
-            raise Refused("the recipe %s must have an environment of exactly contents: packages: a list of strings" % recipe)
+            raise Refused("the recipe %s must have an environment of exactly contents: packages: a list of strings"
+                          % recipe)
         if not isinstance(d["pipeline"], list) or not d["pipeline"]:
             raise Refused("the recipe %s must have a pipeline with at least one step" % recipe)
         for step in d["pipeline"]:

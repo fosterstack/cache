@@ -14,9 +14,13 @@ for heading in want:
 manifest = "\n---\n".join(blocks)
 # Substitute ONLY the image tag with the loaded candidate; keep
 # imagePullPolicy Never so kind uses the loaded image.
-manifest = manifest.replace("ghcr.io/fosterstack/cache:X.Y.Z", os.environ["CANDIDATE_LOCAL"])
-manifest = manifest.replace(
-    "image: " + os.environ["CANDIDATE_LOCAL"],
-    "image: " + os.environ["CANDIDATE_LOCAL"] + "\n          imagePullPolicy: Never")
+image = os.environ["CANDIDATE_LOCAL"]
+# each placeholder must occur exactly once, or the suite would test the published image instead of the candidate
+if manifest.count("ghcr.io/fosterstack/cache:X.Y.Z") != 1:
+    raise SystemExit("the image placeholder must occur exactly once in the manifests")
+manifest = manifest.replace("ghcr.io/fosterstack/cache:X.Y.Z", image)
+if manifest.count("image: " + image) != 1:
+    raise SystemExit("the image line must occur exactly once in the manifests")
+manifest = manifest.replace("image: " + image, "image: " + image + "\n          imagePullPolicy: Never")
 open("/tmp/fscache-k8s.yaml", "w").write(manifest)
 print(manifest)

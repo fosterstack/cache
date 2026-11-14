@@ -18,10 +18,9 @@ set -euo pipefail
 # strace release built from source, statically linked, so it can be
 # the entrypoint of the distroless (no libc) candidate image.
 STRACE_VER=6.9
-# SHA256 of https://strace.io/files/${STRACE_VER}/strace-${STRACE_VER}.tar.xz
-# (official release host). Cross-verified: this tarball's sha512 equals
-# Alpine 3.20's recorded strace-6.9 sha512, and its size (2,466,252 B)
-# matches strace.io's published size. Empty => fail closed.
+# SHA256 of https://github.com/strace/strace/releases/download/v${STRACE_VER}/strace-${STRACE_VER}.tar.xz
+# (the URL the builder downloads). Cross-verified: this tarball's sha512 equals
+# Alpine 3.20's recorded strace-6.9 sha512. Empty => fail closed.
 STRACE_SHA256='da189e990a82e3ca3a5a4631012f7ecfd489dab459854d82d8caf6a865c1356a'
 # Host dirs: the static strace binary (mounted read-only into the
 # candidate) and the per-scenario trace output (mounted read-write).
@@ -48,9 +47,9 @@ get_static_strace() {
   chmod 0777 "$TRACE_OUT"
   [ -n "$STRACE_SHA256" ] || fail "STRACE_SHA256 is not pinned; refusing to build the syscall tracer from unverified source (fail closed). Pin the published checksum of strace-${STRACE_VER}.tar.xz."
   docker run --rm -v "$TRACE_BIN":/out -e V="$STRACE_VER" -e SUM="$STRACE_SHA256" alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc sh -euc '
-    apk add --no-cache build-base linux-headers xz >/dev/null
+    apk add --no-cache build-base=0.5-r3 linux-headers=6.6-r0 xz=5.8.3-r0 >/dev/null
     cd /tmp
-    wget -q -O "strace-${V}.tar.xz" "https://github.com/strace/strace/releases/download/v6.9/strace-6.9.tar.xz"
+    wget -q -O "strace-${V}.tar.xz" "https://github.com/strace/strace/releases/download/v${V}/strace-${V}.tar.xz"
     echo "${SUM}  strace-${V}.tar.xz" | sha256sum -c -
     tar -xf "strace-${V}.tar.xz"
     cd "strace-${V}"
@@ -437,6 +436,10 @@ docker network create fscache-open >/dev/null 2>&1 || true
 docker network create --internal fscache-denied >/dev/null 2>&1 || true
 docker network create fscache-nc-open >/dev/null 2>&1 || true
 docker network create --internal fscache-nc-denied >/dev/null 2>&1 || true
+for n in fscache-denied fscache-nc-denied; do
+  [ "$(docker network inspect -f '{{.Internal}}' "$n")" = true ] \
+    || fail "network $n is not --internal: the denied phase would run with egress open"
+done
 
 echo "== phase pre-0: build and prove the static candidate tracer =="
 get_static_strace
