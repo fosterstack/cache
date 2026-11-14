@@ -1182,6 +1182,7 @@ for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    st
   "exprname-alone|  zz:\n    name: '\${{ matrix.n }}'\n    strategy:\n      matrix:\n        n: [coverage]\n|bad" \
   "exprname-ok-os|  zz:\n    name: 'build \${{ matrix.os }} (1.2.0)'\n    strategy:\n      matrix:\n        os: [ubuntu]\n|ok" \
   "exprname-ok-scan|  zz:\n    name: 'scan (\${{ matrix.scanner }})'\n    strategy:\n      matrix:\n        scanner: [grype]\n|ok" \
+  "exprname-bang|  zz:\n    name: '\${{ matrix.n }}!'\n    strategy:\n      matrix:\n        n: [x]\n|ok" \
   "exprname-ok-rescan|  zz:\n    name: '${RS}'\n    strategy:\n      matrix:\n        target: [${RT}]\n|ok"; do
   want="${mut##*|}"; body="${mut%|*}"
   reserved_wf "${mut%%|*}" "$(printf "${body#*|}${JOB}")"
@@ -1189,7 +1190,9 @@ for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    st
   then got=ok; else got=bad; fi
   if [ "$got" = "$want" ]; then
     pass=$((pass+1)); echo "PASS ${mut%%|*} → $got"
-  else failn=$((failn+1)); echo "FAIL ${mut%%|*} → $got, want $want ($out)"; fi
+  else
+    failn=$((failn+1)); echo "FAIL ${mut%%|*} → $got, want $want ($out)"
+  fi
 done
 
 # REQ-REL-013-AC3: 64 plain matrix expressions with no text between and a final "!" (in no reserved name) cannot render
@@ -1206,15 +1209,7 @@ timed_judge() {  # <workflow copy name>: sets got (ok|bad), ms and out; the judg
   ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 }
 expr64=""; for _ in $(seq 64); do expr64+='${{ matrix.a.b }}'; done
-# the twin is the control: the judge says ok on a benign one-expression name
-reserved_wf exprname-twin "$(printf '  zz:\n    name: %s!\n%b' '${{ matrix.a.b }}' "$JOB")"
 reserved_wf exprname-64-plain "$(printf '  zz:\n    name: %s!\n%b' "$expr64" "$JOB")"
-timed_judge exprname-twin
-if [ "$got" = ok ]; then
-  pass=$((pass+1)); echo "PASS exprname-twin → ok in ${ms} ms"
-else
-  failn=$((failn+1)); echo "FAIL exprname-twin → $got in ${ms} ms, want ok ($out)"
-fi
 timed_judge exprname-64-plain
 if [ "$got" = ok ]; then
   pass=$((pass+1)); echo "PASS exprname-64-plain-then-bang → ok in ${ms} ms"
