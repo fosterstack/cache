@@ -45,7 +45,8 @@ UP = {"witness-check-" + RUNNER: RECORD_DIRS, "check-results-" + RUNNER: "check-
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
-REC_LINE = "bash bin/check-records-digests.sh " + RUNNER + " witness-scanners witness-acceptance witness-runtime > check-records.json"   # the runner's list of its three record folders, a file Sign compares (REQ-REL-011-AC1); no job output
+REC_LINE = 'bash bin/check-records-digests.sh "$LEG" check-records.json witness-scanners witness-acceptance witness-runtime'   # the script writes the runner's list of its three record folders itself, a file Sign compares (REQ-REL-011-AC1); no job output
+REC_ENV = {"LEG": "${{ matrix.runner }}"}
 SNAPSHOT_IF = "${{ inputs.mode != 'snapshot' }}"
 CHECK_NEEDS = ["check-govulncheck", "build-assemble", "sign"]
 CHECK_STRATEGY = {"matrix": {"runner": RUNNERS}}
@@ -202,6 +203,10 @@ def exact_steps(label, steps, want, what):
         bad.append("%s must have exactly its %d listed steps (%s), found %d" % (label, len(want), what, len(steps)))
     for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
         extra = {"upid": {"id"}}.get(kind, set())
+        if kind == "run" and arg == REC_LINE:
+            extra = {"env"}
+            if isinstance(s, dict) and s.get("env") != REC_ENV:
+                bad.append("%s step %d: the records step must carry exactly env LEG: ${{ matrix.runner }}: %s" % (label, i, s.get("env")))
         if not isinstance(s, dict) or set(s) - ({"name", "uses", "with", "run"} | extra):
             bad.append("%s step %d: keys not allowed (an if, env or shell would change what runs): %s" % (label, i, sorted(s) if isinstance(s, dict) else s)); continue
         u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
@@ -284,8 +289,11 @@ def stage(path):
         bad.append("a registry login, a secret, a packages or attestations permission, an identity token, an environment or a registry name appears in a Check job")
     kinds, names = [], []
     for s in steps:
-        if set(s) - {"name", "uses", "with", "run"}:
+        is_rec = (s.get("run") or "").strip() == REC_LINE
+        if set(s) - {"name", "uses", "with", "run"} - ({"env"} if is_rec else set()):
             bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run"}))
+        if is_rec and s.get("env") != REC_ENV:
+            bad.append("the records step must carry exactly env LEG: ${{ matrix.runner }}: %s" % s.get("env"))
         u = s.get("uses", "")
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
