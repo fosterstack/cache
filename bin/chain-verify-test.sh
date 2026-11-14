@@ -600,7 +600,7 @@ for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("pty
     mutate_field("sign_prov", "env_" + _nm, _ed)
     mutate_field("sign_prov", "env_" + _nm, _ed)
 # ---- PR 4 (advisor 0386, read-back verifier-bindings): bind-items and check-list ----
-# items.json is a PRODUCT of Build's record next to digests.json; the four Check records (scanners, acceptance, runtime, arm64) are Witness collections
+# items.json is a PRODUCT of Build's record next to digests.json; the six Check records (scanners, acceptance, runtime of each of the two runners) are Witness collections
 # named for their step, signed by release.yml (its sign jobs) at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
 MAT = "https://witness.dev/attestations/material/v0.1/file:"
 PRD = "https://witness.dev/attestations/product/v0.1/file:"
@@ -635,50 +635,67 @@ _PADM = {"name": PRD + "admission-baseline.json", "digest": {"sha256": _fsha("ad
 add("bi_adm", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM]))
 add("bi_adm_dup", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM, dict(_PADM, digest={"sha256": _fsha("admission-baseline-other.json")})]))
 add("bi_adm_material", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [dict(_PADM, name=MAT + "admission-baseline.json")]))
-def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None, ref=T):
+CK_RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
+CK_STEPS = ("scanners", "acceptance", "runtime")
+def _chk(name, step, key="rel", digests="digests.json", signed=True, subj=None, ref=T, runner=""):
+    # a runner's product differs from the other runner's (two records of different bytes: a record repeated for the other runner is a duplicate)
     add(name, COLL, None, stmt="v0.1", signed=signed, key=key,
         payload=_coll(step, subj if subj is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}},
-                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": "9" * 64}}], ref))
-for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("c_" + _sn, _sn)
-for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("co_" + _sn, _sn, digests="digests-other.json")      # all four agree with each other, not with Build's list
-_chk("c_arm64_job", "check-arm64"); _chk("c_runtime_arm64name", "arm64")
+                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": hashlib.sha256((runner + step).encode()).hexdigest()}}], ref))
+for _r in CK_RUNNERS:
+    for _sn in CK_STEPS: _chk("c_%s_%s" % (_r, _sn), _sn, runner=_r)
+for _r in CK_RUNNERS:
+    for _sn in CK_STEPS: _chk("co_%s_%s" % (_r, _sn), _sn, digests="digests-other.json", runner=_r)      # all six agree with each other, not with Build's list
+_chk("c_job", "check-arm64")
 _chk("c_scanners_otherkey", "scanners", key="other"); _chk("c_scanners_throwaway", "scanners", key="throwaway")
 _chk("c_scanners_unsigned", "scanners", signed=False)
 _chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
 _chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}])
 _chk("c_scanners_dupmat", "scanners", subj=[{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}, {"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests-other.json")}}])
 def _cl(dirname, slots):
-    for slot, rec in slots.items():
+    """slots: {(runner, step): record name}; the records land in DIR/<runner>/witness-<step>/<step>-collection.json with their Rekor entries file beside them"""
+    for (runner, slot), rec in slots.items():
         if rec is None: continue
-        os.makedirs(p("%s/witness-%s" % (dirname, slot)), exist_ok=True)
-        shutil.copy(p(rec + ".json"), p("%s/witness-%s/%s-collection.json" % (dirname, slot, slot)))
-        if os.path.exists(p(rec + ".rekor.json")): shutil.copy(p(rec + ".rekor.json"), p("%s/witness-%s/%s-collection.rekor.json" % (dirname, slot, slot)))      # its Rekor entry beside it
-OK4 = {"scanners": "c_scanners", "acceptance": "c_acceptance", "runtime": "c_runtime", "arm64": "c_arm64"}
-_cl("cl_ok", OK4)
-_cl("cl_missing", dict(OK4, arm64=None))
-_cl("cl_extra", dict(OK4, extra="c_scanners"))
+        os.makedirs(p("%s/%s/witness-%s" % (dirname, runner, slot)), exist_ok=True)
+        shutil.copy(p(rec + ".json"), p("%s/%s/witness-%s/%s-collection.json" % (dirname, runner, slot, slot)))
+        if os.path.exists(p(rec + ".rekor.json")): shutil.copy(p(rec + ".rekor.json"), p("%s/%s/witness-%s/%s-collection.rekor.json" % (dirname, runner, slot, slot)))      # its Rekor entry beside it
+AMD, ARM = CK_RUNNERS
+OK6 = {(r, s): "c_%s_%s" % (r, s) for r in CK_RUNNERS for s in CK_STEPS}
+def _cd(dirname, rel): return p("%s/%s" % (dirname, rel))
+def six(over): d = dict(OK6); d.update(over); return d      # the six records with the given slots replaced (None leaves a slot out)
+_cl("cl_ok", OK6)
+_cl("cl_missing", six({(ARM, "runtime"): None}))
+_cl("cl_missing_runner", {k: v for k, v in OK6.items() if k[0] == AMD})
+_cl("cl_extra", six({(AMD, "extra"): "c_%s_scanners" % AMD}))
+_cl("cl_extra_runner", six({("ubuntu-24.04-arm64", "scanners"): "c_%s_scanners" % ARM}))
+_cl("cl_arm64_record", six({(ARM, "arm64"): "c_%s_runtime" % ARM}))
 # group 7: the closed folder takes exactly one Rekor entries file beside each record (<step>-collection.rekor.json), and nothing else
-_cl("cl_norekor", OK4); os.remove(p("cl_norekor/witness-runtime/runtime-collection.rekor.json"))
-_cl("cl_stray", OK4); open(p("cl_stray/witness-scanners/notes.txt"), "w").write("x")
-_cl("cl_bak", OK4); shutil.copy(p("cl_bak/witness-scanners/scanners-collection.rekor.json"), p("cl_bak/witness-scanners/scanners-collection.rekor.json.bak"))
-_cl("cl_two", OK4); shutil.copy(p("cl_two/witness-scanners/scanners-collection.rekor.json"), p("cl_two/witness-scanners/other.rekor.json"))
-_cl("cl_alone", OK4); os.remove(p("cl_alone/witness-arm64/arm64-collection.json"))
-_cl("cl_sym", OK4); os.remove(p("cl_sym/witness-acceptance/acceptance-collection.rekor.json")); os.symlink(p("cl_sym/witness-scanners/scanners-collection.rekor.json"), p("cl_sym/witness-acceptance/acceptance-collection.rekor.json"))
-_cl("cl_swapped", dict(OK4, scanners="c_acceptance", acceptance="c_scanners"))          # reordered: each record sits in the other's slot
-_cl("cl_dup", dict(OK4, acceptance="c_scanners"))                                        # the scanners record presented twice
-_cl("cl_subst", dict(OK4, runtime="c_scanners", acceptance="c_acceptance"))              # a substituted record under another name
-_cl("cl_unverifiable", dict(OK4, runtime="c_scanners_unsigned"))
-_cl("cl_wrongjob", dict(OK4, arm64="c_arm64_job"))
-_cl("cl_otherkey", dict(OK4, scanners="c_scanners_otherkey"))
-_cl("cl_throwaway", dict(OK4, scanners="c_scanners_throwaway"))
-_cl("cl_nomat", dict(OK4, scanners="c_scanners_nomat"))
-_cl("cl_prodonly", dict(OK4, scanners="c_scanners_prodonly"))
-_cl("cl_dupmat", dict(OK4, scanners="c_scanners_dupmat"))
-_cl("cl_alt_digests", {"scanners": "co_scanners", "acceptance": "co_acceptance", "runtime": "co_runtime", "arm64": "co_arm64"})
-_cl("cl_onebad_digests", dict(OK4, runtime="co_runtime"))
-os.makedirs(p("cl_stray/witness-scanners"), exist_ok=True)
-_cl("cl_stray", OK4); open(p("cl_stray/witness-scanners/stray.json"), "w").write("{}")
+_cl("cl_norekor", OK6); os.remove(_cd("cl_norekor", ARM + "/witness-runtime/runtime-collection.rekor.json"))
+_cl("cl_stray", OK6); open(_cd("cl_stray", AMD + "/witness-scanners/notes.txt"), "w").write("x")
+_cl("cl_bak", OK6); shutil.copy(_cd("cl_bak", ARM + "/witness-scanners/scanners-collection.rekor.json"), _cd("cl_bak", ARM + "/witness-scanners/scanners-collection.rekor.json.bak"))
+_cl("cl_two", OK6); shutil.copy(_cd("cl_two", AMD + "/witness-scanners/scanners-collection.rekor.json"), _cd("cl_two", AMD + "/witness-scanners/other.rekor.json"))
+_cl("cl_alone", OK6); os.remove(_cd("cl_alone", ARM + "/witness-runtime/runtime-collection.json"))
+_cl("cl_sym", OK6); os.remove(_cd("cl_sym", ARM + "/witness-acceptance/acceptance-collection.rekor.json")); os.symlink(_cd("cl_sym", ARM + "/witness-scanners/scanners-collection.rekor.json"), _cd("cl_sym", ARM + "/witness-acceptance/acceptance-collection.rekor.json"))
+_cl("cl_swapped", six({(AMD, "scanners"): "c_%s_acceptance" % AMD, (AMD, "acceptance"): "c_%s_scanners" % AMD}))          # reordered: each record sits in the other's slot
+_cl("cl_dup", six({(AMD, "acceptance"): "c_%s_scanners" % AMD}))                                        # the scanners record presented twice
+_cl("cl_crossrunner", six({(ARM, "scanners"): "c_%s_scanners" % AMD}))                                  # one runner's record presented as the other runner's
+_cl("cl_subst", six({(AMD, "runtime"): "c_%s_scanners" % AMD}))                                         # a substituted record under another name
+_chk("c_scanners_unsigned", "scanners", signed=False)
+_cl("cl_unverifiable", six({(ARM, "runtime"): "c_scanners_unsigned"}))
+_cl("cl_wrongjob", six({(ARM, "runtime"): "c_job"}))
+_chk("c_scanners_otherkey", "scanners", key="other"); _chk("c_scanners_throwaway", "scanners", key="throwaway")
+_chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
+_chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}])
+_chk("c_scanners_dupmat", "scanners", subj=[{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}, {"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests-other.json")}}])
+_cl("cl_otherkey", six({(ARM, "scanners"): "c_scanners_otherkey"}))
+_cl("cl_throwaway", six({(AMD, "scanners"): "c_scanners_throwaway"}))
+_cl("cl_nomat", six({(ARM, "scanners"): "c_scanners_nomat"}))
+_cl("cl_prodonly", six({(AMD, "scanners"): "c_scanners_prodonly"}))
+_cl("cl_dupmat", six({(ARM, "scanners"): "c_scanners_dupmat"}))
+_cl("cl_alt_digests", {(r, s): "co_%s_%s" % (r, s) for r in CK_RUNNERS for s in CK_STEPS})
+_cl("cl_onebad_digests", six({(ARM, "runtime"): "co_%s_runtime" % ARM}))
 _cl("cl_empty", {})
+_cl("cl_stray2", OK6); open(_cd("cl_stray2", ARM + "/witness-runtime/stray.json"), "w").write("{}")
 # REQ-CHAIN-006-AC4 / REQ-CHAIN-007-AC16 (advisor Oct 12, ruling G): check-results/govulncheck.json is a PRODUCT of Check's scanners record, which carries Build's digest
 # list as its material; Release binds the file it uses to that product (bind-check), under Check's identity at the tag, as it binds items.json to Build's record
 dj("gv.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v1.7.0"}})
@@ -697,7 +714,7 @@ _gv("gv_wrongstep", step="acceptance"); _gv("gv_otherdigests", digests="digests-
 add("bi_othertag", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), T2))
 add("bi_branch", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json"), "refs/heads/main"))
 _chk("c_scanners_tag2", "scanners", ref=T2); _chk("c_scanners_branch", "scanners", ref="refs/heads/main")
-_cl("cl_tag2", dict(OK4, scanners="c_scanners_tag2")); _cl("cl_branch", dict(OK4, scanners="c_scanners_branch"))
+_cl("cl_tag2", six({(ARM, "scanners"): "c_scanners_tag2"})); _cl("cl_branch", six({(AMD, "scanners"): "c_scanners_branch"}))
 _gv("gv_tag2", ref=T2); _gv("gv_branch", ref="refs/heads/main")
 _gv("gv_nomat", mats=[]); _gv("gv_otherkey", key="other"); _gv("gv_unsigned", signed=False)
 
@@ -717,7 +734,8 @@ add("rc_sign_othersrc", PROV, D, ref=TRC, predicate=_src("e" * 40))
 add("rc_sign_nosrc", PROV, D, ref=TRC, predicate={"buildDefinition": dict(slsa_ok(TRC)["buildDefinition"], resolvedDependencies=[])})
 add("rc_rebuild", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild", coll_ref=TRC)
 add("rc_rebuild_other", COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild", coll_ref=TRC)
-for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("rc_c_" + _sn, _sn, ref=TRC)
+for _r in CK_RUNNERS:
+    for _sn in CK_STEPS: _chk("rc_c_%s_%s" % (_r, _sn), _sn, ref=TRC, runner=_r)
 _chk("rc_c_scanners_otherkey", "scanners", key="other", ref=TRC)           # a Check record signed by a key the manifest does not name
 _HF = {"mint_sign_cert": ("sign", "signature is not the manifest key's (manifest key)"), "read_sign_token": ("runner", "nothing usable"),
        "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
@@ -740,27 +758,27 @@ def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", hostile=
     files = [("witness-build/build-collection.json", build + ".json"), ("witness-build/digests.json", digests), ("witness-build/items.json", "items.json"), ("witness-build/admission-baseline.json", adm + ".json"),
              ("provenance/provenance.json", sign + ".json"), ("provenance/provenance.rekor.json", sign + ".rekor.json"),
              ("witness-rebuild/rebuild-collection.json", rebuild + ".json"), ("hostile-results/hostile-results.json", hostile + ".json")]
-    chk = {s: "rc_c_" + s for s in ("scanners", "acceptance", "runtime", "arm64")}
+    chk = {(r, s): "rc_c_%s_%s" % (r, s) for r in CK_RUNNERS for s in CK_STEPS}
     chk.update(check or {})
-    for slot, rec in chk.items():
-        if rec is not None: files.append(("witness-check/witness-%s/%s-collection.json" % (slot, slot), rec + ".json"))
+    for (runner, slot), rec in chk.items():
+        if rec is not None: files.append(("witness-check/%s/witness-%s/%s-collection.json" % (runner, slot, slot), rec + ".json"))
     for rel, src in files:
         os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
         shutil.copy(p(src), os.path.join(d, rel))
         if os.path.exists(p(src[:-5] + ".rekor.json")): shutil.copy(p(src[:-5] + ".rekor.json"), os.path.join(d, rel[:-5] + ".rekor.json"))      # the record's Rekor entry beside it
 rcdir("rc_ok")
 rcdir("rc_norekor_rebuild"); os.remove(p("rc_norekor_rebuild/witness-rebuild/rebuild-collection.rekor.json"))      # one collection loses its entries file
-rcdir("rc_norekor_check"); os.remove(p("rc_norekor_check/witness-check/witness-runtime/runtime-collection.rekor.json"))
+rcdir("rc_norekor_check"); os.remove(p("rc_norekor_check/witness-check/ubuntu-24.04-arm/witness-runtime/runtime-collection.rekor.json"))
 rcdir("rc_badsign", sign="sign_othertag")
 rcdir("rc_othersrc", sign="rc_sign_othersrc")
 rcdir("rc_nosrc", sign="rc_sign_nosrc")
 rcdir("rc_build_final", build="rc_build_final", adm="admission-baseline-final")
 rcdir("rc_noadm", build="rc_build_noadm")
-rcdir("rc_check_missing", check={"arm64": None})
-rcdir("rc_check_otherkey", check={"scanners": "rc_c_scanners_otherkey"})
-_chk("rc_c_scanners_tag", "scanners", ref=T)          # a Check record made at the FINAL tag, offered under the rc tag's policy
+rcdir("rc_check_missing", check={(ARM, "runtime"): None})
+rcdir("rc_check_otherkey", check={(AMD, "scanners"): "rc_c_scanners_otherkey"})
+_chk("rc_c_scanners_tag", "scanners", ref=T, runner=ARM)          # a Check record made at the FINAL tag, offered under the rc tag's policy
 add("rc_build_finalref", COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_padm("admission-baseline-rc.json")], T))
-rcdir("rc_check_finaltag", check={"scanners": "rc_c_scanners_tag"})
+rcdir("rc_check_finaltag", check={(ARM, "scanners"): "rc_c_scanners_tag"})
 rcdir("rc_build_finalref", build="rc_build_finalref")
 rcdir("rc_norekor")
 os.remove(p("rc_norekor/provenance/provenance.rekor.json"))
@@ -1781,26 +1799,30 @@ expect_ok     "AB bind-items --product '': an empty name is the default product,
 expect_refuse "AB bind-items --product '': ...and is judged as items.json" "build|items.json|digest" \
   $(BI bi_ok items-other) --product ""
 CLS() { echo check-list --policy "$work/policy.json" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
-expect_ok     "PR4 check-list: exactly scanners, acceptance, runtime and arm64, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
-expect_refuse "PR4 check-list: a missing record (arm64) is refused, naming Check and the record" "check|arm64|missing" $(CLS cl_missing)
+expect_ok     "PR4 check-list: scanners, acceptance and runtime of both runners, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
+expect_refuse "PR4 check-list: a missing record (the arm runner's runtime) is refused, naming Check, the runner and the record" "check|ubuntu-24.04-arm|runtime|missing" $(CLS cl_missing)
+expect_refuse "PR4 check-list: one runner's three records alone (the other runner's directory missing) are refused" "check|ubuntu-24.04-arm|missing" $(CLS cl_missing_runner)
+expect_refuse "PR4 check-list: a directory that is not one of the two runners (ubuntu-24.04-arm64) is refused" "check|extra|ubuntu-24.04-arm64" $(CLS cl_extra_runner)
+expect_refuse "PR4 check-list: a seventh record, an arm64 record, is refused" "check|extra|witness-arm64" $(CLS cl_arm64_record)
+expect_refuse "PR4 check-list: one runner's record presented as the other runner's is refused as a duplicate" "check|scanners|duplicate" $(CLS cl_crossrunner)
 expect_refuse "PR4 check-list: a record with no Rekor entries file beside it is refused, naming Rekor" "rekor" $(CLS cl_norekor)
 expect_refuse "PR4 check-list: a stray file beside a record is refused as extra" "check|extra|notes.txt" $(CLS cl_stray)
 expect_refuse "PR4 check-list: a renamed copy of the entries file is refused as extra" "check|extra|rekor.json.bak" $(CLS cl_bak)
 expect_refuse "PR4 check-list: a second entries file under another name is refused as extra" "check|extra|other.rekor.json" $(CLS cl_two)
-expect_refuse "PR4 check-list: an entries file with its record missing is refused as missing" "check|arm64|missing" $(CLS cl_alone)
+expect_refuse "PR4 check-list: an entries file with its record missing is refused as missing" "check|runtime|missing" $(CLS cl_alone)
 expect_refuse "PR4 check-list: an entries file that is a symlink is refused" "check|symlink|acceptance" $(CLS cl_sym)
 expect_refuse "PR4 check-list: an extra record is refused, naming it" "check|extra" $(CLS cl_extra)
-expect_refuse "PR4 check-list: a stray file inside a record directory is refused" "check|stray.json" $(CLS cl_stray)
+expect_refuse "PR4 check-list: a stray file inside a record directory is refused" "check|stray.json" $(CLS cl_stray2)
 expect_refuse "PR4 check-list: two records swapped between their slots (a substitution) are refused" "check|scanners" $(CLS cl_swapped)
 expect_refuse "PR4 check-list: the scanners record presented twice (as acceptance) is refused" "check|acceptance" $(CLS cl_dup)
 expect_refuse "PR4 check-list: a record substituted under another step's name is refused" "check|runtime" $(CLS cl_subst)
 expect_refuse "PR4 check-list: an unverifiable (unsigned) record is refused, naming the record" "check|runtime|signature" $(CLS cl_unverifiable)
-expect_refuse "PR4 check-list: the arm64 slot holding a record of the job check-arm64 (wrong job) is refused" "check|arm64" $(CLS cl_wrongjob)
+expect_refuse "PR4 check-list: a slot holding a record of the job check-arm64 (wrong job) is refused" "check|check-arm64" $(CLS cl_wrongjob)
 expect_refuse "PR4 check-list: a record with no material digest list is refused" "check|scanners|digests" $(CLS cl_nomat)
 expect_refuse "PR4 check-list: a product named like the digest list does not stand in for the material" "check|scanners|digests" $(CLS cl_prodonly)
 expect_refuse "PR4 check-list: two material subjects for the digest list are refused" "check|scanners|digests" $(CLS cl_dupmat)
-expect_refuse "PR4 check-list: four valid records whose digests match EACH OTHER but not Build's verified digests are refused" "check|digest" $(CLS cl_alt_digests)
-expect_refuse "PR4 check-list: one record for other digests among three right ones is refused" "check|runtime|digest" $(CLS cl_onebad_digests)
+expect_refuse "PR4 check-list: six valid records whose digests match EACH OTHER but not Build's verified digests are refused" "check|digest" $(CLS cl_alt_digests)
+expect_refuse "PR4 check-list: one record for other digests among five right ones is refused" "check|runtime|digest" $(CLS cl_onebad_digests)
 expect_refuse "PR4 check-list: against another digest list of Build's none of the records matches" "check|digest" $(CLS cl_ok digests-other)
 expect_refuse "PR4 check-list: an empty directory is refused" "check|missing" $(CLS cl_empty)
 # ruling G: bind-check, the same binding for the one file of Check's scanners record that Release uses (govulncheck.json)
@@ -1833,7 +1855,8 @@ import hashlib, json, sys
 out, rc_tag, run_id, chain, d = sys.argv[1:6]
 M = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rekor": "provenance/provenance.rekor.json",
      "rebuild": "witness-rebuild/rebuild-collection.json", "hostile_verdict": "hostile-results/hostile-results.json"}
-for s in ("scanners", "acceptance", "runtime", "arm64"): M[s] = "witness-check/witness-%s/%s-collection.json" % (s, s)
+for r in ("ubuntu-24.04", "ubuntu-24.04-arm"):
+    for s in ("scanners", "acceptance", "runtime"): M["%s-%s" % (s, r)] = "witness-check/%s/witness-%s/%s-collection.json" % (r, s, s)
 rec = {k: hashlib.sha256(open("%s/%s" % (d, v), "rb").read()).hexdigest() for k, v in M.items()}
 json.dump({"rc_tag": rc_tag, "run_id": run_id, "chain_sha256": chain, "records": rec}, open(out, "w"), indent=1, sort_keys=True)
 PY
@@ -1935,6 +1958,9 @@ r = dict(m["records"]); del r["sign"]; save("norecord", dict(m, records=r))
 r = dict(m["records"]); del r["rekor"]; save("norekor", dict(m, records=r))      # ratify B: a marker without its rekor row
 r = dict(m["records"]); r["extra"] = "0" * 64; save("extrarecord", dict(m, records=r))
 r = dict(m["records"]); r["build"] = "XYZ"; save("badrecord", dict(m, records=r))
+r = dict(m["records"]); r["arm64"] = "0" * 64; save("arm64record", dict(m, records=r))      # no arm64 record exists
+r = dict(m["records"]); del r["runtime-ubuntu-24.04-arm"]; save("nochiprecord", dict(m, records=r))
+r = dict(m["records"]); r["scanners"] = r.pop("scanners-ubuntu-24.04"); save("oldscanners", dict(m, records=r))      # a Check record keyed by its step alone, no runner
 save("other", dict(m, chain_sha256="0" * 64))
 open("%s/marker-dup.json" % w, "w").write(open(sys.argv[1]).read().replace('"rc_tag"', '"run_id": "1", "rc_tag"', 1))
 PY
@@ -1949,6 +1975,9 @@ cm_no "AC6 marker: a short chain sha is refused" "chain_sha256" "$C2" "$work/mar
 cm_no "AC6 marker: a record digest missing is refused" "shape" "$C2" "$work/marker-norecord.json"
 cm_no "AC6 marker: a marker without its rekor record row is refused (ratify B: every signature keeps its Rekor entry)" "shape" "$C2" "$work/marker-norekor.json"
 cm_no "AC6 marker: an extra record digest is refused" "shape" "$C2" "$work/marker-extrarecord.json"
+cm_no "AC6 marker: an arm64 record digest is refused (Check has no arm64 record)" "shape" "$C2" "$work/marker-arm64record.json"
+cm_no "AC6 marker: a marker without one chip's Check record (runtime-ubuntu-24.04-arm) is refused" "shape" "$C2" "$work/marker-nochiprecord.json"
+cm_no "AC6 marker: a Check record keyed by its step alone (scanners) is refused" "shape" "$C2" "$work/marker-oldscanners.json"
 cm_no "AC6 marker: a record digest that is not a sha256 is refused" "records" "$C2" "$work/marker-badrecord.json"
 cm_no "AC6 marker: a sha for other bytes (all zero) is refused, naming the bytes" "bytes" "$C2" "$work/marker-other.json"
 # an rc tag that is not an ancestor: v0.3.0-rc2 sits on a side branch from C1
@@ -1986,7 +2015,7 @@ expect_refuse "AC6 rc-proof: Sign's provenance that names no built commit is ref
 expect_refuse "AC6 rc-proof: Sign's provenance made for another tag is refused (the rc tag's identity)" "sign|v0.3.1" $(RCP rc_badsign)
 expect_refuse "Q2a AC6 rc-proof: Build's record of the run for the FINAL tag (its signed admission baseline names v0.3.0) is refused under the rc tag's policy" "build|tag|v0.3.0" $(RCP rc_build_final)
 expect_refuse "Q2a AC6 rc-proof: a Build record that holds no admission-baseline.json product is refused (nothing signed names the tag)" "build|admission-baseline.json" $(RCP rc_noadm)
-expect_refuse "AC6 rc-proof: a missing Check record (arm64) is refused" "check|arm64|missing" $(RCP rc_check_missing)
+expect_refuse "AC6 rc-proof: a missing Check record (the arm runner's runtime) is refused" "check|ubuntu-24.04-arm|runtime|missing" $(RCP rc_check_missing)
 expect_refuse "AC6 rc-proof: Rebuild's record about other digests is refused" "rebuild|digest" $(RCP rc_rebuild_other)
 expect_refuse "AC6 rc-proof: a hostile verdict in which an attempt was accepted is refused" "mint_sign_cert" $(RCP rc_hostile_accepted)
 expect_refuse "AC6 rc-proof: a hostile verdict with a missing case row stays an error, not a skip" "read_sign_key" $(RCP rc_hostile_missing)
@@ -2002,6 +2031,12 @@ m = json.load(open(sys.argv[1])); r = dict(m["records"]); r["sign"] = "f" * 64
 json.dump(dict(m, records=r), open("%s/marker-signdigest.json" % sys.argv[2], "w"))
 PY
 expect_refuse "AC6 rc-proof: a record whose sha256 is not the marker's is refused naming the record" "marker|digest|sign" $(RCP rc_ok "$C2" "$work/marker-signdigest.json")
+python3 - "$work/marker-ok.json" "$work" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); r = dict(m["records"]); r["runtime-ubuntu-24.04-arm"] = "f" * 64
+json.dump(dict(m, records=r), open("%s/marker-armdigest.json" % sys.argv[2], "w"))
+PY
+expect_refuse "AC6 rc-proof: the arm runner's runtime record whose sha256 is not the marker's is refused naming the record" "marker|digest|runtime-ubuntu-24.04-arm" $(RCP rc_ok "$C2" "$work/marker-armdigest.json")
 # Codex 4b-1 r1 (A B1, B B2): the marker's run id is bound to the records: Sign's provenance (verified under the rc tag's identity) names the run it ran in
 python3 - "$work/marker-ok.json" "$work" <<'PY'
 import json, sys
@@ -2205,7 +2240,7 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=793
+EXPECT=800
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
