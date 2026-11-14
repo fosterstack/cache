@@ -1189,17 +1189,26 @@ for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    st
 done
 
 # REQ-REL-013-AC3: 64 plain matrix expressions with no text between and a final "!" (in no reserved name) cannot render
-# as a reserved name, so the judge says ok, and within a second: a backtracking match of that name never ends
+# as a reserved name, so the judge says ok, and no slower than a one-expression twin plus a second (a backtracking
+# match of that name never ends); the twin is the baseline because the judge's own start-up takes over a second
+timed_judge() {  # <workflow copy name>: sets got (ok|bad), ms and out; the judge runs under timeout 10
+  local t0; t0=$(date +%s%N)
+  if out=$(here="$here" PIN_WIRING_WORKFLOWS_DIR="$work/rs-$1" timeout 10 \
+    bash -c "$(declare -f judge); judge \"\$1\"" _ "$here/.github/workflows/ci.yml" 2>&1)
+  then got=ok; else got=bad; fi
+  ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+}
 expr64=""; for _ in $(seq 64); do expr64+='${{ matrix.a.b }}'; done
+reserved_wf exprname-twin "$(printf '  zz:\n    name: %s!\n%b' '${{ matrix.a.b }}' "$JOB")"
 reserved_wf exprname-64-plain "$(printf '  zz:\n    name: %s!\n%b' "$expr64" "$JOB")"
-t0=$(date +%s%N)
-if out=$(here="$here" PIN_WIRING_WORKFLOWS_DIR="$work/rs-exprname-64-plain" timeout 10 \
-  bash -c "$(declare -f judge); judge \"\$1\"" _ "$here/.github/workflows/ci.yml" 2>&1)
-then got=ok; else got=bad; fi
-ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-if [ "$got" = ok ] && [ "$ms" -lt 1000 ]; then
-  pass=$((pass+1)); echo "PASS exprname-64-plain-then-bang → ok in ${ms} ms"
-else failn=$((failn+1)); echo "FAIL exprname-64-plain-then-bang → $got in ${ms} ms, want ok in under 1000 ms ($out)"; fi
+timed_judge exprname-twin; base=$ms
+timed_judge exprname-64-plain
+if [ "$got" = ok ] && [ "$ms" -lt $((base + 1000)) ]; then
+  pass=$((pass+1)); echo "PASS exprname-64-plain-then-bang → ok in ${ms} ms (twin ${base} ms)"
+else
+  failn=$((failn+1))
+  echo "FAIL exprname-64-plain-then-bang → $got in ${ms} ms, want ok under twin ${base} ms + 1000 ($out)"
+fi
 
 # the required-check policy: each split job must stay listed with integration 15368 and scope push
 # (release admission reads them);
