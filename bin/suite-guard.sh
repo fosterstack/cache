@@ -7,13 +7,14 @@
 #   (run and all, which execute suites, are bin/suite-guard-run.py)
 #   floors-vs-base [--allow-lowered A,B | --allow-from-body] REF FLOORS
 #       FLOORS (a path in the working tree) may not lower or drop a floor the file at REF holds, unless the suite is
-#       named in --allow-lowered, or by the body's line with --allow-from-body; no file at REF: passes. A dropped suite
-#       always fails. A named suite must be one whose floor is lowered. --allow-from-body reads the environment variable
+#       named in --allow-lowered, or by the body's line with --allow-from-body; no file at REF: passes. A named suite
+#       must be one whose floor is lowered. --allow-from-body reads the environment variable
 #       PR_BODY (the pull request's body, passed by ci.yml through env) and takes the rest of its first line that starts
 #       exactly with "Lowered floors: " (carriage returns removed): the suites' file names, comma-separated, as written
 #       in the floors file. The ok line names each lowering. A suite leaves the floors file only when the body's first line that starts
 #       exactly with "Dropped suites: " names it (the same form) and its test file, by that name, is deleted between REF and HEAD
-#       and is in no directory of HEAD; a name whose suite is not dropped, or whose file stays, fails.
+#       (a rename or a move is no deletion) and is in no directory of HEAD; otherwise a dropped suite fails, as does a name whose
+#       suite is not dropped.
 # Why: a script committed as an empty file exits 0, so "rc 0" proved nothing (release chain PR 3, bin/check-file-allowlist-test.sh).
 set -euo pipefail
 die() { echo "suite-guard: $*" >&2; exit 1; }
@@ -71,7 +72,8 @@ cmd_floor() {
   echo "ok $2 $3 >= $f"
 }
 # the rest of the first line of $PR_BODY that starts exactly "LABEL: " (CRs removed), or nothing; one process,
-# so no pipe takes a SIGPIPE on a long body
+# so no pipe takes a SIGPIPE on a long body. LABEL is one of two literals below, never body text.
+# matched: "Dropped suites: a-test.sh,b-test.sh" gives a-test.sh,b-test.sh; refused: " Dropped suites: a-test.sh" (leading space) or "dropped suites: a-test.sh"
 from_body() {
   sed -n "s/\r//g; /^$1: /{s/^$1: //p;q;}" <<< "${PR_BODY:-}"
 }
@@ -87,9 +89,8 @@ cmd_vs_base() {
   [ -n "$ref" ] && git rev-parse --verify --quiet "$ref^{commit}" > /dev/null 2>&1 || die "the base revision '$ref' cannot be read: the floors cannot be compared with it"
   if ! git cat-file -e "$ref:$file" 2> /dev/null; then echo "suite-guard: no floors file at $ref: nothing to hold"; return 0; fi
   old=$(git show "$ref:$file" 2> /dev/null) || die "the floors file $file at $ref cannot be read"
-  local gone; gone=$(comm -23 <(git diff --no-renames --diff-filter=D --name-only "$ref" HEAD | sed 's|.*/||' | sort -u) <(git ls-files | sed 's|.*/||' | sort -u))
-  python3 - "$file" "$allow" "$old" "$dropped" "$gone" <<'PY'
-import json, sys
+  python3 - "$file" "$allow" "$old" "$dropped" "$ref" <<'PY'
+import json, subprocess, sys
 try:
     new = json.load(open(sys.argv[1])); old = json.loads(sys.argv[3])
     if not isinstance(new, dict) or not isinstance(old, dict):
@@ -98,17 +99,22 @@ except (OSError, ValueError) as e:
     print("suite-guard: the floors file or its base version cannot be read as JSON (%s)" % e, file=sys.stderr); sys.exit(1)
 allow = set(x.strip() for x in sys.argv[2].split(",") if x.strip())
 dropped = set(x.strip() for x in sys.argv[4].split(",") if x.strip())
-gone = set(sys.argv[5].split("\n"))
+def basenames(*args): # NUL-delimited, so git quotes no path
+    out = subprocess.check_output(("git",) + args).decode("utf-8", "surrogateescape")
+    return set(p.rsplit("/", 1)[-1] for p in out.split("\0") if p)
+# file names deleted between REF and HEAD (a rename is not one) and no longer anywhere in HEAD; only a Dropped line needs them
+gone = basenames("diff", "-z", "-M", "--diff-filter=D", "--name-only", sys.argv[5], "HEAD") - basenames("ls-files", "-z") if dropped else set()
 bad, lowered = [], []
 for k, v in old.items():
     if k not in new:
-        if k not in dropped or k not in gone: bad.append("%s was dropped (floor %s)" % (k, v))
+        if k not in dropped: bad.append("%s was dropped (floor %s)" % (k, v))
+        elif k not in gone: bad.append("%s is named as dropped but its file is not deleted" % k)
     elif new[k] < v and k not in allow: bad.append("%s was lowered from %s to %s and the PR does not name it" % (k, v, new[k]))
     elif new[k] < v: lowered.append("%s %s->%s" % (k, v, new[k]))
 for k in sorted(allow):
     if not (k in old and k in new and new[k] < old[k]): bad.append("%s is named as lowered but its floor is not lowered" % k)
 for k in sorted(dropped):
-    if not (k in old and k not in new and k in gone): bad.append("%s is named as dropped but is not a dropped suite whose file is deleted" % k)
+    if not (k in old and k not in new): bad.append("%s is named as dropped but is not a dropped suite" % k)
 if bad:
     print("suite-guard: floors may only rise: " + "; ".join(bad), file=sys.stderr); sys.exit(1)
 print("ok floors did not fall" + (" except the named: " + ", ".join(lowered) if lowered else "") + (" (dropped with their files: " + ", ".join(sorted(dropped)) + ")" if dropped else ""))
