@@ -1317,9 +1317,8 @@ run() {
   if [ -n "${KIND_LISTEN:-}" ]; then rm -rf "$work/$name/procnet"; cp -R "$pnet" "$work/$name/procnet"; pnet="$work/$name/procnet"; fi
   KIND_PROCNET="${KIND_LISTEN:+$pnet}" mkhost "$work/$name"
   rm -f "$work/$name/srv.log"; srvctl __case dir "$work/$name"
-  local dot=.
   sed -i.bak "2i\\
-$dot \"$work/$name/docker.env\"" "$work/$name/docker"; rm -f "$work/$name/docker.bak"
+. \"$work/$name/docker.env\"" "$work/$name/docker"; rm -f "$work/$name/docker.bak"
   rc=0
   local tw=(); [ -n "${RUN_TIMEOUT:-}" ] && tw=(perl -e 'alarm shift; exec @ARGV' "$RUN_TIMEOUT")
   # the counter's settle window is 3.0s of quiet with a 20s ceiling by DEFAULT; the cases use shorter ones (SETTLE_QUIET, SETTLE_MAX) except where SETTLE_DEFAULT=1 (the stated bounds)
