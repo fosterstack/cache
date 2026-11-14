@@ -17,6 +17,7 @@ sha, so an old record then names a different sha and does not apply.
 Every doubt fails closed: a missing or malformed answer, a head that is not 40 lower-case hex, a missing policy file.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -133,26 +134,30 @@ def _approval(tag_object):
 NO_ITEMS = {"accepted_items": []}      # what a missing .auditor/accepted-items.json means: no item is open
 
 
-def _open_item(items):
+def _open_item(items, today):
     """Why the parsed .auditor/accepted-items.json holds the release (an owner-decision item is open, or the file is
-    malformed), else None."""
+    malformed), else None. An item is read as the auditor reads it: `threshold` at_or_above is an item waiting on the
+    owner (auditor-run.py:2430-2441), and an item whose `expiry` has come (ISO dates compare as text) is reopened
+    (auditor-run.py:1810); the auditor has no way to close an at_or_above item, so the gate never does either."""
     listed = items.get("accepted_items") if isinstance(items, dict) else None
-    if not isinstance(listed, list) or not all(isinstance(i, dict) for i in listed):
+    if not isinstance(listed, list) or not all(isinstance(i, dict) and isinstance(i.get("expiry") or "", str)
+                                               for i in listed):
         return "%s is malformed: it must be an object whose accepted_items is a list of objects" % ITEMS_PATH
-    if any(i.get("threshold") == "at_or_above" for i in listed):
-        return "an owner-decision item is still open in %s" % ITEMS_PATH
+    if any(i.get("threshold") == "at_or_above" or (i.get("expiry") and i["expiry"] <= today) for i in listed):
+        return "an owner-decision item is open or expired in %s" % ITEMS_PATH
     return None
 
 
-def verify_release(tag, tag_object, tagged_sha, ref, commit, policy, items=NO_ITEMS):
+def verify_release(tag, tag_object, tagged_sha, ref, commit, policy, items, today):
     """Gate 7 (release process rule 7): (True, "") for a patch tag or for a release tag whose commit has a
     passed-audit record that the owner's signed tag message approves; else (False, reason). Every tag is refused while
-    an owner-decision item is open in `items` (the parsed .auditor/accepted-items.json, REQ-AUD-17 AC5).
+    an owner-decision item is open in `items` (the parsed .auditor/accepted-items.json, REQ-AUD-17 AC5), `today` being
+    an ISO date.
     The tag's signature is verified by the admission step before this runs, so a line in the message is the
     owner's own."""
     if not isinstance(tag, str) or not _RELEASE_TAG.fullmatch(tag):
         return False, "the tag is not a release version"
-    held = _open_item(items)
+    held = _open_item(items, today)
     if held:
         return False, held
     if _PATCH_TAG.fullmatch(tag):
@@ -266,7 +271,8 @@ def main(argv):
             obj = None
         ok, why = verify_release(a.tag, obj, a.tagged_sha, _load(a.ref_json), _load(a.commit_json),
                                  _load(os.path.join(a.base_root, WRITERS_PATH)),
-                                 _load_items(os.path.join(a.base_root, ITEMS_PATH)))
+                                 _load_items(os.path.join(a.base_root, ITEMS_PATH)),
+                                 datetime.datetime.now(datetime.timezone.utc).date().isoformat())
         done = ("no whole-release record needed" if is_patch_tag(a.tag)
                 else "the owner's approval matches the passed-audit record")
         print("audit-record: " + ("release %s: %s" % (a.tag, done) if ok else why))
