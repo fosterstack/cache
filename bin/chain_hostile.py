@@ -186,12 +186,17 @@ def grade_token(rest):
     if not ref:
         print("error: the token has no job_workflow_ref claim, so it cannot be graded", file=sys.stderr)
         sys.exit(2)
-    # exactly Sign's workflow file of THIS repository: <repo>/.github/workflows/stage-sign.yml@<ref>, not a file that ends the same way
+    sub = parsed.get("sub")
+    if not sub:
+        print("error: the token has no sub claim, so it cannot be graded", file=sys.stderr)
+        sys.exit(2)
+    # Sign's token names environment sign (only v* tags may deploy to it) and release.yml of THIS repository, whose ref alone names every job
     repo = os.environ.get("GITHUB_REPOSITORY", "fosterstack/cache")
-    if re.fullmatch(re.escape(repo) + r"/\.github/workflows/stage-sign\.yml@refs/[A-Za-z0-9._/-]+", ref):
+    sign_ref = re.fullmatch(re.escape(repo) + r"/\.github/workflows/release\.yml@refs/[A-Za-z0-9._/-]+", ref)
+    if sub == "repo:%s:environment:sign" % repo and sign_ref:
         print("ok")
         return
-    refuse("runner", "nothing usable for Sign: the token's job_workflow_ref is %s" % ref)
+    refuse("runner", "nothing usable for Sign: the token's sub is %s and its job_workflow_ref is %s" % (sub, ref))
 
 
 def cmd_hostile_material(a):
