@@ -7546,7 +7546,7 @@
       "key": "e7cb7c4b8d3c6819618a107fb607afeb7ba6a299274d3b243401970873733e46",
       "line": "bef44bfc767f2cb1824db5c659476ee6d74f3564394b2443c2a8dae9ac1e31ac",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7554,7 +7554,7 @@
       "key": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
       "line": "ade94342e791a0daac5b1b18c0b341469d65bab4381983345df778fbe18ae244",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7562,7 +7562,7 @@
       "key": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
       "line": "20113298d104d7a8585e4cf20d62f12708cbea4d2f96001ab5eb71d9b5c36e7d",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7570,7 +7570,7 @@
       "key": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
       "line": "62d9cdea4c432e66964b8a0049bb3e0247006ccbd9701a9d715ad1331107de20",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7578,7 +7578,7 @@
       "key": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
       "line": "bafa0655514e6a784da167020c0e5bf1355bffce6887b3c743f371ea6977ab37",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7586,7 +7586,7 @@
       "key": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
       "line": "6db7ae20a5c05659099d2a27812c96e483124e8dc5267870cca1bc270e0d9ab3",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7594,7 +7594,7 @@
       "key": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
       "line": "b5fc123c69f993f35de2139d4a7deca062634f87977d6e7ccbbdd6e7e7a26d9a",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7602,7 +7602,7 @@
       "key": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
       "line": "c5f767f4636fbc1be0b80983400a9ae98e40ba57413310c887e3266918cdd2c5",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7611,7 +7611,7 @@
       "line": "1425238712c43cc80a7c32e51f91e1cbd19a2ffa25816c704e093afc7cf6a475",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
       "count": 4,
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7619,7 +7619,7 @@
       "key": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
       "line": "fb8335586b908cfdb232ee66172661fa2e70ae9cc8bd128e6bad3379fcaaeee6",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7627,7 +7627,7 @@
       "key": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
       "line": "25209ec1a5602cdff68b8ded371dcaab440215ae8c0c7ebf9c02660b8be1ea1e",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7635,7 +7635,7 @@
       "key": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
       "line": "c0c050aff0b0ddc5c968359c7f2d961b55fe36e97a75fbd81b79d7bcd4015a3c",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
@@ -7643,7 +7643,7 @@
       "key": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
       "line": "67cd693963880a5451e9874ca4e7351953e6d8ad7c6339f6fcafafeebeaace8a",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "bde4710cc79f6960bc80d90951f7da2f8e8cc9b549d266433b97a3f822fd2789"
+      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
     },
     {
       "file": ".github/agent/tests/pin-audit-test.sh",
