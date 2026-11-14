@@ -1608,7 +1608,7 @@ The v0.3.0 customer verification guide (docs/verify-release.md) shall be one pag
 
 When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires, fails unless every new job succeeded.
 
-*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor)*
+*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23*
 
 > The pin-wiring judge (pin-wiring-test.sh) that held this split was deleted by the release audit ruling of Nov 12, and no check holds it now; the criteria below are listed in test-evidence/unmapped.yaml. The gate fails on a missing or empty result as on a failed, skipped or cancelled one.
 
@@ -1623,7 +1623,7 @@ When a required CI job of .github/workflows/ci.yml is split into parallel jobs t
 
 Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the step that re-runs the suites of the floors file runs only those that no counting step runs.
 
-*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor); the suite guard (bin/suite-guard-run.py)*
+*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23; the suite guard (bin/suite-guard-run.py)*
 
 > A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that is not the file name of its PATH. The floors only rise as before.
 
