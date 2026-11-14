@@ -72,26 +72,6 @@
    "reason": "Persona UAT, weekly run (REQ-UAT-001): the same federation in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no registry credential"
   },
   {
-   "workflow": "stage-promote.yml",
-   "job": "release",
-   "reason": "Release (REQ-CHAIN-007): the Witness steps and the cosign signatures of release-sign.sh are made with the release key through the job's OIDC token; the one job with a registry credential, the release key (KMS, for the apks too) through that token, and packages: write"
-  },
-  {
-   "workflow": "stage-sign.yml",
-   "job": "sign",
-   "reason": "Sign: the one provenance signer (REQ-CHAIN-001), and the signer of the Build records (owner Oct 22)"
-  },
-  {
-   "workflow": "stage-sign.yml",
-   "job": "sign-rebuild",
-   "reason": "Sign: the signer of the Rebuild records (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md); receives no Rebuild apk or image"
-  },
-  {
-   "workflow": "stage-sign.yml",
-   "job": "sign-check",
-   "reason": "Sign: the signer of the Check records (REQ-REL-011-AC1, cache#606): the Check jobs hold no identity token; Sign checks their records against the results and signs them with the release key"
-  },
-  {
    "workflow": "release.yml",
    "job": "live-test",
    "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
@@ -100,6 +80,16 @@
    "workflow": "release.yml",
    "job": "live-test-release",
    "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "build",
+   "reason": "the call of release.yml in snapshot mode: id-token is the ceiling the caller grants (REQ-CHAIN-004-AC14); no called job holds it in that mode"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "build",
+   "reason": "the call of release.yml in snapshot mode: id-token is the ceiling the caller grants (REQ-CHAIN-004-AC14); no called job holds it in that mode"
   }
  ]
 }
