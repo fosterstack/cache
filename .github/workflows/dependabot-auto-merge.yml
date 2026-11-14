@@ -262,7 +262,9 @@ jobs:
             disarm; echo "::error::could not read the reviewer's verdict on ${head:0:7}"; exit 1
           fi
           read -r verdict external_id <<<"$verdict"
-          if [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ]; then
+          success_counts=false
+          [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ] && success_counts=true
+          if [ "$success_counts" = true ]; then
             # a success counts only with the reviewer's version on main, computed by main's own script. Every failed
             # or empty read turns auto-merge off and fails the step
             main=$(mktemp -d)
@@ -281,11 +283,13 @@ jobs:
             version=$(bash "$RUNNER_TEMP/dependabot-reviewer-version.sh" "$main") ||
               fail "could not compute the reviewer's version"
             [ -n "$version" ] || fail "the reviewer's version is empty"
-            [ "$external_id" = "$version" ] || verdict=none
+            [ "$external_id" = "$version" ] || { verdict=none; success_counts=false; }
           fi
-          if [ "$verdict" = success ] && [ "$WAITS_FOR_VERDICT" = true ]; then
+          if [ "$success_counts" = true ]; then
             echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
-          elif [ "$armed" != true ]; then echo "auto-merge is not armed; nothing to turn off"
+          elif [ "$armed" != true ]; then
+            if [ "$WAITS_FOR_VERDICT" = true ]; then echo "auto-merge is not armed; nothing to turn off"
+            else echo "a patch or minor bump needs no verdict; auto-merge is not armed"; fi
           elif [ "$verdict" = failure ]; then
             gh pr merge --disable-auto "$PR_URL"
             echo "auto-merge turned off: the reviewer failed the current head (${head:0:7})"
