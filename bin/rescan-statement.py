@@ -285,7 +285,8 @@ def _vex_match(doc, finding, variant, image_repo):
             if pp[0] == "oci" and not (image_repo is not None and pp[1] == image_repo and pp[2] in (None, variant) and pp[3] in (None, arch)):
                 continue
             subs = [_sub_purl(x["@id"]) for x in p.get("subcomponents", [])]
-            subs += [("stdlib", "go" + _sub_purl(x["@id"])[1]) for x in p.get("subcomponents", [])   # scanners write go1.27.2 for the golang stdlib's 1.27.2
+            # scanners write go1.27.2 for the golang stdlib's 1.27.2
+            subs += [("stdlib", "go" + _sub_purl(x["@id"])[1]) for x in p.get("subcomponents", [])
                      if x["@id"].startswith("pkg:golang/stdlib@")]
             if subs and not pkg[0]:
                 continue   # a finding with no package identity never matches a statement that names packages
