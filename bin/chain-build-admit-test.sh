@@ -661,6 +661,15 @@ fresh; accepted_on_main below; run_admit
 expect_ok "REQ-AUD-17-AC5 a below-threshold item on main holds nothing: the tag is admitted"
 fresh; run_admit
 expect_ok "REQ-AUD-17-AC5 no accepted-items file on main: nothing is open, the tag is admitted"
+# a file that main lists but whose blob cannot be read is a refusal naming it, never taken for an absent file
+fresh; accepted_on_main below
+blob=$(G rev-parse "origin/main:.auditor/accepted-items.json"); blob_file="$W/c/repo/.git/objects/${blob:0:2}/${blob:2}"
+if [ -f "$blob_file" ]; then rm -f "$blob_file"; fi
+if [ -n "$(G ls-tree --name-only origin/main -- .auditor/accepted-items.json)" ] && ! G cat-file -e "$blob" 2> /dev/null; then
+  ok "fixture: main lists the accepted-items file but its blob cannot be read"
+else bad "fixture: the accepted-items blob is still readable (or main does not list the file)"; fi
+run_admit
+expect_refuse "REQ-AUD-17-AC5 an accepted-items file that main lists but cannot be read is refused at audit-approval, naming it" audit-approval ".auditor/accepted-items.json"
 # release candidates are held to the same rule, in the chain's -rcN form (and -rc.N is not a chain tag at all)
 fresh; sig_tag v0.3.0-rc1; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1
 expect_refuse "AC7 a release candidate tag with no approval line is refused at audit-approval" audit-approval Audit-approved
@@ -716,8 +725,8 @@ mutant_escapes() { # mutant_escapes LABEL OLD NEW [ENV...] : the mutant admits t
   [ "$RC" = 0 ] && ok "AC7 mutant caught: $label (the mutant admits what the real script refuses)" || bad "AC7 mutant NOT caught: $label -> exit $RC, $(head -1 "$W/c/err")"
 }
 rm -f "$W/pwned-judge"
-mutant_escapes "the judge read from the tagged commit instead of origin/main" '    for path in AUDIT_FILES + (AUDIT_ITEMS,):
-        data = git_show("origin/main:" + path)' '    for path in AUDIT_FILES + (AUDIT_ITEMS,):
+mutant_escapes "the judge read from the tagged commit instead of origin/main" '    for path in AUDIT_FILES:
+        data = git_show("origin/main:" + path)' '    for path in AUDIT_FILES:
         data = git_show(ctx.sha + ":" + path)' AUDIT_MODE=missing
 [ -e "$W/pwned-judge" ] && ok "AC7 the planted judge of the tagged tree does run in that mutant (the case above is a real probe)" || bad "AC7 the planted judge did not run in the mutant"
 fresh; mutant_escapes "the audit-approval check not called" '        check_audit_approval(ctx)
@@ -1054,6 +1063,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=184
+EXPECT_TOTAL=186
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
