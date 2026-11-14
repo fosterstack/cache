@@ -29,13 +29,13 @@ OLD = "2025b-0+deb13u1"          # a reported version the image does NOT have (i
 EV_FALSE = EV_REAL               # for a finding at OLD: the package database records tzdata at another version
 
 
-PURL = "pkg:deb/debian/tzdata@2026c-0%2Bdeb13u1?arch=all&distro=debian-13"
+PURL = "pkg:generic/tzdata@2026c-0%2Bdeb13u1"
 
 
 def finding(fid="CVE-2099-0002", pkg="tzdata", ver="2026c-0+deb13u1", img="fips-arm64", seen=("scout",), of=3,
             purls=None):
     if purls is None:       # the scanner's purl names the reported version (Codex r4 R6)
-        purls = ("pkg:deb/debian/%s@%s?arch=all&distro=debian-13" % (pkg, ver.replace("+", "%2B")),)
+        purls = ("pkg:generic/%s@%s" % (pkg, ver.replace("+", "%2B")),)
     return {"image": img, "id": fid, "package": pkg, "version": ver, "seen_by": list(seen), "of": of,
             "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": list(purls)}
 
@@ -163,7 +163,7 @@ class Evidence(unittest.TestCase):
         gone = ("h\n%s\npackage databases read: dpkg\npackage database: no record names busybox\n"
                 "files: no path in the image mentions busybox\n"
                 "go build info: no Go binary in the image records busybox\n" % P.EVIDENCE_MARK)
-        bb = finding(pkg="busybox", ver="1.37.0")
+        bb = finding(pkg="busybox", ver="1.37.0", purls=("pkg:deb/debian/busybox@1.37.0",))     # the dpkg database speaks for a deb package
         self.assertEqual(P.vote(false(ev="package database: no record names busybox"), gone, bb), "false")
         self.assertIsNone(P.vote(real(ev="package database: no record names busybox"), gone, bb))
         unread = gone.replace("package databases read: dpkg", "package databases read: none")      # rc-5b fix 3
@@ -492,7 +492,7 @@ class Reversals(unittest.TestCase):                                         # RE
 
     def test_a_rejected_then_accepted_identity_is_remembered_as_proposed_and_the_reversal_finds_its_statement(self):   # S3 ruling (2)
         bad = ("pkg:deb/tzdata@2025b-0%2Bdeb13u1",)                      # no distro namespace: not representable, so no statement
-        good = ("pkg:deb/debian/tzdata@2025b-0%2Bdeb13u1?arch=all",)
+        good = ("pkg:generic/tzdata@2025b-0%2Bdeb13u1",)
         two = {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})}
         st, out = P.apply_day(verdict(finding(ver=OLD, purls=bad)), P.new_state(), bundles, {"entries": []}, two, "2026-10-03", SCORING)
         self.assertEqual(out["vex"], [])
@@ -585,7 +585,7 @@ class Reversals(unittest.TestCase):                                         # RE
                 seen.append(json.loads(req.data))
                 return Resp(json.dumps(body).encode())
             return o
-        f = finding(ver=OLD)
+        f = finding(ver=OLD, purls=("pkg:deb/debian/tzdata@2025b-0%2Bdeb13u1?arch=all",))
         self.assertTrue(P.osv_advisory(f, opener=opener({"vulns": [{"id": "DSA-1", "aliases": ["cve-2099-0002"]}]})))
         self.assertEqual(seen[0], {"package": {"purl": "pkg:deb/debian/tzdata@2025b-0+deb13u1"}})
         self.assertFalse(P.osv_advisory(f, opener=opener({"vulns": [{"id": "CVE-2099-9999"}]})))

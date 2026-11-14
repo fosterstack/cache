@@ -7,7 +7,9 @@ from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import vendor_records as V  # noqa: E402
+from locale_cleared import setUpModule, tearDownModule  # noqa: E402,F401
 
 spec = importlib.util.spec_from_file_location("vendor_records_cli", os.path.join(BIN, "auditor-vendor-records.py"))
 CLI = importlib.util.module_from_spec(spec); spec.loader.exec_module(CLI)
@@ -21,12 +23,18 @@ class Cli(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, rc, "\n".join(names) + "\n", "HTTP 500" if rc else "")
         return run
 
-    def main(self, argv, run, answers):
+    def main(self, argv, run, answers, slug="app"):
         seen = []
-        def process(repo, branch, ws, run_, regenerate, dry_run=False):
-            seen.append((repo, branch, ws, dry_run)); return answers.get(branch, "up to date")
+        self.logins = []
+        def process(repo, branch, ws, run_, regenerate, dry_run=False, app_login=None):
+            seen.append((repo, branch, ws, dry_run)); self.logins.append(app_login)
+            return answers.get(branch, "up to date")
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(V, "process_branch", process), redirect_stdout(out), redirect_stderr(err):
+        env = {k: v for k, v in os.environ.items() if k != "AUDITOR_APP_SLUG"}
+        if slug is not None:
+            env["AUDITOR_APP_SLUG"] = slug
+        with mock.patch.object(V, "process_branch", process), mock.patch.dict(os.environ, env, clear=True), \
+                redirect_stdout(out), redirect_stderr(err):
             rc = CLI.main(argv, run=run, regenerate=lambda *a: None)
         return rc, seen, out.getvalue(), err.getvalue()
 
@@ -62,6 +70,18 @@ class Cli(unittest.TestCase):
     def test_a_listing_that_fails_is_exit_one_and_visits_nothing(self):
         rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws"], self.gh([], rc=1), {})
         self.assertEqual((rc, seen), (1, [])); self.assertIn("could not list the branches: HTTP 500", err)
+
+    def test_every_branch_gets_the_apps_login_built_from_its_slug(self):
+        rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws"],
+            self.gh(["dependabot/go_modules/a", "auditor/bump-b"]), {}, slug="fosterstack-auditor")
+        self.assertEqual(self.logins, ["fosterstack-auditor[bot]"] * 2)
+
+    def test_without_a_slug_the_login_is_empty_so_only_dependabot_is_trusted(self):
+        for slug in (None, ""):
+            rc, seen, out, err = self.main(["--repo", "o/r", "--workspace", "/ws", "--branch", "dependabot/go_modules/a"],
+                self.gh([]), {}, slug=slug)
+            self.assertEqual((rc, len(seen)), (0, 1)); self.assertFalse(self.logins[0], slug)
+            self.assertNotIn("[bot]", self.logins[0] or "")
 
     def test_the_default_runner_and_regeneration_are_wired(self):
         with mock.patch.object(V, "make_regenerate", return_value="regen") as mk, mock.patch.object(V, "process_branch",

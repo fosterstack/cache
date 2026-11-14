@@ -3,8 +3,8 @@
 # the repo, each adversarial stand-in class from the two independent second-gate
 # reviews, runs .github/agent/tests/auditor-matrix-test.sh against it, and asserts the class buys no
 # undue passes. This is what makes "nothing false-passes" a permanent, on-demand
-# property. The stand-ins are the reviewers' own, checked in verbatim under
-# .github/agent/fixtures/mutants/ as TEST INPUTS (adversaries), not auditor code.
+# property. The stand-ins under .github/agent/fixtures/mutants/ are TEST INPUTS (adversaries), not auditor code;
+# they were not checked in verbatim: this pull request rewrote effect-standin.py and edited the headers of the other two.
 #
 #   original-inert     first-pass-inert.py (exit 7, echoes old expectation fields)
 #   stdout-echo        exit-0, prints input files to stdout, writes nothing
@@ -29,22 +29,40 @@ here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/../../.." && pwd)"
 MUT="$repo/.github/agent/fixtures/mutants"
 EFFECT="$MUT/effect-standin.py"; INERT="$MUT/first-pass-inert.py"; PROBE="$MUT/probe-standin.py"
 PY=python3
+SUITE="$repo/.github/agent/tests/auditor-matrix-test.sh"
 fails=0
 # Static cases parse the workflow file and exported policy fixtures only — they call
 # no auditor command, so any command-mutant replacement passes them legitimately once
 # a valid workflow exists. Command mutants are graded on the cases they can affect.
 STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-conditional-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry req15-ac8-section6-7-removed r16-exactly-one-gh-token-key-in-driver-env req16-ac4-malformed-proposal-dropped req18-ac1-suites-wired-into-required-allowlist-job req18-suite-leaves-checkout-untouched req18-ac2-python-100pct-coverage-gate req18-ac2-identity-claims-logging-stubbed req18-requirements-resolve-in-required-job req18-ac3-gate-runs-from-base-on-pull-request-target rpt-ac5-lint-catches-the-old-defects rpt-r1-lint-catches-spilled-list-lines"
+# These read only the workflow file or the shared library (kept in the copy), and call no auditor command.
+STATIC="$STATIC req3-ac3-workflow-carries-the-nochange-state ol3-3-gvc-module-from-sbom-modules
+ req13-ac2-stable-unique-ids req6-ac2-workflow-writes-the-token-budget req17-ac1-fixed-subject-prefix-family
+ req16-ac3-knowledge-doc-generated req18-ac3-verdict-runs-and-propagates
+ req-dep-005-publishers-skip-a-live-queue-head req-dep-005-queue-judge-binds-the-ref-to-the-head
+ req-rel-012-record-writer-job-shape-and-sweep-stale-path panel-1-parse-panel-reads-one-scanners-findings-from-the-verdict
+ panel-5-corroboration-is-kept-per-image rc5b-13-mutating-classifier-lists-allowlist-forms rc5b-13-suite-leaves-checkout-untouched"
+STATIC="${STATIC//$'\n'/}"
 is_static(){ case " $STATIC " in *" $1 "*) return 0;; *) return 1;; esac; }
 MK="$(mktemp -d)"; trap 'rm -rf "$MK"' EXIT
-cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/.github/agent/tests/auditor-matrix-test.sh" | sort -u; }
+cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$SUITE" | sort -u; }
+# a case is a `begin "name"` at the start of a line; a commented-out one is no case
+is_case() { grep -q "^begin \"$1\"" "$SUITE"; }
 # copies are git repositories (the layout case lists tracked files), never the real checkout's .git
 gitify() { ( cd "$1" && git init -q && git add -A && git -c user.name=m -c user.email=m@m -c commit.gpgsign=false commit -qm copy ) >/dev/null 2>&1; }
-passes_of() {   # passes_of <workdir>  -> prints the pass case names (one per line)
-  ( cd "$1" && bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
-}
 
 # run_mutant <label> <mode> <standin> [workflow-variant]
 # installs the stand-in under every command name (with AUDIT_MUTANT=<mode>), prints passes.
+keep_fixture_helper() {  # keep_fixture_helper <workspace>: the suite's own verdict helper and the library it imports
+  mkdir -p "$1/.github/agent/bin/tests"
+  cp -R "$repo/.github/agent/bin/auditorlib" "$1/.github/agent/bin/"
+  # materialize() builds each manifest's panel block with the REAL auditor-manifest.py, but bin/auditor-manifest.py in
+  # the copy is a stand-in under test: keep the real one beside the helper and point the helper's copy at it
+  cp "$repo/.github/agent/bin/auditor-manifest.py" "$1/.github/agent/bin/tests/auditor-manifest-real.py"
+  sed 's|os.path.join(BIN, "auditor-manifest.py")|os.path.join(BIN, "tests", "auditor-manifest-real.py")|' \
+    "$repo/.github/agent/bin/tests/verdict_fixture.py" > "$1/.github/agent/bin/tests/verdict_fixture.py"
+}
+
 run_mutant() {
   local label="$1" mode="$2" standin="$3" wf="${4:-}"
   local w; w="$(mktemp -d)"
@@ -52,6 +70,7 @@ run_mutant() {
   rm -rf "$w/.github/agent/bin"; mkdir -p "$w/.github/agent/bin"
   local c
   for c in $(cmds); do cp "$standin" "$w/.github/agent/bin/$c"; chmod +x "$w/.github/agent/bin/$c"; done
+  keep_fixture_helper "$w"
   if [ -n "$wf" ]; then printf '%s' "$wf" > "$w/.github/workflows/auditor.yml"; fi
   ( cd "$w" && AUDIT_MUTANT="$mode" AUDIT_MARKER="$MK/$label.marker" bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
   rm -rf "$w"
@@ -63,6 +82,7 @@ run_probe() {  # run_probe <label> <probemode> : install probe-standin in that m
   rm -rf "$w/.github/agent/bin"; mkdir -p "$w/.github/agent/bin"
   local c
   for c in $(cmds); do cp "$PROBE" "$w/.github/agent/bin/$c"; chmod +x "$w/.github/agent/bin/$c"; done
+  keep_fixture_helper "$w"
   ( cd "$w" && AUDIT_PROBE="$pm" AUDIT_MARKER="$MK/$label.marker" bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
   rm -rf "$w"
 }
@@ -74,6 +94,7 @@ marker_ok() {  # marker_ok <label> : the class must have reached a faulty branch
 assert_zero() {   # assert_zero <label> <passes...> : zero NON-static passes
   local label="$1"; shift
   local undue=""; local c
+  if [ "$#" -eq 0 ]; then echo "FAIL  ${label}: no case passed at all, so nothing was graded"; fails=$((fails+1)); return; fi
   for c in "$@"; do is_static "$c" || undue="$undue $c"; done
   if [ -z "$undue" ]; then echo "PASS  ${label}: 0 command-cases passed (static workflow/policy cases excluded)"; else
     echo "FAIL  ${label}: command-cases passed —$undue"; fails=$((fails+1)); fi
@@ -85,9 +106,31 @@ assert_contains() {  # assert_contains <label> <needle> <haystack-lines...>
 }
 assert_absent() {  # assert_absent <label> <needle> <haystack-lines...>
   local label="$1" needle="$2"; shift 2
+  # a needle that is no case of the suite can never fail, so it would pass vacuously
+  if ! is_case "$needle"; then
+    echo "FAIL  ${label}: '${needle}' is not a case of the matrix suite"; fails=$((fails+1)); return; fi
+  # an empty list means the mutant run produced no result, not that the case failed
+  if [ "$#" -eq 0 ]; then echo "FAIL  ${label}: no case passed at all, so nothing was graded"; fails=$((fails+1)); return; fi
   if printf '%s\n' "$@" | grep -qx "$needle"; then echo "FAIL  ${label}: '${needle}' should have failed but passed"; fails=$((fails+1)); else
     echo "PASS  ${label}: '${needle}' correctly failed"; fi
 }
+
+echo "=== harness self-checks (the assertions themselves must not pass vacuously) ==="
+self_check() {  # self_check <label> <command...> : the command must raise the failure count
+  local label="$1"; shift
+  local before="$fails"
+  "$@" >/dev/null
+  if [ "$fails" -gt "$before" ]; then fails="$before"; echo "PASS  self-check ${label}"; else
+    echo "FAIL  self-check ${label}: the assertion did not fail"; fails=$((fails+1)); fi
+}
+self_check "assert_zero fails on an empty pass list" assert_zero "empty-list"
+self_check "assert_absent fails on an empty pass list" assert_absent "empty-list" "req1-ac1-workflow-path"
+SUITE="$MK/commented-suite.sh"
+printf '# begin "ghost-case" "a commented-out line"\nbegin "real-case" "a case"\n' > "$SUITE"
+self_check "a commented-out begin line is no case" assert_absent "ghost" "ghost-case" "some-other-case"
+is_case "real-case" && echo "PASS  self-check a begin at the start of a line is a case" || {
+  echo "FAIL  self-check a begin at the start of a line is a case"; fails=$((fails+1)); }
+SUITE="$repo/.github/agent/tests/auditor-matrix-test.sh"
 
 echo "=== command / effect / echo classes (must buy zero passes) ==="
 for spec in \
@@ -141,7 +184,8 @@ QUOTED_WF="${INERT_WF/on:/\'on\':}"
 PC="$(run_mutant "workflow-comment-oidc" "wrong-effects" "$EFFECT" "$INERT_WF")"
 marker_ok "workflow-comment-oidc"
 assert_absent "workflow-comment-oidc" "req6-ac1-oidc-federation-no-api-key" $PC
-assert_absent "workflow-comment-oidc" "req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" $PC
+assert_absent "workflow-comment-oidc" "req6-ac1-identifiers-are-env-secrets" $PC
+assert_absent "workflow-comment-oidc" "req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" $PC
 assert_absent "workflow-comment-oidc" "req1-ac1-schedule-cron-offset" $PC
 
 PF="$(run_mutant "workflow-forbidden-push" "wrong-effects" "$EFFECT" "$PUSH_WF")"
@@ -159,13 +203,12 @@ probe() {  # probe <mode> <targeted-case>
   marker_ok "$lbl"
   assert_absent "$lbl" "$target" $P
 }
-probe model-not-affected-no-evidence req2-ac2a-notpullable-and-unreachable   # F1/F4
-probe recheck-flags-only             req2-ac5c-expiry-reopens-item           # F6
-probe recheck-flags-only             req2-ac7-every-run-recheck              # F6
-probe reconcile-wrong-row            req3-ac5-second-exact-key-same-row      # F5
-probe authz-substring                req11-ac1-hold-wrong-author             # F7
-probe known-exploited-omitted        req2-ac5b-known-exploited-alone         # F8
-probe entrypoint-noop                req12-ac1-dryrun-produces-report-vex-accepteditems-misses-only-no-shim  # F3
+probe model-not-affected-no-evidence req2-ac2a-notpullable-and-unreachable
+probe recheck-flags-only             req2-ac5c-expiry-reopens-item
+probe recheck-flags-only             req2-ac7-every-run-recheck
+probe reconcile-wrong-row            req3-ac5-second-exact-key-same-row
+probe known-exploited-omitted        req2-ac5b-known-exploited-alone
+probe entrypoint-noop                req12-ac1-dryrun-deterministic-rows-actions-status
 
 echo "=== README independence (no command under test reads fixtures/README.md) ==="
 A="$(mktemp -d)"; B="$(mktemp -d)"; rsync -a --exclude .git "$repo/" "$A/"; rsync -a --exclude .git "$repo/" "$B/"

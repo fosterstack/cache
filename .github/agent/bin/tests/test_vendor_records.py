@@ -14,6 +14,7 @@ from auditorlib import vendor_records as V  # noqa: E402
 REPO = "o/r"
 BR = "dependabot/go_modules/example.com/m-1.1.0"
 OID = "9" * 40
+APP = "app[bot]"
 GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
     "GIT_COMMITTER_EMAIL": "t@example.invalid",
            "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1", "PATH": os.environ["PATH"]}
@@ -41,10 +42,19 @@ def put(root, files):
             fh.write(data)
 
 
+def commit(login, verified=True, committer="web-flow"):
+    """one entry of the compare endpoint's commit list"""
+    return {"sha": "3" * 40, "author": {"login": login}, "committer": {"login": committer},
+            "commit": {"verification": {"verified": verified}}}
+
+
 class Api:
     """A fake GitHub: one branch ref, the mutation answer, and a record of the commits made."""
-    def __init__(self, branch, head, signature=True):
+    def __init__(self, branch, head, signature=True, commits=None, total=None, compare_rc=0):
         self.refs, self.made, self.signature = {branch: head}, [], signature
+        # the compare answer: by default one verified commit by Dependabot, as a real bump branch has
+        self.commits = [commit("dependabot[bot]")] if commits is None else commits
+        self.total, self.compare_rc, self.compared = total, compare_rc, []
 
     def __call__(self, cmd, **kw):
         cmd = list(cmd)
@@ -53,6 +63,12 @@ class Api:
             self.made.append(json.loads(kw["input"])["variables"]["input"])
             sig = {"isValid": True, "state": "VALID"} if self.signature else {"isValid": False, "state": "UNSIGNED"}
             return done(0, json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": sig}}}}))
+        if "/compare/" in cmd[2]:
+            self.compared.append(cmd[2])
+            total = len(self.commits) if self.total is None else self.total
+            if self.compare_rc:
+                return done(self.compare_rc, "", "gh: HTTP 500")
+            return done(0, json.dumps({"total_commits": total, "commits": self.commits}))
         branch = cmd[2].split("/git/ref/heads/")[1]
         if branch not in self.refs:
             return done(1, "", "gh: Not Found (HTTP 404)")
@@ -105,7 +121,8 @@ class Sweep(unittest.TestCase):
 
     def sweep(self, regenerate=None, branch=BR, dry_run=False, api=None):
         api = api or Api(branch, self.head(branch))
-        return V.process_branch(REPO, branch, self.ws, api, regenerate or self.regen, dry_run=dry_run), api
+        return V.process_branch(REPO, branch, self.ws, api, regenerate or self.regen, dry_run=dry_run,
+            app_login=APP), api
 
     def test_a_bump_that_only_changes_go_mod_and_go_sum_gets_one_commit_of_the_regenerated_records(self):
         status, api = self.sweep()
@@ -308,6 +325,157 @@ class Sweep(unittest.TestCase):
             status, api = self.sweep()
         self.assertEqual(status, "failed: git cat-file failed: fatal: no blob"); self.assertEqual(api.made, [])
 
+    def untrusted(self, **api_kw):
+        """sweep a branch whose commits the compare answer describes; the regeneration must not even run"""
+        ran = []
+        status, api = self.sweep(lambda *a: ran.append(a), api=Api(BR, self.head(), **api_kw))
+        self.assertEqual(ran, []); self.assertEqual(api.made, [])
+        return status
+
+    def test_the_sweep_asks_for_the_commits_from_the_merge_base_to_the_head(self):
+        status, api = self.sweep()
+        base = git(self.origin, "merge-base", "main", self.head())
+        self.assertEqual(len(api.compared), 1)
+        self.assertIn("repos/%s/compare/" % REPO, api.compared[0])
+        self.assertIn("%s...%s" % (base, self.head()), api.compared[0])
+
+    def test_commits_by_dependabot_or_by_the_app_are_trusted_in_any_mix(self):
+        for commits in ([commit(APP)], [commit("dependabot[bot]"), commit(APP)], [commit(APP), commit("dependabot[bot]")]):
+            status, api = self.sweep(api=Api(BR, self.head(), commits=commits))
+            self.assertEqual(status, "committed " + OID, commits)
+
+    def test_a_commit_by_a_stranger_makes_the_branch_skipped_whatever_its_name(self):
+        for commits in ([commit("stranger")], [commit("dependabot[bot]"), commit("stranger")],
+                        [commit("stranger"), commit("dependabot[bot]")]):
+            status = self.untrusted(commits=commits)
+            self.assertTrue(status.startswith("skipped: "), status)
+            self.assertIn("verified", status)
+
+    def test_a_bot_authored_commit_signed_by_a_contributor_makes_the_branch_skipped(self):
+        for commits in ([commit(APP, committer="contributor")], [commit("dependabot[bot]", committer="contributor")],
+                        [commit("dependabot[bot]"), commit(APP, committer=None)]):
+            status = self.untrusted(commits=commits)
+            self.assertTrue(status.startswith("skipped: "), status)
+
+    def test_a_commit_committed_by_the_app_itself_is_trusted(self):
+        status, api = self.sweep(api=Api(BR, self.head(), commits=[commit(APP, committer=APP)]))
+        self.assertEqual(status, "committed " + OID)
+
+    def test_a_dependabot_look_alike_or_a_commit_without_a_linked_author_is_a_stranger(self):
+        for author in ("dependabot", "dependabot[bot]x", "xdependabot[bot]", "Dependabot[bot]", "app", "", None):
+            doc = commit("x"); doc["author"] = {"login": author} if author is not None else None
+            status = self.untrusted(commits=[doc])
+            self.assertTrue(status.startswith("skipped: "), (author, status))
+        doc = commit("x"); del doc["author"]
+        self.assertTrue(self.untrusted(commits=[doc]).startswith("skipped: "))
+
+    def test_an_unverified_commit_makes_the_branch_skipped(self):
+        for commits in ([commit("dependabot[bot]", verified=False)], [commit("dependabot[bot]"), commit(APP, False)]):
+            status = self.untrusted(commits=commits)
+            self.assertTrue(status.startswith("skipped: "), status); self.assertIn("verified", status)
+        bare = commit("dependabot[bot]"); bare["commit"] = {}
+        self.assertTrue(self.untrusted(commits=[bare]).startswith("skipped: "))
+        bare["commit"] = {"verification": {"verified": "true"}}               # only the boolean true counts
+        self.assertTrue(self.untrusted(commits=[bare]).startswith("skipped: "))
+
+    def test_a_truncated_commit_list_is_not_trusted(self):
+        status = self.untrusted(commits=[commit("dependabot[bot]")], total=250)
+        self.assertTrue(status.startswith("skipped: "), status)
+
+    def test_a_failed_lookup_or_an_empty_list_is_not_trusted(self):
+        self.assertTrue(self.untrusted(compare_rc=1).startswith("skipped: "))
+        self.assertTrue(self.untrusted(commits=[], total=0).startswith("skipped: "))
+        self.assertTrue(self.untrusted(commits=[], total=5).startswith("skipped: "))
+
+    def test_the_auditors_bump_lane_is_judged_by_its_authors_too(self):
+        br = "auditor/bump-example.com-m-1.1.0"
+        self.bump(br, {"go.mod": b"module r\n\nrequire example.com/m v1.1.0\n", "go.sum": b"sum2\n"})
+        status, api = self.sweep(branch=br, api=Api(br, self.head(br), commits=[commit(APP)]))
+        self.assertEqual(status, "committed " + OID)
+        status, api = self.sweep(branch=br, api=Api(br, self.head(br), commits=[commit("stranger")]))
+        self.assertTrue(status.startswith("skipped: "), status); self.assertEqual(api.made, [])
+
+    def test_without_the_apps_login_only_dependabot_commits_are_trusted(self):
+        for login in (None, ""):
+            api = Api(BR, self.head(), commits=[commit(APP)])
+            status = V.process_branch(REPO, BR, self.ws, api, self.regen, app_login=login)
+            self.assertTrue(status.startswith("skipped: "), (login, status)); self.assertEqual(api.made, [])
+            api = Api(BR, self.head())
+            self.assertEqual(V.process_branch(REPO, BR, self.ws, api, self.regen, app_login=login), "committed " + OID)
+
+    def test_without_the_apps_login_a_commit_with_no_author_login_is_still_a_stranger(self):
+        for login in (None, ""):
+            for doc in (commit(None), commit(""), {**commit("x"), "author": None}):
+                api = Api(BR, self.head(), commits=[doc])
+                status = V.process_branch(REPO, BR, self.ws, api, self.regen, app_login=login)
+                self.assertTrue(status.startswith("skipped: "), (login, doc, status)); self.assertEqual(api.made, [])
+
+    def test_the_author_check_comes_before_the_content_checks(self):
+        self.bump(BR, {"go.mod": b"module r\n\nrequire example.com/m v1.1.0\n", "README.md": b"x\n"})
+        status = self.untrusted(commits=[commit("stranger")])
+        self.assertIn("verified", status); self.assertNotIn("README.md", status)
+
+    def test_a_dry_run_also_skips_an_untrusted_branch(self):
+        api = Api(BR, self.head(), commits=[commit("stranger")])
+        status = V.process_branch(REPO, BR, self.ws, api, self.regen, dry_run=True, app_login=APP)
+        self.assertTrue(status.startswith("skipped: "), status)
+
+    # _export: the head's raw tree
+    def tree(self, *entries):
+        """a git tree of the given (mode, path) entries, written with plumbing, for _export to read"""
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.ws, input=b"x", capture_output=True,
+                              env=GIT_ENV).stdout.decode().strip()
+        index = os.path.join(self.tmp, "idx")
+        env = dict(GIT_ENV, GIT_INDEX_FILE=index)
+        for mode, path in entries:
+            subprocess.run(["git", "update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, blob, path)],
+                           cwd=self.ws, env=env, check=True)
+        tree = subprocess.run(["git", "write-tree"], cwd=self.ws, env=env, capture_output=True, check=True)
+        commit_ = subprocess.run(["git", "commit-tree", tree.stdout.decode().strip(), "-m", "t"], cwd=self.ws,
+                                 env=env, capture_output=True, check=True)
+        os.remove(index)
+        return commit_.stdout.decode().strip()
+
+    def listing(self, *paths, sha="a" * 40):
+        """a fake `git ls-tree -r -z` answer (git itself will not build a tree with such paths)"""
+        real = V._git
+        text = b"".join(b"100644 blob " + sha.encode() + b"\t" + p.encode() + b"\0" for p in paths)
+        return mock.patch.object(V, "_git", lambda ws, *a: text if a[0] == "ls-tree" else real(ws, *a))
+
+    def test_a_path_with_an_empty_dot_or_dot_dot_component_is_a_skip_and_nothing_is_written(self):
+        for i, path in enumerate(("vendor/../evil", "../evil", "vendor/./x", "./x", "vendor//x", "vendor/a/../../x",
+                                  "vendor/.", "vendor/..", "/abs", "x/", "")):
+            dest = os.path.join(self.tmp, "out", str(i))
+            with self.listing("vendor/fine.go", path), self.assertRaises(V.Skip, msg=path):
+                V._export(self.ws, self.head(), dest)
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "evil")), path)
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "out", "evil")), path)
+            self.assertFalse(os.path.exists(dest) and os.listdir(dest), path)    # the check is before any file is written
+
+    def test_the_sweep_reports_a_traversal_path_as_a_skip(self):
+        with self.listing("vendor/../../evil"):
+            status, api = self.sweep()
+        self.assertTrue(status.startswith("skipped: "), status); self.assertEqual(api.made, [])
+
+    def test_an_ordinary_dotted_name_is_still_exported(self):
+        head = self.tree(("100644", "vendor/.gitattributes"), ("100644", "vendor/a..b/c.go"), ("100644", "go.mod"))
+        dest = os.path.join(self.tmp, "ok")
+        V._export(self.ws, head, dest)
+        self.assertEqual(sorted(os.path.relpath(os.path.join(r, f), dest) for r, _, fs in os.walk(dest) for f in fs),
+                         ["go.mod", "vendor/.gitattributes", "vendor/a..b/c.go"])
+
+    def test_a_blob_missing_from_the_cat_file_output_is_a_runtime_error_not_an_index_error(self):
+        with self.listing("vendor/a.go", sha="d" * 40):      # no such object: cat-file says "missing"
+            with self.assertRaises(RuntimeError):
+                V._export(self.ws, self.head(), os.path.join(self.tmp, "gone"))
+
+    def test_a_missing_blob_is_that_branchs_failed_line_and_the_sweep_goes_on(self):
+        with self.listing("vendor/a.go", sha="d" * 40):
+            status, api = self.sweep()
+        self.assertTrue(status.startswith("failed: "), status); self.assertEqual(api.made, [])
+        status, api = self.sweep()                                              # the next branch is still swept
+        self.assertEqual(status, "committed " + OID)
+
     def test_a_missing_branch_a_moved_branch_and_a_failed_commit(self):
         status, api = self.sweep(api=Api("other", OID))
         self.assertEqual(status, "gone")
@@ -320,11 +488,8 @@ class Sweep(unittest.TestCase):
         status, api = self.sweep(branch="main", api=Api("main", OID))
         self.assertEqual(status, "skipped: not a dependency-bump branch")
 
-    def test_the_subject_names_the_last_part_of_the_branch(self):
-        self.assertEqual(V.subject("dependabot/go_modules/github.com/prometheus/client_golang-1.25.0"),
-            "Vendor records for the client_golang-1.25.0 bump")
-        self.assertEqual(V.subject("auditor/bump-example.com-m-1.1.0"),
-            "Vendor records for the bump-example.com-m-1.1.0 bump")
+    def test_the_records_message_has_no_second_name_in_this_module(self):
+        self.assertFalse(hasattr(V, "subject"))
 
 
 class Licences(unittest.TestCase):

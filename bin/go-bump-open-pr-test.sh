@@ -409,8 +409,9 @@ SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+""" 
 LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
 # every tracked file is read except the tests, the prose and the data (docs, markdown, json, the evidence and the root requirements)
 SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$")
-ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole line, stripped"
-root = sys.argv[1]
+mode, root = sys.argv[1:3]       # "scan" lists the offending lines, "dead" the allowed hashes that match no line
+ALLOWED = set(sys.argv[3:])      # sha256 of "file\nwhole line, stripped"
+used, found = set(), []
 files = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
 for f in files:
     if not f or SKIP.search(f) or not os.path.isfile(os.path.join(root, f)) or os.path.islink(os.path.join(root, f)):
@@ -424,18 +425,40 @@ for f in files:
         s = line.strip()
         if s.startswith("#") or not (SHELL_RE.search(s) or LIST_RE.search(s)):
             continue
-        if hashlib.sha256((f + "\n" + s).encode()).hexdigest() in ALLOWED:
+        digest = hashlib.sha256((f + "\n" + s).encode()).hexdigest()
+        if digest in ALLOWED:
+            used.add(digest)
             continue
-        print("%s:%d:%s" % (f, n, s[:160]))
+        found.append("%s:%d:%s" % (f, n, s[:160]))
     for m in LIST_RE.finditer(whole):           # an argument list spread over lines
         if "\n" in m.group(0):
-            print("%s:%d:%s" % (f, whole.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())[:160]))
+            found.append("%s:%d:%s" % (f, whole.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())[:160]))
+lines = found if mode == "scan" else sorted(ALLOWED - used)
+if lines:
+    print("\n".join(lines))
 '
-guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
-ALLOW=(93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f 7c3e3df9b151afb150c82b8a64eb67d69d60c0c2ccbf0b9ac97f54624218f818 933049755c9dd2e918eccd8dd86a093de078ec3c7d82a817b3e5aef6bb6c36e6)
+guard_scan() { python3 -I -c "$GUARD_PY" scan "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
+guard_dead() { python3 -I -c "$GUARD_PY" dead "$@"; }   # guard_dead <repo root> [allowed sha256 ...]: the ones that match no line
+# each hash covers one line, named here by its file and the start of the line
+ALLOW=(
+  93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9  # auditor-open-pr.py: shim("git commit -m auditor:%s" % change)
+  7c3e3df9b151afb150c82b8a64eb67d69d60c0c2ccbf0b9ac97f54624218f818  # bin/melange-apko-lib.sh: GIT_COMMITTER_EMAIL=t@example.test GIT_COMMITTER_DATE=... git co
+  933049755c9dd2e918eccd8dd86a093de078ec3c7d82a817b3e5aef6bb6c36e6  # bin/chain-verify.py: refuse(stage, "commit: the record's git commit %s is not the run's commit %s" ...
+  983018d69395400814caa6f3599d037b91deafc7be3d33db32e712225ac90290  # auditor-signed-commit.py: main requires signed commits; `git commit` in a runner is unsigned. ...
+  a8d65fd5764e2010f75f86de97cdd4e74d1e5aa88c45bd0c97954b2d3b6fe992  # auditorlib/signed_commit.py: main's ruleset requires signed commits, and a commit made by `git commit` ...
+  bd19eca3ff27b1131b153768cb7e7bc3f980ecb72c093736b85673c9f0256bcd  # auditorlib/signed_commit.py: "the commit cannot be made through the API (and a git commit would be unsigned)"
+)
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
 if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC9, plain forms)"; pass=$((pass+1))
 else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$bad_lines" | sed 's/^/    /'; fail=$((fail+1)); fi
+# an allowed hash whose line is gone or changed is a dead entry: it must be removed, not left to excuse a later line
+dead="$(guard_dead "$root" "${ALLOW[@]}")" || dead="the guard itself failed"
+if [ -z "$dead" ]; then echo "ok: every allowed hash matches a live line (no dead entry)"; pass=$((pass+1))
+else echo "FAIL: an allowed hash matches no line any more:"; printf '%s\n' "$dead" | sed 's/^/    /'; fail=$((fail+1)); fi
+fake="$(printf 'no such file\nno such line' | shasum -a 256 | cut -d' ' -f1)"
+dead="$(guard_dead "$root" "${ALLOW[@]}" "$fake")"
+if [ "$dead" = "$fake" ]; then echo "ok: a dead allowed hash is reported (and only it)"; pass=$((pass+1))
+else echo "FAIL: a dead allowed hash was not reported exactly: '$dead'"; fail=$((fail+1)); fi
 # the guard must catch each plain form on its own, in a throwaway repository
 g="$(mktemp -d)"; ( cd "$g" && git init -q && mkdir -p bin .github/workflows .githooks tools/requirements ) >/dev/null 2>&1
 guard_in() {   # guard_in <file> <content>: the number of hits when the repository holds only that file

@@ -4,7 +4,7 @@ merge/consolidate fallbacks, the narrative guard, the scanner tables and main()'
 
 No network, no real git/gh/go: every subprocess call is intercepted by FakeRun and asserted on by
 its exact argv. Every write goes to a temp dir."""
-import base64, contextlib, importlib.util, io, json, os, shlex, shutil, subprocess, sys, tempfile, unittest
+import base64, contextlib, importlib.util, inspect, io, json, os, shlex, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -320,6 +320,23 @@ class NoChange(Base):
             self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "real_fixable")
         self.assertEqual(ask.call_count, 1)
 
+    def test_a_malformed_reply_is_charged_to_the_token_budget(self):
+        ex = RuntimeError("client error: bad reply"); ex.token_usage = 40000
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=ex) as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "adjudicator_error")
+        self.assertGreaterEqual(ask.call_count, 1)
+        self.assertEqual(st["tokens"], 40000 * ask.call_count)
+
+    def test_malformed_replies_stop_the_run_at_the_budget(self):
+        ex = RuntimeError("client error: bad reply"); ex.token_usage = 90000
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=ex) as ask:
+            for _ in range(6):
+                R.adjudicate("/x/real.py", self.CTX, st)
+        self.assertLessEqual(ask.call_count, 3)
+        self.assertGreaterEqual(st["tokens"], R.policy.TOKEN_BUDGET)
+
     def test_a_refusal_or_an_error_is_never_recorded_as_a_verdict(self):
         st = self.state()
         with mock.patch.object(R.cli, "ask_model", side_effect=R.cli.Refused("no")):
@@ -421,6 +438,19 @@ class NoChange(Base):
             self.assertNotEqual(base, R._adjudication_fingerprint(adj))
             self.assertNotEqual(R._adjudication_fingerprint(os.path.join(self.tmp, "missing.py")), base)
         self.assertNotIn("m-one", R._adjudication_fingerprint(adj))          # a digest, never the identifier itself
+
+    def test_the_fingerprint_ignores_whitespace_around_a_configured_id(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "m-one", "AUDITOR_MODEL_FALLBACK": ""}):
+            plain = R._adjudication_fingerprint(adj)
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-one\n"
+            self.assertEqual(plain, R._adjudication_fingerprint(adj))
+
+    def test_mask_hides_a_configured_id_that_has_a_trailing_newline_in_the_environment(self):
+        # an id set from a file or a shell line carries the newline; the report text has the id without it
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7\n", "AUDITOR_MODEL_FALLBACK": ""}):
+            out = R._mask("reviewed by acme-big-7\nthen acme-big-7 again")
+        self.assertNotIn("acme-big-7", out)
 
     def test_the_adjudication_fingerprint_follows_the_standing_prompt(self):
         adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
@@ -533,6 +563,19 @@ class Pullability(Base):
         with mock.patch.object(R.cli, "ask_model", side_effect=ex):
             self.assertIsNone(R._pullability("/a", {"finding_id": "C"}, st))
         self.assertEqual(st["tokens"], 16); self.assertEqual(st["calls"], 1)
+
+    def test_a_malformed_reply_is_billed_and_returns_none(self):
+        ex = RuntimeError("client error: bad reply"); ex.token_usage = 7
+        st = {"tokens": 5}
+        with mock.patch.object(R.cli, "ask_model", side_effect=ex):
+            self.assertIsNone(self.quiet(R._pullability, "/a", {"finding_id": "C"}, st)[0])
+        self.assertEqual(st["tokens"], 12)
+
+    def test_an_error_without_usage_charges_nothing(self):
+        st = {"tokens": 5}
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            self.quiet(R._pullability, "/a", {"finding_id": "C"}, st)
+        self.assertEqual(st["tokens"], 5)
 
     def test_error_recorded_once_masked(self):
         st = {"tokens": 0}
@@ -850,6 +893,7 @@ class PurlVersion(unittest.TestCase):
         self.assertEqual(R._ver_from_purl("pkg:deb/debian/openssl@3.0.1+deb12u1"), "3.0.1+deb12u1")
         self.assertEqual(R._ver_from_purl("pkg:golang/x/y@v1.2.3#sub/path"), "v1.2.3")
         self.assertIsNone(R._ver_from_purl("pkg:generic/x"))
+        self.assertEqual(R._ver_from_purl("pkg:deb/debian/x@1.0%2541"), "1.0%41")      # decoded once: a literal % stays
         self.assertIsNone(R._ver_from_purl(None))
 
 
@@ -870,13 +914,46 @@ class ResolveCarried(unittest.TestCase):
         self.assertEqual(R._resolve_carried({}, stmts), ["CVE-2099-1"])
 
     def _groups(self):
-        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
         return {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
 
     @staticmethod
     def _stmt(arch):
         return {"vulnerability": {"name": "CVE-2099-7"},
                 "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": "pkg:deb/debian/libfoo@1.0?arch=%s&distro=debian-12.0" % arch}]}]}
+
+    def test_names_that_differ_only_by_percent_encoding_or_case_are_the_same_package(self):
+        """the carried entry says libfoo / 1.0+b1; the statement spells the purl LibFoo@1.0%2Bb1: one package, so the statement is re-judged this run"""
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0+b1"})
+        groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
+        stmt = {"vulnerability": {"name": "CVE-2099-7"},
+                "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": "pkg:deb/debian/LibFoo@1.0%2Bb1?arch=amd64"}]}]}
+        R._resolve_carried(groups, [stmt])
+        self.assertEqual([x["purl"] for x in groups["CVE-2099-7"]["findings"]], ["pkg:deb/debian/LibFoo@1.0%2Bb1?arch=amd64"])
+
+    def _resolved(self, version, purl):
+        carried = {"carried": True, "version": version}
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, carried)
+        groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
+        stmt = {"vulnerability": {"name": "CVE-2099-7"},
+                "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": purl}]}]}
+        return R._resolve_carried(groups, [stmt])
+
+    def test_a_purl_version_is_decoded_once_so_a_literal_percent_is_not_read_as_an_escape(self):
+        purl = "pkg:deb/debian/libfoo@1.0%2541?arch=amd64"      # the version is "1.0%41"
+        self.assertEqual(self._resolved("1.0A", purl), ["CVE-2099-7"])
+
+    def test_the_same_version_spelled_plainly_is_the_same_package(self):
+        self.assertEqual(self._resolved("1.0A", "pkg:deb/debian/libfoo@1.0A?arch=amd64"), [])
+
+    def test_aliases_of_one_statement_add_no_duplicate_finding(self):
+        """the group is known by its id and an alias and the statement names both: the finding is resolved once (one scanner, finding_id and purl)"""
+        f = R.PARS.finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
+        groups = {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": ["GHSA-aaaa-bbbb-cccc"], "findings": [f], "lineages": {"inspector"}}}
+        stmt = self._stmt("amd64")
+        stmt["vulnerability"]["aliases"] = ["GHSA-aaaa-bbbb-cccc"]
+        R._resolve_carried(groups, [stmt])
+        self.assertEqual(len(groups["CVE-2099-7"]["findings"]), 1)
 
     def test_a_change_only_in_the_carried_resolution_never_reuses_a_verdict_for_a_different_question(self):
         """the no-change hash is taken over the groups BEFORE the carried statements are resolved, so two runs can share it while the statements resolve differently. That
@@ -1111,12 +1188,6 @@ class SuppressionPR(Base):
             with self.assertRaises(R.ReviewedInputInvalid):
                 self.real(fr, base_sha="b" * 40)
 
-    def test_a_delivery_given_the_base_failure_returns_it_and_fetches_nothing_again(self):
-        fr = ApiRun()
-        self.assertEqual(self.real(fr, base_err="git fetch: offline"), (None, "git fetch: offline"))
-        # not a second fetch, not a read, not a checkout
-        self.assertEqual(fr.argvs(), [])
-
     def test_the_suppression_pr_title_and_body_are_plain_and_pass_the_customer_words_check(self):
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.real(fr)
@@ -1269,6 +1340,24 @@ class SuppressionPR(Base):
             self.assertIn("--comment", first)
             self.assertIn("supersed", first[first.index("--comment") + 1].lower())
             self.assertNotIn("--delete-branch", first)                      # the branch stays: nothing here deletes refs
+
+    def test_the_daily_branch_pattern_matches_a_day_and_a_hex_sha_only(self):
+        for branch in ("auditor/2026-09-22-abcdef123456",
+                       "auditor/2026-01-01-0123456789abcdef0123456789abcdef01234567"):
+            self.assertTrue(R._DAILY_BRANCH.match(branch), branch)
+        for branch in ("auditor/2026-09-22-abcdef123456\n", "auditor/2026-09-22-ABCDEF123456",
+                       "auditor/2026-09-22-zzzzzzzz", "auditor/2026-09-22", "auditor/2026-9-22-abcdef123456",
+                       "auditor/panel", "feature/2026-09-22-abcdef123456",
+                       "auditor/\u0662\u0660\u0662\u0666-09-22-abcdef123456", "auditor/2026-09-22-abcdef123456/x"):
+            self.assertFalse(R._DAILY_BRANCH.match(branch), repr(branch))
+
+    def test_a_branch_that_only_looks_like_a_daily_one_is_never_closed(self):
+        lookalikes = "20 auditor/2026-09-19-zzzzzzzzzzzz\n21 auditor/2026-09-19\n22 auditor/2026-09-19-ABCDEF123456\n"
+        listing = self.OPEN + lookalikes
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, listing, "")})
+        self.assertIsNotNone(self.real(fr)[0])
+        closed = sorted(a[3] for a in fr.argvs() if a[:3] == ["gh", "pr", "close"])
+        self.assertEqual(closed, ["10", "5"])
 
     def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # reviewer r1 blocker 2
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
@@ -1578,6 +1667,25 @@ class FixPR(Base):
             with mock.patch.object(R.subprocess, "run", FakeRun(rules)):
                 got, err = R._open_dependabot_prs(self.d("ws"))
             self.assertIsNone(got); self.assertIn("gh pr list", err)
+
+    def test_an_empty_or_wrongly_shaped_answer_is_a_failed_lookup_not_no_prs(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        for out in ("", "   \n", "{}", "null", '"x"', "7", '{"number": 5}'):
+            with mock.patch.object(R.subprocess, "run", FakeRun({("gh", "pr", "list"): (0, out, "")})):
+                got, err = R._open_dependabot_prs(self.d("ws"))
+            self.assertIsNone(got, msg=repr(out)); self.assertIn("gh pr list", err or "", msg=repr(out))
+        with mock.patch.object(R.subprocess, "run", FakeRun({("gh", "pr", "list"): (0, "[]", "")})):
+            self.assertEqual(R._open_dependabot_prs(self.d("ws")), ([], None))         # a real empty list is still "no open PRs"
+
+    def test_a_row_without_a_positive_integer_number_is_a_failed_lookup_not_a_pr_to_defer_to(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        for number in (0, -1, "5", 5.5, None):
+            rows = [{"number": number, "title": "Bump example.com/m from 1.0.0 to 1.1.0", "url": "https://x/pull/0"}]
+            with mock.patch.object(R.subprocess, "run", FakeRun({("gh", "pr", "list"): (0, json.dumps(rows), "")})):
+                got, err = R._open_dependabot_prs(self.d("ws"))
+            self.assertIsNone(got, msg=repr(number)); self.assertIn("gh pr list", err or "", msg=repr(number))
 
     def test_a_real_run_defers_to_an_open_dependabot_pr_and_survives_a_failed_lookup(self):
         dep = {("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, json.dumps([{"number": 5,
@@ -2113,7 +2221,7 @@ def panel_manifest_fields(tmp):
     path = os.path.join(tmp, "verdict-ok.json")
     with open(path, "w") as fh:
         json.dump({"images": images, "not_counted": [], "scanner_failures": [], "findings": [], "vex_covered": [],
-                   "issue": PL._panel_module().render_issue([]), "unique": [], "exit": 0}, fh)
+                   "issue": PL.panel_module().render_issue([]), "unique": [], "exit": 0}, fh)
     return {"scanner_set": "panel", "panel": {"verdict": path}, "scanner_status": PANEL_STATUS,
             "scanner_reports": {x: path for x in PL.PANEL_SCANNERS}}
 
@@ -2228,6 +2336,52 @@ class Run(Base):
         self.assertIn("2 owner-decision issue(s) failed to open", whole["status"])
         self.assertIn("1 findings unassessed: adjudicator unavailable (RuntimeError: HTTP 500)", whole["status"])
 
+    def test_a_base_that_cannot_be_fetched_stops_the_run_before_any_owner_issue(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+        self.wj(os.path.join(self.d("ws"), ".vex", "fosterstack-cache.openvex.json"), {"statements": []})
+        def ask(adj, fid, **kw):
+            if fid == "CONCLUSION":
+                return {"narrative": ""}
+            raise R.cli.Refused(fid)
+        fr = FakeRun({("git", "fetch"): (1, "", "offline"), ("gh", "issue", "list"): (0, "[]", "")})
+        with mock.patch.object(R.subprocess, "run", fr):
+            with self.assertRaises(R.ReviewedInputInvalid) as cm:
+                self.go(self.grp(F("CVE-2099-68", "pkg:deb/debian/libg@1", "libg")), dry=False,
+                        adjudicator="/x/real-adjudicator.py", ask=mock.Mock(side_effect=ask))
+        self.assertIn("git fetch: offline", str(cm.exception))
+        self.assertFalse(any(a[:3] == ["gh", "issue", "create"] for a in fr.argvs()))
+        self.assertFalse(any(a[:2] == ["git", "checkout"] for a in fr.argvs()))
+
+    def test_a_missing_workspace_or_git_is_one_refusal_that_names_it_on_every_path(self):
+        # the same stop whether or not real delivery is on: _fetch_base must not leak a raw OSError
+        nowhere = os.path.join(self.tmp, "no-such-workspace")
+        empty_path = self.d("empty-path")
+        for real in ("0", "1"):
+            for what, env in (("workspace", {"GITHUB_WORKSPACE": nowhere}), ("git", {"PATH": empty_path})):
+                os.environ["AUDITOR_ALLOW_REAL_GH"] = real
+                with mock.patch.dict(os.environ, env):
+                    with self.assertRaises(R.ReviewedInputInvalid, msg=(what, real)) as cm:
+                        self.go(self.grp(), dry=False)
+                self.assertIn(nowhere if what == "workspace" else "git", str(cm.exception), (what, real))
+
+    def test_workspace_commit_oserror_names_what_happened_and_never_none(self):
+        os.environ["GITHUB_WORKSPACE"] = self.d("ws")
+        for ex, must, missing in (
+                (PermissionError(13, "Permission denied", "/ws/git"), "Permission denied", False),
+                (OSError(5, "Input/output error"), "git", False),
+                (OSError("boom"), "OSError", False),
+                (FileNotFoundError("x"), "FileNotFoundError", True)):
+            with self.subTest(repr(ex)):
+                fr = FakeRun({("git", "rev-parse", "HEAD"): ex})
+                with mock.patch.object(R.subprocess, "run", fr):
+                    with self.assertRaises(R.ReviewedInputInvalid) as cm:
+                        self.go(self.grp(), dry=False)
+                msg = str(cm.exception)
+                self.assertIn("the workspace commit cannot be read", msg)
+                self.assertIn(must, msg, repr(ex))
+                self.assertEqual("is missing" in msg, missing, repr(ex))
+                self.assertNotIn("None", msg, repr(ex))
+
     def test_go_bump_unresolvable_stays_section3(self):
         c = "CVE-2099-67"
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
@@ -2292,6 +2446,35 @@ class ExitThreeBeforeMutation(unittest.TestCase):
             self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: not-a-sha"))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (1, "", "bad")})):
             self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: bad"))
+
+    def test_find_pr_with_gh_missing_is_a_refusal_that_names_gh(self):
+        gone = FileNotFoundError(2, "No such file or directory", "gh")
+        with mock.patch.object(R.subprocess, "run", FakeRun({("gh",): gone})):
+            self.assertEqual(R._find_pr(self.d, "audit/x"), ("", "gh is missing: No such file or directory"))
+
+    def test_find_pr_oserror_without_strerror_names_the_class_never_none(self):
+        for ex, cls in ((OSError("boom"), "OSError"), (FileNotFoundError("x"), "FileNotFoundError")):
+            with self.subTest(repr(ex)):
+                with mock.patch.object(R.subprocess, "run", FakeRun({("gh",): ex})):
+                    pr, err = R._find_pr(self.d, "audit/x")
+                self.assertEqual(pr, "")
+                self.assertIn(cls, err, repr(ex))
+                self.assertNotIn("None", err, repr(ex))
+
+    def test_fetch_base_oserror_names_what_happened_and_never_none(self):
+        for ex, must, missing in (
+                (PermissionError(13, "Permission denied", "/ws/git"), "Permission denied", False),
+                (OSError(5, "Input/output error"), "git", False),
+                (FileNotFoundError(2, "No such file or directory", "git"), "is missing", True),
+                (OSError("boom"), "OSError", False),
+                (FileNotFoundError("x"), "FileNotFoundError", True)):
+            with self.subTest(repr(ex)):
+                with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): ex})):
+                    sha, err = R._fetch_base(self.d)
+                self.assertIsNone(sha)
+                self.assertIn(must, err, repr(ex))
+                self.assertEqual("is missing" in err, missing, repr(ex))
+                self.assertNotIn("None", err, repr(ex))
 
     def test_base_docs_reads_both_reviewed_files_from_the_sha(self):
         fr = FakeRun({("git", "show", self.SHA40 + ":" + self.VP): (0, json.dumps({"statements": []}).encode(), b"")})
@@ -2384,6 +2567,315 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         self.assertEqual([a[4] for a in co], ["b" * 40])
 
 
+class ProposalEvidence(unittest.TestCase):
+    """A proposal's evidence is a repo-root-relative path, written as git writes it, naming a regular file in a git
+    commit of the checkout the run reads. It is read at that commit only: with no commit there is nothing to read (no
+    workspace fallback); dry and test runs use a fixture commit."""
+    GOOD = {"kind": "defect_log", "package": "libpropose", "note": "generalises from a recorded pattern",
+            "keys": [{"scanner": "grype", "finding_id": "CVE-2099-1", "purl": "pkg:deb/debian/libpropose@1.0"}]}
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", self.root, "-c", "user.name=t", "-c", "user.email=t@example.org",
+                               "-c", "commit.gpgsign=false", *a],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.root, True)
+        self.outside = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.outside, True)
+        os.makedirs(os.path.join(self.root, "docs"))
+        for name in ("docs/tracker.md", "top.txt"):
+            with open(os.path.join(self.root, name), "w") as fh:
+                fh.write("x\n")
+        with open(os.path.join(self.outside, "x.md"), "w") as fh:
+            fh.write("outside the checkout\n")
+        os.symlink("top.txt", os.path.join(self.root, "link.txt"))
+        # a directory link out of the checkout, committed
+        os.symlink(self.outside, os.path.join(self.root, "escape"))
+        self.git("init", "-q"); self.git("add", "-A"); self.git("commit", "-qm", "base")
+        self.sha = self.git("rev-parse", "HEAD")
+
+    def ask(self, evidence, sha="commit", root=None, **over):
+        sha = self.sha if sha == "commit" else sha
+        return R._valid_proposal(dict(self.GOOD, evidence=evidence, **over), root or self.root, sha)
+
+    def test_a_regular_file_by_its_relative_path_at_the_commit_is_kept(self):
+        for path in ("top.txt", "docs/tracker.md"):
+            self.assertEqual(self.ask(path), dict(self.GOOD, evidence=path), path)
+
+    def test_there_is_no_workspace_fallback_without_a_commit(self):
+        for path in ("top.txt", "docs/tracker.md"):
+            # present in the workspace, but nothing is read from it
+            self.assertIsNone(self.ask(path, sha=None), path)
+        # nor without a checkout
+        self.assertIsNone(R._valid_proposal(dict(self.GOOD, evidence="top.txt"), None, self.sha))
+        self.assertIsNone(R._valid_proposal(dict(self.GOOD, evidence="top.txt"), self.root, ""))
+
+    def test_a_file_the_workspace_has_but_the_commit_has_not_is_refused(self):
+        with open(os.path.join(self.root, "new.txt"), "w") as fh:
+            fh.write("untracked\n")
+        self.assertIsNone(self.ask("new.txt"))
+        self.git("add", "new.txt")                                                # staged is not committed
+        self.assertIsNone(self.ask("new.txt"))
+        self.git("commit", "-qm", "later")
+        # the run reads the commit it was given, not a later one
+        self.assertIsNone(self.ask("new.txt"))
+        self.assertIsNotNone(self.ask("new.txt", sha=self.git("rev-parse", "HEAD")))
+
+    def test_a_path_through_a_directory_link_out_of_the_checkout_is_refused(self):
+        # it reads fine through the workspace
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "escape", "x.md")))
+        self.assertIsNone(self.ask("escape/x.md"))
+        self.assertIsNone(self.ask("escape/x.md", sha=None))
+        self.assertIsNone(self.ask("escape"))
+        # a link made in the workspace after the commit is not in the commit either
+        os.symlink(self.outside, os.path.join(self.root, "later-escape"))
+        self.assertIsNone(self.ask("later-escape/x.md"))
+        self.assertIsNone(self.ask("later-escape/x.md", sha=None))
+
+    def test_a_model_name_is_refused_as_a_plain_substring_in_every_text_field(self):
+        for text in ("per the gpt-5 analysis", "claude3", "llama3", "sonnet4", "Claude3 wrote it", "a llama3 note",
+                     "SONNET4", "claude 3", "opus4", "gemini2", "GeminiPro", "libopus0", "libllama-compat",
+                     "codexample", "ask codex", "OpenAI said so"):
+            for field in ("note", "package"):
+                self.assertIsNone(self.ask("top.txt", **{field: text}), (field, text))
+            self.assertIsNone(self.ask("top.txt", keys=[dict(self.GOOD["keys"][0], finding_id=text)]), text)
+
+    def test_ordinary_words_that_contain_no_model_name_are_kept(self):
+        for text in ("minizip", "knowledge", "libpng", "zlib-ng", "operations"):
+            self.assertIsNotNone(self.ask("top.txt", package=text), text)
+            self.assertIsNotNone(self.ask("top.txt", note=text), text)
+
+    def test_a_path_that_is_not_a_regular_file_in_the_commit_is_refused(self):
+        for path in ("docs", "missing.txt", "docs/missing.md", "link.txt"):
+            self.assertIsNone(self.ask(path), path)
+
+    def test_a_path_that_leaves_the_root_or_is_absolute_is_refused(self):
+        outside = os.path.join(self.root, "docs", "tracker.md")
+        for path in ("/top.txt", outside, "../top.txt", "docs/../top.txt",
+                     "docs/../../top.txt", "./../top.txt"):
+            self.assertIsNone(self.ask(path), path)
+
+    def test_a_path_not_in_gits_normal_form_is_refused(self):
+        self.assertIsNotNone(self.ask("docs/tracker.md"))
+        for path in ("./top.txt", "./docs/tracker.md", "docs//tracker.md", "//top.txt", "docs/tracker.md/", "top.txt/",
+                     "docs/", "docs/./tracker.md", "docs/tracker.md/.", "./", "."):
+            self.assertIsNone(self.ask(path), path)
+            self.assertIsNone(self.ask(path, sha=None), path)
+
+    def test_a_path_with_a_nul_byte_is_refused(self):
+        self.assertIsNone(self.ask("top.txt\x00.md"))
+        self.assertIsNone(self.ask("\x00"))
+
+    def test_a_value_that_is_not_a_path_string_is_refused(self):
+        for evidence in ("", "  ", None, 7, ["top.txt"], {"path": "top.txt"}, "debian security tracker: no-DSA"):
+            self.assertIsNone(self.ask(evidence), repr(evidence))
+
+    def test_a_path_that_is_not_ascii_is_refused_not_an_error(self):
+        for path in ("t\u00f6p.txt", "docs/\u2603.md"):
+            self.assertIsNone(self.ask(path), path)
+
+    def test_evidence_that_cannot_be_encoded_is_refused_and_never_raises(self):
+        for path in ("\ud800", "top.txt\ud800", "docs/\udfff.md", "\ud800\udc00x"):
+            for sha in ("commit", None):
+                try:
+                    got = self.ask(path, sha=sha)
+                except UnicodeError as e:
+                    self.fail("%r raised %s" % (path, type(e).__name__))
+                self.assertIsNone(got, path)
+        for field in ("note", "package"):
+            try:
+                self.assertIsNone(self.ask("top.txt", **{field: "x\ud800"}), field)
+            except UnicodeError as e:
+                self.fail("%s raised %s" % (field, type(e).__name__))
+        try:
+            self.assertIsNone(self.ask("top.txt", keys=[dict(self.GOOD["keys"][0], purl="pkg:x/\ud800")]))
+        except UnicodeError as e:
+            self.fail("keys raised %s" % type(e).__name__)
+
+    def test_a_proposal_whose_evidence_cannot_be_encoded_is_counted_like_any_refused_proposal(self):
+        ctx = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1",
+               "candidate_digest": "sha256:cand"}
+        def run(evidence):
+            st = {"tokens": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None, "nc_prev": None,
+                  "nc_today": "2026-10-24", "evidence_root": self.root, "evidence_sha": self.sha}
+            ans = {"category": "real_fixable", "token_usage": 1, "propose": dict(self.GOOD, evidence=evidence)}
+            with mock.patch.object(R.cli, "ask_model", return_value=ans):
+                self.assertEqual(R.adjudicate("/x/real.py", ctx, st), "real_fixable")
+            return st
+        # the unencodable ones count exactly like an absent file
+        for bad in ("missing.txt", "\ud800", "top.txt\ud800"):
+            st = run(bad)
+            self.assertEqual(st.get("proposals_refused"), 1, bad)
+            self.assertNotIn("proposals", st, bad)
+            self.assertNotIn("adj_errors", st, bad)
+        st = run("top.txt")
+        self.assertEqual((st.get("proposals_refused", 0), len(st["proposals"])), (0, 1))
+
+    def test_with_a_base_sha_the_file_must_be_in_that_commit(self):
+        self.assertIsNotNone(self.ask("top.txt"))
+        with open(os.path.join(self.root, "docs", "tracker2.md"), "w") as fh:
+            fh.write("x\n")
+        self.assertIsNone(self.ask("docs/tracker2.md"))             # in the workspace, not in the commit
+        self.assertIsNone(self.ask("docs"))
+        self.assertIsNone(self.ask("../top.txt"))
+        self.assertIsNone(self.ask("top.txt", sha="0" * 40))        # a commit that does not exist
+        self.assertIsNone(self.ask("top.txt", sha="--bogus"))       # a sha that is an option
+
+
+class CarriedVersion(unittest.TestCase):
+    """The panel's vex_covered entries arrive flagged `carried` with the version as the panel carried it; the carried
+    statement's purl holds the version percent-encoded. The finding's version is kept as carried and is decoded once,
+    on the purl's side."""
+    def stmt(self, purl, cve="CVE-2099-1"):
+        return {"vulnerability": {"name": cve}, "products": [{"@id": PROD, "subcomponents": [{"@id": purl}]}]}
+
+    def groups(self, version, package="libx", cve="CVE-2099-1"):
+        f = R.PARS.finding("inspector", cve, "pkg:generic/%s@%s" % (package, version), (), package, None, None,
+                           {"carried": True, "version": version, "images": ["production-amd64"]})
+        return {cve: {"id": cve, "aliases": set(), "findings": [f]}}
+
+    def resolved(self, version, purl, package="libx"):
+        g = self.groups(version, package)
+        R._resolve_carried(g, [self.stmt(purl)])
+        return g
+
+    def test_a_carried_version_with_a_percent_sign_matches_the_purl_that_encodes_it(self):
+        g = self.resolved("1.0%41", "pkg:generic/libx@1.0%2541")
+        # rejudged, not dropped
+        self.assertEqual([f["purl"] for f in g["CVE-2099-1"]["findings"]], ["pkg:generic/libx@1.0%2541"])
+        self.assertTrue(g["CVE-2099-1"]["findings"][0]["extra"]["carried"])
+
+    def test_the_carried_version_is_not_decoded_a_second_time(self):
+        # "1.0%41" is the panel's literal text; the purl "1.0%2541" decodes ONCE to it. A purl that spells it "1.0A"
+        # is another version.
+        self.assertNotIn("CVE-2099-1", self.resolved("1.0%41", "pkg:generic/libx@1.0A"))
+        self.assertNotIn("CVE-2099-1", self.resolved("1.0A", "pkg:generic/libx@1.0%2541"))
+        # that purl decodes once to "1.0A"
+        self.assertNotIn("CVE-2099-1", self.resolved("1.0%41", "pkg:generic/libx@1.0%41"))
+
+    def test_an_ordinary_encoded_version_still_matches(self):
+        for version, purl in (("1.0+b1", "pkg:generic/libx@1.0%2Bb1"), ("1.0", "pkg:generic/libx@1.0"),
+                              ("2:1.0-1", "pkg:generic/libx@2%3A1.0-1")):
+            self.assertIn("CVE-2099-1", self.resolved(version, purl), version)
+        self.assertNotIn("CVE-2099-1", self.resolved("1.0+b1", "pkg:generic/libx@1.0%2Bb2"))
+
+    def test_a_package_name_still_matches_encoded_or_not(self):
+        self.assertIn("CVE-2099-1", self.resolved("1", "pkg:generic/lib%2Fx@1", package="lib/x"))
+
+
+class NarrativeScrub(unittest.TestCase):
+    """One plain-substring model-name check (over the lowered text) covers a narrative; a name is refused inside a
+    word too."""
+    SECS = {n: [] for n in range(1, 8)}
+
+    def ok(self, text):
+        return R._narrative_ok(text, self.SECS)
+
+    def test_a_model_name_written_literally_is_refused_in_a_narrative(self):
+        for text in ("Reviewed by gpt-5 today.", "gpt-5", "GPT-5", "Reviewed by Claude.", "OpenAI said so"):
+            self.assertFalse(self.ok(text), text)
+
+    def test_a_model_name_with_digits_attached_is_refused_in_a_narrative(self):
+        for text in ("claude3 says so", "llama3", "sonnet4", "Llama3.1", "we asked claude3", "opus4"):
+            self.assertFalse(self.ok(text), text)
+
+    def test_a_configured_model_identifier_is_refused_as_plain_text_in_any_case_or_suffix(self):
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7", "AUDITOR_MODEL_FALLBACK": ""}):
+            for text in ("acme-big-7 said", "ACME-BIG-7 said", "acme-big-7b"):
+                self.assertFalse(self.ok(text), text)
+            self.assertTrue(self.ok("a bigger acme reading of 7 packages"))
+
+    def test_a_name_inside_a_word_or_followed_by_digits_is_refused_in_a_narrative(self):
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big", "AUDITOR_MODEL_FALLBACK": ""}):
+            for text in ("GeminiPro wrote this", "ClaudeAI wrote this", "OpenAIs wrote this", "CodexCLI wrote this",
+                         "acme-big-70 wrote this"):
+                self.assertFalse(self.ok(text), text)
+            self.assertTrue(self.ok("Nothing changed today."))
+
+    def test_a_configured_id_is_refused_inside_a_longer_digit_run(self):
+        # only a plain substring check refuses this: acme-big-7 is not a whole word in acme-big-70
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7", "AUDITOR_MODEL_FALLBACK": ""}):
+            self.assertFalse(self.ok("acme-big-70 wrote this"))
+
+    def test_a_configured_id_with_a_trailing_newline_is_still_refused(self):
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "acme-big-7\n", "AUDITOR_MODEL_FALLBACK": ""}):
+            self.assertFalse(self.ok("acme-big-7 said"))
+
+    def test_plain_text_is_kept(self):
+        for text in ("Nothing changed today.", "zlib and minizip need no action; knowledge of the tracker is current.",
+                     "Package libfoo-compat is not a model name"):
+            self.assertTrue(self.ok(text), text)
+
+    def test_a_name_inside_a_package_word_is_refused_too(self):
+        for text in ("libopus0 needs no action", "libllama-compat needs no action"):
+            self.assertFalse(self.ok(text), text)
+
+    def test_the_conclusion_withholds_a_narrative_that_names_a_model(self):
+        st = {"tokens": 0, "nc_prev": None, "nc_narr": None, "nc_today": "2026-10-24"}
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "Judged by gpt-5.", "token_usage": 3}):
+            text = R._conclusion("/x/real.py", self.SECS, {}, st)
+        self.assertEqual(text, "conclusion withheld: narrative disagreed with the record.")
+        self.assertIsNone(st["nc_narr"])
+        self.assertTrue(st["nc_incomplete"])
+
+
+class ConclusionReplies(unittest.TestCase):
+    """A reply to the conclusion step that is malformed, or whose narrative is not a string, is charged to the token
+    budget like any billed reply, is counted as incomplete, and is not accepted."""
+    SECS = {n: [] for n in range(1, 8)}
+
+    def run_with(self, **ask):
+        st = {"tokens": 10, "nc_prev": None, "nc_narr": None, "nc_today": "2026-10-24"}
+        with mock.patch.object(R.cli, "ask_model", **ask):
+            text = R._conclusion("/x/real.py", self.SECS, {}, st)
+        return text, st
+
+    def test_a_narrative_that_is_not_a_string_is_charged_counted_and_not_accepted(self):
+        for bad in (5, 1.5, True, ["a narrative"], {"text": "x"}, None):
+            text, st = self.run_with(return_value={"narrative": bad, "token_usage": 40})
+            self.assertEqual(st["tokens"], 50, repr(bad))                         # the reply was billed
+            self.assertTrue(st["nc_incomplete"], repr(bad))
+            self.assertIsNone(st["nc_narr"], repr(bad))
+            self.assertTrue(text.startswith("conclusion withheld"), repr(bad))
+            self.assertNotIn(str(bad), text)
+
+    def test_a_malformed_reply_the_client_billed_is_charged_to_the_budget(self):
+        ex = RuntimeError("client error: bad reply"); ex.token_usage = 7000
+        text, st = self.run_with(side_effect=ex)
+        self.assertEqual(st["tokens"], 7010)
+        self.assertTrue(st["nc_incomplete"])
+        self.assertIsNone(st["nc_narr"])
+        self.assertEqual(text, "conclusion withheld: the narrative could not be produced this run.")
+        self.assertNotIn("bad reply", text)                           # the error text never reaches the report
+
+    def test_a_malformed_reply_without_a_bill_charges_nothing_and_still_withholds(self):
+        text, st = self.run_with(side_effect=ValueError("not json"))
+        self.assertEqual(st["tokens"], 10)
+        self.assertTrue(st["nc_incomplete"])
+        self.assertTrue(text.startswith("conclusion withheld"))
+
+    def test_a_reply_that_is_not_an_object_is_withheld_and_marked_incomplete(self):
+        for bad in ([], ["x"], "text", 7, None):
+            text, st = self.run_with(return_value=bad)
+            self.assertTrue(text.startswith("conclusion withheld"), repr(bad))
+            self.assertTrue(st["nc_incomplete"], repr(bad))
+            self.assertIsNone(st["nc_narr"], repr(bad))
+
+    def test_a_good_reply_is_charged_and_accepted(self):
+        text, st = self.run_with(return_value={"narrative": " Nothing changed. ", "token_usage": 40})
+        self.assertEqual((text, st["tokens"]), ("Nothing changed.", 50))
+        self.assertFalse(st.get("nc_incomplete"))
+
+
+class DeletedNames(unittest.TestCase):
+    def test_the_helpers_that_only_a_removed_feature_used_are_gone(self):
+        for name in ("_nofix_reason", "FORBIDDEN_NAMES", "MAX_ITERATIONS"):
+            self.assertFalse(hasattr(R, name), name)
+
+    def test_the_suppression_delivery_no_longer_takes_a_base_error(self):
+        self.assertNotIn("base_err", inspect.signature(R._deliver_suppression_pr).parameters)
+
+
 class SupplyCves(unittest.TestCase):
     """The suppression PR's plan entry names the CVEs its VEX package carries."""
     def test_names_from_the_package_and_none_without_one(self):
@@ -2418,10 +2910,19 @@ class DefectLogLoading(unittest.TestCase):
         self.assertEqual(list(R.log_index(log)), [("grype", "CVE-1", "pkg:x")])
 
     def test_malformed_and_non_object_logs_raise_log_error(self):
-        for text, want in (("{", "Expecting property name"), ("[]", "top level is list")):
+        for text in ("{", "[]", "{}", '{"defects": null}'):
+            path = self._log(text)
+            with self.assertRaises(R.DefectLogInvalid, msg=text) as cm:
+                R.load_defect_log(path)
+            self.assertIn(path, str(cm.exception))
+
+    def test_the_log_is_read_through_the_shared_reader(self):
+        path = self._log(json.dumps({"defects": []}))
+        with mock.patch.object(R.reviewed, "read", side_effect=R.ReviewedInputInvalid("shared reader refused")) as rd:
             with self.assertRaises(R.DefectLogInvalid) as cm:
-                R.load_defect_log(self._log(text))
-            self.assertIn(want, str(cm.exception))
+                R.load_defect_log(path)
+        self.assertIn("shared reader refused", str(cm.exception))
+        self.assertEqual(rd.call_count, 1)
 
     def test_main_reports_log_not_manifest(self):
         out = io.StringIO()

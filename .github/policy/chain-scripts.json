@@ -528,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
+      "sha256": "5ad6446bfd6a64d2a040fa267de90508e3dfc199963547c15a1adb24927e1a45",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -575,8 +575,8 @@
         "bin/admission-tag-signer.py"
       ],
       "signs": false,
-      "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing",
-      "sha256": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f"
+      "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing",
+      "sha256": "ef833b53a82cc984b023672b5ad518665f74e79d10b460299234d129bce8bf9a"
     },
     {
       "path": "bin/build-freeze.sh",

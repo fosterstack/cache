@@ -4,6 +4,7 @@ An ABSENT file stays the first run. The readers of the release gate and the cons
 
 No network; every file lives in a temp dir."""
 import contextlib, importlib.util, io, json, os, re, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
@@ -56,7 +57,7 @@ _SWEEP_FILE = ("a file of the records sweep (auditor-vendor-records.py): made an
 for _n in ("dependency-provenance.json", "licenses.json", "origins.json", "provenance.json", "sumdb.json"):
     EXEMPT[_n] = _SWEEP_FILE
 EXEMPT["openvex-schema.json"] = "the JSON schema the VEX documents are validated against: a checked-in constant, not an input of a run"
-EXEMPT["auditor-state.json"] = "the no-change-day state kept between runs: read by auditorlib/nochange.py with its own strict loader (regular file, size cap, strict JSON, schema fosterstack/auditor-state/v1 checked by _valid); anything unusable is None, i.e. the model is asked again, never a skipped decision"
+EXEMPT["auditor-state.json"] = "the no-change-day state kept between runs: read by auditorlib/nochange.py through its one strict reader (regular file, size cap, strict JSON, schema fosterstack/auditor-state/v1 checked by _valid); anything unusable is None, i.e. the model is asked again, never a skipped decision"
 
 # every json.load( / json.loads( in the agent programs outside auditorlib/reviewed.py: the file and how many, with the reason it is not a reviewed input read through the reader
 _SITES = {
@@ -71,16 +72,14 @@ _SITES = {
     "auditor-notify.py": (1, "the finding file written earlier in the same run"),
     "auditor-recheck.py": (1, "the disposition file written earlier in the same run"),
     "auditor-manifest.py": (3, "the scanned image's files and a registry reply, validated by the manifest builder"),
-    "auditor-run.py": (6, "the known-defect log's own parse (after reviewed.present), the gh issue list replies, "
-                          "and the open Dependabot PR list (gh reply and its test shim)"),
+    "auditor-run.py": (5, "the gh issue list replies and the open Dependabot PR list (gh reply and its test shim)"),
     "auditor-poam.py": (2, "the package and the finding files written earlier in the same run"),
     "auditor-votes.py": (1, "the run's manifest"),
-    "auditor-panel.py": (10, "registry and scanner-database replies, the answers of gh issue list (the standing issue lookup, by exact title), image blobs, the PR files (parsed by _checked_doc / _checked_state_text and then checked with the shared rules) and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
-    "auditor-release-authz.py": (1, "the owner-issues list the run fetched with gh"),
+    "auditor-panel.py": (7, "registry and scanner-database replies, the answers of gh issue list (the standing issue lookup, by exact title), image blobs, the PR files (parsed by _checked_doc / _checked_state_text and then checked with the shared rules) and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
     "auditor-report.py": (1, "run-state.json written earlier in the same run"),
     "auditor-suppress.py": (1, "the disposition file written earlier in the same run"),
     "auditor-vex-scope-check.py": (1, "a candidate VEX document: an empty one fails closed (no products, all_scoped false, nothing re-emitted)"),
-    "auditorlib/nochange.py": (2, "the no-change-day state, read twice: load (verdict reuse) and load_unsettled (the unsettled-run counts), each its own strict loader; an unusable file is no state, a right-schema file with untrustworthy counts stops the run (see EXEMPT auditor-state.json)"),
+    "auditorlib/nochange.py": (1, "the no-change-day state, read through one strict reader (load for verdict reuse, load_unsettled for the unsettled-run counts both take their state from it); an unusable file is no state, a right-schema file with untrustworthy counts stops the run (see EXEMPT auditor-state.json)"),
     "auditorlib/parsers.py": (2, "the scanners' own reports"),
     "auditorlib/vex.py": (1, "the checked-in VEX schema"),
     "auditorlib/cli.py": (1, "the model client's reply"),
@@ -119,6 +118,29 @@ class TheTable(unittest.TestCase):
                 fh.write("{not json")
             with self.assertRaises(reviewed.ReviewedInputInvalid):
                 rd(p, name)
+
+    def test_a_file_where_a_folder_should_be_is_a_stop_not_an_absence(self):      # row 19
+        blocker = os.path.join(self.d, "blocker")
+        with open(blocker, "w") as fh:
+            fh.write("x")
+        under = os.path.join(blocker, "panel-state.json")             # lstat raises NotADirectoryError
+        with self.assertRaises(reviewed.ReviewedInputInvalid):
+            reviewed.present(under)
+        with self.assertRaises(reviewed.ReviewedInputInvalid):
+            rd(under, "panel-state.json")
+        self.assertFalse(reviewed.present(os.path.join(self.d, "absent", "panel-state.json")))
+        self.assertTrue(reviewed.present(blocker))
+        dangling = os.path.join(self.d, "dangling.json")
+        os.symlink(os.path.join(self.d, "nowhere"), dangling)
+        self.assertTrue(reviewed.present(dangling))                   # present, not absent
+
+    def test_parse_checks_a_document_in_hand_against_the_spec_it_is_given(self):      # row 26
+        spec = PANEL.SPECS["panel-state.json"]
+        good = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        self.assertEqual(reviewed.parse(json.dumps(good), "x", spec=spec), good)
+        for bad in ("[]", "{not json", json.dumps({"version": 1})):
+            with self.assertRaises(reviewed.ReviewedInputInvalid, msg=bad):
+                reviewed.parse(bad, "x", spec=spec)
 
     def test_the_table_names_exactly_the_reviewed_files_and_their_required_keys(self):
         for name, keys, *_ in FILES:
@@ -165,19 +187,6 @@ class TheReadSites(unittest.TestCase):
                 found[fn] = n
         self.assertEqual(found, {k: v[0] for k, v in _SITES.items()}, "a json.load outside auditorlib/reviewed.py: read the file through reviewed.read, or declare it in _SITES with the reason it is not a reviewed input")
 
-    def test_every_caller_of_the_panels_plain_json_helper_is_declared_with_its_reason(self):
-        # _load_json is the panel's PLAIN reader (a missing file is its default): a call that reads a reviewed or persistent input must go through reviewed.read instead
-        with open(os.path.join(BIN, "auditor-panel.py")) as fh:
-            src = fh.read()
-        declared = {
-            "path, default=None": "the definition",
-            "path": "rescan_binding: the rescan binding file the workflow step wrote for this run; checked field by field right after (run, heads, conclusion), not a reviewed input",
-            'os.path.join(a.out, "state.json")': "cmd_deliver: the judgment's own output of this run (written by cmd_judge from a validated state)",
-            'os.path.join(a.out, "day.json")': "cmd_deliver: the judgment's own output of this run",
-        }
-        sites = re.findall(r"_load_json\(((?:[^()]|\([^()]*\))*)\)", src)
-        self.assertEqual(sorted(s.strip() for s in sites), sorted(declared), "a new _load_json call: read persistent or reviewed inputs through reviewed.read, or declare the site here with its reason")
-
     def test_a_vex_is_recognised_by_its_suffix_only(self):
         self.assertTrue(reviewed.spec_for("a.openvex.json"))
         self.assertEqual(reviewed.spec_for("openvex-schema.json"), ())
@@ -204,23 +213,35 @@ class TheReaders(unittest.TestCase):
         self.assertEqual(R._read_reopened(self.w("ok/reopened-expired.json", {"reopened": []})), [])
         self.assertEqual(R._read_reopened(os.path.join(self.d, "none.json")), [])
 
-    def test_the_release_gate_holds_on_an_empty_or_keyless_vex(self):
-        for bad in ({}, {"statements": None}, {"other": 1}):
-            vd = os.path.join(self.d, "vex"); os.makedirs(vd, exist_ok=True)
-            for f in os.listdir(vd):
-                os.remove(os.path.join(vd, f))
-            self.w("vex/CVE-2099-1.openvex.json", bad)
-            out = os.path.join(self.d, "authz.json")
-            r = self.run_py("auditor-release-authz.py", "--vex-dir", vd, "--out", out)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            got = json.load(open(out))
-            self.assertEqual(got["decision"], "hold", bad)
-            self.assertIn("malformed candidate VEX", got["reasons"][0])
-        for f in os.listdir(vd):
-            os.remove(os.path.join(vd, f))
-        self.w("vex/CVE-2099-1.openvex.json", {"statements": []})
-        r = self.run_py("auditor-release-authz.py", "--vex-dir", vd, "--out", out)
-        self.assertEqual(json.load(open(out)), {"decision": "promote", "reasons": []})
+    def test_deeply_nested_json_is_a_named_refusal_in_both_readers_never_a_recursion_error(self):
+        """reviewed.parse (text) and reviewed.read (a file) both turn 20 KB of "[" into a ReviewedInputInvalid that
+        names the input and says it cannot be read as JSON; json really raises RecursionError for it, and it does not
+        escape."""
+        real = json.loads, json.load
+        raised = []
+        def watch(fn):
+            def inner(*a, **k):
+                try:
+                    return fn(*a, **k)
+                except RecursionError:
+                    raised.append(1); raise
+            return inner
+        for raw in ("[" * 20000, '{"statements": ' + "[" * 20000, '{"a":' * 20000):
+            path = os.path.join(self.d, "deep.json")
+            with open(path, "w") as fh:
+                fh.write(raw)
+            for as_bytes in (False, True):
+                del raised[:]
+                with mock.patch.object(json, "loads", watch(real[0])):
+                    with self.assertRaisesRegex(reviewed.ReviewedInputInvalid, r"^the input .*cannot be read as JSON"):
+                        reviewed.parse(raw.encode() if as_bytes else raw, "the input")
+                self.assertEqual(len(raised), 1, "json did not reach RecursionError in parse")
+            del raised[:]
+            with mock.patch.object(json, "load", watch(real[1])):
+                with self.assertRaisesRegex(reviewed.ReviewedInputInvalid,
+                                            r"deep\.json is present but cannot be read as JSON"):
+                    reviewed.read(path)
+            self.assertEqual(len(raised), 1, "json did not reach RecursionError in read")
 
     def test_the_consistency_check_exits_non_zero_on_an_empty_or_keyless_vex(self):
         man = self.w("manifest.json", {"panel": {}})
@@ -299,47 +320,6 @@ class TheClosedGuards(unittest.TestCase):
         self.assertEqual(R.load_defect_log(os.path.join(self.d, "none.json")), {})
         self.assertIsNone(cl.fp_verified(["CVE-1"], os.path.join(self.d, "none.json"), []))
         self.assertIsNone(cl.fp_verified(["CVE-1"], None, []))
-
-    def authz(self, *args):
-        out = os.path.join(self.d, "authz.json")
-        if os.path.exists(out):
-            os.remove(out)
-        r = self.run_py("auditor-release-authz.py", "--out", out, *args)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return json.load(open(out))
-
-    def test_the_release_gate_holds_when_it_cannot_enumerate_or_read_what_it_judges(self):
-        vd = os.path.join(self.d, "vex"); os.makedirs(vd)
-        self.w("vex/CVE-2099-1.openvex.json", {"statements": [{"status": "affected", "vulnerability": {"name": "CVE-2099-1"}}]})
-        if os.geteuid() != 0:
-            self.unreadable(vd)
-            got = self.authz("--vex-dir", vd)
-            self.assertEqual(got["decision"], "hold", got)
-            self.assertIn("malformed candidate VEX", got["reasons"][0])
-            os.chmod(vd, 0o755)
-        afile = self.w("afile", {})
-        got = self.authz("--vex-dir", afile)                                    # a path that exists and is not a directory
-        self.assertEqual(got["decision"], "hold", got)
-        os.symlink(os.path.join(self.d, "nowhere"), os.path.join(self.d, "dangling"))
-        self.assertEqual(self.authz("--vex-dir", os.path.join(self.d, "dangling"))["decision"], "hold")
-        self.assertEqual(self.authz("--vex-dir", os.path.join(self.d, "absent-dir")), {"decision": "promote", "reasons": []})      # only a truly absent directory means no VEX
-        self.assertEqual(self.authz(), {"decision": "promote", "reasons": []})
-
-    def test_the_release_gate_judges_only_the_vex_files_of_its_directory(self):
-        vd = os.path.join(self.d, "vexonly"); os.makedirs(vd)
-        self.w("vexonly/still-present.json", {})                      # a disposition the run writes beside the VEX files, and a note: not VEX documents
-        self.w("vexonly/note.json", {})
-        self.assertEqual(self.authz("--vex-dir", vd), {"decision": "promote", "reasons": []})
-        self.w("vexonly/a.openvex.json", {})                         # a VEX file without its list is still a hold
-        self.assertEqual(self.authz("--vex-dir", vd)["decision"], "hold")
-
-    def test_the_release_gate_reads_its_candidate_inventory_under_the_inventory_rules(self):
-        for bad in ({"accepted_items": {}}, {"accepted_items": ""}, {"accepted_items": None}, {}, {"accepted_items": [3]}):
-            got = self.authz("--candidate", self.w("cand.json", bad))
-            self.assertEqual(got["decision"], "hold", bad)
-            self.assertIn("malformed candidate inventory", got["reasons"][0])
-        got = self.authz("--candidate", self.w("cand2.json", {"accepted_items": []}))
-        self.assertEqual(got, {"decision": "promote", "reasons": []})
 
     def test_the_defect_log_tool_stops_on_an_empty_or_keyless_log(self):
         for sub in (["probe", "--hit", "s", "f", "p"], ["run", "--findings", self.w("fnd.json", {"findings": []}), "--adjudicator", "none"], ["reconcile", "--finding", "s", "f", "p", "--adjudicator", "none"]):

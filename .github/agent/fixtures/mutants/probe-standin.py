@@ -1,9 +1,6 @@
-# Probe mutants distilled from the implementation review
-# (audits/2026-09-22/cve-auditor-implementation-1b8916c/evidence/probes/*).
-# Each mode is a stand-in that exhibits ONE of the ten findings' wrong behaviours;
-# the mutation harness asserts the now-strengthened suite catches it. Every
-# invocation writes a marker so a mode that crashes before its bug is not counted.
-# Not auditor code — a checked-in TEST INPUT (adversary).
+# Probe mutants for .github/agent/tests/auditor-matrix-mutants.sh. Each mode is a stand-in that exhibits ONE wrong
+# behaviour; the mutation harness asserts the suite catches it. Every invocation writes a marker so a mode that
+# crashes before its bug is not counted. Not auditor code: a checked-in TEST INPUT (adversary).
 import json, os, sys
 from pathlib import Path
 name = Path(sys.argv[0]).stem
@@ -29,7 +26,7 @@ def mark(tag):
 
 mark("reached")
 
-# F1/F4 — the model authors a not_affected with NO evidence object.
+# The model authors a not_affected with NO evidence object.
 if mode == "model-not-affected-no-evidence" and name == "auditor-classify":
     fid = arg("--finding")
     if fid:
@@ -39,7 +36,7 @@ if mode == "model-not-affected-no-evidence" and name == "auditor-classify":
         mark("wrote-unverified-vex")
     sys.exit(0)
 
-# F6 — rechecks report removal booleans but delete nothing.
+# Rechecks report removal booleans but delete nothing.
 if mode == "recheck-flags-only":
     if name == "auditor-poam" and "--recheck" in args:
         put("recheck.json", {"ignore_removed": True, "returned_to_section": 3, "policy_reapplied": True})
@@ -48,7 +45,7 @@ if mode == "recheck-flags-only":
         put("recheck.json", {"vex_removed": True, "bump_pr_opened": True, "report_section": 1})
         mark("flag-without-delete"); sys.exit(0)
 
-# F5 — reconciliation adds the key to a row by finding-id alone, ignoring same_defect/purl.
+# Reconciliation adds the key to a row by finding-id alone, ignoring same_defect/purl.
 if mode == "reconcile-wrong-row" and name == "auditor-defectlog" and args and args[0] == "reconcile":
     logp = arg("--log"); a = args
     sc, fid, purl = a[a.index("--finding") + 1:a.index("--finding") + 4]
@@ -57,14 +54,7 @@ if mode == "reconcile-wrong-row" and name == "auditor-defectlog" and args and ar
     json.dump(log, open(logp, "w"))
     put("reconcile.json", {"added": True}); mark("wrong-row-and-purl"); sys.exit(0)
 
-# F7 — release authorization accepts a substring, not the parsed acceptance form.
-if mode == "authz-substring" and name == "auditor-release-authz":
-    issues = json.load(open(arg("--issues")))
-    txt = json.dumps(issues)
-    decision = "promote" if "ACCEPT" in txt else "hold"   # ignores author, form, date
-    put("authz.json", {"decision": decision}); mark("substring-accept"); sys.exit(0)
-
-# F8 — threshold omits known-exploited.
+# Threshold omits known-exploited.
 if mode == "known-exploited-omitted" and name == "auditor-poam" and "--recheck" not in args:
     f = json.load(open(arg("--finding")))
     put("decision.json", {"ci_stays_green": True, "report_section": 2,
@@ -74,7 +64,7 @@ if mode == "known-exploited-omitted" and name == "auditor-poam" and "--recheck" 
     put("package.json", {"cve": f["cve"], "ignore_expiry_days": 30})
     mark("known-exploited-omitted"); sys.exit(0)
 
-# F3 — the entrypoint prints a banner and does no audit.
+# The entrypoint prints a banner and does no audit.
 if mode == "entrypoint-noop" and name == "auditor-run":
     print("daily CVE auditor: (no-op banner)"); mark("no-op-run"); sys.exit(0)
 

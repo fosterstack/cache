@@ -482,6 +482,31 @@ class Helpers(Harness):
             self.assertEqual(M._archives(os.path.join(self.tmp, "rescan"), "", self.oci, self.tar),
                              ("production", None))
 
+    def test_two_production_layouts_are_an_error(self):
+        """more than one production layout directory in the artifacts is ambiguous: neither is chosen"""
+        other = os.path.join(self.tmp, "rescan", "c", "production")
+        os.makedirs(os.path.join(other, "blobs", "sha256")); _wr(os.path.join(other, "oci-layout"), "{}")
+        self.rules([])
+        with mock.patch.dict(os.environ, self.env), contextlib.redirect_stdout(io.StringIO()):
+            got = M._archives(os.path.join(self.tmp, "rescan"), "", self.oci, self.tar)
+        self.assertIsNone(got[0]); self.assertTrue(got[1])
+        self.assertEqual([a for a in self.argv() if a and a[0] == "skopeo"], [])      # nothing was read from either layout
+
+    def test_a_symlinked_blob_is_refused_before_it_is_opened(self):
+        """the link points at a FIFO: opening it would block forever, so a refusal that comes back proves the link was refused without being opened"""
+        import signal
+        blobs = os.path.join(self.prod_oci, "blobs", "sha256")
+        fifo = os.path.join(self.tmp, "fifo"); os.mkfifo(fifo)
+        os.symlink(fifo, os.path.join(blobs, "a" * 64))
+        def _hung(*_): raise AssertionError("the symlinked blob was opened")
+        old = signal.signal(signal.SIGALRM, _hung); signal.alarm(5)
+        try:
+            with mock.patch.dict(os.environ, self.env), contextlib.redirect_stdout(io.StringIO()):
+                got = M._archives(os.path.join(self.tmp, "rescan"), "", self.oci, self.tar)
+        finally:
+            signal.alarm(0); signal.signal(signal.SIGALRM, old)
+        self.assertIsNone(got[0]); self.assertTrue(got[1])
+
     def test_norm_ref(self):
         self.assertEqual(M._norm_ref("debian:12.0@sha256:X"), "debian@sha256:X")
         self.assertEqual(M._norm_ref("ghcr.io/a/b@sha256:Y"), "ghcr.io/a/b@sha256:Y")

@@ -5,6 +5,7 @@ per-call key, and the validator of yesterday's state file, which must never let 
 forged or different-hash file change a run (anything unusable = today's behaviour, model calls).
 """
 import json, os, sys, tempfile, unittest
+from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
@@ -93,6 +94,44 @@ class Load(unittest.TestCase):
         self.assertIsNone(N.load(self.write(None, raw='{"a": NaN}')))
         self.assertIsNone(N.load(self.write(None, raw=b"\xff\xfe".decode("latin-1"))))
         self.assertIsNone(N.load(self.write(None, raw=json.dumps(good()) + " " * N.MAX_BYTES)))     # over the size bound
+
+    def test_deeply_nested_json_is_refused_by_both_readers_never_a_recursion_error(self):
+        """The state file is read by two functions (load and load_unsettled); a file of 20 KB of "[" (or of nested
+        objects) is not a usable state for either: each answers as it does for any unreadable file, and neither lets the
+        interpreter's RecursionError out."""
+        for label, raw in (("arrays", "[" * 20000), ("closed arrays", "[" * 20000 + "]" * 20000),
+                           ("objects", '{"a":' * 20000),
+                           ("a state key holding arrays", '{"schema": "x", "verdicts": ' + "[" * 20000)):
+            path = self.write(None, raw=raw)
+            raised = []
+            real = json.loads
+            def watch(*a, **k):
+                try:
+                    return real(*a, **k)
+                except RecursionError:
+                    raised.append(1); raise
+            with mock.patch.object(N.json, "loads", watch):
+                loaded = N.load(path)
+                unsettled = N.load_unsettled(path, "2026-10-24")
+            self.assertEqual(len(raised), 2, "json did not reach RecursionError in both readers: %s" % label)
+            self.assertIsNone(loaded, label)
+            self.assertEqual(unsettled, ("missing", {}), label)
+
+    def test_the_narrative_date_must_be_on_the_calendar(self):      # row 25
+        for bad in ("2026-02-30", "2026-13-01", "2026-00-10"):
+            d = good(); d["narrative"]["date"] = bad
+            self.assertIsNone(N.load(self.write(d)), bad)
+        d = good(); d["narrative"]["date"] = "2024-02-29"
+        self.assertEqual(N.load(self.write(d)), d)
+
+    def test_a_json_constant_anywhere_in_the_state_makes_it_unusable_through_both_readers(self):      # row 25: one reader, refuse_constant
+        for const in ("NaN", "Infinity", "-Infinity"):
+            raw = json.dumps(good()).replace('"Nothing changed."', const)
+            self.assertIsNone(N.load(self.write(None, raw=raw)), const)
+            self.assertEqual(N.load_unsettled(self.write(None, raw=raw), "2026-10-23"), ("missing", {}), const)
+            raw = json.dumps(good()).replace('"unsettled": {}', '"unsettled": {"CVE-1": {"runs": %s, "last": "2026-10-22"}}' % const)
+            self.assertIsNone(N.load(self.write(None, raw=raw)), const)
+            self.assertEqual(N.load_unsettled(self.write(None, raw=raw), "2026-10-23"), ("missing", {}), const)
 
     def test_every_malformed_field_is_refused(self):
         def bad(mut):

@@ -2,8 +2,9 @@
 """SYNTHETIC TEST DOUBLE — not the auditor.
 
 A canned-answer adjudicator that satisfies the same interface the real model
-client will: read one adjudication request as JSON on stdin, print one JSON
-answer on stdout. It holds NO judgment logic — it is a lookup table keyed by
+client does: read one adjudication request as JSON on stdin, print one JSON
+answer on stdout, or with --serve answer one request per input line until stdin
+closes. Every answer carries token_usage 1000. It holds NO judgment logic — it is a lookup table keyed by
 (finding_id, attempt) — so tests that drive it are deterministic and never call
 a real model.
 
@@ -13,7 +14,7 @@ correct classify can actually reach these answers. The refusal case uses a real,
 famous "cyber" CVE (CVE-2021-44228) that is deliberately NOT in the scan manifest,
 so its refuse-then-fallback answers never collide with a classify answer.
 
-Independent model-call ledger: on every invocation this appends one line
+Independent model-call ledger: on every request this appends one line
     <finding_id>|<attempt>|<model_role>
 to the file named by $AUDITOR_MODEL_LEDGER (if set). A test proves a phase made
 no model call by asserting that ledger is empty, and proves the fallback order /
@@ -53,7 +54,7 @@ CANNED = {
                     "keys": [{"scanner": "grype", "finding_id": "CVE-2099-PROPOSE",
                               "purl": "pkg:deb/debian/libpropose@1.0"}],
                     "note": "generalises from a recorded no-DSA pattern",
-                    "evidence": "debian security tracker: no-DSA (minor)"}},
+                    "evidence": "README.md"}},
     # a MALFORMED proposal (unsupported kind, no evidence) — must be dropped, never forwarded.
     ("CVE-2099-BADPROP", "primary"): {
         "refused": False, "category": "false_positive", "justification": "vulnerable_code_not_present",

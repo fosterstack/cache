@@ -42,6 +42,50 @@ class Govulncheck(unittest.TestCase):
         self.assertRaises(P.ParseError, P.parse_govulncheck, w('{"finding": {"trace": []}}'))
 
 
+class RefuseConstant(unittest.TestCase):
+    def test_nan_and_the_infinities_are_refused_with_a_parse_error_naming_the_document(self):
+        for c in ("NaN", "Infinity", "-Infinity"):
+            with self.assertRaises(P.ParseError) as cm:
+                P.refuse_constant("state", c)
+            self.assertEqual(str(cm.exception), "state: %s is not valid JSON" % c)
+
+    def test_the_document_name_comes_from_the_caller(self):
+        for document in ("panel verdict", "profiles"):
+            with self.assertRaises(P.ParseError) as cm:
+                P.refuse_constant(document, "NaN")
+            self.assertEqual(str(cm.exception), "%s: NaN is not valid JSON" % document)
+
+    def test_it_works_as_the_json_hook(self):
+        hook = lambda name: P.refuse_constant("doc", name)
+        with self.assertRaises(P.ParseError):
+            json.loads('{"a": NaN}', parse_constant=hook)
+        self.assertEqual(json.loads('{"a": 1.5}', parse_constant=hook), {"a": 1.5})
+
+    def test_the_old_private_name_is_gone(self):
+        self.assertFalse(hasattr(P, "_refuse_constant"))
+
+
+class PublicNames(unittest.TestCase):
+    def test_the_helpers_other_modules_call_are_public(self):
+        for name in ("finding", "panel_module", "no_dup_pairs"):
+            self.assertTrue(callable(getattr(P, name, None)), name)
+            self.assertFalse(hasattr(P, "_" + name), "_" + name)
+
+    def test_the_panel_module_has_the_issue_renderer_and_the_purl_splitter(self):
+        pm = P.panel_module()
+        self.assertTrue(callable(pm.render_issue))
+        self.assertTrue(callable(pm.purl_name_version))
+        self.assertFalse(hasattr(pm, "_purl_name_version"))
+
+    def test_no_dup_pairs_keeps_distinct_keys_in_a_dict(self):
+        doc = json.loads('{"a": 1, "b": {"c": 2}}', object_pairs_hook=P.no_dup_pairs)
+        self.assertEqual(doc, {"a": 1, "b": {"c": 2}})
+
+    def test_no_dup_pairs_refuses_a_repeated_key_at_any_depth(self):
+        for text in ('{"a": 1, "a": 2}', '{"x": {"a": 1, "a": 2}}', '[{"a": 1, "a": 1}]'):
+            self.assertRaises(ValueError, json.loads, text, object_pairs_hook=P.no_dup_pairs)
+
+
 class Kev(unittest.TestCase):
     def test_real(self):
         self.assertIn("CVE-2023-4911", P.parse_kev(F + "/kev/kev.json"))
