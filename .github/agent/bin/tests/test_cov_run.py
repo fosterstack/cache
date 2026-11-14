@@ -2366,18 +2366,21 @@ class Run(Base):
 
     def test_workspace_commit_oserror_names_what_happened_and_never_none(self):
         os.environ["GITHUB_WORKSPACE"] = self.d("ws")
-        for ex, must, never in (
-                (PermissionError(13, "Permission denied", "/ws/git"), "Permission denied", "missing"),
-                (OSError(5, "Input/output error"), "git", "None")):
-            fr = FakeRun({("git", "rev-parse", "HEAD"): ex})
-            with mock.patch.object(R.subprocess, "run", fr):
-                with self.assertRaises(R.ReviewedInputInvalid) as cm:
-                    self.go(self.grp(), dry=False)
-            msg = str(cm.exception)
-            self.assertIn("the workspace commit cannot be read", msg)
-            self.assertIn(must, msg, repr(ex))
-            self.assertNotIn(never, msg, repr(ex))
-            self.assertNotIn("None", msg, repr(ex))
+        for ex, must, missing in (
+                (PermissionError(13, "Permission denied", "/ws/git"), "Permission denied", False),
+                (OSError(5, "Input/output error"), "git", False),
+                (OSError("boom"), "OSError", False),
+                (FileNotFoundError("x"), "FileNotFoundError", True)):
+            with self.subTest(repr(ex)):
+                fr = FakeRun({("git", "rev-parse", "HEAD"): ex})
+                with mock.patch.object(R.subprocess, "run", fr):
+                    with self.assertRaises(R.ReviewedInputInvalid) as cm:
+                        self.go(self.grp(), dry=False)
+                msg = str(cm.exception)
+                self.assertIn("the workspace commit cannot be read", msg)
+                self.assertIn(must, msg, repr(ex))
+                self.assertEqual("is missing" in msg, missing, repr(ex))
+                self.assertNotIn("None", msg, repr(ex))
 
     def test_go_bump_unresolvable_stays_section3(self):
         c = "CVE-2099-67"
@@ -2449,17 +2452,29 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         with mock.patch.object(R.subprocess, "run", FakeRun({("gh",): gone})):
             self.assertEqual(R._find_pr(self.d, "audit/x"), ("", "gh is missing: No such file or directory"))
 
+    def test_find_pr_oserror_without_strerror_names_the_class_never_none(self):
+        for ex, cls in ((OSError("boom"), "OSError"), (FileNotFoundError("x"), "FileNotFoundError")):
+            with self.subTest(repr(ex)):
+                with mock.patch.object(R.subprocess, "run", FakeRun({("gh",): ex})):
+                    pr, err = R._find_pr(self.d, "audit/x")
+                self.assertEqual(pr, "")
+                self.assertIn(cls, err, repr(ex))
+                self.assertNotIn("None", err, repr(ex))
+
     def test_fetch_base_oserror_names_what_happened_and_never_none(self):
-        for ex, must, never in (
-                (PermissionError(13, "Permission denied", "/ws/git"), "Permission denied", "missing"),
-                (OSError(5, "Input/output error"), "git", "None"),
-                (FileNotFoundError(2, "No such file or directory", "git"), "missing", "None")):
-            with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): ex})):
-                sha, err = R._fetch_base(self.d)
-            self.assertIsNone(sha)
-            self.assertIn(must, err, repr(ex))
-            self.assertNotIn(never, err, repr(ex))
-            self.assertNotIn("None", err, repr(ex))
+        for ex, must, missing in (
+                (PermissionError(13, "Permission denied", "/ws/git"), "Permission denied", False),
+                (OSError(5, "Input/output error"), "git", False),
+                (FileNotFoundError(2, "No such file or directory", "git"), "is missing", True),
+                (OSError("boom"), "OSError", False),
+                (FileNotFoundError("x"), "FileNotFoundError", True)):
+            with self.subTest(repr(ex)):
+                with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): ex})):
+                    sha, err = R._fetch_base(self.d)
+                self.assertIsNone(sha)
+                self.assertIn(must, err, repr(ex))
+                self.assertEqual("is missing" in err, missing, repr(ex))
+                self.assertNotIn("None", err, repr(ex))
 
     def test_base_docs_reads_both_reviewed_files_from_the_sha(self):
         fr = FakeRun({("git", "show", self.SHA40 + ":" + self.VP): (0, json.dumps({"statements": []}).encode(), b"")})
