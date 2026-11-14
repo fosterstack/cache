@@ -24,11 +24,14 @@ have_ver="$("$grype" version 2>/dev/null | sed -n 's/^Version:[[:space:]]*//p' |
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 # grype-scan.sh reads only the published .vex/fosterstack-cache.openvex.json, with no override (a security boundary): it runs from a temp tree whose .vex file is the fixture.
 mkdir -p "$w/tree/bin" "$w/tree/.vex"; cp "$here/grype-scan.sh" "$w/tree/bin/"; cp "$vex" "$w/tree/.vex/fosterstack-cache.openvex.json"; gs="$w/tree/bin/grype-scan.sh"
-# the scanner is not set by the environment: gsc SCANNER prints the path of a copy of grype-scan.sh
-# whose TEST-SUBST line runs SCANNER
+# the scanner is not set by the environment: gsc SCANNER prints the path of a wrapper that runs the unmodified grype-scan.sh
+# with a directory first on PATH whose executable named grype runs SCANNER
 gsc() {
-  local f="$w/tree/bin/scan-${1##*/}.sh"
-  sed "s|^scanner=grype   # TEST-SUBST\$|scanner=\"$1\"   # TEST-SUBST|" "$gs" > "$f"
+  local n="${1##*/}" d f
+  d="$w/path-$n"; f="$w/tree/bin/scan-$n.sh"
+  mkdir -p "$d"
+  printf '#!/bin/bash\nexec %q "$@"\n' "$1" > "$d/grype"; chmod +x "$d/grype"
+  printf '#!/bin/bash\nPATH=%q:$PATH exec bash %q "$@"\n' "$d" "$gs" > "$f"
   echo "$f"
 }
 pass=0; fail=0
