@@ -679,8 +679,21 @@ BUILD_DATA = {"digests.json": b'{"apk":"sha256:' + b"c" * 64 + b'"}', "items.jso
 BUILD_ART = {"dist/fscache_0.3.0_linux_amd64.tar.gz": b"archive-bytes", "out/production/index.json": b"{}"}   # Sign downloads Build's images to artifacts/witness-build/out and dist to artifacts/witness-build/dist (stage-sign.yml)
 
 
-CHECK_PRODS = {"scanners": {"govulncheck.json": b'{"vulns":[]}', "grype/production.json": b"grype-out"}, "acceptance": {"acceptance.json": b'{"ok":true}'},
-               "runtime": {"runtime/summary.txt": b"strace summary"}, "arm64": {"arm64.json": b'{"arch":"arm64"}'}}
+CHECK_RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
+CHECK_STEPS = ("scanners", "acceptance", "runtime")
+CHECK_PRODS = {"scanners": {"grype/production.json": b"grype-out"}, "acceptance": {"acceptance.json": b'{"ok":true}'}, "runtime": {"runtime/summary.txt": b"strace summary"}}
+
+
+def check_prods(runner, step):
+    """What one runner's record of a step names: govulncheck runs on the amd64 runner only."""
+    prods = dict(CHECK_PRODS[step])
+    if step == "scanners" and runner == "ubuntu-24.04":
+        prods["govulncheck.json"] = b'{"vulns":[]}'
+    return prods
+
+
+def check_dir(runner, step):
+    return "rec-check/%s/witness-%s" % (runner, step)
 
 
 def put(root, rel, data):
@@ -708,12 +721,13 @@ def sr_tree(name, stage="build"):
         put(root, "artifacts/witness-apk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x"); put(root, "artifacts/witness-apk-ubuntu-24.04/out/x86_64/APKINDEX.tar.gz", b"idx")
     elif stage == "check":
         mat = [("witness-build/digests.json", BUILD_DATA["digests.json"])]
-        for folder, step, prods, art in (("witness-scanners", "scanners", CHECK_PRODS["scanners"], "check-results"), ("witness-acceptance", "acceptance", CHECK_PRODS["acceptance"], "check-results"),
-                                         ("witness-runtime", "runtime", CHECK_PRODS["runtime"], "check-results"), ("witness-arm64", "arm64", CHECK_PRODS["arm64"], "check-results-arm64")):
-            os.makedirs(root + "/" + folder)
-            pays[folder] = coll_record(root + "/" + folder + "/" + step + "-collection.local.json", step, {"check-results/" + n: d for n, d in prods.items()}, mat)
-            for n, d in prods.items():
-                put(root, "artifacts/" + art + "/" + n, d)
+        for runner in CHECK_RUNNERS:
+            for step in CHECK_STEPS:
+                os.makedirs(root + "/" + check_dir(runner, step))
+                prods = check_prods(runner, step)
+                pays[runner + "/witness-" + step] = coll_record(root + "/" + check_dir(runner, step) + "/" + step + "-collection.local.json", step, {"check-results/" + n: d for n, d in prods.items()}, mat)
+                for n, d in prods.items():
+                    put(root, "artifacts/check-results-%s/%s" % (runner, n), d)
     else:
         mat = [("witness-build/digests.json", BUILD_DATA["digests.json"])]
         os.makedirs(root + "/witness-rebuild"); os.makedirs(root + "/witness-rapk-ubuntu-24.04")
@@ -737,18 +751,21 @@ def sr_expect(tree, name="expected-records.json"):
     return name
 
 
-def sr_expect_check(root, groups=(("check-records.json", ("witness-scanners", "witness-acceptance", "witness-runtime")), ("check-records-arm64.json", ("witness-arm64",)))):
-    """Check's two lists as the producing jobs print them: {folder: {file: sha256:hex}} for the folders of each job (the checkout of the tree as it is now). Returns the file names."""
+def sr_expect_check(root, runners=CHECK_RUNNERS):
+    """Check's lists as each runner's job prints them, made by the REAL bin/check-records-digests.sh from the tree as it is now: rec-digests/<runner>/check-records.json.
+    Returns the file names."""
     names = []
-    for fname, folders in groups:
-        lst = {f: {n: "sha256:" + hashlib.sha256(open(root + "/" + f + "/" + n, "rb").read()).hexdigest() for n in os.listdir(root + "/" + f)} for f in folders if os.path.isdir(root + "/" + f)}
-        open(root + "/" + fname, "w").write(json.dumps(lst, sort_keys=True))
-        names.append(fname)
+    for runner in runners:
+        dirs = ["%s/rec-check/%s/%s" % (root, runner, f) for f in sorted(os.listdir("%s/rec-check/%s" % (root, runner)))]
+        out = subprocess.run(["bash", REPO_ROOT + "/bin/check-records-digests.sh", runner] + dirs, capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        put(root, "rec-digests/%s/check-records.json" % runner, out.stdout.encode())
+        names.append("rec-digests/%s/check-records.json" % runner)
     return names
 
 
 def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
-    dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else ["witness-scanners", "witness-acceptance", "witness-runtime", "witness-arm64"] if stage == "check" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
+    dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else [check_dir(r, st) for r in CHECK_RUNNERS for st in CHECK_STEPS] if stage == "check" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
     a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--digests", "digests.json", "--out", out]
     if stage == "rebuild" and expect:
         a += ["--expect-digests", expect if isinstance(expect, str) else sr_expect(root)]
@@ -999,59 +1016,92 @@ rrd_case("rebuild-records-digests --check with a third argument (exit 2)", 2, ("
 rrd_case("rebuild-records-digests --check does not read the environment (the old variables alone do not pass)", 2, ("usage",), rrd(["--check"], t, {"RAPK_RECORDS": outs["ubuntu-24.04"], "RAPK_ARM_RECORDS": outs["ubuntu-24.04-arm"]}))
 rrd_case("rebuild-records-digests --rapk takes a plain runner name (exit 2)", 2, ("usage",), rrd(["--rapk", "../x", "rec-rapk/ubuntu-24.04"], t, {}))
 
-# Check's records (the Check-stage no-token PR): the four folders, the check-results products matched to the received files, two expect-digests lists
+# Check's records: three per runner (ubuntu-24.04, ubuntu-24.04-arm), named <runner>/<folder>, each runner's results in check-results-<runner>, one expect-digests list per runner
+def ck_rec(d, runner, step, prods=None, material=None, **kw):
+    """Rewrite one Check record of the tree; its products default to the ones the runner makes, its material to Build's attested digests.json."""
+    prods = check_prods(runner, step) if prods is None else prods
+    mat = [("witness-build/digests.json", BUILD_DATA["digests.json"])] if material is None else material
+    return coll_record("%s/%s/%s-collection.local.json" % (d, check_dir(runner, step), step), step, {"check-results/" + n: v for n, v in prods.items()}, mat, **kw)
+
+
+def ck_lists(d, drop=(), merge=False):
+    """Check's two lists (the real script), then changed: the folders in drop removed, and with merge the arm runner's folders added to the amd64 runner's list."""
+    names = sr_expect_check(d)
+    lists = [json.load(open(d + "/" + n)) for n in names]
+    if merge:
+        lists[0].update(lists[1])
+    for n, lst in zip(names, lists):
+        open(d + "/" + n, "w").write(json.dumps({k: v for k, v in lst.items() if k not in drop}))
+    return names
+
+
+AMD, ARM = CHECK_RUNNERS
 d, pays = sr_tree("ck1", "check")
-rc, out, err = sr("sign-records check: a valid set (four records, their results, two lists) is accepted", d, "check", 0)
+rc, out, err = sr("sign-records check: a valid set (two runners, three records each, their results, two lists) is accepted", d, "check", 0)
 lines = [l.split("\t") for l in out.strip().split("\n") if l]
-check("sign-records check: one `payload<TAB>final` line per record, final names signed/<folder>/<step>-collection.json",
-      sorted(l[1] for l in lines) == ["signed/witness-acceptance/acceptance-collection.json", "signed/witness-arm64/arm64-collection.json", "signed/witness-runtime/runtime-collection.json", "signed/witness-scanners/scanners-collection.json"], repr(lines))
-check("sign-records check: the staged payloads are the records' payloads byte for byte", rc == 0 and all(open(d + "/staged/%s/%s-collection.payload" % (f, f[len("witness-"):]), "rb").read() == pays[f] for f in pays))
-d, _ = sr_tree("ck2", "check"); ex = sr_expect_check(d); put(d, "artifacts/check-results/govulncheck.json", b'{"vulns":["changed after the record"]}')
+check("sign-records check: one `payload<TAB>final` line per record, final names signed/<runner>/witness-<step>/<step>-collection.json",
+      sorted(l[1] for l in lines) == sorted("signed/%s/witness-%s/%s-collection.json" % (r, st, st) for r in CHECK_RUNNERS for st in CHECK_STEPS), repr(lines))
+check("sign-records check: the staged payloads are the records' payloads byte for byte, one tree per runner",
+      rc == 0 and all(open(d + "/staged/%s/%s-collection.payload" % (n, n.split("/witness-")[1]), "rb").read() == pays[n] for n in pays))
+check("sign-records check: staged/<runner>/plan.txt is that runner's lines of the printed list, and there is no plan.txt at the root of the out folder",
+      rc == 0 and not os.path.exists(d + "/staged/plan.txt")
+      and all(open(d + "/staged/%s/plan.txt" % r).read() == "".join(l + "\n" for l in out.strip().split("\n") if l.split("\t")[1].startswith("signed/%s/" % r)) for r in CHECK_RUNNERS))
+check("sign-records check: govulncheck's result is received from the amd64 runner only", rc == 0 and os.path.exists(d + "/artifacts/check-results-" + AMD + "/govulncheck.json") and not os.path.exists(d + "/artifacts/check-results-" + ARM + "/govulncheck.json"))
+d, _ = sr_tree("ck2", "check"); ex = sr_expect_check(d); put(d, "artifacts/check-results-%s/govulncheck.json" % AMD, b'{"vulns":["changed after the record"]}')
 sr("sign-records check: a result whose bytes differ from the record's product is refused", d, "check", 1, ["check-results/govulncheck.json"], args=sr_args("check", d, expect=ex))
-d, _ = sr_tree("ck3", "check"); put(d, "artifacts/check-results/extra.txt", b"x")
-sr("sign-records check: a received file no record names is refused", d, "check", 1, ["check-results/extra.txt"])
-d, _ = sr_tree("ck4", "check"); os.remove(d + "/artifacts/check-results/acceptance.json")
+d, _ = sr_tree("ck3", "check"); put(d, "artifacts/check-results-%s/extra.txt" % ARM, b"x")
+sr("sign-records check: a received file no record of that runner names is refused", d, "check", 1, ["check-results/extra.txt"])
+d, _ = sr_tree("ck4", "check"); os.remove(d + "/artifacts/check-results-%s/acceptance.json" % ARM)
 sr("sign-records check: a check-results product a record names but Sign did not receive is refused", d, "check", 1, ["check-results/acceptance.json"])
-d, _ = sr_tree("ck5", "check"); coll_record(d + "/witness-acceptance/acceptance-collection.local.json", "acceptance", {"check-results/govulncheck.json": CHECK_PRODS["scanners"]["govulncheck.json"], "check-results/acceptance.json": CHECK_PRODS["acceptance"]["acceptance.json"]}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
-sr("sign-records check: a product named by two records of the same group is refused", d, "check", 1, ["named twice"])
-d, _ = sr_tree("ck6", "check"); put(d, "artifacts/check-results-arm64/arm64.json", b'{"arch":"arm64"}'); put(d, "artifacts/check-results/arm64.json", b'{"arch":"arm64"}')
-sr("sign-records check: arm64's result inside the check artifact (not named by the check group's records) is refused", d, "check", 1, ["check-results/arm64.json"])
-d, _ = sr_tree("ck7", "check"); shutil.rmtree(d + "/artifacts/check-results-arm64")
-sr("sign-records check: a missing check-results-arm64 artifact is refused", d, "check", 1, ["check-results-arm64"])
-d, _ = sr_tree("ck8", "check"); os.symlink("/etc/passwd", d + "/artifacts/check-results/link")
+d, _ = sr_tree("ck5", "check"); ck_rec(d, ARM, "acceptance", dict(check_prods(ARM, "acceptance"), **{"grype/production.json": CHECK_PRODS["scanners"]["grype/production.json"]}))
+sr("sign-records check: a product named by two records of the same runner is refused", d, "check", 1, ["named twice"])
+d, _ = sr_tree("ck6", "check"); put(d, "artifacts/check-results-%s/govulncheck.json" % ARM, b'{"vulns":[]}')
+sr("sign-records check: a govulncheck result in the arm runner's results (only the amd64 runner runs it) is refused", d, "check", 1, ["check-results/govulncheck.json"])
+d, _ = sr_tree("ck6b", "check"); put(d, "artifacts/check-results-%s/acceptance.json" % AMD, b'{"ok":false}')
+sr("sign-records check: a result of one runner's own folder is checked against that runner's records (the other runner's bytes do not pass)", d, "check", 1, ["check-results/acceptance.json"])
+d, _ = sr_tree("ck7", "check"); shutil.rmtree(d + "/artifacts/check-results-" + ARM)
+sr("sign-records check: a missing check-results-<runner> artifact is refused", d, "check", 1, ["check-results-" + ARM])
+d, _ = sr_tree("ck8", "check"); os.symlink("/etc/passwd", d + "/artifacts/check-results-%s/link" % AMD)
 sr("sign-records check: a symlink among the received results is refused", d, "check", 1, ["symlink"])
-d, _ = sr_tree("ck9", "check"); os.makedirs(d + "/artifacts/check-results/locked"); put(d, "artifacts/check-results/locked/f", b"x"); os.chmod(d + "/artifacts/check-results/locked", 0)
-sr("sign-records check: an unreadable results folder is refused, not counted as empty", d, "check", 1, ["unreadable"]); os.chmod(d + "/artifacts/check-results/locked", 0o755)
+d, _ = sr_tree("ck9", "check"); os.makedirs(d + "/artifacts/check-results-%s/locked" % ARM); put(d, "artifacts/check-results-%s/locked/f" % ARM, b"x"); os.chmod(d + "/artifacts/check-results-%s/locked" % ARM, 0)
+sr("sign-records check: an unreadable results folder is refused, not counted as empty", d, "check", 1, ["unreadable"]); os.chmod(d + "/artifacts/check-results-%s/locked" % ARM, 0o755)
 d, _ = sr_tree("ck10", "check")
 sr("sign-records check: without --expect-digests the check stage is refused", d, "check", 1, ["expect-digests", "required"], args=sr_args("check", d, expect=False))
-d, _ = sr_tree("ck11", "check"); ex = sr_expect_check(d); put(d, "witness-runtime/runtime-collection.local.json.bak", b"x")
+d, _ = sr_tree("ck11", "check"); ex = sr_expect_check(d); put(d, check_dir(ARM, "runtime") + "/runtime-collection.local.json.bak", b"x")
 sr("sign-records check: an extra file in a record folder (not on the producing job's list) is refused", d, "check", 1, ["expect-digests"], args=sr_args("check", d, expect=ex))
-d, _ = sr_tree("ck12", "check"); ex = sr_expect_check(d); coll_record(d + "/witness-runtime/runtime-collection.local.json", "runtime", {"check-results/runtime/summary.txt": b"forged summary"})
+d, _ = sr_tree("ck12", "check"); ex = sr_expect_check(d); ck_rec(d, ARM, "runtime", {"runtime/summary.txt": b"forged summary"})
 sr("sign-records check: a runtime record swapped after the job listed it is refused", d, "check", 1, ["expect-digests", "runtime-collection.local.json"], args=sr_args("check", d, expect=ex))
-d, _ = sr_tree("ck13", "check"); ex = sr_expect_check(d, (("check-records.json", ("witness-scanners", "witness-acceptance", "witness-runtime", "witness-arm64")), ("check-records-arm64.json", ("witness-arm64",))))
-sr("sign-records check: the same folder on both lists is refused (the lists must be disjoint)", d, "check", 1, ["expect-digests", "witness-arm64"], args=sr_args("check", d, expect=ex))
-d, _ = sr_tree("ck14", "check"); ex = sr_expect_check(d, (("check-records.json", ("witness-scanners", "witness-acceptance")), ("check-records-arm64.json", ("witness-arm64",))))
-sr("sign-records check: a record folder on no list (witness-runtime) is refused", d, "check", 1, ["expect-digests", "folders"], args=sr_args("check", d, expect=ex))
+d, _ = sr_tree("ck12b", "check"); ex = sr_expect_check(d); ck_rec(d, AMD, "runtime", {"runtime/summary.txt": b"forged summary"})
+sr("sign-records check: the amd64 runner's record swapped after its job listed it is refused too (each runner's list covers its own folders)", d, "check", 1, ["expect-digests", "runtime-collection.local.json"], args=sr_args("check", d, expect=ex))
+d, _ = sr_tree("ck13", "check"); ex = ck_lists(d, merge=True)
+sr("sign-records check: the same folder on both runners' lists is refused (the lists must be disjoint)", d, "check", 1, ["expect-digests", ARM + "/witness-"], args=sr_args("check", d, expect=ex))
+d, _ = sr_tree("ck14", "check"); ex = ck_lists(d, drop=(ARM + "/witness-runtime",))
+sr("sign-records check: a record folder on no list (the arm runner's runtime) is refused", d, "check", 1, ["expect-digests", "folders"], args=sr_args("check", d, expect=ex))
 d, _ = sr_tree("ck15", "check")
-sr("sign-records check: only three of Check's four record folders given is refused", d, "check", 1, ["record", "witness-"], args=sr_args("check", d, dirs=["witness-scanners", "witness-acceptance", "witness-arm64"], expect=sr_expect_check(d, (("check-records.json", ("witness-scanners", "witness-acceptance")), ("check-records-arm64.json", ("witness-arm64",))))))
-d, _ = sr_tree("ck16", "check"); os.rename(d + "/witness-runtime/runtime-collection.local.json", d + "/witness-runtime/scanners-collection.local.json")
+sr("sign-records check: only five of Check's six record folders given is refused", d, "check", 1, ["record", "witness-"], args=sr_args("check", d, dirs=[check_dir(r, st) for r in CHECK_RUNNERS for st in CHECK_STEPS][:-1]))
+d, _ = sr_tree("ck15b", "check"); ex = sr_expect_check(d, (AMD,))
+sr("sign-records check: one runner's three records alone (the arm runner's missing, listed or not) is refused", d, "check", 1, ["record", "exactly"], args=sr_args("check", d, dirs=[check_dir(AMD, st) for st in CHECK_STEPS], expect=ex))
+d, _ = sr_tree("ck15c", "check"); shutil.copytree(d + "/" + check_dir(AMD, "runtime"), d + "/rec-check/%s/witness-arm64" % AMD); os.rename(d + "/rec-check/%s/witness-arm64/runtime-collection.local.json" % AMD, d + "/rec-check/%s/witness-arm64/arm64-collection.local.json" % AMD)
+sr("sign-records check: a seventh record, an arm64 record, is refused", d, "check", 1, ["arm64"], args=sr_args("check", d, dirs=[check_dir(r, st) for r in CHECK_RUNNERS for st in CHECK_STEPS] + ["rec-check/%s/witness-arm64" % AMD]))
+d, _ = sr_tree("ck15d", "check"); os.rename(d + "/" + check_dir(ARM, "runtime"), d + "/rec-check/%s/witness-arm64" % ARM); os.rename(d + "/rec-check/%s/witness-arm64/runtime-collection.local.json" % ARM, d + "/rec-check/%s/witness-arm64/arm64-collection.local.json" % ARM)
+sr("sign-records check: an arm64 record in place of the arm runner's runtime record is refused", d, "check", 1, ["arm64"], args=sr_args("check", d, dirs=[check_dir(r, st) for r in CHECK_RUNNERS for st in CHECK_STEPS[:2]] + [check_dir(AMD, "runtime"), "rec-check/%s/witness-arm64" % ARM]))
+d, _ = sr_tree("ck16", "check"); os.rename(d + "/" + check_dir(ARM, "runtime") + "/runtime-collection.local.json", d + "/" + check_dir(ARM, "runtime") + "/scanners-collection.local.json")
 sr("sign-records check: a scanners record in the runtime folder is refused (the folder names its step)", d, "check", 1, ["step"])
-d, _ = sr_tree("ck17", "check"); os.rename(d + "/witness-runtime/runtime-collection.local.json", d + "/witness-runtime/rebuild-collection.local.json")
+d, _ = sr_tree("ck17", "check"); os.rename(d + "/" + check_dir(AMD, "runtime") + "/runtime-collection.local.json", d + "/" + check_dir(AMD, "runtime") + "/rebuild-collection.local.json")
 sr("sign-records check: a Rebuild record (rebuild-collection.local.json) passed off as Check's is refused", d, "check", 1, ["step"])
-d, _ = sr_tree("ck18", "check"); os.rename(d + "/witness-runtime/runtime-collection.local.json", d + "/witness-runtime/build-collection.local.json")
+d, _ = sr_tree("ck18", "check"); os.rename(d + "/" + check_dir(ARM, "runtime") + "/runtime-collection.local.json", d + "/" + check_dir(ARM, "runtime") + "/build-collection.local.json")
 sr("sign-records check: a Build record passed off as Check's is refused", d, "check", 1, ["step"])
-d, _ = sr_tree("ck19", "check"); coll_record(d + "/witness-scanners/scanners-collection.local.json", "scanners", {"check-results/" + n: dd for n, dd in CHECK_PRODS["scanners"].items()}, [("witness-build/digests.json", b"another list")])
-sr("sign-records check: a scanners record whose material is not Build's attested digests.json is refused", d, "check", 1, ["material"])
-d, _ = sr_tree("ck20", "check"); coll_record(d + "/witness-acceptance/acceptance-collection.local.json", "acceptance", {"check-results/acceptance.json": CHECK_PRODS["acceptance"]["acceptance.json"]}, env_vars={"GH_TOKEN": "x"})
+d, _ = sr_tree("ck20", "check"); ck_rec(d, ARM, "acceptance", env_vars={"GH_TOKEN": "x"})
 sr("sign-records check: a Check record that names a token variable is refused (record-env)", d, "check", 1, ["env", "GH_TOKEN"])
-d, _ = sr_tree("ck21", "check"); coll_record(d + "/witness-arm64/arm64-collection.local.json", "arm64", {"check-results/arm64.json": CHECK_PRODS["arm64"]["arm64.json"]}, env_vars={"X": "github_pat_" + "A" * 30})
+d, _ = sr_tree("ck21", "check"); ck_rec(d, AMD, "runtime", env_vars={"X": "github_pat_" + "A" * 30})
 sr("sign-records check: a Check record that holds a github_pat_ token value is refused (record-env)", d, "check", 1, ["env", "token"])
-d, _ = sr_tree("ck22", "check"); put(d, "witness-runtime/digests.json", b"{}")
+d, _ = sr_tree("ck22", "check"); put(d, check_dir(ARM, "runtime") + "/digests.json", b"{}")
 sr("sign-records check: a data file in a Check record folder (digests.json) is refused: the folder holds only its record", d, "check", 1, ["witness-runtime", "digests.json"])
-for step_, prods_ in (("acceptance", CHECK_PRODS["acceptance"]), ("runtime", CHECK_PRODS["runtime"]), ("arm64", CHECK_PRODS["arm64"])):
-    d, _ = sr_tree("ck23" + step_, "check"); coll_record(d + "/witness-%s/%s-collection.local.json" % (step_, step_), step_, {"check-results/" + n: dd for n, dd in prods_.items()}, [("witness-build/digests.json", b"another list")])
-    sr("sign-records check: the %s record's material must be Build's attested digests.json as well (not only scanners)" % step_, d, "check", 1, ["material", step_])
-d, _ = sr_tree("ck24", "check"); coll_record(d + "/witness-acceptance/acceptance-collection.local.json", "acceptance", {"check-results/acceptance.json": CHECK_PRODS["acceptance"]["acceptance.json"]})
+for runner_ in CHECK_RUNNERS:
+    for step_ in CHECK_STEPS:
+        d, _ = sr_tree("ck23%s%s" % (runner_, step_), "check"); ck_rec(d, runner_, step_, material=[("witness-build/digests.json", b"another list")])
+        sr("sign-records check: the %s record of %s must have Build's attested digests.json as material" % (step_, runner_), d, "check", 1, ["material", step_])
+d, _ = sr_tree("ck24", "check"); ck_rec(d, ARM, "acceptance", material=())
 sr("sign-records check: a Check record with no material at all is refused", d, "check", 1, ["material"])
 d, _ = sr_tree("sr25", "rebuild"); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
 sr("sign-records rebuild: a record that names the verdict by its bare file name is refused (the product is witness-rebuild/verdict.json, matched in full)", d, "rebuild", 1, ["witness-rebuild/verdict.json"])
@@ -1073,7 +1123,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 226
+EXPECT = 235
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
