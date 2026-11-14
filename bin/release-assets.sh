@@ -84,6 +84,26 @@ if git cat-file tag "$rel" > release-tag.txt 2> /dev/null && python3 bin/release
   notes=(--notes-file release-notes.md)
 fi
 rm -f release-tag.txt
+# The notice comes first when the controls document changes in this release (REQ-REL-014). The checkout holds only this tag, so the earlier
+# release and its document are read with gh; only "Not Found" means the document was not there, any other failure stops the step.
+new=docs/controls.md; [ -f "$new" ] || new=/dev/null
+prev=$(gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' | python3 bin/release-metadata.py previous-release --tag "$rel")
+: > controls-notice.md
+if [ -n "$prev" ]; then
+  old=controls-old.md
+  if ! gh_err=$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/{owner}/{repo}/contents/docs/controls.md?ref=$prev" 2>&1 > "$old"); then
+    [[ "$gh_err" == *"Not Found"* ]] || { echo "release-assets: cannot read docs/controls.md of $prev: $gh_err" >&2; exit 1; }
+    : > "$old"
+  fi
+  python3 bin/release-metadata.py controls-notice --old "$old" --new "$new" > controls-notice.md
+fi
+if [ -s controls-notice.md ]; then
+  [ "${notes[0]}" = --notes-file ] || printf '%s' "${notes[1]}" > release-notes.md
+  cat controls-notice.md release-notes.md > release-body.md
+  mv release-body.md release-notes.md
+  notes=(--notes-file release-notes.md)
+fi
+rm -f controls-old.md controls-notice.md
 if ! view_err=$(gh release view "$rel" 2>&1 > /dev/null); then
   [[ "$view_err" == *"release not found"* ]] || { echo "release-assets: cannot tell whether release $rel exists: $view_err" >&2; exit 1; }
   gh release create "$rel" --title "fscache $rel" "${notes[@]}" --verify-tag
