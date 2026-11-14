@@ -266,7 +266,6 @@ def _vex_match(doc, finding, variant, image_repo):
     arch = (finding.get("platform") or "").rpartition("/")[2]
     if not isinstance(finding.get("package") or "", str):
         raise ValueError("a package name that is not a string")
-    versions = _gate.vex_versions(None, *pkg)
     dead = _gate.superseded(doc["statements"])
     for si, st in enumerate(doc["statements"]):
         if st["status"] not in _gate.SUPPRESSING:
@@ -286,9 +285,11 @@ def _vex_match(doc, finding, variant, image_repo):
             if pp[0] == "oci" and not (image_repo is not None and pp[1] == image_repo and pp[2] in (None, variant) and pp[3] in (None, arch)):
                 continue
             subs = [_sub_purl(x["@id"]) for x in p.get("subcomponents", [])]
+            subs += [("stdlib", "go" + _sub_purl(x["@id"])[1]) for x in p.get("subcomponents", [])   # scanners write go1.27.2 for the golang stdlib's 1.27.2
+                     if x["@id"].startswith("pkg:golang/stdlib@")]
             if subs and not pkg[0]:
                 continue   # a finding with no package identity never matches a statement that names packages
-            if not subs or any(_same_package(pkg[0], ver, *sub) for ver in versions for sub in subs):
+            if not subs or any(_same_package(pkg[0], pkg[1], *sub) for sub in subs):
                 return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v["name"], "status": st["status"], "product": p.get("@id")}
     return None
 
