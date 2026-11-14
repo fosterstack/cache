@@ -1081,6 +1081,13 @@
       "reason": "the Gradle acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
       "exceptions": [
         {
+          "rule": "deny",
+          "line": "if [ \"$(grep -c '' \"$policy\")\" != 1 ] || [ \"$(sed 's/^[0-9a-f]*//' \"$policy\")\" != \"  $jar\" ] ||",
+          "line_sha256": "dc5a4906f45597140024a18502f0f6be4dc98ecc94dc14cf1c33523b0c979b38",
+          "count": 1,
+          "why": "the wrapper-jar check: a test on the output of a substitution, not a compound assignment or an array subscript (REQ-SUP-001-AC32)"
+        },
+        {
           "rule": "script-name",
           "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain --info 2>&1",
           "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
@@ -1184,6 +1191,13 @@
           "rule": "script-name",
           "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1",
           "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ \"$(grep -c '' \"$policy\")\" != 1 ] || [ \"$(sed 's/^[0-9a-f]*//' \"$policy\")\" != \"  $jar\" ] ||",
+          "line_sha256": "dc5a4906f45597140024a18502f0f6be4dc98ecc94dc14cf1c33523b0c979b38",
+          "count": 1,
+          "why": "the wrapper-jar check: a test on the output of a substitution, not a compound assignment or an array subscript (REQ-SUP-001-AC32)"
         },
         {
           "rule": "deny",
