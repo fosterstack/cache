@@ -85,12 +85,6 @@ jobs:
           MODULES: "2"
         run: |
           set -euo pipefail
-          wait_healthy() {
-            for _ in $(seq 1 20); do
-              curl -sf "http://localhost:$1/healthz" && return 0; sleep 0.5
-            done
-            echo "server on $1 never became healthy" >&2; return 1
-          }
           for v in 1.2.0 1.2.3; do
             rm -rf /tmp/fscache-mvn-data /tmp/fscache-mvn-capped /tmp/mvn-* /tmp/m2-* /tmp/m-cold* /tmp/m-warm* bench/maven-sample/target bench/maven-sample/lib/target bench/maven-sample/app/target
             sed -i "s|<version>[0-9.]*</version>|<version>$v</version>|" bench/maven-sample/.mvn/extensions.xml
@@ -98,12 +92,20 @@ jobs:
             FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
               FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
               /tmp/fscache-bench & echo $! > /tmp/fscache-mvn.pid
-            wait_healthy 18098
+            up=
+            for _ in $(seq 1 20); do
+              curl -sf http://localhost:18098/healthz && up=yes && break; sleep 0.5
+            done
+            [ -n "$up" ] || { echo "server on 18098 never became healthy" >&2; exit 1; }
             bash bin/acceptance-maven.sh
             FSCACHE_ADDR=:18099 FSCACHE_DATA_DIR=/tmp/fscache-mvn-capped \
               FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
               FSCACHE_MAX_BYTES=262144 /tmp/fscache-bench & echo $! > /tmp/fscache-mvn-capped.pid
-            wait_healthy 18099
+            up=
+            for _ in $(seq 1 20); do
+              curl -sf http://localhost:18099/healthz && up=yes && break; sleep 0.5
+            done
+            [ -n "$up" ] || { echo "server on 18099 never became healthy" >&2; exit 1; }
             bash bin/acceptance-maven-capped.sh
             kill "$(cat /tmp/fscache-mvn.pid)" "$(cat /tmp/fscache-mvn-capped.pid)"
           done
