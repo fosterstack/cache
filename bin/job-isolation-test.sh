@@ -187,7 +187,7 @@ if EXCLUDED_AC1:
     bad.append("EXCLUDED_AC1 is not empty: no job is exempt from AC1 (REQ-REL-011-AC1: there is no exclusion)")
 # the release chain's jobs all exist under the names the English gives them, and release.yml reaches no reusable workflow
 rel_jobs = {k[1] for k in jobs_seen if k[0] == "release.yml"}
-for need in BUILD_SIDE_JOBS + SIGN_JOBS + ("release-compare", "release-verify", "release"):
+for need in BUILD_SIDE_JOBS + SIGN_JOBS + ("release-compare", "release-verify", "release", "release-evidence"):
     if need not in rel_jobs:
         bad.append("release.yml has no job %s" % need)
 for k_, j_ in jobs_seen.items():
@@ -352,7 +352,15 @@ edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      -
 done
 want_msg="is in the environment sign but is not one of the four sign jobs"
 mutate "release.yml release job is placed in the environment sign" '
-edit("release.yml", lambda s: in_job(s, "release", r"(    runs-on:)", "    environment: sign\n\\1", regex=True))'
+edit("release.yml", lambda s: in_job(s, "release", r"    environment: release\n", "    environment: sign\n", regex=True))'
+mutate "release.yml release-evidence job is placed in the environment sign (ruling 2: it holds no environment)" '
+edit("release.yml", lambda s: in_job(s, "release-evidence", r"(    runs-on:)", "    environment: sign\n\\1", regex=True))'
+want_msg="and builds in the step"
+for job in release; do
+  mutate "release.yml the $job job builds (go build): it holds the release environment and packages write" '
+edit("release.yml", lambda s: in_job(s, "'$job'", r"(    steps:\n)", r"\1      - name: mutant\n        run: go build ./...\n", regex=True))'
+done
+want_msg="is in the environment sign but is not one of the four sign jobs"
 mutate "ci.yml lint is placed in the environment sign" '
 edit("ci.yml", lambda s: re.sub(r"(  lint:.*?)(    runs-on:)", lambda m: m.group(1) + "    environment: sign\n" + m.group(2), s, count=1, flags=re.S))'
 want_msg=""
