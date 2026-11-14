@@ -2,9 +2,9 @@
   "comment": [
     "Checks that release admission requires green but the ruleset on main does not list",
     "(the owner trimmed them from the ruleset on 2026-11-12). Same shape and meaning as",
-    "required-checks.json; the required-check guard does not read this file. Admission and the",
-    "patch release's ready step append these entries to required-checks.json's. A context is in",
-    "one file or the other, never both."
+    "required-checks.json. The required-check guard holds these seven entries whole and refuses any",
+    "other list. Admission and the patch release's ready step append these entries to",
+    "required-checks.json's. A context is in one file or the other, never both."
   ],
   "required_checks": [
     {
