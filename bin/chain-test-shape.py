@@ -1,23 +1,23 @@
 """Test infrastructure (not product code), shared by bin/chain-build-wiring-test.sh and bin/chain-rebuild-test.sh: the judges for
-the shape of the Build and Rebuild stage files, the four stage scripts, the job graph of release.yml and the environment record of
+the shape of the Build and Rebuild jobs of release.yml, the four stage scripts, the job graph of release.yml and the environment record of
 a Witness collection. Each judge prints `ok` or the list of faults and exits 1 on any fault; the tests first prove every judge on a
 known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then apply it to the real repository (RED until
 PR 2 is implemented).
 
 DESIGN RULE (PR 1's ten lost rounds): NO denylists, NO shell analysis, NO subsequence checks. Every judge below is a FINITE EXACT
-GRAMMAR over an allowlist: a stage file is exactly the steps in JOBS, a stage script is exactly the lines of expected_lines(KIND),
+GRAMMAR over an allowlist: a Build or Rebuild job is exactly the steps in JOBS, a stage script is exactly the lines of expected_lines(KIND),
 the job graph is exactly the keys and targets in CHAIN. Anything else is a fault by construction.
 
   helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, (no timeout since handoff 0713)
   directwitness FILE...                     REQ-CHAIN-004-AC2: no `witness run` in any stage file or stage script (every call goes through the helper)
-  stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
+  stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4: FILE is a workflow file holding the family's jobs (release.yml: build-freeze, build-apk, build-assemble; rebuild-apk, rebuild-assemble)
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
-  lockflow BUILD_ASM REBUILD_ASM STAGE_YML...   REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: Build and Rebuild assemble identically; no stage file names apko
+  lockflow BUILD_ASM REBUILD_ASM WORKFLOW...    REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: Build and Rebuild assemble identically; no workflow names apko beyond the pinned install
   listed CHAIN_SCRIPTS.json ROOT            the four scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
-  callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls stage-build.yml with mode: snapshot and nothing else
-  graph FILE                                REQ-CHAIN-005-AC5: the chain jobs of release.yml
-  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml,
-                                             and stage-image.yml / stage-admission.yml are gone
+  callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls release.yml with mode: snapshot and nothing else
+  graph FILE                                REQ-CHAIN-005-AC5: the fifteen chain jobs of release.yml, each with its exact needs, if, permissions and environment, and the jobs around them
+  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond persona-uat.yml and customer-words-edited.yml,
+                                             and no stage-*.yml file exists
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
   nosource ROOT                             sandboxed-build rule 1: no step of Build or Rebuild runs source code
     outside melange (34 closure files:
@@ -243,16 +243,16 @@ CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0"}      # fetc
 PERM_PLAIN = {"contents": "read"}
 PERM_ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 MAT = "${{ matrix.runner }}"
-# Build hands Sign the digests.json text: the stage output reads the assemble job's output, which one pinned step fills from digests.json
-STAGE_OUTPUT = "${{ jobs.assemble.outputs.digests }}"
+# Build hands the snapshot callers the digests.json text: the workflow output reads the build-assemble job's output, which one pinned step fills from digests.json
+STAGE_OUTPUT = "${{ jobs.build-assemble.outputs.digests }}"
 JOB_OUTPUT = "${{ steps.digests.outputs.digests }}"
 ALWAYS = "always()"
 VERDICT_ARTIFACT = "witness-rebuild"
-# Rebuild receives Build's record under one name in a release (the copy Sign signed) and under another in a snapshot (nothing signs a snapshot)
-WB_DOWN = "${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}"
-MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
+# Rebuild stage-starts from Build's UNSIGNED record, witness-build, in both modes (ruling 8 of cache#921: it needs build-assemble only, so it never waits for Sign)
+WB_DOWN = "witness-build"
+MODE_RELEASE_IF = "${{ inputs.mode != 'snapshot' }}"      # a release run: any mode but snapshot (the guard step refuses a third value first); a tag push carries no mode input
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
-MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
+MODE_GUARD_ENV = {"MODE": "${{ inputs.mode || 'release' }}"}
 # Rebuild's apk job installs the same pinned Go toolchain (release review R1, Oct 21: bin/build-apk.sh refuses to run in CI without the pinned Go at /usr/local/bin/fscache-go, REQ-CHAIN-005-AC2: Rebuild uses the same pinned tools as Build)
 # Build's apk job installs the Go toolchain the melange build needs (bin/build-apk.sh refuses to run in CI without it)
 # the way the chain installs Witness: a
@@ -260,11 +260,11 @@ MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
 # (advisor, Codex A r3 F4: no setup-go action; the toolchain bytes are pinned by a committed sha256)
 # admission.json is written once per apk leg (the Witness record of each leg holds it as a product) but uploaded ONCE, from the leg on ubuntu-24.04 and only in a
 # release run, under the fixed name `admission` (PR 4's Release reads the baseline a CI patch tag used from it; a matrix upload under one name would clash)
-ADMISSION_IF = "${{ inputs.mode == 'release' && matrix.runner == 'ubuntu-24.04' }}"
+ADMISSION_IF = "${{ inputs.mode != 'snapshot' && matrix.runner == 'ubuntu-24.04' }}"
 # REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the baseline admission chose reaches Release as a product of Build's own record. Each apk leg copies its admission.json
 # into out/ (so the leg's record holds it and the assemble job's `bind` verifies it), the assemble job writes admission-baseline.json from both legs (a product of
 # Build's record), and uploads it under the fixed name `admission-baseline` in a release run only.
-BASELINE_IF = "${{ inputs.mode == 'release' }}"
+BASELINE_IF = "${{ inputs.mode != 'snapshot' }}"
 ADMISSION_COPY = "cp admission.json out/admission.json"
 ADMISSION_BASELINE = ('python3 -I bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json '
     '--admission apk/ubuntu-24.04-arm/admission.json '
@@ -300,70 +300,49 @@ MODE_GUARD_RUN = 'bash bin/build-stage-refuse-mode.sh "$MODE"'
 # the closed list of snapshot step names
 SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build", "rapk": "snapshot-rapk", "rebuild": "snapshot-rebuild"}
 SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Rebuild's verdict: named, so it can never be mistaken for a release verdict
-HOSTILE_IF = "${{ inputs.hostile }}"
 HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
-PROBE_RUN = "bash bin/chain-sandbox-probe.sh"      # the dry run's sandbox wall probe, a step of the apk job after its Witness steps
+PROBE_RUN = "bash bin/chain-sandbox-probe.sh"      # the sandbox wall probe, a step of the apk job after its Witness steps, in every build
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 # Rebuild's assemble job exposes the sha256 of every record and of the verdict it made or consumed, for Sign (the Witness move, adversarial pass R2): a job output only that job can write
 EXPOSE_RECORDS = 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"'
-RECORDS_STAGE_OUTPUT = "${{ jobs.assemble.outputs.records }}"
-# the Rebuild apk jobs, one per architecture, each exposes the sha256 of its record at its own upload (adversarial pass round 6, A1); assemble checks what it downloads against them
-def exposerapk(runner): return 'r=$(bash bin/rebuild-records-digests.sh --rapk %s witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"' % runner
-RAPK_CHECK_ENV = {"RAPK_RECORDS": "${{ needs.rapk.outputs.records }}", "RAPK_ARM_RECORDS": "${{ needs.rapk-arm.outputs.records }}"}
-RAPK_CHECK_RUN = 'bash bin/rebuild-records-digests.sh --check "$RAPK_RECORDS" "$RAPK_ARM_RECORDS"'
-RAPK_JOBS = {"rapk": "ubuntu-24.04", "rapk-arm": "ubuntu-24.04-arm"}
+# the Rebuild apk job (one job, a matrix over both chips) writes the sha256 of its record to a file and uploads it as rebuild-records-<runner>, never as a job output (ruling 8 of cache#921);
+# assemble downloads both files and checks what it downloaded of each rapk record against them (adversarial pass round 6, A1)
+RAPK_RECORDS_FILE = 'bash bin/rebuild-records-digests.sh --rapk "${{ matrix.runner }}" witness-rapk > rebuild-records.json'
+RAPK_CHECK_RUN = 'bash bin/rebuild-records-digests.sh --check "$(cat rec-digests/ubuntu-24.04/rebuild-records.json)" "$(cat rec-digests/ubuntu-24.04-arm/rebuild-records.json)"'
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
-JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    # judged by freeze_job(): no Witness step, no mode, no tools
-    ("build", "freeze"): dict(kind="freeze", perm=PERM_PLAIN, gh=False, matrix=False, up=[("freeze", "freeze")]),
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="freeze",
+JOBS = {  # (family, job id of release.yml) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
+    # judged by freeze_job(): no Witness step, no mode, no tools; the job carries gate G as its if
+    ("build", "build-freeze"): dict(kind="freeze", perm=PERM_PLAIN, gh=False, matrix=False, up=[("freeze", "freeze")]),
+    ("build", "build-apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, needs="build-freeze",
     down=[("freeze", "freeze")], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True, probe=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
+    ("build", "build-assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, needs="build-apk", tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
-    ("rebuild", "rapk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
+    ("rebuild", "rebuild-apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, needs="build-assemble", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, records_file=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
-        up=[("rapk-ubuntu-24.04", "out"), ("witness-rapk-ubuntu-24.04", "witness-rapk")]),
-    ("rebuild", "rapk-arm"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04-arm", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
-        down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
-        up=[("rapk-ubuntu-24.04-arm", "out"), ("witness-rapk-ubuntu-24.04-arm", "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
+        up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk"), ("rebuild-records-" + MAT, "rebuild-records.json")]),
+    ("rebuild", "rebuild-assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, needs="rebuild-apk", tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
+        down_records=[("rebuild-records-" + r, "rec-digests/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
 }
+FAMILY_JOBS = {"build": ("build-freeze", "build-apk", "build-assemble"), "rebuild": ("rebuild-apk", "rebuild-assemble")}
+BUILD_GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G (REQ-CHAIN-005-AC5): the chain starts on a tag push, in a dry run or in a snapshot call
 
 
 def stage(path, family, allowed_path=None):
+    """The jobs of one family in release.yml (Build: build-freeze, build-apk, build-assemble; Rebuild: rebuild-apk, rebuild-assemble), each an exact grammar. The file's triggers, its outputs and its
+    other jobs are judged by graph() and the other judges."""
     bad = []
-    text = open(path).read()
-    d = yaml.load(text, Loader=yaml.BaseLoader)
-    if not isinstance(d, dict) or set(d) - {"name", "on", "permissions", "jobs"}:
-        return ["top-level keys beyond name/on/permissions/jobs: %s" % (sorted(set(d) - {"name", "on", "permissions", "jobs"}) if isinstance(d, dict) else d)]
-    on = d.get("on")
-    call = on.get("workflow_call") if isinstance(on, dict) else None
-    mode_input = {"type": "string", "default": "release"}
-    want_call = ({"inputs": {"hostile": {"type": "boolean", "default": "false"}, "mode": mode_input}, "outputs": {"digests": {"value": STAGE_OUTPUT}}}
-                 if family == "build" else {"inputs": {"mode": mode_input}, "outputs": {"records": {"value": RECORDS_STAGE_OUTPUT}}})
-    if isinstance(call, dict):       # a description is free text
-        call = {k: {n: ({a: b for a, b in v.items() if a != "description"} if isinstance(v, dict) else v) for n, v in call[k].items()}
-                if isinstance(call[k], dict) else call[k] for k in call}
-    if not isinstance(on, dict) or set(on) != {"workflow_call"} or (call or None) != want_call:
-        bad.append("on: must be exactly workflow_call with %s, got %s"
-                   % ("the inputs hostile (boolean, default false; the dry run's hostile Build step) and mode (string, default release; release or snapshot) "
-                      "and the one output digests = %s" % STAGE_OUTPUT
-                      if family == "build" else "the one input mode (string, default release; release or snapshot) and the one output records = %s" % RECORDS_STAGE_OUTPUT, on))
-    if d.get("permissions") != {"contents": "read"}:
-        bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
-    if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed-local.sh)")
-    jobs = d.get("jobs") or {}
-    names = ("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("freeze", "apk", "assemble")
-    if "verify-freeze" in text: bad.append("a stage file names verify-freeze: only bin/build-freeze.sh, run by the "
-        "freeze job of Build, may run it")
-    if set(jobs) != set(names):
-        return bad + ["exactly the jobs %s required (one stage = one file = one identity), found %s" % (" and ".join(names), sorted(jobs))]
+    d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
+    jobs = (d.get("jobs") or {}) if isinstance(d, dict) else {}
+    names = FAMILY_JOBS[family]
+    for n in names:
+        if n not in jobs: bad.append("release.yml has no job %s" % n)
+    if bad: return bad
     allowed = None
     if allowed_path:
         try:
@@ -371,9 +350,12 @@ def stage(path, family, allowed_path=None):
         except (OSError, ValueError):
             bad.append("the allowed-actions list %s is unreadable (fail closed)" % allowed_path)
     for name in names:
-        if name != "freeze" and "build-freeze" in json.dumps(jobs[name]):
-            bad.append("%s: only the freeze job runs bin/build-freeze.sh (it starts go of the tagged tree)" % name)
-        bad += ["%s: %s" % (name, m) for m in (freeze_job(jobs[name], allowed) if name == "freeze" else job(jobs[name],
+        txt = json.dumps(jobs[name])
+        if re.search(r"\bwitness\s+run\b", txt): bad.append("%s names `witness run` directly (every stage goes through bin/witnessed-local.sh)" % name)
+        if "verify-freeze" in txt: bad.append("%s names verify-freeze: only bin/build-freeze.sh, run by the build-freeze job, may run it" % name)
+        if name != "build-freeze" and "build-freeze.sh" in txt:
+            bad.append("%s: only the build-freeze job runs bin/build-freeze.sh (it starts go of the tagged tree)" % name)
+        bad += ["%s: %s" % (name, m) for m in (freeze_job(jobs[name], allowed) if name == "build-freeze" else job(jobs[name],
             family, name, allowed))]
     return bad
 
@@ -386,13 +368,14 @@ def pinned(uses, prefix, allowed):
 
 
 def freeze_job(j, allowed):
-    """The freeze job: a runner of its own, contents: read, no needs, no outputs, no env but the guard's, no secret.
+    """The freeze job: a runner of its own, gate G as its if, contents: read, no needs, no outputs, no env but the guard's, no secret.
     Steps: checkout,
     the mode guard (no if), then in release mode only the pinned Go, bin/build-freeze.sh and one upload. Nothing
     else."""
     bad = []
-    keys = {"runs-on", "permissions", "steps", "timeout-minutes"}
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes", "if"}
     if set(j) - keys: bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
+    if j.get("if") != BUILD_GATE: bad.append("the build-freeze job must carry exactly the gate G as its if: %s, got %r (the chain starts here)" % (BUILD_GATE, j.get("if")))
     if j.get("runs-on") != "ubuntu-24.04": bad.append("the freeze job must run directly on the ubuntu-24.04 VM, got "
         "%r" % j.get("runs-on"))
     if j.get("permissions") != PERM_PLAIN: bad.append("permissions must be exactly %s (no token, no write), got "
@@ -434,26 +417,22 @@ def job(j, family, name, allowed):
     keys = {"runs-on", "permissions", "steps", "timeout-minutes"}
     if spec["matrix"]:
         keys |= {"strategy"} | ({"needs"} if spec.get("needs") else set())
-    elif not spec.get("runner"):
+    else:
         keys |= {"needs"}
     if spec.get("needs") and j.get("needs") not in (spec["needs"], [spec["needs"]]):
         bad.append("%s must need exactly %s, got %s" % (name, spec["needs"], j.get("needs")))
-    if spec.get("expose") or spec.get("expose_records") or spec.get("expose_rapk"): keys.add("outputs")
+    if spec.get("expose") or spec.get("expose_records"): keys.add("outputs")
     if set(j) - keys:
         bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
     if {"runs-on", "permissions", "steps"} - set(j):
         bad.append("job lacks %s" % sorted({"runs-on", "permissions", "steps"} - set(j)))
     for k in ("container", "services", "env", "defaults", "environment", "outputs", "if", "continue-on-error", "uses", "secrets"):
-        if k in j and not (k == "outputs" and (spec.get("expose") or spec.get("expose_records") or spec.get("expose_rapk"))): bad.append("job has %s" % k)
+        if k in j and not (k == "outputs" and (spec.get("expose") or spec.get("expose_records"))): bad.append("job has %s" % k)
     if spec.get("expose") and j.get("outputs") != {"digests": JOB_OUTPUT}:
         bad.append("the assemble job must expose exactly outputs: digests: %s, got %s" % (JOB_OUTPUT, j.get("outputs")))
     if spec.get("expose_records") and j.get("outputs") != {"records": RECORDS_JOB_OUTPUT}:
         bad.append("the Rebuild assemble job must expose exactly outputs: records: %s, got %s" % (RECORDS_JOB_OUTPUT, j.get("outputs")))
-    if spec.get("expose_rapk") and j.get("outputs") != {"records": RECORDS_JOB_OUTPUT}:
-        bad.append("the Rebuild apk job must expose exactly outputs: records: %s, got %s" % (RECORDS_JOB_OUTPUT, j.get("outputs")))
-    if spec.get("runner"):
-        if j.get("runs-on") != spec["runner"]: bad.append("this Rebuild apk job must run directly on %s (a native runner, no matrix), got %r" % (spec["runner"], j.get("runs-on")))
-    elif spec["matrix"]:
+    if spec["matrix"]:
         st = j.get("strategy") or {}
         if j.get("runs-on") != MAT:
             bad.append("the apk job must run on matrix.runner, got %r" % j.get("runs-on"))
@@ -462,9 +441,6 @@ def job(j, family, name, allowed):
             bad.append("strategy must be exactly matrix.runner: both of %s (native runners, no emulation, no include/exclude)" % [r for r, a in RUNNERS])
     else:
         if j.get("runs-on") != "ubuntu-24.04": bad.append("the assemble job must run directly on the ubuntu-24.04 VM (rule 62), got %r" % j.get("runs-on"))
-        if family == "rebuild":
-            if sorted(j.get("needs") or []) != ["rapk", "rapk-arm"] or not isinstance(j.get("needs"), list): bad.append("assemble must need exactly rapk and rapk-arm, got %s" % j.get("needs"))
-        elif j.get("needs") not in ("apk", ["apk"]): bad.append("assemble must need exactly apk, got %s" % j.get("needs"))
     if j.get("permissions") != spec["perm"]:
         bad.append("permissions must be exactly %s, got %s" % (spec["perm"], j.get("permissions")))
     steps = j.get("steps") or []
@@ -525,10 +501,15 @@ def job(j, family, name, allowed):
                 or (s.get("with") or {}) != {"name": nm, "path": path_} or not gated):
             bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s "
                        "(a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
-    if spec.get("check_rapk"):       # A1: what assemble downloaded of each rapk record is what that rapk job uploaded (release mode only), checked before anything is built
+    for nm, path_ in spec.get("down_records", ()):       # A1: the digest lists the rapk jobs uploaded (release mode only), downloaded before the check
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"name", "if", "env", "run"} or s.get("if") != MODE_RELEASE_IF or s.get("env") != RAPK_CHECK_ENV or str(s.get("run") or "").strip() != RAPK_CHECK_RUN:
-            bad.append("step %d must be exactly if: %s, env %s, run: %s (the rapk records are checked against their jobs' outputs before the Witness step)" % (i, MODE_RELEASE_IF, RAPK_CHECK_ENV, RAPK_CHECK_RUN))
+        if (set(s) - {"uses", "with", "name", "if"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
+                or (s.get("with") or {}) != {"name": nm, "path": path_} or s.get("if") != MODE_RELEASE_IF):
+            bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s under if: %s (the digest list of one Rebuild apk job)" % (i, nm, path_, MODE_RELEASE_IF))
+    if spec.get("check_rapk"):       # A1: what assemble downloaded of each rapk record is what that rapk job listed (release mode only), checked before anything is built
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"name", "if", "run"} or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != RAPK_CHECK_RUN:
+            bad.append("step %d must be exactly if: %s, run: %s (the rapk records are checked against the digest lists of their jobs before the Witness step; no env, no job output)" % (i, MODE_RELEASE_IF, RAPK_CHECK_RUN))
     s = steps[i] if i < len(steps) else {}; i += 1
     want_keys = {"run", "name"} | ({"env"} if spec["gh"] else set()) | ({"if"} if spec.get("mode") else set())
     if set(s) - want_keys: bad.append("the Witness step may carry only %s (no shell, working-directory)" % sorted(want_keys))
@@ -544,33 +525,32 @@ def job(j, family, name, allowed):
         if set(s) - {"run", "name", "if"} or s.get("if") != MODE_SNAPSHOT_IF:
             bad.append("step %d (the snapshot Witness step) may carry only name, run and if: %s" % (i, MODE_SNAPSHOT_IF))
         bad += witness_seam(s.get("run") or "", snap, family)
-    if spec.get("probe"):        # the sandbox wall probe (sandboxed-build rules 3 and 5): the dry run's step, never in a release
+    if spec.get("probe"):        # the sandbox wall probe (sandboxed-build rules 3 and 5): a step of every build, with no condition
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"name", "if", "run"} or s.get("if") != HOSTILE_IF or str(s.get("run") or "").strip() != PROBE_RUN:
-            bad.append("step %d must be exactly if: %s, run: %s (the dry run's sandbox wall probe; never in a release)" % (i, HOSTILE_IF, PROBE_RUN))
+        if set(s) - {"name", "run"} or str(s.get("run") or "").strip() != PROBE_RUN:
+            bad.append("step %d must be exactly run: %s with no if (the sandbox wall probe runs in every build)" % (i, PROBE_RUN))
     if spec.get("expose"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "run"} or s.get("id") != "digests" or str(s.get("run") or "").strip() != EXPOSE:
             bad.append("step %d must be exactly id: digests, run: %s (the stage output is the digests.json text, compact)" % (i, EXPOSE))
-    if spec.get("expose_rapk"):
+    if spec.get("records_file"):
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"id", "name", "if", "run"} or s.get("id") != "records" or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != exposerapk(spec["runner"]):
-            bad.append("step %d must be exactly id: records, if: %s, run: %s (the record digests of this apk job, a job output, release mode only)" % (i, MODE_RELEASE_IF, exposerapk(spec["runner"])))
+        if set(s) - {"name", "if", "run"} or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != RAPK_RECORDS_FILE:
+            bad.append("step %d must be exactly if: %s, run: %s (the record digests of this apk job, written to a file that is uploaded, release mode only; never a job output)" % (i, MODE_RELEASE_IF, RAPK_RECORDS_FILE))
     if spec.get("expose_records"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "if", "run"} or s.get("id") != "records" or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != EXPOSE_RECORDS:
             bad.append("step %d must be exactly id: records, if: %s, run: %s (the stage output is the record digests Sign checks, release mode only)" % (i, MODE_RELEASE_IF, EXPOSE_RECORDS))
-    if spec.get("hostile"):       # PR 1's static contract (bin/chain-hostile-test.sh): the dry run's hostile Build step, then its upload
+    if spec.get("hostile"):       # PR 1's static contract (bin/chain-hostile-test.sh) and REQ-CHAIN-004-AC19: the hostile Build step runs in every build, with no condition, then its upload
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"name", "if", "run"} or s.get("if") != HOSTILE_IF or str(s.get("run") or "").strip() != HOSTILE_RUN:
-            bad.append("step %d must be exactly if: %s, run: %s (the dry run's hostile Build step; never in a release)" % (i, HOSTILE_IF, HOSTILE_RUN))
+        if set(s) - {"name", "run"} or str(s.get("run") or "").strip() != HOSTILE_RUN:
+            bad.append("step %d must be exactly run: %s with no if (the hostile Build step runs in every build)" % (i, HOSTILE_RUN))
         s = steps[i] if i < len(steps) else {}; i += 1
-        if (set(s) - {"name", "if", "uses", "with"} or s.get("if") != HOSTILE_IF
-                or not pinned(s.get("uses"), "actions/upload-artifact", allowed) or (s.get("with") or {}) != HOSTILE_UP):
-            bad.append("step %d must be a pinned actions/upload-artifact of %s under if: %s" % (i, HOSTILE_UP, HOSTILE_IF))
+        if (set(s) - {"name", "uses", "with"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed) or (s.get("with") or {}) != HOSTILE_UP):
+            bad.append("step %d must be a pinned actions/upload-artifact of %s with no if" % (i, HOSTILE_UP))
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        want_if = ALWAYS if nm == VERDICT_ARTIFACT else (ADMISSION_IF if nm == "admission" else BASELINE_IF if nm == "admission-baseline" else None)      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
+        want_if = ALWAYS if nm == VERDICT_ARTIFACT else (ADMISSION_IF if nm == "admission" else BASELINE_IF if nm == "admission-baseline" else MODE_RELEASE_IF if nm.startswith("rebuild-records-") else None)      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
         if (set(s) - {"uses", "with", "name", "if"} or s.get("if") != want_if or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
                 or (s.get("with") or {}) != {"name": nm, "path": path_}):
             bad.append("step %d must be a pinned actions/upload-artifact with exactly name %s and the ONE path %s%s "
@@ -584,7 +564,7 @@ def job(j, family, name, allowed):
 # ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
 STEPS = ("apk", "build", "rapk", "rebuild",
          "snapshot-apk", "snapshot-build", "snapshot-rapk", "snapshot-rebuild",
-         "scanners", "acceptance", "runtime", "arm64",
+         "scanners", "acceptance", "runtime",
          "release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify")      # the closed list (PR 3 adds Check's three steps, PR 4 the six of Release); the record is witness-DIR/STEP-collection.json
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # Handoff 0713: the collection is signed with the release KMS key by its alias, by the one signing function (chain-verify.py sign-record), after Witness has run with a throwaway key. The identity
@@ -644,7 +624,7 @@ def witnessed_lines():
             'exit "$rc"']
 
 
-LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|scanners|acceptance|runtime|arm64"
+LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|release-verify|release-assets|release-postverify|scanners|acceptance|runtime"
 
 
 def local_lines():
@@ -906,13 +886,13 @@ NS_SHA = {
     "bin/build-apk-helper.py": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
-    "bin/chain-bytes-sha.py": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
+    "bin/chain-bytes-sha.py": "754ee5bb31f7cad861dbd44502ee2197e5120c12584895aaaa5ba890036c0d96",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
     "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
-    "bin/chain-verify.py": "2de75e08e4a6ad24c6b0a10a05d242b9379009c655c6af1daf4c94e9663d4c2e",
+    "bin/chain-verify.py": "1c07cd59f11fc42c73f055d4887cba4f2a3ac95daf5e8d15393415c60e7ca3a8",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "fb476b3e1a546263c9de35689bddac82be7f91c8f977655dee973b144702fb7b",
-    "bin/chain_items.py": "4d02cfe8da7c98eba2d9cc78f36bcafe6ccdad87639e9a1d04b701e23588d20e",
+    "bin/chain_items.py": "3a6aa1e9d4e3710533c47b754e7c27b8ca73c0582f584507164d49a63f269a69",
     "bin/go-module-sbom.py": "70dce4789b0cb905e496ad18d026877c01609fe0f86234f320b5ef1a8b296935",
     "bin/install-host-bwrap.py": "d980094338b3a8f12019d0066090bc564ce50f5d3bd06d6a3205b221cbffdf9d",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
@@ -1366,36 +1346,38 @@ SHELL_LINES = {      # per shell helper: its commands (comments and blank lines 
 
 
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
-CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml",
-         "sign-rebuild": "stage-sign.yml", "check": "stage-verify.yml", "sign-check": "stage-sign.yml", "release": "stage-promote.yml"}
-# Check needs exactly build (REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side; Codex B r2 R3). Release needs all three.
-# The Witness move (owner Oct 22 2026): the building jobs' records are signed by Sign, so Rebuild and Check start after Sign (they verify Build's record as Sign
-# signed it), and Rebuild's own records are signed by Sign's second call after Rebuild. Release needs Check, Sign and Sign-rebuild (it reaches Rebuild through it).
-NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build", "sign"], "sign-rebuild": ["build", "rebuild"], "check": ["build", "sign"],
-         "sign-check": ["build", "check"], "release": ["check", "sign", "sign-check", "sign-rebuild"]}
-
-
-# The `if` of the chain jobs (REQ-CHAIN-005-AC5). ONE gate G, the same exact text on build and sign: the chain starts on a v* tag PUSH, or in a dry-run
-# dispatch on any branch. (A manual workflow_dispatch on an existing v* tag is therefore NOT a release run: its event is not push and its dry-run is
-# not true.) rebuild and check carry no if: they run after build through needs. release carries exactly !inputs.dry-run (a dry run neither tags
-# nor publishes; on a tag push inputs.dry-run is null, so it runs). No !cancelled(), no needs.admission: admission is gone in PR 2's graph and
-# build needs nothing. PR 1's release.yml has other strings (`!inputs.dry-run && ...` conjuncts on other jobs, `if: ${{ inputs.dry-run }}` on sign):
-# at the merge of PR 1 into chain-v030 they are replaced by these.
-GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
-RELEASE_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
+# REQ-CHAIN-005-AC5 and the rulings of cache#921: release.yml is ONE file, each stage step its own job on its own runner. The chain jobs, each with its exact needs, permissions, environment and if.
+GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true || inputs.mode == 'snapshot' }}"      # gate G, on build-freeze only: a tag push, a dry-run dispatch or a snapshot call
+GUARD_S = ("inputs.mode != 'snapshot' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && "
+           "startsWith(github.workflow_ref, format('{0}/.github/workflows/release.yml@', github.repository))")      # guard S: a v* tag push of release.yml itself, never in snapshot mode or under a workflow_call
+SIGN_IF = "${{ %s }}" % GUARD_S                                                    # sign, sign-rebuild, sign-check
+AFTER_IF = "${{ %s && !contains(github.ref_name, '-') }}" % GUARD_S                # release, sign-release, release-evidence: a release candidate publishes nothing and never enters the environments release or sign
+CHECK_IF = "${{ inputs.mode != 'snapshot' }}"                                     # check-govulncheck and check
+PERM_READ = {"contents": "read"}
+SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
+CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
+    "build-freeze": dict(needs=[], perm=PERM_READ, if_=GATE, env=None),
+    "build-apk": dict(needs=["build-freeze"], perm=PERM_ADMIT, if_=None, env=None),
+    "build-assemble": dict(needs=["build-apk"], perm=PERM_READ, if_=None, env=None),
+    "sign": dict(needs=["build-assemble"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
+    "rebuild-apk": dict(needs=["build-assemble"], perm=PERM_READ, if_=None, env=None),
+    "rebuild-assemble": dict(needs=["rebuild-apk"], perm=PERM_READ, if_=None, env=None),
+    "sign-rebuild": dict(needs=["build-assemble", "rebuild-assemble"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
+    "check-govulncheck": dict(needs=[], perm=PERM_READ, if_=CHECK_IF, env=None),
+    "check": dict(needs=["build-assemble", "check-govulncheck", "sign"], perm=PERM_READ, if_=CHECK_IF, env=None),
+    "sign-check": dict(needs=["build-assemble", "check"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
+    "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
+    "release-verify": dict(needs=["release-compare"], perm=PERM_READ, if_=None, env=None),
+    "release": dict(needs=["release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role (ruling 1)
+    "sign-release": dict(needs=["release"], perm={"contents": "read", "id-token": "write", "packages": "write"}, if_=AFTER_IF, env="sign"),
+    "release-evidence": dict(needs=["sign-release"], perm={"contents": "write"}, if_=AFTER_IF, env=None),      # no environment, no KMS role, no identity token (ruling 2)
+}
+CHAIN = sorted(CHAIN_SPEC)
+RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
 # patch-failed also fires when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, a third queued tag run replaces it, and
 # the replaced run ends as cancelled, which failure() does not see
-PATCH_FAILED_IF = "${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
-RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
-GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
-RC_PUSH = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
-BUILD_WITH = {"hostile": "${{ %s }}" % RC_PUSH}      # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
-SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
-# PR 1's stage-sign.yml takes exactly ONE input, digests (Build's record is downloaded by the fixed artifact name witness-build, not passed). PR 1's
-# placeholder needs.build.outputs.checksums (raw checksums.txt text) is replaced at the cutover by Build's digests output, the digests.json text.
-SIGN_WITH = {"sign": {"digests": "${{ needs.build.outputs.digests }}", "stage": "build"},
-             "sign-rebuild": {"digests": "${{ needs.build.outputs.digests }}", "stage": "rebuild", "records": "${{ needs.rebuild.outputs.records }}"},
-             "sign-check": {"digests": "${{ needs.build.outputs.digests }}", "stage": "check", "records": "${{ needs.check.outputs.records }}", "records-arm64": "${{ needs.check.outputs.records-arm64 }}"}}
+PATCH_FAILED_IF = "${{ inputs.mode != 'snapshot' && always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+STATUS_FUNCTION = re.compile(r"always\(\)|cancelled\(\)|failure\(\)|success\(\)")     # a status function in a chain job's if lets it run after a failed predecessor
 
 # The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
 # (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter.
@@ -1404,9 +1386,9 @@ SIGN_WITH = {"sign": {"digests": "${{ needs.build.outputs.digests }}", "stage": 
 # REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
 PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
-LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
-LIVE_TEST_FINAL_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
-PERSONA_RC_IF = "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+LIVE_TEST_RC_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+LIVE_TEST_FINAL_IF = "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+PERSONA_RC_IF = "${{ inputs.mode != 'snapshot' && vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
 # The persona job's only secrets (REQ-UAT-001-AC1, the persona-uat environment): the model names and the federation identifiers. It holds no registry credential or write token.
 # The live-test environment's Docker Hub credentials (REQ-SCAN-012-AC1, amended on the advisor reading of Oct 17): the test user and its push token (an organization access token
 # scoped to the test repository only) and the read-only Scout token with its user; the same four in both live-test jobs, nothing else
@@ -1440,14 +1422,15 @@ def names_secrets(obj):
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": False, "if": DECIDE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
-    "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
+    "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": CHAIN},
     # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
     # else), after Check on a release candidate and after Release on a final tag; they publish nothing, hold no secrets but the live-test environment's four Docker Hub test credentials (LIVE_TEST_SECRETS), and cannot run in the dry run.
+    # They stay in release.yml, guarded off in snapshot mode and under workflow_call, in their own environments with the identity token for their own federations only (ruling 8), never the KMS role.
     "live-test": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["check"], "if": LIVE_TEST_RC_IF, "secrets": LIVE_TEST_SECRETS},
     "live-test-release": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["release"], "if": LIVE_TEST_FINAL_IF, "secrets": LIVE_TEST_SECRETS},
-    # The persona UAT of a release candidate (REQ-UAT-001-AC1): after Build only, against Build's own layout loaded into a registry on the runner; the persona-uat environment
-    # holds the model secrets and nothing else; contents read and the federated token (id-token write), no registry credential, no write.
-    "persona-uat": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "persona-uat", "needs": ["build"], "if": PERSONA_RC_IF, "secrets": PERSONA_SECRETS},
+    # The persona UAT of a release candidate (REQ-UAT-001-AC1): the ONE job-level call of persona-uat.yml (which holds the persona jobs and their environment), in release mode only, after
+    # Build only; contents read and the federated token (id-token write) for the persona federation, no registry credential, no write, never the KMS role.
+    "persona-uat-rc": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "needs": ["build-assemble"], "if": PERSONA_RC_IF, "uses": "./.github/workflows/persona-uat.yml"},
 }
 HOSTILE = {"perm": {"contents": "read"}, "agent": False}
 
@@ -1477,64 +1460,57 @@ def graph(path):
     except yaml.YAMLError as e:
         return ["%s cannot be read as a workflow: %s" % (path, str(e).replace("\n", " ")[:160])]
     jobs, bad = d.get("jobs") or {}, []
-    if d.get("permissions") != {"contents": "read"}:
-        bad.append("workflow-level permissions must be exactly contents: read (every job asks for what it needs), got %s" % d.get("permissions"))
+    if d.get("permissions") != {}:
+        bad.append("workflow-level permissions must be empty, permissions: {} (every job declares its own), got %s" % d.get("permissions"))
     dispatch = ((d.get("on") or {}).get("workflow_dispatch") or {}) if isinstance(d.get("on"), dict) else {}
     dry = (dispatch.get("inputs") or {}).get("dry-run") if isinstance(dispatch, dict) else None
     if dry is not None and (dry or {}).get("type") != "boolean":
         bad.append("on.workflow_dispatch.inputs.dry-run must be type: boolean (a string input makes `inputs.dry-run == true` false and silently skips "
                    "the dry run), got %s" % (dry or {}).get("type"))
-    for name, file in CHAIN.items():
-        job = jobs.get(name)
+    for name in CHAIN:
+        job, spec = jobs.get(name), CHAIN_SPEC[name]
         if job is None:
             bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % name); continue
         # `concurrency` is allowed on the release job ONLY, and must be exactly the constant group with cancel-in-progress false (release review R3, Oct 22:
         # bin/release-publish.sh decides :X and :latest from the registry's tag list, so two release runs must not interleave; a cancelling or per-ref group
         # would kill a publication half way or not serialize at all). On any other chain job it stays outside the allowed keys.
-        extra = set(job) - {"uses", "needs", "permissions", "with", "if"} - ({"concurrency"} if name == "release" else set())
+        extra = set(job) - {"runs-on", "needs", "permissions", "steps", "strategy", "outputs", "if", "environment", "env", "timeout-minutes", "name"} - ({"concurrency"} if name == "release" else set())
         if name == "release" and (job.get("concurrency") != {"group": "release-publish", "cancel-in-progress": "false"} or not RELEASE_CONCURRENCY_LINE.search(raw_text)):
             # this loader keeps every scalar as text, so the quoted string "false" cannot be told from the boolean: the raw file must hold the unquoted line
             bad.append("release must hold exactly the concurrency {group: release-publish, cancel-in-progress: false} with the unquoted line `cancel-in-progress: false` (two publications must not interleave; actionlint refuses a quoted string), got %r" % (job.get("concurrency"),))
         if extra:
-            bad.append("%s: keys outside {uses, needs, permissions, with} and build's one if: %s (no continue-on-error, secrets, strategy, env)"
-                       % (name, sorted(extra)))
-        if name in GATED:
-            if job.get("if") != GATE:
-                bad.append("%s must carry exactly one if, the gate %s, got %r" % (name, GATE, job.get("if")))
-        elif name == "release":
-            if job.get("if") != RELEASE_IF:
-                bad.append("release must carry exactly the if %s (a dry run publishes nothing), got %r" % (RELEASE_IF, job.get("if")))
-        elif "if" in job:
-            bad.append("%s may not carry an if (it runs after build through needs), got %r" % (name, job["if"]))
-        if name == "rebuild" and "with" in job:
-            bad.append("rebuild may not pass inputs (stage-reproducibility.yml takes none; a mode there would make a snapshot Rebuild), got %s" % job["with"])
-        if name == "build" and job.get("with") != BUILD_WITH:
-            bad.append("build must pass exactly with: %s (the hostile Build step runs only on a push of an rc tag), got %s" % (BUILD_WITH, job.get("with")))
-        if name in SIGN_WITH:
-            if job.get("permissions") != SIGN_PERMISSIONS:
-                bad.append("sign must hold exactly the permissions %s, got %s" % (SIGN_PERMISSIONS, job.get("permissions")))
-            with_ = job.get("with") or {}
-            if with_ != SIGN_WITH[name]:
-                bad.append("%s must pass exactly with: %s (the digests.json text of build's output and the stage it signs; stage-sign.yml takes no other input), got %s"
-                           % (name, SIGN_WITH[name], with_))
-        if job.get("uses") != "./.github/workflows/" + file:
-            bad.append("%s must call exactly ./.github/workflows/%s, got %r" % (name, file, job.get("uses")))
-        if sorted(needs_of(job)) != NEEDS[name]:
-            bad.append("%s must need exactly %s, got %s" % (name, NEEDS[name], sorted(needs_of(job))))
-        if "secrets." in json.dumps(job) or "environment" in job:
-            bad.append("%s names secrets. or an environment (a chain job calls its stage with nothing of the kind)" % name)
+            bad.append("%s: keys outside the allowlist: %s (no continue-on-error, secrets, container, services, defaults, uses)" % (name, sorted(extra)))
+        if job.get("if") != spec["if_"]:
+            bad.append("%s must carry %s, got %r%s" % (name, "exactly the if %s" % spec["if_"] if spec["if_"] else "no if (it runs after its needs)", job.get("if"),
+                       " (a status function such as always() or !cancelled() lets a job run after a failed predecessor)" if STATUS_FUNCTION.search(str(job.get("if", ""))) else ""))
+        if job.get("permissions") != spec["perm"]:
+            bad.append("%s must hold exactly the permissions %s, got %s" % (name, spec["perm"], job.get("permissions")))
+        if job.get("environment") != spec["env"]:
+            bad.append("%s must be %s, got %r" % (name, "in the environment %s" % spec["env"] if spec["env"] else "in no environment", job.get("environment")))
+        if sorted(needs_of(job)) != spec["needs"]:
+            bad.append("%s must need exactly %s, got %s" % (name, spec["needs"], sorted(needs_of(job))))
+        if "uses" in job:
+            bad.append("%s has a job-level uses (%s): the jobs of the chain are jobs of this file" % (name, job["uses"]))
+        if name in ("sign", "sign-rebuild", "sign-check", "sign-release") and job.get("env", {}).get("AWS_ROLE_ARN") is None:
+            bad.append("%s must carry the KMS role in its job env (AWS_ROLE_ARN): the four sign jobs hold it and no other job does" % name)
+        if name not in ("sign", "sign-rebuild", "sign-check", "sign-release") and "AWS_ROLE_ARN" in json.dumps(job):
+            bad.append("%s names AWS_ROLE_ARN: only the four sign jobs ask for the KMS role" % name)
+        if name not in ("sign", "sign-rebuild", "sign-check", "sign-release") and "id-token" in (job.get("permissions") or {}):
+            bad.append("%s asks for an identity token: only the four sign jobs of the chain do" % name)
+        if names_secrets({k: v for k, v in job.items() if k != "steps"}) or ("secrets." in json.dumps(job) and name not in ("release", "sign-release")):
+            bad.append("%s names the secrets context (only release and sign-release read the registry credentials)" % name)
     for name, job in jobs.items():
-        if name in CHAIN:
+        if name in CHAIN_SPEC:
             continue
         job = job or {}
         granted = job.get("permissions", d.get("permissions"))
-        if "uses" in job:
-            bad.append("job %s has a job-level uses (%s): only the five chain jobs call a workflow" % (name, job["uses"]))
+        spec = HOSTILE if name.startswith("hostile-") else NON_CHAIN.get(name)
+        if "uses" in job and not (spec and spec.get("uses") == job["uses"]):
+            bad.append("job %s has a job-level uses (%s): only persona-uat-rc calls a workflow, persona-uat.yml" % (name, job["uses"]))
         if name == "patch-failed" and job.get("if") != PATCH_FAILED_IF:
             bad.append("patch-failed must carry exactly the if %s (a cancelled, replaced release opens an issue too), got %r" % (PATCH_FAILED_IF, job.get("if")))
-        spec = HOSTILE if name.startswith("hostile-") else NON_CHAIN.get(name)
         if spec is None:
-            bad.append("job %s is not one of the five chain jobs or the allowed non-chain jobs %s plus hostile-*" % (name, sorted(NON_CHAIN)))
+            bad.append("job %s is not one of the chain jobs or the allowed non-chain jobs %s plus hostile-*" % (name, sorted(NON_CHAIN)))
             continue
         if granted != spec["perm"]:
             bad.append("job %s must hold exactly the permissions %s, got %s" % (name, spec["perm"], granted))
@@ -1550,7 +1526,7 @@ def graph(path):
             if names_secrets(job): bad.append("job %s may not use secrets. (only patch-notes holds the App's)" % name)
         if "if" in spec and job.get("if") != spec["if"]:
             bad.append("job %s must carry exactly the if %s, got %r" % (name, spec["if"], job.get("if")))
-        if "needs" in spec and sorted(needs_of(job)) != spec["needs"]:
+        if "needs" in spec and sorted(needs_of(job)) != sorted(spec["needs"]):
             bad.append("job %s must need exactly %s, got %s" % (name, spec["needs"], sorted(needs_of(job))))
     return bad
 
@@ -1603,18 +1579,16 @@ def callers(path):
 
 # ---- no other workflow file is added (REQ-CHAIN-004-AC1) -------------------------------------------------------------------------------
 KNOWN_WORKFLOWS = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
-go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml stage-acceptance-artifacts.yml
-stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml stage-admission.yml stage-authorize.yml stage-build.yml
-stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml supply-chain.yml""".split())    # the v0.2.2 set; PRs 2-4 only remove from it
+go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml supply-chain.yml""".split())    # the v0.2.2 set that stays; every stage-*.yml is gone
 
 
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml", "customer-words-edited.yml"})
-    only = "(the only new files of v0.3.0 are stage-sign.yml, rule 52, and customer-words-edited.yml, decision 98)"
+    added = sorted(have - KNOWN_WORKFLOWS - {"persona-uat.yml", "customer-words-edited.yml"})
+    only = "(the only new files of v0.3.0 are persona-uat.yml, REQ-UAT-001, and customer-words-edited.yml, decision 98; release.yml is the one file of the release chain)"
     bad = ["workflow file %s was added %s" % (f, only) for f in added]
-    return bad + ["%s still exists (PR 2 removes it, rules 50 and 61)" % f for f in ("stage-image.yml", "stage-admission.yml") if f in have]
+    return bad + ["%s still exists (the stage files are folded into release.yml, REQ-CHAIN-005-AC5)" % f for f in sorted(have) if f.startswith("stage-")]
 
 
 # ---- the Witness record -------------------------------------------------------------------------------------------------------------
