@@ -651,6 +651,11 @@ rc, log = go(last, [("success", VER)], waits="true")
 if "the reviewer approved the current head" not in LASTOUT or "auto-merge stands" not in LASTOUT:
     bad.append("a success of the current version on a major's head: the step says the reviewer approved the head and "
             "auto-merge stands\n%s" % LASTOUT)
+# the verdict counts but auto-merge is not armed: "stands" would be false, the step says it is not armed
+rc, log = go(last, [("success", VER)], armed="false", waits="true")
+if rc != 0 or "--disable-auto" in log or "not armed" not in LASTOUT or "stands" in LASTOUT:
+    bad.append("a success of the current version on a major's head that is not armed: the step says auto-merge is "
+            "not armed and never that it stands (rc %s)\n%s" % (rc, LASTOUT))
 for what, runs in (("another version", [("failure", OLDVER)]), ("no external_id", [("failure", None)])):
     for waits in ("false", "true"):
         rc, log = go(last, runs, waits=waits)
