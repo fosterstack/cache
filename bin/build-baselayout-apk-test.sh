@@ -48,8 +48,11 @@ assert len(hit) == 1, hit
 lines[hit[0]] = swap
 open(out, "w").write("\n".join(lines))
 PY
-printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
-  "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)" >"$work/py3-shim"
+{
+  printf '#!/bin/bash\nif [ "${3:-}" = bin/build-apk-helper.py ]; then '
+  printf 'exec "%s" -I -B "%s" "${@:4}"; fi\nexec "%s" "$@"\n' \
+    "$(command -v python3)" "$work/helper-copy.py" "$(command -v python3)"
+} >"$work/py3-shim"
 chmod +x "$work/py3-shim"
 mkcopy() {   # mkcopy OUT RECIPE: a copy of the script with the tool locations of the stubs and RECIPE as the recipe
   [ -f "$BB" ] || { printf '#!/bin/bash\necho "build-baselayout-apk.sh is missing" >&2\nexit 127\n' >"$1"; chmod +x "$1"; return 0; }   # no script yet: every case fails, none aborts
