@@ -269,21 +269,37 @@ def check_ancestor_of_main(ctx):
 
 # ---------------------------------------------------------------- 8. audit-approval (REQ-REL-012-AC7)
 
+def is_on_main(path):
+    """True when origin/main has the file; only a path that is not in its tree is absent, any git error refuses."""
+    rc, out, err = outcome(lambda: subprocess.run(["git", "ls-tree", "--name-only", "origin/main", "--", path],
+        capture_output=True, check=False))
+    if rc != 0:
+        raise Refusal("audit-approval", "git could not list origin/main: %s" % one_line(text(err), 300))
+    return out.strip() != b""
+
+
+def copy_into(root, path, data):
+    os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
+    with open(os.path.join(root, path), "wb") as fh:
+        fh.write(data)
+
+
 def check_audit_approval(ctx):
     """Release process rule 7: a tag that is not a patch tag needs the passed-audit record of the tagged commit AND the owner's
     `Audit-approved: <record commit>` line in the signed tag message (the signature was verified above, so the line is the owner's).
     The decision is main's judge (bin/audit-record-judge.sh --release), the only place that knows what a patch tag is: it reads no record
     for one. Exit 0 passes; exit 1 (no or bad record, no or ambiguous line), exit 3 (a GitHub API error) and anything else refuse."""
     root = os.path.join(ctx.tmp, "audit-root")
-    for path in AUDIT_FILES + (AUDIT_ITEMS,):
+    for path in AUDIT_FILES:
         data = git_show("origin/main:" + path)
-        if data is None and path == AUDIT_ITEMS:
-            continue
         if data is None:
             raise Refusal("audit-approval", "%s is not on origin/main, so the whole-release audit cannot be judged" % path)
-        os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
-        with open(os.path.join(root, path), "wb") as fh:
-            fh.write(data)
+        copy_into(root, path, data)
+    if is_on_main(AUDIT_ITEMS):
+        data = git_show("origin/main:" + AUDIT_ITEMS)
+        if data is None:
+            raise Refusal("audit-approval", "%s is on origin/main but cannot be read, so the whole-release audit cannot be judged" % AUDIT_ITEMS)
+        copy_into(root, AUDIT_ITEMS, data)
     judge = os.path.join(root, AUDIT_FILES[0])
     rc, out, err = outcome(lambda: subprocess.run(["bash", judge, ctx.sha, "main", "--release", ctx.tag, ctx.tag_object],
         capture_output=True, check=False))
