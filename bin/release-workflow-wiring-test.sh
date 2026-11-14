@@ -359,8 +359,8 @@ if "check" in jobs:
     for k in ("container", "services", "env", "defaults", "secrets", "environment"):
         if k in j:
             bad.append("check carries %s" % k)
-    if sorted((j.get("outputs") or {})) != ["records", "records-arm64"]:
-        bad.append("check does not expose its record digests as one output per chip (records and records-arm64): %s" % (j.get("outputs") or {}))
+    if (j.get("outputs") or {}) or "outputs" in j:
+        bad.append("check has job outputs (a matrix job keeps one output per key, so two chips cannot both set records): its records travel as one artifact per architecture: %s" % (j.get("outputs") or {}))
     r = [s.get("run", "").strip() for s in steps_of(j) if "witnessed-local.sh" in (s.get("run") or "")]
     if r != ["bash bin/witnessed-local.sh %s bin/check-phase.sh %s" % (x, x) for x in ("scanners", "acceptance", "runtime")]:
         bad.append("check does not run exactly the three single-line steps `bash bin/witnessed-local.sh STEP bin/check-phase.sh STEP` (scanners, acceptance, runtime in that order): %s" % r)
@@ -372,9 +372,21 @@ if "check" in jobs:
     ups = [(s.get("with") or {}).get("name", "") for s in steps_of(j) if "actions/upload-artifact@" in str(s.get("uses"))]
     if not any(u.startswith("witness-check-") for u in ups) or not any(u.startswith("check-results-") for u in ups):
         bad.append("check does not upload witness-check-<runner> and check-results-<runner>: %s" % ups)
+    if not any(u.startswith("check-records-") for u in ups):
+        bad.append("check does not upload one record artifact per architecture (check-records-<runner>): %s" % ups)
     dl = [(s.get("with") or {}) for s in steps_of(j) if "actions/download-artifact@" in str(s.get("uses"))]
     if sum(1 for w in dl if w.get("name") == "images") != 1:
         bad.append("check does not download the images artifact exactly once")
+if "rebuild-apk" in jobs:
+    j = jobs["rebuild-apk"]
+    if "outputs" in j:
+        bad.append("rebuild-apk has job outputs (a matrix job keeps one output per key): its records travel as one artifact per architecture: %s" % (j.get("outputs"),))
+    ups = [(s.get("with") or {}).get("name", "") for s in steps_of(j) if "actions/upload-artifact@" in str(s.get("uses"))]
+    if not any(u.startswith("rebuild-records-") for u in ups):
+        bad.append("rebuild-apk does not upload one record artifact per architecture (rebuild-records-<runner>): %s" % ups)
+for jn in SIGN_JOBS:
+    if jn in jobs and re.search(r"needs\.(check|rebuild-apk)\.outputs", text_of(jobs[jn])):
+        bad.append("sign job %s reads record digests from needs.%s.outputs: it reads the downloaded record artifacts" % (jn, "check or rebuild-apk"))
 if not os.path.exists(os.path.join(root, "bin/check-phase.sh")):
     bad.append("bin/check-phase.sh (the one Check script on both chips) does not exist")
 if os.path.exists(os.path.join(root, "bin/check-phase-arm64.sh")):
@@ -587,7 +599,12 @@ case_ check-per-phase-script  bad "arm64 script or a per-phase script" "hit(s.__
 case_ check-phase-order       bad "does not run exactly the three single-line steps" "$J['check']['steps'] = [s for s in $J['check']['steps'] if 'witnessed-local.sh runtime' not in (s.get('run') or '')]"
 case_ check-phase-two-lines   bad "does not run exactly the three single-line steps" "hit(s.__setitem__('run', s['run'] + ' && true') for s in $J['check']['steps'] if 'witnessed-local.sh acceptance' in (s.get('run') or ''))"
 case_ check-no-grype          bad "does not install, in this order" "$J['check']['steps'] = [s for s in $J['check']['steps'] if 'install-scanner.sh grype' not in (s.get('run') or '')]"
-case_ check-outputs-one       bad "one output per chip" "$J['check']['outputs'].pop('records-arm64')"
+case_ check-outputs-record    bad "check has job outputs" "$J['check']['outputs'] = {'records': \"\${{ steps.w.outputs.records }}\"}"
+case_ check-outputs-per-chip  bad "check has job outputs" "$J['check']['outputs'] = {'records': 'a', 'records-arm64': 'b'}"
+case_ check-no-record-upload  bad "does not upload one record artifact per architecture" "$J['check']['steps'] = [s for s in $J['check']['steps'] if not str((s.get('with') or {}).get('name', '')).startswith('check-records-')]"
+case_ rebuild-apk-outputs     bad "rebuild-apk has job outputs" "$J['rebuild-apk']['outputs'] = {'records': 'x'}"
+case_ rebuild-apk-no-record-upload bad "rebuild-apk does not upload one record artifact" "$J['rebuild-apk']['steps'] = [s for s in $J['rebuild-apk']['steps'] if not str((s.get('with') or {}).get('name', '')).startswith('rebuild-records-')]"
+case_ sign-check-digests-from-needs bad "reads record digests from needs" "$J['sign-check']['steps'].append({'run': 'x', 'env': {'D': \"\${{ needs.check.outputs.records }}\"}})"
 case_ check-images-twice      bad "images artifact exactly once" "$J['check']['steps'].append({'uses': 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'with': {'name': 'images', 'path': 'images'}})"
 case_ check-no-result-uploads bad "does not upload witness-check-<runner>" "$J['check']['steps'] = [s for s in $J['check']['steps'] if 'upload-artifact' not in str(s.get('uses'))]"
 case_ govulncheck-matrix      bad "check-govulncheck is not one job" "$J['check-govulncheck']['strategy'] = {'matrix': {'r': ['a']}}"
