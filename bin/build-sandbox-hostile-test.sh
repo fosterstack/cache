@@ -119,8 +119,8 @@ d = sys.argv[1] + "/build/probe/"
 want = {"read-record": ["cat @RECORD@", "/home/build/witness-apk/apk-collection.local.json"],
         "write-record": [">> @RECORD@"],
         "read-keydir": ["@KEYDIR@/dummy"],
-        "read-token": ["ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "cut -d = -f 1"],
-        "network": ["192.0.2.1:9", "/proc/net/route"]}
+        "read-token": ["ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME_TOKEN|GH_TOKEN|GITHUB_TOKEN", "AWS_", "cut -d = -f 1"],
+        "network": ["/proc/net/route", "ipv6"]}
 for k, v in want.items():
     for x in v: assert x in open(d + k + ".yaml.tmpl").read(), (k, x)
 PY
@@ -128,12 +128,12 @@ t "AC5" "the control reads the route table the network wall depends on" \
   grep -q 'cat /proc/net/route' "$root/build/probe/control.yaml.tmpl"
 # the six templates are bound by hash: a template-only change must change a hash here (the hashes are data, no
 # template text)
-HASHES="277db462b97327e3cbc0731850f96c951f6fb64b81538930b588c851faa7fac3  build/probe/control.yaml.tmpl
-6a8c80b624b77ebb004ef2528260bbfdae119e3aab290435d8c4b71e4096d3fc  build/probe/read-record.yaml.tmpl
-8cbe432aa1741f9903fb2bd8419a0c27288270a056a4a4b855a43673b92f4bdb  build/probe/write-record.yaml.tmpl
-32d50e8b55421866d20bbc620e8b7dd0fc7d8d3646eac82ee4467220e9083e9e  build/probe/read-keydir.yaml.tmpl
-9f365493701556423ef2622e76a46e414191acb745c1e56ffb8f6247bdf36208  build/probe/read-token.yaml.tmpl
-b7e43370bc58dfdeb3ad3c140c0651a523c6624e20f14e8169d562e9d843c095  build/probe/network.yaml.tmpl"
+HASHES="4001dd1ab79625d0cd0cb6973ff669f0d6804a0ac91e544e3cf93480e9146970  build/probe/control.yaml.tmpl
+9f9ea91f8921a00001aaaead09c6bdf0c4ef18734a6c7a6827c5ff60bb689223  build/probe/read-record.yaml.tmpl
+df707bfb928110a6e64a8e59348518ea7b1059d028a91f7cb708891170177cca  build/probe/write-record.yaml.tmpl
+12cfdd0158eb21599faa6e61195fcc907c1b324b596dfb43720178571db46eb5  build/probe/read-keydir.yaml.tmpl
+82f2ebf932271a9d691cef7da932c0a84f4e2ab59624adc4cec14589af468501  build/probe/read-token.yaml.tmpl
+e1793239e22eedbdf02b1b955293223e788a9ead4de20807a8e4881f1a3cec9c  build/probe/network.yaml.tmpl"
 t "AC5" "the six templates equal the hashes bound in this test" \
   bash -c "cd '$root' && printf '%s\\n' \"\$0\" | sha256sum -c --quiet -" "$HASHES"
 

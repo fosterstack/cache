@@ -163,6 +163,9 @@ def judge_wf(d, real=False):
         bad.append("daily-audit does not run on the schedule")
     if ".github/agent/supply-chain/pin-audit.py" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])) or "--rerun-held" in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("daily-audit must run .github/agent/supply-chain/pin-audit.py without --rerun-held")
+    pull_fetches = [st for st in j.get("steps", []) if "git fetch" in str(st.get("run", "")) and "refs/pull" in str(st.get("run", ""))]
+    if pull_fetches:
+        bad.append("daily-audit has a step that runs git fetch of refs/pull: the history is read from main only")
     # rerun-held
     j = jobs["rerun-held"]
     if j.get("permissions") != {"actions": "write", "contents": "read", "pull-requests": "read", "checks": "read"}:
@@ -434,6 +437,8 @@ except Exception as e:
 real_db = load(DB)
 
 passed = failed = 0
+def J_real_steps(): return ((real_wf or {}).get("jobs") or {}).get("daily-audit", {}).get("steps", [])
+
 def result(ok, msg):
     global passed, failed
     if ok: passed += 1; print("ok  ", msg)
@@ -447,6 +452,8 @@ dd = dup_keys(real_text.replace("\nconcurrency:\n", "\nconcurrency: {group: shar
 result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a parse would keep the last value)" + ("" if dd else "; saw nothing"))
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
+pf = [st for st in J_real_steps() if "git fetch" in str(st.get("run", "")) and "refs/pull" in str(st.get("run", ""))]
+result(not pf, "the real daily-audit job has no step that runs git fetch of refs/pull" + ("" if not pf else ": " + "; ".join(str(st.get("run", "")) for st in pf)))
 b = judge_db(real_db)
 result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on the root gomod entry, the tools/requirements and govulncheck tool entries weekly with their own 7-day cooldown, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
@@ -644,7 +651,13 @@ mut_wf("the observations expire in a day", "does not keep the tag observations",
 mut_wf("the PR job writes observations", "only daily-audit may write the tag observations", lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("the audit stops writing observations", "does not write the tag observations", lambda d: [x.update(run=x["run"].replace("--observations-out", "--quiet")) for x in J(d, "daily-audit")["steps"] if "run" in x])
 mut_wf("daily-audit re-runs PRs itself", "daily-audit must run .github/agent/supply-chain/pin-audit.py without --rerun-held", lambda d: [x.update(run=x["run"] + " --rerun-held") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
-mut_wf("rerun-held loses actions: write", "rerun-held's permissions are not exactly", lambda d: J(d, "rerun-held")["permissions"].pop("actions"))
+FETCH_REASON = "daily-audit has a step that runs git fetch of refs/pull"
+mut_wf("daily-audit gains a pull request fetch", FETCH_REASON,
+       lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'"}))
+mut_wf("daily-audit gains a pull request fetch with a token", FETCH_REASON,
+       lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin 'refs/pull/*/head:refs/pull/*/head'",
+                                                         "env": {"GH_TOKEN": "${{ github.token }}"}}))
+mut_wf("rerun-held loses actions: write","rerun-held's permissions are not exactly", lambda d: J(d, "rerun-held")["permissions"].pop("actions"))
 mut_wf("rerun-held gains issues: write", "can write issues", lambda d: J(d, "rerun-held")["permissions"].update(issues="write"))
 mut_wf("rerun-held never re-runs", "does not run .github/agent/supply-chain/pin-audit.py --rerun-held", lambda d: J(d, "rerun-held").update(steps=[s for s in J(d, "rerun-held")["steps"] if "--rerun-held" not in str(s.get("run", ""))]))
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))

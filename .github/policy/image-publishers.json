@@ -1,5 +1,5 @@
 {
-  "_note": "Who signs each third-party image outside ghcr.io and Docker Hub, pinned by hand: adding an image needs its publisher's identity here, never discovered at run time. A keyed publisher is its published public key; a keyless one is an OIDC issuer and subject.",
+  "_note": "Who signs each third-party image outside ghcr.io and Docker Hub, pinned by hand: adding an image needs its publisher's identity here, never discovered at run time. An entry is named by an image or by a registry. A keyed publisher is its published public key; a keyless one is an OIDC issuer and subject; a publisher that signs nothing has an unsigned reason, and the check prints it as no signature published. An image on a registry named nowhere here fails.",
   "gcr.io/projectsigstore/cosign": {
     "key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhyQCx0E9wQWSFI9ULGwy3BuRklnt\nIqozONbbdbqz11hlRJy9c7SG+hdcFl9jE9uE/dwtuwU2MqU9T/cN0YkWww==\n-----END PUBLIC KEY-----\n",
     "key_source": "https://github.com/sigstore/cosign/blob/main/release/release-cosign.pub (sha256 of the DER key, base64: rbgIqwcUgkJ7ehNbmfZAWAVTdXxGRUtJ1tryJ8Ga748=)"

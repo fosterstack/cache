@@ -897,8 +897,9 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false
   goget="$(grep -cE '^go get ' "$shim" 2>/dev/null)"; goget="${goget:-0}"
   tidy="$(grep -cE '^go mod tidy' "$shim" 2>/dev/null)"; tidy="${tidy:-0}"
   addonly="$(grep -cE '^gh api graphql createCommitOnBranch auditor/bump-[^ ]+ -- go\.mod go\.sum$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
-  { [ "$bump" -ge 1 ] 2>/dev/null && [ "$baserb" -eq 0 ] 2>/dev/null && [ "$goget" -ge 1 ] 2>/dev/null && [ "$tidy" -ge 1 ] 2>/dev/null && [ "$addonly" -ge 1 ] 2>/dev/null; } \
-    && ok || no "draft bump PR delivered via go get/tidy + a signed API commit of go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy signed_commit_gomod_gosum=$addonly"; }
+  { [ "$bump" -ge 1 ] 2>/dev/null && [ "$baserb" -eq 0 ] 2>/dev/null &&
+    [ "$goget" -ge 1 ] 2>/dev/null && [ "$tidy" -ge 1 ] 2>/dev/null && [ "$addonly" -ge 1 ] 2>/dev/null; } &&
+    ok || no "draft bump PR delivered via go get/tidy + a signed API commit of go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy signed_commit_gomod_gosum=$addonly"; }
 
 begin "req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" "the workflow's run step invokes auditor-run.py with the dispatch dry_run input"
 if ! have "$WF"; then no "$WF present" "absent"; else
@@ -3290,6 +3291,17 @@ printf ' bin/patch-decide.py\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws3=
   && eq "$trace" "0" && eq "$trace_other" "1" && eq "$patchx" "0" && eq "$patch_other" "1" \
   && eq "$ws1" "1" && eq "$ws2" "1" && eq "$ws3" "1"; } \
   && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other patch_classifier=$patchx patch_lookalike=$patch_other whitespace=$ws1/$ws2/$ws3"
+
+begin "req18-ac1-pin-rulings-exempt-by-exact-path" "the pin rulings file may name .github/agent/ files it pins; a different file outside .github/agent/ that refers to .github/agent/ still fails"
+lp="$WORK/req18-ac1-pins"; rm -rf "$lp"; mkdir -p "$lp/.github" "$lp/docs"
+for f in .github/supply-chain-exceptions.json .github/supply-chain-exceptions-copy.json docs/exceptions.json; do
+  printf '{"file": ".github/agent/bin/auditor-run.py"}\n' > "$lp/$f"
+done
+printf '.github/supply-chain-exceptions.json\n' | "$PY" "$LC" --root "$lp" >/dev/null 2>&1; pins=$?
+printf '.github/supply-chain-exceptions-copy.json\n' | "$PY" "$LC" --root "$lp" >/dev/null 2>&1; pins_copy=$?
+printf 'docs/exceptions.json\n' | "$PY" "$LC" --root "$lp" >/dev/null 2>&1; pins_docs=$?
+{ eq "$pins" "0" && eq "$pins_copy" "1" && eq "$pins_docs" "1"; } \
+  && ok || no "only the exact pin rulings path is exempt" "pins=$pins copy=$pins_copy docs=$pins_docs"
 
 begin "req18-ac1-suites-wired-into-required-allowlist-job" "ci.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
 hy="$(python3 - <<'HH'

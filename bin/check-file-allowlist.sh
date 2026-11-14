@@ -153,7 +153,6 @@ ALLOW_PATTERNS=(
   '^bin/chain-test-signers\.(py|json)$'
   '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/rekor\.pub$'
-  '^\.github/policy/fulcio-chain\.pem$'
   '^test-evidence/witness-real/(build|apk)-collection\.real\.txt$'
   '^results/\.gitkeep$'
   # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission

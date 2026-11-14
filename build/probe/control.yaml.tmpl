@@ -1,5 +1,5 @@
 # Test-only recipe of the sandbox wall probe (bin/chain-sandbox-probe.sh), wall: control. Never published.
-# The probe renders it into a temporary folder (@BUSYBOX@, @RECORD@, @KEYDIR@ are replaced there) and runs it sealed.
+# The probe renders it into a temporary folder (@BUSYBOX@ is replaced there) and runs it sealed.
 package:
   name: probe-control
   version: 0.0.1
@@ -16,7 +16,7 @@ pipeline:
       command -v cat
       command -v env
       command -v grep
-      command -v wget
       command -v cut
       cat /proc/net/route > /dev/null
+      cat /proc/net/ipv6_route > /dev/null
       ls -R /home/build

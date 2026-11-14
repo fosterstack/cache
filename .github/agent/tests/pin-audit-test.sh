@@ -20,7 +20,7 @@ ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
-# The three long cases (about 130 of 146 seconds) start in the background at once; bg_collect prints each one's
+# The two long cases start in the background at once; bg_collect prints each one's
 # line, in launch order, before the summary. <&0 keeps the heredoc a background check is given (a background job
 # would otherwise read /dev/null).
 BG_N=0
@@ -289,7 +289,7 @@ d = json.loads(sys.argv[1]); del d["live_ranges"]; json.dump(d, open(sys.argv[2]
 PY
 run nolive "$(cat "$work/dispute-nolive.json")" "$work/r-cur" --exceptions "$work/exc.json"
 CASE="when the live authoritative ranges cannot be read the exception does not apply (fail closed)"
-check test "$rc" -eq 1
+check test "$rc" -eq 1; check grep -qi 'disputed' "$work/nolive.gh.bodies"
 python3 - "$work/exc.json" "$work/exc-inrange.json" <<'PY'
 import json, sys
 e = json.load(open(sys.argv[1])); e["exceptions"][0]["authoritative"]["ranges"] = [">= 0.70.0, < 0.80.0"]; json.dump(e, open(sys.argv[2], "w"))
@@ -321,11 +321,11 @@ e = json.load(open(sys.argv[1])); del e["exceptions"][0]["modified"]["GHSA-69fq-
 PY
 run nomod "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-nomod.json"
 CASE="an exception with no recorded last-modified time for one of its ids is malformed: exit 2, never applied (it could not be shown unchanged)"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'cannot do its job.*malformed' "$work/nomod.err"
 echo '{"not": "a list"}' >"$work/exc-bad.json"
 run badexc "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-bad.json"
 CASE="an unreadable exceptions file fails the run loudly (exit 2), never as 'no exceptions'"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'cannot do its job.*exceptions is not a list' "$work/badexc.err"
 CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds the advisor rulings in the shared shape: trivy (GO-2026-4919 and GHSA-69fq-xp46-6x23, GitHub authoritative, range 0.69.4 only) and codeql-action (GHSA-vqf5-2xx6-9wfm, GitHub two ranges), each with evidence, a date and last-modified times"
 check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
 import json, sys
@@ -341,7 +341,8 @@ PY
 # a plain hit is NOT a dispute: when both lists agree it is affected, an exception for another advisory changes nothing
 run agree "{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-x\", \"incident\": \"INC-A\", \"affected\": true, \"modified\": \"2026-09-01T00:00:00Z\"}], \"osv\": [{\"id\": \"GO-x\", \"incident\": \"INC-A\", \"affected\": true, \"modified\": \"2026-09-02T00:00:00Z\"}]}}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": []}" "$work/r-cur" --exceptions "$work/exc.json"
 CASE="when BOTH lists say affected it is a plain hit (rollback advice allowed), not a dispute, and an unrelated exception does not hide it"
-check test "$rc" -eq 1; check bash -c "! grep -qi 'disputed' '$work/agree.gh.bodies'"
+check test "$rc" -eq 1; check grep -q 'GHSA-x' "$work/agree.gh.bodies"
+check bash -c "! grep -qi 'disputed' '$work/agree.gh.bodies'"
 
 # disputes of one package and incident across several versions (the 90-day history can hold many) are ONE issue listing every version, never one issue per version
 mkrepo "$work/r-twin" "120:$SHA1"
@@ -433,6 +434,34 @@ else:
     raise AssertionError("an upstream check swallowed a rate limit")
 PY
 
+printf '#!/bin/sh\nprintf "%%s\\n" "$GH_ERR" >&2\nexit 1\n' >"$work/gh-err"; chmod +x "$work/gh-err"
+CASE="live gh status: upstream and a strict record read take only gh's exact status token: HTTP 404 is not there, "
+CASE+="a 403 whose URL holds 404 and a 500 are Fail with gh's text (the run stops)"
+check python3 - "$aud" "$work/gh-err" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+net = pa.LiveNet([sys.argv[2]], ".")
+it = pa.inv.Item("action", "o/r", "a" * 40, "")
+def fails(call):
+    try:
+        call()
+    except pa.Fail as e:
+        return str(e)
+os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
+assert net.upstream(it) is False
+assert net._gh_json("repos/o/r/git/ref/tags/v1", need=(("object", dict),), strict=True) is None
+for err in ("gh: Forbidden (HTTP 403)  https://api.github.com/repos/o/404/compare/x...main",
+            "gh: Server Error (HTTP 500)"):
+    os.environ["GH_ERR"] = err
+    msg = fails(lambda: net.upstream(it))
+    assert msg is not None and "could not check" in msg and err[-10:-1] in msg, (err, msg)
+    msg = fails(lambda: net._gh_json("repos/o/404/git/ref/tags/v1", need=(("object", dict),), strict=True))
+    assert msg is not None and err[-10:-1] in msg, (err, msg)
+os.environ["GH_ERR"] = "gh: Not Found (HTTP 404)"
+msg = fails(lambda: net._gh_json("repos/o/r/releases?per_page=100", rows=(("tag_name", str),), strict=True))
+assert msg is not None and "failed" in msg, msg
+PY
+
 # --- the live source against a gh stub (no network): reachability direction, GitHub-only advisories, rollback rules ---------------------------------------------------------------
 cp "$here/gh-map-stub.py" "$work/ghmap"
 chmod +x "$work/ghmap"
@@ -483,7 +512,7 @@ PY
 printf '{"exceptions": [{"version": "1.0.0", "ids": ["A"], "package": "p", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "ruling": "r", "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
 run noev "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-noev.json"
 CASE="an exception without evidence links and a date is malformed: exit 2, never applied"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'cannot do its job.*malformed' "$work/noev.err"
 
 CASE="version order: a pre-release is BEFORE its release (1.0.0-rc.1, 1.0.0rc1 < 1.0.0), 1.2 equals 1.2.0, an unreadable range is never read as safe"
 check python3 - "$aud" <<'PY'
@@ -519,7 +548,7 @@ for n in ("pin-inventory", "pin-age-check", "pin-audit"):
         ms = [m.name for m in c.body if isinstance(m, ast.FunctionDef)]
         assert len(ms) == len(set(ms)), (n, c.name, sorted(x for x in ms if ms.count(x) > 1))
         if c.name == "LiveNet":
-            assert {"lists", "covered", "live_ranges", "upstream", "nested", "versions", "prs", "proofs", "modified"} <= set(ms), ms
+            assert {"lists", "covered", "live_ranges", "upstream", "nested", "versions", "prs", "proofs"} <= set(ms), ms
 PY
 
 # --- the daily run records what it saw of every tag we use, FIRST (before judging), cumulatively; a pull request run never writes it --------------------------------------------------------------------
@@ -543,7 +572,7 @@ PY
 )
 rm -rf "$work/obsout2"; run obs2 "$HIT_OBS" "$work/r-cur" --observations-out "$work/obsout2/state.json"
 CASE="the observations are written BEFORE anything is judged: a run that finds a hit (exit 1) has still recorded them"
-check test "$rc" -eq 1; check test -s "$work/obsout2/state.json"
+check test "$rc" -eq 1; check grep -q 'supply-chain-hit' "$work/obs2.gh"; check test -s "$work/obsout2/state.json"
 rm -rf "$work/obsout3"; run obs3 "$OBS_FX" "$work/r-pr" --base HEAD~1 --observations-out "$work/obsout3/state.json"
 CASE="a pull request run (--base) never writes observations: only the scheduled run on main does"
 check test ! -e "$work/obsout3/state.json"
@@ -960,10 +989,11 @@ PY
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"
-check test "$rc" -eq 2
-echo 'not json' >"$work/broken.fx.json"; rc=0; ( cd "$work" && GH_LOG="$work/broken.gh" python3 "$aud" --root "$work/r-clean" --fixtures "$work/broken.fx.json" --now "$NOW" --gh "$work/gh" >/dev/null 2>&1 ) || rc=$?
+check test "$rc" -eq 2; check grep -q 'gh issue create failed' "$work/ghfail.err"
+echo 'not json' >"$work/broken.fx.json"; rc=0; ( cd "$work" && GH_LOG="$work/broken.gh" python3 "$aud" --root "$work/r-clean" --fixtures "$work/broken.fx.json" --now "$NOW" --gh "$work/gh" >"$work/broken.out" 2>"$work/broken.err" ) || rc=$?
 CASE="unreadable input fails the run (exit 2), it never reports a clean day"
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'unreadable fixtures' "$work/broken.err"
+check none_match 'no known-compromised' "$work/broken.out"
 # --- AC5 (round 1 of cache#393, both seats): an image named only in bin/persona-uat-tools.json is in the daily history too: a revision that changed only that file, and was replaced within 90 days, is still read ---
 r="$work/r-ptools"; mkrepo "$r" "100:$CLEANSHA"
 PTD1=sha256:$(printf 'a%.0s' $(seq 64)); PTD2=sha256:$(printf 'b%.0s' $(seq 64))
@@ -996,6 +1026,19 @@ PY
 else
   ok "$CASE (skipped as root: file modes do not bind)"
 fi
+r="$work/r-ptlink-hist"; mkrepo "$r" "100:$CLEANSHA"
+printf '{"shell": "ghcr.io/own/ptool@sha256:%s"}\n' "$(printf 'a%.0s' $(seq 64))" >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 30)" GIT_COMMITTER_DATE="$(dago 30)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
+rm "$r/bin/persona-uat-tools.json"; ln -s elsewhere.json "$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 20)" GIT_COMMITTER_DATE="$(dago 20)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools symlink"
+rm "$r/bin/persona-uat-tools.json"; printf '{"shell": "ghcr.io/own/ptool@sha256:%s"}\n' "$(printf 'a%.0s' $(seq 64))" >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular again"
+run ptlinkhist "$CLEAN" "$r"
+CASE="AC5 persona tools: a tools file that is a symbolic link at a revision of the history fails the audit (exit 2), the reason names the file and says symbolic link, never a clean day"
+check test "$rc" -eq 2; check grep -q 'persona-uat-tools.json.*symbolic link' "$work/ptlinkhist.err"; check none_match 'no known-compromised' "$work/ptlinkhist.out"
+r="$work/r-ptlink-wt"; mkrepo "$r" "100:$CLEANSHA"
+printf '{"shell": "ghcr.io/own/ptool@sha256:%s"}\n' "$(printf 'a%.0s' $(seq 64))" >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago 10)" GIT_COMMITTER_DATE="$(dago 10)" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools regular"
+rm "$r/bin/persona-uat-tools.json"; ln -s elsewhere.json "$r/bin/persona-uat-tools.json"
+run ptlinkwt "$CLEAN" "$r"
+CASE="AC5 persona tools: a tools file that is a symbolic link in the working tree fails the audit (exit 2), the reason names the file and says symbolic link"
+check test "$rc" -eq 2; check grep -q 'persona-uat-tools.json.*symbolic link' "$work/ptlinkwt.err"; check none_match 'no known-compromised' "$work/ptlinkwt.out"
 # --- cache#455 follow-up (handoff 0496 step 2): the 90-day history reads one inventory per DISTINCT set of files the inventory reads, not one per commit ---
 r="$work/r-histmemo"; mkrepo "$r" "100:$CLEANSHA" "40:$SHA1" "30:$SHA2"
 mkdir -p "$r/.github/agent/tests" "$r/docs"
@@ -1053,6 +1096,29 @@ t = time.time()
 pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
 print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
 assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
+PY
+
+CASE="history read: a script under .github/agent/ with an install at an old revision is not an item of the history; "
+CASE+="the same script at the tip is"
+check python3 - "$aud" "$work/r-agent-tip" <<'PY'
+import datetime as dt, importlib.util, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+repo, script = sys.argv[2], ".github/agent/tests/t.sh"
+os.makedirs(os.path.join(repo, os.path.dirname(script)))
+def commit(version, when):
+    with open(os.path.join(repo, script), "w") as f:
+        f.write("#!/bin/sh\ngo install github.com/securego/gosec/v2/cmd/gosec@%s\n" % version)
+    env = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+    subprocess.run(["git", "-C", repo, "add", "-A"], check=True)
+    subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "-m", version],
+                   check=True, env=env)
+subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+commit("v2.29.0", "2026-09-20T00:00:00Z")
+commit("v2.30.0", "2026-10-01T00:00:00Z")
+got = pa.history_items(repo, "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+gosec = "gotool:github.com/securego/gosec/v2/cmd/gosec@"
+assert gosec + "v2.30.0" in got, sorted(got)
+assert gosec + "v2.29.0" not in got, sorted(got)
 PY
 
 # --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
@@ -1168,14 +1234,13 @@ check python3 - "$aud" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 inv = pa.inv
-bad = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: echo " + "0123456789abcdef" * 4 + "\n      - run: " + "x" * 4500 + "\n"
 script = "#!/usr/bin/env bash\npip install missingversion\ncurl -L -o /tmp/t https://example.org/releases/download/v${VER}/tool-${VER}.tgz\n"
 dump = lambda d: sorted((k, i.step, i.path, i.src) for k, i in d.items())
 inv._MEMO_ON[0] = False
 neutral = dump(inv.inventory({"bin/x.sh": script}))
 assert neutral, "the probe has no items"
 many = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: |\n" + "".join("          pip install p%d==1.0\n" % i for i in range(600))
-for memo, poison in ((m, p) for m in (False, True) for p in (bad, many)):
+for memo, poison in ((m, many) for m in (False, True)):
     inv._MEMO_ON[0] = memo; inv._FILE_MEMO.clear()
     for _ in range(2):    # cold, then warm
         try:
@@ -1206,7 +1271,7 @@ for files_ in (callee_ok, callee_bad, callee_ok, callee_bad):      # a warm call
         inv.inventory(dict(files_)); assert files_ is callee_ok
     except RuntimeError:
         assert files_ is callee_bad
-long_line = {"bin/b.sh": "echo " + "y" * 4500 + "\n"}
+long_line = {"bin/b.sh": "echo y\n" * 20001}      # a file of more than 20000 lines is refused
 for _ in range(3):
     try:
         inv.inventory(dict(long_line)); raise SystemExit("no raise")
@@ -1221,95 +1286,6 @@ no_memo = lock_dump()
 inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 cold, warm = lock_dump(), lock_dump()
 assert no_memo and no_memo == cold == warm, ("the lock's items differ between no memo, a cold memo and a warm memo", no_memo, cold, warm)
-PY
-CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
-check_bg python3 - "$aud" "$here/../../.." <<'PY'
-import importlib.util, json, subprocess, sys, tempfile, os
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-inv, root = pa.inv, sys.argv[2]
-ipath = ".github/agent/supply-chain/pin-inventory.py"
-intro = subprocess.run(["git", "-C", root, "log", "-S_FILE_MEMO", "--reverse", "--format=%H", "HEAD", "--", ipath], capture_output=True, text=True).stdout.split()
-assert intro, "the commit that introduced the memo is not in this checkout's history"
-src = subprocess.run(["git", "-C", root, "show", intro[0] + "^:" + ipath], capture_output=True, text=True)      # the file as it was before the memo existed, whatever the parents of HEAD are
-assert src.returncode == 0, src.stderr[:200]
-assert "_FILE_MEMO" not in src.stdout, "the oracle is the memoising implementation"
-with tempfile.TemporaryDirectory() as d:
-    p = os.path.join(d, "parent_inventory.py"); open(p, "w").write(src.stdout)
-    ps = importlib.util.spec_from_file_location("parent_inventory", p); parent = importlib.util.module_from_spec(ps); ps.loader.exec_module(parent)
-paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
-revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
-assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
-dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
-def lock_keys(r, repo=None):      # the items the kernel lock of that revision adds: the memo-time oracle predates the lock and cannot know them
-    # the revision's own kernel lock, read by the inventory's own row parser; whatever it would refuse fails here, naming the revision
-    repo = repo or root
-    ls = subprocess.run(["git", "-C", repo, "ls-tree", "-z", r, "--", inv.KERNEL_LOCK], capture_output=True)
-    assert ls.returncode == 0, "cannot list %s at %s" % (inv.KERNEL_LOCK, r)
-    if not ls.stdout:
-        return set()                          # no lock at this revision: nothing the oracle cannot see
-    mode = ls.stdout.split()[0]
-    assert mode != b"120000", "%s at %s is a symbolic link" % (inv.KERNEL_LOCK, r)
-    if mode not in (b"100644", b"100755"):
-        return set()                          # a directory or a submodule at the path is no lock file: the inventory reads none
-    p = subprocess.run(["git", "-C", repo, "show", r + ":" + inv.KERNEL_LOCK], capture_output=True)
-    assert p.returncode == 0, "cannot read %s at %s" % (inv.KERNEL_LOCK, r)
-    try:
-        text = p.stdout.decode("utf-8")
-        assert len(text) <= inv.MAX_FILE, "the file is too large to read safely"
-        items = inv._kernel_lock_items(inv.KERNEL_LOCK, text)
-    except (UnicodeDecodeError, RuntimeError, AssertionError) as e:
-        raise AssertionError("%s at %s cannot be read as the inventory reads it (%s)" % (inv.KERNEL_LOCK, r, e))
-    return {i.key for i in items}
-def _tree(repo, mode, data):
-    blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"], input=data, capture_output=True, check=True).stdout.decode().strip()
-    idx = tempfile.mktemp(prefix="cache1-idx.", dir=repo)
-    env = dict(os.environ, GIT_INDEX_FILE=idx)
-    subprocess.run(["git", "-C", repo, "update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, blob, inv.KERNEL_LOCK)], env=env, check=True)
-    t = subprocess.run(["git", "-C", repo, "write-tree"], env=env, capture_output=True, check=True).stdout.decode().strip()
-    os.unlink(idx)
-    return t
-with tempfile.TemporaryDirectory(prefix="cache1-lockkeys.") as lk:
-    subprocess.run(["git", "init", "-q", lk], check=True)
-    row = b"linux-virt=6.18.60-r0 sha256:" + b"a" * 64 + b"\n"
-    ok = lambda data, mode="100644": lock_keys(_tree(lk, mode, data), repo=lk)
-    assert ok(row) == {"apk:linux-virt@6.18.60-r0"}, "a plain row"
-    assert ok(b"# a comment\n\n" + row) == {"apk:linux-virt@6.18.60-r0"}, "a comment and a blank line"
-    assert ok(b"   # an indented comment\n" + row) == {"apk:linux-virt@6.18.60-r0"}, "an INDENTED comment is a comment (the inventory strips first)"
-    assert ok(b"  " + row.strip() + b"  \n") == {"apk:linux-virt@6.18.60-r0"}, "a padded row"
-    assert ok(b"x86_64/linux-virt=6.18.60-r0 sha256:" + b"b" * 64 + b"\n") == {"apk:x86_64/linux-virt@6.18.60-r0"}, "a row with an arch prefix"
-    for what, data, mode in (("a row without '='", b"linux-virt sha256:" + b"a" * 64 + b"\n", "100644"),
-                             ("a row without a sha256", b"linux-virt=6.18.60-r0\n", "100644"),
-                             ("a version that is not a pin (latest)", b"linux-virt=latest sha256:" + b"a" * 64 + b"\n", "100644"),
-                             ("a short digest", b"linux-virt=6.18.60-r0 sha256:" + b"a" * 40 + b"\n", "100644"),
-                             ("a duplicate row", row + b"linux-virt=6.18.60-r0 sha256:" + b"b" * 64 + b"\n", "100644"),
-                             ("a lock with only a comment", b"# nothing here\n", "100644"),
-                             ("a lock that is not UTF-8", row + b"\xff\xfe\n", "100644"),
-                             ("a symbolic link", b"build/locks/other", "120000")):
-        tr = _tree(lk, mode, data)
-        try:
-            lock_keys(tr, repo=lk)
-        except AssertionError as e:
-            assert tr in str(e), ("the error must name the revision", what, str(e))
-        else:
-            raise SystemExit("lock_keys accepted " + what)
-    assert lock_keys("4b825dc642cb6eb9a060e54bf8d69288fbee4904", repo=lk) == set(), "a revision with no lock names no keys"
-    # a TREE at the lock's path is no lock file (the inventory reads none): no keys and no false red
-    sub = subprocess.run(["git", "-C", lk, "hash-object", "-w", "--stdin"], input=b"x", capture_output=True, check=True).stdout.decode().strip()
-    idx2 = tempfile.mktemp(prefix="cache1-idx.", dir=lk); env2 = dict(os.environ, GIT_INDEX_FILE=idx2)
-    subprocess.run(["git", "-C", lk, "update-index", "--add", "--cacheinfo", "100644,%s,%s/inner" % (sub, inv.KERNEL_LOCK)], env=env2, check=True)
-    tree_at_path = subprocess.run(["git", "-C", lk, "write-tree"], env=env2, capture_output=True, check=True).stdout.decode().strip(); os.unlink(idx2)
-    assert lock_keys(tree_at_path, repo=lk) == set(), "a directory at the lock path names no keys"
-def run(mod, r, skip=()):
-    try:
-        d = mod.load_at(root, r)
-    except RuntimeError as e:
-        return "raise:" + str(e)
-    assert all(k in d for k in skip), ("a kernel lock row is not an item of the revision", r)
-    return dump({k: i for k, i in d.items() if k not in skip})
-want = {r: run(parent, r) for r in revs}
-inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
-for r in revs + list(reversed(revs)):
-    assert run(inv, r, lock_keys(r)) == want[r], r
 PY
 
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
@@ -1343,10 +1319,8 @@ net._version_of = lambda i: "1.27.3"
 assert [r["affected"] for r in net.lists(it)[1]] == [False]
 PY
 
-# --- the history reader skips only the unreadable revisions named in its list (advisor 0637): a command line
-# over 4000 characters is never read partially, so every audit would stop in the 90-day history read at a revision
-# that held one. The skip is by FULL sha, from a reviewed list in the script, each named with its own reason;
-# anything else unreadable still ends it.
+# --- the history reader reads a command line whole, whatever its length (no 4000 cap): a revision holding a run line of
+# 4529 or over 9000 characters is read, the audit is complete (exit 0), and a download or dependency at the END of the line is found.
 r="$work/r-oversize"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at that sha, with one step whose run line is $2 long
   printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$1" >"$r/.github/workflows/ci.yml"
@@ -1355,133 +1329,99 @@ oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at
 printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
 commit_at() { git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago "$1")" GIT_COMMITTER_DATE="$(dago "$1")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "$2"; git -C "$r" rev-parse HEAD; }
 oversize_ci "$SHA1" 0;    OV_A=$(commit_at 60 "readable A")
-oversize_ci "$SHA2" 4100; OV_B=$(commit_at 40 "oversize B")
+oversize_ci "$SHA2" 4529; OV_B=$(commit_at 40 "long line B (4529 characters)")
 oversize_ci "$SHA4" 0;    OV_C=$(commit_at 20 "readable C")
-oversize_ci "$SHA4" 4300; OV_D=$(commit_at 10 "oversize D (a fourth, never listed)")
+oversize_ci "$SHA4" 9100; OV_D=$(commit_at 10 "long line D (9100 characters)")
 oversize_ci "$SHA4" 0;    OV_E=$(commit_at 5 "readable E")
-OVPY='import datetime as dt, importlib.util, sys
+# a history in which a revision is unreadable for another reason: bin/big.sh of 1.2 MB (a file too large) in revisions B and D
+r="$work/r-toolarge"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+bigfile_ci() { # <checkout sha> <1 = with bin/big.sh of 1.2 MB>
+  oversize_ci "$1" 0; rm -f "$r/bin/big.sh"
+  [ "$2" -eq 0 ] || python3 -c "open('$r/bin/big.sh', 'w').write('# xxxxxxxxxx\n' * 100000)"
+}
+bigfile_ci "$SHA1" 0; TL_A=$(commit_at 60 "readable A")
+bigfile_ci "$SHA2" 1; TL_B=$(commit_at 40 "too large B")
+bigfile_ci "$SHA4" 0; TL_C=$(commit_at 20 "readable C")
+bigfile_ci "$SHA4" 1; TL_D=$(commit_at 10 "too large D (a fourth, never listed)")
+bigfile_ci "$SHA4" 0; TL_E=$(commit_at 5 "readable E")
+r="$work/r-oversize"
+OVPY='import contextlib, datetime as dt, importlib.util, io, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 NOW = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
-def hist(skip):
-    pa.SKIP_UNREADABLE = skip
-    try:
-        return pa.history_items(sys.argv[2], "HEAD", NOW), None
-    except RuntimeError as e:
-        return None, str(e)
+def hist():      # kept for the reader-failure case below
+    err = io.StringIO()
+    with contextlib.redirect_stdout(err):
+        items = pa.history_items(sys.argv[2], "HEAD", NOW)
+    return " ".join(repr(k) for k in items), err.getvalue()
 '
-CASE="oversize history: a revision with a command line over 4000 characters that is NOT on the list stops the history read with the cap's own message (fail closed)"
-check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
+run oversizeold "$CLEAN" "$work/r-oversize"
+CASE="long-line history: a revision with a command line of 4529 or 9100 characters is read whole: exit 0 and the audit says there are no known-compromised versions"
+check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/oversizeold.out"
+CASE="long-line history: no 'cannot be read whole' or 'longer than' reason is written to stderr for a long command line"
+check none_match 'cannot be read whole|longer than' "$work/oversizeold.err"
+run toolargeold "$CLEAN" "$work/r-toolarge"
+CASE="too-large history: a revision holding a file too large to read makes the audit incomplete: exit 2, the reason on stderr names the revision or the file"
+check test "$rc" -eq 2; check grep -qE "${TL_B:0:12}|${TL_D:0:12}|big\\.sh" "$work/toolargeold.err"
+CASE="too-large history: an incomplete audit never says 'no known-compromised versions' on stdout"
+check none_match 'no known-compromised' "$work/toolargeold.out"
+CASE="too-large history: a history of readable revisions only still exits 0 and says there are no known-compromised versions"
+run readableonly "$CLEAN" "$work/r-clean"
+check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/readableonly.out"
+rm -rf "$work/r-pullref"; cp -R "$work/r-clean" "$work/r-pullref"
+git -C "$work/r-pullref" fetch -q "$work/r-toolarge" "$TL_B:refs/pull/1/head"
+run pullref "$CLEAN" "$work/r-pullref"
+CASE="AC5: the 90-day history is read from main only, never from refs/pull/*/head: a too-large file on a PR ref "
+CASE+="leaves the audit complete (exit 0, says no known-compromised versions)"
+check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/pullref.out"
+# a download or a dependency at the END of a long line of an old revision is found
+r="$work/r-longtail"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+oversize_ci "$SHA1" 0; LT_A=$(commit_at 40 "readable A")
+printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n      - name: long\n        run: echo %s && pip install evilpkg==9.9.9 && go install example.org/evil@v9.9.9\n' \
+  "$SHA1" "$(python3 -c "print('x'*9100)")" >"$r/.github/workflows/ci.yml"
+LT_B=$(commit_at 30 "a dependency and a go tool at the end of a line of 9100 characters")
+oversize_ci "$SHA1" 0; LT_C=$(commit_at 5 "readable C")
+CASE="long-line history: a package and a go tool named at the END of a run line over 9000 characters, in a revision replaced within 90 days, are in the history items"
+check python3 - "$aud" "$r" <<PY
 $OVPY
-items, err = hist({})
-assert items is None and "command line of" in err and "refusing to read it partially" in err, (items, err)
+got, _ = hist()
+assert "package:pypi/evilpkg@9.9.9" in got and "gotool:example.org/evil@v9.9.9" in got, got[:2000]
 PY
-CASE="oversize history: with the only two oversize revisions listed (full shas, a reason each) the read completes and still holds the readable neighbours' pins"
-check python3 - "$aud" "$r" "$OV_B" "$OV_D" "$SHA1" "$SHA4" <<PY
+r="$work/r-oversize"
+CASE="oversize history: no other error is swallowed: a revision unreadable for another reason (a broken "
+CASE+="tree) still stops the read"
+check python3 - "$aud" "$r" <<PY
 $OVPY
-items, err = hist({sys.argv[3]: "fixture B: a 4100-character run line", sys.argv[4]: "fixture D: a 4300-character run line"})
-assert err is None, err
-blob = " ".join(repr(k) for k in items)
-assert sys.argv[5] in blob and sys.argv[6] in blob, blob[:600]
-PY
-CASE="oversize history: a fourth oversize revision that is not on the list still refuses although the others are listed (fail closed for anything unnamed)"
-check python3 - "$aud" "$r" "$OV_B" <<PY
-$OVPY
-items, err = hist({sys.argv[3]: "fixture B only"})
-assert items is None and "command line of" in err, (items, err)
-PY
-CASE="oversize history: an abbreviated sha (8 characters), an uppercase sha and a sha with a space never match: only the full lowercase 40-hex revision name does"
-check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
-$OVPY
-for bad in (sys.argv[3][:8], sys.argv[3].upper(), sys.argv[3] + " ", " " + sys.argv[3]):
-    items, err = hist({bad: "x", sys.argv[4]: "d"})
-    assert items is None and "command line of" in err, (bad, items, err)
-PY
-CASE="oversize history: a listed revision that is READABLE is read normally (the list never hides a readable revision's pins)"
-check python3 - "$aud" "$r" "$OV_A" "$OV_B" "$OV_D" "$SHA1" <<PY
-$OVPY
-items, err = hist({sys.argv[3]: "readable A listed by mistake", sys.argv[4]: "B", sys.argv[5]: "D"})
-assert err is None, err
-assert sys.argv[6] in " ".join(repr(k) for k in items)
-PY
-CASE="oversize history: the list holds the named commits (full 40-hex shas), each with a reason that names its file"
-check python3 - "$aud" <<'PY'
-import importlib.util, re, sys
-spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-pr459 = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b"}
-p1p5 = {"27b14e37ed06bca44ae479a8880480fa5855605b", "c4ac17f07ac894c014034ec7e535e4598e06ced8", "c9e30be29823765fce4c8a23bb11a4340a73fd69", "23f771008513913f5a1bf434af83530125621a53",
-        "c5b8f225a378db6fa72200bafcf9af7998ef23e5", "9045a08f287801c75cbf385caae8038774ed9f10",
-        "115c746b17620f08c0fe52c789dea720c887d465", "cdbaf6283ab81b9ee8c9539ceeb253cf9ba61987",
-        "210d27d4e2bd01d0b8e0cd9f706148182e0d6ec8", "464b72fea4e356a9876bf9bd70f57cc84e07cab4"}
-p2 = {"7d538938ec3733112eb29b5f495502e8a74d7e33", "16e2e1f9a010dfc966930b7963cec13326fa877c",
-      "28acfea97185023710ee2ba4596cbdb2ca68bfb0", "84112d2d433db8148b0fe6cf47a1a4d943c5c8fa",
-      "fbecada5bf5c37ab9263ca82664b3382c3dd9457"}
-r597 = "6b8c70df66651667e530748db9bc22462e307bee"
-assert set(pa.SKIP_UNREADABLE) == pr459 | p1p5 | p2 | {r597}, sorted(pa.SKIP_UNREADABLE)
-for k, why in pa.SKIP_UNREADABLE.items():
-    assert re.fullmatch(r"[0-9a-f]{40}", k), k
-    if k == r597:
-        assert "bin/chain-check-scripts-test.sh" in why and "#597" in why and "4103" in why, (k, why)
-    elif k in p1p5 | p2:
-        assert ("cache6-0713-p1p5" if k in p1p5 else "cache6-0713-p2") in why, (k, why)
-        assert "bin/chain-rekor-key-test.sh" in why and "4529" in why, (k, why)
-        assert why.endswith("since wrapped (0289dc91)"), (k, why)
-    else:
-        assert "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
-PY
-CASE="oversize history: no other error is swallowed: a listed revision that is unreadable for another reason (a broken tree) still stops the read"
-check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
-$OVPY
-pa.SKIP_UNREADABLE = {sys.argv[3]: "listed", sys.argv[4]: "listed"}
-orig = pa.inv.load_at
-def boom(root, rev):
-    if rev == sys.argv[3]:
-        raise RuntimeError("some other failure of the reader")
-    return orig(root, rev)
+def boom(root, rev, agent=True):
+    raise RuntimeError("some other failure of the reader")
 pa.inv.load_at = boom
 try:
-    pa.history_items(sys.argv[2], "HEAD", NOW)
+    hist()
 except RuntimeError as e:
     assert "some other failure" in str(e)
 else:
-    raise SystemExit("an unrelated error of a listed revision was swallowed")
+    raise SystemExit("an unrelated error of a revision was swallowed")
 PY
 
-# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key. A skipped revision must never be remembered under that key (seat A and
-# seat B of cache#520: the cases above never share a tree, so a memo that stored skipped revisions as empty passed them all).
-r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key.
+# Both
+# revisions of a shared too-large tree make the audit incomplete (exit 2).
+r="$work/r-toolarge-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
-oversize_ci "$SHA2" 4100; SH_X=$(commit_at 60 "oversize X")
-oversize_ci "$SHA1" 0;    SH_M=$(commit_at 40 "readable M")
-oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
-oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
-oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
-oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
-CASE="oversize history, shared tree: listing one of two revisions that share an unreadable tree never lets the other, unlisted one pass (a skip is not remembered under the tree key), in both orders"
-check python3 - "$aud" "$r" "$SH_X" "$SH_Y" <<PY
-$OVPY
-for listed in (sys.argv[3], sys.argv[4]):
-    items, err = hist({listed: "only one of the pair"})
-    assert items is None and "command line of" in err, (listed, items, err)
-items, err = hist({sys.argv[3]: "x", sys.argv[4]: "y"})
-assert err is None, err
-PY
-CASE="oversize history, shared tree: a listed revision whose tree was already read from a readable revision is read normally, in both orders (the list never hides a readable revision's pins)"
-check python3 - "$aud" "$r" "$SH_M" "$SH_R1" "$SH_R2" "$SH_X" "$SH_Y" "$SHA1" <<PY
-$OVPY
-both = {sys.argv[6]: "x", sys.argv[7]: "y"}
-for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
-    items, err = hist({**both, listed: "readable but listed"})
-    assert err is None, err
-    assert sys.argv[8] in " ".join(repr(k) for k in items)
-PY
+bigfile_ci "$SHA2" 1; SH_X=$(commit_at 60 "too large X")
+bigfile_ci "$SHA1" 0; SH_M=$(commit_at 40 "readable M")
+bigfile_ci "$SHA2" 1; SH_Y=$(commit_at 20 "too large Y (the same tree as X)")
+bigfile_ci "$SHA1" 0; SH_R1=$(commit_at 10 "readable R1")
+bigfile_ci "$SHA4" 0; SH_Q=$(commit_at 8 "readable Q")
+bigfile_ci "$SHA1" 0; SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
+run oversizeshared "$CLEAN" "$work/r-toolarge-shared"
+CASE="too-large history, shared tree: revisions that share an unreadable tree make the audit incomplete too: exit 2, no 'no known-compromised versions'"
+check test "$rc" -eq 2; check none_match 'no known-compromised' "$work/oversizeshared.out"
 
-
-# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits 2 and the tag observations are already written; one
-# ls-tree -r per revision is all the history reader asks git for ---
-rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-oversize" --observations-out "$work/obsout4/state.json"
-CASE="oversize history, daily run: an unlisted unreadable revision ends the audit with exit 2 and the cap's own message"
-check test "$rc" -eq 2; check grep -q 'refusing to read it partially' "$work/oversizeobs.err"
-CASE="oversize history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
+# --- the daily run stops at an unreadable revision with exit 2, after the tag observations are written ---
+rm -rf "$work/obsout4"; run oversizeobs "$CLEAN" "$work/r-toolarge" --observations-out "$work/obsout4/state.json"
+CASE="too-large history, daily run: the tag observations (state.json) are written before the history is read, so an unreadable revision does not lose them"
 check test -s "$work/obsout4/state.json"
 CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
 check python3 - "$aud" "$work/r-histmemo" <<'PY'
@@ -1554,7 +1494,8 @@ gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
 assert [g["id"] for g in gh] == ["GHSA-aaaa-bbbb-cccc"] and gh[0]["affected"], gh
 PY
 
-CASE="proxy: a 200 answer that is not a module info object ([], null, {}, a non-empty array, a missing, null or empty Version) is CouldNotLook, never 'module not found' (strict mode only)"
+CASE="proxy: a 200 answer that is not a module info object ([], null, {}, a non-empty array, a missing, "
+CASE+="null or empty Version) is CouldNotLook, never 'module not found'"
 check python3 - "$aud" <<'PY'
 import importlib.util, io, sys, urllib.request
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -1565,23 +1506,18 @@ class R(io.BytesIO):
 for body in (b"[]", b"null", b"{}", b"[1]", b'{"Version": null}', b'{"Version": ""}', b'{"Version": 3}', b"not json"):
     urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
     try:
-        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0")
     except age.CouldNotLook:
         pass
     else:
         raise AssertionError(("no CouldNotLook", body))
 urllib.request.urlopen = lambda *a, **k: R(b'{"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"}')
-mod, info = age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+mod, info = age._go_module("github.com/o/r/cmd/x", "v1.0.0")
 assert info["Version"] == "v1.0.0", (mod, info)
-urllib.request.urlopen = lambda *a, **k: R(b"[1]")
-try:
-    age._go_module("github.com/o/r/cmd/x", "v1.0.0")      # the age check's lenient mode: a list answer is a wrong shape, CouldNotLook, no crash
-except age.CouldNotLook:
-    pass
-else:
-    raise AssertionError("lenient proxy skipped a wrong shape")
 PY
-CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is CouldNotLook in strict mode and no crash in lenient mode; a missing Time or a null Time never crashes the go-index proof; a bad answer reaches covered() as CouldNotLook"
+CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is "
+CASE+="CouldNotLook; a missing Time or a null Time never crashes the go-index proof; "
+CASE+="a bad answer reaches covered() as CouldNotLook"
 check python3 - "$aud" <<'PY'
 import http.client, importlib.util, io, sys, urllib.request
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -1592,12 +1528,11 @@ def boom(exc):
 for exc in (http.client.IncompleteRead(b'{"Ver'), http.client.BadStatusLine("x"), http.client.LineTooLong("status line")):
     urllib.request.urlopen = boom(exc)
     try:
-        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0")
     except age.CouldNotLook:
         pass
     else:
         raise AssertionError(("no CouldNotLook", exc))
-    assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None), exc      # lenient: no traceback, no proof
 class R(io.BytesIO):
     def __enter__(self): return self
     def __exit__(self, *a): return False
@@ -1612,7 +1547,7 @@ for body in (b'{"Time": "2020-01-01T00:00:00Z"}', b"{}", b"[]", b"null", b'{"Ver
     else:
         raise AssertionError(("covered() read an unreadable answer as an answer", body))
 for info in ({"Version": "v1.0.0"}, {"Version": "v1.0.0", "Time": None}, {"Version": "v1.0.0", "Time": 5}):
-    age._go_module = lambda path, version, strict=False, _i=info: ("github.com/o/r", _i)
+    age._go_module = lambda path, version, _i=info: ("github.com/o/r", _i)
     age._pr_clock = lambda *a, **k: None
     assert age.live_proofs(it, ".") == [], info      # no go-index proof, no crash: the pin then fails as unprovable
 PY
@@ -1694,7 +1629,7 @@ for nxt in (7, "http://evil.example/x", "https://evil.example/x", ["a"]):
     must_refuse(("hub next", nxt), lambda: age._registry_push(img))
 PY
 CASE="structural closure: an unexpected AttributeError/KeyError/TypeError/IndexError/ValueError while reading an answer ends the daily audit with exit 2, 'cannot do its job' and no 'as of' sentence"
-check_bg python3 - "$aud" "$root" "$work" <<'PY'
+check_bg python3 - "$aud" "$work/r-clean" "$work" <<'PY'
 import contextlib, importlib.util, io, json, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 fx = sys.argv[3] + "/struct-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
@@ -1705,6 +1640,20 @@ for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"),
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
     assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
+CASE="fixtures that are not a JSON object (not JSON, null, a list) end both programs in exit 2 on a readable "
+CASE+="repository, with a 'cannot' line on stderr"
+check python3 - "$aud" "$work/r-clean" "$work" <<'PY'
+import subprocess, sys
+aud, repo, work = sys.argv[1:4]
+age = aud.replace("pin-audit.py", "pin-age-check.py")
+for body in ("not json", "null", "[]"):
+    fx = work + "/notobj.fx.json"; open(fx, "w").write(body)
+    for argv in ([aud, "--root", repo, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"],
+                 [age, "--root", repo, "--base", "HEAD", "--head", "HEAD", "--fixtures", fx,
+                  "--now", "2026-10-05T12:00:00Z"]):
+        r = subprocess.run([sys.executable, *argv], capture_output=True, text=True)
+        assert r.returncode == 2 and "cannot" in r.stderr, (argv[0], body, r.returncode, r.stderr[-200:])
 PY
 CASE="error lines: a path with line breaks, escapes or ##[ in an error prints as one stderr line, no workflow command"
 check python3 - "$aud" "$root" "$work" <<'PY'
@@ -1737,7 +1686,8 @@ REFUSE = (age.CouldNotLook, pa.Fail)
 tmp = tempfile.mkdtemp()
 
 # ---- 1. no reader has a default: the caller must say what it reads
-for fn, name in ((age._http_dict, "need"), (age._http_json_strict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"), (age._gh_pages, "rows"), (age._gh_list, "rows")):
+for fn, name in ((age._http_dict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"),
+                  (age._gh_pages, "rows"), (age._gh_list, "rows")):
     assert inspect.signature(fn).parameters[name].default is inspect.Parameter.empty, (fn.__name__, name, "has a default")
 net0 = pa.LiveNet(["false"], ".")
 for kw in ({}, {"need": (), "rows": ()}):
@@ -1749,7 +1699,7 @@ for kw in ({}, {"need": (), "rows": ()}):
         raise AssertionError(("_gh_json accepted", kw))
 
 # ---- 2. every site that reads an answer is in the table below, and every site has its case
-READERS = {"_http_dict", "_http_json_strict", "_gh_json_raw", "_gh_api", "_gh_list", "_gh_pages", "_gh_json", "_fetch_json", "load", "loads"}
+READERS = {"_http_dict", "_gh_json_raw", "_gh_api", "_gh_list", "_gh_pages", "_gh_json", "_fetch_json", "load", "loads"}
 def sites(path):
     tree = ast.parse(open(path).read()); parents = {}
     for n in ast.walk(tree):
@@ -1766,10 +1716,10 @@ def sites(path):
             if isinstance(p, ast.FunctionDef): break
         found[(os.path.basename(path), p.name if isinstance(p, ast.FunctionDef) else "<module>", name)] += 1
         # a reader call names what it reads (a shape argument), never a bare read
-        if name == "_http_json_strict": assert len(n.args) + len(n.keywords) >= 2, ("_http_json_strict without need", n.lineno)
         if name == "_http_dict": assert len(n.args) + len(n.keywords) >= 2, ("_http_dict without need", n.lineno)
         if name in ("_gh_api", "_gh_pages", "_gh_list"): assert len(n.args) + len(n.keywords) >= 2, (name + " without a shape", n.lineno)
-        if name == "_gh_json": assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
+        if name == "_gh_json" and path == aud:
+            assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
     return found
 actual = sites(chk) + sites(aud)      # a Counter: how many calls of each reader sit in each function
 
@@ -1824,37 +1774,17 @@ def c_gh_list():
 def c_fetch_and_dict():
     for body in (b"{}", b"null", b"[]", b"[{}]"):
         http(body); refuse(("http_dict", body), lambda: age._http_dict("https://h.example/x", OBJ))
-def c_http_strict():
-    for body in (b"{}", b"null", b"[]", b"[{}]"):
-        http(body); refuse(("http_json_strict", body), lambda: age._http_json_strict("https://h.example/x", OBJ))
-    def err(code):
-        def f(*a, **k): raise urllib.error.HTTPError("https://h.example/x", code, "x", {}, None)
-        return f
-    for code in (404, 410):
-        urllib.request.urlopen = err(code); assert accepts(("strict", code), lambda: age._http_json_strict("https://h.example/x", OBJ)) is None
-    for code in (500, 403):
-        urllib.request.urlopen = err(code); refuse(("strict http", code), lambda: age._http_json_strict("https://h.example/x", OBJ))
+def c_go_module():
     for body in (b"{}", b"null", b"[{}]"):
-        http(body); refuse(("go strict", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True))
-def c_go_lenient():
-    for body in (b"{}", b"null", b"[{}]"):
-        http(body); refuse(("go lenient", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
+        http(body); refuse(("go", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
 def c_go_index():
     for body in (b"{}\n", b"[{}]\n", b"null\n"):
         http(body); refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
-def c_release_time():
-    gh({"releases/tags": "{}"}); refuse("release_time {}", lambda: age._release_time("o/r", ["v1"]))
-    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z"}}); refuse("release_time no draft", lambda: age._release_time("o/r", ["v1"]))
-    gh({"releases/tags": {"published_at": None, "draft": True}}); assert accepts("release_time draft", lambda: age._release_time("o/r", ["v1"])) is None
 def c_release_assets():
     gh({"releases/tags": "{}"}); refuse("assets {}", lambda: age._release_with_assets("o/r", ["v1"]))
     gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False, "assets": [{}]}}); assert accepts("assets [{}] (name and times are optional)", lambda: age._release_with_assets("o/r", ["v1"]))
     gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False, "assets": [5]}}); refuse("assets [5]", lambda: age._release_with_assets("o/r", ["v1"]))
     gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False}}); refuse("assets absent", lambda: age._release_with_assets("o/r", ["v1"]))
-def c_commit_date():
-    gh({"commits/": "{}"}); refuse("commit {}", lambda: age._commit_date("o/r", "a" * 40))
-    gh({"commits/": {"commit": {"committer": {"date": 7}}}}); refuse("commit date 7", lambda: age._commit_date("o/r", "a" * 40))
-    gh({"commits/": {"commit": {"committer": {}}}}); assert accepts("committer {} (optional date)", lambda: age._commit_date("o/r", "a" * 40)) is None
 def c_observed():
     age._OBS.clear(); age.tobs.accept_run = lambda r: True
     gh({"supply-chain.yml/runs": "{}"}); refuse("runs {}", age.observed)
@@ -1895,7 +1825,7 @@ def c_main_fixtures():
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
                 rc = main(args)
-            assert rc == 2, (main.__module__, body, rc, out.getvalue()[:160])
+            assert rc == 2 and "cannot" in out.getvalue(), (main.__module__, body, rc, out.getvalue()[:160])
 def c_local_files():
     f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
     refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
@@ -2001,10 +1931,6 @@ def c_prs():
 def c_tag_map():
     for body in ("{}\n", '{"name": "v1", "commit": {}}\n'):
         gh({"tags?": body}); refuse(("tags", body), lambda: net.tag_map([act]))
-def c_modified():
-    gh({"advisories/": "{}"}); refuse("modified ghsa {}", lambda: net.modified("GHSA-x"))
-    for body in (b"{}", b"[]"):
-        http(body); refuse(("modified osv", body), lambda: net.modified("GO-x"))
 def c_file_issues():
     class G:
         def run(self, *a, **k): return P("[{}]" if a[:2] == ("issue", "list") else "")
@@ -2013,11 +1939,6 @@ def c_file_issues():
         def run(self, *a, **k): return P("{}" if a[:2] == ("issue", "list") else "")
     refuse("issues {}", lambda: pa.file_issues(G2(), [], "2026-10-05"))
 
-def c_json_object():
-    for body in (b"{}", b"null", b"[]", b"[{}]", b"not json", b'{"other": 1}'):
-        refuse(("json_object", body), lambda: age._json_object(body, ("k",)))
-    refuse(("json_object empty", "{}"), lambda: age._json_object(b"{}"))
-    assert accepts(("json_object", "good"), lambda: age._json_object(b'{"k": 1}', ("k",))) == {"k": 1}
 def c_json_file():
     bad = os.path.join(tmp, "not-json.txt"); open(bad, "w").write("not json")
     for path in (bad, os.path.join(tmp, "absent.json")):
@@ -2030,12 +1951,13 @@ def c_json_file():
     good = os.path.join(tmp, "good.json"); open(good, "w").write('{"k": 1}')
     assert accepts(("json_file", "good"), lambda: age._json_file(good)) == {"k": 1}
 CASES = {
-    ("pin-age-check.py", "_json_object", "loads"): c_json_object, ("pin-age-check.py", "_json_file", "load"): c_json_file,
-    ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, ("pin-age-check.py", "_gh_api", "loads"): c_gh_api, ("pin-age-check.py", "_gh_list", "loads"): c_gh_list,
+    ("pin-age-check.py", "_json_file", "load"): c_json_file,
+    ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, ("pin-age-check.py", "_gh_json", "loads"): c_gh_api,
+    ("pin-age-check.py", "_gh_api", "_gh_json"): c_gh_api, ("pin-age-check.py", "_gh_list", "_gh_json"): c_gh_list,
     ("pin-age-check.py", "_fetch_json", "load"): c_fetch_and_dict, ("pin-age-check.py", "_http_dict", "_fetch_json"): c_fetch_and_dict,
-    ("pin-age-check.py", "_http_json_strict", "_http_dict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_json_strict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_dict"): c_go_lenient,
-    ("pin-age-check.py", "_go_index_time", "loads"): c_go_index, ("pin-age-check.py", "_release_time", "_gh_api"): c_release_time,
-    ("pin-age-check.py", "_commit_date", "_gh_api"): c_commit_date, ("pin-age-check.py", "observed", "_gh_api"): c_observed,
+    ("pin-age-check.py", "_go_module", "_http_dict"): c_go_module,
+    ("pin-age-check.py", "_go_index_time", "loads"): c_go_index,
+    ("pin-age-check.py", "observed", "_gh_api"): c_observed,
     ("pin-age-check.py", "_run_times", "_gh_api"): c_pr_clock, ("pin-age-check.py", "_run_times", "loads"): c_pr_clock,
     ("pin-age-check.py", "_release_with_assets", "_gh_api"): c_release_assets, ("pin-age-check.py", "live_proofs", "_http_dict"): c_live_pypi,
     ("pin-age-check.py", "_registry_push", "_gh_list"): c_registry, ("pin-age-check.py", "_registry_push", "_http_dict"): c_registry,
@@ -2046,7 +1968,7 @@ CASES = {
     ("pin-audit.py", "upstream", "_gh_json"): c_upstream, ("pin-audit.py", "nested", "_gh_json"): c_nested,
     ("pin-audit.py", "versions", "_http_dict"): c_versions, ("pin-audit.py", "versions", "_gh_json"): c_versions,
     ("pin-audit.py", "open_pr_items", "_gh_pages"): c_open_pr_items, ("pin-audit.py", "prs", "loads"): c_prs, ("pin-audit.py", "prs", "_gh_json"): c_prs,
-    ("pin-audit.py", "tag_map", "_gh_pages"): c_tag_map, ("pin-audit.py", "modified", "_gh_json"): c_modified, ("pin-audit.py", "modified", "load"): c_modified,
+    ("pin-audit.py", "tag_map", "_gh_pages"): c_tag_map,
     ("pin-audit.py", "load_exceptions", "load"): c_local_files, ("pin-audit.py", "file_issues", "loads"): c_file_issues, ("pin-audit.py", "main", "load"): c_main_fixtures,
 }
 # a function with more than one call of the same reader lists how many; each call has its probe in the named case (a new call in a known function changes the count and fails here)
@@ -2078,16 +2000,22 @@ revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).spl
 assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src, sorted(i.sums))
                              for k, i in sorted(d.items())}, sort_keys=True)
+# a revision the reader refuses (a command line over its cap) must be refused the same way with the memos
+def read(r):
+    try:
+        return dump(inv.load_at(root, r))
+    except RuntimeError as e:
+        return "raises: " + str(e)
 inv._MEMO_ON[0] = False
-ref = {r: dump(inv.load_at(root, r)) for r in revs}
+ref = {r: read(r) for r in revs}
 inv._MEMO_ON[0] = True
 inv._FILE_MEMO.clear(); inv._STEP_MEMO.clear(); inv._LINE_ID_MEMO.clear()
 for r in revs:
-    assert dump(inv.load_at(root, r)) == ref[r], r
+    assert read(r) == ref[r], r
 assert inv._STEP_MEMO and inv._LINE_ID_MEMO, "the line memos were not used"
 inv._FILE_MEMO.clear()          # a warm line memo under a cold file memo: every file is read again, every line is a hit
 for r in reversed(revs):
-    assert dump(inv.load_at(root, r)) == ref[r], r
+    assert read(r) == ref[r], r
 PY
 CASE="T5 line memo: a script line that makes too many items raises on a hit too, a returned or replayed item cannot reach the memo (sums included), and no line is read from the memo while a job's run texts are set"
 check python3 - "$aud" <<'PY'
@@ -2164,8 +2092,8 @@ src = [ast.unparse(e) for e in lists[0].elts]
 assert "inv.PERSONA_TOOLS" in src, src
 assert "inv.KERNEL_LOCK" in src, src
 PY
-CASE="background checks: the three long cases were each started once and each reported once"
-check test "$BG_N" -eq 3
+CASE="background checks: the two long cases were each started once and each reported once"
+check test "$BG_N" -eq 2
 
 # --- the total deadline and the phase markers (cache supply-chain.yml timed out at 15 and 20 minutes with an empty log: no scheduled run since Oct 7) --------------
 # A hanging gh: every call sleeps. With --deadline 2 the audit must end by itself: exit 2 within seconds, stderr naming the phase it was in, and the phase
@@ -2206,6 +2134,11 @@ for bad in 0 -3 86401 9223372037 abc 1.5 "$BIGDIGITS"; do
   rc=0; ( cd "$work" && python3 "$aud" --root "$work/r-clean" --now "$NOW" --gh "$work/gh" --fixtures "$work/clean.fx.json" --deadline "$bad" >"$work/dl.out" 2>"$work/dl.err" ) || rc=$?
   CASE="deadline: --deadline ${bad:0:12} is refused with exit 2, nothing is audited, and nothing is a traceback"
   check test "$rc" -eq 2 -a ! -s "$work/dl.out" -a -s "$work/dl.err" -a "$(grep -c Traceback "$work/dl.err")" -eq 0
+  case $bad in
+    abc|1.5|"$BIGDIGITS") reason="invalid int value" ;;
+    *) reason='cannot do its job: --deadline must be from 1 to 86400 seconds' ;;
+  esac
+  check grep -qF "$reason" "$work/dl.err"
 done
 CASE="deadline: the values 1 and 86400 (one day, the largest) are accepted and the run is audited as before"
 check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" <<'PY'
@@ -2217,7 +2150,8 @@ for v in ("1", "86400"):
 PY
 # a run that finishes cannot also report the deadline: cancel() does not stop a callback that has already started, so the end of main waits for it (join)
 CASE="deadline: a callback already running when the run finishes decides the exit: 2, not a 0 that carries the deadline line"
-rc=0; python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" >/dev/null 2>&1 <<'PY' || rc=$?
+rc=0
+python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" >/dev/null 2>"$work/cbrun.err" <<'PY' || rc=$?
 import importlib.util, sys, threading, time
 aud, repo, fx, now, gh = sys.argv[1:6]
 spec = importlib.util.spec_from_file_location("pa", aud); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
@@ -2230,7 +2164,7 @@ pa._deadline_passed = slow_callback
 pa.FixtureNet.prs = lambda self: (started.wait(10), [])[1]   # the run finishes only after the callback has started
 sys.exit(pa.main(["--root", repo, "--fixtures", fx, "--now", now, "--gh", gh, "--rerun-held", "--deadline", "1"]))
 PY
-check test "$rc" -eq 2
+check test "$rc" -eq 2; check grep -q 'audit: could not finish: still in' "$work/cbrun.err"
 # a deadline in the middle of the observations write must not leave a half-written state.json at the published path
 CASE="observations: a deadline during the write leaves no partial file at the published path (a temp file, then os.replace)"
 check python3 - "$aud" "$work/r-clean" "$work/clean.fx.json" "$NOW" "$work/gh" "$work/obs-partial" <<'PY'

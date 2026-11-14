@@ -64,6 +64,164 @@ export PYTHONPATH="$work/pylib${PYTHONPATH:+:$PYTHONPATH}"
 SHA=3d3c42e5aac5ba805825da76410c181273ba90b1
 DIG=sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
+# What a refusal must print. A refusal is exit 1 with a finding line, never a crash or a usage error. Every bad case is
+# named below by why it is refused, so a refusal for any other reason fails.
+refusal_reason() {
+  case "$1" in
+    cache-restore-tag|cache-save-short-sha|docker-tag|tag|branch|short-sha|uppercase-sha|nested-action-tag|action-yml-anywhere \
+      |local-action-upper|upper-manifest-found) echo "not a full commit digest" ;;
+    cache-restore-no-comment|sha-no-comment|comment-not-version|comment-next-line) echo "is not followed directly by" ;;
+    container-tag|container-map-tag|service-tag|docker-action-image|docker-action-file|kind-node-tag \
+      |run-literal-tag|run-bare-name|run-registry-tag|run-flags-first|run-flag-equals|run-sudo-env|run-chained \
+      |run-subshell|run-container-verb|run-image-verb|run-create|run-continued|run-skopeo-src|run-crane-src \
+      |run-composite|run-if|run-negated|run-loop-body|run-timeout|run-env-wrapper|run-xargs|run-local-skopeo \
+      |run-template-too-wide|run-other-job-local|img-bash-c|r1-manifest|r1-imagetools|b6-build-unpinned \
+      |b6-variable-from|b6-template-one-bad) echo "not pinned by digest" ;;
+    pkg-pip-*|pkg-global-flag|pkg-python-m|pkg-continued|pkg-venv-path|pkg-hashes-but-spec|pkg-r-without-hashes \
+      |pkg-editable|pkg-timeout|pkg-bash-c|pkg-eval|n3-pip-*|n4-subst-pip) echo "--require-hashes" ;;
+    pkg-pipx-*|pkg-uv*|pkg-npm*|pkg-gem|pkg-yarn|n4-conda|n4-mamba|x2-uv-*) \
+      echo "a package manager this repository does not use" ;;
+    b8-pwsh*|b8-default-shell-pwsh|n8-*pwsh*) echo "POSIX shell only" ;;
+    n9-*|n10-*|ro-windows|ro-macos|ro-self-hosted-list|ro-expression|ro-group|ro-missing) \
+      echo "is not an ubuntu runner" ;;
+    b2-global-host|b2-global-unknown|b2-global-host-refused) echo "has a global option this check does not know" ;;
+    b4-unknown-flag|b4-unknown-short) echo "has an option this check does not know" ;;
+    b5-compose|b5-docker-compose|b5-bake) echo "runs images named in" ;;
+    b6-build-stdin|b6-buildx-stdin-file) echo "from stdin" ;;
+    b6-generated|n3-written-dockerfile|n3-tee-dockerfile|n5-*|n7-earlier-step-docker) \
+      echo "the script writes a file named like its Dockerfile" ;;
+    n3-absolute-dockerfile) echo "is outside the repository" ;;
+    n4-subst-run|n4-backtick-run|n4-subst-quoted|n4-subst-skopeo|n4-subst-crane|n4-subst-imagetools \
+      |n4-nested|n6-r-from-subst) echo "command substitution" ;;
+    n6-r-written|n7-earlier-step-pip|n7-if-then-write) echo "the script writes or changes" ;;
+    n6-r-absolute|n6-r-missing|n6-r-stdin-no-heredoc) echo "reads -r from" ;;
+    n1-forward-*|n1-variable-verb) echo "forward" ;;
+    n2-linked-binary|n2-copied-pip) echo "copies, links or aliases" ;;
+    x1-buildah|x1-ctr|x1-crictl) echo "runs or pulls images through a CLI" ;;
+    x2-pipenv|x2-poetry|x2-pip-sync|x2-python-m-build) echo "cannot hold to hashes" ;;
+    templated|matrix-expression) echo "is an expression, not a pin" ;;
+    unclassified-action|cache-lookalike-*) echo "is not a classified action" ;;
+    remote-reusable) echo "remote reusable workflow" ;;
+    local-escapes|local-missing|local-action-refused) echo "local reference" ;;
+    anchor-alias|merge-key|anchor-only-pinned) echo "YAML anchor" ;;
+    unparsable) echo "does not parse as YAML" ;;
+    non-yml-in-workflows) echo "not .yml/.yaml" ;;
+    symlinked-workflow|symlink) echo "a symlink where a workflow or action file is read" ;;
+    gate-edited) echo "agent-review-gate.yml: changed" ;;
+    gate-missing) echo "agent-review-gate.yml: missing" ;;
+    service-no-image) echo "service without an image" ;;
+    not-a-string) echo "not a plain string" ;;
+    expression-key|expression-key-action) echo "a mapping key holding an expression" ;;
+    buildx-*) echo "docker/setup-buildx-action" ;;
+    qemu-*) echo "docker/setup-qemu-action" ;;
+    kind-*) echo "helm/kind-action" ;;
+    sha-in-comment-only|key-whitespace|flow-style|key-case|second-document|job-named-with-uses \
+      |nested-workflow-dir|trailing-newline-ref|unicode-nbsp-ref) echo 'not a full commit digest' ;;
+    folded-scalar|comment-after-other|comment-in-string|tag-with-fragment) echo 'is not followed directly by' ;;
+    local-workflow-step) echo 'local reference' ;;
+    job-named-with-cont|job-named-env-cont|service-named-with|service-scalar-tag|image-trailing-space) \
+      echo 'not pinned by digest' ;;
+    service-expression) echo 'is an expression, not a pin' ;;
+    services-expression) echo 'services is not a mapping' ;;
+    uses-odd-position) echo 'uses at a position GitHub does not read as an action' ;;
+    service-options|container-options|container-volumes|container-ports) \
+      echo 'only image, credentials and env, and ports on a service' ;;
+    service-ports) echo 'only 127.0.0.1:<port>:<port> as plain text is read' ;;
+    container-env-name) echo 'a variable name that is not plain' ;;
+    docker-entrypoint) echo "Docker action input 'entrypoint' is refused" ;;
+    docker-action-entrypoint) echo "Docker action input 'entrypoint' is refused" ;;
+    docker-args) echo "Docker action input 'args' is refused" ;;
+    scorecard-composite-retired) echo 'ossf/scorecard-action is retired' ;;
+    service-name-inject) echo 'a service name that is not a plain identifier' ;;
+    action-path-traversal) echo 'an action path with a `.`/`..`/empty segment is refused' ;;
+    n2-copied-binary) echo 'copies, links or aliases' ;;
+    r3c02-python-generated) echo "with another language's interpreter" ;;
+    x2-setup-py|c04-setup-flag) echo "runs setup.py with another language's interpreter" ;;
+    n11-*) echo 'built by a command substitution' ;;
+    n12-*) echo 'POSIX shell only' ;;
+    n14-*|n15-*|n16-*|n17-*|n19-*|n20-*) echo 'is not a verb this check reads' ;;
+    n18-global-*) echo 'has a global option this check does not know' ;;
+    n18-config-other) echo 'sets DOCKER_CONFIG, which points docker or buildx' ;;
+    n18-buildkit-host) echo 'sets BUILDKIT_HOST, which points docker or buildx' ;;
+    n18-*) echo 'sets DOCKER_HOST, which points docker or buildx' ;;
+    scout-unknown-option|exec-unknown-option-bad|r26-b1-build-unknown-option-bad|r32-b1-*|r31-b1-*) \
+      echo 'has an option this check does not know' ;;
+    n23-*) echo 'a build context is not a local path' ;;
+    n24-working-directory|n24-cd-literal|n25-*|n26-wd-pip-r|n26-cd-pip-r|n28-*|n31-ansi-pushd \
+      |n31-ansi-cd|n31-locale-cd) echo 'working directory this check cannot place' ;;
+    r2c02-cd-in-parent) echo 'working directory this check cannot place' ;;
+    n27-alias-*|n27-expand-aliases|n27-alias-any) echo 'defines an alias' ;;
+    n27-ansi-*) echo 'ANSI-C quoting' ;;
+    r2c02-ansi-in-script) echo 'ANSI-C quoting' ;;
+    n27-cp-split) echo 'copies, links or aliases' ;;
+    n29-*|r3n03-*) echo 'a program is named by a variable with a default' ;;
+    n30-ansi-pip|c05-*|r2c05-*|c04-mpip-attached|c04-pip-main|r2c04-python-cluster \
+      |c02-script-calls-script|exec-inner-pip-bad|run-inner-pip-flags-bad|pkg-pip3-version) echo '--require-hashes' ;;
+    n32-*|n34-*) echo 'reads its script from stdin, a herestring or a process substitution' ;;
+    n33-*|sealed-probe-other-dir|sealed-probe-other-name|r2c02-fake-provenance|r2c02-foreign-repo \
+      |r3c02-git-show-ref|r3c02-api-unrelated|c02-variable-script \
+      |w-runner-temp-copy-then-download-bad) echo 'named by a variable' ;;
+    n35-*) echo 'which the job makes executable (chmod)' ;;
+    n21-*) echo 'not pinned by digest' ;;
+    exec-nested-too-deep-bad) echo 'nests scripts deeper than this check reads' ;;
+    r19-b10-case-in-substitution-bad) echo 'nests scripts deeper than this check reads' ;;
+    cov-scripts-nested-past-the-limit-bad) echo 'scripts nest deeper than this check reads' ;;
+    exec-sh-c-inner-tool-bad) echo 'is not a committed file' ;;
+    c01-glob-*|r2c01-bracket-only) echo 'a program name is a glob' ;;
+    r3c01-posix-class|r3c02-glob-exec) echo 'a glob that names a committed file' ;;
+    c04-uv-option|c04-npm-*|c04-pipx-option) echo 'a package manager this repository does not use' ;;
+    c02-python-c) echo 'inline code in the workflow is not read' ;;
+    c02-ruby-e|c02-node-e|c02-perl-e|r2c02-node-eval-eq|r2c02-perl-attached|r2c02-ruby-attached \
+      |r3c02-env-u-node) echo 'runs inline code from the workflow, which is not read' ;;
+    c02-uncommitted-script|c02-generated-elsewhere) echo 'is not a committed file' ;;
+    r2c02-replaced-script|r3c02-replace-*|sealed-probe-replaced|ac3-tee-bad|w-checkout-* \
+      |w-download-artifact-*|w-cache-*|w-writer-*|w-conditional-writer-bad|w-duplicate-path-keys-*) \
+      echo 'is changed by the job before it runs' ;;
+    c12-hash-p) echo 'binds a command name to a program' ;;
+    c11-*|r2c11-*|r3c11-adjacent-redirect|r3c11-workspace-abs|r3c11-tar-workspace) \
+      echo 'the script writes a file named like its Dockerfile' ;;
+    r3c11-pipmain-req|r3c11-mpip-req) echo 'outside the repository' ;;
+    r24-req-symlink) echo 'which is not a file in the repository' ;;
+    c13-*|r2c13-*|r3c13-*) echo 'sets DOCKER_HOST, which points docker or buildx' ;;
+    c09-buildkit-syntax-arg|r2c09-syntax-from-env) echo 'sets its frontend image by tag or from the environment' ;;
+    r2c09-attest-generator|r2c09-sbom-generator) echo 'a build runs a generator image not pinned by digest' ;;
+    r3c09-attest-sbom|r3c09-sbom-true) echo "a build generates an SBOM with BuildKit's default scanner image" ;;
+    r3c02-env-S) echo '`env` runs a string or moves the working directory' ;;
+    c07-*|c08-*|c09-copy-from-image|c09-syntax-directive|r3c08-from-number|n24-context-dockerfile \
+      |r23-build-with-unpinned-from-bad|r23c-b01-*|r23c-b02-*|r23c-b03-*|r26-b1-build-* \
+      |r4b1-trap-build-still-checked-bad) echo 'builds FROM an image not pinned by digest' ;;
+    r23-var-*|r23-for-loop-literal-pull-bad|r23-removed-local-trust-bypass-by-variable-bad \
+      |r24-literal-assignment-in-committed-script-bad|r24-kubectl-image-through-literal-variable-bad \
+      |r24-kind-image-through-literal-variable-bad|r26-b3-*|r26-b8-*-literal-variable-bad|r27-b3-* \
+      |r31-b2-*|r32-b2-*) echo 'which this script assigns the unpinned name' ;;
+    r25-*|r26-b8-crane-pull-mixed-word-bad|r31-b3-*) echo 'which mixes a variable with a literal name' ;;
+    r24-docker-tag-source-substitution-bad) echo 'takes its source from a command substitution' ;;
+    r26-b5-*) echo 'takes its image from a command substitution' ;;
+    r23c-b05-xargs-supplies-image-bad) echo 'has no image operand' ;;
+    r26-b4-kind-config-bad) echo 'reads its node images from a config file' ;;
+    r26-b6-*) echo 'runs or pulls images through a CLI this check does not read' ;;
+    r24-install-*|r23c-b09-*|r26-b9-*|r31-b4-*|r32-b4-*|r33-b1-*) echo 'which this job downloaded and installed' ;;
+    r23-tag-of-local-name-bad|r23c-b07-image-tag-alias-bad) echo 'not pinned by digest' ;;
+    w-fence-*|a-*) echo 'is not a committed file' ;;
+    w-tmp-copy-*|r20-tmp-copy-*|r21-b10-tmp-copy-*) echo 'is not a committed file' ;;
+    ac3-non-bash-step-bad) echo 'POSIX shell only' ;;
+    run-*|exec-*|create-*|container-create-inner-bad|b1-*|b2-*|b3-*|b4-*|b7-*|b8-* \
+      |n4-inner-still-read|n13-*|n22-*|n30-*|c01-*|c02-*|c03-*|c06-*|c10-*|r2c02-*|r2c10-*|r3c02-* \
+      |r3c10-*|r2r03-*|r2n01-*|r3n01-*|r4b*|r17-*|r18-*|r19-*|r20-*|r21-*|r22-*|r23-*|r24-*|r26-* \
+      |r27-*|scout-registry-unpinned|x1-nerdctl|r3n01-*|b6-*|r23c-*|r28-*) echo 'not pinned by digest' ;;
+  esac
+}
+# prints why a refusal is not the wanted one, or nothing
+refusal_problem() {
+  local name=$1 rc=$2 out=$3 want
+  [ "$rc" -eq 1 ] || { echo "(exit $rc, want a refusal by exit 1)"; return; }
+  ! grep -q Traceback <<<"$out" || { echo "(a crash, not a refusal)"; return; }
+  grep -qv '^check-action-pins: ' <<<"$out" || { echo "(no finding line)"; return; }
+  want=$(refusal_reason "$name")
+  [ -n "$want" ] || { echo "(no reason is named for this refusal in refusal_reason)"; return; }
+  grep -qF -- "$want" <<<"$out" || echo "(the finding does not say: $want)"
+}
+
 # case_ <name> <expect ok|bad> <workflow text> [setup commands, run in the fixture root]
 case_() {
   local name=$1 expect=$2 d="$work/$1"
@@ -84,9 +242,12 @@ case_() {
   : > "$d/bin/audit-record-prepare.sh"
   : > "$d/.github/agent/bin/auditor-signed-commit.py"  # the gate's committed programs
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
-  if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
-  if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
-  else failn=$((failn+1)); echo "FAIL $name → $got (want $expect)"; fi
+  local out rc=0 why=""
+  out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then got=ok; else got=bad; fi
+  [ "$got" != bad ] || [ "$expect" != bad ] || why=$(refusal_problem "$name" "$rc" "$out")
+  if [ "$got" = "$expect" ] && [ -z "$why" ]; then pass=$((pass+1)); echo "PASS $name → $got"
+  else failn=$((failn+1)); echo "FAIL $name → $got (want $expect) $why"; fi
   # VERBOSE=1: show why each case was judged (the first finding), to prove a red is the intended red
   if [ -n "${VERBOSE:-}" ]; then python3 "$here/../bin/check-action-pins.py" "$d" 2>&1 | head -1 | sed "s#^#     #" || true; fi
 }
@@ -661,10 +822,9 @@ case_ unclassified-action  bad "$head
 # --- adversarial round 9 (audits/2026-09-30/pins/round9)
 case_ docker-action-entrypoint bad "$head
     steps:
-      - uses: ossf/scorecard-action@$SHA # v2.4.4
+      - uses: docker://alpine@$DIG
         with:
-          results_file: r.sarif
-          entrypoint: '/bin/echo\" alpine:latest \"'"
+          entrypoint: /bin/echo"
 # advisor 0140, Codex r2 B1: the composite ossf/scorecard-action wrapper is retired — refused outright, by name,
 # whatever its digest/comment; only the direct docker://...@sha256 executor form is accepted
 case_ scorecard-composite-retired bad "$head
@@ -717,9 +877,12 @@ gitcase() {
   : > "$d/bin/audit-record-prepare.sh"
   : > "$d/.github/agent/bin/auditor-signed-commit.py"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
-  if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
-  if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
-  else failn=$((failn+1)); echo "FAIL git-$name → $got (want $expect)"; fi
+  local out rc=0 why=""
+  out=$(cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then got=ok; else got=bad; fi
+  [ "$got" != bad ] || [ "$expect" != bad ] || why=$(refusal_problem "$name" "$rc" "$out")
+  if [ "$got" = "$expect" ] && [ -z "$why" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
+  else failn=$((failn+1)); echo "FAIL git-$name → $got (want $expect) $why"; fi
 }
 gitcase pinned   ok  "$head
     steps:
@@ -2875,7 +3038,7 @@ case_ w-cache-restore-expression-bad bad "$(uw "$(us actions/cache/restore "    
 # 1. every actions/cache and cache/restore step writes everywhere (the glob and the file-path forms are not parsed)
 n=0
 for p in 'bi*' 'bin?' '[b]in' 'bin/tool.sh' '.github/agent/bi*' '~' '~/work/x/x/bin' '/home/runner/work/x/x/bin' '/tmp/x'; do
-  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: $p
+  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: '$p'
           key: k")")" "$mk_tool"
 done
 case_ w-cache-save-still-ok ok "$(uw "$(us actions/cache/save "          path: bi*
@@ -3304,13 +3467,100 @@ case3_() {
 dlj() { printf '%s\n    steps:\n      - run: |\n' "$head"; printf '%s\n' "$1" | sed 's/^/          /'; }
 DLS='mkdir -p bin tools; printf "echo x\n" > bin/x-test.sh; printf "echo y\n" > tools/y.sh'
 U=https://example.invalid/x-test.sh
-for spelling in "curl -fsSL -o bin/x-test.sh $U" "curl -fsSL -obin/x-test.sh $U" "curl -fsSLo bin/x-test.sh $U" "curl -sSfLO $U" "curl --remote-name $U" "curl --output bin/x-test.sh $U" "curl --output=bin/x-test.sh $U" \
-  "curl --output-dir bin -O $U" "curl --output-dir bin -obin/x-test.sh $U" "curl -fsSL -o \$GITHUB_WORKSPACE/bin/x-test.sh $U" "curl -fsSL -o \$PWD/bin/x-test.sh $U" "curl -fsSL -o bin/x-test.sh '$U?v=1'" \
-  "curl -D bin/x-test.sh -o /dev/null $U" "curl --dump-header bin/x-test.sh -o /dev/null $U" "curl -fsSL \"-o\" bin/x-test.sh $U" "FMT='%output{bin/x-test.sh}x'; curl -s -w \"\$FMT\" file:///dev/null" "FMT=x; curl -s --write-out=\"\$FMT\" file:///dev/null" "H=('X: y' -o bin/x-test.sh); curl -H \"\${H[@]}\" $U" "curl -H \"\$@\" $U" "curl -fsSL $U &> bin/x-test.sh" "curl -fsSL $U >& bin/x-test.sh" "curl -fsSL $U >& 2026-build.sh" "sh -c '/usr/bin/curl -fsSL $U' > bin/x-test.sh" "bash -c '/usr/local/bin/wget -qO- $U' >> bin/x-test.sh" "/usr/bin/curl -fsSL -o bin/x-test.sh $U" "curl -H 'X: a\"b' $U" "curl --header 'X: a\"b' $U" "curl 'a\"b' $U" "curl -fsSL $U 1>& 2026.log" "curl -fsSL $U >& 2>x" "bash -c 'curl -fsSL $U' > bin/x-test.sh" "sh -c \"curl -fsSL $U\" >> bin/x-test.sh" "eval 'curl -fsSL $U' > bin/x-test.sh" "bash -c 'curl -fsSL $U' >& bin/x-test.sh" "curl -fsSL $U 1>& bin/x-test.sh" "curl -fsSL \$U >&bin/x-test.sh" "CURL_OPTS='-o bin/x-test.sh'; curl \${CURL_OPTS:--silent} $U" "curl -s -w \"\${F:-x}\" $U" "curl \${A:-}\${B:--s} $U" "curl -fsSL $U &>> bin/x-test.sh" "curl -fsSL $U >| bin/x-test.sh" "echo $U | xargs curl -fsSL" "printf '%s\\n' -o | xargs -n1 curl $U" "opts=(-o bin/x-test.sh); curl \"\${opts[@]}\" $U" "curl \"\$@\" $U" "curl \$1 $U" "curl \"\$1\" $U" "header='X: v -o bin/x-test.sh'; curl -H \$header $U" "curl -s -w '%output{bin/x-test.sh}echo changed' file:///dev/null" "curl -s -w'%output{bin/x-test.sh}x' file:///dev/null" "curl -s --write-out '%{stderr}%output{bin/x-test.sh}x' file:///dev/null" "curl -s -w @fmt $U" "curl -s --write-out=@fmt $U" "curl --header" "curl -H" "wget -O /dev/null $U" "wget --output-document=/dev/null $U" "curl $U --output" "curl $U -o" "wget $U -O" "curl --request=PUT -X GET --bogus-option $U" "curl -Z $U" "curl -fsSL '--output' bin/x-test.sh $U" "curl -fsSL $U > bin/x-test.sh" "curl -fsSL $U >> bin/x-test.sh" \
-  "curl -fsSL -o \"\$f\" $U" "curl -fsSL \${opts} $U" "curl -K cfg $U" "curl --config cfg $U" "curl -T bin/x-test.sh $U" "curl --create-dirs -o bin/x-test.sh $U" "env curl -o bin/x-test.sh $U" \
-  "sudo curl -o bin/x-test.sh $U" "xargs curl -O" "command curl -o bin/x-test.sh $U" "sh -c 'curl -o bin/x-test.sh $U'" "bash -c \"curl -o bin/x-test.sh $U\"" "curl -fsSL -o dl.tmp $U && cp dl.tmp bin/x-test.sh" \
-  "curl -fsSL -o dl.tmp $U && mv dl.tmp bin/x-test.sh" "curl -fsSL -o dl.tmp $U && install -m 755 dl.tmp bin/x-test.sh" "wget -O bin/x-test.sh $U" "wget -obin/x-test.sh $U" "wget -P bin $U" "wget $U" "wget -qO bin/x-test.sh $U" \
-  "wget --output-document=bin/x-test.sh $U" "wget -a log $U" "aria2c -o x-test.sh -d bin $U" "aria2c $U" "curl -fsSL $U -o /dev/null -o bin/x-test.sh" "curl -sS --output /dev/null --output bin/x-test.sh $U"; do
+spellings=(
+  "curl -fsSL -o bin/x-test.sh $U"
+  "curl -fsSL -obin/x-test.sh $U"
+  "curl -fsSLo bin/x-test.sh $U"
+  "curl -sSfLO $U"
+  "curl --remote-name $U"
+  "curl --output bin/x-test.sh $U"
+  "curl --output=bin/x-test.sh $U"
+  "curl --output-dir bin -O $U"
+  "curl --output-dir bin -obin/x-test.sh $U"
+  "curl -fsSL -o \$GITHUB_WORKSPACE/bin/x-test.sh $U"
+  "curl -fsSL -o \$PWD/bin/x-test.sh $U"
+  "curl -fsSL -o bin/x-test.sh '$U?v=1'"
+  "curl -D bin/x-test.sh -o /dev/null $U"
+  "curl --dump-header bin/x-test.sh -o /dev/null $U"
+  "curl -fsSL \"-o\" bin/x-test.sh $U"
+  "FMT='%output{bin/x-test.sh}x'; curl -s -w \"\$FMT\" file:///dev/null"
+  "FMT=x; curl -s --write-out=\"\$FMT\" file:///dev/null"
+  "H=('X: y' -o bin/x-test.sh); curl -H \"\${H[@]}\" $U"
+  "curl -H \"\$@\" $U"
+  "curl -fsSL $U &> bin/x-test.sh"
+  "curl -fsSL $U >& bin/x-test.sh"
+  "curl -fsSL $U >& 2026-build.sh"
+  "sh -c '/usr/bin/curl -fsSL $U' > bin/x-test.sh"
+  "bash -c '/usr/local/bin/wget -qO- $U' >> bin/x-test.sh"
+  "/usr/bin/curl -fsSL -o bin/x-test.sh $U"
+  "curl -H 'X: a\"b' $U"
+  "curl --header 'X: a\"b' $U"
+  "curl 'a\"b' $U"
+  "curl -fsSL $U 1>& 2026.log"
+  "curl -fsSL $U >& 2>x"
+  "bash -c 'curl -fsSL $U' > bin/x-test.sh"
+  "sh -c \"curl -fsSL $U\" >> bin/x-test.sh"
+  "eval 'curl -fsSL $U' > bin/x-test.sh"
+  "bash -c 'curl -fsSL $U' >& bin/x-test.sh"
+  "curl -fsSL $U 1>& bin/x-test.sh"
+  "curl -fsSL \$U >&bin/x-test.sh"
+  "CURL_OPTS='-o bin/x-test.sh'; curl \${CURL_OPTS:--silent} $U"
+  "curl -s -w \"\${F:-x}\" $U"
+  "curl \${A:-}\${B:--s} $U"
+  "curl -fsSL $U &>> bin/x-test.sh"
+  "curl -fsSL $U >| bin/x-test.sh"
+  "echo $U | xargs curl -fsSL"
+  "printf '%s\\n' -o | xargs -n1 curl $U"
+  "opts=(-o bin/x-test.sh); curl \"\${opts[@]}\" $U"
+  "curl \"\$@\" $U"
+  "curl \$1 $U"
+  "curl \"\$1\" $U"
+  "header='X: v -o bin/x-test.sh'; curl -H \$header $U"
+  "curl -s -w '%output{bin/x-test.sh}echo changed' file:///dev/null"
+  "curl -s -w'%output{bin/x-test.sh}x' file:///dev/null"
+  "curl -s --write-out '%{stderr}%output{bin/x-test.sh}x' file:///dev/null"
+  "curl -s -w @fmt $U"
+  "curl -s --write-out=@fmt $U"
+  "curl --header"
+  "curl -H"
+  "wget -O /dev/null $U"
+  "wget --output-document=/dev/null $U"
+  "curl $U --output"
+  "curl $U -o"
+  "wget $U -O"
+  "curl --request=PUT -X GET --bogus-option $U"
+  "curl -Z $U"
+  "curl -fsSL '--output' bin/x-test.sh $U"
+  "curl -fsSL $U > bin/x-test.sh"
+  "curl -fsSL $U >> bin/x-test.sh"
+  "curl -fsSL -o \"\$f\" $U"
+  "curl -fsSL \${opts} $U"
+  "curl -K cfg $U"
+  "curl --config cfg $U"
+  "curl -T bin/x-test.sh $U"
+  "curl --create-dirs -o bin/x-test.sh $U"
+  "env curl -o bin/x-test.sh $U"
+  "sudo curl -o bin/x-test.sh $U"
+  "xargs curl -O"
+  "command curl -o bin/x-test.sh $U"
+  "sh -c 'curl -o bin/x-test.sh $U'"
+  "bash -c \"curl -o bin/x-test.sh $U\""
+  "curl -fsSL -o dl.tmp $U && cp dl.tmp bin/x-test.sh"
+  "curl -fsSL -o dl.tmp $U && mv dl.tmp bin/x-test.sh"
+  "curl -fsSL -o dl.tmp $U && install -m 755 dl.tmp bin/x-test.sh"
+  "wget -O bin/x-test.sh $U"
+  "wget -obin/x-test.sh $U"
+  "wget -P bin $U"
+  "wget $U"
+  "wget -qO bin/x-test.sh $U"
+  "wget --output-document=bin/x-test.sh $U"
+  "wget -a log $U"
+  "aria2c -o x-test.sh -d bin $U"
+  "aria2c $U"
+  "curl -fsSL $U -o /dev/null -o bin/x-test.sh"
+  "curl -sS --output /dev/null --output bin/x-test.sh $U"
+)
+for spelling in "${spellings[@]}"; do
   n=$(printf '%s' "$spelling" | md5 -q 2>/dev/null || printf '%s' "$spelling" | md5sum | cut -c1-32)
   case3_ "ac3-bad-$n" "$(dlj "$spelling
 bash bin/x-test.sh")" "$DLS"
@@ -3339,8 +3589,30 @@ case3_ ac3-composite-bad "$head
     steps:
       - uses: ./.github/actions/x" "$DLS; mkdir -p .github/actions/x; printf 'name: x\\nruns:\\n  using: composite\\n  steps:\\n    - shell: bash\\n      run: |\\n        curl -fsSL -o bin/x-test.sh $U\\n        bash bin/x-test.sh\\n' > .github/actions/x/action.yml"
 # the downloads that are demonstrably standard output / /dev/null stay fine in the same job
-for spelling in "curl -sf $U 2>&1 >/dev/null" "curl -sf $U 2>&1" "curl -s $U >&2 || true" "curl -s $U 2>&- >/dev/null" "bash -c 'curl -fsS $U' > /dev/null" "bash -c 'curl -fsS $U' | jq -r ." "curl -s $U >&2" "curl -s $U 2>/dev/null" "curl -s $U 2>&1 | jq -r ." "curl -fsSL $U | jq -r ." "curl --silent --show-error --fail --location --head $U" "x=\$(curl -fsS $U)" "curl -s -o /dev/null -w '%{http_code}' -I $U" "curl -sf $U >/dev/null" "curl -sS --output /dev/null $U" "wget -qO- $U" "wget -O - -q $U" "wget --output-document=- $U" \
-  "curl -sf -X PUT -u a:b --data-binary @/tmp/in -H 'X: y' $U >/dev/null" "curl -s -D - -o /dev/null -X PUT $U" "echo curl is a tool"; do
+spellings=(
+  "curl -sf $U 2>&1 >/dev/null"
+  "curl -sf $U 2>&1"
+  "curl -s $U >&2 || true"
+  "curl -s $U 2>&- >/dev/null"
+  "bash -c 'curl -fsS $U' > /dev/null"
+  "bash -c 'curl -fsS $U' | jq -r ."
+  "curl -s $U >&2"
+  "curl -s $U 2>/dev/null"
+  "curl -s $U 2>&1 | jq -r ."
+  "curl -fsSL $U | jq -r ."
+  "curl --silent --show-error --fail --location --head $U"
+  "x=\$(curl -fsS $U)"
+  "curl -s -o /dev/null -w '%{http_code}' -I $U"
+  "curl -sf $U >/dev/null"
+  "curl -sS --output /dev/null $U"
+  "wget -qO- $U"
+  "wget -O - -q $U"
+  "wget --output-document=- $U"
+  "curl -sf -X PUT -u a:b --data-binary @/tmp/in -H 'X: y' $U >/dev/null"
+  "curl -s -D - -o /dev/null -X PUT $U"
+  "echo curl is a tool"
+)
+for spelling in "${spellings[@]}"; do
   n=$(printf '%s' "$spelling" | md5 -q 2>/dev/null || printf '%s' "$spelling" | md5sum | cut -c1-32)
   case_ "ac3-ok-$n" ok "$(dlj "$spelling
 bash bin/x-test.sh")" "$DLS"

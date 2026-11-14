@@ -2372,8 +2372,9 @@ def _resolve_script(path, text, entries, bases=()):
                     if not full.search(ln) or re.search(dst, ln):
                         continue
                     bare = full.sub("PATH", ln)          # the file's own name (install-scanner.sh) is not a command
-                    if re.search(r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex)(?![\w.-])", bare) \
-                            or re.search(r">>?\s*\"?" + dpat + r"/" + re.escape(base), ln):
+                    if (re.search(r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync"
+                                  r"|curl|wget|truncate|patch|ed|ex)(?![\w.-])", bare)
+                            or re.search(r">>?\s*\"?" + dpat + r"/" + re.escape(base), ln)):
                         return None      # something else writes the copy (sed -i, cp, mv, tee ...): it is not main's committed bytes
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:

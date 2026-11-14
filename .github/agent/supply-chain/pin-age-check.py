@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""The pin age check (REQ-SUP-001-AC2, AC3): a version a pull request moves must have been public 7 days, proven by a SERVER-SIDE time.
+"""The pin age check (REQ-SUP-001-AC2, AC3): a version a pull request moves must have been public 7 days, proven by a
+SERVER-SIDE time.
 
-  pin-age-check.py --root REPO --base REV --head REV [--fixtures FILE] [--json FILE] [--now ISO] [--min-days N] [--exceptions FILE]
+  pin-age-check.py --root REPO --base REV --head REV [--fixtures FILE] [--json FILE] [--now ISO] [--min-days N]
+  [--exceptions FILE]
 
-Exit 0: nothing moved, or every moved version is old enough. Exit 1: a moved version is too young or its age cannot be proven (never a pass).
+Exit 0: nothing moved, or every moved version is old enough. Exit 1: a moved version is too young or its age cannot be
+proven (never a pass).
 Exit 2: the check could not run (unreadable input, a tree that does not parse).
 
-Times that count (and nothing else): github-release (a release's publish time), pypi (the index's upload time), go-index (the Go module index's
-timestamp), registry-push (the registry's push time), and the first time the exact version appeared in one of OUR pull requests. A commit date, a tag
+Times that count (and nothing else): github-release (a release's publish time), pypi (the index's upload time), go-index
+(the Go module index's
+timestamp), registry-push (the registry's push time), and the first time the exact version appeared in one of OUR pull
+requests. A commit date, a tag
 date, a version-control time or an image's own "created" field is set by the publisher or builder and is never a proof.
 Fixtures (offline tests): {"now": ISO, "times": {ITEM: {"time": ISO, "source": S}}, "first_seen": {ITEM: ISO}}.
 """
 import argparse
-import base64
 import hashlib
 import http.client
 import datetime as dt
@@ -28,7 +32,7 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SERVER_SIDE = ("github-release", "pypi", "go-index", "registry-push", "signed-timestamp", "observer", "pr-clock")
+SERVER_SIDE = ("github-release", "pypi", "go-index", "registry-push", "observer", "pr-clock")
 MIN_DAYS = 7.0
 
 
@@ -59,67 +63,89 @@ def parse_time(s, clock=False):
     if tz and tz != "Z":
         sign = 1 if tz[0] == "+" else -1
         hh, mm = int(tz[1:3]), int(tz[-2:])
+        if hh > 23 or mm > 59:
+            return None
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
     d = d.replace(tzinfo=dt.timezone.utc)
     if frac and not clock:
-        d += dt.timedelta(seconds=1)   # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated: an age is never over-counted (AC3)
+        # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated: an age is never
+        # over-counted (AC3)
+        d += dt.timedelta(seconds=1)
     return d
 
 
-_PIN = inv._PIN          # the one predicate lives in pin-inventory.py (its kernel-lock reader needs it); the names stay here for every caller and test
+# the one predicate lives in pin-inventory.py (its kernel-lock reader needs it); the names stay here for every caller
+# and test
+_PIN = inv._PIN
 is_pin = inv.is_pin
 
 
+INSTALLER_TOOLS = {tool for inputs in inv.INSTALLER_INPUTS.values() for _, tool in inputs if tool}
 FILE_PIN_SOURCE = "file-pin-ruling"
 
 
 def is_file_item(item):
     """A checksum or version FILE item (its identity is the file's content), the only kind a file_pins row can date."""
     path = getattr(item, "raw", None) or ""
-    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" and (getattr(item, "step", "") or "").startswith("content:") \
-        and bool(re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])) and path.rsplit("/", 1)[-1] not in inv.VERSION_FILES   # a checksum file only: never a version file (.python-version ...)
+    # a checksum file only: never a version file (.python-version ...)
+    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" \
+        and (getattr(item, "step", "") or "").startswith("content:") \
+        and bool(re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])) \
+        and path.rsplit("/", 1)[-1] not in inv.VERSION_FILES
 
 
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
-    """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    ruled_file = is_file_item(item) and any(src == FILE_PIN_SOURCE for _, src in proofs)    # REQ-SUP-001-AC34: a file pin the base branch's file_pins row dates
+    """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the
+    oldest decides."""
+    # REQ-SUP-001-AC34: a file pin the base branch's file_pins row dates
+    ruled_file = is_file_item(item) and any(src == FILE_PIN_SOURCE for _, src in proofs)
     if ruled_file:
-        proofs = [p for p in proofs if p[1] == FILE_PIN_SOURCE]    # the row's published time decides, never an earlier clock of the pull request
-    if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
+        # the row's published time decides, never an earlier clock of the pull request
+        proofs = [p for p in proofs if p[1] == FILE_PIN_SOURCE]
+    if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") \
+        or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or ""))):
-        return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
-    if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
-        return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
+        return False, (f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, "
+                       "or an action not named by its commit, so it has no age"), None
+    if item.kind == "tool" and item.name in INSTALLER_TOOLS and len(item.version.lstrip("v").split(".")) < 3:
+        return False, (f"not a pin: {item.version!r} is a series, not an exact release "
+                       "(the installer picks the newest patch), so it has no age"), None
     bad = next((src[len("bad-label:"):] for _, src in proofs if str(src).startswith("bad-label:")), None)
     if bad is not None:
-        return False, f"age not provable: the label '# {bad}' does not name the pinned commit (the label is wrong; this is not a missing clock)", None
+        return False, (f"age not provable: the label '# {bad}' does not name the pinned commit "
+                       "(the label is wrong; this is not a missing clock)"), None
     if item.kind == "image":
         host = _image_registry(item.name)
         if host not in ("ghcr.io", "docker.io"):
-            unproven = next((t for t, src in proofs if src == "publisher-unproven"), None)
-            proofs = [p for p in proofs if p[1] == "signed-timestamp"]
-            if not proofs:
-                reason = f" ({unproven})" if unproven else ""
-                what = "is not ghcr.io or Docker Hub and the image has no publisher-signed time"
-                return False, f"age not provable: {host} {what}{reason}", None
-        else:
-            proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
-    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
-        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
+            entry = _publisher_entry(item.name)
+            if entry is None:
+                return False, f"registry {host} is not in image-publishers.json, so nothing vouches for the image", None
+            if "unsigned" in entry:
+                return True, f"no age asked of an image on {host}: no signature published", None
+            return True, f"no age asked of an image on {host}: its signature is checked by cosign-verify", None
+        proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
+    if item.kind in ("tool", "package", "gotool") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer")
+            for t, src in proofs):
+        # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old
+        # clock
+        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
         if src not in SERVER_SIDE and src != "first-seen" and not (src == FILE_PIN_SOURCE and ruled_file):
             continue
         if src == "github-release" and item.kind == "action":
-            continue  # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must have seen the commit
+            # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must
+            # have seen the commit
+            continue
         d = parse_time(t)
         if d is None or d > now:
             continue
         if best is None or d < best[0]:
             best = (d, src)
     if best is None:
-        return False, "age not provable: no server-side publish time" + (f" (refused or unusable: {', '.join(seen)})" if seen else " found"), None
+        return False, "age not provable: no server-side publish time" + (f" (refused or unusable: {', '.join(seen)})"
+            if seen else " found"), None
     age = (now - best[0]).total_seconds() / 86400
     proof = {"time": best[0].strftime("%Y-%m-%dT%H:%M:%SZ"), "source": best[1], "age_days": round(age, 2)}
     if age + 1e-9 < min_days:
@@ -129,23 +155,33 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
 
 # ---------- live providers (a real run, no fixtures) ----------
 class CouldNotLook(Exception):
-    """The server could not be asked (rate limit, outage): the check cannot run. Never read as 'no proof', never a pass."""
+    """The server could not be asked (rate limit, outage): the check cannot run. Never read as 'no proof', never a
+    pass."""
 
 
 GH_TIMEOUT = 120
 
 
 def _gh_run(cmd, **kw):
-    """subprocess.run for the gh and git calls here, with a timeout: a call that hangs is CouldNotLook (the run stops), never an answer."""
+    """subprocess.run for the gh and git calls here, with a timeout: a call that hangs is CouldNotLook (the run
+    stops), never an answer."""
     try:
         return subprocess.run(cmd, **dict({"timeout": GH_TIMEOUT}, **kw))
     except subprocess.TimeoutExpired:
         raise CouldNotLook(f"{cmd[0]} {' '.join(map(str, cmd[1:3]))} did not answer in {GH_TIMEOUT}s")
 
 
+def _gh_status(r):
+    """The status gh reports: the token "(HTTP 404)" that ends the last line of its error text, else None. A URL or a
+    body that mentions a token earlier in the text is not read."""
+    lines = r.stderr.strip().splitlines()
+    m = re.search(r"\(HTTP (\d{3})\)$", lines[-1].strip()) if lines else None
+    return int(m.group(1)) if m else None
+
+
 def _gh_failed(r):
-    """True for a plain miss (404 and friends); raises when the failure is the service's, not the answer's."""
-    if not re.search(r"\b(404|410|422)\b", r.stderr + r.stdout):  # only "not there" is an answer; a 401/403, a rate limit or an outage means we could not look
+    """True for a plain miss; raises when the failure is the service's, not the answer's."""
+    if _gh_status(r) not in (404, 410, 422):
         raise CouldNotLook(f"GitHub API: {(r.stderr or r.stdout).strip()[:120]}")
     return True
 
@@ -154,21 +190,24 @@ _NULL = type(None)
 
 
 def _shaped(value, need, what):
-    """The one way to read a JSON object answer: `need` is ((key, type or tuple of types), ...), given by every caller (no default). An answer that is not an object,
-    or lacks a needed key, or holds it as another type, is an answer we cannot read (CouldNotLook): never 'nothing there'. Keys a caller reads with .get are the
+    """The one way to read a JSON object answer: `need` is ((key, type or tuple of types), ...), given by every caller
+    (no default). An answer that is not an object,
+    or lacks a needed key, or holds it as another type, is an answer we cannot read (CouldNotLook): never 'nothing
+    there'. Keys a caller reads with .get are the
     optional ones; each of those is type-checked where it is used."""
     if not isinstance(value, dict):
         raise CouldNotLook(f"{what} is not a JSON object")
     for key, typ in need:
         types = typ if isinstance(typ, tuple) else (typ,)
-        got = value.get(key, _FAILED)
-        if got is _FAILED or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
+        got = value.get(key)
+        if key not in value or not isinstance(got, types) or (isinstance(got, bool) and bool not in types):
             raise CouldNotLook(f"{what} lacks {key!r} of the expected type")
     return value
 
 
 def _dicts(value, what, need):
-    """A list of JSON objects each holding every key of `need` (CouldNotLook otherwise): an element of another shape is an answer we cannot read."""
+    """A list of JSON objects each holding every key of `need` (CouldNotLook otherwise): an element of another shape
+    is an answer we cannot read."""
     if not isinstance(value, list):
         raise CouldNotLook(f"{what} is not a list of JSON objects")
     for x in value:
@@ -177,7 +216,8 @@ def _dicts(value, what, need):
 
 
 def _gh_pages(path, rows):
-    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line); every row must hold the keys of `rows`."""
+    """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line); every row must
+    hold the keys of `rows`."""
     r = _gh_run(["gh", "api", "--paginate", path, "--jq", ".[]"], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
@@ -189,96 +229,87 @@ def _gh_pages(path, rows):
     return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-def _gh_api(path, need):
-    """A GitHub object answer holding every key of `need`; None only for a plain miss (404)."""
+_MISS = object()
+
+
+def _gh_json(path):
+    """The JSON a `gh api path` call prints; _MISS only for a plain miss (404)."""
     r = _gh_run(["gh", "api", path], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
-        return None
+        return _MISS
     try:
-        got = json.loads(r.stdout)
+        return json.loads(r.stdout)
     except ValueError:
         raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
-    return _shaped(got, need, f"GitHub API {path.split('?')[0]}")
+
+
+def _gh_api(path, need):
+    """A GitHub object answer holding every key of `need`; None only for a plain miss (404)."""
+    got = _gh_json(path)
+    return None if got is _MISS else _shaped(got, need, f"GitHub API {path.split('?')[0]}")
 
 
 def _gh_list(path, rows):
     """One page of a GitHub list answer, every row holding the keys of `rows`; None only for a plain miss (404)."""
-    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
-    if r.returncode:
-        _gh_failed(r)
-        return None
-    try:
-        got = json.loads(r.stdout)
-    except ValueError:
-        raise CouldNotLook(f"GitHub API {path.split('?')[0]} did not return JSON")
-    return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
+    got = _gh_json(path)
+    return None if got is _MISS else _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-_FAILED = object()      # the server could not be asked (lenient mode)
-_GONE = object()        # strict mode: the server said 404 or 410, the one answer that means "not there"
+_GONE = object()        # the server said 404 or 410, the one answer that means "not there"
 
 
-def _fetch_json(url, timeout=30, strict=False):
-    """The raw decoded answer. PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single caller).
-    Lenient: _FAILED when the server could not be asked or its body is not JSON. strict: only a 404/410 is an answer (_GONE); a network error, a timeout, a 5xx
-    or a body that is not JSON means we could not look (CouldNotLook)."""
+def _fetch_json(url, timeout=30):
+    """The raw decoded answer, or _GONE for a 404/410. A network error, a timeout, a 5xx or a body that is not JSON
+    means we could not look (CouldNotLook).
+    PRIVATE: its one caller is _http_dict, which shapes it before anyone else sees it (a test enforces the single
+    caller)."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
-        if not strict:
-            return _FAILED
         if e.code in (404, 410):
             return _GONE
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
     except (OSError, ValueError, http.client.HTTPException) as e:
-        if not strict:
-            return _FAILED
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
 
 
-def _http_dict(url, need, timeout=30, strict=False):
-    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it reads). None only when the server could not be asked
-    (strict: when it said 404/410); valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing there'."""
-    d = _fetch_json(url, timeout, strict)
-    if d is _FAILED or d is _GONE:
+def _http_dict(url, need, timeout=30):
+    """An endpoint that answers with a JSON object holding every key of `need` (no default: the caller says what it
+    reads). None only when the server said 404/410;
+    valid JSON of another shape, a JSON null or a missing key is an answer we cannot read (CouldNotLook), never 'nothing
+    there'."""
+    d = _fetch_json(url, timeout)
+    if d is _GONE:
         return None
     return _shaped(d, need, urllib.parse.urlsplit(url).netloc + " answer")
 
 
-def _http_json_strict(url, need, timeout=30):
-    """_http_dict where only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
-    return _http_dict(url, need, timeout, strict=True)
-
-
 TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
-    "trivy": "aquasecurity/trivy", "grype": "anchore/grype", "syft": "anchore/syft", "snyk": "snyk/cli", "osv": "google/osv-scanner",
+    "trivy": "aquasecurity/trivy", "grype": "anchore/grype", "syft": "anchore/syft", "snyk": "snyk/cli",
+        "osv": "google/osv-scanner",
     "scout": "docker/scout-cli", "golangci-lint": "golangci/golangci-lint", "python": "actions/python-versions",
-    "buildx": "docker/buildx", "goreleaser": "goreleaser/goreleaser", "cosign": "sigstore/cosign", "kind": "kubernetes-sigs/kind", "helm": "helm/helm", "node": "nodejs/node",
+    "buildx": "docker/buildx", "goreleaser": "goreleaser/goreleaser", "cosign": "sigstore/cosign",
+        "kind": "kubernetes-sigs/kind", "helm": "helm/helm", "node": "nodejs/node",
 }
 
 
-_RELEASE = (("published_at", (str, _NULL)), ("draft", bool))      # a release answer holds both (published_at is null on a draft): a missing key is no release, it is an unreadable answer
-
-
-def _release_time(repo, tags):
-    for tag in tags:
-        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE)
-        if rel and rel["published_at"] and not rel["draft"]:
-            return rel["published_at"]
-    return None
+# a release answer holds both (published_at is null on a draft): a missing key is no release, it is an unreadable answer
+_RELEASE = (("published_at", (str, _NULL)), ("draft", bool))
 
 
 _TAGS = {}
 
 
 def _tag_refs(repo):
-    """{tag: commit} for EVERY tag of a public repository, annotated tags peeled, from ONE `git ls-remote` (no REST call per tag: a repository with hundreds
+    """{tag: commit} for EVERY tag of a public repository, annotated tags peeled, from ONE `git ls-remote` (no REST call
+    per tag: a repository with hundreds
     of annotated tags would otherwise exhaust the shared API budget)."""
     if repo not in _TAGS:
         try:
-            r = subprocess.run(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"], capture_output=True, text=True, timeout=180)
+            r = subprocess.run(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"], capture_output=True,
+                text=True, timeout=180)
         except (OSError, subprocess.TimeoutExpired) as e:
             raise CouldNotLook(f"git ls-remote of {repo} failed: {type(e).__name__}")
         if r.returncode:
@@ -307,19 +338,6 @@ def _tag_for_commit(repo, sha):
     return tags[0] if tags else None
 
 
-def _commit_date(repo, sha):
-    c = _gh_api(f"repos/{repo}/commits/{sha}", (("commit", dict),))
-    if c is None:
-        return None
-    committer = c["commit"].get("committer")      # optional: a commit without a committer has no date
-    if committer is None:
-        return None
-    date = _shaped(committer, (), "the commit's committer").get("date")
-    if date is not None and not isinstance(date, str):
-        raise CouldNotLook("GitHub API commit answered with a committer date that is not text")
-    return date
-
-
 def _go_escape(path):
     """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
     return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
@@ -328,41 +346,47 @@ def _go_escape(path):
 _MODINFO = (("Version", str),)      # a module info answer holds its version
 
 
-def _go_module(path, version, strict=False):
+def _go_module(path, version):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
-        url = f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info"
-        info = _http_json_strict(url, _MODINFO) if strict else _http_dict(url, _MODINFO)
+        url = (f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}"
+               f"/@v/{urllib.parse.quote(version)}.info")
+        info = _http_dict(url, _MODINFO)
         if info is None:
-            continue      # not there (strict) or the proxy could not be asked (lenient): try the shorter module path
+            continue      # not there: try the shorter module path
         if not info["Version"]:
-            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found", in either mode
+            # a 200 we cannot read is not "module not found", in either mode
+            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")
         return mod, info
     return None, None
 
 
 def _go_index_time(mod, version, vcs_time):
-    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it).
+    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the
+    index entry follows it).
     Every row of a page is validated before any is used: an unreadable row is CouldNotLook, never 'not this module'."""
     since = vcs_time
     for _ in range(40):
         try:
-            with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
+            with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000",
+                    timeout=30) as r:
                 lines = [ln for ln in r.read().decode().splitlines() if ln.strip()]
-        except (OSError, ValueError, http.client.HTTPException):
-            return None
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            raise CouldNotLook(f"index.golang.org could not be asked ({type(e).__name__})")
         rows = []
         for ln in lines:
             try:
                 row = json.loads(ln)
             except ValueError:
                 raise CouldNotLook("index.golang.org answered with a line that is not JSON")
-            if not (isinstance(row, dict) and all(isinstance(row.get(k), str) and row.get(k) for k in ("Path", "Version", "Timestamp"))):
+            if not (isinstance(row, dict)
+                    and all(isinstance(row.get(k), str) and row.get(k) for k in ("Path", "Version", "Timestamp"))):
                 raise CouldNotLook("index.golang.org answered with a row that is not {Path, Version, Timestamp}")
             rows.append(row)
         for row in rows:
-            if row["Path"] == mod and row["Version"] == version:      # exact (the module path is case-sensitive); every row was validated above
+            # exact (the module path is case-sensitive); every row was validated above
+            if row["Path"] == mod and row["Version"] == version:
                 return row["Timestamp"]
         if len(rows) < 2000:
             return None
@@ -382,7 +406,8 @@ def _gh_bytes(path):
 
 
 def observed():
-    """The cumulative tag observations of OUR scheduled runs on main (None before the first one); loud if they exist and cannot be read.
+    """The cumulative tag observations of OUR scheduled runs on main (None before the first one); loud if they exist and
+    cannot be read.
     Only runs of this workflow's path with event=schedule, branch main and conclusion success or failure are read
     (tag_observer.accept_run: a failed daily run still wrote its state), so a pull request can never forge them."""
     if "state" in _OBS:
@@ -390,11 +415,16 @@ def observed():
     repo = os.environ.get("GITHUB_REPOSITORY")
     state = None
     if repo:
-        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+        data = _gh_api(
+            f"repos/{repo}/actions/workflows/supply-chain.yml/runs"
+            f"?event=schedule&branch=main&status=completed&per_page=100", (("workflow_runs", list),)
+        ) or {"workflow_runs": []}
         wruns = _dicts(data["workflow_runs"], "the scheduled workflow runs", (("id", int),))
-        runs = sorted((r for r in wruns if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
+        runs = sorted((r for r in wruns if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))),
+            key=lambda r: r.get("created_at", ""), reverse=True)
         for run in runs[:30]:
-            adata = _gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts", (("artifacts", list),)) or {"artifacts": []}
+            adata = _gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts", (("artifacts", list),
+                )) or {"artifacts": []}
             arts = _dicts(adata["artifacts"], "the artifacts of a scheduled run", (("id", int), ("name", str)))
             art = next((x for x in arts if x["name"] == tobs.STATE_NAME and not x.get("expired")), None)
             if art:
@@ -404,7 +434,8 @@ def observed():
                 except Exception as e:  # a state that exists but cannot be read is loud, never "nothing observed"
                     raise CouldNotLook(f"the tag observations of a scheduled run cannot be read: {type(e).__name__}")
                 break
-    _OBS["state"] = state  # None: runs that predate the artifact, or none yet: nothing observed, so ages only get younger
+    # None: runs that predate the artifact, or none yet: nothing observed, so ages only get younger
+    _OBS["state"] = state
     return state
 
 
@@ -412,7 +443,8 @@ _INV_CACHE = {}
 
 
 def _pr_clock(item, root, base, head="HEAD"):
-    """The PR clock: the earliest server-side time of a workflow run on the first commit of base..head whose INVENTORY holds this exact item
+    """The PR clock: the earliest server-side time of a workflow run on the first commit of base..head whose INVENTORY
+    holds this exact item
     (not a text match: a comment mentioning the version, or digits that happen to equal it, never start the clock)."""
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo or not base or not item.version:
@@ -433,8 +465,11 @@ def _pr_clock(item, root, base, head="HEAD"):
     if first is None:
         return None
     intro = commits[first]
-    for c in commits[first:]:      # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own (base..head bounds the walk)
-        if c != intro and _gh_run(["git", "-C", root, "merge-base", "--is-ancestor", intro, c], capture_output=True).returncode != 0:
+    # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own
+    # (base..head bounds the walk)
+    for c in commits[first:]:
+        if c != intro and _gh_run(["git", "-C", root, "merge-base", "--is-ancestor", intro, c],
+                capture_output=True).returncode != 0:
             continue      # a sibling in a merge does not contain the introducing commit: its runs lend no clock
         times = _run_times(repo, c)
         if times:
@@ -443,10 +478,12 @@ def _pr_clock(item, root, base, head="HEAD"):
 
 
 def _run_times(repo, commit):
-    rdata = _gh_api(f"repos/{repo}/actions/runs?head_sha={commit}&per_page=100", (("workflow_runs", list),)) or {"workflow_runs": []}
+    rdata = _gh_api(f"repos/{repo}/actions/runs?head_sha={commit}&per_page=100", (("workflow_runs", list),
+        )) or {"workflow_runs": []}
     runs = _dicts(rdata["workflow_runs"], "the workflow runs of a commit", (("created_at", (str, _NULL)),))
     times = [x["created_at"] for x in runs if x["created_at"]]
-    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{commit}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
+    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{commit}/check-suites?per_page=100", "--jq",
+        ".check_suites[]"], capture_output=True, text=True)
     if r2.returncode:
         _gh_failed(r2)
     else:
@@ -457,7 +494,8 @@ def _run_times(repo, commit):
                 raise CouldNotLook("GitHub API check-suites answered with a line that is not JSON")
             c = _shaped(row, (("created_at", (str, _NULL)),), "a check suite of the first commit")["created_at"]
             if c:
-                times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
+                # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
+                times.append(c)
     return times
 
 
@@ -465,160 +503,101 @@ def _release_with_assets(repo, tags):
     for tag in tags:
         rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}", _RELEASE + (("assets", list),))
         if rel and rel["published_at"] and not rel["draft"]:
-            _dicts(rel["assets"], "the assets of a release", ())      # name, created_at and updated_at are optional: an asset without a name matches no download, so the release lends no proof (the pin then fails as unprovable)
+            # name, created_at and updated_at are optional: an asset without a name matches no download, so the release
+            # lends no proof (the pin then fails as unprovable)
+            _dicts(rel["assets"], "the assets of a release", ())
             return rel
     return None
 
 
 def live_proofs(item, root, base=None, head="HEAD"):
     out = []
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") \
+        or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
-        return out    # a placeholder, a range, a variable or an action not named by its commit has no age: nothing is looked up (and nothing can pass)
+        # a placeholder, a range, a variable or an action not named by its commit has no age: nothing is looked up (and
+        # nothing can pass)
+        return out
     if item.kind == "action":
-        # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves nothing about a moved tag),
+        # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves
+        # nothing about a moved tag),
         # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
         tags = _tags_for_commit(item.name, item.version)
         want = [item.label] if item.label else tags
         if item.label and item.label not in tags:
-            return [(None, "bad-label:" + item.label)]    # the label Dependabot bumps does not resolve to this commit: age not provable, with no PR clock to lean on
+            # the label Dependabot bumps does not resolve to this commit: age not provable, with no PR clock to lean on
+            return [(None, "bad-label:" + item.label)]
         state = observed()
         for tag in want:
             t = tobs.first_seen(state, item.name, tag, item.version)
             if t:
                 out.append((t, "observer"))
     elif item.kind == "tool":
-        repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
+        # owner/repo: a downloaded release asset
+        repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
         if repo:
             bare = item.version.lstrip("v")
-            rel = _release_with_assets(repo, [item.label] if item.label else [item.version, "v" + bare, bare])   # a download names its EXACT tag: no twin tag lends its age
+            # a download names its EXACT tag: no twin tag lends its age
+            rel = _release_with_assets(repo, [item.label] if item.label else [item.version, "v" + bare, bare])
             if rel:
-                # the NEWEST of the release date and every asset's own created/updated time: a replaced asset in an old release is young again
-                assets = [a for a in rel.get("assets", []) if not item.path or a.get("name") == item.path.split("#")[0]]   # the asset we download: a missing one borrows no other asset's age
+                # the NEWEST of the release date and every asset's own created/updated time: a replaced asset in an old
+                # release is young again
+                # the asset we download: a missing one borrows no other asset's age
+                assets = [a for a in rel.get("assets", []) if not item.path or a.get("name") == item.path.split("#")[0]]
                 if item.path.split("#")[0] and not assets:
                     return out
-                stamps = [rel["published_at"]] + [a[k] for a in assets for k in ("created_at", "updated_at") if a.get(k)]
-                out.append((max(stamps, key=lambda x: parse_time(x) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)), "github-release"))
+                stamps = [rel["published_at"]] + [a[k] for a in assets for k in ("created_at", "updated_at")
+                    if a.get(k)]
+                out.append((max(stamps, key=lambda x: parse_time(x)
+                    or dt.datetime.min.replace(tzinfo=dt.timezone.utc)), "github-release"))
     elif item.kind == "gotool":
         mod, info = _go_module(item.name, item.version)
         if mod:
-            t = _go_index_time(mod, info["Version"], info["Time"]) if isinstance(info.get("Time"), str) else None      # no readable version-control time: no go-index proof (the pin then fails as unprovable)
+            # no readable version-control time: no go-index proof (the pin then fails as unprovable)
+            t = _go_index_time(mod, info["Version"], info["Time"]) if isinstance(info.get("Time"), str) else None
             if t:
                 out.append((t, "go-index"))
     elif item.kind == "package":
         name = item.name.split("/", 1)[1]
-        d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json", (("urls", list),))
-        ups = [u.get("upload_time_iso_8601") for u in _dicts((d or {"urls": []})["urls"], "pypi urls", ()) if u.get("upload_time_iso_8601")]      # the upload time is optional, text when there
+        d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json",
+            (("urls", list),))
+        # the upload time is optional, text when there
+        ups = [u.get("upload_time_iso_8601")
+               for u in _dicts((d or {"urls": []})["urls"], "pypi urls", ()) if u.get("upload_time_iso_8601")]
         if not all(isinstance(x, str) for x in ups):
             raise CouldNotLook("pypi.org answered with an upload time that is not text")
         if ups:
             out.append((max(ups), "pypi"))  # the newest file: a wheel added later to an old release is young
     elif item.kind == "image" and item.version:
         if _image_registry(item.name) in ("ghcr.io", "docker.io"):
-            t, src = _registry_push(item), "registry-push"
-        else:
-            t, why = _publisher_proof(item)
-            return [(t, "signed-timestamp")] if t else [(why, "publisher-unproven")]
-        return [(t, src)] if t else []
+            t = _registry_push(item)
+            return [(t, "registry-push")] if t else []
+        return []
     pc = _pr_clock(item, root, base, head)
     if pc:
         out.append((pc, "pr-clock"))
     return out
 
 
-def _image_registry(name):
-    """The registry of an image name: a first part with a dot, a colon or localhost is a host; else Docker Hub."""
+HUB_HOSTS = ("docker.io", "index.docker.io", "registry-1.docker.io")
+
+
+def _split_image(name):
+    """(registry, path) of an image name. A first part with a dot, a colon or localhost is the registry, lowercase,
+    without :443, Docker Hub's hosts as docker.io; else Docker Hub (a name of three parts without a host has no
+    registry we know, so its first part stands)."""
     first, _, rest = name.partition("/")
-    if first == "docker.io":
-        name = rest
-    elif rest and ("." in first or ":" in first or first == "localhost"):
-        return first
-    return "docker.io" if name.count("/") <= 1 else name.split("/")[0]
+    if rest and ("." in first or ":" in first or first == "localhost"):
+        host = first.lower().removesuffix(":443")
+        return ("docker.io" if host in HUB_HOSTS else host), rest
+    return ("docker.io" if name.count("/") <= 1 else first), name
 
 
-class CouldNotProve(Exception):
-    """A publisher-signed time that does not stand up; the text is one line saying which part failed."""
+def _image_registry(name):
+    return _split_image(name)[0]
 
 
-OPENSSL_SECONDS, DOCKER_SECONDS = 30, 600
-
-
-def _openssl(args, data=None):
-    """Run openssl with `data` on stdin. If it cannot run or hangs the check stops (CouldNotLook); that says nothing about the image."""
-    try:
-        return subprocess.run(["openssl", *args], input=data, capture_output=True, timeout=OPENSSL_SECONDS)
-    except subprocess.TimeoutExpired:
-        raise CouldNotLook("openssl timed out") from None
-    except OSError as e:
-        raise CouldNotLook(f"openssl could not be run ({type(e).__name__})") from None
-
-
-def _openssl_verify(key_pem, data, sig):
-    """True when the ECDSA/SHA-256 signature `sig` over `data` verifies under the PEM public key."""
-    with tempfile.TemporaryDirectory() as d:
-        for name, blob in (("key.pem", key_pem.encode()), ("data", data), ("sig", sig)):
-            with open(os.path.join(d, name), "wb") as f:
-                f.write(blob)
-        path = lambda name: os.path.join(d, name)
-        r = _openssl(["dgst", "-sha256", "-verify", path("key.pem"), "-signature", path("sig"), path("data")])
-    return r.returncode == 0
-
-
-def _key_der(pem):
-    r = _openssl(["pkey", "-pubin", "-outform", "DER"], pem.encode())
-    if r.returncode != 0:
-        raise CouldNotProve("a public key is not readable")
-    return r.stdout
-
-
-def rekor_log_id(key_pem):
-    """The log id Rekor names an entry by: the hex SHA-256 of the log key's DER form."""
-    return hashlib.sha256(_key_der(key_pem)).hexdigest()
-
-
-def _merkle_root_from_inclusion(index, size, leaf_hash, proof):
-    """RFC 9162 section 2.1.3.2: the tree root the proof leads to, or None when it does not fit the tree."""
-    if index < 0 or size < 1 or index >= size:
-        return None
-    fn, sn, r = index, size - 1, leaf_hash
-    for p in proof:
-        if sn == 0:
-            return None
-        if fn & 1 or fn == sn:
-            r = hashlib.sha256(b"\x01" + p + r).digest()
-            while not fn & 1 and fn != 0:
-                fn >>= 1
-                sn >>= 1
-        else:
-            r = hashlib.sha256(b"\x01" + r + p).digest()
-        fn >>= 1
-        sn >>= 1
-    return r if sn == 0 else None
-
-
-def _check_log_entry(body_b64, tree_index, tree_size, hashes, root, checkpoint, rekor_pem):
-    """The proof leads to `root`, and the log's signed checkpoint names that tree size and root."""
-    leaf = hashlib.sha256(b"\x00" + base64.b64decode(body_b64)).digest()
-    if _merkle_root_from_inclusion(tree_index, tree_size, leaf, hashes) != root:
-        raise CouldNotProve("the inclusion proof does not lead to the tree root it names")
-    note, _, signed = checkpoint.partition("\n\n")
-    lines = note.split("\n")
-    if int(lines[1]) != tree_size or base64.b64decode(lines[2]) != root:
-        raise CouldNotProve("the checkpoint is for another tree than the inclusion proof's")
-    sigs = [base64.b64decode(l.split(" ")[2])[4:] for l in signed.split("\n") if l.startswith("\u2014 ")]
-    if not any(_openssl_verify(rekor_pem, (note + "\n").encode(), x) for x in sigs):
-        raise CouldNotProve("the checkpoint is not signed by the log key")
-
-
-def _json_object(data, need=()):
-    """A JSON object that is not empty and has the keys in `need`; anything else is an answer we cannot read."""
-    try:
-        value = json.loads(data)
-    except ValueError:
-        raise CouldNotLook("an answer is not JSON") from None
-    if not isinstance(value, dict) or not value or any(k not in value for k in need):
-        raise CouldNotLook("an answer is not the JSON object we asked for")
-    return value
+DOCKER_SECONDS = 600
 
 
 def _json_file(path):
@@ -627,319 +606,20 @@ def _json_file(path):
         return json.load(f)
 
 
-def _utc(seconds):
-    """A time the log has signed, as a UTC datetime; a number no clock can hold is not a time."""
-    try:
-        return dt.datetime.fromtimestamp(seconds, dt.timezone.utc)
-    except (OverflowError, OSError, ValueError):
-        raise CouldNotProve("the integrated time is not a time (time not proven)") from None
-
-
-def _check_entry_time(body_b64, integrated, log_index, log_id_hex, set_b64, rekor_pem):
-    """The log's signed entry timestamp covers this integrated time. Raises CouldNotProve."""
-    signed = {"body": body_b64, "integratedTime": integrated, "logID": log_id_hex, "logIndex": log_index}
-    canon = json.dumps(signed, sort_keys=True, separators=(",", ":")).encode()
-    if not _openssl_verify(rekor_pem, canon, base64.b64decode(set_b64)):
-        raise CouldNotProve("the log's signature does not cover this integrated time (time not proven)")
-
-
-_ISSUER_OID_DER = bytes.fromhex("2b0601040183bf300101")        # 1.3.6.1.4.1.57264.1.1, Fulcio's OIDC issuer extension
-
-
-def _der_children(der, start, end):
-    """The (tag, value start, value end) of each TLV between start and end of a DER string."""
-    out = []
-    while start < end:
-        tag, n, start = der[start], der[start + 1], start + 2
-        if n & 0x80:
-            width = n & 0x7F
-            n, start = int.from_bytes(der[start:start + width], "big"), start + width
-        if start + n > end:
-            raise ValueError("a length runs past its parent")
-        out.append((tag, start, start + n))
-        start += n
-    return out
-
-
-def _fulcio_issuers(cert_der):
-    """The value of each Fulcio issuer extension of a DER certificate, found by walking its structure."""
-    _, cs, ce = _der_children(cert_der, 0, len(cert_der))[0]                      # Certificate
-    _, ts, te = _der_children(cert_der, cs, ce)[0]                                # tbsCertificate
-    out = []
-    for tag, xs, xe in _der_children(cert_der, ts, te):
-        if tag == 0xA3:                                                           # [3] extensions
-            _, es, ee = _der_children(cert_der, xs, xe)[0]
-            for _, s0, e0 in _der_children(cert_der, es, ee):
-                fields = _der_children(cert_der, s0, e0)
-                if cert_der[fields[0][1]:fields[0][2]] == _ISSUER_OID_DER:
-                    out.append(cert_der[fields[-1][1]:fields[-1][2]])             # the extension value, last field
-    return out
-
-
-def _cert_identity(cert_pem):
-    """(issuer, subject, not_before, not_after) of a Fulcio certificate.
-    The subject is the one name in the subjectAltName extension, which openssl prints alone, so no other field can pose as it."""
-    pem = cert_pem.encode()
-    san = _openssl(["x509", "-noout", "-ext", "subjectAltName"], pem)
-    der = _openssl(["x509", "-outform", "DER"], pem)
-    dates = _openssl(["x509", "-noout", "-startdate", "-enddate"], pem)
-    if san.returncode or der.returncode or dates.returncode:
-        raise CouldNotProve("a certificate is not readable (wrong identity)")
-    san_lines = [l.strip() for l in san.stdout.decode(errors="replace").split("\n")[1:] if l.strip()]
-    names = [n for n in ", ".join(san_lines).split(", ") if n]
-    if len(names) != 1 or not re.fullmatch(r"(?:email|URI):\S+", names[0]):
-        raise CouldNotProve("the certificate has no single subject name (wrong identity)")
-    try:
-        values = _fulcio_issuers(der.stdout)
-    except (ValueError, IndexError):
-        raise CouldNotProve("a certificate is not readable (wrong identity)") from None
-    if len(values) != 1 or not values[0]:
-        raise CouldNotProve("the certificate carries no single OIDC issuer (wrong identity)")
-    stamp = dict(l.split("=", 1) for l in dates.stdout.decode().split("\n") if "=" in l)
-    def when(key):
-        parsed = dt.datetime.strptime(" ".join(stamp[key].split()), "%b %d %H:%M:%S %Y GMT")
-        return parsed.replace(tzinfo=dt.timezone.utc)
-    return values[0].decode("utf-8", "replace"), names[0].split(":", 1)[1], when("notBefore"), when("notAfter")
-
-
-def _chains_to_root(cert_pem, fulcio_chain_pem, at):
-    """True when the certificate chains to the pinned chain's first certificate, through the others, as of `at`."""
-    certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----\n?", fulcio_chain_pem, re.S)
-    with tempfile.TemporaryDirectory() as d:
-        for name, pem in (("root.pem", certs[0]), ("inter.pem", "".join(certs[1:])), ("leaf.pem", cert_pem)):
-            with open(os.path.join(d, name), "w") as f:
-                f.write(pem)
-        path = lambda name: os.path.join(d, name)
-        # -no-CApath -no-CAstore: the pinned root is the only trust anchor, not the machine's CAs
-        when = str(int(at.timestamp()))
-        r = _openssl(["verify", "-no-CApath", "-no-CAstore", "-attime", when,
-                      "-CAfile", path("root.pem"), "-untrusted", path("inter.pem"), path("leaf.pem")])
-    return r.returncode == 0
-
-
-def _cert_public_key(cert_pem):
-    return _openssl(["x509", "-noout", "-pubkey"], cert_pem.encode()).stdout.decode()
-
-
-def _keyless_layer_time(name, digest, layer, idents, rekor_pem, fulcio_pem):
-    """The integrated time of one cosign signature (payload, certificate, Rekor entry) that verifies fully."""
-    payload, entry = base64.b64decode(layer["payload"], validate=True), layer["rekor_entry"]
-    if _json_object(payload, ("critical",))["critical"]["image"]["docker-manifest-digest"] != digest:
-        raise CouldNotProve(f"the signed payload is not about {digest} (wrong digest)")
-    cert = layer["certificate"]
-    issuer, subject, not_before, not_after = _cert_identity(cert)
-    if not any(i.get("issuer") == issuer and i.get("subject") == subject for i in idents):
-        raise CouldNotProve(f"{subject} from {issuer} is not a pinned identity of {name} (wrong identity)")
-    integrated = int(entry["integratedTime"])
-    body = _json_object(base64.b64decode(entry["body"], validate=True), ("kind", "spec"))
-    spec = body["spec"]
-    payload_hash = {"algorithm": "sha256", "value": hashlib.sha256(payload).hexdigest()}
-    same_signature = spec["signature"]["content"] == layer["signature"]
-    if body.get("kind") != "hashedrekord" or spec["data"]["hash"] != payload_hash or not same_signature:
-        raise CouldNotProve("the log entry is for another signature or payload than this one's (wrong identity)")
-    if base64.b64decode(spec["signature"]["publicKey"]["content"]).decode().strip() != cert.strip():
-        raise CouldNotProve("the log entry names another certificate than this one's (wrong identity)")
-    proof = entry["verification"].get("inclusionProof")
-    if not isinstance(proof, dict):
-        raise CouldNotProve("the log entry has no inclusion proof")
-    hashes = [bytes.fromhex(h) for h in proof["hashes"]]
-    root = bytes.fromhex(proof["rootHash"])
-    tree_index, tree_size = int(proof["logIndex"]), int(proof["treeSize"])
-    _check_log_entry(entry["body"], tree_index, tree_size, hashes, root, proof["checkpoint"], rekor_pem)
-    if entry["logID"] != rekor_log_id(rekor_pem):
-        raise CouldNotProve("the log entry names another log than the pinned Rekor key (time not proven)")
-    entry_time = entry["verification"]["signedEntryTimestamp"]
-    _check_entry_time(entry["body"], integrated, int(entry["logIndex"]), entry["logID"], entry_time, rekor_pem)
-    when = _utc(integrated)
-    if not (not_before <= when <= not_after):
-        raise CouldNotProve("the integrated time is outside the certificate's validity window (time not proven)")
-    if not _chains_to_root(cert, fulcio_pem, when):
-        raise CouldNotProve("the certificate does not chain to the pinned Fulcio root (wrong identity)")
-    if not _openssl_verify(_cert_public_key(cert), payload, base64.b64decode(layer["signature"], validate=True)):
-        raise CouldNotProve("the signature does not verify under the certificate (wrong identity)")
-    return when
-
-
-def keyless_signed_time(name, digest, evidence, pins, rekor_pem, fulcio_pem):
-    """The earliest time a pinned keyless identity of `name` signed `digest`, or CouldNotProve.
-    Any one pinned identity that verifies fully is enough; a signature by one that is not pinned counts for nothing."""
-    pin = pins.get(name) if isinstance(pins, dict) else None
-    idents = pin.get("keyless") if isinstance(pin, dict) else None
-    if not isinstance(idents, list) or not idents:
-        raise CouldNotProve(f"{name} is not pinned: image-publishers.json names no publisher identity for it")
-    good, first = [], None
-    for layer in evidence.get("layers", []) if isinstance(evidence, dict) else []:
-        try:
-            good.append(_keyless_layer_time(name, digest, layer, idents, rekor_pem, fulcio_pem))
-        except CouldNotProve as ex:
-            first = first or ex
-        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
-            first = first or CouldNotProve(f"a signature layer is malformed ({type(ex).__name__})")
-    if good:
-        return min(good)
-    raise first or CouldNotProve(f"no signature of {name} was recorded")
-
-
-def publisher_signed_time(name, digest, bundle, pins, rekor_pem):
-    """The time the publisher signed `digest`, from a Sigstore bundle, or CouldNotProve. No network.
-    The signature must verify under the key pinned for `name`, the log entry must carry that signature and key,
-    its inclusion proof must lead to a checkpoint the log signed, and the log must have signed the entry's time."""
-    pin = pins.get(name) if isinstance(pins, dict) else None
-    if not isinstance(pin, dict) or not isinstance(pin.get("key"), str):
-        raise CouldNotProve(f"{name} is not pinned: image-publishers.json names no publisher identity for it")
-    try:
-        env, tlog = bundle["dsseEnvelope"], bundle["verificationMaterial"]["tlogEntries"][0]
-        payload = base64.b64decode(env["payload"], validate=True)
-        sig = base64.b64decode(env["signatures"][0]["sig"], validate=True)
-        statement = _json_object(payload, ("subject",))
-        want = digest.removeprefix("sha256:")
-        if not any(sub.get("digest", {}).get("sha256") == want for sub in statement["subject"]):
-            raise CouldNotProve(f"the signed statement is not about {digest} (wrong digest)")
-        pae = b"DSSEv1 %d %s %d " % (len(env["payloadType"]), env["payloadType"].encode(), len(payload)) + payload
-        if not _openssl_verify(pin["key"], pae, sig):
-            raise CouldNotProve(f"the signature does not verify under the identity pinned for {name} (wrong identity)")
-        body = _json_object(base64.b64decode(tlog["canonicalizedBody"], validate=True), ("kind", "spec"))
-        entry_sig = body["spec"]["signatures"][0]
-        payload_hash = body["spec"]["payloadHash"]["value"]
-        same_payload = hashlib.sha256(payload).hexdigest() == payload_hash
-        if entry_sig["signature"] != env["signatures"][0]["sig"] or not same_payload:
-            raise CouldNotProve("the log entry is for another signature or payload than the bundle's (wrong identity)")
-        if _key_der(base64.b64decode(entry_sig["verifier"]).decode()) != _key_der(pin["key"]):
-            raise CouldNotProve("the log entry names another key than the pinned one (wrong identity)")
-        proof = tlog.get("inclusionProof")
-        if not isinstance(proof, dict):
-            raise CouldNotProve("the log entry has no inclusion proof")
-        body_b64, hashes = tlog["canonicalizedBody"], [base64.b64decode(h) for h in proof["hashes"]]
-        root = base64.b64decode(proof["rootHash"])
-        tree_index, tree_size = int(proof["logIndex"]), int(proof["treeSize"])
-        _check_log_entry(body_b64, tree_index, tree_size, hashes, root, proof["checkpoint"]["envelope"], rekor_pem)
-        log_id = base64.b64decode(tlog["logId"]["keyId"]).hex()
-        entry_time = tlog["inclusionPromise"]["signedEntryTimestamp"]
-        _check_entry_time(body_b64, int(tlog["integratedTime"]), int(tlog["logIndex"]), log_id, entry_time, rekor_pem)
-        return _utc(int(tlog["integratedTime"]))
-    except CouldNotProve:
-        raise
-    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
-        raise CouldNotProve(f"the bundle is malformed ({type(ex).__name__})") from None
-
-
 POLICY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "policy")
 PUBLISHER_PINS_FILE = os.path.join(POLICY_DIR, "image-publishers.json")     # pinned by hand, never discovered
-REKOR_KEY_FILE = os.path.join(POLICY_DIR, "rekor.pub")
-FULCIO_CHAIN_FILE = os.path.join(POLICY_DIR, "fulcio-chain.pem")
-REKOR_ENTRY_URL = "https://rekor.sigstore.dev/api/v1/log/entries?logIndex="
-OCI_INDEX = "application/vnd.oci.image.index.v1+json"
-OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
-MAX_EVIDENCE_PARTS = 8        # signatures or referrers read per image
-MAX_EVIDENCE_BYTES = 4 << 20
-
-
-def _get_bytes(url, accept="*/*", timeout=30):
-    """GET a registry or log answer: its bytes, None for 404/410, CouldNotLook for any other failure."""
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": accept}), timeout=timeout) as r:
-            data = r.read(MAX_EVIDENCE_BYTES + 1)
-    except urllib.error.HTTPError as e:
-        if e.code in (404, 410):
-            return None
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
-    except (OSError, http.client.HTTPException) as e:
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
-    if len(data) > MAX_EVIDENCE_BYTES:
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with more than {MAX_EVIDENCE_BYTES} bytes")
-    return data
-
-
-def _blob(base, digest):
-    """The blob `digest` of a registry, or None; its bytes must hash to the digest it was asked by."""
-    data = _get_bytes(f"{base}blobs/{digest}")
-    if data is not None and "sha256:" + hashlib.sha256(data).hexdigest() != digest:
-        raise CouldNotLook("a registry answered with a blob that is not the one asked for")
-    return data
-
-
-def _keyed_bundles(base, digest):
-    """The Sigstore bundles published as referrers of the image that say they are cosign signatures."""
-    idx = _get_bytes(f"{base}referrers/{digest}", OCI_INDEX)
-    out = []
-    for m in (_json_object(idx, ("schemaVersion",)).get("manifests") or [])[:MAX_EVIDENCE_PARTS] if idx else []:
-        if str(m.get("annotations", {}).get("dev.sigstore.bundle.predicateType", "")).endswith("sign/v1"):
-            man = _get_bytes(f"{base}manifests/{m['digest']}", OCI_MANIFEST)
-            blob = _blob(base, _json_object(man, ("layers",))["layers"][0]["digest"]) if man else None
-            if blob:
-                out.append(_json_object(blob, ("dsseEnvelope",)))
-    return out
-
-
-def _keyless_evidence(base, digest):
-    """The older cosign signature (the sha256-<hex>.sig tag): each layer with its Rekor entry and inclusion proof."""
-    man = _get_bytes(f"{base}manifests/sha256-{digest[len('sha256:'):]}.sig", OCI_MANIFEST)
-    layers = []
-    for l in (_json_object(man, ("layers",)).get("layers") or [])[:MAX_EVIDENCE_PARTS] if man else []:
-        a = l["annotations"]
-        payload = _blob(base, l["digest"])
-        bundle = _json_object(a["dev.sigstore.cosign/bundle"], ("Payload",))
-        raw = _get_bytes(REKOR_ENTRY_URL + str(int(bundle["Payload"]["logIndex"])))
-        if payload is None or raw is None:
-            continue
-        (uuid, entry), = _json_object(raw).items()
-        layers.append({"payload": base64.b64encode(payload).decode(),
-                       "signature": a["dev.cosignproject.cosign/signature"],
-                       "certificate": a["dev.sigstore.cosign/certificate"],
-                       "chain": a.get("dev.sigstore.cosign/chain", ""),
-                       "bundle": bundle, "rekor_entry": {"uuid": uuid, **entry}})
-    return {"layers": layers}
-
-
-def _publisher_proof(item):
-    """(the publisher-signed time of an image outside ghcr.io and Docker Hub, None), or (None, why there is none).
-    Only a publisher pinned in image-publishers.json counts. The evidence is read (GET) from the image's registry and Rekor."""
-    try:
-        pins = _json_file(PUBLISHER_PINS_FILE)
-        with open(REKOR_KEY_FILE) as f:
-            rekor_pem = f.read()
-        with open(FULCIO_CHAIN_FILE) as f:
-            fulcio_pem = f.read()
-    except (OSError, ValueError):
-        return None, "the publisher pins could not be read"
-    pin = pins.get(item.name) if isinstance(pins, dict) else None
-    host, _, repo = item.name.partition("/")
-    if not isinstance(pin, dict) or not repo or not (item.version or "").startswith("sha256:"):
-        return None, f"{item.name} is not pinned: image-publishers.json names no publisher identity for it"
-    base = f"https://{host}/v2/{repo}/"
-    times, why = [], None
-    try:
-        if "key" in pin:
-            for bundle in _keyed_bundles(base, item.version):
-                try:
-                    times.append(publisher_signed_time(item.name, item.version, bundle, pins, rekor_pem))
-                except CouldNotProve as ex:
-                    why = why or str(ex)
-            why = why or f"no signature of {item.name} was recorded"
-        elif "keyless" in pin:
-            evidence = _keyless_evidence(base, item.version)
-            times.append(keyless_signed_time(item.name, item.version, evidence, pins, rekor_pem, fulcio_pem))
-    except CouldNotProve as ex:
-        return None, " ".join(str(ex).split())
-    except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError):
-        return None, "the signature evidence is malformed"
-    if not times:
-        return None, " ".join((why or "no publisher signature").split())
-    return min(times).strftime("%Y-%m-%dT%H:%M:%SZ"), None
-
-
-def _signed_timestamp(item):
-    """The publisher-signed time of an image as text, or None (so the judge refuses it)."""
-    return _publisher_proof(item)[0]
 
 
 def _registry_push(item):
     host = _image_registry(item.name)
     if host == "ghcr.io":
-        owner, _, pkg = item.name[len("ghcr.io/"):].partition("/")
+        owner, _, pkg = _split_image(item.name)[1].partition("/")
         for scope in ("orgs", "users"):
             for page in (1, 2, 3):
-                vs = _gh_list(f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}/versions?per_page=100&page={page}", (("name", str), ("created_at", (str, _NULL))))
+                vs = _gh_list(
+                    f"{scope}/{owner}/packages/container/{urllib.parse.quote(pkg, safe='')}"
+                    f"/versions?per_page=100&page={page}",
+                    (("name", str), ("created_at", (str, _NULL))))
                 if not vs:
                     break
                 for v in vs:
@@ -947,7 +627,7 @@ def _registry_push(item):
                         return v.get("created_at")
         return None
     if host == "docker.io":
-        path = item.name.removeprefix("docker.io/").split("/")
+        path = _split_image(item.name)[1].split("/")
         ns, repo = ("library", path[0]) if len(path) == 1 else path
         url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
         for _ in range(5):
@@ -955,7 +635,10 @@ def _registry_push(item):
             if d is None:
                 return None
             for tag in _dicts(d["results"], "hub.docker.com results", ()):
-                if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in _dicts(tag.get("images", []), "hub.docker.com images", ())):      # digest, images and tag_last_pushed are optional
+                # digest, images and tag_last_pushed are optional
+                if tag.get("digest") == item.version or any(
+                        i.get("digest") == item.version
+                        for i in _dicts(tag.get("images", []), "hub.docker.com images", ())):
                     pushed = tag.get("tag_last_pushed")
                     if pushed is not None and not isinstance(pushed, str):
                         raise CouldNotLook("hub.docker.com answered with a push time that is not text")
@@ -1002,7 +685,7 @@ def check(moved_items, source, now, min_days):
     return rows
 
 
-PIN_FIELDS = ("key", "keyless", "source", "key_source")
+PIN_FIELDS = ("key", "keyless", "unsigned", "source", "key_source")
 
 
 def _is_identity(i):
@@ -1010,14 +693,19 @@ def _is_identity(i):
 
 
 def _checked_pins(pins):
-    """The publisher entries of the pins file (names starting with _ are notes). ValueError unless each entry has a key or
+    """The publisher entries of the pins file (names starting with _ are notes). ValueError unless each entry has a key
+    or
     keyless identities and every field it has is well formed."""
     entries = {k: v for k, v in pins.items() if not k.startswith("_")} if isinstance(pins, dict) else None
     if not entries:
         raise ValueError("image-publishers.json pins no image")
     for name, pin in entries.items():
-        if not isinstance(pin, dict) or not ({"key", "keyless"} & set(pin)) or set(pin) - set(PIN_FIELDS):
-            raise ValueError(f"image-publishers.json: {name} has no key or keyless identity, or a field that is not known")
+        if not isinstance(pin, dict) or not ({"key", "keyless", "unsigned"} & set(pin)) or set(pin) - set(PIN_FIELDS):
+            raise ValueError(f"image-publishers.json: {name} has no key, keyless identity or unsigned reason, "
+                             "or a field that is not known")
+        if "unsigned" in pin and ({"key", "keyless"} & set(pin) or not (isinstance(pin["unsigned"], str)
+                                                                         and pin["unsigned"].strip())):
+            raise ValueError(f"image-publishers.json: {name} has an unsigned that is not text, or beside a key")
         if "key" in pin and not (isinstance(pin["key"], str) and pin["key"].strip()):
             raise ValueError(f"image-publishers.json: {name} has a key that is not text")
         for note in ("source", "key_source"):
@@ -1025,36 +713,57 @@ def _checked_pins(pins):
                 raise ValueError(f"image-publishers.json: {name} has a {note} that is not text")
         idents = pin.get("keyless", [])
         if "keyless" in pin and not (isinstance(idents, list) and idents and all(_is_identity(i) for i in idents)):
-            raise ValueError(f"image-publishers.json: {name} has keyless identities that are not a list of issuer and subject")
+            raise ValueError(f"image-publishers.json: {name} has keyless identities that are not a list of "
+                             "issuer and subject")
     return entries
 
 
+def _publisher_entry(name, pins=None):
+    """The image-publishers.json entry for an image: its own name, else its registry; None when neither is enrolled."""
+    try:
+        pins = pins or _checked_pins(_json_file(PUBLISHER_PINS_FILE))
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"cannot read image-publishers.json: {e}")
+    host, path = _split_image(name)
+    return pins.get(f"{host}/{path}") or pins.get(host)
+
+
 def cosign_verify_images(root, rev, cosign_image, run):
-    """For each pinned image the tree at `rev` names by digest, run `cosign verify` once per pinned identity.
-    An image passes when any run succeeds. `run(cmd)` returns the exit code. Only `verify` is run, never a write."""
+    """For each image the tree at `rev` names by digest, run `cosign verify` once per pinned identity.
+    An image passes when any run succeeds. An image on a registry not in image-publishers.json fails, and one whose
+    entry says the publisher signs nothing is reported as "no signature published", never as verified. Images on
+    ghcr.io and Docker Hub are dated by their registry time and left to that check unless enrolled.
+    `run(cmd)` returns the exit code. Only `verify` is run, never a write."""
     pins = _checked_pins(_json_file(PUBLISHER_PINS_FILE))
     results, seen = [], set()
     with tempfile.TemporaryDirectory() as d:
         for it in inv.load_at(root, rev).values():
             by_digest = (it.version or "").startswith("sha256:")
-            if it.kind != "image" or it.name not in pins or not by_digest or (it.name, it.version) in seen:
+            if it.kind != "image" or not by_digest or (it.name, it.version) in seen:
                 continue
             seen.add((it.name, it.version))
-            pin, ref, cmds = pins[it.name], f"{it.name}@{it.version}", []
+            pin = _publisher_entry(it.name, pins)
+            if pin is None and _image_registry(it.name) in ("ghcr.io", "docker.io"):
+                continue
+            if pin is None or "unsigned" in pin:
+                reason = "no signature published" if pin else f"registry {_image_registry(it.name)} is not enrolled"
+                results.append({"name": it.name, "digest": it.version, "ok": pin is not None, "reason": reason,
+                                "verified": False})
+                continue
+            ref, cmds, docker_run = f"{it.name}@{it.version}", [], ["docker", "run", "--rm"]
             if "key" in pin:
                 key_file = os.path.join(d, f"key{len(seen)}.pub")
                 with open(key_file, "w") as f:
                     f.write(pin["key"])
                 mount = f"{key_file}:/pin/key.pub:ro"
-                cmds.append(["docker", "run", "--rm", "-v", mount, cosign_image, "verify",
-                             "--key", "/pin/key.pub", ref])
+                cmds.append(docker_run + ["-v", mount, cosign_image, "verify", "--key", "/pin/key.pub", ref])
             for ident in pin.get("keyless", []):
-                cmds.append(["docker", "run", "--rm", cosign_image, "verify",
-                             "--certificate-identity", ident["subject"], "--certificate-oidc-issuer", ident["issuer"], ref])
+                cmds.append(docker_run + [cosign_image, "verify", "--certificate-identity", ident["subject"],
+                                          "--certificate-oidc-issuer", ident["issuer"], ref])
             codes = [run(c) for c in cmds]                      # every pinned identity is tried, so the log shows each
             ok = any(c == 0 for c in codes)
             reason = "" if ok else f"cosign verify found no pinned identity that signed it ({len(cmds)} tried)"
-            results.append({"name": it.name, "digest": it.version, "ok": ok, "reason": reason})
+            results.append({"name": it.name, "digest": it.version, "ok": ok, "reason": reason, "verified": ok})
     return results
 
 
@@ -1102,8 +811,8 @@ def _cosign_verify_main(argv):
     if not results:
         print("pin-age: no pinned image in the tree, nothing to verify")
     for r in results:
-        status = "ok   " if r["ok"] else "FAIL "
-        print(f"{status}{r['name']}@{r['digest']}" + ("" if r["ok"] else f": {r['reason']}"))
+        status = "ok   " if r["verified"] else "none " if r["ok"] else "FAIL "
+        print(f"{status}{r['name']}@{r['digest']}" + ("" if r["verified"] else f": {r['reason']}"))
     return 0 if all(r["ok"] for r in results) else 1
 
 
@@ -1118,12 +827,18 @@ def main(argv=None):
     ap.add_argument("--json")
     ap.add_argument("--now")
     ap.add_argument("--min-days", type=float, default=MIN_DAYS)
-    ap.add_argument("--base-inputs", help="the base-inputs list (default: .github/policy/base-inputs.json beside this script's own checkout, the base branch in CI)")
-    ap.add_argument("--exceptions", help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
+    ap.add_argument("--base-inputs",
+        help="the base-inputs list (default: .github/policy/base-inputs.json beside this script's own checkout, the "
+            "base branch in CI)")
+    ap.add_argument("--exceptions",
+        help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
     a = ap.parse_args(argv)
     try:
         fx = json.load(open(a.fixtures)) if a.fixtures else None
-        now = parse_time(a.now, True) if a.now else (parse_time((fx or {}).get("now"), True) if fx and fx.get("now") else dt.datetime.now(dt.timezone.utc))
+        if a.fixtures and not isinstance(fx, dict):
+            raise ValueError("--fixtures is not a JSON object")
+        now = parse_time(a.now, True) if a.now else (parse_time((fx or {}).get("now"), True) if fx and fx.get("now")
+            else dt.datetime.now(dt.timezone.utc))
         if now is None:
             raise ValueError("--now is not an ISO time")
         base_items = inv.load_at(a.root, a.base)
@@ -1137,7 +852,8 @@ def main(argv=None):
     except RuntimeError as e:
         print(f"pin-age: cannot run: {_one_line(e)} (not a pass)", file=sys.stderr)
         return 2
-    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
+    # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
+    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:
         print(f"pin-age: cannot run: an answer could not be read ({type(e).__name__}) (not a pass)", file=sys.stderr)
         return 2
     except CouldNotLook as e:
@@ -1150,10 +866,13 @@ def _line_hash(flat):
 
 
 def _occurrences(root, rev):
-    """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
+    """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than
+    space or tab, a continuation) gets
     a group no row can name ('unruled:' + its hash)."""
     out = {}
-    for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_surfaces(root, rev), **inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
+    # a read error propagates (exit 2)
+    for k, flat, bashlike in inv.unmeasured_occurrences(
+            {**inv.tree_surfaces(root, rev), **inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
         _LINE_TEXT[lh] = flat
         per = out.setdefault(k, {})
@@ -1162,8 +881,10 @@ def _occurrences(root, rev):
 
 
 def _unmeasured_counts(root, base, head):
-    """{key: {whole-line hash: head occurrences}} for every (key, whole line) the head has MORE of than the base: an occurrence is identified by its key
-    AND the whole line it sits in, so an edited line that keeps its download segment is an addition, like a new one (REQ-SUP-001-AC16)."""
+    """{key: {whole-line hash: head occurrences}} for every (key, whole line) the head has MORE of than the base: an
+    occurrence is identified by its key
+    AND the whole line it sits in, so an edited line that keeps its download segment is an addition, like a new one
+    (REQ-SUP-001-AC16)."""
     b, h = _occurrences(root, base), _occurrences(root, head)
     added = {}
     for k, per in h.items():
@@ -1173,41 +894,49 @@ def _unmeasured_counts(root, base, head):
     return added
 
 
-def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command): an in-place swap or an edit of the line around it is an ADDITION
-    """Install forms this check cannot measure that the head has MORE of than the base (per file, form and whole line): a PR that adds one is refused."""
+# keys are (file, form, the normalised command): an in-place swap or an edit of the line around it is an ADDITION
+def _added_unmeasured(root, base, head):
+    """Install forms this check cannot measure that the head has MORE of than the base (per file, form and whole
+    line): a PR that adds one is refused."""
     return sorted(_unmeasured_counts(root, base, head))
 
 
-# REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub written as data). They are read from
-# the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the pull request's tree (--root).
+# REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub
+# written as data). They are read from
+# the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the
+# pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
-LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
-GO_RULING = "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): "   # the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
-LOOPBACK_RULING = "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): "   # the one line of the loopback helper that starts the fetch program (REQ-SUP-001-AC24): honored for that file and that line's sha256 only
-LOOPBACK_FILE = "bin/loopback-get.sh"
-LOOPBACK_LINE = """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?"""    # the raw text of the line, byte for byte (no indent, no trailing space, no carriage return)
-LOOPBACK_LINE_SHA256 = "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd"   # sha256 of that line as the scan hashes it (whitespace collapsed); the raw text above is what the head file must hold
+# a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
+LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "
+# the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
+GO_RULING = "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): "
 DOWNLOAD_FORM = "a download"
 _LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
-# the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash included, so the host cannot change) followed by
+# the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash
+# included, so the host cannot change) followed by
 # exactly ONE variable and nothing else
 _LIVE_URL_VAR = re.compile(r"https://packages\.wolfi\.dev/os/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 _GO_OUT = re.compile(r"(?:[A-Za-z0-9_./-]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})+")
 _GO_URL_VAR = re.compile(r"https://go\.dev/dl/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
-_ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
 
-_LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g", "--globoff", "--fail", "--silent", "--show-error", "--location", "--tlsv1.2"}
-_LIVE_FLAG_VALUE = {"--max-filesize": r"[0-9]+", "--max-time": r"[0-9]+", "--proto": r"=https", "-o": r"[A-Za-z0-9_./${}-]+", "--output": r"[A-Za-z0-9_./${}-]+"}
+_LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g", "--globoff", "--fail", "--silent",
+    "--show-error", "--location", "--tlsv1.2"}
+_LIVE_FLAG_VALUE = {"--max-filesize": r"[0-9]+", "--max-time": r"[0-9]+", "--proto": r"=https",
+    "-o": r"[A-Za-z0-9_./${}-]+", "--output": r"[A-Za-z0-9_./${}-]+"}
 
 
 def _live_fetch_line_ok(flat, toolchain=False):
-    """The bound line is exactly ONE curl command: curl or /usr/bin/curl, then only flags from a fixed list (with a plain value where one is taken), then exactly one
-    URL operand that is https on the host packages.wolfi.dev (with toolchain=True instead: exactly https://go.dev/dl/ followed by ONE variable, REQ-SUP-001-AC23); optionally followed by `|| die "plain text" [digit]` or `|| exit N`. The line is split into shell words,
-    so quote concatenation cannot change a word after the check; a variable may appear only as part of the -o file name; no second command, pipe, redirection,
+    """The bound line is exactly ONE curl command: curl or /usr/bin/curl, then only flags from a fixed list (with a
+    plain value where one is taken), then exactly one
+    URL operand that is https on the host packages.wolfi.dev (with toolchain=True instead: exactly https://go.dev/dl/
+    followed by ONE variable, REQ-SUP-001-AC23); optionally followed by `|| die "plain text" [digit]` or `|| exit N`.
+    The line is split into shell words,
+    so quote concatenation cannot change a word after the check; a variable may appear only as part of the -o file name;
+    no second command, pipe, redirection,
     substitution, other operand or schemeless host is accepted."""
     import shlex
     left, sep, right = flat.partition("||")
@@ -1219,15 +948,19 @@ def _live_fetch_line_ok(flat, toolchain=False):
         w = shlex.split(left, posix=True)
     except ValueError:
         return False
-    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in (("-q",) if toolchain else ("-q", "--disable")):
-        return False                                   # -q first: no default .curlrc (CURL_HOME) can add a URL or an option (the Go shape takes only the spelling -q)
+    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in (("-q",) if toolchain
+            else ("-q", "--disable")):
+        # -q first: no default .curlrc (CURL_HOME) can add a URL or an option (the Go shape takes only the spelling -q)
+        return False
     raw = re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"']+)+""", left)
     if len(raw) != len(w):
         return False
     if toolchain and "'" in left:
-        return False                                   # the Go shape has no single quote anywhere: a single-quoted $name is a literal dollar sign, never a variable
+        # the Go shape has no single quote anywhere: a single-quoted $name is a literal dollar sign, never a variable
+        return False
     for rt in raw:
-        # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into several words
+        # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into
+        # several words
         if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
             return False
     i, operands, globoff, op_raw = 2, [], False, []
@@ -1237,13 +970,16 @@ def _live_fetch_line_ok(flat, toolchain=False):
             globoff = globoff or t in (("-g",) if toolchain else ("-g", "--globoff"))
             i += 1
         elif t in _LIVE_FLAG_VALUE:
-            if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output") and "$" in w[i + 1]):
+            if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output")
+                    and "$" in w[i + 1]):
                 return False
             if toolchain and t in ("-o", "--output") and not _GO_OUT.fullmatch(w[i + 1]):
-                return False                           # the Go shape: an output value is literal characters and plain $name / ${name} references only
+                # the Go shape: an output value is literal characters and plain $name / ${name} references only
+                return False
             i += 2
         elif t.startswith("-"):
-            return False                               # an option outside the list (-x, -K, --resolve, --url, an attached value, a cluster not listed)
+            # an option outside the list (-x, -K, --resolve, --url, an attached value, a cluster not listed)
+            return False
         else:
             operands.append(t)
             op_raw.append(raw[i])
@@ -1251,562 +987,69 @@ def _live_fetch_line_ok(flat, toolchain=False):
     if len(operands) != 1:
         return False
     if toolchain:
-        # the variable form only, only with -g, and the operand must be double-quoted or bare: a single-quoted $f is a literal dollar sign, not a variable
+        # the variable form only, only with -g, and the operand must be double-quoted or bare: a single-quoted $f is a
+        # literal dollar sign, not a variable
         return globoff and "'" not in op_raw[0] and _GO_URL_VAR.fullmatch(operands[0]) is not None
     if _LIVE_URL_VAR.fullmatch(operands[0]) is not None:
-        return globoff                                  # curl itself expands {a,b} and [1-2] in a URL: a variable operand is one transfer only with -g
+        # curl itself expands {a,b} and [1-2] in a URL: a variable operand is one transfer only with -g
+        return globoff
     return _LIVE_URL.fullmatch(operands[0]) is not None
 
 
-# REQ-SUP-001-AC16, the optional row field `context` (advisor, Oct 16; the owner's plain-forms rule): a ruled row may name WHY its line is inert, and the checker then
-# PROVES that from the head file at scan time. A context only ever NARROWS: a row whose context does not hold rules nothing (it never falls back to the plain row), and a
-# row without a context behaves exactly as before. comment: the line is a comment. assignment: the line is ONE plain NAME=word assignment (no substitution, no second
-# command). heredoc: the line lies in a here-document with a QUOTED delimiter (the shell expands nothing in it), opened by no interpreter or shell and by no function that
-# runs its input, whose output is not piped or substituted into one, and whose file (if written) is never later run. pystring: the same for a Python program read from a
-# quoted heredoc, and the ruled text lies only inside string constants or comments of that program (Python's own tokenizer and parser decide). A program that can run
-# something (exec, eval, subprocess, os.system ..., or that writes files) is "impure": its rows must say in `proof` that they rest on review ("attested by review"),
-# so a reader of the file sees that this is not a proof.
-CONTEXTS = ("comment", "assignment", "heredoc", "pystring")
-_INTERP_WORDS = frozenset("sh bash dash zsh ksh ash csh tcsh fish eval source . exec xargs python python2 python3 node nodejs perl ruby awk gawk mawk nawk php lua".split())
-_USE_WORDS = frozenset("chmod mv cp ln install source exec eval".split())
-_PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr globals locals vars breakpoint importlib runpy code pkgutil ctypes cffi subprocess pty commands "
-                                "system popen startfile posix_spawn posix_spawnp fork forkpty execl execle execlp execlpe execv execve execvp execvpe spawnl spawnle spawnlp spawnlpe "
-                                "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
-                                "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
-_DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od".split())
-_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii "
-                          "unicodedata urllib.parse shlex enum dataclasses".split())
-_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))", re.M)
+# REQ-SUP-001-AC16, the optional row field body-sha256: the row is a review of one whole file (and of the files it
+# sources by a literal path), so any edit to them stops the row matching.
+_SOURCE = re.compile(r"(?:^|[;&|({]|\b(?:then|do|else)[ \t])[ \t]*(?:source|\.)[ \t]+([^\s;&|)]+)", re.M)   # matches "x; . lib.sh", refuses "echo source lib.sh"
+_NON_LITERAL = re.compile(r"[$`\"'\\*?\[{~]")
 
 
-def _norm_word(w):
-    """A versioned interpreter (python3.11, perl5.36, ruby3.2, bash5, sh.exe) is the interpreter."""
-    b = re.sub(r"(?:\.exe)?$", "", w)
-    b = re.sub(r"[\d.]+$", "", b)
-    for cand in (w, b, re.sub(r"\d+$", "", b)):
-        if cand in _INTERP_WORDS:
-            return cand
-    return w
+def _sourced(text):
+    """The operands of the source commands in text, or None when one is not a plain path."""
+    lines = [ln for ln in text.split("\n") if not ln.lstrip().startswith("#")]
+    ops = _SOURCE.findall("\n".join(lines))
+    return None if any(_NON_LITERAL.search(o) for o in ops) else ops
 
 
-def _words(text):
-    return [_norm_word(w) for w in re.findall(r"[A-Za-z_][\w.+-]*|(?<![\w.])\.(?=\s)", text.replace("/", " "))]
-
-
-def _unquote(raw):
-    """Shell quote removal of one word (single quotes literal, double quotes with a backslash only before dollar, backtick, double quote and backslash, a backslash escapes the next character): the text bash compares a heredoc terminator with."""
-    out, i = [], 0
-    while i < len(raw):
-        c = raw[i]
-        if c == "'":
-            k = raw.find("'", i + 1)
-            if k < 0: return None
-            out.append(raw[i + 1:k]); i = k + 1
-        elif c == '"':
-            k, buf = i + 1, []
-            while k < len(raw) and raw[k] != '"':
-                if raw[k] == "\\" and k + 1 < len(raw) and raw[k + 1] in '$`"\\': k += 1
-                buf.append(raw[k]); k += 1
-            if k >= len(raw): return None
-            out.append("".join(buf)); i = k + 1
-        elif c == "\\":
-            if i + 1 < len(raw): out.append(raw[i + 1])
-            i += 2
-        else:
-            out.append(c); i += 1
-    return "".join(out)
-
-
-def _shell_lex(lines):
-    """Walk the script once, quote-aware across lines. Returns (heredocs, sane, state): state[i] is the quote/substitution stack at the START of line i as a tuple (() = plain code
-    position) or None when line i lies inside a here-document body; each heredoc is {open, start, end (the terminator's index; None if there is none), quoted, nested, bad, opener (the
-    command line, continuation lines joined), targets (files its output goes to), ops (how many heredocs the line opens)}. A `<<` counts only in code position (not inside quotes, a
-    comment, arithmetic or a here-string). sane is False when the walk ends inside an open quote or substitution: then nothing in the file is proved."""
-    hds, stack, i, n = [], [], 0, len(lines)
-    insane = False
-    state = [None] * n
-    while i < n:
-        state[i] = tuple(stack)
-        line, j, ops, cmt = lines[i], 0, [], False
-        while j < len(line) and not cmt:
-            c, top = line[j], (stack[-1] if stack else "")
-            if top == "'":
-                if c == "'": stack.pop()
-            elif top == '"':
-                if c == "\\": j += 1
-                elif c == '"': stack.pop()
-                elif c == "`": stack.append("`")
-                elif c == "$" and line[j + 1:j + 2] == "{":
-                    k, d = j + 2, 1
-                    while k < len(line) and d: d += (line[k] == "{") - (line[k] == "}"); k += 1
-                    if d: insane = True                 # a parameter expansion that does not close on its line: its word can hold substitutions the walk does not follow
-                    else: j = k - 1
-                elif c == "$" and line[j + 1:j + 2] == "(":
-                    if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
-                    else: stack.append("$("); j += 1
-            else:                                   # code position: top level, $( ), $(( )), (( )), backticks, ( )
-                if c == "$" and line[j + 1:j + 2] == "{":
-                    k, d = j + 2, 1
-                    while k < len(line) and d: d += (line[k] == "{") - (line[k] == "}"); k += 1
-                    if d: insane = True
-                    else: j = k - 1
-                elif c == "\\": j += 1
-                elif c == "'": stack.append("'")
-                elif c == '"': stack.append('"')
-                elif c == "`":
-                    if top == "`": stack.pop()
-                    else: stack.append("`")
-                elif c == "$" and line[j + 1:j + 2] == "(":
-                    if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
-                    else: stack.append("$("); j += 1
-                elif c.isalpha() and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:if|while|until|for|select|case)(?![\w.-])", line[j:]) and re.search(r"(?:^|[;&|({]|\bthen|\bdo|\belse|\belif)[ \t]*$", line[:j]):
-                    stack.append("kw")                      # a compound command: what follows its fi / done / esac (a pipe to a shell) decides what a heredoc inside it feeds
-                elif c.isalpha() and top == "kw" and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:fi|done|esac)(?![\w.-])", line[j:]):
-                    stack.pop()
-                elif c == "{" and (j == 0 or line[j - 1] in " \t;&|(") and (j + 1 == len(line) or line[j + 1] in " \t"):
-                    stack.append("{")                       # a brace group: what a heredoc inside it feeds is decided by what follows the closing brace
-                elif c == "}" and top == "{" and (j == 0 or line[j - 1] in " \t;&|"):
-                    stack.pop()
-                elif c == "(":
-                    if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
-                    else: stack.append("(")
-                elif c == ")" and top in ("$(", "(", "$((", "(("):
-                    if top == "$(" and re.match(r"[ \t]*\(?[^\s()]+(?:\|[^\s()]+)*$", line[:j]):
-                        insane = True                   # a bare word, then `)`, at the start of a line inside $( ): a case pattern, not the end of the substitution; not followed
-                    stack.pop()
-                    if top in ("$((", "((") and line[j + 1:j + 2] == ")": j += 1
-                elif c == "#" and (j == 0 or line[j - 1] in " \t;&|(") : cmt = True
-                elif c == "<" and line[j:j + 3] == "<<<":
-                    j += 2                          # a here-string, not a heredoc
-                elif c == "<" and line[j:j + 2] == "<<" and top not in ("$((", "(("):
-                    m = re.match(r"<<(-?)[ \t]*((?:'[^']*'|\"[^\"]*\"|\\.|[^\s;&|()<>'\"\\])+)", line[j:])
-                    if m:
-                        raw = m.group(2)
-                        quoted = bool(re.search(r"['\"\\]", raw))
-                        delim = _unquote(raw)
-                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"', "(", "((", "{", "kw") for s in stack)))
-                        j += m.end() - 1
-            j += 1
-        i += 1
-        if not ops:
+def _files_hash(root, head, path):
+    """The sha256 of one line '<path> <sha256 of its bytes>' (or '<path> absent') per file: path first, then the files
+    it sources by literal path to any depth, in path order. None when a file cannot be read or a source operand is
+    not a plain path."""
+    lines, todo, seen = {}, [path], set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
             continue
-        o = i - 1                                   # the opener line
-        first = o
-        while first > 0 and lines[first - 1].rstrip().endswith("\\"):
-            first -= 1
-        opener = " ".join(lines[first:o + 1])
-        bad = lines[o].rstrip().endswith("\\")      # the command goes on after the operator: where the body starts is not something this walk claims
-        stripped = re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", opener)
-        tee_ops = []
-        for m in re.finditer(r"\btee\b((?:[ \t]+(?:-\w+|\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+))+)", opener):
-            tee_ops += re.findall(r"\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+", re.sub(r"(?:^|[ \t])-\w+", " ", m.group(1)))
-        targets = [t.strip("'\"") for t in re.findall(r"(?:^|[^\d<>&])(?:\d*>>?|&>>?)[ \t]*(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)", stripped) + tee_ops]
-        targets = [t for t in targets if t and not t.startswith("&") and t not in ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty") and not t.startswith("/dev/fd/")]
-        for tab, quoted, delim, nested in ops:
-            start, k = i, i
-            if delim is None:
-                hds.append({"open": o, "start": start, "end": None, "quoted": quoted, "nested": nested, "bad": True, "opener": opener, "targets": targets, "ops": len(ops)})
-                continue
-            while k < n and (lines[k].lstrip("\t") if tab else lines[k]) != delim:
-                state[k] = None
-                k += 1
-            hds.append({"open": o, "start": start, "end": k if k < n else None, "quoted": quoted, "nested": nested, "bad": bad, "opener": opener, "targets": targets, "ops": len(ops)})
-            i = (k + 1) if k < n else n
-            if k >= n:
-                break
-    return hds, not stack and not insane, state
-
-
-def _func_bodies(lines):
-    """{name: body text} of the shell functions the file defines (both `name() {` and `function name {`, the brace on the same or the next line)."""
-    out = {}
-    for idx, ln in enumerate(lines):
-        m = _DEF_FUNC.match(ln)
-        if not m:
+        seen.add(f)
+        raw = _head_file(root, head, f)
+        if raw is None:
+            if f == path:
+                return None
+            lines[f] = f + " absent"
             continue
-        name = m.group(1) or m.group(2)
-        if "{" not in ln and not (idx + 1 < len(lines) and lines[idx + 1].lstrip().startswith("{")):
-            continue
-        depth, body, k, seen = 0, [], idx, False
-        while k < len(lines):
-            bare = re.sub(r"(?:^|(?<=\s))#.*$", "", re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k]))        # a brace inside a quoted string or a comment does not open or close the function
-            body.append(lines[k]); depth += bare.count("{") - bare.count("}"); seen = seen or "{" in bare
-            if seen and depth <= 0: break
-            k += 1
-        out[name] = "\n".join(body)
-    return out
-
-
-def _runs_input(words, funcs, seen=None):
-    """True when any of `words` is, or (through the functions the file defines, to any depth) calls, an interpreter, a shell or a command that runs or moves a file."""
-    seen = seen if seen is not None else set()
-    for w in words:
-        if w in _INTERP_WORDS or w in _USE_WORDS:
-            return True
-        if w in funcs and w not in seen:
-            seen.add(w)
-            if _runs_input(_words(funcs[w]), funcs, seen):
-                return True
-    return False
-
-
-# Functions that may receive a written file's CONTENT as an argument ("$(cat FILE)"), by the sha256 of the whitespace-flattened definition (a new one is a change here: a human gate).
-_REVIEWED_FUNCS = {"run": frozenset((
-    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-age-check-test.sh fixture
-    "004f644d043348ed9bf307882a5ffe652f7fb62628cf16b2cc1508b957796d46",   # bin/persona-uat-test.sh run()
-))}
-
-
-def _strip_comment(ln):
-    """The line without a trailing shell comment: a # starts one only outside quotes, at the start or after whitespace or ; & | ( ."""
-    sq = dq = False
-    i = 0
-    while i < len(ln):
-        c = ln[i]
-        if sq:
-            sq = c != "'"
-        elif c == "\\" and not sq:
-            i += 1
-        elif c == "'" and not dq:
-            sq = True
-        elif c == '"':
-            dq = not dq
-        elif c == "#" and not dq and (i == 0 or ln[i - 1] in " \t;&|("):
-            return ln[:i]
-        i += 1
-    return ln
-
-
-def _reads_only(seg):
-    """True when the (already comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor, no -o / --output option (also clustered, e.g. -uo)."""
-    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![^\s;&|<>()])", " ", seg)
-    if re.search(r"\d*>|&>", flat):
-        return False
-    flat = re.sub(r"[\"'\\]", "", flat)                       # judged on the option WORDS: "-o", '--output=x' and -\o spell the same options
-    return not re.search(r"(?:^|[ \t])(?:-[A-Za-z]*o\S*|--output\S*)(?=[ \t=]|$)", flat)
-
-
-def _written_file_used_later(lines, hd):
-    """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
-    nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
-    chmod'ing, a pipe to anything else, a substitution that is evaluated, a program or function the checker does not know all refuse."""
-    later = lines[(hd["end"] or hd["start"]) + 1:]
-    names = set(hd["targets"])
-    for _ in range(4):                                          # a variable that holds the name (set before or after the heredoc; one assignment at a time, a few levels)
-        for ln in lines:
-            for var, val in re.findall(r"(?:^|[;&|\s])([A-Za-z_]\w*)=(\"[^\"]*\"|'[^']*'|[^\s;&|]+)", ln):
-                if val.strip("'\"") in names or any(t in val for t in names):
-                    names |= {"$" + var, "${" + var + "}"}
-    spell = set(names)
-    for t in list(names):
-        if not t.startswith("$"):
-            spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
-    rxs = [re.compile(r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])") if not t.startswith("$") else re.compile(re.escape(t)) for t in spell if t]
-    funcs = _func_bodies(lines)
-    reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
-    readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
-    for ln in later:
-        ln = _strip_comment(ln)
-        if not any(rx.search(ln) for rx in rxs):
-            continue
-        if "`" in ln:
-            return True
-        stripped = readcat.sub(" ", ln)
-        content = stripped != ln                                  # some mention is a $(cat FILE) read: its content goes to the command
-        rest = any(rx.search(stripped) for rx in rxs)
-        if "$(" in stripped:
-            return True
-        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", stripped) if sg.strip()]
-        for seg in segs:
-            toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
-            if toks and all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
-                continue                                          # a plain assignment (the alias rule above follows the name)
-            toks = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
-            first = [t for t in toks if not re.fullmatch(r"\d*[<>]+.*", t)]
-            cmd = (_unquote(first[0]) or "").split("/")[-1] if first else ""
-            if content and not rest and len(segs) == 1 and cmd in reviewed:
-                continue                                          # the content goes to a reviewed function, once, with nothing else on the line
-            if cmd not in _DATA_CONSUMERS or content or not _reads_only(seg):
-                return True
-    return False
-
-
-_PY_SAFE_BUILTINS = frozenset("print len range str int float bool list dict set tuple frozenset sorted enumerate zip min max sum any all repr isinstance issubclass ord chr abs round "
-                              "format map filter reversed bytes bytearray type hash hex bin oct divmod pow iter next slice object id callable chr super property staticmethod classmethod "
-                              "Exception BaseException ValueError KeyError TypeError AssertionError RuntimeError SystemExit IndexError StopIteration AttributeError NotImplementedError "
-                              "ZeroDivisionError UnicodeDecodeError UnicodeEncodeError LookupError ArithmeticError OverflowError FileNotFoundError".split())
-_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii unicodedata shlex enum "
-                             "dataclasses".split())
-_PY_PURE_DOTTED = frozenset(("os.path", "urllib.parse"))
-_PY_MODULE_NAMES = frozenset("os sys io builtins posix nt shutil subprocess importlib pathlib tempfile socket ctypes".split())
-_PY_SYS_OK = frozenset("argv exit stdin stdout stderr version_info platform maxsize".split())
-_PY_SAFE_METHODS = frozenset("""capitalize casefold center count decode encode endswith expandtabs find format format_map index isalnum isalpha isascii isdecimal isdigit isidentifier
-    islower isnumeric isprintable isspace istitle isupper join ljust lower lstrip maketrans partition removeprefix removesuffix replace rfind rindex rjust rpartition rsplit rstrip split
-    splitlines startswith strip swapcase title translate upper zfill append extend insert pop remove clear sort reverse copy get items keys values setdefault update add discard union
-    intersection difference symmetric_difference issubset issuperset popitem fromkeys hex fromhex group groups groupdict start end span sub subn match search fullmatch findall finditer
-    pattern hexdigest digest strftime isoformat timestamp date time utcoffset total_seconds astimezone most_common elements total""".split())
-
-
-def _py_dotted(nd):
-    import ast
-    parts = []
-    while isinstance(nd, ast.Attribute):
-        parts.append(nd.attr); nd = nd.value
-    if isinstance(nd, ast.Name):
-        return ".".join([nd.id] + parts[::-1])
-    return None
-
-
-def _py_program_flags(body):
-    """(tree, impure reasons) for the Python source `body`, or (None, ...) when it does not parse. A POSITIVE subset: a program is pure only when every call is to a builtin on the safe
-    list, to a function or class the program itself defines, to a pure module's function, or to a method whose name is not a writer; there is no unpacked argument, no name that runs or
-    reaches code (exec, eval, compile, __import__, getattr ...) and every import is from the pure list. Anything else is an impurity reason (its rows then need the review label)."""
-    import ast
-    try:
-        tree = ast.parse(body)
-    except (SyntaxError, ValueError, RecursionError):
-        return None, ["does not parse"]
-    why = set()
-    mods, defined = {}, set()
-    for nd in ast.walk(tree):
-        if isinstance(nd, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): defined.add(nd.name)
-        elif isinstance(nd, ast.Import):
-            for a in nd.names:
-                if a.name in _PY_PURE_MODULES or a.name in _PY_PURE_DOTTED: mods[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]    # `import os.path` binds os, not os.path
-                else: why.add("import " + a.name)
-        elif isinstance(nd, ast.ImportFrom):
-            if nd.level or (nd.module or "") not in (_PY_PURE_MODULES | _PY_PURE_DOTTED): why.add("import " + (nd.module or "."))
-            else:
-                for a in nd.names:
-                    if a.name in _PY_FORBIDDEN_NAMES or a.name == "open": why.add(a.name)
-                    if nd.module == "sys" and a.name not in _PY_SYS_OK: why.add("sys." + a.name)      # an imported member of sys is judged like the attribute
-                    mods[a.asname or a.name] = (nd.module or "") + "." + a.name
-        elif isinstance(nd, ast.Assign):
-            for t in nd.targets:
-                if isinstance(t, ast.Name) and isinstance(nd.value, ast.Lambda): defined.add(t.id)
-    called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
-    roots = {id(nd.value) for nd in ast.walk(tree) if isinstance(nd, ast.Attribute)}
-    for nd in ast.walk(tree):
-        if isinstance(nd, ast.Name) and nd.id in mods and nd.id not in defined and id(nd) not in roots and id(nd) not in called:
-            why.add("module " + nd.id + " used as a value")
-        if isinstance(nd, ast.Attribute) and nd.attr in _PY_MODULE_NAMES and id(nd) not in roots:
-            why.add("module " + nd.attr + " reached through an attribute")      # `x = os.path.os`: a module re-exported under a plain name      # `x = sys` then x.modules[...]: an alias the walk below would not follow
-    for nd in ast.walk(tree):
-        if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES and nd.id not in defined: why.add(nd.id)
-        if isinstance(nd, ast.Name) and nd.id == "open" and nd.id not in defined: why.add("open")
-        if isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
-        if isinstance(nd, ast.Attribute) and nd.attr == "open": why.add("open")
-        if isinstance(nd, ast.Attribute):
-            dd = _py_dotted(nd)
-            if dd and dd.split(".")[0] in mods and mods[dd.split(".")[0]] == "sys" and len(dd.split(".")) > 1 and dd.split(".")[1] not in _PY_SYS_OK: why.add("sys." + dd.split(".")[1])
-        if isinstance(nd, ast.Call):
-            if any(isinstance(a, ast.Starred) for a in nd.args) or any(k.arg is None for k in nd.keywords): why.add("unpacked arguments")
-            f = nd.func
-            if isinstance(f, ast.Name):
-                if f.id not in _PY_SAFE_BUILTINS and f.id not in defined and f.id not in mods: why.add("call of " + f.id)
-            elif isinstance(f, ast.Attribute):
-                dotted = _py_dotted(f)
-                root = dotted.split(".")[0] if dotted else None
-                if root in mods:
-                    full = mods[root] + dotted[len(root):] if dotted else ""
-                    ms = [m for m in _PY_PURE_MODULES | _PY_PURE_DOTTED if full == m or full.startswith(m + ".")]
-                    if not ms: why.add("call of " + full)
-                    elif "." in full[len(max(ms, key=len)):].lstrip("."): why.add("call of " + full)      # a name reached THROUGH the module (os.path.os.replace): only the module's own functions pass
-                elif root == "os": why.add("call of " + dotted)
-                elif f.attr not in _PY_SAFE_METHODS and f.attr not in defined: why.add("method " + f.attr)      # a method on some other object: a closed list of names
-            else:
-                why.add("a call of a computed function")
-    return tree, sorted(why)
-
-
-def _py_code_part(body, lineno):
-    """The 1-based line `lineno` of `body` with its string constants and comments blanked (what is left is the program's CODE on that line, f-string expressions included), or None
-    on a tokenizer error."""
-    import io, tokenize
-    FS, FM, FE = (getattr(tokenize, k, None) for k in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"))
-    rows = body.split("\n")
-    mask = [[False] * len(r) for r in rows]
-    def blank(tk):
-        (sr, sc), (er, ec) = tk.start, tk.end
-        for r in range(sr, er + 1):
-            a = sc if r == sr else 0
-            b = ec if r == er else len(rows[r - 1])
-            for c in range(a, min(b, len(rows[r - 1]))): mask[r - 1][c] = True
-    try:
-        for tk in tokenize.generate_tokens(io.StringIO(body).readline):
-            if tk.type == tokenize.COMMENT or tk.type == FM or tk.type == FS or tk.type == FE:
-                blank(tk)                         # an f-string's literal pieces are text; the expressions between its braces stay code
-            elif tk.type == tokenize.STRING:
-                if re.match(r"(?i)[a-z]*f", tk.string): return None        # an f-string the tokenizer does not split (before 3.12): not judged
-                blank(tk)
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        return None
-    if not 1 <= lineno <= len(rows): return None
-    return "".join(" " if m else ch for ch, m in zip(rows[lineno - 1], mask[lineno - 1]))
-
-
-def _plain_value(s):
-    """True when the assignment text has no substitution that RUNS: no $( or backtick outside single quotes, no <( or >( outside every quote, no old-style $[ arithmetic."""
-    sq = dq = False
-    i = 0
-    while i < len(s):
-        c = s[i]
-        if sq:
-            sq = c != "'"
-        elif c == "\\":
-            i += 1
-        elif c == "'" and not dq:
-            sq = True
-        elif c == '"':
-            dq = not dq
-        elif c == "`" or (c == "$" and s[i + 1:i + 2] in ("(", "[")):
-            return False
-        elif not dq and c in "<>" and s[i + 1:i + 2] == "(":
-            return False
-        i += 1
-    return not (sq or dq)
-
-
-_Q = r"""(?:"(?:[^"`$\\]|\$\{?\w+\}?|\$@|\\.)*"|'[^']*'|[A-Za-z0-9_./:=+,@%^~-]+|\$\{?\w+\}?|"\$\(out (?:[A-Za-z0-9_-]+|"\$\{?\w+\}?")\)")"""
-_WORD = r"""(?:"(?:[^"`$\\]|\$\{?\w+\}?)*"|'[^']*'|[A-Za-z0-9_./${}-]+)"""
-_REDIR = r"\d*>>?[ \t]*" + _WORD
-_DELIMQ = r"""(?:'[^'\s]+'|"[^"\s]+"|\\\w+)"""
-_CAT_OPENER = re.compile(r"[ \t]*cat(?:[ \t]+" + _REDIR + r")*[ \t]*<<-?[ \t]*" + _DELIMQ + r"(?:[ \t]+" + _REDIR + r")*[ \t]*")
-_ENV_ASSIGN = r"""[A-Za-z_]\w*=(?:"(?:[^"`$\\]|\$\{?\w+\}?)*"|'[^']*'|[A-Za-z0-9_./${}:-]*)"""
-_PY_OPENER = re.compile(r"[ \t]*(?:" + _ENV_ASSIGN + r"[ \t]+)*(check[ \t]+)?python3?(?:\.\d+)?[ \t]+-(?:[ \t]+" + _Q + r")*(?:[ \t]+" + _REDIR + r")*[ \t]*<<-?[ \t]*" + _DELIMQ
-                        + r"(?:[ \t]+" + _REDIR + r")*[ \t]*")
-# Wrapper functions an opener may use (`check python3 - ...`), by the sha256 of the whitespace-flattened definition line. A new wrapper is a change to this list: a human gate.
-_REVIEWED_WRAPPERS = {
-    "check": frozenset((
-        "d9f0551a0eefa0c75ab77d72fe9446ac100bf33458d956b500c865ccf33f2b43",   # persona-uat-agent-test.sh
-        "0eeb4484c724571050ef124103472beb31a6983886cd15e2f00c6e6e1a1f2629",   # persona-uat-test.sh
-        "9d447de27fa81cc5ba86eada6ef1be1830accd4258ebd950e1e1255ef6ce881d",   # pin-age-check-test.sh (fixture)
-    )),
-}
-
-
-# Helper functions an opener's argument may call as "$(NAME arg)": by the sha256 of the whitespace-flattened definition line (a new helper is a change here: a human gate).
-_REVIEWED_SUBST = {"out": frozenset(("613b579188d1c362ee67b847f36a06f68538c58197899586022d932ed1bea047",))}
-
-
-def _opener_form(opener, lines):
-    """"cat" or "python" when the opener is exactly one of the closed forms (nothing before, between or after: no pipe, list, substitution, function or continuation), else None."""
-    if _CAT_OPENER.fullmatch(opener):
-        return "cat"
-    m = _PY_OPENER.fullmatch(opener)
-    if not m:
-        return None
-    if re.search(r"\$\(out ", opener):                         # the `out` helper: its definition must be a reviewed line
-        defs = [_line_hash(" ".join(l.split())) for l in lines if re.match(r"\s*out\(\)", l)]
-        if not defs or not all(d in _REVIEWED_SUBST["out"] for d in defs):
+        lines[f] = f + " " + hashlib.sha256(raw).hexdigest()
+        ops = _sourced(raw.decode("utf-8", "replace"))
+        if ops is None:
             return None
-    if m.group(1):                                            # the `check` wrapper: its definition must be a reviewed line
-        defs = [_line_hash(" ".join(l.split())) for l in lines if re.match(r"\s*check\(\)", l)]
-        if not defs or not all(d in _REVIEWED_WRAPPERS["check"] for d in defs):
-            return None
-    return "python"
+        todo += [os.path.normpath(o) for o in ops]
+    text = "".join(lines[f] + "\n" for f in [path] + sorted(set(lines) - {path}))
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _heredoc_ok(hd, lines, funcs, python=False):
-    """The here-document is terminated and quoted, is opened by exactly one operator in a closed opener form (a plain `cat [>file] <<'X'`, or for python a `[check] python3 - args [>file]
-    <<'X'`), is not nested in a substitution, and its file (if any) is later named only as an argument of a data consumer."""
-    if hd is None or not hd["quoted"] or hd["nested"] or hd["bad"] or hd["end"] is None or hd["ops"] != 1:
-        return False
-    form = _opener_form(hd["opener"], lines)
-    if form != ("python" if python else "cat"):
-        return False
-    return not _written_file_used_later(lines, hd)
-
-
-def _context_holds(context, proof, text, line_hash):
-    """True only when EVERY single-line occurrence of the ruled line (by the hash of its whole flattened text) in `text` has the named context. None found: False."""
-    lines = text.split("\n")
-    hits = [i for i, l in enumerate(lines)
-            if " ".join(l.split()) and all(c in " \t" or not c.isspace() for c in l) and _line_hash(" ".join(l.split())) == line_hash and not (i and lines[i - 1].rstrip().endswith("\\"))]
-    if not hits:
-        return False
-    hds, sane, state = _shell_lex(lines)
-    if not sane:
-        return False
-    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
-    if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text):
-        return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
-    def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
-        return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
-    if context == "assignment" and re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):
-        return False                           # a variable with attributes (integer, array, nameref ...) evaluates or redirects its assignment: nothing in this file is judged plain
-    if context in ("comment", "assignment"):
-        import shlex
-        for i in hits:
-            if not (state[i] == () or in_quoted_heredoc(i)):                          # not in plain code position: the shell state around the line decides what it is
-                return False
-            s = lines[i].strip()
-            if context == "comment":
-                if not s.startswith("#"): return False
-            else:
-                if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", s) or s.endswith("\\") or not _plain_value(s): return False
-                lx = shlex.shlex(s, posix=True, punctuation_chars=True); lx.whitespace_split = True; lx.commenters = ""
-                try:
-                    toks = list(lx)
-                except ValueError:
-                    return False
-                if len(toks) != 1 or not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", toks[0]): return False
-        return True
-    for i in hits:
-        hd = next((h for h in hds if h["start"] <= i < (h["end"] if h["end"] is not None else -1)), None)
-        if not _heredoc_ok(hd, lines, None, python=(context == "pystring")):
-            return False
-        if context == "heredoc":
-            continue
-        body = "\n".join(lines[hd["start"]:hd["end"]])
-        tree, why = _py_program_flags(body)
-        if tree is None:
-            return False
-        if why and "attested by review" not in proof.lower():
-            return False
-        code = _py_code_part(body, i - hd["start"] + 1)
-        if code is None or list(inv.unmeasured_occurrences({"x.sh": code})) or (re.search(r"\b(?:curl|wget)\b", code)):
-            return False
-    return True
-
-
-_HEAD_SCRIPTS = {}
-
-
-def _scripts_at(root, rev):
-    return _HEAD_SCRIPTS.setdefault((root, rev), inv.tree_scripts(root, rev))
-
-
-_RAW_CR = {}
-
-
-def _has_cr(root, rev, path):
-    """True when the file's real bytes hold a carriage return (the scan reads text with universal newlines, which hides one: bash would see a different line). Unreadable: True."""
-    key = (root, rev, path)
-    if key not in _RAW_CR:
-        try:
-            raw = subprocess.run(["git", "-C", root, "show", f"{rev}:{path}"], capture_output=True, check=True, timeout=120).stdout if rev is not None else open(os.path.join(root, path), "rb").read()
-            _RAW_CR[key] = b"\r" in raw
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            _RAW_CR[key] = True
-    return _RAW_CR[key]
-
-
-_LOOPBACK_OK = {}
-
-
-PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "   # nineteen script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
-HASH_LOCKED_RULING = "hash-locked fetch, orchestrator ruling Nov 5 (audits/reviews/cache-840-kernel-fetch.md): "   # the one Alpine kernel package line of bin/refresh-inputs.sh (REQ-SUP-001-AC35)
-HL_FILE, HL_LOCK, HL_HOST, HL_PATH, HL_INDENT = "bin/refresh-inputs.sh", "build/locks/vm-kernel.lock", "dl-cdn.alpinelinux.org", "/alpine/v3.24/main/x86_64/$f", " " * 8
-_HL_FLAGS = re.compile(re.escape('/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/x86_64/$f" '))
-_HL_DIE = 'die "could not download the kernel package from the Alpine mirror" 1'
-PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must hold each exactly once
+# the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
+PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "
+# file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must
+# hold each exactly once
+PINNED_FETCH = {
+    "bin/loopback-get.sh": [
+        """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?""",
+    ],
     'bin/release-assets.sh': [
         'gh release download "$rel" -D release-published',
     ],
     'bin/acceptance-k8s.sh': [
-        'docker pull -q curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 && docker tag curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 "$CLIENT_LOCAL"',
+        'docker pull -q curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 '
+            '&& docker tag '
+                'curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 '
+                    '"$CLIENT_LOCAL"',
     ],
     'bin/acceptance-gradle.sh': [
         '  code=$(curl -s -o /dev/null -w \'%{http_code}\' -I "localhost:18095/${key}")',
@@ -1816,162 +1059,100 @@ PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no
     'bin/acceptance-gradle-capped.sh': [
         'head_code() { curl -s -o /dev/null -w \'%{http_code}\' -I "localhost:18096/$1"; }',
         'curl -s localhost:18096/metrics > /tmp/capped-metrics.txt',
-        'hdr=$(curl -s -D - -o /dev/null -X PUT --data-binary @/tmp/oversized-probe.bin http://localhost:18096/oversizedprobe)',
+        'hdr=$(curl -s -D - -o /dev/null -X PUT --data-binary @/tmp/oversized-probe.bin '
+            'http://localhost:18096/oversizedprobe)',
         "code=$(curl -s -o /dev/null -w '%{http_code}' -I http://localhost:18096/oversizedprobe)",
     ],
     'bin/acceptance-maven.sh': [
         'curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-cold.txt',
         'curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-warm.txt',
-        'before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk \'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
-        'after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk \'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
+        'before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '
+            '\'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
+        'after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '
+            '\'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
     ],
     'bin/acceptance-maven-capped.sh': [
-        'app_code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w \'%{http_code}\' -I "http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar")',
-        'hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)',
-        "code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I http://localhost:18099/maven/oversizedprobe)",
+        'app_code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w \'%{http_code}\' -I '
+            '"http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar")',
+        'hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT --data-binary @/tmp/mvn-oversized-probe.bin '
+            'http://localhost:18099/maven/oversizedprobe)',
+        "code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I "
+            "http://localhost:18099/maven/oversizedprobe)",
     ],
     'bin/install-scanner.sh': [
         '    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"',
     ],
     'bin/go-bump-open-pr.sh': [
-        '  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1',
-        '    curl -q -fsSL -g -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1',
+        '  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: '
+            'cannot read the published checksums" 1',
+        '    curl -q -fsSL -g -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go '
+            'tarball from go.dev" 1',
     ],
 }
-_PINNED_FETCH_SHA = {f: {hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest(): l for l in ls} for f, ls in PINNED_FETCH.items()}
+_PINNED_FETCH_SHA = {f: {hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest(): l for l in ls}
+    for f, ls in PINNED_FETCH.items()}
 _PINNED_OK = {}
 
 
+def _held_once(root, head, f, line):
+    """True only when the head file f (a regular file, not a link) holds `line` byte for byte exactly once, has no
+    carriage return, and holds no other line that differs
+    from it only in whitespace (the scan hashes with whitespace collapsed, so the raw text is compared here).
+    Unreadable: False."""
+    raw = _head_file(root, head, f)
+    if raw is None or b"\r" in raw:
+        return False
+    rows = raw.split(b"\n")
+    flat = " ".join(line.split())
+    return rows.count(line.encode()) == 1 and sum(" ".join(r.decode("utf-8", "replace").split()) == flat
+        for r in rows) == 1
+
+
 def _pinned_line_ok(root, head, f, lh):
-    """True only when the pinned line of file f whose whole-line sha256 is lh is held by the head file byte for byte exactly once, the file is a regular file (not a link),
-    there is no carriage return in it and no other line that differs from the pinned one only in whitespace (the scan hashes with whitespace collapsed, so the raw
-    text is compared here). Unreadable, or a line the checker does not pin: False. The same shape as the loopback ruling (AC25), for the nineteen lines of AC26."""
+    """True only when the pinned line of file f whose whole-line sha256 is lh is held by the head file as _held_once
+    says. A line the checker does not pin: False."""
     key = (root, head, f, lh)
     if key not in _PINNED_OK:
-        ok = False
         raw_line = _PINNED_FETCH_SHA.get(f, {}).get(lh)
-        try:
-            if raw_line is not None:
-                if head is None:
-                    path = os.path.join(root, f)
-                    ok = os.path.isfile(path) and not os.path.islink(path)
-                    raw = open(path, "rb").read() if ok else b""
-                else:
-                    ent = subprocess.run(["git", "-C", root, "ls-tree", head, "--", f], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
-                    ok = len(ent) >= 4 and ent[0] in ("100644", "100755") and ent[1] == "blob"
-                    raw = subprocess.run(["git", "-C", root, "show", f"{head}:{f}"], capture_output=True, check=True, timeout=120).stdout if ok else b""
-                if ok:
-                    lines = raw.split(b"\n")
-                    same = [ln for ln in lines if " ".join(ln.decode("utf-8", "replace").split()) == " ".join(raw_line.split())]
-                    ok = b"\r" not in raw and lines.count(raw_line.encode()) == 1 and len(same) == 1
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            ok = False
-        _PINNED_OK[key] = ok
+        _PINNED_OK[key] = raw_line is not None and _held_once(root, head, f, raw_line)
     return _PINNED_OK[key]
 
 
 def _head_file(root, rev, f):
-    """The bytes of the regular file f (not a link) in the tree of rev (the working tree when rev is None); None when it is missing, a link or unreadable."""
+    """The bytes of the regular file f (not a link) in the tree of rev (the working tree when rev is None); None when
+    it is missing, a link or unreadable."""
     try:
         if rev is None:
             path = os.path.join(root, f)
             return open(path, "rb").read() if os.path.isfile(path) and not os.path.islink(path) else None
-        ent = subprocess.run(["git", "-C", root, "ls-tree", rev, "--", f], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
+        ent = subprocess.run(["git", "-C", root, "ls-tree", rev, "--", f], capture_output=True, check=True,
+            timeout=120).stdout.decode("utf-8", "replace").split()
         if len(ent) < 4 or ent[0] not in ("100644", "100755") or ent[1] != "blob":
             return None
-        return subprocess.run(["git", "-C", root, "show", f"{rev}:{f}"], capture_output=True, check=True, timeout=120).stdout
+        return subprocess.run(["git", "-C", root, "show", f"{rev}:{f}"], capture_output=True, check=True,
+            timeout=120).stdout
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
 
 
-def _hash_locked_line_ok(root, head, f, flat, ver):
-    """REQ-SUP-001-AC35: True only for the one kernel fetch line of bin/refresh-inputs.sh: the fixed curl flags in the fixed order, one double-quoted operand
-    https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$f compared as written, then `|| die "plain text" 1`; the file holds that line once, as the whole raw line
-    (eight spaces of indent, single spaces, nothing after it; no whitespace twin, no carriage return);
-    and the head tree holds the kernel lock file as a regular file (the inventory refuses a malformed one first); the row's verifier (file, line) names the line of that
-    file that checks a download's sha256 against the lock: it is held once as a whole line with no whitespace twin, and its sha256 is the row's verifier-line-sha256."""
-    if f != HL_FILE:  # HL:file
-        return False
-    left, _, right = flat.partition(" || ")
-    if right != _HL_DIE:  # HL:die
-        return False
-    start = _HL_FLAGS.match(left)
-    if not start or re.search(r"[;&|<>`]|\$\(", left):  # HL:flags
-        return False
-    ops = re.findall(r'"[^"]*"|\S+', left[start.end():])
-    if len(ops) != 1 or not re.fullmatch(r'"[^"]*"', ops[0]):  # HL:operands
-        return False
-    url = ops[0][1:-1]
-    host, _, rest = url[8:].partition("/")
-    if not url.startswith("https://") or host != HL_HOST:  # HL:host
-        return False
-    if "/" + rest != HL_PATH:  # HL:path
-        return False
-    raw = _head_file(root, head, f)
-    rows = raw.split(b"\n") if raw is not None else []
-    if raw is None or b"\r" in raw or sum(b" ".join(ln.split()) == flat.encode() for ln in rows) != 1 or (HL_INDENT + flat).encode() not in rows:  # HL:raw
-        return False
-    vb = ver[1].encode("utf-8", "surrogatepass") if ver else b""
-    if not ver or ver[0] != HL_FILE or rows.count(vb) != 1 or sum(b" ".join(ln.split()) == b" ".join(vb.split()) for ln in rows) != 1:  # HL:verifier
-        return False
-    if hashlib.sha256(vb).hexdigest() != ver[2]:  # HL:verifier-sha
-        return False
-    rev = head  # HL:head
-    lock = _head_file(root, rev, HL_LOCK)
-    if lock is None or b"\r" in lock:  # HL:lock
-        return False
-    return True
+def _body_proved(root, head, path, line_hash, row):
+    """A row without a body hash rules its line as it always did; a row with one rules it only while the head's file
+    (and the files it sources) hash to it."""
+    return row[2] is None or _files_hash(root, head, path) == row[2]
 
 
-def _loopback_line_ok(root, head):
-    """True only when the head file bin/loopback-get.sh is a regular file (not a link) holding the pinned line byte for byte exactly once, no carriage return anywhere
-    and no other line that differs from it only in whitespace (the scan hashes with whitespace collapsed, so the raw text is compared here). Unreadable: False."""
-    key = (root, head)
-    if key not in _LOOPBACK_OK:
-        ok = False
-        try:
-            if head is None:
-                path = os.path.join(root, LOOPBACK_FILE)
-                ok = os.path.isfile(path) and not os.path.islink(path)
-                raw = open(path, "rb").read() if ok else b""
-            else:
-                ent = subprocess.run(["git", "-C", root, "ls-tree", head, "--", LOOPBACK_FILE], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
-                ok = len(ent) >= 4 and ent[0] in ("100644", "100755") and ent[1] == "blob"
-                raw = subprocess.run(["git", "-C", root, "show", f"{head}:{LOOPBACK_FILE}"], capture_output=True, check=True, timeout=120).stdout if ok else b""
-            if ok:
-                lines = raw.split(b"\n")
-                same = [ln for ln in lines if " ".join(ln.decode("utf-8", "replace").split()) == " ".join(LOOPBACK_LINE.split())]
-                ok = b"\r" not in raw and lines.count(LOOPBACK_LINE.encode()) == 1 and len(same) == 1
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            ok = False
-        _LOOPBACK_OK[key] = ok
-    return _LOOPBACK_OK[key]
-
-
-def _context_proved(root, head, path, line_hash, row):
-    """A row without a context is as it always was; a row with one rules its line only when the context is proved from the head file."""
-    ruling, count, context, proof = row[:4]
-    if context is None:
-        return True
-    if not path.endswith(".sh"):
-        return False
-    text = _scripts_at(root, head).get(path)
-    return text is not None and not _has_cr(root, head, path) and _context_holds(context, proof, text, line_hash)
-
-
-def _context_regressions(root, base, head, rulings):
-    """{(key, line hash)} of lines a context row rules that held their context in the base and no longer do in the head. Such a line is not "added" (its count is unchanged),
-    so the delta never looks at it: without this, a ruled line could be moved out of its heredoc and stay ruled."""
+def _body_regressions(root, head, rulings):
+    """{(key, line hash): count} of head lines whose body-bound row no longer matches the body they sit in. Such a line
+    is not "added" (its count is unchanged), so the delta
+    never looks at it: without this, an edit inside a reviewed body would stay ruled."""
     out = {}
     for k, per in _occurrences(root, head).items():
         for lh, n in per.items():
             row = rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh))
-            if not row or row[2] is None or not k[0].endswith(".sh"):
-                continue
-            was = _scripts_at(root, base).get(k[0])
-            if was is not None and not _has_cr(root, base, k[0]) and _context_holds(row[2], row[3], was, lh) and not _context_proved(root, head, k[0], lh, row):
+            if row and not _body_proved(root, head, k[0], lh, row):
                 out.setdefault(k, {})[lh] = n
     return out
+
 
 MAX_RULED_COUNT = 100
 
@@ -1984,11 +1165,14 @@ def _no_duplicate_keys(pairs):
 
 
 def _no_constant(name):
-    raise ValueError(f"{name} is not JSON (Python's reader accepts NaN, Infinity and -Infinity; this file must not hold them)")
+    raise ValueError(f"{name} is not JSON (Python's reader accepts NaN, Infinity and -Infinity; "
+                     "this file must not hold them)")
 
 
 def load_ruled_text(path, required=False):
-    """{(file, form, 64-hex segment hash, 64-hex whole-line hash): (ruling, count, context or None, proof, verifier (file, line, sha256) or None)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
+    """{(file, form, 64-hex segment hash, 64-hex whole-line hash):
+    (ruling, count, body sha256 or None)} from the file's unmeasured_text list. A missing default
+    file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
@@ -1996,7 +1180,8 @@ def load_ruled_text(path, required=False):
         return {}
     try:
         with open(path) as f:
-            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)   # a repeated key would let a later copy silently win
+            # a repeated key would let a later copy silently win
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)
     except (OSError, ValueError) as e:
         raise RuntimeError(f"the exceptions file {path} (unmeasured_text) is unreadable: {e}")
     rows = d.get("unmeasured_text", []) if isinstance(d, dict) else None
@@ -2005,8 +1190,10 @@ def load_ruled_text(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "context", "proof", "verifier", "verifier-line-sha256"} or not set(_RULED_FIELDS) <= set(r):
-            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, context, proof, and for a hash-locked fetch row verifier and verifier-line-sha256)")
+        if (not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "body-sha256"}
+                or not set(_RULED_FIELDS) <= set(r)):
+            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count, "
+                "and body-sha256)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{64}", r["key"]):
@@ -2016,35 +1203,28 @@ def load_ruled_text(path, required=False):
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
-        if r["form"] == LOCAL_CALL_FORM and ("context" in r or "proof" in r):
-            raise bad("is a local-call row, which does not take a context or a proof")
-        if "context" in r and (type(r["context"]) is not str or r["context"] not in CONTEXTS):
-            raise bad("has a context that is not one of " + ", ".join(CONTEXTS))
-        if "proof" in r and ("context" not in r or type(r["proof"]) is not str or not r["proof"].strip()):
-            raise bad("has a proof that is empty, not text, or has no context to go with")
-        v = r.get("verifier")
-        if ("verifier" in r) != ("verifier-line-sha256" in r) or ("verifier" in r and not r["ruling"].strip().startswith(HASH_LOCKED_RULING)):
-            raise bad("has a verifier without its verifier-line-sha256, or the reverse, or is not a hash-locked fetch row")
-        if "verifier" in r and (not isinstance(v, dict) or set(v) != {"file", "line"} or not all(isinstance(x, str) and x.strip() for x in v.values())
-                                or not isinstance(r["verifier-line-sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", r["verifier-line-sha256"])):
-            raise bad("has a verifier that is not {file, line} of non-empty text, or a verifier-line-sha256 that is not 64 lowercase hex")
+        body = r.get("body-sha256")
+        if "body-sha256" in r and (r["form"] == LOCAL_CALL_FORM or not re.fullmatch(r"[0-9a-f]{64}", str(body))):
+            raise bad("has a body-sha256 that is not 64 lowercase hex, or is a local-call row")
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
-        out[k] = (r["ruling"].strip(), count, r.get("context"), r.get("proof", "").strip(), (v["file"], v["line"], r["verifier-line-sha256"]) if v else None)
+        out[k] = (r["ruling"].strip(), count, body)
     return out
 
 
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
-_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?")   # a time with a real zone or none (UTC, as parse_time reads it); nothing parse_time would bend (a +99:99 offset)
 
 
 def load_file_pins(path, required=False):
-    """REQ-SUP-001-AC34: {(file, content hash): (published, upstream, version)} from the exceptions file's file_pins list (the BASE branch's copy: rows a pull request brings
-    do nothing until merged). A row missing a field, with a content that is not 64 lowercase hex or a published time that is not a time rules nothing. Two rows for
-    one (file, content), a list that is not a list or an unreadable file stop the check (RuntimeError, exit 2): never 'nothing ruled' by guesswork and never the older of two."""
+    """REQ-SUP-001-AC34: {(file, content hash): (published, upstream, version)} from the exceptions file's file_pins
+    list (the BASE branch's copy: rows a pull request brings
+    do nothing until merged). A row missing a field, with a content that is not 64 lowercase hex or a published time
+    that is not a time rules nothing. Two rows for
+    one (file, content), a list that is not a list or an unreadable file stop the check (RuntimeError, exit 2): never
+    'nothing ruled' by guesswork and never the older of two."""
     if not os.path.exists(path):
         if required:
             raise RuntimeError(f"the exceptions file {path} (file_pins) does not exist")
@@ -2067,15 +1247,18 @@ def load_file_pins(path, required=False):
                 raise RuntimeError(f"{path}: file_pins repeats the row for {f_} with content {c_}")
             seen.add((f_, c_))
         fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
-        if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) or not r["upstream"].startswith("https://") \
-                or not _STRICT_TIME.fullmatch(r["published"]) or parse_time(r["published"]) is None:
+        if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) \
+            or not r["upstream"].startswith("https://") \
+                or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", r["published"]) \
+                    or parse_time(r["published"]) is None:
             continue
         out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
     return out
 
 
 class FilePinSource:
-    """Wraps a proof source: a file item the base branch's file_pins names (same file AND same content) gets the row's published time as its proof."""
+    """Wraps a proof source: a file item the base branch's file_pins names (same file AND same content) gets the row's
+    published time as its proof."""
 
     def __init__(self, inner, pins):
         self.inner, self.pins, self.notes = inner, pins, {}
@@ -2091,8 +1274,10 @@ class FilePinSource:
 
 
 def load_base_inputs(path, required=False):
-    """REQ-SUP-001-AC21: the set of paths .github/policy/base-inputs.json lists (read from the base branch's copy beside this script, never the pull request's tree).
-    A missing default file lists nothing; anything malformed raises RuntimeError (exit 2): never 'nothing exempted' and never 'everything'."""
+    """REQ-SUP-001-AC21: the set of paths .github/policy/base-inputs.json lists (read from the base branch's copy beside
+    this script, never the pull request's tree).
+    A missing default file lists nothing; anything malformed raises RuntimeError (exit 2): never 'nothing exempted' and
+    never 'everything'."""
     if not os.path.exists(path):
         if required:
             raise RuntimeError(f"the base-inputs list {path} does not exist")
@@ -2109,11 +1294,13 @@ def load_base_inputs(path, required=False):
 
 
 def split_base_inputs(moved, paths):
-    """A (file) item whose repository path the list names is no item: its content is the repository's own base record. Exact equality with the path as git
+    """A (file) item whose repository path the list names is no item: its content is the repository's own base record.
+    Exact equality with the path as git
     names it (Item.raw), never with the display name, which _hide() rewrites."""
     keep, ruled = [], []
     for m in moved:
-        (ruled if (m.kind == "tool" and m.version == "(file)" and m.raw is not None and m.raw in paths) else keep).append(m)
+        (ruled if (m.kind == "tool" and m.version == "(file)" and m.raw is not None and m.raw in paths)
+            else keep).append(m)
     return keep, ruled
 
 
@@ -2126,8 +1313,10 @@ def _item_hash(item):
 
 
 def unresolved_call_rows(root, rev, exceptions_path):
-    """The local-call rows of the exceptions file that would rule NO item of the tree at rev, judged by the very tuple split_ruled_local_calls() looks up
-    ((file, form, h, h) for an eligible item: kind action, version (local), with an origin file): [] when every row resolves to exactly one item."""
+    """The local-call rows of the exceptions file that would rule NO item of the tree at rev, judged by the very tuple
+    split_ruled_local_calls() looks up
+    ((file, form, h, h) for an eligible item: kind action, version (local), with an origin file): [] when every row
+    resolves to exactly one item."""
     rows = [k for k in load_ruled_text(exceptions_path, required=True) if k[1] == LOCAL_CALL_FORM]
     have = {}
     for it in inv.load_at(root, rev).values():
@@ -2138,8 +1327,10 @@ def unresolved_call_rows(root, rev, exceptions_path):
 
 
 def split_ruled_local_calls(moved, rulings):
-    """REQ-SUP-001-AC19: a local reusable-workflow call that keeps a with: block is an item that cannot pass, unless a base-branch row names it: file, form
-    "a local reusable workflow call", key and line both the 64-hex hash of the item's whole identity (its path and the hash of its with: block), so an edited
+    """REQ-SUP-001-AC19: a local reusable-workflow call that keeps a with: block is an item that cannot pass, unless a
+    base-branch row names it: file, form
+    "a local reusable workflow call", key and line both the 64-hex hash of the item's whole identity (its path and the
+    hash of its with: block), so an edited
     with: block is another item. Returns (still moved, [(item, ruling)])."""
     keep, ruled = [], []
     for m in moved:
@@ -2152,12 +1343,15 @@ def split_ruled_local_calls(moved, rulings):
 
 
 def drop_ruled_unpinned(items, ruled_lines):
-    """REQ-SUP-001-AC20: an unpinned package item leaves the list only when the script line that made it (its own path and line id) is a ruled occurrence."""
-    return [m for m in items if not (m.kind == "package" and m.version == "(unpinned)" and m.src and tuple(m.src) in ruled_lines)]
+    """REQ-SUP-001-AC20: an unpinned package item leaves the list only when the script line that made it (its own path
+    and line id) is a ruled occurrence."""
+    return [m for m in items
+        if not (m.kind == "package" and m.version == "(unpinned)" and m.src and tuple(m.src) in ruled_lines)]
 
 
 def ruled_unpinned_lines(root, base, head, exceptions_path):
-    """The (script path, line id) pairs of the unpinned-package occurrences the head ADDS that a base-branch row rules, within the row's count. Shared by this check and
+    """The (script path, line id) pairs of the unpinned-package occurrences the head ADDS that a base-branch row rules,
+    within the row's count. Shared by this check and
     pin-audit.py, so the one required job judges a ruled line once."""
     rulings = load_ruled_text(exceptions_path, required=False)
     in_base = _occurrences(root, base)
@@ -2166,33 +1360,47 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
         if k[1] != UNPINNED_FORM:
             continue
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
-        rs = [r if r is None or _context_proved(root, head, k[0], lh, r) else None for r, lh in zip(rs, per)]
-        # a line the base already holds is never ruled here: an item of that line may have moved because an assignment it reads changed, and a copy of
+        rs = [r if r is None or _body_proved(root, head, k[0], lh, r) else None for r, lh in zip(rs, per)]
+        # a line the base already holds is never ruled here: an item of that line may have moved because an assignment
+        # it reads changed, and a copy of
         # the line cannot be told from it (the occurrence is still reported; the item keeps failing)
         if all(r and n <= r[1] and not in_base.get(k, {}).get(lh) for r, (lh, n) in zip(rs, per.items())):
             out.update((k[0], lh) for lh in per)
     return out
 
 
-GO_EXEMPT_REASON = "exempt from the 7-day hold: Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies"
+GO_EXEMPT_REASON = (
+    "exempt from the 7-day hold: Go's own release, "
+    "downloaded from go.dev and verified against its pinned sha256 "
+    "(owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies")
 _GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
 _GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
-_GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
+_GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die '
+    r'"download failed: go toolchain"[ \t]*$')
 _GO_VERIFY = ["verify() { # file", "  local got", "  got=$(sha256sum \"$1\" | cut -d' ' -f1)",
-              '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"', "}"]
-_GO_EXTRACT = re.compile(r'^[ \t]*mkdir -p "\$tmp/x" && tar -xzf "\$tmp/go\.tgz" -C "\$tmp/x" \|\| pipeline_fail "extract failed for go"[ \t]*$')
+              '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - '
+                  'refusing to run an unverified scanner"', "}"]
+_GO_EXTRACT = re.compile(r'^[ \t]*mkdir -p "\$tmp/x" && tar -xzf "\$tmp/go\.tgz" -C "\$tmp/x" \|\| pipeline_fail '
+    r'"extract failed for go"[ \t]*$')
 _GO_MSG = r'"(?:[^"$`\\]|\$\{[A-Za-z_]+\})*"'
 _GO_WANT = re.compile(r'^[ \t]*\[ "\$want" = "\$GO_VER" \] \|\| pipeline_fail ' + _GO_MSG + r'[ \t]*$')
-_GO_SHOW = re.compile(r'^[ \t]*"\$\{DEST\}/fscache-go/bin/go" version \| grep -q "go\$\{GO_VER\} " \|\| pipeline_fail ' + _GO_MSG + r'[ \t]*$')
-_GO_FAIL = ['pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }']
+_GO_SHOW = re.compile(
+    r'^[ \t]*"\$\{DEST\}/fscache-go/bin/go" version \| grep -q "go\$\{GO_VER\} " \|\| pipeline_fail '
+    + _GO_MSG + r'[ \t]*$')
+_GO_FAIL = ['pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; '
+    'exit 1; }']
 _SUM_ROW = re.compile(r"^[ \t]*[A-Za-z0-9_.:|-]+\) SUM=[0-9a-f]{64} ;;[ \t]*$")
-_SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')   # a module pinned by go.sum: its own key, empty sum
-_GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$") for a in (r"x86_64\|go:amd64", r"aarch64\|go:arm64")}
+# a module pinned by go.sum: its own key, empty sum
+_SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')
+_GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$")
+    for a in (r"x86_64\|go:amd64", r"aarch64\|go:arm64")}
 
 
 def go_exemption(root, head):
-    """The pinned Go version when the head's bin/install-scanner.sh fetches Go ONLY from https://go.dev/dl/ at its pinned GO_VER, pins the sha256 of both
-    architectures (64 hex each) and verifies the file right after the download; otherwise None (the 7-day hold applies). Any other line that downloads
+    """The pinned Go version when the head's bin/install-scanner.sh fetches Go ONLY from https://go.dev/dl/ at its
+    pinned GO_VER, pins the sha256 of both
+    architectures (64 hex each) and verifies the file right after the download; otherwise None (the 7-day hold applies).
+    Any other line that downloads
     something Go-shaped (curl or wget naming go.tgz, GO_VER, go.dev or golang) voids it."""
     try:
         text = inv.tree_files(root, head).get("bin/install-scanner.sh")
@@ -2201,11 +1409,13 @@ def go_exemption(root, head):
     if not text:
         return None
     lines = text.split("\n")
-    joined = re.sub(r"\\[ \t]*\n", " ", text).split("\n")   # a shell continuation is one command: a download written over two lines is still one
+    # a shell continuation is one command: a download written over two lines is still one
+    joined = re.sub(r"\\[ \t]*\n", " ", text).split("\n")
     vers = [m.group(1) for m in (_GO_VER_LINE.match(l) for l in lines) if m]
     if len(vers) != 1 or sum(1 for l in lines if re.match(r"^[ \t]*(?:export[ \t]+)?GO_VER=", l)) != 1:
         return None
-    fetch = [i for i, l in enumerate(joined) if re.search(r"\b(curl|wget)\b", l) and re.search(r"go\.tgz|GO_VER|gofile|go\.dev|golang|go\$\{|go[0-9]+\.[0-9]", l)]
+    fetch = [i for i, l in enumerate(joined) if re.search(r"\b(curl|wget)\b", l)
+        and re.search(r"go\.tgz|GO_VER|gofile|go\.dev|golang|go\$\{|go[0-9]+\.[0-9]", l)]
     if len(fetch) != 1 or not _GO_CURL.match(joined[fetch[0]]):
         return None
     names = [l for l in joined if re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+)?gofile=", l)]
@@ -2214,27 +1424,33 @@ def go_exemption(root, head):
     nxt = next((l.strip() for l in joined[fetch[0] + 1:] if l.strip()), "")
     if nxt != 'verify "$tmp/go.tgz"':
         return None
-    if any(sum(1 for l in lines if rx.match(l)) != 1 for rx in _GO_SUM.values()) or sum(1 for l in lines if re.search(r"\bgo:", l) and re.search(r"\bSUM", l)) != 2:
+    if any(sum(1 for l in lines if rx.match(l)) != 1 for rx in _GO_SUM.values()) or sum(1 for l in lines
+            if re.search(r"\bgo:", l) and re.search(r"\bSUM", l)) != 2:
         return None
-    # the verifier and the failure helper are the reviewed ones, each defined once in ANY spelling (verify() / verify () / function verify)
+    # the verifier and the failure helper are the reviewed ones, each defined once in ANY spelling (verify() / verify ()
+    # / function verify)
     for name, want in (("verify", _GO_VERIFY), ("pipeline_fail", _GO_FAIL)):
         if len(re.findall(r"\bfunction[ \t]+" + name + r"\b|\b" + name + r"[ \t]*\([ \t]*\)", text)) != 1:
             return None
         starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
         if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
             return None
-    # the installer defines only the reviewed helpers (a redefined sha256sum, cut or echo would change what verify() computes) and aliases nothing
+    # the installer defines only the reviewed helpers (a redefined sha256sum, cut or echo would change what verify()
+    # computes) and aliases nothing
     defs = set()
     for l in joined:
         if not l.lstrip().startswith("#"):
             q = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l)
-            defs.update(re.findall(r"([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\)", q) + re.findall(r"\bfunction[ \t]+([\w.-]+)", q))
+            defs.update(re.findall(r"([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\)", q) + re.findall(r"\bfunction[ \t]+([\w.-]+)",
+                q))
             if re.search(r"(?:^|[;&|{(]|\bthen|\bdo|\belse)[ \t]*(?:alias|enable|builtin|unalias)\b", q):
                 return None
     if defs - {"verify", "pipeline_fail", "die"}:
         return None
-    # the download and its verify call sit at the top level of the go arm of the one tool dispatch: counted from the START of the file, the only open construct at the
-    # download is that dispatch `case` (a wrapper around it, a group or loop or condition around the arm, an inline `; (` all raise the depth: refused)
+    # the download and its verify call sit at the top level of the go arm of the one tool dispatch: counted from the
+    # START of the file, the only open construct at the
+    # download is that dispatch `case` (a wrapper around it, a group or loop or condition around the arm, an inline `;
+    # (` all raise the depth: refused)
     arm = [i for i, l in enumerate(joined[:fetch[0]]) if re.match(r"^[ \t]*go\)[ \t]*$", l)]
     if len(arm) != 1:
         return None
@@ -2243,21 +1459,27 @@ def go_exemption(root, head):
         t = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l.strip())
         if t.startswith("#"):
             continue
-        depth += (len(re.findall(r"(?:^|[;&|)][ \t]*|\bthen[ \t]+|\bdo[ \t]+|\belse[ \t]+)(?:if|while|until|for|select|case)\b", t)) + (1 if t[:1] in "({" else 0)
+        depth += (len(re.findall(r"(?:^|[;&|)][ \t]*|\bthen[ \t]+|\bdo[ \t]+|\belse[ "
+            r"\t]+)(?:if|while|until|for|select|case)\b", t)) + (1 if t[:1] in "({" else 0)
                  + len(re.findall(r"[;&|][ \t]*[({]", t)) + (1 if re.search(r"\)[ \t]*\{[ \t]*(?:#.*)?$", t) else 0))
         depth -= len(re.findall(r"(?:^|[;&|)][ \t]*)(?:fi|done|esac)\b", t)) + (1 if t[:1] in ")}" else 0)
     if depth != 1:
         return None
-    # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the installed-version grep, each ending in a
-    # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
-    # non-comment line voids the exemption: a write in any form, a second transfer by any command, a URL variable, a read in another command
+    # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the
+    # installed-version grep, each ending in a
+    # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or
+    # a Go archive name (go<N>.<N>) in a
+    # non-comment line voids the exemption: a write in any form, a second transfer by any command, a URL variable, a
+    # read in another command
     for i, l in enumerate(joined):
-        if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l) \
+        if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) \
+            or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l) \
                 or _GO_WANT.match(l) or _GO_SHOW.match(l):
             continue
         if re.search(r"GO_VER|gofile|go\.tgz|go\.dev|\bgo[0-9]+\.[0-9]", l):
             return None
-    # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any other mention of SUM must only read it
+    # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any
+    # other mention of SUM must only read it
     for l in joined:
         rest = re.sub(r"\$\{SUM\}|\$SUM\b", "", l)
         if re.search(r"\bSUM\b", rest) and not (_SUM_ROW.match(l) or _SUM_MODULE.match(l)):
@@ -2266,48 +1488,63 @@ def go_exemption(root, head):
 
 
 def split_go_exempt(moved, root, head):
-    """(the moved items without the exempt Go release, the exempt ones): only `tool:go` at the installer's own pinned version."""
+    """(the moved items without the exempt Go release, the exempt ones): only `tool:go` at the installer's own pinned
+    version."""
     ver = go_exemption(root, head) if any(it.kind == "tool" and it.name == "go" for it in moved) else None
     keep = [it for it in moved if not (ver and it.kind == "tool" and it.name == "go" and it.version == ver)]
     return keep, [it for it in moved if it not in keep]
 
 
 def _run(a, moved, fx, now):
-    rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
+    # before the scan: a malformed list stops the check
+    rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))
     lines = _unmeasured_counts(a.root, a.base, a.head)
-    for k, per in _context_regressions(a.root, a.base, a.head, rulings).items():
+    for k, per in _body_regressions(a.root, a.head, rulings).items():
         lines.setdefault(k, {}).update(per)
     added, ruled = [], []
     for k in sorted(lines):
-        # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
+        # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's
+        # count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
-        rs = [r if r is None or _context_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]    # a row with a context that does not hold rules nothing
-        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING, HASH_LOCKED_RULING)) for r in rs):
-            rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
-        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
-            rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
-        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING) and not (k[0].endswith(".sh") and not k[0].startswith(".github/") and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
-            rs = [None]                                  # a Go-toolchain ruling on a line that is not exactly the one go.dev/dl/ shape rules nothing (AC23)
-        if any(r and r[0].startswith(LOOPBACK_RULING) and not (k[0] == LOOPBACK_FILE and lh == LOOPBACK_LINE_SHA256 and _loopback_line_ok(a.root, a.head)) for r, lh in zip(rs, lines[k])):
-            rs = [None]                                  # the loopback ruling on any line but the helper's one pinned line rules nothing (AC25)
-        if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r, lh in zip(rs, lines[k])):
-            rs = [None]                                  # the pinned-fetch ruling on any line but one of the nineteen pinned lines of its own file rules nothing (AC26)
-        if any(r and r[0].startswith(HASH_LOCKED_RULING) and not _hash_locked_line_ok(a.root, a.head, k[0], _LINE_TEXT.get(lh, ""), r[4]) for r, lh in zip(rs, lines[k])):  # HL:gate
-            rs = [None]                                  # the hash-locked ruling on any line but the kernel fetch line, with its lock at the head, rules nothing (AC35)
+        # a row whose body hash does not hold rules nothing
+        rs = [r if r is None or _body_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]
+        if k[1] == DOWNLOAD_FORM and any(r
+                and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, PINNED_FETCH_RULING))
+                    for r in rs):
+            # a download row rules a line only with one of the four rulings named above (text, live, Go, pinned)
+            rs = [None]
+        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING)
+                and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
+            # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
+            rs = [None]
+        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING)
+                and not (k[0].endswith(".sh") and not k[0].startswith(".github/")
+                    and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
+            # a Go-toolchain ruling on a line that is not exactly the one go.dev/dl/ shape rules nothing (AC23)
+            rs = [None]
+        if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r,
+                lh in zip(rs, lines[k])):
+            # the pinned-fetch ruling on any line but one of the pinned lines of its own file rules nothing (AC26)
+            rs = [None]
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
             added.append(k)
-    moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20
-    moved, base_files = split_base_inputs(moved, load_base_inputs(a.base_inputs or DEFAULT_BASE_INPUTS, required=bool(a.base_inputs)))   # REQ-SUP-001-AC21
-    moved, ruled_calls = split_ruled_local_calls(moved, rulings)                                                       # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
+    # REQ-SUP-001-AC20
+    moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))
+    # REQ-SUP-001-AC21
+    moved, base_files = split_base_inputs(
+        moved, load_base_inputs(a.base_inputs or DEFAULT_BASE_INPUTS, required=bool(a.base_inputs)))
+    # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
+    moved, ruled_calls = split_ruled_local_calls(moved, rulings)
     moved, go_free = split_go_exempt(moved, a.root, a.head)
     if not moved and not added and not go_free:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
-        rows = check(moved, FilePinSource(Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), load_file_pins(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))), now, a.min_days)
+        rows = check(moved, FilePinSource(Fixture(fx) if fx is not None else Live(a.root, a.base, a.head),
+            load_file_pins(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {_one_line(r['item'])}: {_one_line(r['reason'])}")
@@ -2316,23 +1553,28 @@ def _run(a, moved, fx, now):
             print(f"  ok   {it.key}: {GO_EXEMPT_REASON}")
     for path, what, line in added:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
-                     "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
+                     "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a "
+                                f"pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{_one_line(path)}: {what} added: not measurable, refused")
     for it in base_files:
-        rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
+        rows.append({"item": it.key, "label": "", "ok": True, "proof": None,
+            "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
         print(f"  ok   {it.key}: base input (REQ-SUP-001-AC21)")
     for it, ruling in ruled_calls:
-        rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
+        rows.append({"item": it.key, "label": "", "ok": True, "proof": None,
+            "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
         print(f"  ok   {_one_line(it.key)}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
-                     "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
+                     "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's "
+                                f"unmeasured_text: {ruling[:200]}"})
         print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
         json.dump({"min_days": a.min_days, "moved": rows}, open(a.json, "w"), indent=1)
     if failing:
-        print(f"pin-age: FAIL: {len(failing)} of {len(rows)} moved version(s) too young or unprovable; the check turns green when each is {a.min_days:g} days old")
+        print(f"pin-age: FAIL: {len(failing)} of {len(rows)} moved version(s) too young or unprovable; "
+              f"the check turns green when each is {a.min_days:g} days old")
         return 1
     return 0
 

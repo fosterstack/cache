@@ -875,15 +875,22 @@ mappings:
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
   - ac: REQ-SUP-001-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-strict-lookups-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
   - ac: REQ-SUP-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC5
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-gh-404-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-strict-lookups-test.sh" }
   - ac: REQ-SUP-001-AC6
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
@@ -909,9 +916,11 @@ mappings:
   - ac: REQ-SUP-001-AC15
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
   - ac: REQ-SUP-001-AC16
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
   - ac: REQ-SUP-001-AC18
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
@@ -967,7 +976,7 @@ mappings:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC35
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: inspection, ref: ".github/agent/supply-chain/pin-age-check.py: a download row rules a line only under TEXT_RULING, LIVE_RULING, GO_RULING or PINNED_FETCH_RULING, and nothing in the file reads build/locks/vm-kernel.lock for a download ruling; no suite names AC35 now (the hash-locked fetch cases left with the ruling), and the case 'a download row with another ruling text rules nothing: exit 1' of .github/agent/tests/pin-age-check-test.sh shows the general rule only, so its proves line does not list AC35 (re-verified 2026-11-13)" }
   - ac: REQ-SUP-001-AC36
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
