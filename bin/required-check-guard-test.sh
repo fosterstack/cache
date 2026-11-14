@@ -75,11 +75,11 @@ check2 "release-only file without the array = exit 2"   2 "release-only"        
 
 # REQ-REL-013-AC2: the pin is main's copy of the guard, so a head that edits the file, the judge's constants and the
 # guard together is still red; the wiring runs the script fetched from main, not the tree's bin/ copy
-mkdir -p "$w/main" "$w/head/.github/policy" "$w/head/.github/agent/tests" "$w/head/bin"
+mkdir -p "$w/main" "$w/head/.github/policy" "$w/head/bin"
 cp "$sut" "$w/main/required-check-guard.sh"
 cp "$list" "$w/head/.github/policy/required-checks.json"
 sed 's/5054756/15368/' "$ro" > "$w/head/.github/policy/release-only-checks.json"
-sed 's/5054756/15368/' "$repo/.github/agent/tests/pin-wiring-test.sh" > "$w/head/.github/agent/tests/pin-wiring-test.sh"
+printf 'JUDGE_PIN=5054756\n' | sed 's/5054756/15368/' > "$w/head/judge-constants.sh"
 { cat "$sut"; echo '# the head moves its own pin'; } | sed 's/5054756/15368/' > "$w/head/bin/required-check-guard.sh"
 out="$(cd "$w/head" && GUARD_RULES_JSON="$w/match.json" bash "$w/main/required-check-guard.sh" \
   .github/policy/required-checks.json .github/policy/release-only-checks.json 2>&1)"; rc=$?
