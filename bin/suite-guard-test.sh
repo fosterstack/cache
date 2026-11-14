@@ -170,6 +170,25 @@ printf 'not json\n' > test-evidence/suite-floors.json; git add -A; git commit -q
 brk=$(git rev-parse HEAD); printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 1 "vs-base: a floors file at the base that is not valid JSON fails" "base" -- floors-vs-base "$brk" test-evidence/suite-floors.json
 expect 0 "vs-base: a readable base without the floors file still passes" "no floors file" -- floors-vs-base "$(git rev-list --max-parents=0 HEAD)" test-evidence/suite-floors.json
+# a suite the PR drops: the body's `Dropped suites: A,B` line names it and its file is deleted in the same diff
+printf '{"suite-a": 50, "suite-b": 10, "suite-c": 5}\n' > test-evidence/suite-floors.json; echo x > bin/suite-b; echo x > bin/suite-c; git add -A; git commit -qm suites
+dbase=$(git rev-parse HEAD); git rm -q bin/suite-b; git commit -qm dropb; D=test-evidence/suite-floors.json
+printf '{"suite-a": 50, "suite-c": 5}\n' > $D
+PR_BODY=$'Dropped suites: suite-b' expect 0 "vs-base: a dropped suite the body names, its file deleted, passes" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+expect 1 "vs-base: a dropped suite the body does not name fails" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'Dropped suites: suite-a' expect 1 "vs-base: naming another suite does not excuse a dropped one" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'Dropped suites: suite-b\r\nmore\r\n' expect 0 "vs-base: a carriage return at the end of the Dropped suites line is stripped" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 50, "suite-b": 10, "suite-c": 5}\n' > $D
+PR_BODY=$'Dropped suites: suite-b' expect 1 "vs-base: a named suite whose floor is still in the file is not dropped, it fails" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 50}\n' > $D
+PR_BODY=$'Dropped suites: suite-b, suite-c' expect 1 "vs-base: a dropped suite whose file stays is not excused by the body" "suite-c" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 50, "suite-c": 5}\n' > $D
+PR_BODY=$' Dropped suites: suite-b' expect 1 "vs-base: a Dropped suites line that does not start with the words is ignored (leading space)" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'See: Dropped suites: suite-b' expect 1 "vs-base: the Dropped suites words in the middle of a line are ignored" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+PR_BODY=$'Dropped suites: suite-c\nDropped suites: suite-b' expect 1 "vs-base: only the first Dropped suites line counts" "suite-b" -- floors-vs-base --allow-from-body "$dbase" $D
+printf '{"suite-a": 40, "suite-c": 5}\n' > $D
+PR_BODY=$'Lowered floors: suite-a\nDropped suites: suite-b' expect 0 "vs-base: a Lowered floors line and a Dropped suites line each pass together" "suite-a 50->40" -- floors-vs-base --allow-from-body "$dbase" $D
+git reset -q --hard "$brk"; printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
 cd "$root"
 # the wiring: ci.yml reads the body through the step's env only, never as an expression inside run: (the body is public
 # text a contributor writes: an injection route)
@@ -273,7 +292,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=113
+EXPECT=123
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
