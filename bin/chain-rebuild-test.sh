@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-005-AC3, REQ-CHAIN-005-AC7 — the comparison. REQ-CHAIN-005-AC1, AC2, AC4, AC5 and AC6 are proven by bin/chain-build-wiring-test.sh
 # (the Rebuild stage-file allowlist, the script order, the job graph), which shares its judges with this lane's Build tests.
-# Written before bin/chain-verify.py had the rebuild-compare subcommand (tests before implementation, step 4 of the nine-step process).
 #
-# Rebuild's comparison (v0.3.0 rules 31, 54, 59, 64, 70; advisor read-back 0338). Runs on ubuntu-24.04 or macOS with: bash, python3, jq.
+# Rebuild's comparison (v0.3.0 rules 31, 54, 59, 64, 70). Runs on ubuntu-24.04 or macOS with: bash, python3, jq.
 # No network, no keys: the comparison is plain digests. Build's record is NOT re-verified here: chain-verify.py stage-start did that
 # immediately before in the same job (the script order is pinned in bin/chain-build-wiring-test.sh), and rebuild-compare only reads
 # the product hash Witness recorded for items.json from the record's payload.
 #
-# THE CLI THIS TEST ASSUMES (the implementer matches it; anything else is a change to this header first):
+# THE CLI THIS TEST PINS:
 #   chain-verify.py rebuild-compare [--snapshot] --build-record REC.json --expected ITEMS.json --actual ITEMS2.json --out VERDICT.json
 #     REC.json   Build's Witness collection as a DSSE envelope; its Statement holds the product subject
 #                https://witness.dev/attestations/product/v0.1/file:items.json with digest {sha256,...}
@@ -27,12 +26,12 @@
 #     {"equal":bool,"items":[{"name","expected","actual","status":"same|differs|missing-expected|missing-actual|unexpected"}]}
 #     (sorted by name) and holds both digests of each differing item. Comparison is of the strings only: no size, time or order.
 #     exit 2 (usage / unreadable file) is NOT a refusal and never a pass.
-# WHERE THE FILES ARE (fix round 1, Opus B4 / Sonnet B1): the Build stage runs its command from the repo root (no witness -d), writes items.json at the
+# WHERE THE FILES ARE: the Build stage runs its command from the repo root (no witness -d), writes items.json at the
 # repo root, and Witness names a product subject relative to the working directory, so the real subject is file:items.json (and file:digests.json for
-# PR 1's sign --check): exactly what this contract names. Rebuild's verdict is written to witness-rebuild/verdict.json, a product of Rebuild's record
+# sign --check): exactly what this contract names. Rebuild's verdict is written to witness-rebuild/verdict.json,
+# a product of Rebuild's record
 # (subject file:witness-rebuild/verdict.json) uploaded in the witness-rebuild artifact: that is how the verdict travels (it is the stage's only output).
-# THE ITEMS (32, the list REQUIRED below; 0710 adds apk-baselayout-<arch> and inputs-manifest-baselayout), from
-# cache-3f's interface note and its UPDATE. What cache's tests fix:
+# THE ITEMS (32, the list REQUIRED below). What cache's tests fix:
 #   - the apk item is `apk-tool.py digest APK` by name, in its output form sha256:<hex> [F L748]. Which sections it covers is cache's to change
 #     (control and data, signature excluded), so this test does not name them; bin/chain-bind-test.sh proves, against the real items-apk, that the item
 #     differs from the whole-file sha256 and ignores the signature;
@@ -40,10 +39,10 @@
 #   - the image is the OCI INDEX digest as the registry shows it, which assemble-image.sh writes as OUT/<variant>.digest, plus one item per platform
 #     manifest from OUT/<variant>.manifests (`<arch> sha256:<hex>`, arch amd64|arm64; bin/oci-digest.py TAR verifies every blob hashes to its name):
 #     image-<variant> and image-<variant>-manifest-<arch>.
-#   Added in fix round 2 (PROPOSED, advisor to confirm): the four Linux archives archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64 and
+#   The four Linux archives archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64 and
 #   archive-fips-linux-arm64, each the sha256 of the archive file, because rule 54 compares every digest Release will publish and Sign's digests.json
 #   covers them (rules 35 and 51).
-#   PROPOSED/UNVERIFIED (no cache test fixes them): the apkindex, inputs-manifest, SBOM-directory and binary item layouts.
+#   Not fixed by any cache test: the apkindex, inputs-manifest, SBOM-directory and binary item layouts.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 CV="$root/bin/chain-verify.py"
@@ -96,6 +95,7 @@ dump("act-diff-snap3.json", snap3)
 two = dict(exp)
 for i in (items[0], items[7], items[-1]): two[i] = two[i][:-1] + ("0" if two[i][-1] != "0" else "1")
 dump("act-diff3.json", two)
+dump("act-miss-both.json", {k: v for k, v in exp.items() if k != items[3]})     # the item is gone from both lists
 x = dict(exp); x["unlisted-item"] = val("x"); dump("act-extra.json", x)
 dump("exp-extra.json", x); hx = hashlib.sha256(open(w + "/exp-extra.json", "rb").read()).hexdigest(); record("rec-extra.json", [subj(hx)])
 m = dict(exp); del m[items[3]]; hm = dump("exp-miss.json", m); record("rec-miss.json", [subj(hm)]); record("rec-snap-miss.json", [subj(hm)], "snapshot-build")
@@ -126,13 +126,13 @@ sys.exit(0 if named == want else 1)       # EXACTLY the wanted items: naming an 
 PY
   } && [ -f "$W/verdict.json" ] && jq -e '.equal == false' "$W/verdict.json" > /dev/null 2>&1; then ok "$1"
   else bad "$1 -> exit $RC, first line '$first', verdict=$([ -f "$W/verdict.json" ] && echo present || echo absent)"; fi; }
-[ -f "$CV" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
+[ -f "$CV" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist"
 accept "005-AC3 identical items on both sides are accepted" rec.json exp.json act.json
 if [ -f "$W/verdict.json" ];
 then jq -e '.equal == true and (.items|length == 32) and ([.items[].status]|unique == ["same"]) and (.items == (.items|sort_by(.name)))' \
     "$W/verdict.json" > /dev/null && ok "005-AC3 the accepted verdict lists all 32 items as same, sorted by name" || bad \
     "005-AC3 accepted verdict shape: $(head -c 200 "$W/verdict.json")";
-else bad "005-AC3 no verdict written on success (RED)";
+else bad "005-AC3 no verdict written on success";
 fi
 for i in $REQUIRED; do
   refuse "005-AC3 one differing nibble in $i blocks and names exactly it" differs "$i" rec.json exp.json "act-diff-$i.json"
@@ -144,7 +144,7 @@ for i in $REQUIRED; do
       && ok "005-AC3 the verdict marks only $i as differs, with the expected and actual values of the two files" \
       || bad "005-AC3 verdict for $i: $(head -c 160 "$W/verdict.json")"
   else
-    bad "005-AC3 no verdict for a difference in $i (RED)"
+    bad "005-AC3 no verdict for a difference in $i"
   fi
 done
 three=$(set -- $REQUIRED; echo "${1}|${8}|${!#}")      # the first, the eighth and the last item: what act-diff3.json changes
@@ -154,6 +154,9 @@ for i in apk-fips-aarch64 apk-baselayout-x86_64 inputs-manifest-baselayout image
 done
 refuse "005-AC3 an item missing on the Build side is a difference (and is named with its side)" missing "$(echo $REQUIRED | cut -d' ' -f4)" \
     rec-miss.json exp-miss.json act.json
+refuse "005-AC3 an item dropped from BOTH lists at once is still refused as missing" \
+    missing "$(echo $REQUIRED | cut -d' ' -f4)" \
+    rec-miss.json exp-miss.json act-miss-both.json
 refuse "005-AC3 an item that is not on the committed list, on the Rebuild side, is refused" unexpected unlisted-item rec.json exp.json act-extra.json
 refuse "005-AC3 an item that is not on the committed list, on the Build side, is refused" unexpected unlisted-item rec-extra.json exp-extra.json act-extra.json
 for k in upper sha512 short long num null bare ws;
@@ -174,7 +177,7 @@ rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json"
 # REQ-CHAIN-005-AC7: a snapshot Rebuild compares against Build's SNAPSHOT record, and only with --snapshot
 snap_run() { # snap_run FLAG REC EXPECTED ACTUAL -> RC; FLAG is --snapshot or empty
   rm -f "$W/verdict.json"; RC=$(rc_of rebuild-compare $1 --build-record "$W/$2" --expected "$W/$3" --actual "$W/$4" --out "$W/verdict.json"); }
-# The snapshot verdict (witness-rebuild/snapshot-verdict.json; advisor and cache-3f agreed the shape, Oct 9), written in every case:
+# The snapshot verdict (witness-rebuild/snapshot-verdict.json), written in every case:
 #   {"verdict":"identical"|"differs",
 #    "images":[{"image":"production","build_digest":"sha256:...","rebuild_digest":"sha256:...","equal":true},{"image":"fips",...}],
 #    "items_differing":[item names, sorted]}
@@ -215,7 +218,8 @@ if [ "$RC" = 0 ] && jq -e '.verdict == "identical"' "$W/verdict.json" > /dev/nul
 else
   bad "005-AC7 --snapshot with a record naming 0.0.0 products -> exit $RC: $(head -c 160 "$W/err" | tr '\n' ' ')"
 fi
-# a MISSING or UNEXPECTED item (agreed shape, Oct 9): the item stays in items_differing, the verdict is differs, the exit is 1; a missing image digest is null
+# a MISSING or UNEXPECTED item: the item stays in items_differing, the verdict is differs, the exit is 1;
+# a missing image digest is null
 snap_run --snapshot rec-snap.json exp.json "act-miss-image-fips.json"
 if [ "$RC" = 1 ] && jq -e --arg ef "$(jq -r '."image-fips"' "$W/exp.json")" '.verdict == "differs" and .items_differing == ["image-fips"]
       and .images[1] == {"image": "fips", "build_digest": $ef, "rebuild_digest": null, "equal": false} and .images[0].equal == true' \
@@ -237,6 +241,14 @@ if [ "$RC" = 1 ] && jq -e --arg i "$(echo $REQUIRED | cut -d' ' -f4)" '.verdict 
   ok "005-AC7 an item missing on the Build side: verdict differs, the item is in items_differing, exit 1"
 else
   bad "005-AC7 an item missing on the Build side -> exit $RC: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
+fi
+snap_run --snapshot rec-snap-miss.json exp-miss.json act-miss-both.json
+if [ "$RC" = 1 ] && jq -e --arg i "$(echo $REQUIRED | cut -d' ' -f4)" \
+      '.verdict == "differs" and .items_differing == [$i]' \
+      "$W/verdict.json" > /dev/null 2>&1; then
+  ok "005-AC7 an item dropped from both lists at once: verdict differs, the item is in items_differing, exit 1"
+else
+  bad "005-AC7 an item missing on both sides -> exit $RC: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
 fi
 snap_run --snapshot rec.json exp.json act.json
 if [ "$RC" = 1 ] && grep -q '^refused at rebuild: step: build$' < <(head -1 "$W/err"); then
@@ -265,16 +277,16 @@ import json, sys
 a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
 sys.exit(0 if sorted(a) == sorted(b) and len(a) == len(set(a)) else 1)
 PY
-else bad "005-AC3 .github/policy/rebuild-items.json does not exist (RED: the implementation commits the list)"; fi
+else bad "005-AC3 .github/policy/rebuild-items.json does not exist"; fi
 # nothing published: the only file rebuild-compare writes is the verdict (rule 64: Release publishes Build's bytes)
 rm -rf "$W/clean";
 mkdir "$W/clean";
 (cd "$W/clean" && python3 "$CV" rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --actual "$W/act.json" --out verdict.json > \
     /dev/null 2>&1 || true)
-[ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
+[ -f "$CV" ] && [ "$(ls -A "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
     "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad \
-    "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
-TOTAL=$((pass + failn)); EXPECT=110
+    "005-AC4 files written by rebuild-compare: '$(ls -A "$W/clean" 2> /dev/null | tr '\n' ' ')'"
+TOTAL=$((pass + failn)); EXPECT=112
 echo "pass=$pass fail=$failn"
 if [ "$TOTAL" != "$EXPECT" ]; then echo "FAIL case count $TOTAL != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

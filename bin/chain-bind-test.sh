@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC7 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
-# Written before the bind, items-apk and items-merge subcommands existed (tests before implementation, step 4); they are bin/chain_items.py now.
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC7 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
 #
 # The REAL chain-verify.py subcommands that bin/chain-test-harness.py only fakes. Needs: python3, ubuntu-24.04 or macOS. No network, no keys.
 # Records are DSSE envelopes built here (the shape of bin/chain-rebuild-test.sh): `bind` and `items-*` never check a signature, because the
 # `verify` line that runs right before `bind` in the stage script does that (the script order is pinned in bin/chain-build-wiring-test.sh).
 # Every command runs from the repository root of a throw-away tree with RELATIVE paths, as the stage scripts do.
 #
-# THE CLI THIS TEST ASSUMES (the implementer matches it; anything else is a change to this header first):
+# THE CLI THIS TEST ASSUMES:
 #   chain-verify.py bind --step apk|rapk|snapshot-apk|snapshot-rapk --record REC.json --dir DIR --as PREFIX      (--dir and --as are relative paths)
 #     REC.json   the Witness collection of the apk matrix job (step apk, Build) or of the Rebuild apk job (step rapk). Its Statement holds product
 #                subjects https://witness.dev/attestations/product/v0.1/file:PREFIX/<path relative to DIR> with digests {sha256, gitoid...}.
@@ -59,7 +58,7 @@
 #     Exit 1 with nothing written, first line `refused at build: <cause>: <names>`: digest (two fragments naming one item with different values),
 #     arch (the fragments are not exactly one for x86_64 and one for aarch64: a missing or a doubled architecture is named), missing (an input file
 #     is missing), unexpected (a fragment names an item the committed list does not have).
-# PROPOSED/UNVERIFIED: the items layout (bin/chain-test-harness.py documents the oracle) and the file names of the archives.
+# The items layout and the archive file names are the oracle's: bin/chain-test-harness.py documents them.
 exec python3 - "$(cd "$(dirname "$0")/.." && pwd)" <<'PY'
 import atexit, base64, hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
@@ -87,8 +86,6 @@ def check(label, ok, detail=""):
 
 
 def run(args, cwd):
-    if not os.path.exists(CV):
-        return 127, "", "bin/chain-verify.py does not exist (RED)"
     try:
         p = subprocess.run([sys.executable, CV] + args, capture_output=True, text=True, cwd=cwd, timeout=60)
     except subprocess.TimeoutExpired:
@@ -138,7 +135,7 @@ def bind(label, d, want_rc, cause=None, names=None, step="apk", flags=(), **over
     check(label, ok, "exit %s, first line %r" % (rc, first[:160]))
 
 
-check("bin/chain-verify.py exists", os.path.exists(CV), "(RED: not implemented yet; every case below needs it)")
+check("bin/chain-verify.py exists", os.path.exists(CV), "(every case below needs it)")
 # ---- bind ----------------------------------------------------------------------------------------------------------------------------
 APK, INDEX, FRAG = "out/x86_64/fscache-0.3.0-r0.apk", "out/x86_64/APKINDEX.tar.gz", "out/items-apk.json"
 d = tree("ok")
@@ -314,10 +311,10 @@ check("items-apk: a release candidate's apk (fscache-0.3.0_rc1-r0.apk, PROPOSED)
 rc, frag4b, err = fragment_of(apk_tree("apk4b", tag="v0.0.0-rc.1"))
 check("items-apk: a SNAPSHOT build's apks (fscache-0.0.0_rc1-r0.apk and the fips one) are found and itemized (the 0.0.0 refusal is the verifiers')",
       rc == 0 and frag4b == h.fragment("x86_64", "v0.0.0-rc.1"), "exit %s %s" % (rc, err[:120]))
-rc, frag5, err = fragment_of(apk_tree("apk5", edit=add_second_apk))
+rc, _, err = fragment_of(apk_tree("apk5", edit=add_second_apk))
 check("items-apk: two standard apks in one directory are refused (exactly one per variant)",
       rc == 1 and err.startswith("refused at build"), "exit %s %s" % (rc, err[:100]))
-rc, frag6, err = fragment_of(apk_tree("apk6", edit=add_dotfile))
+rc, _, err = fragment_of(apk_tree("apk6", edit=add_dotfile))
 check("items-apk: a dot directory under out/ is refused (upload-artifact would drop it)",
       rc == 1 and err.startswith("refused at build: hidden: "), "exit %s %s" % (rc, err[:100]))
 
@@ -334,13 +331,13 @@ def drop_baselayout_inputs(d):
     os.remove(d + "/out/inputs-manifest-baselayout.json")
 
 
-rc, frag7, err = fragment_of(apk_tree("apk7", edit=drop_baselayout_apk))
+rc, _, err = fragment_of(apk_tree("apk7", edit=drop_baselayout_apk))
 check("items-apk: no base-layout apk in the directory is refused, naming it (0710)",
       rc == 1 and err.startswith("refused at build: apk: ") and "baselayout" in err.split("\n", 1)[0], "exit %s %s" % (rc, err[:100]))
-rc, frag8, err = fragment_of(apk_tree("apk8", edit=add_second_baselayout_apk))
+rc, _, err = fragment_of(apk_tree("apk8", edit=add_second_baselayout_apk))
 check("items-apk: two base-layout apks in one directory are refused (exactly one)",
       rc == 1 and err.startswith("refused at build: apk: ") and "baselayout" in err.split("\n", 1)[0], "exit %s %s" % (rc, err[:100]))
-rc, frag9, err = fragment_of(apk_tree("apk9", edit=drop_baselayout_inputs))
+rc, _, err = fragment_of(apk_tree("apk9", edit=drop_baselayout_inputs))
 check("items-apk: no inputs-manifest-baselayout.json beside the apks is refused, naming it",
       rc == 1 and err.startswith("refused at build: missing: ") and "inputs-manifest-baselayout.json" in err, "exit %s %s" % (rc, err[:100]))
 check("items-apk: the fragment holds the base-layout apk by apk-tool digest (and no binary item for it)",
@@ -397,7 +394,8 @@ check("items-merge: digests.json names no base-layout apk (assembled into the im
       rc == 0 and got_digests is not None and not [k for k in got_digests if "baselayout" in k] and "apk-baselayout-x86_64" in (got_items or {}), "exit %s" % rc)
 
 
-# B1 (Codex B r2): Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text with printf '%s'. The file the
+# Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text
+# with printf '%s'. The file the
 # Witness product hashes must therefore BE those bytes (compact, no trailing newline), or Sign's byte binding refuses every release. The test hashes what Sign
 # actually receives and runs the REAL verifier comparison on it.
 original = open(d + "/digests.json", "rb").read() if os.path.exists(d + "/digests.json") else b""
@@ -449,8 +447,7 @@ d = merge_tree("m4d")
 edit_manifests(d, "production", lambda L: [L[0] + " extra"] + L[1:])
 refused("items-merge: a malformed line in <image>.manifests is refused, never a traceback", d, do_merge(d), "manifests", "production.manifests")
 # Build's images artifact ships each variant as an OCI LAYOUT directory out/<variant>/ (oci-layout, index.json, blobs/), so the digest does not change between
-# Build and a push (real crane runs: a docker-format tarball push changes the digest, a layout directory keeps it). PROPOSED/UNVERIFIED: cache P5 decides the
-# shape of assemble-image.sh's output; the judge pins this one.
+# Build and a push (a docker-format tarball push changes the digest, a layout directory keeps it).
 def layout_refused(label, edit, fragment):
     dd = merge_tree("lay-" + label.split()[0])
     edit(dd)
@@ -507,8 +504,9 @@ def bad_blob(dd):
 layout_refused("a layout whose blob does not hash to its name is refused", bad_blob, "production")
 def bad_version(dd):
     open(dd + "/out/production/oci-layout", "w").write('{"imageLayoutVersion": "2.0.0"}')
-layout_refused("an oci-layout file of another version is refused", bad_blob if False else bad_version, "production")
-# Codex A r3 F3: the sidecar digests are bound to the platform descriptors of the parsed index blob, and the child blobs exist and hash to their names
+layout_refused("an oci-layout file of another version is refused", bad_version, "production")
+# The sidecar digests are bound to the platform descriptors of the parsed index blob, and the child blobs
+# exist and hash to their names
 d = merge_tree("idx-ok")
 rc, out, err = do_merge(d)
 ix = json.loads(open("%s/out/production/blobs/sha256/%s" % (d, h.image_outputs("production", "v0.3.0")["digest"].split(":")[1])).read())
@@ -538,7 +536,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1", vex=False),
       "exit %s %s" % (rc, err[:100]))
 
-# ---- admission-baseline (REQ-CHAIN-007-AC19, advisor ruling B, Oct 12): the baseline admission chose, as a file of Build's own record ----------------------
+# ---- admission-baseline (REQ-CHAIN-007-AC19): the baseline admission chose, as a file of Build's own record
 # chain-verify.py admission-baseline --admission A.json --admission B.json --tag T --sha S --out F   (run by the assemble job right after both legs are bound)
 #   A and B are the admission.json of the two apk legs, already verified by `bind` (each is a product of its leg's record). Exit 0 writes F, canonical
 #   (sorted keys, indent 1): exactly {baseline, baseline_version, sha, tag}, taken from the legs, which must agree on those four fields (their evidence
@@ -588,7 +586,8 @@ for label, ver, path in (("a version that is not vX.Y.Z", "0.3.0", "requirements
                          ("a release candidate version", "v0.3.0-rc1", "requirements/releases/v0.3.0-rc1.yaml"), ("a path that is not the version's file", "v0.3.0", "requirements/releases/v0.2.0.yaml"),
                          ("an absolute path", "v0.3.0", "/etc/passwd")):
     adm("admission-baseline: %s is refused (baseline)" % label, adm_tree("adm14", dict(ADM, baseline_version=ver, baseline=path), dict(ADM, baseline_version=ver, baseline=path)), 1, "baseline")
-# Codex 4b-2 r1 (A B1): a release candidate tag is admitted with its OWN baseline (version = tag, rc spelling) and the transfer must accept exactly that
+# A release candidate tag is admitted with its OWN baseline (version = tag, rc spelling) and the transfer must
+# accept exactly that
 RCA = dict(ADM, tag="v0.3.0-rc1", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml")
 adm("admission-baseline: a release candidate tag's own baseline (version = the rc tag) is accepted", adm_tree("adm20", RCA, dict(RCA, run={"id": 2, "attempt": 1})), 0, tag="v0.3.0-rc1")
 adm("admission-baseline: a release candidate tag with a baseline that is not its own (v0.3.0) is refused (baseline)", adm_tree("adm21", dict(RCA, baseline_version="v0.3.0", baseline="requirements/releases/v0.3.0.yaml"), dict(RCA, baseline_version="v0.3.0", baseline="requirements/releases/v0.3.0.yaml")), 1, "baseline", tag="v0.3.0-rc1")
@@ -635,15 +634,12 @@ open(d + "/apk-collection.local.json", "w").write("not json at all")
 rc, out, err = run(["bind", "--local", "--step", "apk", "--record", "apk-collection.local.json", "--dir", "dir", "--as", "out"], d)
 check("bind --local: a *.local.json that is not JSON is a usage error, never a pass", rc == 2 and "Traceback" not in err, "exit %s" % rc)
 # ---- sign-records (the Witness move: Sign checks the building jobs' local records, then re-signs the payloads keyless) ------------------------------------------
-import re as _re
 TAGSHA = "f" * 40
 ATT = ["environment", "git", "material", "command-run", "product"]      # the five kinds pinned Witness 0.12.0 `run` writes, in its order
 GOODENV = {"GITHUB_REF": "refs/tags/v0.3.0", "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": TAGSHA}
 
 
 def run_env(args, cwd, env):
-    if not os.path.exists(CV):
-        return 127, "", "bin/chain-verify.py does not exist (RED)"
     e = {"PATH": os.environ["PATH"], "HOME": work}
     e.update(env)
     p = subprocess.run([sys.executable, CV] + args, capture_output=True, text=True, cwd=cwd, timeout=120, env=e)
@@ -653,7 +649,8 @@ def run_env(args, cwd, env):
 SR_REF = "refs/tags/v0.3.0"        # the ref the environment attestor of a made record carries (Sign's own, unless a case sets another)
 
 
-def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT, ptype="application/vnd.in-toto+json", env_vars=None, signed=False, ref=None, stdout="built\n", env_raw=None):
+def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT,
+                ptype="application/vnd.in-toto+json", env_vars=None, ref=None, stdout="built\n", env_raw=None):
     """A Witness collection, the throwaway-key form: {payloadType, payload, signatures:[{keyid,sig}]}; products {relative name: bytes}."""
     ref = ref or SR_REF
     subs = [subject(n, d) for n, d in products.items()] + [subject(n, d, MATERIAL) for n, d in material]
@@ -765,11 +762,11 @@ def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
 
 
 REPO_ROOT = root
-REPO_TEMPLATE = root + "/.github/policy/release-policy.template.json"
 
 
 def make_keys_dir():
-    """A key manifest made here (handoff 0713): an offline root key and a release key from openssl, the manifest signed by the root key. The
+    """A key manifest made here: an offline root key and a release key from openssl, the manifest signed by
+    the root key. The
     committed manifest does not exist yet (the owner makes the root key), and sign-records checks one before it reads a record."""
     d = work + "/keys"
     os.makedirs(d)
@@ -822,7 +819,7 @@ d, _ = sr_tree("sr4"); os.remove(d + "/witness-build/items.json")
 sr("sign-records build: a required name the record holds but Sign did not receive (items.json) is refused", d, "build", 1, ["items.json"])
 d, _ = sr_tree("sr5"); put(d, "witness-build/digests.json", b'{"apk":"sha256:' + b"d" * 64 + b'"}')
 sr("sign-records build: a data file whose bytes differ from the record's product is refused", d, "build", 1, ["digests.json"])
-for _st, _label in (("build", "Build"), ("rebuild", "Rebuild"), ("check", "Check")):
+for _st in ("build", "rebuild", "check"):
     d, _ = sr_tree("sr6-" + _st, _st)
     sr("sign-records %s: a real-shaped record (environment, git, material, command-run, product, as Witness 0.12.0 writes it) is accepted" % _st, d, _st, 0)
 d, _ = sr_tree("sr6a"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), attestors=["environment", "git", "material", "product"])
@@ -917,7 +914,8 @@ d, _ = sr_tree("sr23", "rebuild"); put(d, "digests.json", b'{"apk":"sha256:' + b
 sr("sign-records rebuild: a record whose material digests.json is not Build's attested list (--digests) is refused", d, "rebuild", 1, ["material", "digests"])
 d, _ = sr_tree("sr24", "rebuild"); os.remove(d + "/witness-rebuild/verdict.json")
 sr("sign-records rebuild: Rebuild's record without the verdict.json it names is refused", d, "rebuild", 1, ["verdict.json"])
-# the Rebuild job's list of the records it made (--expect-digests): Sign's second call refuses any record folder that differs from it (row-78 pass, R2)
+# the Rebuild job's list of the records it made (--expect-digests): Sign's second call refuses any record
+# folder that differs from it
 d, _ = sr_tree("sr32", "rebuild"); ex = sr_expect(d)
 rc, out, err = sr("sign-records rebuild: the folders match the Rebuild job's list (made by the real bin/rebuild-records-digests.sh) -> accepted", d, "rebuild", 0, args=sr_args("rebuild", d, expect=ex))
 d, _ = sr_tree("sr33", "rebuild"); ex = sr_expect(d); put(d, "witness-rebuild/verdict.json", b'{"verdict":"swapped after the job listed it"}')
@@ -940,7 +938,8 @@ d, _ = sr_tree("sr41", "rebuild"); open(d + "/bad.json", "w").write("{not json")
 sr("sign-records rebuild: a list that is not JSON is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
 d, _ = sr_tree("sr42", "rebuild"); open(d + "/bad.json", "w").write('{"witness-rebuild":{"verdict.json":"abc"}}')
 sr("sign-records rebuild: a list whose digest is not sha256:<64 hex> is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
-# the apk legs' own lists and the assemble job's --check (row-78 round 6, A1): each rapk job prints its folder's list after its Witness step, and the assemble job refuses any record
+# the apk legs' own lists and the assemble job's --check: each rapk job prints its folder's list after its
+# Witness step, and the assemble job refuses any record
 # folder that changed between that upload and its own start
 RRD = REPO_ROOT + "/bin/rebuild-records-digests.sh"
 def rrd(args, cwd, env=None):
@@ -977,7 +976,6 @@ t, outs = rrd_tree("rrd4"); put(t, "rec-rapk/ubuntu-24.04/extra.json", b"x")
 rrd_case("rebuild-records-digests --check: an extra file in a leg's folder is refused, naming it", 1, ("ubuntu-24.04:", "extra.json"), rrd_check(t, outs))
 t, outs = rrd_tree("rrd5"); os.remove(t + "/rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json")
 rrd_case("rebuild-records-digests --check: a leg's folder with no file is refused", 1, ("no file in",), rrd_check(t, outs))
-t, outs = rrd_tree("rrd6"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
 t, outs = rrd_tree("rrd4b"); put(t, "rec-rapk/ubuntu-24.04/.hidden", b"x")
 rrd_case("rebuild-records-digests --check: a hidden extra file in a leg's folder is refused (it is a file of the folder)", 1, ("ubuntu-24.04:", ".hidden"), rrd_check(t, outs))
 rrd_case("rebuild-records-digests --rapk lists a hidden file too", 0, (), (lambda r: (0 if ".hidden" in r[1] else 1, r[1], r[2]))(rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04"], t)))

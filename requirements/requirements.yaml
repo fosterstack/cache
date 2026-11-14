@@ -2827,7 +2827,7 @@ requirements:
       - id: REQ-SUP-001-AC1
         given: "Dependabot's configuration"
         when: "it is read"
-        then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) wait 7 days (a 7-day cooldown, default-days 7 and nothing else), the product's gomod entry for the root is unchanged, and no docker entry exists (rule 61: there is no Dockerfile)"
+        then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) wait 7 days (a 7-day cooldown, default-days 7 and nothing else), the product's gomod entry for the root is unchanged, and no docker entry exists (the repository has no container build file for it to watch)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC2
@@ -3326,7 +3326,7 @@ requirements:
       - id: REQ-CHAIN-002-AC4
         given: "the Sign and Build signing steps"
         when: "the workflow files are read"
-        then: "nothing a step passes to the signing tool comes from a secret, a token or an environment secret; a signature made with the release key carries no certificate"
+        then: "nothing a step passes to the signing tool comes from a secret, a token or an environment secret, except one binding: the run's own token, read-only, as GH_TOKEN with the value ${{ github.token }}, which job apk's apk step passes through the Witness wrapper to bin/build-admit.py only; a signature made with the release key carries no certificate"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
