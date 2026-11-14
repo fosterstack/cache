@@ -119,7 +119,7 @@ check("R1-04 the Google command appears once, and only as the constant",
 # Sonnet #167 r3 (R3-01): a pasted command never ends the reader's shell. zsh (the macOS default) runs a pipeline's last
 # stage in the current shell, so `| while …; do … || exit 1; done` would close the terminal. Each looping command runs in
 # its own ( … ) subshell: it reports the failure and the reader's shell — and its options (pipefail) — are untouched.
-import shutil, subprocess, tempfile
+import subprocess
 stub = ('aws() { case "$*" in *list-filters*) printf "arn:a\\tarn:b\\n" ;; *delete-filter*|*create-filter*) echo denied >&2; return 1 ;; esac; }\n'
         'jq() { printf "%s\\n" "{}"; }\n')
 for name, cmd in (("Inspector load", next(l for b in blocks for l in b.splitlines() if "create-filter" in l).strip()),
@@ -193,6 +193,7 @@ check("R4 docs/scanning.md says the CSAF file leaves out Go standard library ver
       re.search(r"CSAF file[^.]*(omit|leave out|leaves out|without|not (carry|include|contain))[^.]*Go standard library",
                 scan, re.I) is not None, scan[:200])
 # R8: a customer doc sentence that mentions a CA bundle (the images carry none) fails unless it is listed as reviewed
+# matches "CA bundle", "CA certificate bundle", "ca-certificates"; refuses "a bundle of root certificates"
 CA_BUNDLE = re.compile(r"\bca[-\s]+(certificates?[-\s]+)?bundle|\bca-certificates?\b", re.I)
 REVIEWED_CA = [
     ("README.md",
@@ -239,44 +240,52 @@ check("R8 mutant: a sentence naming a CA bundle appended to the notes is caught"
           for n in ("ca-certificates-bundle", "ca-certificates", "CA bundle", "CA certificate bundle",
                     "CA certificates bundle", "ca-bundle", "CA-Certificates-Bundle")))
 check("R8 new mention fails", ca_bundle_hits("docs/install.md", "The images ship a CA bundle.") != [])
-check("R8 new mention with negation fails", ca_bundle_hits("docs/install.md", "The images ship no CA certificate bundle.") != [])
-check("R8 new mention, hyphenated form, fails", ca_bundle_hits("docs/install.md", "Mount the ca-certificates package.") != [])
-check("R8 new mention in a table row fails", ca_bundle_hits("docs/install.md", "| Item | Note |\n| CA bundle | not shipped. |") != [])
-check("R8 new mention in release notes fails", ca_bundle_hits("docs/release-notes-draft.md", "The image now includes a CA certificate bundle.") != [])
+check("R8 new mention with negation fails",
+      ca_bundle_hits("docs/install.md", "The images ship no CA certificate bundle.") != [])
+check("R8 new mention, hyphenated form, fails",
+      ca_bundle_hits("docs/install.md", "Mount the ca-certificates package.") != [])
+check("R8 new mention in a table row fails",
+      ca_bundle_hits("docs/install.md", "| Item | Note |\n| CA bundle | not shipped. |") != [])
+check("R8 new mention in release notes fails",
+      ca_bundle_hits("docs/release-notes-draft.md", "The image now includes a CA certificate bundle.") != [])
 check("R8 release notes draft has no hits", ca_bundle_hits("docs/release-notes-draft.md", notes) == [])
 check("R8 each reviewed sentence passes in its own file", all(ca_bundle_hits(f, s) == [] for f, s in REVIEWED_CA))
-check("R8 reviewed sentence passes inside a longer paragraph", all(ca_bundle_hits(f, "Intro text. " + s + " More text.") == [] for f, s in REVIEWED_CA if s[-1] in ".!?;"))
+check("R8 reviewed sentence passes inside a longer paragraph",
+      all(ca_bundle_hits(f, "Intro text. " + s + " More text.") == [] for f, s in REVIEWED_CA if s[-1] in ".!?;"))
 def changed(s):
     return s.replace(" no ", " a ", 1) if " no " in s else s.replace("needs", "has", 1)
 check("R8 each reviewed sentence with one word changed fails",
       all(ca_bundle_hits(f, changed(s)) != [] for f, s in REVIEWED_CA))
 check("R8 reviewed sentences with changed word really differ", all(changed(s) != s for f, s in REVIEWED_CA))
-check("R8 reviewed sentence under a different file fails", all(ca_bundle_hits("docs/other.md", s) != [] for f, s in REVIEWED_CA))
-check("R8 sentence without a CA bundle gives no hits", ca_bundle_hits("docs/install.md", "The server listens on port 8080. Nothing else is needed.") == [])
+check("R8 reviewed sentence under a different file fails",
+      all(ca_bundle_hits("docs/other.md", s) != [] for f, s in REVIEWED_CA))
+check("R8 sentence without a CA bundle gives no hits",
+      ca_bundle_hits("docs/install.md", "The server listens on port 8080. Nothing else is needed.") == [])
 # R8 over the customer docs themselves: the real files, and copies of them with one change each
 def scope_files(base):
     names = ["README.md", "SECURITY.md", "CONTRIBUTING.md", "RELEASING.md"]
     for sub in ("docs", ".vex"):
         names += [os.path.relpath(m, base) for m in glob.glob(os.path.join(base, sub, "**/*.md"), recursive=True)]
-    return sorted(n for n in set(names) if os.path.isfile(os.path.join(base, n)))
+    return sorted(n for n in names if os.path.isfile(os.path.join(base, n)))
 def collapsed(base, rel):
     return " ".join(open(os.path.join(base, rel)).read().split())
 def scan_hits(base):
     return [(rel, h) for rel in scope_files(base) for h in ca_bundle_hits(rel, open(os.path.join(base, rel)).read())]
 def reviewed_gone(base):
-    return [(f, s) for f, s in REVIEWED_CA if s not in collapsed(base, f)]
+    return [(f, s) for f, s in REVIEWED_CA
+            if not os.path.isfile(os.path.join(base, f)) or s not in collapsed(base, f)]
 def copy_scope(base, dest):
     for rel in scope_files(base):
         os.makedirs(os.path.dirname(os.path.join(dest, rel)), exist_ok=True)
         shutil.copy(os.path.join(base, rel), os.path.join(dest, rel))
 for rel in scope_files(root):
     text = open(os.path.join(root, rel)).read()
-    check("R8 %s has no unreviewed CA bundle sentence" % rel, ca_bundle_hits(rel, text) == [])
+    hits = ca_bundle_hits(rel, text)
+    check("R8 %s has no unreviewed CA bundle sentence" % rel, hits == [], hits)
 check("R8 every reviewed sentence is still in its file", reviewed_gone(root) == [], reviewed_gone(root))
-scratch = tempfile.mkdtemp(prefix="vex-guide-r8.")
-try:
+with tempfile.TemporaryDirectory(prefix="vex-guide-r8.") as scratch:
     copy_scope(root, scratch)
-    check("R8 the copy of the tree scans clean", scan_hits(scratch) == [])
+    check("R8 the copy of the tree scans clean", scan_hits(scratch) == [], scan_hits(scratch))
     with open(os.path.join(scratch, "docs/install.md"), "a") as fh:
         fh.write("\nThe images ship a CA bundle.\n")
     check("R8 a CA bundle sentence appended to a copy of docs/install.md is a hit",
@@ -287,8 +296,10 @@ try:
     open(os.path.join(scratch, f0), "w").write(" ".join(text0.split()).replace(s0, changed(s0), 1))
     check("R8 a reviewed sentence with one word changed in a copy is reported gone",
           reviewed_gone(scratch) == [(f0, s0)], reviewed_gone(scratch))
-finally:
-    shutil.rmtree(scratch)
+    copy_scope(root, scratch)
+    os.remove(os.path.join(scratch, "README.md"))
+    check("R8 a reviewed file missing from a copy is reported gone by name",
+          reviewed_gone(scratch) == [(f, s) for f, s in REVIEWED_CA if f == "README.md"], reviewed_gone(scratch))
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
