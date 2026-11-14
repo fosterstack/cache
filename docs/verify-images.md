@@ -90,9 +90,9 @@ records (Build's against the artifacts it receives, Rebuild's against Build's
 digest list) and signs them. The records are attached to the release so you can
 verify them too: the Witness records of Build (`build-collection.json`,
 `digests.json`, `items.json`, `admission-baseline.json`), Rebuild (`rebuild-collection.json`,
-`verdict.json`) and Check (`scanners-collection.json`,
-`acceptance-collection.json`, `runtime-collection.json`,
-`arm64-collection.json`). The jobs that build or run workloads hold no signing identity: Build's,
+`verdict.json`) and Check (the `scanners`, `acceptance` and `runtime` collections of
+each of the two runners, attached as `ubuntu-24.04-scanners-collection.json`,
+`ubuntu-24.04-arm-scanners-collection.json` and so on). The jobs that build or run workloads hold no signing identity: Build's,
 Rebuild's and Check's records are signed with the KMS key by the Sign stage (`stage-sign.yml`
 at the release tag). `release-manifest.json`, the OpenVEX, CSAF and
 inspector-filters files are covered by the signed `release-files.sha256`;
