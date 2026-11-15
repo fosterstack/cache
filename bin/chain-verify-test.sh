@@ -447,6 +447,19 @@ add("rebuild_coll_other", COLL, None, stmt="v0.1", coll_file="digests-other.json
 add("rebuild_acr", COLL, None, stmt="v0.1", coll_file="acr-build.json", coll_name="rebuild")
 add("rebuild_acr_forged", COLL, None, stmt="v0.1", coll_file="acr-forged.json", coll_name="rebuild")
 add("rebuild_acr_throwaway", COLL, None, stmt="v0.1", coll_file="acr-build.json", coll_name="rebuild", key="throwaway")
+# signed rapk records, one per witness: collection rapk, a product per apk named by its file, sha256 = apk digest
+def _rapk(n, arch, runner, fix=lambda d: d, key="rel"):
+    P = "https://witness.dev/attestations/product/v0.1/file:out/" + runner + "/"
+    sub = [{"name": P + nm, "digest": {"sha256": fix(AC_BUILD["apk-%s-%s" % (v, arch)]).split(":")[1]}}
+           for v, nm in (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk"))]
+    ev = {"os": "linux", "variables": {"GITHUB_REF": T}}
+    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": ev}]
+    pr = {"name": "rapk", "attestations": att}
+    pl = json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "subject": sub, "predicate": pr}).encode()
+    add(n, COLL, None, payload=pl, key=key)
+_rapk("rapk_amd64", "amd64", "x86_64"); _rapk("rapk_arm64", "arm64", "aarch64")
+_rapk("rapk_arm64_other", "arm64", "aarch64", lambda d: "sha256:" + "9" * 64)
+_rapk("rapk_arm64_throwaway", "arm64", "aarch64", key="throwaway")
 # the key binds a Witness collection too: signed by another key, by the building job's throwaway key, and unsigned
 for _s, _name in (("build", "build"), ("rebuild", "rebuild"), ("check", "scanners")):
     add(_s + "_coll_otherkey", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_name, key="other")
@@ -746,6 +759,9 @@ dj("rc-hostile-null.json", {"attempts": [None] + [_hrow(a) for a in _HF] + [_CTL
 dj("rc-hostile-floatexit.json", {"attempts": [_hrow(a, exit_code=1.0) for a in _HF] + [_CTL]})
 dj("rc-hostile-floatctl.json", {"attempts": [_hrow(a) for a in _HF] + [dict(_CTL, exit_code=0.0)]})
 dj("rc-hostile-boolexit.json", {"attempts": [_hrow(a, exit_code=True) for a in _HF] + [_CTL]})
+_DC = "digest list differs from the digests Build attested (its digest does not match the record's product subject)"
+dj("rc-hostile-digestcause.json", {"attempts": [_hrow(a, reason=_DC) if a == "hand_sign_code" else _hrow(a)
+                                              for a in _HF] + [_CTL]})   # refused at the attestation check, not the format check
 dj("rc-hostile-reworded.json", {"attempts": [_hrow(a, reason=_HF[a][1] + " ") for a in _HF] + [_CTL]})      # still a green verdict, other bytes
 def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", hostile="rc-hostile", check=None, digests="digests.json", adm="admission-baseline-rc"):
     d = p(name)
@@ -785,6 +801,7 @@ rcdir("rc_hostile_null", hostile="rc-hostile-null")
 rcdir("rc_hostile_boolexit", hostile="rc-hostile-boolexit")
 rcdir("rc_hostile_floatexit", hostile="rc-hostile-floatexit")
 rcdir("rc_hostile_floatctl", hostile="rc-hostile-floatctl")
+rcdir("rc_hostile_digestcause", hostile="rc-hostile-digestcause")
 print("fixtures ok")
 
 PY
@@ -1935,6 +1952,22 @@ rc=0; cbx sha --commit "$CESC" --repo "$RG" || rc=$?
 [ "$rc" = 1 ] && grep -F -q "refused at marker:" "$work/cb.err" && ok "AC6 bytes: a listed path that leaves bin/ is refused" || bad "AC6 bytes: an escaping path gave exit $rc"
 rc=0; cbx sha --commit 0123456789abcdef0123456789abcdef01234567 --repo "$RG" || rc=$?
 [ "$rc" = 1 ] && grep -F -q "refused at marker:" "$work/cb.err" && ok "AC6 bytes: a commit that does not exist is refused" || bad "AC6 bytes: an unknown commit gave exit $rc"
+# the build inputs the chain reads (sealed environment, melange lock, probe templates) are chain files:
+# a change to one changes the sum
+rcg checkout -q -b bi-base "$C1"; mkdir -p "$RG/build/locks" "$RG/build/probe"
+printf '{"sealed":1}\n' > "$RG/build/sealed-env.json"; printf 'lock\n' > "$RG/build/locks/melange.lock"
+printf 'name: control\n' > "$RG/build/probe/control.yaml.tmpl"
+printf 'name: network\n' > "$RG/build/probe/network.yaml.tmpl"
+rcg add -A > /dev/null; rcg commit -q -m bi-base; CBI=$(rcg rev-parse HEAD); rcg checkout -q main
+SBI=$(shaof "$CBI"); bi_n=0
+for f in build/sealed-env.json build/locks/melange.lock build/probe/control.yaml.tmpl build/probe/network.yaml.tmpl; do
+  rcg checkout -q -b "bi-$((++bi_n))" "$CBI"; printf '# changed\n' >> "$RG/$f"
+  rcg add -A > /dev/null; rcg commit -q -m bi
+  c=$(rcg rev-parse HEAD); rcg checkout -q main
+  [[ "$(shaof "$c")" =~ ^[0-9a-f]{64}$ ]] && [ "$(shaof "$c")" != "$SBI" ] \
+    && ok "AC6 bytes: a changed $f changes the sha" \
+    || bad "AC6 bytes: a changed $f did not change the sha"
+done
 # the marker, written for the rc tag's bytes and the records of rc_ok; committed on top of the rc tag's commit
 python3 "$work/mkmarker.py" "$work/marker-ok.json" v0.3.0-rc1 1 "$S1" "$work/rc_ok"
 cp "$work/marker-ok.json" "$RG/.github/policy/rc-proof.json"; rcg add -A > /dev/null; rcg commit -q -m marker; C2=$(rcg rev-parse HEAD)
@@ -2029,6 +2062,10 @@ expect_refuse "AC6 rc-proof: a null attempt row is a refusal naming the hostile 
 expect_refuse "AC6 rc-proof: an exit code of true is not an integer exit status and is refused" "hostile|exit" $(RCP rc_hostile_boolexit)
 expect_refuse "AC6 rc-proof: an exit code of 1.0 on a refused row is not an integer exit status and is refused" "hostile|exit" $(RCP rc_hostile_floatexit)
 expect_refuse "AC6 rc-proof: the positive control's exit code 0.0 is not an integer exit status and is refused" "hostile|control" $(RCP rc_hostile_floatctl)
+# a marker that names this verdict's bytes
+python3 "$work/mkmarker.py" "$work/marker-digestcause.json" v0.3.0-rc1 1 "$S1" "$work/rc_hostile_digestcause"
+expect_refuse "AC6 rc-proof: hand_sign_code refused at the attestation check (a digest mismatch), not its format check" \
+  "cause" $(RCP rc_hostile_digestcause "$C2" "$work/marker-digestcause.json")
 python3 - "$work/marker-ok.json" "$work" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1])); r = dict(m["records"]); r["sign"] = "f" * 64
@@ -2100,7 +2137,10 @@ open(w + "/ac_notjson.json", "w").write("{not json")
 open(w + "/ac_array.json", "w").write("[]")
 d2 = json.loads(json.dumps(dig)); d2.pop("apk-fips-arm64"); json.dump(d2, open(w + "/acd_missing.json", "w"))
 PY
-ACV() { echo apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr.json" --file "$work/ac_$1.json" --digests "$work/${2:-acd}.json"; }
+RAPK() { echo --rapk "$work/rapk_amd64.json" --rapk "$work/${1:-rapk_arm64}.json"; }
+ACB() { echo apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr.json"; }
+ACN() { echo $(ACB) --file "$work/ac_good.json" --digests "$work/acd.json"; }
+ACV() { echo $(ACB) --file "$work/ac_$1.json" --digests "$work/${2:-acd}.json" $(RAPK); }
 expect_ok     "apk-compare: the good result (pass, four pairs, rebuild == build == Build's attested digest) is accepted" $(ACV good)
 for c in fail noverdict Pass; do expect_refuse "apk-compare: the verdict '$c' is refused (only the exact word pass)" "apk-compare|verdict" $(ACV $c); done
 expect_refuse "apk-compare: three pairs are refused" "apk-compare|four" $(ACV three)
@@ -2118,11 +2158,20 @@ expect_refuse "apk-compare: a variant other than standard and fips is refused" "
 expect_refuse "apk-compare: pairs that are not a list are refused" "apk-compare|pairs" $(ACV pairsnotlist)
 expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|json" $(ACV notjson)
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
-expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr.json" --file "$work/ac_nothere.json" --digests "$work/acd.json"
+expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr.json" --file "$work/ac_nothere.json" --digests "$work/acd.json" $(RAPK)
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
 # the verdict and the rebuild digests come from Rebuild's verified record, never from the unsigned result file alone
-expect_refuse "apk-compare: a result that says pass for digests Rebuild's verified record does not attest is refused" "rebuild" apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr_forged.json" --file "$work/ac_good.json" --digests "$work/acd.json"
-expect_refuse "apk-compare: a good result beside a Rebuild record signed by the throwaway key is refused" "rebuild|signature" apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr_throwaway.json" --file "$work/ac_good.json" --digests "$work/acd.json"
+expect_refuse "apk-compare: a result that says pass for digests Rebuild's verified record does not attest is refused" "rebuild" apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr_forged.json" --file "$work/ac_good.json" --digests "$work/acd.json" $(RAPK)
+expect_refuse "apk-compare: a good result beside a Rebuild record signed by the throwaway key is refused" "rebuild|signature" apk-compare --policy "$work/policy.json" --record "$work/rebuild_acr_throwaway.json" --file "$work/ac_good.json" --digests "$work/acd.json" $(RAPK)
+# ROW 1: apks are compared with the SIGNED rapk records (--rapk, one per witness), never Rebuild's unsigned digests.json
+R1="apk-compare: Rebuild's unsigned digests.json and no signed rapk record is refused"
+expect_refuse "$R1" "rapk|signed" $(ACN)
+R1="apk-compare: one signed rapk record instead of two is refused"
+expect_refuse "$R1" "rapk" $(ACN) --rapk "$work/rapk_amd64.json"
+R1="apk-compare: a rapk record attesting another apk digest than the pair's is refused"
+expect_refuse "$R1" "rapk|digest" $(ACN) $(RAPK rapk_arm64_other)
+R1="apk-compare: a rapk record signed by the throwaway key is refused"
+expect_refuse "$R1" "rapk|signature" $(ACN) $(RAPK rapk_arm64_throwaway)
 # ---- restored (re-aimed) cases: what the keyless identity used to enforce, now enforced by the ref a collection carries, Sign's workflow ref and the Rekor entry
 expect_refuse "001-AC2 Build's record from another tag is refused" "build|ref" $(S build_coll_otherref) --digests "$work/digests.json"
 expect_refuse "003-AC1 wrong tag through stage-start" "build|ref" $(ST rebuild build) $(rec build_coll_otherref) --digests "$work/digests.json"
@@ -2273,7 +2322,47 @@ if len(hits) != 1 or not re.fullmatch(r'OPENSSL = "/[A-Za-z0-9_./+-]+"  # TEST-S
 if "environ" in text:
     sys.exit("chain_common.py reads the environment")
 PY
-EXPECT=807
+# ---- every workflow caller of chain-verify: its arguments are accepted by the verifier's own parser ---------
+# A wrapper call (bin/with-aws-token.sh sign-record|sign|kms-sign ARG...) runs chain-verify.py with ARG... and,
+# for sign-record and sign, the --aws and --public-key the wrapper adds: so its ARG... must parse too (a flag
+# the parser no longer has fails the job in production with exit 2).
+python3 - "$root" << 'PY' \
+  && ok "callers: every chain-verify.py and with-aws-token.sh call in the workflows parses through build_parser()" \
+  || bad "callers: a workflow call of chain-verify.py does not parse (see the lines above)"
+import contextlib, glob, importlib.util, io, os, re, shlex, sys
+root = sys.argv[1]
+path_cv = os.path.join(root, "bin", "chain-verify.py")
+spec = importlib.util.spec_from_file_location("chain_verify", path_cv)
+cv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cv)
+CALL = re.compile(r"chain-verify\.py\s+([a-z][a-z-]*\s.*)|with-aws-token\.sh\s+((?:sign-record|sign|kms-sign)\b.*)")
+found, failed = 0, 0
+for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml"))):
+    text = re.sub(r"\\\n\s*", " ", open(path, errors="replace").read())
+    for n, line in enumerate(text.split("\n"), 1):
+        m = CALL.search(line)
+        if not m or line.lstrip().startswith("#") or "--help" in line:
+            continue
+        cmd = re.sub(r"\$\{\{.*?\}\}", "x", m.group(1) or m.group(2))
+        cmd = re.split(r"\s(?:2>|>|\|\||&&|\||;)\s*", cmd)[0].rstrip("\\ ")
+        try:
+            words = shlex.split(cmd)
+        except ValueError:
+            continue                  # a line cut in the middle of a quote
+        argv = [w if "$" not in w else "1" if words[i - 1] == "--exit-code" else "x" for i, w in enumerate(words)]
+        if m.group(2) and argv[0] in ("sign-record", "sign"):
+            argv += ["--aws", "x", "--public-key", "x"]
+        found += 1
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                cv.build_parser().parse_args(argv)
+            except SystemExit:
+                failed += 1
+                why = err.getvalue().strip().splitlines()[-1:]
+                print("%s:%d: does not parse: %s (%s)" % (os.path.relpath(path, root), n, cmd[:100], why))
+sys.exit(0 if found and not failed else 1)
+PY
+EXPECT=817
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
