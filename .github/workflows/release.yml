@@ -1,7 +1,6 @@
 name: Release
 
-# The release chain (release-chain-design.md): ONE workflow file, one job per stage step, each on its own GitHub-hosted runner (owner rule
-# docs/ratify/2026-11-13-workflows-grouped-by-purpose.md; the rulings of cache#921). Build once, verify by digest, publish by digest. Every job asks for what it needs: the
+# The release chain (release-chain-design.md): ONE workflow file, one job per stage step, each on its own GitHub-hosted runner. Build once, verify by digest, publish by digest. Every job asks for what it needs: the
 # workflow-level permissions are empty. One signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
 # are sha256 digests emitted by the job that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
 # pushes anything, and the job release is the only path that can make anything public, and only after it has verified every earlier
@@ -117,7 +116,11 @@ jobs:
         if: ${{ inputs.mode == 'snapshot' }}
         run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh
       - name: sandbox wall probe
-        run: bash bin/chain-sandbox-probe.sh
+        if: ${{ inputs.mode != 'snapshot' }}
+        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json
+      - name: sandbox wall probe (snapshot)
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/chain-sandbox-probe.sh snapshot-apk-collection.local.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: apk-${{ matrix.runner }}

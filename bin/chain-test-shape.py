@@ -301,7 +301,8 @@ MODE_GUARD_RUN = 'bash bin/build-stage-refuse-mode.sh "$MODE"'
 SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build", "rapk": "snapshot-rapk", "rebuild": "snapshot-rebuild"}
 SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Rebuild's verdict: named, so it can never be mistaken for a release verdict
 HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
-PROBE_RUN = "bash bin/chain-sandbox-probe.sh"      # the sandbox wall probe, a step of the apk job after its Witness steps, in every build
+PROBE_RUN = "bash bin/chain-sandbox-probe.sh"      # the sandbox wall probe, in every build: one step per mode, each naming the record its Witness step wrote
+PROBE_RECORD = {"release": "apk-collection.local.json", "snapshot": "snapshot-apk-collection.local.json"}
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 # Rebuild's assemble job exposes the sha256 of every record and of the verdict it made or consumed, for Sign (the Witness move, adversarial pass R2): a job output only that job can write
@@ -529,9 +530,11 @@ def job(j, family, name, allowed):
             bad.append("step %d (the snapshot Witness step) may carry only name, run and if: %s" % (i, MODE_SNAPSHOT_IF))
         bad += witness_seam(s.get("run") or "", snap, family)
     if spec.get("probe"):        # the sandbox wall probe (sandboxed-build rules 3 and 5): a step of every build, with no condition
-        s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"name", "run"} or str(s.get("run") or "").strip() != PROBE_RUN:
-            bad.append("step %d must be exactly run: %s with no if (the sandbox wall probe runs in every build)" % (i, PROBE_RUN))
+        for mode, cond in (("release", MODE_RELEASE_IF), ("snapshot", MODE_SNAPSHOT_IF)):
+            s = steps[i] if i < len(steps) else {}; i += 1
+            want = "%s %s" % (PROBE_RUN, PROBE_RECORD[mode])
+            if set(s) - {"name", "run", "if"} or s.get("if") != cond or str(s.get("run") or "").strip() != want:
+                bad.append("step %d must be exactly run: %s with if: %s (the sandbox wall probe runs in every build, on the record its mode's Witness step wrote)" % (i, want, cond))
     if spec.get("expose"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "run"} or s.get("id") != "digests" or str(s.get("run") or "").strip() != EXPOSE:
@@ -892,7 +895,7 @@ NS_SHA = {
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "754ee5bb31f7cad861dbd44502ee2197e5120c12584895aaaa5ba890036c0d96",
     "bin/chain-hostile-step.sh": "2e09a11b964cfcfc632bc8da1e0c9cc406525f2aa5dfc44523e83277affbdb2f",
-    "bin/chain-sandbox-probe.sh": "34f39a4658c66eced1a36e48e5ca696261342ece173eb8fb443fc32b37d70a30",
+    "bin/chain-sandbox-probe.sh": "36ce7a31cfec6efab0a6a00212fc8f4bf110ca46738520596e9a6943c02f0b4d",
     "bin/chain-verify.py": "96631cc7cb6b00fb3a3f3b7b1c5b38f8d9938aea5eb6f668a9035edcd86d96bf",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "096b1cd46903aefc921f2e59c633e5889139bfdb93c39675340cba83672c91ab",

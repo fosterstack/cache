@@ -181,7 +181,8 @@ def stage_text(family):
             out += "      - name: check the rapk records against the digest lists their jobs uploaded\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.RAPK_CHECK_RUN)
         out += witness_block(sp)
         if sp.get("probe"):
-            out += "      - name: sandbox wall probe\n        run: %s\n" % S.PROBE_RUN
+            out += "      - name: sandbox wall probe\n        if: %s\n        run: %s %s\n" % (S.MODE_RELEASE_IF, S.PROBE_RUN, S.PROBE_RECORD["release"])
+            out += "      - name: sandbox wall probe (snapshot)\n        if: %s\n        run: %s %s\n" % (S.MODE_SNAPSHOT_IF, S.PROBE_RUN, S.PROBE_RECORD["snapshot"])
         if sp.get("records_file"): out += "      - name: write the record digests of this apk job to a file\n        if: %s\n        env:\n          LEG: ${{ matrix.runner }}\n        run: %s\n" % (S.MODE_RELEASE_IF, S.RAPK_RECORDS_FILE)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the job output\n        run: %s\n" % S.EXPOSE
         if sp.get("expose_records"): out += "      - id: records\n        name: expose the record digests as the job output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.EXPOSE_RECORDS)
@@ -433,17 +434,34 @@ st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "host
 st s_hup_if   "AC2 the hostile upload carries an if (it must go up in every build)" "hostile" '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: hostile-attempts' \
     '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        if: always()\n        with:\n          name: hostile-attempts'
 # the sandbox wall probe (sandboxed-build rules 3 and 5): a step of the apk job, after its Witness steps, only in a dry run
-PROBE_STEP='      - name: sandbox wall probe\n        run: bash bin/chain-sandbox-probe.sh\n'
-st s_probe_none "AC2 the sandbox wall probe step is missing from the apk job" "probe" "$PROBE_STEP" ''
-st s_probe_if "AC2 the probe step carries an if (the probe runs in every build)" "probe" \
-    '      - name: sandbox wall probe\n' '      - name: sandbox wall probe\n        if: ${{ inputs.mode != '"'snapshot'"' }}\n'
+PROBE_RIF='        if: ${{ inputs.mode != '"'snapshot'"' }}\n'
+PROBE_SIF='        if: ${{ inputs.mode == '"'snapshot'"' }}\n'
+PROBE_R='      - name: sandbox wall probe\n'"$PROBE_RIF"'        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json\n'
+PROBE_S='      - name: sandbox wall probe (snapshot)\n'"$PROBE_SIF"'        run: bash bin/chain-sandbox-probe.sh snapshot-apk-collection.local.json\n'
+st s_probe_none "AC2 both sandbox wall probe steps are missing from the apk job" "probe" "$PROBE_R$PROBE_S" ''
+st s_probe_nosnap "AC2 the snapshot probe step is missing (a snapshot build would not probe the wall)" "probe" "$PROBE_S" ''
+st s_probe_norel "AC2 the release probe step is missing" "probe" "$PROBE_R" ''
+st s_probe_recs "AC2 the snapshot probe step names the release record" "probe" \
+    'probe.sh snapshot-apk-collection.local.json' 'probe.sh apk-collection.local.json'
+st s_probe_recr "AC2 the release probe step names the snapshot record" "probe" \
+    'probe.sh apk-collection.local.json' 'probe.sh snapshot-apk-collection.local.json'
+st s_probe_swap "AC2 the two probe steps carry each other's if" "probe" "$PROBE_R$PROBE_S" \
+    '      - name: sandbox wall probe\n'"$PROBE_SIF"'        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json\n      - name: sandbox wall probe (snapshot)\n'"$PROBE_RIF"'        run: bash bin/chain-sandbox-probe.sh snapshot-apk-collection.local.json\n'
+st s_probe_if "AC2 an extra condition on a probe step" "probe" \
+    "$PROBE_R" '      - name: sandbox wall probe\n        if: ${{ inputs.mode != '"'snapshot'"' && github.event_name == '"'push'"' }}\n        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json\n'
+st s_probe_ifs "AC2 an extra condition on the snapshot probe step" "probe" \
+    "$PROBE_S" '      - name: sandbox wall probe (snapshot)\n        if: ${{ inputs.mode == '"'snapshot'"' && always() }}\n        run: bash bin/chain-sandbox-probe.sh snapshot-apk-collection.local.json\n'
 st s_probe_alw  "AC2 the probe step runs always()" "probe" \
-    '      - name: sandbox wall probe\n' '      - name: sandbox wall probe\n        if: always()\n'
-st s_probe_run  "AC2 the probe step runs another script" "probe" 'run: bash bin/chain-sandbox-probe.sh' 'run: bash bin/chain-hostile-step.sh'
+    "$PROBE_R" '      - name: sandbox wall probe\n        if: always()\n        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json\n'
+st s_probe_run  "AC2 the probe step runs another script" "probe" 'run: bash bin/chain-sandbox-probe.sh apk-collection' 'run: bash bin/chain-hostile-step.sh apk-collection'
 st s_probe_env  "AC2 the probe step carries an env (the runner token must never reach it)" "probe" \
-    '        run: bash bin/chain-sandbox-probe.sh' '        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/chain-sandbox-probe.sh'
+    '        run: bash bin/chain-sandbox-probe.sh apk-collection' '        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/chain-sandbox-probe.sh apk-collection'
+st s_probe_envs "AC2 the snapshot probe step carries an env" "probe" \
+    '        run: bash bin/chain-sandbox-probe.sh snapshot' '        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/chain-sandbox-probe.sh snapshot'
 st s_probe_ct   "AC2 the probe step continues on error (a held wall and an open wall would look alike)" "probe" \
-    '        run: bash bin/chain-sandbox-probe.sh' '        continue-on-error: true\n        run: bash bin/chain-sandbox-probe.sh'
+    '        run: bash bin/chain-sandbox-probe.sh apk-collection' '        continue-on-error: true\n        run: bash bin/chain-sandbox-probe.sh apk-collection'
+st s_probe_cts  "AC2 the snapshot probe step continues on error" "probe" \
+    '        run: bash bin/chain-sandbox-probe.sh snapshot' '        continue-on-error: true\n        run: bash bin/chain-sandbox-probe.sh snapshot'
 # REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
 GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode || '\''release'\'' }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
@@ -3684,7 +3702,7 @@ if [ -f "$work/rot/rec-old.json" ]; then
   if [ "$rc" = 1 ] && grep -q "signature" "$work/rot/ro.err"; then ok "AC6 key rotation cutover: a record signed by the old key is refused after the old valid_to"
   else bad "AC6 key rotation cutover: a record signed by the old key was not refused (exit $rc: $(head -c 200 "$work/rot/ro.err" | tr '\n' ' '))"; fi
 fi
-EXPECT=1342
+EXPECT=1350
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
