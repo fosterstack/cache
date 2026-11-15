@@ -112,6 +112,14 @@ jobs:
         with:
           name: apk-compare
           path: apk-compare
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04
+          path: witness-rapk-ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk-ubuntu-24.04-arm
       - name: release-verify under Witness (a throwaway key, no identity token)
         run: bash bin/witnessed-local.sh release-verify bin/release-verify.sh
       - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
@@ -182,6 +190,14 @@ jobs:
         with:
           name: apk-compare
           path: apk-compare
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04
+          path: witness-rapk-ubuntu-24.04
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk-ubuntu-24.04-arm
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
