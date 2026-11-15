@@ -135,6 +135,8 @@ mut("badstage", 2, stage="x")
 mut("wrongcause_forge", 4, reason="digest mismatch")
 mut("wrongstage_token", 1, stage="sign")
 mut("wrongcause_hand", 3, reason="identity is stage-build.yml")
+mut("digestcause_hand", 3, reason="digest list differs from the digests Build attested "
+    "(its digest does not match the record's product subject)")
 mut("wrongcause_key", 2, reason="no such file attempts/read_sign_key.txt")
 mut("wrongcause_mint", 0, reason="digest mismatch")
 mut("nostage", 3, stage="")
@@ -201,6 +203,8 @@ expect refuse "verdict: a stage that is not a stage" badstage "stage"
 expect refuse "verdict: a forged provenance refused for a digest mismatch (not its identity) does not count" wrongcause_forge "cause"
 expect refuse "verdict: a token attempt graded at stage sign instead of runner does not count" wrongstage_token "stage"
 expect refuse "verdict: hand_sign_code refused for an identity reason (not digest/format) does not count" wrongcause_hand "cause"
+expect refuse "verdict: hand_sign_code refused at the attestation check (digest mismatch), not at its format check, \
+does not count" digestcause_hand "cause"
 expect refuse "verdict: a key attempt refused because the file was missing does not count" wrongcause_key "cause"
 expect refuse "verdict: a certificate mint refused for a digest mismatch does not count" wrongcause_mint "cause"
 expect refuse "verdict: an empty stage" nostage "stage"
@@ -1531,7 +1535,7 @@ if [ "$(id -u)" != 0 ]; then
   s2c perm; printf '{}' > "$work/s2rows-perm/bad.json"; chmod 000 "$work/s2rows-perm/bad.json"
   s2expect "S2 hostile-collect: an unreadable (permission denied) row file is a named error, exit 2, no traceback" perm
 else ok "S2 hostile-collect: permission-denied case skipped, running as root"; fi
-EXPECT=296
+EXPECT=297
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
