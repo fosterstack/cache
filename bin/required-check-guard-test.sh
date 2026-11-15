@@ -88,27 +88,103 @@ else
   echo "$out" | sed 's/^/    /'; fail=$((fail+1))
 fi
 
-# The pin step's run text, for the cases below. The step is pinned byte for byte in pin-wiring-test.sh.
-python3 - "$repo/.github/workflows/ci.yml" "$w/pin-run.sh" <<'PY'
-import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["required-check-guard"]["steps"]
-run = [s["run"] for s in steps if "release-only-checks.json" in s.get("run", "")]
-assert len(run) == 1, "pin step not found"
-open(sys.argv[2], "w").write(run[0])
-PY
 
-# The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
-# committed under GitHub's default `bash -e` with a recording gh stub (round-1 blocker:
-# -e ended the step at the guard's refusal, before any issue call).
-python3 - "$repo/.github/workflows/ci.yml" "$w/step.sh" <<'PY'
+# The steps of the pinned job, found by what they contain: checkout, fetch of main's guard, run of it, drift issue.
+# A step is written to a file only when exactly one step has that content.
+ci="${CI_YML:-$repo/.github/workflows/ci.yml}"
+python3 - "$ci" "$w" <<'PY' || { echo "FAIL: ci.yml has no single pin step"; exit 1; }
+import sys, re, yaml
+wf = yaml.safe_load(open(sys.argv[1])); w = sys.argv[2]
+steps = wf["jobs"]["required-check-guard"]["steps"]
+def pick(what, found):
+    assert len(found) == 1, what + " step not found"
+    return found[0]
+fetch = pick("fetch", [s for s in steps if "contents/bin/required-check-guard.sh" in s.get("run", "")])
+pin = pick("run", [s for s in steps if "release-only-checks.json" in s.get("run", "")])
+drift = pick("drift-issue", [s for s in steps if s.get("id") == "drift-issue"])
+for name, s in (("fetch-run.sh", fetch), ("pin-run.sh", pin), ("step.sh", drift)):
+    open(w + "/" + name, "w").write(s["run"])
+open(w + "/guard-name", "w").write(re.search(r"RUNNER_TEMP\}?/([\w.-]+)", fetch["run"]).group(1))
+PY
+gname="$(cat "$w/guard-name" 2>/dev/null)"
+
+# The extraction must say in words when a step is missing or doubled. The suite runs itself over copies of ci.yml with
+# no run step and with two (CI_YML set, so the copy's own run skips this case).
+if [ -z "${CI_YML:-}" ]; then
+  for shape in none two; do
+    python3 - "$ci" "$w/ci-$shape.yml" "$shape" <<'PY'
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 steps = wf["jobs"]["required-check-guard"]["steps"]
-run = [s["run"] for s in steps if s.get("name", "").startswith("open or update the `required-check drift` issue")]
-assert len(run) == 1, "drift-issue step not found"
-open(sys.argv[2], "w").write(run[0])
+pin = [s for s in steps if "release-only-checks.json" in s.get("run", "")]
+rest = [s for s in steps if s not in pin]
+wf["jobs"]["required-check-guard"]["steps"] = rest + (pin * 2 if sys.argv[3] == "two" else [])
+yaml.safe_dump(wf, open(sys.argv[2], "w"))
 PY
-mkdir -p "$w/stub"
+    out="$(CI_YML="$w/ci-$shape.yml" bash "$0" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ] && grep -qxF "FAIL: ci.yml has no single pin step" <<<"$out"; then
+      echo "ok: ci.yml with ${shape} run steps fails in words"; pass=$((pass+1))
+    else
+      echo "FAIL: ci.yml with ${shape} run steps (rc ${rc}, want non-zero and the sentence)"; fail=$((fail+1))
+    fi
+  done
+fi
+
+# What ci.yml must say, read as text: the step list, the fetch and run steps, no code of the checkout run, the drift
+# step on the fetched file, and the guard's own suite in the allowlist job.
+python3 - "$repo/.github/workflows/ci.yml" > "$w/static.out" 2>&1 <<'PY'
+import sys, re, json, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+steps = wf["jobs"]["required-check-guard"]["steps"]
+runs = [s.get("run", "") for s in steps]
+T = r"\"?\$\{?RUNNER_TEMP\}?/[\w.-]+\"?"
+def kind(s):
+    if re.match(r"actions/checkout@[0-9a-f]{40}( |$)", s.get("uses", "")): return "checkout"
+    if s.get("id") == "drift-issue": return "drift-issue"
+    if "contents/bin/required-check-guard.sh" in s.get("run", ""): return "fetch"
+    if "release-only-checks.json" in s.get("run", ""): return "run"
+    return "other"
+kinds = [kind(s) for s in steps]
+by = {kind(s): s for s in steps}
+def t(name, ok): print(("ok: " if ok else "FAIL: ") + name)
+t("job steps are checkout, fetch, run, drift-issue in that order (got %s)" % kinds,
+  kinds == ["checkout", "fetch", "run", "drift-issue"])
+f = by.get("fetch", {}).get("run", "")
+t("fetch step: set -euo pipefail, gh api of main's guard into a file under RUNNER_TEMP, then [ -s ] on it",
+  bool(re.search(r"^set -euo pipefail$", f, re.M))
+  and bool(re.search(r'gh api "repos/\$\{GITHUB_REPOSITORY\}/contents/bin/required-check-guard\.sh\?ref=main"', f))
+  and bool(re.search(r"> " + T, f)) and bool(re.search(r"^\[ -s " + T + r" \]$", f, re.M)))
+r = [l.strip() for l in by.get("run", {}).get("run", "").splitlines() if l.strip() and not l.strip().startswith("#")]
+t("run step: one line, bash on a file under RUNNER_TEMP over the two policy files (got %s)" % r,
+  len(r) == 1 and bool(re.fullmatch(r"bash " + T + r" \.github/policy/required-checks\.json "
+                                    r"\.github/policy/release-only-checks\.json", r[0])))
+prog = r"(^|[;&|(])\s*(bash\s+|sh\s+|exec\s+)?\"?(\./)?([\w.-]+/)*bin/"
+t("no run text of the job runs a path under bin/",
+  not any(re.search(prog, l) for x in runs for l in x.splitlines()))
+t("no step of the job sources a file or uses a local action",
+  not any(re.search(r"(^|[;&|(])\s*(source|\.)\s+\S", l) for x in runs for l in x.splitlines())
+  and not any(s.get("uses", "").startswith("./") for s in steps))
+d = by.get("drift-issue", {}).get("run", "")
+t("drift step runs the guard fetched into RUNNER_TEMP", bool(re.search(r"bash " + T, d)))
+t("the guard's fetch path occurs in exactly one step of the job",
+  sum("contents/bin/required-check-guard.sh" in json.dumps(s) for s in steps) == 1)
+al = [s for s in wf["jobs"]["allowlist"]["steps"] if "required-check-guard-test.sh" in json.dumps(s)]
+t("allowlist runs the guard suite as exactly one plain step",
+  len(al) == 1 and al[0].get("run") == "bash bin/required-check-guard-test.sh"
+  and not {"if", "continue-on-error", "env", "shell"} & set(al[0]))
+t("the pinned job does not run the guard suite",
+  not any("required-check-guard-test.sh" in json.dumps(s) for s in steps))
+PY
+while IFS= read -r line; do
+  echo "$line"
+  case "$line" in ok:*) pass=$((pass+1)) ;; *) fail=$((fail+1)) ;; esac
+done < "$w/static.out"
+
+# The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as committed under GitHub's default
+# `bash -e` with a recording gh stub (round-1 blocker: -e ended the step at the guard's refusal, before any issue call).
+# It runs the guard fetched into RUNNER_TEMP, so the fetched copy is put there; the tree it runs in may hold a decoy.
+mkdir -p "$w/stub" "$w/pintree/.github/policy" "$w/pintree/bin" "$w/pinstub"
+cp "$sut" "$w/$gname"
 cat > "$w/stub/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
@@ -119,9 +195,10 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$w/stub/gh"
+tree="$repo"
 step() { # name rules issues_json want_regex [dont_want_regex]
   : > "$w/gh.log"; : > "$w/out"
-  (cd "$repo" && env PATH="$w/stub:$PATH" GH_LOG="$w/gh.log" MAIN_LIST="$list" ISSUES_JSON="$3" \
+  (cd "$tree" && env PATH="$w/stub:$PATH" GH_LOG="$w/gh.log" MAIN_LIST="$list" ISSUES_JSON="$3" \
      GUARD_RULES_JSON="$2" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$w" RUN_URL=https://example.invalid/run GITHUB_OUTPUT="$w/out" \
      bash --noprofile --norc -e -o pipefail "$w/step.sh") >"$w/step.out" 2>&1; local rc=$?
   if [ "$rc" -ne 0 ] || ! grep -qE "$4" "$w/gh.log" || { [ -n "${5:-}" ] && grep -qE "$5" "$w/gh.log"; }; then
@@ -138,10 +215,15 @@ grep -qx "issue=7" "$w/out" 2>/dev/null && { echo "ok: the updated issue's numbe
 step "no required checks on main opens the issue"     "$w/none.json"    "$w/no-issues.json"  '^gh issue create'
 step "match opens nothing"                            "$w/match.json"   "$w/no-issues.json"  '^gh api ' '^gh issue (create|edit)'
 
-# The pin step, run as GitHub runs a step without `shell:` (bash -e, no pipefail): it must fail when the fetch of main's
-# guard fails or comes back empty, and must run the fetched guard once over both policy files with the ruleset from
-# GUARD_RULES_JSON.
-mkdir -p "$w/pintree/.github/policy" "$w/pinstub"
+# The checkout's bin/ copy of the guard is a decoy that leaves a marker if run; no step may run it.
+echo "echo ran > $w/tree-ran" > "$w/pintree/bin/required-check-guard.sh"
+rm -f "$w/tree-ran"; tree="$w/pintree"
+step "drift step opens the issue with the fetched guard" "$w/missing.json" "$w/no-issues.json" '^gh issue create'
+if [ ! -e "$w/tree-ran" ]; then echo "ok: the drift step did not run the checkout's guard"; pass=$((pass+1))
+else echo "FAIL: the drift step ran the checkout's bin/required-check-guard.sh"; fail=$((fail+1)); fi
+
+# The fetch step, run as GitHub runs a step without `shell:` (bash -e): it writes a non-empty file under RUNNER_TEMP
+# and does not run it; it fails when gh fails, prints nothing, or fails after printing.
 cp "$list" "$w/pintree/.github/policy/required-checks.json"
 cp "$ro" "$w/pintree/.github/policy/release-only-checks.json"
 cat > "$w/pinstub/gh" <<'EOF'
@@ -151,20 +233,54 @@ exit "${STUB_RC:-0}"
 EOF
 chmod +x "$w/pinstub/gh"
 base64 < "$sut" | tr -d '\n' > "$w/guard.b64"; : > "$w/empty.txt"
-pinstep() { # name zero|nonzero stub_rc stub_print_file
+echo "echo ran > $w/fetched-ran" | base64 | tr -d '\n' > "$w/marker-guard.b64"
+fetchstep() { # name zero|nonzero stub_rc stub_print_file
+  local rt; rt="$(mktemp -d -p "$w")"; rm -f "$w/fetched-ran"
   (cd "$w/pintree" && env PATH="$w/pinstub:$PATH" GH_TOKEN=x STUB_RC="$3" STUB_PRINT="$4" \
-     GUARD_RULES_JSON="$w/match.json" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$w" \
-     bash --noprofile --norc -e "$w/pin-run.sh") >"$w/pin.out" 2>&1; local rc=$?
-  if { [ "$2" = zero ] && [ "$rc" -ne 0 ]; } || { [ "$2" = nonzero ] && [ "$rc" -eq 0 ]; }; then
-    echo "FAIL: $1 (rc ${rc}, want $2)"; sed 's/^/    /' "$w/pin.out"; fail=$((fail+1)); return
+     GITHUB_REPOSITORY=o/r RUNNER_TEMP="$rt" bash --noprofile --norc -e "$w/fetch-run.sh") >"$w/fetch.out" 2>&1
+  local rc=$?
+  if { [ "$2" = zero ] && { [ "$rc" -ne 0 ] || [ ! -s "$rt/$gname" ] || [ -e "$w/fetched-ran" ]; }; } \
+     || { [ "$2" = nonzero ] && [ "$rc" -eq 0 ]; }; then
+    echo "FAIL: $1 (rc ${rc}, want $2)"; ls "$rt"; [ -e "$w/fetched-ran" ] && echo "    the fetched guard ran"
+    sed 's/^/    /' "$w/fetch.out"; fail=$((fail+1)); return
   fi
   echo "ok: $1"; pass=$((pass+1))
 }
-pinstep "pin step: gh fails with no output = non-zero"          nonzero 1 "$w/empty.txt"
-pinstep "pin step: gh prints nothing, exits 0 = non-zero"       nonzero 0 "$w/empty.txt"
-pinstep "pin step: gh prints main's guard = exit 0"             zero    0 "$w/guard.b64"
-# the step sets pipefail itself: a gh that fails after printing the guard must still fail the step
-pinstep "gh fails after printing the guard"                     nonzero 1 "$w/guard.b64"
+fetchstep "fetch step: gh fails with no output = non-zero"        nonzero 1 "$w/empty.txt"
+fetchstep "fetch step: gh prints nothing, exits 0 = non-zero"     nonzero 0 "$w/empty.txt"
+fetchstep "fetch step: gh fails after printing the guard"         nonzero 1 "$w/guard.b64"
+fetchstep "fetch step: writes the guard under RUNNER_TEMP, never runs it" zero 0 "$w/marker-guard.b64"
+
+# The run step: bash on the fetched file over the two policy files of the tree, and nothing else
+runstep() { # runner_temp
+  (cd "$w/pintree" && env PATH="$w/pinstub:$PATH" GH_TOKEN=x GUARD_RULES_JSON="$w/match.json" \
+     GITHUB_REPOSITORY=o/r RUNNER_TEMP="$1" bash --noprofile --norc -e "$w/pin-run.sh") >"$w/pin.out" 2>&1
+}
+rt="$(mktemp -d -p "$w")"; rm -f "$w/tree-ran"
+printf '%s\n' 'printf "%s\n" "$@" > "${0%/*}/args"' > "$rt/$gname"
+runstep "$rt"; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$w/tree-ran" ] && [ "$(cat "$rt/args" 2>/dev/null)" = \
+     ".github/policy/required-checks.json
+.github/policy/release-only-checks.json" ]; then
+  echo "ok: run step runs the file in RUNNER_TEMP over the two policy files, not the checkout's guard"; pass=$((pass+1))
+else
+  echo "FAIL: run step (rc ${rc}; checkout's guard $([ -e "$w/tree-ran" ] && echo ran || echo not run))"
+  sed 's/^/    /' "$w/pin.out"; fail=$((fail+1))
+fi
+
+# REQ-REL-013-AC2: the fetched guard over a tree whose release-only list lacks `coverage` is drift, exit 1
+rt="$(mktemp -d -p "$w")"
+jq -c '.required_checks |= map(select(.context != "coverage"))' "$ro" \
+  > "$w/pintree/.github/policy/release-only-checks.json"
+(cd "$w/pintree" && env PATH="$w/pinstub:$PATH" STUB_PRINT="$w/guard.b64" GH_TOKEN=x GITHUB_REPOSITORY=o/r \
+   RUNNER_TEMP="$rt" bash --noprofile --norc -e "$w/fetch-run.sh") >/dev/null 2>&1
+(cd "$w/pintree" && env PATH="$w/pinstub:$PATH" STUB_PRINT="$w/guard.b64" GH_TOKEN=x GUARD_RULES_JSON="$w/match.json" \
+   GITHUB_REPOSITORY=o/r RUNNER_TEMP="$rt" bash --noprofile --norc -e "$w/pin-run.sh") >"$w/pin.out" 2>&1; rc=$?
+if [ "$rc" -eq 1 ] && grep -qE '^[-+] .*"coverage"' "$w/pin.out"; then
+  echo "ok: dropping coverage from release-only-checks.json is red at the guard"; pass=$((pass+1))
+else
+  echo "FAIL: dropped coverage (rc ${rc}, want 1)"; sed 's/^/    /' "$w/pin.out"; fail=$((fail+1))
+fi
 
 echo "----"
 echo "required-check-guard: ${pass} passed, ${fail} failed"
