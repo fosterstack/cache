@@ -21,7 +21,7 @@ Upgrade by pulling the new tag or `:latest`.
 
 ### Building and signing, in plain words
 
-Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The key that signs the software packages inside the images (the package-signing key) exists in one place only, the release job's environment, and only one step in it receives the key. That job is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. The signatures on the images, and on the checksum list that covers every release archive, are a different thing: they are made with the release key through the cloud key service, and you check them with the release public key. (The archives are not signed one by one; the signed checksum list covers each of them.)
+Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The software packages inside the images, the images and the checksum list that covers every release archive are all signed with one release key. The key stays in the cloud key service, and only the signing jobs can ask the service to use it. The job that signs and publishes is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. You check the signatures with the release public key. (The archives are not signed one by one; the signed checksum list covers each of them.)
 
 This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5 and Executive Order 14028 with its NIST guidance; we claim no certification. The page `docs/build-and-signing-isolation.md` names the specific controls and lists the known gaps.
 
@@ -33,7 +33,7 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 ### What this release does not do
 
 - The jobs are separated at the level of a virtual machine, not on separate physical hardware.
-- The package signing key is not rotated automatically.
+- The release key is not rotated automatically.
 - The release pipeline's own signing tools are not FIPS-validated. (The `-fips` image uses Go's FIPS 140-3 module, which is a different claim.)
 
 See `release-manifest.json` for the evidence bundle: image digests, archive checksums, the requirements baseline, per-AC results and the transparency-log index.
