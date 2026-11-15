@@ -56,6 +56,10 @@ class Fail(Exception):
     """The audit could not do its job (exit 2)."""
 
 
+class NoMetadata(Fail):
+    """An action with neither action.yml nor action.yaml, or a remote reusable workflow: a finding on that item."""
+
+
 # a GitHub advisory answer holds its vulnerabilities list; the package, range and updated_at inside are read fail closed
 _ADVISORY = (("vulnerabilities", list),)
 
@@ -813,7 +817,7 @@ class LiveNet:
                 for ref in refs:
                     out.append({"ref": ref, "pinned": bool(re.search(r"@[0-9a-f]{40}$|@sha256:[0-9a-f]{64}$", ref))})
                 return out
-        raise Fail(f"{item.name}: its action metadata was not found")
+        raise NoMetadata(f"{item.name}: its action metadata was not found")
 
     def versions(self, item):
         """Candidate versions with their publish times; None when this kind of item cannot be enumerated (then nobody
@@ -1355,8 +1359,8 @@ def history_items(root, start, now):
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh",
              ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS, inv.KERNEL_LOCK]
     # open pull request heads are read by open_pr_items, which continues as incomplete when one cannot be read
-    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", start, "--", *paths).split() if r]
-    tip = inv.git(root, "rev-parse", start).strip()
+    refs = ["--all"] if start == "HEAD" else [start]    # daily mode: every branch and PR ref this checkout has
+    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
     if before:
         revs.append(before)
@@ -1365,11 +1369,10 @@ def history_items(root, start, now):
     # that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     memo = {}
     for r in revs:
-        agent = r == tip    # .github/agent/ scripts are read at the tip only; the history read stays as it was
-        key = inv.tree_key(root, r, agent)
+        key = inv.tree_key(root, r)
         if key not in memo:
             try:
-                memo[key] = inv.load_at(root, r, agent)
+                memo[key] = inv.load_at(root, r)
             except RuntimeError as e:
                 raise RuntimeError(f"revision {r[:12]} cannot be read whole: {e}") from None
         items.update(memo[key])
@@ -1698,6 +1701,10 @@ def main(argv=None):
             def nested_safe(q):
                 try:
                     return net.nested(q[0])
+                except NoMetadata as e:
+                    findings.append(Finding(q[0], "unreadable", ["no-metadata"],
+                        f"{e}: what it calls cannot be read, so it cannot be checked"))
+                    return []
                 except (Fail, age.CouldNotLook) as e:
                     print(f"information: the nested references of {clean(q[0].key)} could not be read: {clean(e)}")
                     return None

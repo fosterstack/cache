@@ -206,11 +206,88 @@ with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
 assert "could not be read" in out.getvalue(), out.getvalue()[-400:]
 assert rc != 0 and "no known-compromised" not in out.getvalue(), (rc, out.getvalue()[-300:])
 PY
-CASE="an action.yml and action.yaml that are both missing (404) end the run incomplete: no 'no "
-CASE+="known-compromised' line, non-zero exit"
-check python3 "$work/nested-run.py" "$work/pre.py" "$work" "$work/gh404"
 CASE="an action.yml that is not valid YAML ends the run incomplete: no 'no known-compromised' line, non-zero exit"
 check python3 "$work/nested-run.py" "$work/pre.py" "$work" "$work/ghyaml"
+
+# --- (4) an action that cannot be read is a FINDING on that item (exit 1), never an incomplete run ---------------------
+# a gh that serves files by path from GH_FILES (a map of the path in the action's repository to its text; any other path
+# is a 404) and answers the issue calls of the run
+cat >"$work/gh-files" <<'PY'
+#!/usr/bin/env python3
+import base64, json, os, sys
+a = sys.argv[1:]
+if a[:2] == ["issue", "list"]:
+    print("[]"); sys.exit(0)
+if a[:2] in (["issue", "create"], ["issue", "edit"]):
+    open(os.environ["GH_LOG"], "a").write(open(a[a.index("--body-file") + 1]).read() + "\n")
+    print("https://github.com/x/y/issues/9"); sys.exit(0)
+if a[:1] != ["api"]:
+    sys.exit(0)
+path = [x for x in a[1:] if not x.startswith("-")][0].split("?")[0]
+files = json.loads(os.environ["GH_FILES"])
+rest = path.partition("/contents/")[2]
+if rest not in files:
+    sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
+print(json.dumps({"content": base64.b64encode(files[rest].encode()).decode()}))
+PY
+chmod +x "$work/gh-files"
+# the audit over a one-workflow tree whose actions are read through gh-files; CASES[name] = the files of the tree, the files of
+# the remote action, the fixtures, and what the run must show: a finding named N (exit 1, no incomplete run) or a hit on N
+cat >"$work/nested-find.py" <<'PY'
+import sys; exec(open(sys.argv[1]).read())
+import subprocess
+work, name = sys.argv[2], sys.argv[3]
+SO, SI = "a" * 40, "b" * 40
+HEAD = "on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n"
+COMP = "runs:\n  using: composite\n  steps:\n    - uses: o/inner@" + SI + " # v1\n"
+HIT = {"lists": {"action:o/inner@" + SI: {"github": [{"id": "GHSA-aaaa-bbbb-cccc", "incident": "INC-1", "affected": True,
+                                                    "modified": "2026-10-04T00:00:00Z"}], "osv": []}}}
+def wf(uses): return {".github/workflows/ci.yml": HEAD + "      - uses: " + uses + "\n"}
+CASES = {
+    "local-yml-read":    (dict(wf("./.github/actions/ny"), **{".github/actions/ny/action.yml": COMP}), {}, HIT, "hit", "o/inner"),
+    "local-yaml-read":   (dict(wf("./.github/actions/ny"), **{".github/actions/ny/action.yaml": COMP}), {}, HIT, "hit", "o/inner"),
+    "remote-yml-read":   (wf("o/act@" + SO + " # v1"), {"action.yml": COMP}, HIT, "hit", "o/inner"),
+    "remote-yaml-read":  (wf("o/act@" + SO + " # v1"), {"action.yaml": COMP}, HIT, "hit", "o/inner"),
+    "remote-sub-yaml-read": (wf("o/act/sub/dir@" + SO + " # v1"), {"sub/dir/action.yaml": COMP}, HIT, "hit", "o/inner"),
+    "local-neither":     (wf("./.github/actions/gone"), {}, {}, "finding", ".github/actions/gone"),
+    "local-dir-no-file": (dict(wf("./.github/actions/empty"), **{".github/actions/empty/README.md": "x\n"}), {}, {}, "finding",
+                          ".github/actions/empty"),
+    "remote-neither":    (wf("actions/checkout@" + SO + " # v4.1.0"), {}, {}, "finding", "actions/checkout"),
+    "remote-sub-neither": (wf("o/act/sub/dir@" + SO + " # v1"), {}, {}, "finding", "o/act"),
+    "remote-reusable-workflow": ({".github/workflows/ci.yml": "on: pull_request\njobs:\n  j:\n    uses: o/r/.github/workflows/w.yml@" + SO + " # v1\n"},
+                                 {}, {}, "finding", "o/r"),
+}
+files, remote, fx, want, named = CASES[name]
+r = work + "/repo-nf-" + name
+for path, text in files.items():
+    os.makedirs(os.path.dirname(r + "/" + path), exist_ok=True); open(r + "/" + path, "w").write(text)
+g = lambda *a: subprocess.run(["git", "-C", r, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+g("init", "-q"); g("add", "-A"); g("commit", "-q", "-m", "x")
+json.dump(dict({"lists": {}, "versions": {}, "prs": []}, **fx), open(work + "/fx-nf.json", "w"))
+os.environ["GH_FILES"] = json.dumps(remote); os.environ["GH_LOG"] = work + "/nf.issues"
+open(os.environ["GH_LOG"], "w").close()
+gh = work + "/gh-files"
+aud = load("pin-audit")
+live = aud.LiveNet([gh], "/nonexistent")
+aud.FixtureNet.nested = lambda self, item: live.nested(item)
+out, err = io.StringIO(), io.StringIO()
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    rc = aud.main(["--root", r, "--fixtures", work + "/fx-nf.json", "--now", "2026-10-05T12:00:00Z", "--gh", gh])
+text = out.getvalue() + err.getvalue() + open(os.environ["GH_LOG"]).read()
+assert rc == 1, ("want exit 1", rc, text[-600:])
+assert named in text, ("the output does not name " + named, text[-600:])
+if want == "finding":
+    assert "incomplete" not in text.lower() and "could not be read" not in text, text[-600:]
+PY
+for c in local-yml-read local-yaml-read remote-yml-read remote-yaml-read remote-sub-yaml-read; do
+  CASE="an action read from its action file ($c): the action it calls inside is checked, so a compromised one is a hit on it (exit 1)"
+  check python3 "$work/nested-find.py" "$work/pre.py" "$work" "$c"
+done
+for c in local-neither local-dir-no-file remote-neither remote-sub-neither remote-reusable-workflow; do
+  CASE="an action with no action.yml or action.yaml, or a remote reusable workflow ($c): a finding on that item (exit 1, "
+  CASE+="named), never an incomplete run"
+  check python3 "$work/nested-find.py" "$work/pre.py" "$work" "$c"
+done
 
 echo "s2-p2-strict-lookups: $pass ok, $failn failed"
 [ "$failn" -eq 0 ]

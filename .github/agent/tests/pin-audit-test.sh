@@ -1098,12 +1098,12 @@ print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
 assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
 PY
 
-CASE="history read: a script under .github/agent/ with an install at an old revision is not an item of the history; "
-CASE+="the same script at the tip is"
+CASE="history read: a script under .github/agent/ is read in every revision of the 90-day window: the install it held at an "
+CASE+="old revision is an item of the history, and so is the one it holds at the tip"
 check python3 - "$aud" "$work/r-agent-tip" <<'PY'
 import datetime as dt, importlib.util, os, subprocess, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-repo, script = sys.argv[2], ".github/agent/tests/t.sh"
+repo, script = sys.argv[2], ".github/agent/bin/t.sh"
 os.makedirs(os.path.join(repo, os.path.dirname(script)))
 def commit(version, when):
     with open(os.path.join(repo, script), "w") as f:
@@ -1118,8 +1118,45 @@ commit("v2.30.0", "2026-10-01T00:00:00Z")
 got = pa.history_items(repo, "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
 gosec = "gotool:github.com/securego/gosec/v2/cmd/gosec@"
 assert gosec + "v2.30.0" in got, sorted(got)
-assert gosec + "v2.29.0" not in got, sorted(got)
+assert gosec + "v2.29.0" in got, sorted(got)
 PY
+
+# a revision on another ref inside the window is read: refs scanned are --all (a branch, a remote-tracking branch or a tag), for
+# a workflow and for an agent script; the tip never holds the wrong pin
+for kind in branch remote tag pull; do
+  for what in .github/workflows/side.yml .github/agent/bin/side.sh; do
+    CASE="history read: a pin that is wrong only on a $kind ref, in $what, within the window, is an item of the history"
+    check python3 - "$aud" "$work/r-side-$kind-${what##*/}" "$kind" "$what" <<'PY'
+import datetime as dt, importlib.util, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+repo, kind, path = sys.argv[2:5]
+gosec = "gotool:github.com/securego/gosec/v2/cmd/gosec@"
+def git(*a, when=None):
+    env = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when) if when else None
+    subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, env=env, capture_output=True)
+def write(version):
+    full = os.path.join(repo, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+    install = "go install github.com/securego/gosec/v2/cmd/gosec@" + version
+    with open(full, "w") as f:
+        f.write("#!/bin/sh\n" + install + "\n" if path.endswith(".sh") else
+                "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: " + install + "\n")
+os.makedirs(repo); git("init", "-q", "-b", "main")
+write("v2.30.0"); git("add", "-A"); git("commit", "-q", "-m", "good", when="2026-09-20T00:00:00Z")
+git("checkout", "-q", "-b", "side")
+write("v2.99.9"); git("add", "-A"); git("commit", "-q", "-m", "wrong pin on the side", when="2026-09-25T00:00:00Z")
+git("checkout", "-q", "main")
+if kind == "remote":
+    git("update-ref", "refs/remotes/origin/side", "side"); git("branch", "-q", "-D", "side")
+if kind == "tag":
+    git("tag", "side-tag", "side"); git("branch", "-q", "-D", "side")
+if kind == "pull":
+    git("update-ref", "refs/pull/1/head", "side"); git("branch", "-q", "-D", "side")
+got = pa.history_items(repo, "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+assert gosec + "v2.30.0" in got, sorted(got)
+assert gosec + "v2.99.9" in got, sorted(got)
+PY
+  done
+done
 
 # --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
 # new tree re-reads only the files that changed. The verdicts must not move: byte-identical items, a changed callee invalidates its caller, a raise is never cached. ---
@@ -1371,9 +1408,11 @@ check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/readableonly
 rm -rf "$work/r-pullref"; cp -R "$work/r-clean" "$work/r-pullref"
 git -C "$work/r-pullref" fetch -q "$work/r-toolarge" "$TL_B:refs/pull/1/head"
 run pullref "$CLEAN" "$work/r-pullref"
-CASE="AC5: the 90-day history is read from main only, never from refs/pull/*/head: a too-large file on a PR ref "
-CASE+="leaves the audit complete (exit 0, says no known-compromised versions)"
-check test "$rc" -eq 0; check grep -q 'no known-compromised' "$work/pullref.out"
+CASE="AC5: the history is read from --all refs, a refs/pull/*/head ref included: a too-large file on a PR ref inside the window "
+CASE+="makes the audit incomplete (exit 2, the reason names the revision or the file)"
+check test "$rc" -eq 2; check grep -qE "${TL_B:0:12}|big\\.sh" "$work/pullref.err"
+CASE="AC5: an incomplete audit over a PR ref never says 'no known-compromised versions' on stdout"
+check none_match 'no known-compromised' "$work/pullref.out"
 # a download or a dependency at the END of a long line of an old revision is found
 r="$work/r-longtail"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
 printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
