@@ -181,6 +181,8 @@ ALLOW_PATTERNS=(
   '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
+  '^bin/guide-judge-test\.sh$'
+  '^bin/guide_plan_judge\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
