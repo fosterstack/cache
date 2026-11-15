@@ -2,7 +2,7 @@
 
 We build tools that help you secure your build pipeline. It made sense to start with the build cache.
 
-We built FosterStack Cache by meticulously following the security guidance that matters: NIST SP 800-204C and 800-204D, and SLSA (a framework for build integrity). Where the guidance stops, we kept going: builds that run with the network cut off (hermetic builds), builds that give the same bytes every time (reproducible builds), a distroless image (no shell, no package manager, only what the server needs), and more. [Read the full list](docs/everything-we-do-for-security.md).
+We built FosterStack Cache by meticulously following the security guidance that matters: NIST SP 800-204C and 800-204D, and SLSA (a framework for build integrity). The package and image build steps run with the network cut off (hermetic builds), the builds give the same bytes every time (reproducible builds), the image is distroless (no shell, no package manager, only what the server needs), and more. [Read the full list](docs/everything-we-do-for-security.md).
 
 [![CI](https://github.com/fosterstack/cache/actions/workflows/ci.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/fosterstack/cache/actions/workflows/codeql.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/codeql.yml)
@@ -51,7 +51,7 @@ Shipped:
 - **Cache server core.** The server stores blobs on the filesystem under their content hash. A `bbolt` database indexes the metadata. When the cache reaches its size cap, it evicts the least recently used entries. All of this is tested.
 - **HTTP surface.** The server answers `GET`, `PUT` and `HEAD`. Basic Auth is optional. Prometheus metrics are at `/metrics`, and a liveness check is at `/healthz`.
 - **A static binary.** It is built with `CGO_ENABLED=0`. It builds and runs today (see below).
-- **CI checks.** On every push and pull request, CI runs the tests (race-enabled), `go vet`, golangci-lint (staticcheck, plus a repo-wide ban on importing `crypto/md5` and `crypto/sha1`), govulncheck, dependency review on pull requests, and a check that the public repo holds only allowlisted files. Before every release, CI also runs gosec, CodeQL, and the full test suite under `GODEBUG=fips140=only`. OpenSSF Scorecard runs weekly.
+- **CI checks.** On every push and pull request, CI runs the tests (race-enabled), `go vet`, golangci-lint (staticcheck, plus a repo-wide ban on importing `crypto/md5` and `crypto/sha1`), govulncheck, dependency review on pull requests, and a check that the public repo holds only allowlisted files. CI also runs gosec, CodeQL, and the full test suite under `GODEBUG=fips140=only`, and scan.yml scans the candidate images, on every pull request. OpenSSF Scorecard runs weekly.
 - **Release pipeline.** We publish signed container images (production and `-fips`) on GHCR (GitHub's container registry), with provenance attached. We also publish bare Linux binaries and a signed checksums file. Only CI builds a release. Each release image is built once, then built a second time independently to check the two match. The scans and acceptance tests run on the first build's exact digest, and that same digest is what we publish: the bytes we tested are the bytes you pull. A daily rescan re-checks the current release. [`RELEASING.md`](RELEASING.md) describes the pipeline stage by stage.
 - **Acceptance tests.** Acceptance tests run before every release. They build a real multi-module Gradle project from scratch, twice. The second build must get real `FROM-CACHE` hits (Gradle's label for a task result restored from a cache). The sample's local build cache is off, so a hit is evidence that the remote cache served it. There is no benchmark suite yet. These tests check correctness, not speed.
 - **Deployment docs.** [Install](docs/install.md) (binaries and systemd), [Docker](docs/docker-deploy.md) (with sizing), [Kubernetes](docs/kubernetes.md), [Gradle](docs/gradle.md), [Maven](docs/maven.md), and [disconnected networks](docs/offline-install.md).
@@ -67,7 +67,7 @@ We track this work in this repo's issues, which is also where you can argue with
 
 There is no waitlist and no signup. Pull the image and run it. The quickstart below is the whole gate.
 
-Each item above names the workflow or command that demonstrates it. The Actions history shows the CI claims. The commands in [`RELEASING.md`](RELEASING.md) show the signatures and provenance. RELEASING.md also states what those commands prove, and what they do not.
+The Actions history shows the CI claims. The commands in [`RELEASING.md`](RELEASING.md) show the signatures and provenance. RELEASING.md also states what those commands prove, and what they do not.
 
 The full core (eviction, size limits, metrics) is free under MIT: see [`LICENSE`](LICENSE). Paid tiers add single sign-on (SSO), high-availability (HA) replication, a 48-hour CVE response target, and compliance support. They sit on top of the same open core. Nothing is withheld from the free tier for security.
 
@@ -232,7 +232,7 @@ We extracted the first set of requirements from the code and docs, and it was ap
 
 ## Security
 
-- A static binary with zero CGO. The image has no shell and no package manager, and a small OS package surface (base layout, CA certificates, time zone data). We patch by publishing a new image, never on a running one.
+- A static binary with zero CGO. The image has no shell and no package manager, and a small OS package surface (base layout, time zone data). We patch by publishing a new image, never on a running one.
 - CI runs the full test suite under `GODEBUG=fips140=only`. In that mode, Go's FIPS 140-3 module makes non-approved algorithms fail. The mode is a best-effort test aid, and the released `-fips` build runs with FIPS mode on. A `depguard` allowlist covers the static side. It permits only in-boundary crypto imports and denies third-party crypto outright. [`SECURITY.md`](SECURITY.md) describes both, including what each does and does not prove.
 - **No telemetry and no required FosterStack connection.** The server reports nothing to us: no usage reporting, no license check, no update ping. Today's free core makes no outbound connections at all, so it runs the same on a host with no route to the internet.
 

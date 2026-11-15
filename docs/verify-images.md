@@ -315,7 +315,7 @@ acceptance criterion, and the Rekor log indexes.
 | `X` / `latest` | — | Floating: move only when the release is the highest released version |
 
 There is no base image from v0.3.0 on: each image holds only the packages named in <!-- pinned: historical -->
-[`build/apko.yaml`](../build/apko.yaml) (base layout, CA certificates, time zone data and `fscache`),
+[`build/apko.yaml`](../build/apko.yaml) (base layout, time zone data and `fscache`),
 pinned by the lock files in `build/locks/`.
 
 Both variants of every release are signed the same way. The `-fips` image has
@@ -326,7 +326,7 @@ not.
 ### The images have no shell
 
 Production and `-fips` contain the `fscache` binary and a few packages
-(base layout, CA certificates, time zone data; see `build/apko.yaml`). They have
+(base layout, time zone data; see `build/apko.yaml`). They have
 no shell, no package manager and no coreutils. Running `docker exec ... sh` in
 them fails, by design.
 
