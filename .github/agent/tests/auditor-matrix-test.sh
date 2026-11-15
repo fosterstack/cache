@@ -10,8 +10,7 @@
 # test, not statements[0]); every case pairs a positive with a contrasting input so
 # a constant writer fails one of the pair. The workflow is parsed with vendored
 # PyYAML over the parsed document, never raw text. A strict harness fails a case on
-# any nonzero exit; there is no run2. The 19 uses of `|| true` are the exceptions: 2 optional fixture copies, 2 grep
-# guards, and 15 auditor-run.py calls whose exit the case does not judge (it reads the files the run wrote).
+# any nonzero exit, except a call ending `|| true` whose case reads the files the run wrote; there is no run2.
 #
 # Neutral fixture -> scenario map:
 #   scanners/grype.json trivy.json osv-image.json osv-gomod.json snyk.json  real captures
@@ -5102,7 +5101,7 @@ for variant in delivery-base-vex-empty delivery-base-items-keyless; do
   eq "$r6" "rc=3 mutating=0" && ok || no "a delivery base whose reviewed file is {} or lacks its list ($variant) stops the run (exit 3) BEFORE git checkout: the delivery base is read with git show, the workspace is not touched" "$r6"
 done
 r7="$("$PY" "$WORK/r7main.py" "$FXRUN" control 2>/dev/null | tail -1)"
-case "$r7" in "rc=3 "*|"rc=EXC"*|"") no "control: an owner-escalating finding with intact per-finding VEX runs and opens its owner-decision issue (so the stop cases below are not vacuous)" "$r7" ;; *"issues=0 "*) no "control: no owner-decision issue was opened, the stop cases below prove nothing" "$r7" ;; "rc="*) ok ;; *) no "control: the probe printed no rc= line" "$r7" ;; esac
+case "$r7" in "rc=3 "*|"rc=EXC"*) no "control: an owner-escalating finding with intact per-finding VEX runs and opens its owner-decision issue (so the stop cases below are not vacuous)" "$r7" ;; *"issues=0 "*) no "control: no owner-decision issue was opened, the stop cases below prove nothing" "$r7" ;; "rc="*) ok ;; *) no "control: the probe printed no rc= line" "$r7" ;; esac
 for variant in base-vex-empty base-items-keyless; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding AND a damaged delivery base ($variant) stops the run (exit 3) before the owner-decision issue: the base is fetched and validated once, before the first issue" "$r7"
