@@ -64,6 +64,10 @@ REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOK
 VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "signed-witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
 VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
 def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("signed-witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
+# ROW 1: verify and release also download the two signed rapk records (records, never apks), for apk-compare --rapk
+RAPK = ("signed-witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm")
+_vd = vdowns
+def vdowns(): return _vd() + "".join(dn(n, n[len("signed-"):]) for n in RAPK)
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
 KMS_REF = "awskms:///alias/fosterstack-release-signing"
 # REQ-CHAIN-007-AC1 (Astra R6) and the owner's rule of Oct 21 2026 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
@@ -145,7 +149,9 @@ V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] ||
      "python3 -I -B bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json",
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-entries provenance/provenance.rekor.json",
      "python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json",
-     "python3 -I -B bin/chain-verify.py apk-compare --policy policy.json --record witness-rebuild/rebuild-collection.json --file apk-compare/apk-compare.json --digests witness-build/digests.json",
+     "python3 -I -B bin/chain-verify.py apk-compare --policy policy.json --record witness-rebuild/rebuild-collection.json --file apk-compare/apk-compare.json --digests witness-build/digests.json"
+     " --rapk witness-rapk-ubuntu-24.04/rapk-collection.json"
+     " --rapk witness-rapk-ubuntu-24.04-arm/rapk-collection.json",
      "python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check",
      # ruling G (advisor Oct 12): the govulncheck stream Release hands the evidence step is a product of Check's scanners record, bound under Check's identity
      "python3 -I -B bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json"]
@@ -308,6 +314,19 @@ m c_upopt   '=          name: apk-compare\n          path: apk-compare\n        
 m r_rapk    'name: dist\n          path: dist'                'name: rapk-ubuntu-24.04\n          path: rapks/ubuntu-24.04' 'download'  "SIGNER the release job downloads a rapk (Rebuild's apks reach the signer)"
 m v_nocmp   '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: apk-compare\n          path: apk-compare\n' '' 'download'  "SIGNER the verify job does not download the comparison result (the first occurrence: release-verify would have nothing to read)"
 m r_nocmp   '(name: apk-compare\n          path: apk-compare\n.*?)      - uses: [^\n]*\n        with:\n          name: apk-compare\n          path: apk-compare\n' '\1' 'download'  "SIGNER the release job does not download the comparison result"
+# ROW 1: verify and release download the signed rapk records (records, never apks)
+DW='actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1'
+D1="      - uses: $DW\n        with:\n          name: "
+N1='signed-witness-rapk-ubuntu-24.04\n          path: witness-rapk-ubuntu-24.04\n'
+N2='signed-witness-rapk-ubuntu-24.04-arm\n          path: witness-rapk-ubuntu-24.04-arm\n'
+m v_norapk "(  verify:.*?)$D1$N1" '\1' 'signed rapk record' \
+  "ROW1 the verify job lacks the amd64 signed rapk record"
+m v_norapk_arm "(  verify:.*?)$D1$N2" '\1' 'signed rapk record' \
+  "ROW1 the verify job lacks the arm64 signed rapk record"
+m r_norapk "(  release:.*?)$D1$N1" '\1' 'signed rapk record' \
+  "ROW1 the release job lacks the amd64 signed rapk record"
+m r_norapk_arm "(  release:.*?)$D1$N2" '\1' 'signed rapk record' \
+  "ROW1 the release job lacks the arm64 signed rapk record"
 m s_rnorv    '=      - name: release-verify\n        env:\n          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n          AWS_REGION: us-east-1\n          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks\n' '      - name: release-apks\n' 'exactly' "AC1 (Astra R6) the release job's first witnessed step is not release-verify (no re-run before the credentials)"
 # round 1 (Codex seat B): the steps between the first and last Witness step are Witness steps and nothing else, and an install never comes after the first four
 m s_latemel  '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: install melange again\n        run: bash bin/install-build-tools.sh melange\n      - name: release-apks' 'none of checkout' "AC1 the release job installs no build tool: a melange install between release-verify and release-apks is refused"
@@ -460,6 +479,14 @@ vm v_gvrec   'witness-check/witness-scanners/scanners-collection.json' 'witness-
 vm v_gvfile  '--file check-results/govulncheck.json' '--file check-results/scan-results.json'                            'not the pinned form' "G bind-check names another file than govulncheck.json"
 vm v_gvdig   '--digests witness-build/digests.json --file' '--file'                                                    'not the pinned form' "G the stream bound without Build's digest list"
 vm v_gvfirst 'python3 -I -B bin/chain-verify.py check-list[^\n]*\n(python3 -I -B bin/chain-verify.py bind-check[^\n]*\n)' '\1python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check\n' 'not the pinned form' "G the stream bound before Check's records are listed (rule 69's order)"
+# ROW 1: apk-compare takes the two signed rapk records (--rapk), never Rebuild's unsigned digests.json alone
+R0=' --rapk witness-rapk-ubuntu-24.04'; RA="$R0/rapk-collection.json"; RB="$R0-arm/rapk-collection.json"
+vm v_rapk_none "$RA$RB" '' 'not the pinned form' \
+  "ROW1 apk-compare without the signed rapk records (unsigned digests.json alone)"
+vm v_rapk_one "$RB" '' 'not the pinned form' \
+  "ROW1 apk-compare with one signed rapk record"
+vm v_rapk_apks 'witness-rapk-ubuntu-24.04/rapk-collection.json' 'rapks/ubuntu-24.04' 'not the pinned form' \
+  "ROW1 --rapk names an apk tree"
 vm v_nobind  'python3 -I -B bin/chain-verify.py bind-items[^\n]*\n' ''                                                      'commands'           "AC16 items.json is not bound to Build's record"
 vm v_noitems '--items witness-build/items.json'              ''                                                       'not the pinned form' "AC16 bind-items without the items file"
 vm v_noadm   'python3 -I -B bin/chain-verify.py bind-items[^\n]*admission-baseline[^\n]*\n' ''                                    'commands'           "AC19 admission's baseline file is not bound to Build's record"
@@ -793,7 +820,7 @@ rm -f "$work/awstree/.github/workflows/w.yaml"
 printf 'jobs:\n  j:\n    steps:\n      - run: bash bin/install-scanner.sh "aws-cli"\n' > "$work/awstree/.github/workflows/q.yml"
 mapfile -t tf < <(awsfiles "$work/awstree"); mj=$(awsjobs "${tf[@]}")
 if [ "$mj" = "q.yml:j" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS"; then ok "KA-2 p4 r2 C4 mutant: a quoted \"aws-cli\" install ($mj) is found and is outside the allowed signing jobs"; else bad "KA-2 p4 r2 C4 mutant: the quoted \"aws-cli\" install was not found by the scan ($mj)"; fi
-EXPECT=355
+EXPECT=362
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
