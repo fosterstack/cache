@@ -216,7 +216,7 @@ refusal_problem() {
   local name=$1 rc=$2 out=$3 want
   [ "$rc" -eq 1 ] || { echo "(exit $rc, want a refusal by exit 1)"; return; }
   ! grep -q Traceback <<<"$out" || { echo "(a crash, not a refusal)"; return; }
-  grep -qv '^check-action-pins: ' <<<"$out" || { echo "(no finding line)"; return; }
+  [ -n "$(grep -v '^check-action-pins: ' <<<"$out" | tr -d '[:space:]')" ] || { echo "(no finding line)"; return; }
   want=$(refusal_reason "$name")
   [ -n "$want" ] || { echo "(no reason is named for this refusal in refusal_reason)"; return; }
   grep -qF -- "$want" <<<"$out" || echo "(the finding does not say: $want)"
@@ -3690,6 +3690,19 @@ for idx in (4, 7):
     assert judge(D, "review", idx, drun, {D: dwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
 assert judge(D, "review", 4, dsteps[7]["run"], {D: dwf}), "one excluded step's key does not exclude the other's text"
 PY
+fi
+
+# refusal_problem fails a refusal that printed nothing (empty or blank output), and passes one that says what it should
+if take refusal-problem-empty-output; then
+  rname=r23-tag-of-local-name-bad
+  p_empty=$(refusal_problem "$rname" 1 "")
+  p_blank=$(refusal_problem "$rname" 1 $'\n  \n')
+  p_good=$(refusal_problem "$rname" 1 "w.yml: job j: an image not pinned by digest")
+  if [[ "$p_empty" == *"no finding line"* && "$p_blank" == *"no finding line"* && -z "$p_good" ]]; then
+    pass=$((pass+1)); echo "PASS refusal-problem-empty-output → ok"
+  else
+    failn=$((failn+1)); echo "FAIL refusal-problem-empty-output → empty: [$p_empty] blank: [$p_blank] good: [$p_good]"
+  fi
 fi
 
 # a real shard that selected no unit is not a successful run (PINS_SHARD=0/5000 would otherwise exit 0 having tested nothing)
