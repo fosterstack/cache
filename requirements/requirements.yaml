@@ -2054,7 +2054,7 @@ requirements:
       - id: REQ-REL-009-AC8
         given: "a patch release"
         when: "its notes are generated"
-        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (patch-decide.py tag-notes; any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
+        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes judged unable to affect supported clients (each citing the decision that judged it), those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (patch-decide.py tag-notes; any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC9
