@@ -249,8 +249,8 @@ check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
       "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps (E item B)")
 t1 = ac("REQ-CHAIN-007", 1)["then"]
-check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
-      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name (accepted Oct 13)")
+check("each one line and nothing else in the step except, for release-publish, an `env` block of exactly the credential names AC2 gives" in t1,
+      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 names (release-publish; AC15 no longer named)")
 check("the release notes are posted here only from the notes carried in the generated patch tag's message (REQ-REL-009-AC8; the changelog is the patch-notes job's)" in t7 and "release notes are not posted here" not in t7,
       "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 (the notes are posted by release-assets from the generated tag's message; Codex 4b-2 r1 B2)")
 check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
