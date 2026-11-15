@@ -381,6 +381,10 @@ mappings:
   - ac: REQ-DEPLOY-002-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }
+  # The platform and FIPS credits to chain-check-scripts-test.sh rest on stub binaries and a stub docker:
+  # unit coverage of bin/check-artifacts.sh, not a run of the shipped artifact. The credit for that run
+  # (Check's run of bin/check-artifacts.sh on the real images and archives)
+  # is added when section 1 settles the Check job's name.
   - ac: REQ-PLAT-002-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
@@ -820,7 +824,7 @@ mappings:
   - ac: REQ-REL-009-AC6
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
-      - { type: shell-test, ref: "bin/chain-no-keyless-tag-test.sh" }
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
   - ac: REQ-REL-009-AC13
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
@@ -838,10 +842,9 @@ mappings:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  # The credited suite asserts only that no step after Sign attaches or changes an attestation;
+  # the digest-equality clause is unproved.
   - ac: REQ-REL-010-AC4
-    evidence:
-      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
-  - ac: REQ-REL-010-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
   - ac: REQ-UAT-001-AC1
@@ -871,7 +874,6 @@ mappings:
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
-      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
@@ -1067,6 +1069,7 @@ mappings:
   - ac: REQ-CHAIN-001-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  # The marker refusal is driven by chain-build-admit-test.sh, marker-gate-test.sh and chain-verify-test.sh.
   - ac: REQ-CHAIN-001-AC6
     evidence:
       - { type: shell-test, ref: "bin/marker-gate-test.sh" }
@@ -1132,10 +1135,10 @@ mappings:
   - ac: REQ-CHAIN-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-CHAIN-004-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
-      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-CHAIN-004-AC3
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1159,6 +1162,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  # chain-sign-wiring-test.sh does not exercise signing a record with the release key.
   - ac: REQ-CHAIN-004-AC10
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1170,14 +1174,13 @@ mappings:
   - ac: REQ-CHAIN-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
-      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
-      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-CHAIN-005-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC3
     evidence:
       - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
+  # chain-sign-wiring-test.sh does not exercise signing a record with the release key.
   - ac: REQ-CHAIN-005-AC4
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1355,6 +1358,7 @@ mappings:
   - ac: REQ-CHAIN-006-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-CHAIN-006-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
@@ -1374,16 +1378,15 @@ mappings:
   - ac: REQ-CHAIN-006-AC6
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  # The credited suite plans the guide's commands; it does not prove the empty cannot-run list.
   - ac: REQ-CHAIN-006-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
-      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
   - ac: REQ-CHAIN-006-AC8
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
   - ac: REQ-CHAIN-006-AC9
     evidence:
-      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-CHAIN-006-AC10
     evidence:
@@ -1391,7 +1394,6 @@ mappings:
       - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
   - ac: REQ-CHAIN-006-AC11
     evidence:
-      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-CHAIN-006-AC12
     evidence:
@@ -1440,7 +1442,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
-      - { type: shell-test, ref: "bin/chain-install-crane-test.sh" }
   - ac: REQ-CHAIN-007-AC8
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
