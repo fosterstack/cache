@@ -2915,9 +2915,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC19
-        given: "a pull request that adds a job (a job, never a step) calling a reusable workflow by the exact form ./.github/workflows/<name>.yml as YAML parses it (a plain file name of letters, digits, dot, underscore and hyphen, with no .., no other directory, no @ref, no expression, no surrounding space), where that file is in the tree and is a workflow with a workflow_call trigger and jobs, and the call has no with: block (absent or empty)"
+        given: "a pull request that adds or changes a line that uses a local action or a local reusable workflow, by a path starting with ./ (a step or a job, with or without a with: block or an env)"
         when: "the age check runs"
-        then: "the call is no item and no finding: nothing can be handed to the called file, which is itself inventoried, so every version it moves is measured there by its own rules; a call with any with: value, and a local reference of any other form, stays an item that cannot pass, as before, unless a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text names it (file of the call, form \"a local reusable workflow call\", key and line both the 64-hex hash of the item's whole identity, which carries the hash of its with: block, so an edited block is another item; ruling non-empty) (decided at review Oct 14: the closed form, because every attempt at a looser one let some caller input reach a version position through the callee)"
+        then: "the line is no item and no finding and the check lists no version for it: it names a file of the same commit, not a pin, and that file is itself inventoried, so every version it moves is measured there by its own rules (decided Nov 15, replacing the Oct 14 closed form)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC20

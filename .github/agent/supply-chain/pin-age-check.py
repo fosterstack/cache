@@ -1056,19 +1056,20 @@ def _command(words):
 
 
 def _logical_lines(text):
-    """The lines of text, a line that leaves a quote open joined with the next ones, and the body of a heredoc fed to
-    python (Python text, not read) left out."""
-    lines, i, python_end = text.split("\n"), 0, None
+    """The lines of text, a line that leaves a quote open joined with the next ones, and the body of a heredoc left out
+    (data), unless a shell reads it: then its lines are read like any others."""
+    lines, i, heredoc_end = text.split("\n"), 0, None
     while i < len(lines):
         line, i = lines[i], i + 1
-        if python_end:
-            python_end = None if line.strip() == python_end else python_end
+        if heredoc_end:
+            heredoc_end = None if line.strip() == heredoc_end else heredoc_end
             continue
         while _segments(line)[1] and i < len(lines):
             line, i = line + "\n" + lines[i], i + 1
         heredoc = _HEREDOC.search(line)
-        if heredoc and any(w.startswith("python") for seg in _segments(line)[0][:1] for w in _command(seg)[0][:1]):
-            python_end = heredoc.group(2)
+        if heredoc and not any(_QUOTING.sub("", w) in _SHELLS for seg in _segments(line)[0]
+                for w in _command(seg)[0][:1]):
+            heredoc_end = heredoc.group(2)
         yield line
 
 
@@ -1455,19 +1456,9 @@ def unresolved_call_rows(root, rev, exceptions_path):
 
 
 def split_ruled_local_calls(moved, rulings):
-    """REQ-SUP-001-AC19: a local reusable-workflow call that keeps a with: block is an item that cannot pass, unless a
-    base-branch row names it: file, form
-    "a local reusable workflow call", key and line both the 64-hex hash of the item's whole identity (its path and the
-    hash of its with: block), so an edited
-    with: block is another item. Returns (still moved, [(item, ruling)])."""
-    keep, ruled = [], []
-    for m in moved:
-        r = None
-        if m.kind == "action" and m.version == "(local)" and m.src:
-            h = _item_hash(m)
-            r = rulings.get((m.src[0], LOCAL_CALL_FORM, h, h))
-        (ruled if r else keep).append((m, r[0]) if r else m)
-    return keep, ruled
+    """REQ-SUP-001-AC19: a local action or reusable workflow (a `uses: ./path` line) is a file of the same commit, not a
+    pin: it leaves the list with no version listed and nothing refused. Returns (still moved, [(item, ruling)])."""
+    return [m for m in moved if not (m.kind == "action" and m.version == "(local)")], []
 
 
 def drop_ruled_unpinned(items, ruled_lines):
