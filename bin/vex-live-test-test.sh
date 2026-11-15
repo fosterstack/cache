@@ -1152,7 +1152,7 @@ case "$*" in
     def hub_curl(answer):
         call = 'echo "curl-call $*" >> "$RUNNER_TEMP/events.log"; '
         return call + ("exit 22" if answer is None else "printf '%s' '" + answer + "'")
-    def leg(reports, env=None, mode="rc", extra="", hub=HUB_PRIVATE):
+    def leg(reports, env=None, mode="rc", extra="", hub=HUB_PRIVATE, curl=None):
         files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
         body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
                 + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
@@ -1160,7 +1160,7 @@ case "$*" in
                 + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; echo \"push-tok-after=${DOCKERHUB_TEST_PUSH_TOKEN-UNSET} scout-tok-after=${DOCKERHUB_SCOUT_TOKEN-UNSET}\"; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
         e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
         e.update(env or {})
-        return sh(body, {"crane": CRANE, "docker": SCOUT, "curl": hub_curl(hub)}, e)
+        return sh(body, {"crane": CRANE, "docker": SCOUT, "curl": curl or hub_curl(hub)}, e)
     OK_FIX = [gl_report(LEG_CVE, "CVE-A", OURS_CVE), gl_report("CVE-A", OURS_CVE)]
     OK_PROD = [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]
     rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)    # the first two answers belong to the informational probe of the Build layout (an unreadable report there is information)
@@ -1257,6 +1257,21 @@ case "$*" in
               "leg-rc=0" not in out and "leg-rc=" in out and "crane push" not in out and "crane copy" not in out and "live-1-1" not in out, (rc, out[-300:]))
     rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, hub=None)
     check("scout leg refuses to push when the API call itself fails", "leg-rc=0" not in out and "crane push" not in out and "crane copy" not in out, (rc, out[-300:]))
+    # a private repository answers 404 to an anonymous call: the visibility is asked with the job's token (on
+    # stdin as `-` or `@-`, in a header or config file, or in an argument), so what curl receives, by any of
+    # those ways, holds one of the job's Docker Hub tokens
+    SEEN_CURL = (
+        'echo "curl-call $*" >> "$RUNNER_TEMP/events.log"; seen="$*"; '
+        'for a in "$@"; do f=${a#@}; [ -f "$f" ] && seen="$seen $(cat "$f")"; done; '
+        'for a in "$@"; do case "$a" in -|@-) seen="$seen $(timeout 2 cat 2> /dev/null || true)" ;; esac; done; '
+        'echo "curl-seen $(printf %s "$seen" | tr "\\n" " ")" >> "$RUNNER_TEMP/events.log"; '
+        'printf \'%s\' \'{"is_private": true}\'')
+    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD, curl=SEEN_CURL)
+    ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
+    seen_tok = [l for l in ev if l.startswith("curl-seen ") and ("push-tok" in l or "scout-tok" in l)]
+    check("scout leg: the Docker Hub visibility call carries the job's token (an anonymous call cannot see a "
+          "private repository)", "leg-rc=0" in out and any(l.startswith("curl-seen ") for l in ev) and seen_tok,
+          (rc, [l for l in ev if l.startswith("curl")][:4]))
 
 # --- review rulings (s2-rows-P456, rows 85-86): sourcing runs nothing; one journal_push needing PUSHED_LOG; one root; a private Docker Hub repository
 def run_script(args, env, stubs, body=None):   # body: sourced with the stubs on PATH; else the script is executed; the stub calls come back as a list
