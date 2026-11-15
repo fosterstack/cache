@@ -532,6 +532,13 @@ GJ="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> | jq -e '.[0] | 
 printf '# guide\n\n```sh\n%s\n```\n' "$GJ" > "$work/gl10/docs/verify-release.md"
 python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$GJ" "$work/gl10/docs/verify-release.cannot-run.json"
 expect ok "AC7 round 3 a verify form piped to a jq filter that holds a quoted pipe is one verify form (the planner's rule)" "" guidelist "$work/gl10/docs/verify-release.md"
+# a rejection by the shared judge is final: a second command after a verify form is refused,
+# whatever the judge says about why
+mkdir -p "$work/gl11/docs"
+printf '# guide\n\n```sh\ncosign verify <IMAGE_REF>; true\n```\n' > "$work/gl11/docs/verify-release.md"
+printf '[{"command": "cosign verify <IMAGE_REF>; true", %s}]\n' "$R" > "$work/gl11/docs/verify-release.cannot-run.json"
+expect caught "AC7 a cannot-run entry the shared judge rejects (a verify form, then '; true') is refused" \
+  "; true" guidelist "$work/gl11/docs/verify-release.md"
 # ---- AC10: the old acceptance stages --------------------------------------------------------------------------------
 mkdir -p "$work/r/.github/workflows"; cp "$work/release.yml" "$work/r/.github/workflows/release.yml"
 expect ok "fixture: none of the old acceptance stages and no call to them" "" removed "$work/r"
@@ -667,7 +674,7 @@ if grep -Fq "unknown step in the plan" <<< "$out"; then ok "REL-011-AC1 witness-
 # the steps are validated first (the loop above: every step name outside the closed list is refused at the plan check), so the one `*) stage=check` arm is reached only by scanners, acceptance, runtime and arm64
 if grep -Fq '*) stage=check' "$root/bin/witness-sign-staged.sh" && grep -Fq 'apk|build) stage=build' "$root/bin/witness-sign-staged.sh" && grep -Fq 'rapk|rebuild) stage=rebuild' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
 
-EXPECT=307
+EXPECT=308
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
