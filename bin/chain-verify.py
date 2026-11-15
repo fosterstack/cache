@@ -965,6 +965,9 @@ def cmd_apk_compare(a):
     repeated or unknown pair, a key that is not in the schema, or a digest that is not sha256:<64 lower-case hex> is refused."""
     stage = "rebuild"
     pol = _release_policy(a, stage)
+    if len(a.rapk or []) != 2:
+        refuse(stage, "apk-compare: exactly two signed rapk records (--rapk, one per witness) are required, got %d"
+               % len(a.rapk or []))
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
@@ -1032,6 +1035,25 @@ def cmd_apk_compare(a):
     if product_digest(typed_subjects(stage, stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse(stage, "apk-compare: Rebuild's verified record attests another digest list than Build attested "
                       "(the rebuild digests are not Build's)")
+    rapk = {}
+    for path in a.rapk or []:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                rs, _rp, rd = verify_record(pol, stage, path, tmp)
+        except Refuse as ex:
+            refuse(ex.stage, "rapk: the signed rapk record %s is refused: %s" % (path, ex.reason))
+        if rd["payloadType"] == POLT or (rs.get("predicate") or {}).get("name") != "rapk":
+            refuse(stage, "rapk: %s is not a signed rapk record of Rebuild" % path)
+        for x in typed_subjects(stage, rs):
+            if x["name"] in rapk:
+                refuse(stage, "rapk: the product %s is in two signed rapk records" % x["name"])
+            rapk[x["name"]] = x["digest"].get("sha256")
+    for p in pairs:
+        runner = "x86_64" if p["arch"] == "amd64" else "aarch64"
+        have = rapk.get(PRODUCT_PREFIX + "out/%s/%s" % (runner, p["name"]))
+        if have != p["build_digest"].split(":")[1]:
+            refuse(stage, "rapk: the signed rapk records do not hold %s/%s with digest %s" % (p["arch"], p["variant"],
+                                                                                           p["build_digest"]))
     print("ok")
 
 
@@ -1228,6 +1250,7 @@ def check_build_record(a):
         refuse("sign", "digest file is missing or unreadable (format)")
     # a snapshot version in the list: refused before any signature check, from the bytes read once (REQ-CHAIN-004-AC15)
     chain_items.check_digest_bytes("build", d_bytes)
+    digests = parse_digest_bytes(d_bytes)     # the format before the attestation: a hand-made list is refused as one
     # Build's record first, as stage build, under the policy's build identity (a dry-run policy is allowed for this)
     pol_b = dict(pol)
     pol_b.pop("dry_run", None)
@@ -1235,7 +1258,7 @@ def check_build_record(a):
         stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, tmp)
     if product_digest(typed_subjects("sign", stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
-    return pol, parse_digest_bytes(d_bytes), stmt
+    return pol, digests, stmt
 
 
 # The SBOMs the signed provenance names: their sha256 come from the file --items names, which Sign binds to Build's
@@ -2568,6 +2591,7 @@ def build_parser():
     ap.add_argument("--record", required=True)       # Rebuild's signed collection: its digest list must be Build's
     ap.add_argument("--file", required=True)
     ap.add_argument("--digests", required=True)
+    ap.add_argument("--rapk", action="append")       # the signed rapk records, one per witness: the apk digests
     cl = sub.add_parser("check-list")
     cl.add_argument("--policy", required=True)
     cl.add_argument("--digests", required=True)
