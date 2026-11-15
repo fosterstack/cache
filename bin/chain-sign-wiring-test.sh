@@ -175,7 +175,7 @@ def judge_sign(path):
                     seq.append(("sign",))
                     if env != want_sign_env(): bad.append("W1: the provenance signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and re.fullmatch(R_SIGNATURES, line):
-                    order.append("signatures"); seq.append(("signatures",))
+                    seq.append(("signatures",))
                     if env != want_sign_env(): bad.append("S3: the release signing step must have exactly the step env %s (literals, as the other signing steps), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
                     seq.append(("signstaged",))
@@ -3593,7 +3593,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='a000c6027918e2447c4a976eb4869fe5775847423cfb3594c32ebc56a9168e26'
+FX_PIN='5a14c07e506322e4761736e6ee0553ad587d214b6708d5fe6c3b903c8ebf1579'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5424,7 +5424,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2205
+EXPECT=2223
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
