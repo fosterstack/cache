@@ -25,7 +25,7 @@ FITS = {
     "mint_sign_cert": (("sign", "release"), ("manifest key", "signature")),
     "read_sign_token": (("runner",), ("nothing usable",)),
     "read_sign_key": (("runner",), ("nothing usable",)),
-    "hand_sign_code": (("sign",), ("digest", "format")),
+    "hand_sign_code": (("sign",), ("format",)),
     "forge_provenance": (("sign", "release"), ("manifest key", "signature")),
 }
 MISSING = ("no such file", "does not exist", "missing", "not found")
