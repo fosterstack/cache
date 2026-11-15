@@ -298,6 +298,7 @@ def tree(extra_env=None):
     os.makedirs(os.path.join(t, "build/keys"), exist_ok=True); open(os.path.join(t, "build/keys/release.rsa.pub"), "w").write(KEYTXT)
     os.makedirs(os.path.join(t, "release-published"), exist_ok=True)   # what release-assets.sh downloads the published release into (gh release download -D release-published)
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
+    os.makedirs(os.path.join(t, "release-policy"), exist_ok=True); open(os.path.join(t, "release-policy/policy.json"), "w").write("{}")      # the artifact release-policy: release-assets.sh attaches release-policy/policy.json (REQ-CHAIN-007-AC1/AC9)
     return t
 KMS = "awskms:///alias/fosterstack-release-signing"      # the value release.yml gives RELEASE_KMS_KEY_REF to sign-release; the P3 workflow cases below read it from that file
 def run(t, script, env=None, creds=None, tag="v0.3.0"):
