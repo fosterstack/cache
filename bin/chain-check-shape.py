@@ -522,7 +522,10 @@ def guidelist(guide):
             bad.append("the cannot-run entry `%s` is not a verify form" % c)
         else:
             segs, _, why = guide_plan_judge.judge(c)
-            if not why and not guide_plan_judge.image_subject(segs):
+            split_why = guide_plan_judge.split(guide_plan_judge.marker(c))[1]
+            if split_why:
+                bad.append("the cannot-run entry `%s` is refused by the shared judge: %s" % (c, split_why))
+            elif not why and not guide_plan_judge.image_subject(segs):
                 bad.append("the cannot-run entry `%s` is not an image-reference command: a file command is run by "
                            "postverify before publishing, never listed" % c)
         if re.sub(r"[ \t]+", " ", c) not in text:
