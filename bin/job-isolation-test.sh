@@ -91,6 +91,7 @@ def installer_problems(txt, key):
 def steps_text(s):
     t = (s.get("run") or "") + " " + (s.get("uses") or "") + " " + yaml.safe_dump(s.get("env") or {})
     return "\n".join(l for l in t.split("\n") if not l.strip().startswith("#"))
+RELEASE_SECRETS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"}   # ruling R5: the release job that pushes images holds exactly these, nothing else
 def holds(d, j):
     perms = j.get("permissions", d.get("permissions"))
     why = []
@@ -152,7 +153,13 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
         stext = re.sub(r"['\"\\]", "", re.sub(r"\\\n[ \t]*", "", stext))   # quotes, backslashes and continuations are not part of the word the shell runs (bin/witnessed-"local".sh is witnessed-local.sh)
         if re.search(r"\bwitnessed-local\.sh\b", stext):
             # ruling Q-e: the release job publishes under witnessed-local.sh, so it keeps its environment release and packages write, but never an identity token or a KMS role
-            wl = [x for x in w if x not in ("an environment", "packages: write")] if key == ("release.yml", "release") else w
+            # ruling R5: and it holds the stored registry secret (Docker Hub username and token), by name, in this job alone; any other stored secret is refused here
+            ok_ = ("an environment", "packages: write")
+            if key == ("release.yml", "release"):
+                names_ = set(re.findall(r"\bsecrets\.(\w+)", yaml.safe_dump(j)))
+                if names_ <= RELEASE_SECRETS and not re.search(r"secrets\s*\[|secrets:\s*inherit", yaml.safe_dump(j) + yaml.safe_dump({k: v for k, v in d.items() if k not in ("jobs", "on", True)})):
+                    ok_ += ("a secret",)
+            wl = [x for x in w if x not in ok_] if key == ("release.yml", "release") else w
             if wl:
                 bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and holds %s: only Sign holds an identity token" % (key[0], jn, ", ".join(wl)))
             if re.search(r"\bwitnessed\.sh\b", stext):
@@ -339,6 +346,13 @@ done
 want_msg="records its steps with witnessed-local.sh (a build-side job) and holds id-token: write"
 mutate "release.yml job release is granted id-token: write (it runs witnessed-local.sh)" '
 edit("release.yml", lambda s: in_job(s, "release", r"(    permissions:\n)", r"\1      id-token: write\n", regex=True))'
+want_msg="records its steps with witnessed-local.sh (a build-side job) and holds a secret"
+mutate "release.yml job release reads another stored secret (ruling R5: only the registry secret)" '
+edit("release.yml", lambda s: in_job(s, "release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}\n        run: echo x\n", regex=True))'
+mutate "release.yml job release reads a bracket-form secret" '
+edit("release.yml", lambda s: in_job(s, "release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets[DOCKERHUB_TOKEN] }}\n        run: echo x\n", regex=True))'
+mutate "release.yml job release-evidence reads the registry secret (ruling R5: release job alone)" '
+edit("release.yml", lambda s: in_job(s, "release-evidence", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n", regex=True))'
 want_msg="also runs the keyless witnessed.sh"
 mutate "release.yml job release runs bin/witnessed.sh (keyless) beside witnessed-local.sh" '
 edit("release.yml", lambda s: in_job(s, "release", r"(    steps:\n)", r"\1      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", regex=True))'
