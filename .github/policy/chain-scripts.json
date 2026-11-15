@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "8ccdcad3da863f7e52613debc778e6de1d64845e05e9e9b34bd3c05975fb0f73",
+      "sha256": "54a6222dd0d88344ce605c22ad3517ca045c13a7734bf7acc0a0f0eb9723be04",
       "tools": [
         "make",
         "at",
@@ -227,7 +227,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "17b6af5b148922a14cde728d0c03df4879fc72baee9f0811d9e2b6a330c39a67",
+      "sha256": "2bfc791820bc71ed5294b3e0f042e72aecac8279b4cd3932e6008720f274b631",
       "tools": [
         "at"
       ],
@@ -237,7 +237,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "a26fdee306ab7e62ec3ffbc21c9578f205ca37e2e8978df2efc5a55e18442975",
+      "sha256": "56fd0c141d17e1efa2676370bfe9527a1186b0234f3584884d75e2ac162cf3fc",
       "tools": [
         "at",
         "git"
@@ -1630,7 +1630,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "d25c70ad39832c88af6b89d384f52125d463c9b13de0ecbd4e91ab1221c3e420",
+      "sha256": "c57edb304580f9b34bceb22cbd09e8b82fc4b4d59ec4aa7836f5304b774e3b04",
       "exceptions": [
         {
           "rule": "deny",
@@ -1913,7 +1913,7 @@
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "2d0e68cbf8916b459990c0428b4c3c0400a74bab4b982ebf5c0450cbaa55fda2"
+      "sha256": "11762771d533f88e2be5a68bb3187c1dc2a5e528ed3df4400032737e78cb0840"
     },
     {
       "path": "bin/release-metadata.py",
@@ -1937,7 +1937,7 @@
       ],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010; a stdlib version the build does not ship is left out); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "5245a92f95339fa77dc64c85f0bd253aa92b3225e4d1e86a4498611b6efaa21d",
+      "sha256": "5796b987490c3aaad8c7874ad3e7f3530bf7f78ae123813f581fe3937975ebb3",
       "exceptions": [
         {
           "rule": "deny",
@@ -2198,7 +2198,7 @@
       ],
       "signs": false,
       "reason": "the sandbox wall probe of the dry run: six test-only recipes (build/probe) through the sealed melange call, judged by melange's exit status; signs, uploads and publishes nothing",
-      "sha256": "06c3f219d7bbacb6cf333403380826a3544fb12a96a0e1142a4fdb58baa5e71f"
+      "sha256": "036a78a40b0ad428fc1d55d5ef5d23af609e2c4fa33c3f7de69f3e0bf20a1d5b"
     },
     {
       "path": "bin/net-probe.py",
