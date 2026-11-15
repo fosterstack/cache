@@ -445,6 +445,13 @@ for name, raw, tags in (("a list instead of an object", "[]", ("v0.3.0", "v0.3.1
         check("cli release: a malformed accepted-items file (%s) with %s exits 1 and names the file, no traceback" % (name, tag),
             r.returncode == 1 and "accepted-items.json" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr,
             (r.returncode, r.stdout, r.stderr))
+# an expiry that is a string but not a YYYY-MM-DD date is malformed too: the gate fails closed on doubt
+for expiry in ("soon", "", "2026-13-01"):
+    for tag in ("v0.3.0", "v0.3.1"):
+        r = owner_run(sys.argv[1], [item("below", expiry)], tag)
+        check("cli release: an accepted-items expiry %r with %s exits 1, says the expiry is not a date and names the file" % (expiry, tag),
+            r.returncode == 1 and "expiry is not a date" in r.stdout + r.stderr and "accepted-items.json" in r.stdout + r.stderr
+            and "Traceback" not in r.stdout + r.stderr, (r.returncode, r.stdout, r.stderr))
 # a judge that treats a decode error as an absent file must fail the unparseable-file case
 decode_as_absent = os.path.join(d, "decode-as-absent.py")
 open(decode_as_absent, "w").write("""import json

@@ -134,15 +134,23 @@ def _approval(tag_object):
 NO_ITEMS = {"accepted_items": []}      # what a missing .auditor/accepted-items.json means: no item is open
 
 
+def _is_date(value):
+    try:
+        return isinstance(value, str) and len(value) == 10 and datetime.date.fromisoformat(value) is not None
+    except ValueError:
+        return False
+
+
 def _open_item(items, today):
     """Why the parsed .auditor/accepted-items.json holds the release (an owner-decision item is open, or the file is
     malformed), else None. An item is read as the auditor reads it: `threshold` at_or_above is an item waiting on the
     owner (auditor-run.py:2430-2441), and an item whose `expiry` has come (ISO dates compare as text) is reopened
     (auditor-run.py:1810); the auditor has no way to close an at_or_above item, so the gate never does either."""
     listed = items.get("accepted_items") if isinstance(items, dict) else None
-    if not isinstance(listed, list) or not all(isinstance(i, dict) and isinstance(i.get("expiry") or "", str)
-                                               for i in listed):
+    if not isinstance(listed, list) or not all(isinstance(i, dict) for i in listed):
         return "%s is malformed: it must be an object whose accepted_items is a list of objects" % ITEMS_PATH
+    if not all(_is_date(i["expiry"]) for i in listed if "expiry" in i):
+        return "%s is malformed: expiry is not a date (YYYY-MM-DD)" % ITEMS_PATH
     if any(i.get("threshold") == "at_or_above" or (i.get("expiry") and i["expiry"] <= today) for i in listed):
         return "an owner-decision item is open or expired in %s" % ITEMS_PATH
     return None
