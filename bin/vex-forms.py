@@ -279,7 +279,13 @@ def _live(vex):
     """The statements without the products a later statement replaces (the gate's superseded()): a replaced one neither
     contradicts nor makes a rule."""
     statements = vex["statements"]
-    dead = _gate.superseded(statements)
+    def named(c):   # a subcomponent known only by identifiers.purl is the package that purl names
+        if isinstance(c, dict) and c.get("@id") is None and isinstance((c.get("identifiers") or {}).get("purl"), str):
+            return dict(c, **{"@id": c["identifiers"]["purl"]})
+        return c
+    dead = _gate.superseded([dict(st, products=[dict(p, subcomponents=[named(c) for c in p.get("subcomponents") or []])
+                                                if isinstance(p, dict) else p for p in st.get("products") or []])
+                             if isinstance(st, dict) else st for st in statements])
     live = []
     for si, st in enumerate(statements):
         prods = [p for pi, p in enumerate(st.get("products") or []) if (si, pi) not in dead]
