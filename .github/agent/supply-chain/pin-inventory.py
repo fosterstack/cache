@@ -191,7 +191,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 
 
 def _wanted(n, agent=True):
-    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS)
+    return not n.startswith(("vendor/", ".github/agent/tests/")) and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS)
         or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or n == KERNEL_LOCK or re.search(r"(^|/)action\.ya?ml$",
         n)
             or (n.endswith(".sh") and (agent or not n.startswith(".github/agent/")))

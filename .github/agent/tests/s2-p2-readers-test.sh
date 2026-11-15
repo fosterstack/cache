@@ -4,7 +4,8 @@
 # pin-inventory.py (rev None = the working tree)
 #   (1) skip a tracked symbolic link (the kernel-lock path already refuses one), whatever it points at;
 #   (2) read at most MAX_FILE+1 bytes of a file before the size check (a file that never ends must not be read whole);
-#   (3) every git / cat-file child is started with a timeout.
+#   (3) every git / cat-file child is started with a timeout;
+#   (4) tree_files reads nothing under .github/agent/tests/ (fixtures are not inventory), the other agent folders still are.
 # Written from the English rows only; in-process against pin-inventory.py.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -158,5 +159,45 @@ assert calls, "the spy saw no child"
 missing = [c for c, t in calls if not isinstance(t, (int, float)) or t <= 0]
 assert not missing, missing[:3]
 PY
+# --- (4) the selector leaves out everything under .github/agent/tests/ (fixtures are not inventory) ------------------
+for rev in None '"HEAD"'; do
+  for fn in tree_files; do
+    CASE="$fn (rev $rev): a .sh, .yml, action.yml or .py under .github/agent/tests/ is not read, while the same files under "
+    CASE+=".github/agent/bin/ and .github/agent/supply-chain/ are"
+    check python3 - "$work/pre.py" "$work/t-$fn-${rev//\"/}" "$fn" "$rev" <<'PY'
+import sys; exec(open(sys.argv[1]).read())
+r, fn, rev = sys.argv[2], sys.argv[3], eval(sys.argv[4])
+T, B, S = ".github/agent/tests/", ".github/agent/bin/", ".github/agent/supply-chain/"
+files = {}
+for d in (T, B, S):
+    files[d + "fx.sh"] = "go install example.org/t@v1.2.3\n"
+    files[d + "fx.py"] = "x = 1\n"
+    files[d + "sub/fx.sh"] = "echo hi\n"
+files[T + "wf.yml"] = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files[T + "sub/action.yml"] = "name: x\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: echo hi\n"
+files[T + "sub/action.yaml"] = files[T + "sub/action.yml"]
+files[".github/agent/tests-other/fx.sh"] = "echo hi\n"
+repo(r, files)
+got = getattr(inv, fn)(r, rev)
+under = sorted(n for n in got if n.startswith(T))
+assert not under, ("read under the tests folder", under)
+for d in (B, S):
+    assert d + "fx.sh" in got and d + "sub/fx.sh" in got, (d, sorted(got))
+assert ".github/agent/tests-other/fx.sh" in got, ("a sibling folder named like it is not the tests folder", sorted(got))
+PY
+  done
+done
+CASE="tree_files: an action.yml under .github/agent/tests/ gives no inventory item (the inventory of the tree holds none of its steps)"
+check python3 - "$work/pre.py" "$work/t-inv" <<'PY'
+import sys; exec(open(sys.argv[1]).read())
+r = sys.argv[2]
+repo(r, {".github/agent/tests/a/action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@" + "1" * 40 + " # v4\n",
+         ".github/agent/tests/t.sh": "go install example.org/t@v1.2.3\n",
+         ".github/agent/tests/w.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: pip install requests\n"})
+for rev in (None, "HEAD"):
+    got = inv.inventory(inv.tree_files(r, rev))
+    assert not got, (rev, sorted(got))
+PY
+
 echo "s2-p2-readers: $pass ok, $failn failed"
 [ "$failn" -eq 0 ]
