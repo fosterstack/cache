@@ -91,6 +91,17 @@ def dup_keys(text):
     walk(yaml.compose(text, Loader=yaml.BaseLoader), "")
     return out
 
+def fetches_pull_ref(run):
+    """True when a step runs git fetch with a refspec whose source is a pull ref (pull/N/head, refs/pull/*, + or not)."""
+    for line in str(run).splitlines():
+        words = re.split(r"[\s;&|()]+", line.replace("'", "").replace('"', ""))
+        if "git" in words and "fetch" in words[words.index("git"):]:
+            after = words[words.index("fetch", words.index("git")) + 1:]
+            if any(re.match(r"\+?(refs/)?pull/", w) for w in after):
+                return True
+    return False
+
+
 def judge_wf(d, real=False):
     bad = []
     on = d.get("on", {})
@@ -163,7 +174,7 @@ def judge_wf(d, real=False):
         bad.append("daily-audit does not run on the schedule")
     if ".github/agent/supply-chain/pin-audit.py" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])) or "--rerun-held" in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("daily-audit must run .github/agent/supply-chain/pin-audit.py without --rerun-held")
-    pull_fetches = [st for st in j.get("steps", []) if "git fetch" in str(st.get("run", "")) and "refs/pull" in str(st.get("run", ""))]
+    pull_fetches = [st for st in j.get("steps", []) if fetches_pull_ref(st.get("run", ""))]
     if pull_fetches:
         bad.append("daily-audit has a step that runs git fetch of refs/pull: the history is read from main only")
     # rerun-held
@@ -452,7 +463,7 @@ dd = dup_keys(real_text.replace("\nconcurrency:\n", "\nconcurrency: {group: shar
 result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a parse would keep the last value)" + ("" if dd else "; saw nothing"))
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
-pf = [st for st in J_real_steps() if "git fetch" in str(st.get("run", "")) and "refs/pull" in str(st.get("run", ""))]
+pf = [st for st in J_real_steps() if fetches_pull_ref(st.get("run", ""))]
 result(not pf, "the real daily-audit job has no step that runs git fetch of refs/pull" + ("" if not pf else ": " + "; ".join(str(st.get("run", "")) for st in pf)))
 b = judge_db(real_db)
 result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on the root gomod entry, the tools/requirements and govulncheck tool entries weekly with their own 7-day cooldown, no docker entry; groups: every github-actions, gomod and pip entry has its minor-patch group (minor and patch only), codeql-action first and major-only, pydantic first on pip, no docker entry, no applies-to" + ("" if not b else ": " + "; ".join(b)))
@@ -657,6 +668,20 @@ mut_wf("daily-audit gains a pull request fetch", FETCH_REASON,
 mut_wf("daily-audit gains a pull request fetch with a token", FETCH_REASON,
        lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin 'refs/pull/*/head:refs/pull/*/head'",
                                                          "env": {"GH_TOKEN": "${{ github.token }}"}}))
+# the guard reads the refspec of a fetch, not the words refs/pull: a pull ref spelled without refs/ is caught, an ordinary fetch is not
+for spec in ("pull/1/head", "pull/1/head:pr-1", "'+pull/*/head:refs/remotes/pr/*'", "pull/1/merge", '"pull/${PR}/head"', "refs/pull/1/head"):
+    mut_wf("daily-audit fetches a pull ref spelled " + spec, FETCH_REASON,
+           lambda d, spec=spec: J(d, "daily-audit")["steps"].insert(1, {"run": "git fetch --no-tags origin " + spec}))
+mut_wf("daily-audit fetches a pull ref with git -C and a url", FETCH_REASON,
+       lambda d: J(d, "daily-audit")["steps"].insert(1, {"run": "git -C . fetch https://example.invalid/o/r.git pull/1/head"}))
+def ctl_wf(name, run):
+    d = copy.deepcopy(real_wf); J(d, "daily-audit")["steps"].insert(1, {"run": run})
+    found = judge_wf(d, False)
+    result(not any(FETCH_REASON in x for x in found), f"not caught as a pull ref fetch: {name}" + "".join(f"; saw {x}" for x in found if FETCH_REASON in x))
+ctl_wf("an ordinary fetch of main", "git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'")
+ctl_wf("a fetch of a branch named like a pull word", "git fetch --no-tags origin refs/heads/pulley:refs/remotes/origin/pulley")
+ctl_wf("a fetch of a tag", "git fetch --no-tags origin refs/tags/v1:refs/tags/v1")
+ctl_wf("a command that only prints pull/1/head", "echo pull/1/head")
 mut_wf("rerun-held loses actions: write","rerun-held's permissions are not exactly", lambda d: J(d, "rerun-held")["permissions"].pop("actions"))
 mut_wf("rerun-held gains issues: write", "can write issues", lambda d: J(d, "rerun-held")["permissions"].update(issues="write"))
 mut_wf("rerun-held never re-runs", "does not run .github/agent/supply-chain/pin-audit.py --rerun-held", lambda d: J(d, "rerun-held").update(steps=[s for s in J(d, "rerun-held")["steps"] if "--rerun-held" not in str(s.get("run", ""))]))
