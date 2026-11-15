@@ -1270,8 +1270,8 @@ if which == "scan":
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "inspector", "Amazon Inspector scan every image tar", "python3 bin/inspector-gate.py"
-    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
-             "rebuild": {"contents": "read"}, "reproducibility": None,
+    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"},
+             "reproducibility": None,
              "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None}
 else:
     triggers = {"schedule": [{"cron": "41 7 * * *"}], "workflow_dispatch": {}}
@@ -1280,7 +1280,7 @@ else:
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "panel-inspector", "Amazon Inspector every image", None
-    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
+    perms = {"top": {"contents": "read"}, "build": {"contents": "write", "packages": "write", "attestations": "write", "id-token": "write", "issues": "write", "checks": "read", "statuses": "read", "pull-requests": "read"},
              "vex-attach": {"contents": "read", "packages": "write"}, "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read", "packages": "read"},
              "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},
