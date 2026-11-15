@@ -94,7 +94,11 @@ def required_contexts(root):
 def checks_result(job, needed):
     """True when a step of JOB reads needs.NEEDED.result in its run text or its env."""
     ref = "needs.%s.result" % needed
-    return any(isinstance(st, dict) and any(ref in str(v) for v in [st.get("run"), *(st.get("env") or {}).values()]) for st in job.get("steps") or [])
+    needs = job.get("needs")
+    if needed not in ([needs] if isinstance(needs, str) else needs if isinstance(needs, list) else []):
+        return False
+    live = lambda v: "\n".join(l for l in str(v).split("\n") if not l.lstrip().startswith("#"))   # a comment is no read
+    return any(isinstance(st, dict) and any(ref in live(v) for v in [st.get("run"), *(st.get("env") or {}).values()]) for st in job.get("steps") or [])
 
 
 def counting_steps(root, floors, names):
