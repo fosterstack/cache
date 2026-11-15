@@ -30,6 +30,8 @@ unmapped:
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
   - ac: REQ-DEP-004-AC2
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
+  - ac: REQ-REL-010-AC5
+    reason: "no test proves it yet: the automatic VEX patch release is decided in release.yml decide, which the section 1 fix removes; section 3 amends the AC to what remains and the test for that text is credited then"
 # The checks these criteria named were deleted by the release audit ruling of Nov 12 (cache#359 section 1); no check holds them now. An entry goes when its criterion is withdrawn in a requirements text change or a check holds it again.
   - ac: REQ-DEP-005-AC1
     reason: "the cases that held it were deleted from bin/required-check-guard-test.sh and bin/check-file-allowlist-test.sh by the release audit ruling of Nov 12; no check holds this criterion now"
