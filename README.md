@@ -8,8 +8,7 @@ We build tools that help you secure your build pipeline. It made sense to start 
 [![Latest release](https://img.shields.io/github/v/release/fosterstack/cache?sort=semver)](https://github.com/fosterstack/cache/releases/latest)
 
 A self-hosted, drop-in remote build cache for **Gradle** — and for **Maven**
-through the Apache Maven Build Cache Extension (acceptance-tested on every
-push and release). Ships as
+through the Apache Maven Build Cache Extension. Ships as
 a single static binary or a minimal container image (no shell, no base image), MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
 image is signed with the release signing key and recorded in the Sigstore transparency log; every binary archive is covered by a
@@ -34,8 +33,7 @@ Maven Build Cache Extension][maven-cache]'s remote HTTP mode
 acceptance-tested against a real multi-module build in CI, and so is the Maven
 path: a real multi-module Maven project with the extension (versions 1.2.0 and 1.2.3 <!-- pinned: upstream -->)
 restores its second build from the remote cache with byte-identical jars,
-and wrong or missing credentials fail the documented way. The Maven suite is a
-release-blocking check.
+and wrong or missing credentials fail the documented way.
 
 [gradle-http]: https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote
 [maven-cache]: https://maven.apache.org/extensions/maven-build-cache-extension/
@@ -50,19 +48,17 @@ Shipped:
   metrics at `/metrics`, liveness at `/healthz`.
 - `CGO_ENABLED=0` static binary — builds and runs today (see below).
 - CI on every push/PR: tests (race-enabled), `go vet`, golangci-lint
-  (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban), gosec,
-  govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
-  public-repo file allowlist.
+  (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban),
+  govulncheck, dependency review on PRs, and a public-repo file allowlist.
+  Before every release: gosec, CodeQL and the full test suite under
+  `GODEBUG=fips140=only`. OpenSSF Scorecard runs weekly.
 - Release pipeline: signed, provenance-attested container images
   (production and `-fips`) on GHCR, plus bare Linux binaries and a signed
-  checksums file. Every release is built only by CI, once. The images are assembled
-  once, and the scans, the acceptance tests and an independent
-  reproducibility rebuild all run on that exact digest; the published
-  images are that same digest, promoted without a rebuild. The daily rescan
+  checksums file. Every release is built only by CI, once. Each release image is built once, then built a second time independently to check the two match. The scans and acceptance tests run on the first build's exact digest, and that same digest is what we publish: the bytes we tested are the bytes you pull. The daily rescan
   then re-checks the current release. [`RELEASING.md`](RELEASING.md)
   describes the pipeline stage by stage.
-- Acceptance-tested against a real multi-module Gradle project on every
-  push/PR — a from-scratch second build must produce real `FROM-CACHE`
+- Acceptance tests run before every release. Against a real multi-module
+  Gradle project, a from-scratch second build must produce real `FROM-CACHE`
   hits, with the sample's local build cache disabled so a hit is remote
   evidence. There is no benchmark suite yet; this is a correctness gate,
   not a performance number.
