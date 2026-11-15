@@ -41,9 +41,14 @@ key_policy() {
   openssl dgst -sha256 -verify .github/policy/release-key-root.pub -signature "$dir/manifest.sig" \
     "$dir/release-key-manifest.json" > /dev/null 2>&1 ||
     { echo "the key manifest is not signed by the root key"; return 1; }
-  # the key's window meets the month; a revoked key is refused
-  jq -e --arg from "$month-01T00:00:00Z" --arg to "$next-01T00:00:00Z" '.revoked_at == null and .valid_from < $to and
-    (.valid_to == null or .valid_to > $from)' "$dir/release-key-manifest.json" > /dev/null ||
+  # the key's window meets the date the letter was SIGNED (the bundle's Rekor time, else the release's published_at), not
+  # the month it is about; with neither date it meets the month. A revoked key is refused
+  signed=$(jq -r '.verificationMaterial.tlogEntries[0].integratedTime // empty' "$dir/$md.bundle" 2> /dev/null) || signed=
+  if [[ "$signed" =~ ^[0-9]+$ ]]; then signed=$(date -u -d "@$signed" +%Y-%m-%dT%H:%M:%SZ)
+  else signed=$(jq -r '.published_at // empty' <<< "$release"); fi
+  jq -e --arg from "$month-01T00:00:00Z" --arg to "$next-01T00:00:00Z" --arg s "$signed" '.revoked_at == null and
+    (if $s != "" then .valid_from <= $s and (.valid_to == null or .valid_to > $s)
+     else .valid_from < $to and (.valid_to == null or .valid_to > $from) end)' "$dir/release-key-manifest.json" > /dev/null ||
     { echo "the key manifest lists no usable key for $month"; return 1; }
   jq '{release_key: {public_key: .public_key}}' "$dir/release-key-manifest.json" > "$dir/policy.json"
   echo "$dir/policy.json"
