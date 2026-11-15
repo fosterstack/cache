@@ -38,7 +38,7 @@
 #       `witness-build` into witness-build (Build's verified record, the --build-record of hand_sign_code, NOT a file the hostile
 #       step supplied); `provenance` into provenance (THIS run's genuine Sign output, for the positive control); the pinned
 #       `policy make` line above; then one step per attempt (five) and one POSITIVE CONTROL step (verify --stage sign --record
-#       provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json, must exit 0, recorded as its own row positive_control that
+#       provenance/provenance.json --policy policy.json --rekor-entries provenance/provenance.rekor.json, must exit 0, recorded as its own row positive_control that
 #       the verdict requires to be ACCEPTED: a policy that refuses everything, e.g. made for the wrong ref, is caught here), each
 #       exactly three lines:
 #           rc=0
@@ -53,7 +53,7 @@
 #         read_sign_key     hostile-material --kind key --file attempts/read_sign_key.txt --policy policy.json
 #         hand_sign_code    check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json
 #                           (the same refusals as `sign --check`, with no signer in it: this job holds no id-token and installs no cosign, step-8 SF4)
-#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json   (must be ACCEPTED;
+#         positive_control  verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-entries provenance/provenance.rekor.json   (must be ACCEPTED;
 #                           the stub is the tlogEntry Sign extracted from its own cosign bundle into the provenance artifact; a verify
 #                           without the stub is refused 'rekor' (chain-verify-test.sh), so the control cannot pass by a shortcut)
 #         forge_provenance  verify --stage sign --record attempts/forge_provenance.json --policy policy.json
@@ -425,7 +425,7 @@ PIN = {
  "read_sign_token": r'python3 bin/chain-verify\.py hostile-material --kind token --file attempts/read_sign_token\.txt',
  "read_sign_key": r'python3 bin/chain-verify\.py hostile-material --kind key --file attempts/read_sign_key\.txt --policy policy\.json',
  "hand_sign_code": r'python3 bin/chain-verify\.py check-build-record --digests attempts/hand_sign_code\.json --build-record witness-build/build-collection\.json --policy policy\.json',
- "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json',
+ "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-entries provenance/provenance\.rekor\.json',
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
@@ -740,7 +740,7 @@ EOF
     cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=\$?
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-entries provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=\$?
           python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "\$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
       - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
       - uses: actions/upload-artifact@$sha # v7
@@ -1397,7 +1397,7 @@ d=$(mk w_pf_literal); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
 d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
 d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
 d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
-d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
+d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-entries provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
 # AC5's runtime proof has a fixed place (advisor accepted Oct 10, lane AC; moved to a signed rc-tag run, advisor 0383; order changed Oct 12): the rc-tag run is
