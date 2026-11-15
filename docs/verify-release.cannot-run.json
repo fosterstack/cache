@@ -1,10 +1,10 @@
 [
   {
     "command": "cosign verify --key release.rsa.pub <IMAGE_REF>",
-    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is run right after publishing (rule 79)"
+    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is run right after publishing"
   },
   {
     "command": "cosign verify --key release.rsa.pub <IMAGE_REF_FIPS>",
-    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is run right after publishing (rule 79)"
+    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is run right after publishing"
   }
 ]
