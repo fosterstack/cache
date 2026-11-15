@@ -133,9 +133,7 @@ invocation: the gate also runs Grype with an empty configuration file and refuse
 scans each platform of the index separately, and checks that every finding
 Grype reports as ignored was ignored by the VEX file. That check does not see
 matches Grype's distro exclusions or OSV-Scanner's `linux` filter drop before any
-report. Read `bin/check-scan.sh` for the full set. On every pull request,
-[`scan.yml`](../.github/workflows/scan.yml) scans the candidate images, with Grype and
-Amazon Inspector. A finding of unknown severity fails the gate too. The VEX document ships with each
+report. Read `bin/check-scan.sh` for the full set. A finding of unknown severity fails the gate too. The VEX document ships with each
 release as `fosterstack-cache.openvex.json` and lives in-repo at
 [`.vex/`](../.vex/). A Grype scan of a published image with that VEX applied:
 
