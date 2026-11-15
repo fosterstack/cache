@@ -36,7 +36,7 @@ unmapped:
   - ac: REQ-DEP-005-AC2
     reason: "the cases that held it were deleted from bin/required-check-guard-test.sh by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-DEP-005-AC3
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
+    reason: ".github/agent/tests/queue-gate-judge-test.sh was deleted by the release audit ruling of Nov 12, and the proves: line of bin/required-check-guard-test.sh no longer claims this criterion; no check holds it now"
   - ac: REQ-REL-009-AC5
     reason: "the check it named was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-REL-009-AC10
@@ -54,4 +54,4 @@ unmapped:
   - ac: REQ-REL-013-AC10
     reason: "the check it named was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
   - ac: REQ-REL-013-AC11
-    reason: "the check it named was deleted by the release audit ruling of Nov 12; no check holds this criterion now"
+    reason: "bin/evidence-letter-job-test.sh was deleted by the release audit ruling of Nov 12, and the proves: line of .github/agent/tests/supply-chain-wiring-test.sh no longer claims this criterion; no check holds it now"
