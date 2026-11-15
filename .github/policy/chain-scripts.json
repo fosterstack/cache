@@ -812,7 +812,14 @@
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "Check's one script, run by the same three witnessed steps on both chips: makes the release policy for the tag, verifies Build, then runs the phase's check scripts; the chip comes from uname -m (REQ-CHAIN-006-AC1, AC3)"
+      "reason": "Check's one script, run by the same three witnessed steps on both chips: makes the release policy for the tag, verifies Build, then runs the phase's check scripts; the chip comes from uname -m (REQ-CHAIN-006-AC1, AC3)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "\"$(uname -m)\" in",
+          "why": "the operand of `case \"$(uname -m)\" in`: a pattern match on this machine's architecture name (x86_64 or aarch64), never run as a command"
+        }
+      ]
     },
     {
       "path": "bin/check-govulncheck.py",
