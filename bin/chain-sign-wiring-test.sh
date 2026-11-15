@@ -3088,8 +3088,8 @@ for r in d["scripts"]:
 json.dump(d, open(p,"w"), indent=1)' "$@"; }
 probe build    stage-build.yml      "a second provenance signer job in stage-build.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-build.yml"
 probe image    stage-image.yml      "a second provenance signer job in stage-image.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-image.yml"
-probe sneak    stage-admission.yml  "stage-admission.yml running an unlisted bin/sneak.sh that signs provenance" \
-  "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/sneak.sh\n' >> .github/workflows/stage-admission.yml"
+probe sneak    release.yml  "release.yml running an unlisted bin/sneak.sh that signs provenance" \
+  "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/sneak.sh\n' >> .github/workflows/release.yml"
 probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
 # KR-SIGN-1 (cache4, handoff 0475): bin/release-sign.sh runs bin/vendor-provenance.py, so the inventory must list it with its bytes; dropping the row, or changing the script without its hash, turns the judge red
@@ -5129,7 +5129,7 @@ d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py"
 # release-assets.sh (release-postverify.sh holds no token). bin/witnessed.sh is bound for GH_TOKEN at exactly those two
 # places and for the secrets in Release. Every other name, place or script is refused.
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
-probe sec_release_extra "stored secret outside Release" "a stored secret (secrets.X_KEY) in a step env of an added job of release.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/release.yml"
+probe sec_release_extra "stored secret outside the named env entries" "a stored secret (secrets.X_KEY) in a step env of an added job of release.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/release.yml"
 probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step other than the admission step" \
   "repl .github/workflows/release.yml '      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness' '      - name: install Witness (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh witness'"
 probe gh_check "GH_TOKEN is allowed only" "the run's token in Check" \
@@ -5139,9 +5139,9 @@ probe perm_apk "must hold exactly the permissions" "a write permission (packages
 probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
   "repl .github/workflows/release.yml '      contents: write\n      packages: write\n    steps:' '      contents: write\n      packages: write\n      attestations: write\n    steps:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
-  "repl .github/workflows/release.yml '      - name: release-publish under Witness\n        env:\n' '      - name: release-publish under Witness\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
+  "repl .github/workflows/release.yml '      - name: release-publish under Witness (a throwaway key, no identity token)\n        env:\n' '      - name: release-publish under Witness (a throwaway key, no identity token)\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
 probe apk_wrong_step "not in the closed secret list" "a secret that no row names on the verify step" \
-  "repl .github/workflows/release.yml '      - name: release-verify under Witness\n' '      - name: release-verify under Witness\n        env:\n          OTHER_KEY: \${{ secrets.OTHER_KEY }}\n'"
+  "repl .github/workflows/release.yml '      - name: release-verify under Witness (a throwaway key, no identity token)\n' '      - name: release-verify under Witness (a throwaway key, no identity token)\n        env:\n          OTHER_KEY: \${{ secrets.OTHER_KEY }}\n'"
 probe token_unlisted_script "not in the closed secret list" "DOCKERHUB_TOKEN bound to release-apks.sh (an unlisted script)" \
   "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"DOCKERHUB_TOKEN\",\"script\":\"bin/release-apks.sh\",\"why\":\"x\",\"file\":\".github/workflows/release.yml\",\"job\":\"release\"});[r.__setitem__(\"reads_env\",[\"RELEASE_KMS_KEY_REF\",\"DOCKERHUB_TOKEN\"]) for r in d[\"scripts\"] if r[\"path\"]==\"bin/release-apks.sh\"];json.dump(d,open(p,\"w\"))'"
 probe name_twice "listed twice" "the same name listed twice at one place" \
@@ -5155,7 +5155,7 @@ probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret inst
 probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
   "repl .github/workflows/release.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
-  "repl .github/workflows/release.yml '      - name: release-publish under Witness\n' '      - name: release-publish under Witness\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
+  "repl .github/workflows/release.yml '      - name: release-publish under Witness (a throwaway key, no identity token)\n' '      - name: release-publish under Witness (a throwaway key, no identity token)\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
 
 # ---- the sign jobs' federation env (REQ-CHAIN-001-AC1 job keys, REQ-CHAIN-001-AC9): in release.yml the four jobs sign, sign-rebuild, sign-check and sign-release, and no other job of any
 # workflow file, carry a job-level env of exactly three non-secret literals (AWS_ROLE_ARN, AWS_REGION, RELEASE_KMS_KEY_REF); no step of them repeats the literals; the release job and every
