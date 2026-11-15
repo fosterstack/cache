@@ -6,8 +6,7 @@
 [![Latest release](https://img.shields.io/github/v/release/fosterstack/cache?sort=semver)](https://github.com/fosterstack/cache/releases/latest)
 
 A self-hosted, drop-in remote build cache for **Gradle** — and for **Maven**
-through the Apache Maven Build Cache Extension (acceptance-tested on every
-push and release). Ships as
+through the Apache Maven Build Cache Extension. Ships as
 a single static binary or a distroless container image, MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
 image is keylessly signed (Sigstore); every binary archive is covered by a
@@ -50,10 +49,9 @@ Shipped:
 - HTTP surface: `GET`/`PUT`/`HEAD`, optional Basic Auth, Prometheus
   metrics at `/metrics`, liveness at `/healthz`.
 - `CGO_ENABLED=0` static binary — builds and runs today (see below).
-- CI on every push/PR: tests (race-enabled), `go vet`, golangci-lint
-  (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban), gosec,
-  govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
-  public-repo file allowlist.
+- CI on every pull request: tests, `go vet`, golangci-lint
+  (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban),
+  govulncheck, and a public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
   (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed
   checksums file. Every release is built only by CI, once. The images are assembled
@@ -62,8 +60,8 @@ Shipped:
   images are that same digest, promoted without a rebuild. The daily rescan
   then re-checks the current release. [`RELEASING.md`](RELEASING.md)
   describes the pipeline stage by stage.
-- Acceptance-tested against a real multi-module Gradle project on every
-  push/PR — a from-scratch second build must produce real `FROM-CACHE`
+- Acceptance tests run before every release. A from-scratch second build of a
+  real multi-module Gradle project must produce real `FROM-CACHE`
   hits, with the sample's local build cache disabled so a hit is remote
   evidence. There is no benchmark suite yet; this is a correctness gate,
   not a performance number.
