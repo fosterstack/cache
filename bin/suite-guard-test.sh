@@ -287,6 +287,21 @@ out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "R
 # trusted only when the required job checks the result of the counting job
 { printf 'jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: %s a-test.sh bin/a-test.sh\n  other:\n    runs-on: x\n    needs: [j]\n    steps:\n      - env:\n          R: ${{ needs.j.result }}\n        run: test "$R" = success\n' "$CNT"; } > "$work/cw/.github/workflows/ci.yml"
 out=$(cwall) || true; if grep -q 'a-test.sh: counted by its own step' <<< "$out"; then ok "REQ-CI-005-AC1 all: a counting step in a job whose result a required check reads from needs is trusted"; else bad "checked job not trusted: ${out:0:200}"; fi
+# the parsed workflow decides, not its text: a comment that names needs.j.result, or a read of it by a job that
+# does not need j, is no check
+HEAD_J='jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: %s a-test.sh bin/a-test.sh\n  other:\n    runs-on: x\n'
+READ_R='      - env:\n          R: ${{ needs.j.result }}\n        run: test "$R" = success\n'
+{ printf "$HEAD_J"'    needs: [j]\n    steps:\n      - run: |\n          # test "${{ needs.j.result }}" = success\n          echo gate\n' "$CNT"; } \
+  > "$work/cw/.github/workflows/ci.yml"
+out=$(cwall) || true
+if grep -q "a-test.sh: count [0-9]" <<< "$out"; then
+  ok "REQ-CI-005-AC1 all: a comment that mentions needs.j.result does not make a counting step trusted"
+else bad "comment trusted: ${out:0:200}"; fi
+{ printf "$HEAD_J"'    steps:\n'"$READ_R" "$CNT"; } > "$work/cw/.github/workflows/ci.yml"
+out=$(cwall) || true
+if grep -q "a-test.sh: count [0-9]" <<< "$out"; then
+  ok "REQ-CI-005-AC1 all: a job that reads needs.j.result without needing j does not make a counting step trusted"
+else bad "no-needs read trusted: ${out:0:200}"; fi
 rm "$work/cw/.github/policy/required-checks.json"
 cwf "" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) || true; if grep -q "a-test.sh: count [0-9]" <<< "$out"; then ok "REQ-CI-005-AC1 all: with no required-checks policy no counting step is trusted (fail closed)"; else bad "no policy trusted: ${out:0:200}"; fi
@@ -303,7 +318,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=120
+EXPECT=122
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
