@@ -920,6 +920,18 @@ r_ = run_gen(J(IMAGES), os.path.join(op, "out"), openvex=pp)
 lp = [l for l in r_.stderr.splitlines() if "left out" in l]
 check("R7 one statement naming two products with the same stale stdlib gives two different 'left out' lines",
       r_.returncode == 0 and len(lp) == 2 and len(set(lp)) == 2, (r_.returncode, r_.stderr[-400:]))
+# --- identifiers.purl is normalized before superseded() reads the statements: a subcomponent known only by
+#     identifiers.purl is the package it names
+def live_n(*stmts): return len(V._live({"statements": list(stmts)})["statements"])
+def sub_ids(p): return [{"@id": OURS, "subcomponents": [{"identifiers": {"purl": p}}]}]
+check("R7 two statements for one image whose packages are named only by identifiers.purl (busybox, wget) stay two",
+      live_n(scoped("CVE-SUP1", "not_affected", sub_ids("pkg:generic/busybox@1.37.0")),
+             scoped("CVE-SUP1", "affected", sub_ids("pkg:generic/wget@1.21"))) == 2)
+BB_ID = [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]
+check("R7 the same package named by @id in one statement and by identifiers.purl in a later one: the later "
+      "replaces the earlier",
+      live_n(scoped("CVE-SUP2", "not_affected", BB_ID),
+             scoped("CVE-SUP2", "affected", sub_ids("pkg:generic/busybox@1.37.0"))) == 1)
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
