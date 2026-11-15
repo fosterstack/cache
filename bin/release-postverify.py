@@ -187,7 +187,10 @@ def make_plan(cmds, digests, tag):
             if reg != REPOSITORIES[0] and not set(PH.findall(c)) & {"IMAGE_REF", "IMAGE_REF_FIPS"}:
                 continue   # no image placeholder: the same command, run once
             argvs = [[fill(w, c) for w in s] for s in segs]
-            plan.append(Run(reg, c, argvs, files, names, [fill(b, c) for b in bundles]))
+            # the names are checked with the tag filled in, as the commands run (an image marker stays a marker)
+            put = lambda ns: [n if n in guide_plan_judge.IMAGE_MARKS else fill(n, c) for n in ns]
+            plan.append(Run(reg, c, argvs, None if files is None else put(files), set(put(names)),
+                            [fill(b, c) for b in bundles]))
     return plan
 
 
