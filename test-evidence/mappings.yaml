@@ -976,7 +976,7 @@ mappings:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC35
     evidence:
-      - { type: inspection, ref: ".github/agent/supply-chain/pin-age-check.py: a download row rules a line only under TEXT_RULING, LIVE_RULING, GO_RULING or PINNED_FETCH_RULING, and nothing in the file reads build/locks/vm-kernel.lock for a download ruling; no suite names AC35 now (the hash-locked fetch cases left with the ruling), and the case 'a download row with another ruling text rules nothing: exit 1' of .github/agent/tests/pin-age-check-test.sh shows the general rule only, so its proves line does not list AC35 (re-verified 2026-11-13)" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC36
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
