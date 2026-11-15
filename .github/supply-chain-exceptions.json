@@ -430,7 +430,7 @@
     {
       "file": ".github/agent/supply-chain/pin-age-check.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): reads registry, index, GitHub and Rekor APIs for a pin's age and signature | text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/supply-chain/pin-age-check.py that names the tool",
-      "body-sha256": "664cb6a7c5f1492a57ce0d602f6204cdcef362adc4e239e7936610367e7c8cfc"
+      "body-sha256": "f3b4f738cf36d4dd0a7b4c5500c43ea84ce18aadbfa21f731372bcb8dc4a3684"
     },
     {
       "file": ".github/agent/supply-chain/pin-audit.py",
