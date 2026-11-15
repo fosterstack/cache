@@ -2753,6 +2753,9 @@ _STEP_ENV = {(".github/workflows/dependabot-reviewer.yml", "review", 8): {
     "DISPATCH_TOKEN": "${{ steps.app-ops.outputs.token }}",
     "RUN_URL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
 }}
+# the chain's decision step (7) holds the same env, without the dispatch token
+_STEP_ENV[(".github/workflows/dependabot-reviewer.yml", "review", 7)] = {
+    k: v for k, v in _STEP_ENV[(".github/workflows/dependabot-reviewer.yml", "review", 8)].items() if k != "DISPATCH_TOKEN"}
 
 
 def _value(node, name):

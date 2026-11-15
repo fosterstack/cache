@@ -3607,27 +3607,20 @@ for what, text in (
         ("a job service with no env", put(JOB, "    services:\n      side:\n        image: %s\n" % IMG))):
     missed.append("%s is a finding" % what) if whole(text) != [4, 8] else None
 assert not missed, missed
-cdwf = chain_file(".github/workflows/dependabot-reviewer.yml")
-csteps = yaml.safe_load(cdwf)["jobs"]["review"]["steps"]                      # the chain's: steps 4 and 7
-mdrun = real[8]
-assert not judge(D, "review", 8, mdrun, {D: dwf}), "main's exact step 8 is excluded"
-for idx in (4, 7):
-    drun = csteps[idx]["run"]
-    assert drun != mdrun
-    assert not judge(D, "review", idx, drun, {D: cdwf}), "the chain's exact identity-token step %d is excluded" % idx
-    for other in (3, 5, 6, 9):
-        assert judge(D, "review", other, drun, {D: cdwf}), "the chain's step %d text at index %d is a finding" % (idx, other)
-    assert judge(D, "review", 8, drun, {D: cdwf}), "the chain's text at main's index is a finding"
-    assert judge(D, "other", idx, drun, {D: cdwf}), "the same text in another job is a finding"
-    assert judge(".github/workflows/x.yml", "review", idx, drun, {".github/workflows/x.yml": cdwf}), "the same text in another file is a finding"
-    assert judge(D, "review", idx, drun + "\n# edited", {D: cdwf}), "an edited step is a finding"
-    assert judge(D, "review", idx, drun, {D: cdwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
-for other in (3, 5, 6, 9):
-    assert judge(D, "review", other, mdrun, {D: dwf}), "main's text at index %d is a finding" % other
-assert judge(D, "review", 4, mdrun, {D: dwf}), "main's text at a chain index is a finding"
-assert judge(D, "other", 8, mdrun, {D: dwf}), "main's text in another job is a finding"
-assert judge(D, "review", 8, mdrun + "\n# edited", {D: dwf}), "an edited main step is a finding"
-assert judge(D, "review", 4, csteps[7]["run"], {D: cdwf}), "one excluded step's key does not exclude the other's text"
+cdwf = chain_file(D)
+csteps = yaml.safe_load(cdwf)["jobs"]["review"]["steps"]
+chain = {4: csteps[4]["run"], 7: csteps[7]["run"]}                            # the chain's: steps 4 and 7
+assert judge_job(chain, {D: cdwf}) == [], "the chain's two exact steps are excluded"
+assert judge_job({5: chain[4], 7: chain[7]}, {D: cdwf}) == [5, 7], "the chain's step 4 text at another index is a finding"
+assert judge_job(chain, {D: cdwf}, job="other") == [4, 7], "the chain's texts in another job are findings"
+assert judge_job(chain, {".github/workflows/x.yml": cdwf}, file=".github/workflows/x.yml") == [4, 7], \
+        "the chain's texts in another file are findings"
+assert judge_job({4: chain[4], 7: chain[7] + "\n# edited"}, {D: cdwf}) == [4, 7], "an edited chain step is a finding"
+assert judge_job({4: chain[4], 8: chain[7]}, {D: cdwf}) == [4, 8], "the chain's decision loop at main's index is a finding"
+assert judge_job({4: chain[7], 7: chain[7]}, {D: cdwf}) == [4, 7], "one excluded step's key does not exclude the other's text"
+assert judge_job({4: real[4], 7: real[8]}, {D: dwf}) == [4, 7], "main's decision loop at the chain's index is a finding"
+assert judge_job(chain, {D: cdwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}) == [4, 7], \
+        "an assignment of the URL variable is a finding"
 PY
 fi
 
