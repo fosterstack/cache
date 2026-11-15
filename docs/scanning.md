@@ -121,8 +121,8 @@ is the gate itself. The scanners are the ones in
 Both scan the exact built images by digest (Grype also scans the four Linux
 archives, OSV-Scanner the Go modules). The same Check stage also runs
 `govulncheck` once on the tagged source, a separate Go source scan with its own
-policy that the rest of this section does not describe. Pull requests are
-scanned by [`scan.yml`](../.github/workflows/scan.yml) on the candidate images,
+policy that the rest of this section does not describe. Before every release,
+[`scan.yml`](../.github/workflows/scan.yml) scans the candidate images,
 with Grype and Amazon Inspector.
 
 The gate's policy is every severity, with the published VEX applied (a finding
@@ -133,8 +133,8 @@ invocation: the gate also runs Grype with an empty configuration file and refuse
 scans each platform of the index separately, and checks that every finding
 Grype reports as ignored was ignored by the VEX file. That check does not see
 matches Grype's distro exclusions or OSV-Scanner's `linux` filter drop before any
-report. Read `bin/check-scan.sh` for the full set. Pull requests are scanned by
-[`scan.yml`](../.github/workflows/scan.yml) on the candidate images, with Grype and
+report. Read `bin/check-scan.sh` for the full set. Before every release,
+[`scan.yml`](../.github/workflows/scan.yml) scans the candidate images, with Grype and
 Amazon Inspector. A finding of unknown severity fails the gate too. The VEX document ships with each
 release as `fosterstack-cache.openvex.json` and lives in-repo at
 [`.vex/`](../.vex/). A Grype scan of a published image with that VEX applied:
