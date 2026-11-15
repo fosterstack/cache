@@ -117,12 +117,7 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
     if item.kind == "image":
         host = _image_registry(item.name)
         if host not in ("ghcr.io", "docker.io"):
-            entry = _publisher_entry(item.name)
-            if entry is None:
-                return False, f"registry {host} is not in image-publishers.json, so nothing vouches for the image", None
-            if "unsigned" in entry:
-                return True, f"no age asked of an image on {host}: no signature published", None
-            return True, f"no age asked of an image on {host}: its signature is checked by cosign-verify", None
+            return False, f"age not provable: registry {host} gives no push time, whatever its entry says", None
         proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
     if item.kind in ("tool", "package", "gotool") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer")
             for t, src in proofs):
@@ -700,6 +695,8 @@ def _checked_pins(pins):
     if not entries:
         raise ValueError("image-publishers.json pins no image")
     for name, pin in entries.items():
+        if "/" not in name:
+            raise ValueError(f"image-publishers.json: {name} names a registry alone, not an image")
         if not isinstance(pin, dict) or not ({"key", "keyless", "unsigned"} & set(pin)) or set(pin) - set(PIN_FIELDS):
             raise ValueError(f"image-publishers.json: {name} has no key, keyless identity or unsigned reason, "
                              "or a field that is not known")
@@ -719,20 +716,21 @@ def _checked_pins(pins):
 
 
 def _publisher_entry(name, pins=None):
-    """The image-publishers.json entry for an image: its own name, else its registry; None when neither is enrolled."""
+    """The image-publishers.json entry for an image, named by its registry and path; None when it is not enrolled."""
     try:
         pins = pins or _checked_pins(_json_file(PUBLISHER_PINS_FILE))
     except (OSError, ValueError) as e:
         raise RuntimeError(f"cannot read image-publishers.json: {e}")
     host, path = _split_image(name)
-    return pins.get(f"{host}/{path}") or pins.get(host)
+    return pins.get(f"{host}/{path}")
 
 
 def cosign_verify_images(root, rev, cosign_image, run):
     """For each image the tree at `rev` names by digest, run `cosign verify` once per pinned identity.
     An image passes when any run succeeds. An image on a registry not in image-publishers.json fails, and one whose
     entry says the publisher signs nothing is reported as "no signature published", never as verified. Images on
-    ghcr.io and Docker Hub are dated by their registry time and left to that check unless enrolled.
+    ghcr.io and Docker Hub are dated by their registry time and left to that check unless enrolled. The age of any
+    other image is never proven: the age check fails it.
     `run(cmd)` returns the exit code. Only `verify` is run, never a write."""
     pins = _checked_pins(_json_file(PUBLISHER_PINS_FILE))
     results, seen = [], set()

@@ -955,9 +955,6 @@ grep -q "^api repos/o/r/pulls/12 " "$TMPROOT/qgh.log" && gp "queue: the call rea
     GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO=o/r "$ABS_SCRIPT" >/dev/null 2>&1 )
 [ ! -s "$TMPROOT/qgh.log" ] && gp "a pull request run makes no lookup" \
     || gf "a pull request run makes no lookup" "$(cat "$TMPROOT/qgh.log")"
-# pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
-runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
-runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 

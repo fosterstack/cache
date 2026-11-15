@@ -1,5 +1,5 @@
 {
-  "_note": "Who signs each third-party image outside ghcr.io and Docker Hub, pinned by hand: adding an image needs its publisher's identity here, never discovered at run time. An entry is named by an image or by a registry. A keyed publisher is its published public key; a keyless one is an OIDC issuer and subject; a publisher that signs nothing has an unsigned reason, and the check prints it as no signature published. An image on a registry named nowhere here fails.",
+  "_note": "Who signs each third-party image outside ghcr.io and Docker Hub, pinned by hand: adding an image needs its publisher's identity here, never discovered at run time. An entry is named by an image (its registry and path), never by a registry alone. A keyed publisher is its published public key; a keyless one is an OIDC issuer and subject; a publisher that signs nothing has an unsigned reason, and the check prints it as no signature published. An image on a registry named nowhere here fails, and an image outside ghcr.io and Docker Hub fails the age check whatever its entry says: an entry decides only who signs, and unsigned waives the signature, never the age.",
   "gcr.io/projectsigstore/cosign": {
     "key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhyQCx0E9wQWSFI9ULGwy3BuRklnt\nIqozONbbdbqz11hlRJy9c7SG+hdcFl9jE9uE/dwtuwU2MqU9T/cN0YkWww==\n-----END PUBLIC KEY-----\n",
     "key_source": "https://github.com/sigstore/cosign/blob/main/release/release-cosign.pub (sha256 of the DER key, base64: rbgIqwcUgkJ7ehNbmfZAWAVTdXxGRUtJ1tryJ8Ga748=)"
@@ -11,7 +11,7 @@
         "subject": "keyless@distroless.iam.gserviceaccount.com"
       }
     ],
-    "source": "the Fulcio certificate of the recorded signature (tests/fixtures/image-publishers/distroless.sig.json); the publisher is Google's distroless project"
+    "source": "the Fulcio certificate of the publisher's signature when the identity was pinned; the publisher is Google's distroless project"
   },
   "registry.k8s.io/kubectl": {
     "keyless": [
@@ -24,6 +24,6 @@
         "subject": "krel-trust@k8s-releng-prod.iam.gserviceaccount.com"
       }
     ],
-    "source": "the Fulcio certificates of the two recorded signatures (tests/fixtures/image-publishers/kubectl.sig.json); the image is accepted when any one pinned identity verifies fully; it is dated by the earliest such signature"
+    "source": "the Fulcio certificates of the publisher's signatures when the identities were pinned; the image is accepted when any one pinned identity verifies fully"
   }
 }
