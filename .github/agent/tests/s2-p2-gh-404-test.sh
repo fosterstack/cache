@@ -162,5 +162,17 @@ assert msg is not None, "a 404 on the advisory list read as no advisories"
 assert "list" in msg or "404" in msg, msg
 PY
 
+# --- (3) the offline gh stub (tests/gh-map-stub.py): a path the map does not name is a 404, never an empty answer ---
+echo '{"repos/o/r/contents/action.yml": {"content": "eA=="}}' >"$work/stub-map.json"
+stub_run() { GH_MAP="$work/stub-map.json" python3 "$here/gh-map-stub.py" api "$1" >"$work/stub.out" 2>"$work/stub.err"; }
+CASE="gh-map-stub.py: a path the map names is answered (exit 0, its value)"
+check stub_run repos/o/r/contents/action.yml
+check grep -q '"content"' "$work/stub.out"
+for wrong in repos/o/r/contents/action.yaml repos/o/other/contents/action.yml repos/o/r/contents/action.yml/ "repos/o/r/contents/action.yml?ref=x" repos/o/r; do
+  CASE="gh-map-stub.py: the path $wrong is not in the map: a 404 (non-zero exit, a 404 body, nothing on stdout)"
+  check bash -c 'if GH_MAP="$1" python3 "$2" api "$3" >"$4" 2>"$5"; then exit 1; fi; grep -q 404 "$5" && [ ! -s "$4" ]' _ \
+    "$work/stub-map.json" "$here/gh-map-stub.py" "$wrong" "$work/stub.out" "$work/stub.err"
+done
+
 echo "s2-p2-gh-404: $pass ok, $failn failed"
 [ "$failn" -eq 0 ]
