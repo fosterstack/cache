@@ -307,6 +307,8 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   mkdir -p .github/workflows; printf 'name: Release\n' > .github/workflows/release.yml
   cp "$root/bin/chain-bytes-sha.py" bin/ 2> /dev/null || printf 'x\n' > bin/chain-bytes-sha.py
   printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n' > .github/policy/chain-scripts.json
+  mkdir -p build/locks
+  for f in sealed-env.json archive.json melange.yaml apko.yaml locks/fips-module.txt; do printf 'x\n' > "build/$f"; done
   git add -A; git commit -q -S -m "chain files"; git tag v0.3.0-rc1; C_A=$(git rev-parse HEAD)
   cat > requirements/requirements.yaml <<'YAML'
 requirements:
@@ -668,6 +670,21 @@ if [ "$RC" = 1 ] ||
   ok "AC4 an OpenPGP signature that gpg calls Good is never recorded as owner-ssh"
 else bad "AC4 an OpenPGP signature was recorded as owner-ssh: $(head -c 200 "$W/c/repo/admission.json" 2> /dev/null)"
 fi
+# build-admit.py runs git and gpg by fixed path with an empty GNUPGHOME: a `gpg` first on PATH must never be run
+mkdir -p "$W/fakegpgbin"
+printf '#!/bin/sh\necho '"'"'Good "git" signature for owner with ED25519 key SHA256:fake'"'"' >&2\nexit 0\n' > "$W/fakegpgbin/gpg"
+chmod +x "$W/fakegpgbin/gpg"
+fresh; commit_move other "other gpg"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit PATH="$W/fakegpgbin:$FB:$PATH"
+expect_refuse "AC4 an OpenPGP-signed commit is refused at commit-signature even when a fake gpg on PATH says Good" \
+  commit-signature
+n_cases=$((n_cases + 1))
+if [ ! -e "$W/c/repo/admission.json" ] || ! grep -q owner-ssh "$W/c/repo/admission.json"; then
+  ok "AC4 a fake gpg on PATH never makes the admission say owner-ssh"
+else bad "AC4 a fake gpg on PATH made the admission say owner-ssh"; fi
+fresh; commit_move other "other gpg"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
+expect_refuse "AC4 a commit signed by a real OpenPGP key that main does not pin is refused at commit-signature" \
+  commit-signature
 # ---- ancestor-of-main ----------------------------------------------------------------------------------------------------------------
 fresh;
 G checkout -q -b side v0.3.0 2> /dev/null;
@@ -1099,6 +1116,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=190
+EXPECT_TOTAL=193
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

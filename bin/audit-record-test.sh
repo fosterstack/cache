@@ -488,7 +488,7 @@ def adm_problems(src):
         if before not in names[:i]: bad.append("it must come after " + before)
     if "check_required_checks" not in names[i + 1:]: bad.append("it must come before check_required_checks")
     seg = ast.get_source_segment(src, fn)
-    for need in ('"origin/main:" + path', '"--release"', "ctx.tag_object", "ctx.sha", "ctx.tag", '"bash"',
+    for need in ('"origin/main:" + path', '"--release"', "ctx.tag_object", "ctx.sha", "ctx.tag", "BASH",
         'raise Refusal("audit-approval"', "rc != 0"):
         if need not in seg: bad.append("lacks: " + need)
     if "ctx.sha + " in seg or "git_show(ctx" in seg: bad.append("reads the tagged commit's own copy")
@@ -516,9 +516,8 @@ for name, old, new, frag in (
         "    why = one_line(text(out) or text(err), 300)\n    rc = 0\n", "rc is assigned"),
     ("an early return", "    judge = os.path.join(root, AUDIT_FILES[0])\n",
         "    return\n    judge = os.path.join(root, AUDIT_FILES[0])\n", "early"),
-    ("a caught error", "    rc, out, err = outcome(lambda: subprocess.run([\"bash\", judge,",
-        "    try:\n        pass\n    except Exception:\n        pass\n    rc, out, err = outcome(lambda: subprocess.run([\"bash\", judge,",
-        "catches"),
+    ("a caught error", "    rc, out, err = run([BASH, judge,",
+        "    try:\n        pass\n    except Exception:\n        pass\n    rc, out, err = run([BASH, judge,", "catches"),
 ):
     if admit_src.count(old) != 1: check("build-admit.py: a copy with %s is refused" % name, False, "anchor not found"); continue
     probs = adm_problems(admit_src.replace(old, new)); check("build-admit.py: a copy with %s is refused" % name,

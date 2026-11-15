@@ -11,6 +11,7 @@ The chain files of a commit are read from the commit's own objects, never from a
   * the workflows release.yml and stage-*.yml,
   * every file a row of .github/policy/chain-scripts.json lists (one that is not in the commit, or a path that leaves bin/, is refused),
   * every file of .github/policy/ except the marker .github/policy/rc-proof.json itself (the marker cannot hash itself),
+  * the five build inputs of BUILD_INPUTS (sealed environment, archive pointer, melange and apko configs, FIPS module),
   * the closure of those over the files they run: every path under bin/ or the bin directory of the agent folder under .github/ that a chain file names,
     and every sibling module a Python chain file imports or loads with load_sibling(), repeated until nothing new is named. A test file named only in
     a comment is not code the chain runs and stays outside; a name that is not a file of the commit is not a chain file.
@@ -32,6 +33,9 @@ import sys
 
 MARKER = ".github/policy/rc-proof.json"
 SCRIPTS = ".github/policy/chain-scripts.json"
+# the build inputs the chain's builds read and no workflow or script names
+BUILD_INPUTS = ("build/sealed-env.json", "build/archive.json", "build/melange.yaml", "build/apko.yaml",
+                "build/locks/fips-module.txt")
 RC_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RUN_ID = re.compile(r"[0-9]{1,20}")
@@ -115,6 +119,7 @@ def chain_paths(repo, commit):
             paths.add(name)
         elif name.startswith(".github/policy/") and name != MARKER:
             paths.add(name)
+    paths.update(BUILD_INPUTS)
     raw = blob(repo, commit, SCRIPTS)
     if raw is None:
         refuse("%s is not in commit %s: the listed scripts are unknown" % (SCRIPTS, commit))

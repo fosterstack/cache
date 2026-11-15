@@ -9,29 +9,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/install-scanner.sh"
 pass=0; fail=0
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-# The installer has no environment hooks: sutc ARCH [NAME=URL...] prints the path of a copy whose TEST-SUBST lines
-# hold the given architecture and base addresses; a base not given points at an empty folder (no network).
-sutc() {
-  local f="$work/copy-$(printf '%s' "$*" | cksum | cut -d' ' -f1).sh"
-  local o="file://$work/offline"
-  python3 - "$sut" "$f" arch="$1" TRIVY_BASE="$o" GRYPE_BASE="$o" SYFT_BASE="$o" SNYK_BASE="$o" OSV_BASE="$o" \
-    SBOMGEN_BASE="$o" SCOUT_BASE="$o" "${@:2}" <<'PY'
-import re, sys
-src, out = sys.argv[1:3]
-subst = dict(a.split("=", 1) for a in sys.argv[3:])
-seen, res = set(), []
-for ln in open(src).read().split("\n"):
-    m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=.*#\s*TEST-SUBST", ln)
-    if m:
-        if m.group(1) not in subst: sys.exit("no substitution given for %s" % m.group(1))
-        seen.add(m.group(1)); res.append("%s=%s   # TEST-SUBST" % (m.group(1), subst[m.group(1)]))
-    else:
-        res.append(ln)
-if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
-open(out, "w").write("\n".join(res))
-PY
-  echo "$f"
-}
+. "$(dirname "$0")/install-scanner-test-lib.sh"   # sutc: a copy of the installer with its TEST-SUBST lines set
 
 check() { # name expected_rc regex -- run...
   local name="$1" want_rc="$2" re="$3"; shift 3
@@ -137,7 +115,8 @@ if ! grep -qE 'INSTALL_SCANNER_ARCH|_BASE_URL' "$sut"; then
   echo "ok: the installer names no environment hook"; pass=$((pass+1))
 else echo "FAIL: the installer still names INSTALL_SCANNER_ARCH or a _BASE_URL"; fail=$((fail+1)); fi
 # 4i. The usage line names every subcommand the installer accepts (the docker-scout-<version> forms as one).
-usage=$(sed -n 's/^# Usage: install-scanner\.sh <\(.*\)> \[dest-dir\]$/\1/p' "$sut")
+usage=$(sed -n '/^# Usage: install-scanner\.sh </,/\[dest-dir\]$/p' "$sut" | sed 's/^# *//' | tr -d '\n' |
+  sed -n 's/^Usage: install-scanner\.sh <\(.*\)> \[dest-dir\]$/\1/p')
 unlisted=
 for n in $(sed -n 's/^case "\$TOOL" in \(.*\)) ;; \*).*/\1/p' "$sut" | head -1 | tr '|' ' '); do
   case "$n" in docker-scout-[0-9]*) n='docker-scout-<version>' ;; esac

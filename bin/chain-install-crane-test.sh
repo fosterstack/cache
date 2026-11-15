@@ -22,6 +22,8 @@ rel="${u#*/download/}"; [ "$rel" != "$u" ] || rel="${u#*/dl/}"
 STUB
 FXD_1="$stubbin/curl"
 chmod +x "$FXD_1"
+. "$(dirname "$0")/install-scanner-test-lib.sh"   # sutc: a copy of the installer with its TEST-SUBST lines set
+
 check() { # name expected_rc regex -- run...
   local name="$1" want_rc="$2" re="$3"; shift 3
   local out rc; out="$("$@" 2>&1)"; rc=$?
@@ -34,11 +36,12 @@ for arch in x86_64 aarch64; do
   case "$arch" in x86_64) asset=go-containerregistry_Linux_x86_64.tar.gz ;; aarch64) asset=go-containerregistry_Linux_arm64.tar.gz ;; esac
   mkdir -p "$work/rel/${ver:-v0.0.0}"; echo "not the real crane tarball" > "$work/rel/${ver:-v0.0.0}/$asset"
   check "crane checksum mismatch rejected on $arch" 1 "checksum mismatch.*PIPELINE failure" \
-    env INSTALL_SCANNER_ARCH=$arch PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" crane "$work/bin-$arch"
+    env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc $arch)" crane "$work/bin-$arch"
   check "crane download failure rejected on $arch" 1 "download failed.*PIPELINE failure" \
-    env INSTALL_SCANNER_ARCH=$arch PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$sut" crane "$work/bin-$arch"
+    env PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$(sutc $arch)" crane "$work/bin-$arch"
 done
-check "crane unsupported architecture rejected" 1 "unsupported architecture.*PIPELINE failure" env INSTALL_SCANNER_ARCH=mips bash "$sut" crane "$work/bin"
+check "crane unsupported architecture rejected" 1 "unsupported architecture.*PIPELINE failure" \
+  bash "$(sutc mips)" crane "$work/bin"
 # the pin itself: one version, one 64-hex sha256 per architecture, in the crane entry (a placeholder or a missing sum is a failure)
 n=$(grep -ciE 'crane' "$sut" 2> /dev/null); n=${n:-0}
 if [ "$n" -gt 0 ] && [ -n "$ver" ] && [ "$(grep -iE 'crane' "$sut" | grep -oE '[0-9a-f]{64}' | sort -u | wc -l | tr -d ' ')" -ge 2 ]; then echo "ok: crane is pinned to $ver with a sha256 for both architectures"; pass=$((pass+1))

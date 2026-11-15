@@ -251,7 +251,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "8c886b5d99273a6343795d6aafc3a8bb37615b96bae1902da8dfb1fdb8559976",
+      "sha256": "405eed3d61856a9d4a27c6fcc51c8adf25c6651f0d5fb62e46bbe6c5491aace0",
       "tools": [
         "at",
         "git"
@@ -524,7 +524,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "c8db744b8e56c19a1c3e33e46eabba7c973507ba409c8e46ce6dcc286d3cd2d8",
+      "sha256": "ff750f09d977ed3db2aefc9f409c89753d6ee41c01b3cd64a6d9548ba357a9a2",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -2297,7 +2297,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "a9ebc31e7fe8fe9336f763457c1ffa6cce89808b6c92961e8656904cd531762e",
+      "sha256": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
       "exceptions": [
         {
           "rule": "deny",
@@ -2541,7 +2541,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "edf49134b03391fad3a4620baea393eb9bba27920ca2779eaf0623e6ce48cbc6",
+      "sha256": "4cb87e47b02e6dd8ea9057237be8ff10d3a467718b7d7df2ec9a5e6ba5c552c8",
       "exceptions": [
         {
           "rule": "script-name",

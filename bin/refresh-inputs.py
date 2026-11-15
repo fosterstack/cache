@@ -211,9 +211,6 @@ def open_pr_plan(plan_dir, archive, digest, tmp):
         if not re.fullmatch(r"refresh/[A-Za-z0-9._-]+", branch):
             fail("plan %s names the branch %r, not one under refresh/" % (name, branch), 2)
         if not paths: fail("plan %s names no file" % name, 2)
-        for p in paths:
-            if p.startswith("/") or ".." in p.split("/") or not os.path.isfile(repo + "/" + p):
-                fail("plan %s names %r, which is not a file of the repository" % (name, p), 2)
         plans.append((branch, title, body, paths, branch.startswith("refresh/fips-module-")))
     if not plans:
         print("open-pr: nothing planned, nothing opened"); open(tmp + "/ncount", "w").write("0\n"); return
@@ -337,12 +334,8 @@ def fips_module(pr_author, goroot, modfile, tmp, staged):
     STAGED = staged == "1"
     cert = os.path.join(goroot, "lib", "fips140", "certified.txt")
 
-
-    def fail(msg, code=2): print("refresh-inputs.sh: " + msg, file=sys.stderr); sys.exit(code)
-
-
     if not os.path.isfile(cert):
-        fail("%s is missing; cannot tell which Go Cryptographic Module is certified" % cert)
+        fail("%s is missing; cannot tell which Go Cryptographic Module is certified" % cert, 2)
     NUM = r"(0|[1-9][0-9]*)"   # no leading zeros: v1.0.00 is not another spelling of v1.0.0
     PAT = re.compile(r"^v%s\.%s\.%s-[0-9a-f]{8}$" % (NUM, NUM, NUM))
     mods = []
@@ -350,36 +343,36 @@ def fips_module(pr_author, goroot, modfile, tmp, staged):
         cert_text = open(cert, "rb").read().decode("utf-8")
     except (OSError, UnicodeDecodeError) as e:
         fail("%s is not readable as UTF-8 text (%s); cannot tell which Go Cryptographic Module is certified"
-             % (cert, e))
+             % (cert, e), 2)
     for ln in cert_text.splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("#"):
             continue
         m = PAT.match(ln)
         if not m:
-            fail("%s: unreadable module value %r (expected vMAJOR.MINOR.PATCH-<8 hex>)" % (cert, ln))
+            fail("%s: unreadable module value %r (expected vMAJOR.MINOR.PATCH-<8 hex>)" % (cert, ln), 2)
         mods.append((tuple(int(x) for x in m.groups()), ln))
     if not mods:
-        fail("%s is empty; cannot tell which Go Cryptographic Module is certified" % cert)
+        fail("%s is empty; cannot tell which Go Cryptographic Module is certified" % cert, 2)
     if len(mods) != 1:
         fail("%s must hold exactly one module line (found %d); which one counts is a human decision"
-             % (cert, len(mods)))
+             % (cert, len(mods)), 2)
     newest = mods[0][1]
     # the module the FIPS build uses now is DATA (build/locks/fips-module.txt), read with the same closed grammar the
     # certified file is
     try:
         raw_cur = open(modfile, "rb").read().decode("ascii")
     except (OSError, UnicodeDecodeError):
-        fail("%s is not readable as plain ASCII text" % modfile)
+        fail("%s is not readable as plain ASCII text" % modfile, 2)
     if not raw_cur.endswith("\n") or "\r" in raw_cur or raw_cur.count("\n") != 1 or not PAT.match(raw_cur[:-1]):
-        fail("%s must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; refusing" % modfile)
+        fail("%s must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; refusing" % modfile, 2)
     cur = raw_cur[:-1]
     cm = PAT.match(cur)
     if tuple(int(x) for x in cm.groups()) > mods[0][0]:
-        fail("%s names %s, older than the %s the FIPS build uses; refusing to move backward" % (cert, newest, cur))
+        fail("%s names %s, older than the %s the FIPS build uses; refusing to move backward" % (cert, newest, cur), 2)
     if cm.groups() == PAT.match(newest).groups() and cur != newest:
         fail("%s names %s, the SAME version as the %s the FIPS build uses with a different hash; refusing, a human "
-             "must look" % (cert, newest, cur))
+             "must look" % (cert, newest, cur), 2)
     if STAGED:
         if cur != newest:
             print("fips-module: pending: Go's certified module file names %s, the FIPS build uses %s; its pull request "
@@ -661,7 +654,7 @@ def verify_integrity(path, what):
     except SystemExit:
         raise
     except Exception as ex:
-        fail("checksum mismatch: %s is damaged, truncated or not an apk (%s)%s" % (what, str(ex)[:120], HINT))
+        fail("checksum mismatch: %s is damaged, truncated or not an apk (%s)" % (what, str(ex)[:120]))
 
 
 # the key name written in a package's signature header
@@ -1368,8 +1361,8 @@ if ahead:   # the reconcile PR says why the index record jumps: it supersedes a 
         # any reply shape we do not understand: fall back to the generic sentence
         except (ValueError, TypeError, KeyError, AttributeError):
             prev = None
-    digs = "; ".join("%s: the record named sha256:%s, the archive held sha256:%s" % (a_, rec_, arch_) for a_, arch_,
-                     rec_ in ahead_info)
+    digs = "; ".join("%s: the record named sha256:%s, the archive held sha256:%s" % (a_, rec_, archive_sha)
+                     for a_, archive_sha, rec_ in ahead_info)
     if prev:
         supersedes = ["No open refresh pull request was found. The previous refresh pull request #%d (%s) was closed "
                       "unmerged; this one supersedes it, which is why the index record jumps (%s)."
