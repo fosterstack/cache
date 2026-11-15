@@ -233,6 +233,19 @@ for hn in "${hostile_names[@]}"; do
   t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
   t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
 done
+# a $ or a backtick in a pasted path would be expanded by the recipe's shell: refused too, before any melange call
+for hn in 'dol$lar' 'back`tick'; do
+  rd="$work/rec-$hn"; mkdir -p "$rd"; cp "$co/witness-apk/apk-collection.local.json" "$rd/r.json"
+  withrec "$work/probe-rec.sh" "$rd/r.json"; setrc 0
+  exits "AC5" "a RECORD path containing [$hn] is refused (exit 2)" 2 runprobe "$work/probe-rec.sh"
+  t "AC5" "...the message names the record path ([$hn])" grep -qF -e "$rd/r.json" "$work/o"
+  t "AC5" "...and melange never ran ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+  kr="$work/rtk-$hn"; mkdir -p "$kr"; : > "$work/calls"
+  exits "AC5" "a RUNNER_TEMP (key folder) path containing [$hn] is refused (exit 2)" 2 \
+    bash -c 'cd "$1" && TMPDIR="$2" RUNNER_TEMP="$3" bash "$4"' _ "$co" "$work/tmp" "$kr" "$work/probe.sh"
+  t "AC5" "...the message names the key folder path ([$hn])" grep -qF -e "$kr" "$work/o"
+  t "AC5" "...and melange never ran for the key folder ([$hn])" bash -c "[ ! -s '$work/calls' ]"
+done
 mkdir -p "$work/rec-plain"; cp "$co/witness-apk/apk-collection.local.json" "$work/rec-plain/r.json"
 withrec "$work/probe-plain.sh" "$work/rec-plain/r.json"; setrc 0
 exits "AC5" "a plain RECORD path in another folder still runs (exit 0)" 0 runprobe "$work/probe-plain.sh"
