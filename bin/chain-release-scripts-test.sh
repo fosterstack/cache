@@ -1065,7 +1065,11 @@ for lit in ("evil.example/x/cache@" + DIG["image-production"], "docker.io/librar
             "AC7 post-publish: a literal image reference (%s) in a listed command is refused and nothing runs: only "
                     "the two constant repositories, through the placeholders" % lit[:28],
             "rc=%s %s" % (rc, first(se)))
-t, rc, so, se = pv([PV4.replace("x.txt", "dir/x.txt")]); check(rc == 0 and len(calls(t)) == 1, "AC7 post-publish: a file path with a slash is not an image reference and runs once")
+t, rc, so, se = pv([PV4.replace("x.txt", "dir/x.txt")])
+check(rc != 0 and "dir/x.txt" in se and "plain file name" in se and not calls(t),
+      "AC7 post-publish: a file path with a slash is not an image reference and not a file of the flat "
+      "release-published/: refused, nothing runs",
+      "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
 for tag in ("main", "v0.3", "0.3.0", "v0.3.0-RC1", ""):
     t, rc, so, se = pv([PV1], tag=tag); check(rc != 0 and not calls(t), "AC7 post-publish: the tag %r is refused, nothing runs" % tag, "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pv([PV1], env={"GITHUB_REPOSITORY": ""})
@@ -1266,6 +1270,21 @@ t, rc, so, se = pva([PBF, "jq -e --arg x '~' '.messageSignature' provenance.bund
 t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.messageSignature' PH_TAG.bundle.json"], assets={"v0.3.0.bundle.json": OKF, "PH_TAG.bundle.json": OK})
 check(rc != 0 and not calls(t), "AC20 round 2: a verify of <TAG>.bundle.json does not license a jq read of a file literally named PH_TAG.bundle.json (refused, nothing runs)", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<TAG>.bundle.json"), "jq -e '.messageSignature' v0.3.0.bundle.json"], assets={"v0.3.0.bundle.json": OK}); check(rc != 0 and not calls(t), "AC20 round 2: a verify of <TAG>.bundle.json does not license the substituted name either (fail closed)", "rc=%s %s" % (rc, first(se)))
+# round 3: the names a verify command names are checked with the tag filled in: <TAG>.bundle.json is the
+# staged v0.3.0.bundle.json, and a marker nothing fills is a refusal that runs nothing
+PBT = PBF.replace("provenance.bundle.json", "<TAG>.bundle.json")
+t, rc, so, se = pva([PBT], assets={"v0.3.0.bundle.json": OK})
+check(rc == 0 and len(calls(t)) == 1 and "--bundle v0.3.0.bundle.json" in calls(t)[0],
+      "AC20 round 3: a verify of <TAG>.bundle.json is checked as the staged v0.3.0.bundle.json and runs with that name",
+      "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
+t, rc, so, se = pva([PBT], assets={})
+check(rc != 0 and "v0.3.0.bundle.json" in se and not calls(t),
+      "AC20 round 3: a verify of <TAG>.bundle.json with no staged v0.3.0.bundle.json is refused naming the filled "
+      "name, nothing runs", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = pva([PBF.replace("provenance.bundle.json", "<NOSUCH>.bundle.json")],
+                    assets={"provenance.bundle.json": OK})
+check(rc != 0 and "<NOSUCH>" in se and not calls(t),
+      "AC20 round 3: an unfilled marker in a named file fails, nothing runs", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, "jq -e --arg ref 'ghcr.io/x/y@sha256:" + "a" * 64 + "' '.messageSignature' provenance.bundle.json"], assets={"provenance.bundle.json": OK}); check(rc == 0, "AC20 round 2: a repository-looking --arg VALUE to jq is text and is not refused as a repository literal (jq opens no network)", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pva([PBF, "jq -e 'any(.messageSignature[]; endswith(\"@sha256:abc\"))' provenance.bundle.json"], assets={"provenance.bundle.json": json.dumps({"verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": {"signature": "x@sha256:abc"}})}); check(rc == 0, "AC20 round 2: @sha256: inside a jq filter string is not a repository operand", "rc=%s %s" % (rc, first(se)))
 # ---- KL-1 (audit orchestrator, Nov 1): a bundle that carries a certificate is refused by the post-publish check, with the check chain-verify.py holds ----------------
@@ -1470,7 +1489,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "630"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "633"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
