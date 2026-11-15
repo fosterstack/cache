@@ -117,6 +117,8 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
     if item.kind == "image":
         host = _image_registry(item.name)
         if host not in ("ghcr.io", "docker.io"):
+            if _publisher_entry(item.name) is None:
+                return False, f"registry {host} is not in image-publishers.json, so nothing vouches for the image", None
             return False, f"age not provable: registry {host} gives no push time, whatever its entry says", None
         proofs = [p for p in proofs if p[1] == "registry-push"]    # the PR clock never dates an image
     if item.kind in ("tool", "package", "gotool") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer")

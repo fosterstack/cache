@@ -1567,13 +1567,13 @@ def unmeasured_occurrences(files):
         mark = "\ue000"
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
-            bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
-            if not tainted:
-                line = line.replace(mark, "")
-            flat = " ".join(line.split())
+            flat = " ".join((line if tainted else line.replace(mark, "")).split())
             if len(flat) > MAX_LINE:
                 yield (path, "a command line over 4000 characters", _long_line_name(flat)), flat, False
                 continue
+            bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
+            if not tainted:
+                line = line.replace(mark, "")
             if path not in _VENDOR_NAMING_FILES and _names_vendor(line):
                 yield (path, "a line that names the vendored folder",
                     hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":"

