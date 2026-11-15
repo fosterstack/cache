@@ -4,6 +4,8 @@
 
 This release is rebuilt with **Go 1.27.4**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
 
+The CA certificate bundle in the build environment is also updated, to Wolfi's `ca-certificates-bundle` 20261020-r0, which removes three eMudhra roots: emSign Root CA C1, emSign ECC Root CA C3 and emSign ECC Root CA G3. The images carry no CA certificate bundle.
+
 ### What changes for Gradle and Maven users
 
 - **Optional HTTPS.** Set `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` and the cache serves HTTPS, with TLS 1.2 as the minimum.
@@ -21,7 +23,7 @@ Upgrade by pulling the new tag or `:latest`.
 
 ### Building and signing, in plain words
 
-Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The software packages inside the images, the images and the checksum list that covers every release archive are all signed with one release key. The key stays in the cloud key service, and only the signing jobs can ask the service to use it. The job that signs and publishes is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. You check the signatures with the release public key. (The archives are not signed one by one; the signed checksum list covers each of them.)
+Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The software packages inside the images, the images and the checksum list that covers every release archive are all signed with one release key. The key stays in the cloud key service, and only the signing jobs can ask the service to use it. The job that signs and publishes gets the packages and images only from the build, never from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. You check the signatures with the release public key. (The archives are not signed one by one; the signed checksum list covers each of them.)
 
 This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5 and Executive Order 14028 with its NIST guidance; we claim no certification. The page `docs/build-and-signing-isolation.md` names the specific controls and lists the known gaps.
 
@@ -29,6 +31,7 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 
 - Go 1.27.4<!-- pinned: upstream --> (above).
 - `github.com/prometheus/client_golang` 1.24.1 to 1.25.0, with its supporting libraries (`prometheus/common` 0.72.0, `prometheus/procfs` 0.22.0, `golang.org/x/sys` 0.48.0). <!-- pinned: upstream -->
+- The CA certificate bundle in the build environment (above).
 
 ### What this release does not do
 
