@@ -279,7 +279,8 @@ scout_leg() {
 # Nothing is pushed to Docker Hub unless its API says the test repository is private (is_private exactly true).
 hub_repo_private() {
   local answer
-  answer=$(curl -fsS "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
+  answer=$(printf 'user = "%s:%s"\n' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" \
+    | curl -fsS -K - "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
     || { echo "::error::cannot read the visibility of ${DH_REPO} from Docker Hub" >&2; return 1; }
   jq -e '.is_private == true' >/dev/null 2>&1 <<<"$answer" \
     || { echo "::error::${DH_REPO} is not private on Docker Hub: nothing is pushed" >&2; return 1; }
