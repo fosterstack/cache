@@ -880,14 +880,14 @@ def ns_shell(path, name):
 NS_SHEBANG = b"#!/usr/bin/env bash"
 NS_SHA = {
     "bin/admission-tag-signer.py": "4f9ea6b8214cc0f8ac3d4b8202edc90b24fbb4e949bf86802afef89fa769c9e7",
-    "bin/apk-tool.py": "3e50007b042ddfd5214c828902e48c8008484641c72f087e13b431526c3d5280",
+    "bin/apk-tool.py": "054a2ee03874d57f74b8486ef225ecbee85b60089745289efddb6ebb902d781c",
     "bin/archive-pull.sh": "13eb7a9d3bd49e5a518316b03aad56dab79328109371f2271543a60740ab1538",
     "bin/archive-verify.py": "7897405722eb7910dab9bebd473f633d1abb1bf0976b4f2949f49c02a2c16d6b",
     "bin/audit-record-judge.sh": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485",
     "bin/audit-record.py": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f",
-    "bin/build-admit.py": "a74f9b827f23c5debae0a6e71db45711f4be1bdd04313691f51f9f89a3e218ed",
+    "bin/build-admit.py": "ff750f09d977ed3db2aefc9f409c89753d6ee41c01b3cd64a6d9548ba357a9a2",
     "bin/build-apk-helper.py": "64fc57cf73c8fcaba226255e59198def1fe69bbc345f52f73d4d4999ebf9a23b",
-    "bin/build-archives.py": "c2edc1df7c843dc4fe4a830c011e3c64940b2b36fef913031d953e7e666130b5",
+    "bin/build-archives.py": "532ec7371f299d3e29f70af776cca3e329156a4517aa328958b4150e635c034d",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "405eed3d61856a9d4a27c6fcc51c8adf25c6651f0d5fb62e46bbe6c5491aace0",
     "bin/chain-hostile-step.sh": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
@@ -900,7 +900,7 @@ NS_SHA = {
     "bin/install-host-bwrap.py": "fdbac6ffdafe1355fc7f3f826accbe79a1cdabd7d4dc5d496720207f5c688b09",
     "bin/loopback-get.sh": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
     "bin/net-probe.py": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729",
-    "bin/oci-digest.py": "ec2344e00188598cba80da00e280158daaf0ad59200a16ead3474a2779701d91",
+    "bin/oci-digest.py": "5569a3e0e15798c4552306d6fee1fc1215974a478e653d9d4129ec46d1064890",
     "bin/rebuild-records-digests.sh": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49",
     "bin/vex-index.py": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d",
 }
