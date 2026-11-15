@@ -8,7 +8,8 @@
 #        the promotion list holds the eleven of the full suite
 #   AC4  ci.yml's test job vets, builds and tests only the changed packages (no -race, no fips settings); its allowlist job writes the suites
 #        bin/select-tests.sh selects to a file and a step output, runs the single-file ones through the committed script bin/run-selected-tests.sh
-#        (one plain line each, run here in a scratch tree), runs each of the four multi-file suites as its own step with an if: on that output,
+#        (one plain line each, run here in a scratch tree), runs the single-file suites of the agent folder in the next step with the same plain
+#        lines, runs each of the four multi-file suites as its own step with an if: on that output,
 #        and runs the allowlist of every tracked file and the action-pin checks (the contract is written above the AC4 cases below);
 #        the test job's package step is run in a throwaway git repository (testdata, renames, tools/requirements)
 #   AC5  full-suite.yml: a daily schedule, workflow_dispatch and workflow_call only; the five moved jobs under their
@@ -201,10 +202,13 @@ def test_job_problems(job):
 #     $RUNNER_TEMP and sets the step output `suites` to those lines (the multi-line form name<<DELIMITER); a selector that fails fails the step;
 #   step `the suites that are one test file` runs, from the repository root, `bash bin/run-selected-tests.sh <that file>`: ONE argument, the file;
 #   bin/run-selected-tests.sh holds one single-line `if grep -qxF '<exact command>' "$selected"; then <that command>; fi` for each suite that is one
-#     committed test file (the pattern is the command line as test-paths.json spells it); the vex-both-scanners line first runs ./bin/install-scanner.sh grype;
+#     committed test file outside the agent folder (the pattern is the command line as test-paths.json spells it), and names nothing under that
+#     folder (the auditor layout check refuses it); the vex-both-scanners line first runs ./bin/install-scanner.sh grype;
 #     the lines run in SCRIPT order whatever the file's order, the first failing suite stops the script with its failure, an empty file passes and runs
-#     nothing, a selected line that neither a line of the script nor a step covers fails the script and is named on stderr; the four commands that have
-#     their own steps are covered by those steps, so the script lets them pass and runs nothing for them;
+#     nothing, a selected line that no line of the script, no line of the next step and no own step's if: covers fails the script and is named on
+#     stderr (the script reads those lines and ifs from ci.yml); the commands covered there are let pass and nothing is run for them;
+#   the step right after the script step is the one step that holds, after selected="${RUNNER_TEMP}/selected-suites", the same plain literal line
+#     for each single-file suite whose command names the agent folder, each running exactly the command it greps for;
 #   each of those four suites is a step of the job whose `if:` is contains(steps.select.outputs.suites, '<the suite's exact command>').
 SEL_ID, SEL_OUT = "select", "suites"
 PATHS = json.load(open(os.path.join(root, ".github/policy/test-paths.json")))
@@ -247,6 +251,11 @@ TESTSH = re.compile(r"[\w./-]*-tests?\.sh\b")
 GUARD = "bash bin/scan-no-workflow-call-test.sh"
 GUARD_NAME = "scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)"
 RUNNER = "bin/run-selected-tests.sh"
+RUNNER_TEXT = open(os.path.join(root, RUNNER)).read()
+CI_TEXT = open(os.path.join(root, WF + "ci.yml")).read()
+GREP_LINE = re.compile(r"^if grep -qxF '([^']+)' \"\$\w+\"; then (.+); fi$")
+ROOT_SINGLE = [s for s in SINGLE if AGENT not in s]
+AGENT_SINGLE = [s for s in SINGLE if AGENT in s]
 RUNNER_CALL = re.compile(r"^\s*(?:bash\s+)?" + re.escape(RUNNER) + r"\s+\S+\s*$")
 SHELL_C = r"\b(?:ba|z|da)?sh\s+(?:-\w+\s+)*-\w*c\b|\beval\b"
 def sel_steps(job): return [s for s, r in runs(job) if "select-tests.sh" in r]
@@ -259,6 +268,8 @@ def runner_call_problems(step):
     if not any(RUNNER_CALL.match(l) for l in lines): bad.append("no command line of the step runs %s by its literal path with one file argument" % RUNNER)
     if any(re.search(SHELL_C, l) for l in lines): bad.append("the step runs a command through a shell -c or eval")
     return bad
+PIP_FILES = " ".join(AGENT + "%s-requirements.txt" % n for n in ("adjudicator", "coverage", "test"))
+PIP_LOOP = re.compile(r"for r in " + re.escape(PIP_FILES) + r";? do;? python3 -m pip install(?: --quiet)? --dry-run --ignore-installed --require-hashes --only-binary=:all: --target \"\$RUNNER_TEMP/resolve-check\" -r \"\$r\";? done")
 def suite_step_problems(job):
     bad = []
     for key, suite in STEP_SUITES.items():
@@ -267,10 +278,43 @@ def suite_step_problems(job):
         run = hit[0].get("run") or ""
         for need in STEP_MUST[key]:
             if need not in run: bad.append("%s: its step does not write %r literally" % (key, need))
-        if key == "pip" and re.search(r"\bfor\b|\$r\b", run): bad.append("pip: the step loops over the files and does not write one command for each")
+        if key == "pip" and not PIP_LOOP.search(re.sub(r"[ \t]+", " ", re.sub(r"\s*\\\n\s*", " ", run).replace("\n", " "))): bad.append("pip: the step is not the loop over the three requirements files with the flags of main")
         if RUNNER in run or re.search(SHELL_C, run): bad.append("%s: its step runs through the script or a shell -c" % key)
         if "continue-on-error" in hit[0]: bad.append("%s: its step may fail" % key)
     return bad
+def literal_steps(job): return [s for s, r in runs(job) if "grep -qxF" in r and RUNNER not in r]
+SELECTED_SET = re.compile(r'^(\w+)="\$\{RUNNER_TEMP\}/selected-suites"$')
+def literal_step_problems(job):
+    """the one step right after the script step: selected set first, then one plain literal line for each single-file suite of the agent folder"""
+    hit, steps, ss = literal_steps(job), job.get("steps") or [], runner_steps(job)
+    if len(hit) != 1: return ["%d steps hold literal grep lines for suites (one wanted)" % len(hit)]
+    bad, step, var, cmds = [], hit[0], None, []
+    if len(ss) == 1 and steps.index(hit[0]) != steps.index(ss[0]) + 1: bad.append("the literal-line step is not the step right after the script step")
+    if "pull_request" not in str(step.get("if", "")): bad.append("the literal-line step does not run on pull requests only")
+    if "continue-on-error" in step: bad.append("the literal-line step may fail")
+    for l in (l.strip() for l in (step.get("run") or "").splitlines() if l.strip() and not l.lstrip().startswith("#")):
+        m = SELECTED_SET.match(l)
+        if m and var is None and not cmds: var = m.group(1); continue
+        if re.match(r"^set -[\w -]+$", l): continue
+        g = GREP_LINE.match(l)
+        if not g: bad.append("a line of the literal-line step is not a plain literal if line: %s" % l); continue
+        if re.search(SHELL_C, l): bad.append("a line of the literal-line step runs a shell -c or eval: %s" % l)
+        if g.group(2) != g.group(1): bad.append("a line runs another command than the one it greps for: %s" % l)
+        if '"$%s"' % var not in l: bad.append("a line does not read the file set first: %s" % l)
+        cmds.append(g.group(1))
+    if var is None: bad.append("the literal-line step does not set selected=\"${RUNNER_TEMP}/selected-suites\" before its lines")
+    for c in dict.fromkeys(cmds):
+        if cmds.count(c) > 1: bad.append("the literal-line step has %d lines for %s" % (cmds.count(c), c))
+    for c in AGENT_SINGLE:
+        if c not in cmds: bad.append("the literal-line step has no line for %s" % c)
+    for c in cmds:
+        if c not in AGENT_SINGLE: bad.append("the literal-line step has a line for a command test-paths.json does not hold for the agent folder: %s" % c)
+    return bad
+def coverage_problems(script, job):
+    """every command bin/select-tests.sh can print is run by exactly one literal line: in the script, in the literal-line step, or as an own step's if:"""
+    lines = [l.strip() for text in [script] + [r for _, r in runs(job)] for l in text.splitlines() if not l.lstrip().startswith("#")]
+    found = [m.group(1) for m in map(GREP_LINE.match, lines) if m] + [if_literal(s) for s in job.get("steps") or [] if if_literal(s)]
+    return ["%s is run by %d literal lines (one wanted)" % (s, found.count(s)) for s in SUITES if found.count(s) != 1]
 def allowlist_static(job):
     bad = []
     text = " ".join(re.sub(r"\s+", " ", r) for _, r in runs(job))
@@ -283,8 +327,9 @@ def allowlist_static(job):
     for s in sel + ss:
         if "pull_request" not in str(s.get("if", "")): bad.append("step %r does not run on pull requests only" % s.get("name"))
     bad += suite_step_problems(job)
+    bad += literal_step_problems(job)
     order = job.get("steps") or []
-    if sel and ss and any(s in order and order.index(s) < order.index(sel[0]) for s in ss + suite_steps(job)):
+    if sel and ss and any(s in order and order.index(s) < order.index(sel[0]) for s in ss + suite_steps(job) + literal_steps(job)):
         bad.append("a step that reads the selection comes before the step that writes it")
     guards = [s for s, r in runs(job) if r.strip() == GUARD]
     if len(guards) != 1: bad.append("the allowlist job does not have exactly one scanner guard step running %s (%d)" % (GUARD, len(guards)))
@@ -292,7 +337,7 @@ def allowlist_static(job):
         if g.get("name") != GUARD_NAME: bad.append("the scanner guard step is not named %r" % GUARD_NAME)
         if any(k in g for k in ("if", "continue-on-error", "shell", "env")): bad.append("the scanner guard step is conditional or weakened: " + ", ".join(k for k in ("if", "continue-on-error", "shell", "env") if k in g))
     for s, r in runs(job):
-        if s not in sel + ss + guards + suite_steps(job) and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
+        if s not in sel + ss + guards + suite_steps(job) + literal_steps(job) and TESTSH.search(r): bad.append("step %r runs a suite directly instead of through the selection" % s.get("name"))
     return bad
 def run_step(step, extra_env, ctx, cwd, job=None):
     """run a step's script the way the runner does: bash -e (bash --noprofile --norc -eo pipefail when it sets shell: bash), expressions resolved"""
@@ -357,6 +402,7 @@ def ci_problems(w):
     bad += test_job_problems(jobs.get("test") or {"steps": []})
     al = jobs.get("allowlist") or {"steps": []}
     bad += allowlist_static(al)
+    bad += coverage_problems(RUNNER_TEXT, al)
     if not bad: bad += selection_problems(al)
     return bad
 verdict("ci.yml: the seven-context layout, the changed-packages test job, the select step, the one script step and the four suite steps in the allowlist job",
@@ -376,19 +422,19 @@ for suite in SUITES:     # .py stand-ins are run by python3, not by bash
     if suite not in (STEP_SUITES["pip"], STEP_SUITES["jwt"]) and suite_file(suite).endswith(".py") and os.path.exists(os.path.join(TREE, suite_file(suite))):
         mkexec(os.path.join(TREE, suite_file(suite)), "import os, sys\nopen(os.environ['LOG'], 'a').write(os.environ.get('GRADLE_SUM_ONLINE', '') + ':%s\\n')\nsys.exit(1 if os.environ.get('FAIL') == '%s' else 0)\n" % (suite_file(suite), suite_file(suite)))
 subprocess.run("git init -q && git add -A", shell=True, cwd=TREE, check=True, capture_output=True)
-RUNNER_TEXT = open(os.path.join(root, RUNNER)).read()
-def runner_run(text, lines, fail=""):
-    """returns (exit code, the lines the stand-ins logged, stdout and stderr)"""
+def runner_run(text, lines, fail="", ci=None):
+    """returns (exit code, the lines the stand-ins logged, stderr); the scratch tree's ci.yml is ci, else the real one"""
     n = len(os.listdir(work)); selected = os.path.join(work, "selected%d" % n); log = os.path.join(work, "log%d" % n)
     open(selected, "w").write("".join(l + "\n" for l in lines)); open(log, "w").close()
     mkexec(os.path.join(TREE, RUNNER), text)
+    mkexec(os.path.join(TREE, WF + "ci.yml"), CI_TEXT if ci is None else ci)
     r = subprocess.run(["bash", RUNNER, selected], capture_output=True, text=True, cwd=TREE, timeout=60, env=dict(os.environ, LOG=log, FAIL=fail))
-    return r.returncode, open(log).read().splitlines(), r.stdout + r.stderr
+    return r.returncode, open(log).read().splitlines(), r.stderr
 FORBIDDEN = [(r"\bcd\b", "a cd"), (r"\bcase\b", "a case statement"), (SHELL_C, "a shell -c or eval"),
              (r"^\s*[\"{]?\$", "a variable standing for the program"), (r"\b(?:bash|sh|python3)\s+\"?\$", "a variable standing for the file run")]
-GREP_LINE = re.compile(r"^if grep -qxF '([^']+)' \"\$\w+\"; then (.+); fi$")
 def runner_shape_problems(text):
     bad = []
+    if AGENT in text: bad.append("the script names %s %d times (the auditor layout check refuses it)" % (AGENT, text.count(AGENT)))
     for line in (l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")):
         for rx, what in FORBIDDEN:
             if re.search(rx, line): bad.append("the script has %s: %s" % (what, line.strip()))
@@ -398,30 +444,39 @@ def runner_shape_problems(text):
             elif m.group(1) in STEP_SUITES.values(): bad.append("the script has a line for a suite that is its own step: %s" % m.group(1))
             elif suite_file(m.group(1)) not in m.group(2): bad.append("the line does not run the command it greps for: %s" % line.strip())
     return bad
+def ci_without(s):
+    """ci.yml of the scratch tree with every line and if: that covers the command s taken out"""
+    return "\n".join(l for l in CI_TEXT.splitlines() if "grep -qxF '%s'" % s not in l and ", '%s')" % s not in l) + "\n"
 def runner_problems(text, stop=False):
     """stop: return at the first problem (the mutated copies need no more)"""
     bad = runner_shape_problems(text)
     if bad and stop: return bad
-    for s in SINGLE:
+    for s in ROOT_SINGLE:
         if bad and stop: return bad
         rc, log, out = runner_run(text, [s])
         if rc != 0 or log != (["install grype"] if s == VEX_BOTH else []) + [suite_record(s)]: bad.append("%r selected alone: rc=%s ran %s" % (s, rc, log))
     if bad and stop: return bad
-    a, b = SINGLE[0], SINGLE[-1]
+    a, b = ROOT_SINGLE[0], ROOT_SINGLE[-1]
     rc1, log1, _ = runner_run(text, [a, b]); rc2, log2, _ = runner_run(text, [b, a])
     if rc1 != 0 or rc2 != 0 or log1 != log2 or sorted(log1) != sorted([suite_record(a), suite_record(b)]):
         bad.append("the order of the lines is not the script's whatever the file's order: %s then %s" % (log1, log2))
     for fail in (a, b):
         rc, log, out = runner_run(text, [a, b], fail=suite_file(fail))
         if rc == 0 or not log or log[-1] != suite_record(fail): bad.append("a failing suite %r does not fail the script and stop it: rc=%s ran %s" % (fail, rc, log))
-    rc, log, out = runner_run(text, SINGLE, fail="install")
+    rc, log, out = runner_run(text, ROOT_SINGLE, fail="install")
     if rc == 0 or any(suite_file(VEX_BOTH) in l for l in log): bad.append("a failed grype install does not fail the script before the suite: rc=%s" % rc)
     for unknown in ("bash bin/no-such-test.sh", "bash bin/panel-test.sh --other-argument"):
         rc, log, out = runner_run(text, [unknown])
         if rc == 0 or unknown not in out or log: bad.append("an unknown selected command %r does not fail the script and get named: rc=%s out=%r" % (unknown, rc, out[-200:]))
-    for s in STEP_SUITES.values():
+    for s in list(STEP_SUITES.values()) + AGENT_SINGLE:
         rc, log, out = runner_run(text, [s])
-        if rc != 0 or log: bad.append("a suite that is its own step is run or refused by the script: %r rc=%s ran %s" % (s, rc, log))
+        if rc != 0 or log: bad.append("a suite that ci.yml covers is run or refused by the script: %r rc=%s ran %s" % (s, rc, log))
+    for s in AGENT_SINGLE + list(STEP_SUITES.values()):
+        rc, log, out = runner_run(text, [s], ci=ci_without(s))
+        if rc == 0 or s not in out or log: bad.append("a selected command that ci.yml does not cover does not fail the script and get named: %r rc=%s ran %s err=%r" % (s, rc, log, out[-200:]))
+    for s in AGENT_SINGLE:
+        rc, log, out = runner_run(text, [s], ci=CI_TEXT + "\n      if grep -qxF '%s' \"$selected\"; then %s; fi\n" % (s, s))
+        if rc != 0 or log: bad.append("a command that a line of ci.yml's step covers does not pass the script quietly: %r rc=%s ran %s" % (s, rc, log))
     rc, log, out = runner_run(text, [])
     if rc != 0 or log: bad.append("an empty selection does not pass quietly: rc=%s ran %s" % (rc, log))
     return bad
@@ -445,8 +500,41 @@ runner_mutant("a case statement added", lambda t: before_first_if(t, "case x in 
 runner_mutant("an eval added", lambda t: before_first_if(t, "eval :"))
 runner_mutant("a bash -c added", lambda t: before_first_if(t, "bash -c :"))
 runner_mutant("a variable program added", lambda t: before_first_if(t, "prog=true\n$prog"))
+runner_mutant("an agent-folder suite line added", lambda t: before_first_if(t, "if grep -qxF 'bash %stests/x-test.sh' \"$selected\"; then bash %stests/x-test.sh; fi" % (AGENT, AGENT)))
+runner_mutant("a comment naming the agent folder", lambda t: before_first_if(t, "# runs " + AGENT + "tests"))
+runner_mutant("an agent-folder suite that ci.yml does not cover run by the script", lambda t: before_first_if(t, "if grep -qxF '%s' \"$selected\"; then %s; fi" % (AGENT_SINGLE[0], AGENT_SINGLE[0])))
 runner_mutant("the vex-scope suite merged back into the script",
               lambda t: before_first_if(t, "if grep -qxF '%s' \"$1\"; then ./bin/install-scanner.sh grype; bash bin/vex-scope-test.sh; fi" % STEP_SUITES["vex-scope"]))
+
+check("bin/run-selected-tests.sh names %s 0 times" % AGENT, RUNNER_TEXT.count(AGENT) == 0, "%d times" % RUNNER_TEXT.count(AGENT))
+check("test-paths.json holds 16 single-file suites that name %s" % AGENT, len(AGENT_SINGLE) == 16, len(AGENT_SINGLE))
+
+# the literal-line step of ci.yml, run in the scratch tree: each suite of the agent folder runs when selected, and only then
+def literal_step_run(job, lines, fail=""):
+    n = len(os.listdir(work)); tmp = os.path.join(work, "lit%d" % n); log = os.path.join(work, "log%d" % n)
+    os.makedirs(tmp); open(log, "w").close(); open(os.path.join(tmp, "selected-suites"), "w").write("".join(l + "\n" for l in lines))
+    r = run_step(literal_steps(job)[0], {"LOG": log, "FAIL": fail, "RUNNER_TEMP": tmp}, {}, TREE, job)
+    return r.returncode, open(log).read().splitlines()
+def literal_step_run_problems(job):
+    if len(literal_steps(job)) != 1: return ["no single literal-line step"]
+    bad = []
+    for s in AGENT_SINGLE:
+        rc, log = literal_step_run(job, [s])
+        if rc != 0 or log != [suite_record(s)]: bad.append("%r selected alone: rc=%s ran %s" % (s, rc, log))
+    rc, log = literal_step_run(job, ROOT_SINGLE[:2] + list(STEP_SUITES.values()))
+    if rc != 0 or log: bad.append("suites that the step does not cover are run or refused by it: rc=%s ran %s" % (rc, log))
+    rc, log = literal_step_run(job, [])
+    if rc != 0 or log: bad.append("an empty selection does not pass quietly: rc=%s ran %s" % (rc, log))
+    a, b = AGENT_SINGLE[0], AGENT_SINGLE[-1]
+    rc, log = literal_step_run(job, [b, a], fail=suite_file(a))
+    if rc == 0 or not log or log[-1] != suite_record(a): bad.append("a failing suite does not fail the step and stop it: rc=%s ran %s" % (rc, log))
+    return bad
+verdict("ci.yml: the literal-line step runs each suite of the agent folder when its command is selected and no other",
+        literal_step_run_problems(ci["jobs"]["allowlist"]), True)
+
+# every command bin/select-tests.sh can print is run by exactly one literal line, in the script, in the literal-line step or in an own step
+verdict("every command of test-paths.json is run by exactly one literal line (script, literal-line step, own step)",
+        coverage_problems(RUNNER_TEXT, ci["jobs"]["allowlist"]), True)
 
 # the test job's package step, run in a throwaway git repository:
 # the base commit holds FILES, then CHANGE(sh) makes the second commit
@@ -540,6 +628,48 @@ for key, suite in STEP_SUITES.items():
         ("the %s step merged back into the script path" % key, lambda d, key=key: suite_edit(d, key, set_run("bash bin/run-selected-tests.sh " + ARG))),
         ("the %s step gone" % key, lambda d, suite=suite: drop_steps(d, lambda s: if_literal(s) == suite)),
     ]
+def pip_run(fn): return lambda d: suite_edit(d, "pip", lambda s: s.__setitem__("run", fn(s["run"])))
+suite_mutants += [
+    ("the pip loop dropping one of the three files", pip_run(lambda r: r.replace(" " + AGENT + "coverage-requirements.txt", "", 1))),
+    ("the pip loop dropping --dry-run", pip_run(lambda r: r.replace(" --dry-run", "", 1))),
+    ("the pip step with no pip command", pip_run(lambda r: "true\n")),
+]
+def lit_edit(d, fn): step_edit(d, lambda s: "grep -qxF" in (s.get("run") or "") and RUNNER not in s["run"], fn)
+def set_lines(fn): return lambda s: s.__setitem__("run", "\n".join(fn(s["run"].splitlines())) + "\n")
+def lit_line(s): return "if grep -qxF '%s' \"$selected\"; then %s; fi" % (s, s)
+A0, A1 = AGENT_SINGLE[0], AGENT_SINGLE[-1]
+def lit_split(d):
+    steps = d["jobs"]["allowlist"]["steps"]
+    i = next(i for i, s in enumerate(steps) if "grep -qxF" in (s.get("run") or "") and RUNNER not in s["run"])
+    first, second = copy.deepcopy(steps[i]), steps[i]
+    lines = first["run"].splitlines(); half = len(lines) // 2
+    first["run"] = "\n".join(lines[:half]) + "\n"; second["run"] = "\n".join(lines[:2] + lines[half:]) + "\n"
+    steps.insert(i, first)
+def lit_move_before_script(d):
+    steps = d["jobs"]["allowlist"]["steps"]
+    lit = next(s for s in steps if "grep -qxF" in (s.get("run") or "") and RUNNER not in s["run"])
+    steps.remove(lit); steps.insert(next(i for i, s in enumerate(steps) if RUNNER in (s.get("run") or "")), lit)
+literal_mutants = [
+    ("the literal-line step gone", lambda d: drop_steps(d, lambda s: "grep -qxF" in (s.get("run") or "") and RUNNER not in s["run"])),
+    ("the line of one agent-folder suite missing", lambda d: lit_edit(d, set_lines(lambda ls: [l for l in ls if "grep -qxF '%s'" % A0 not in l]))),
+    ("the line of the last agent-folder suite missing", lambda d: lit_edit(d, set_lines(lambda ls: [l for l in ls if "grep -qxF '%s'" % A1 not in l]))),
+    ("a line twice", lambda d: lit_edit(d, set_lines(lambda ls: ls + [lit_line(A0)]))),
+    ("a line for a suite of the script too", lambda d: lit_edit(d, set_lines(lambda ls: ls + [lit_line(ROOT_SINGLE[0])]))),
+    ("a line for a suite that is its own step", lambda d: lit_edit(d, set_lines(lambda ls: ls + [lit_line(STEP_SUITES["jwt"])]))),
+    ("a command that is not the one of test-paths.json", lambda d: lit_edit(d, set_lines(lambda ls: [l.replace(A0, A0 + " --other") for l in ls]))),
+    ("a line that greps for one command and runs another", lambda d: lit_edit(d, set_lines(lambda ls: [l.replace("then " + A0, "then " + A1) for l in ls]))),
+    ("a line run through bash -c", lambda d: lit_edit(d, set_lines(lambda ls: [l.replace("then " + A0, "then bash -c '%s'" % A0) for l in ls]))),
+    ("a line run through eval", lambda d: lit_edit(d, set_lines(lambda ls: [l.replace("then " + A0, "then eval '%s'" % A0) for l in ls]))),
+    ("a variable program", lambda d: lit_edit(d, set_lines(lambda ls: ls + ["prog=true", "$prog"]))),
+    ("a case statement", lambda d: lit_edit(d, set_lines(lambda ls: ls + ["case x in x) ;; esac"]))),
+    ("the file not set first", lambda d: lit_edit(d, set_lines(lambda ls: [l for l in ls if not l.startswith("selected=")]))),
+    ("a line failure swallowed", lambda d: lit_edit(d, set_lines(lambda ls: [l.replace("; fi", " || true; fi") for l in ls]))),
+    ("the lines split into two steps", lit_split),
+    ("the step before the script step", lit_move_before_script),
+    ("the step run on pushes too", lambda d: lit_edit(d, lambda s: s.pop("if"))),
+    ("the step allowed to fail", lambda d: lit_edit(d, lambda s: s.__setitem__("continue-on-error", "true"))),
+    ("an auditor suite run by a step of its own", lambda d: add_step(d, "allowlist", {"name": "own", "if": "${{ github.event_name == 'pull_request' }}", "run": A0})),
+]
 mutants("ci.yml", ci_problems, ci, [
     ("the test job back to -race", lambda d: swap_all_go(d, lambda r: re.sub(r"(go test)", r"\1 -race", r))),
     ("the test job on the fips settings", lambda d: swap_all_go(d, lambda r: re.sub(r"(go test)", r"GOFIPS140=v1.0.0 GODEBUG=fips140=only \1", r))),
@@ -587,7 +717,18 @@ mutants("ci.yml", ci_problems, ci, [
     ("the script run through bash -c", lambda d: runner_edit(d, set_run("bash -c \"bash bin/run-selected-tests.sh " + ARG + "\""))),
     ("the selected lines run by the step itself through bash -c", lambda d: runner_edit(d, set_run("# bin/run-selected-tests.sh\nwhile read -r suite; do bash -c \"${suite}\"; done < " + ARG))),
     ("the selection against the parent commit, not the pull request's base", lambda d: select_edit(d, wrong_base)),
-] + suite_mutants)
+] + literal_mutants + suite_mutants)
+def coverage_mutant(label, script_fn=lambda t: t, doc_fn=lambda d: None):
+    try: d = mutated(ci, doc_fn)
+    except Exception as e: check("coverage of test-paths.json: a copy with %s can be made" % label, False, repr(e)); return
+    check("coverage of test-paths.json: a copy with %s is refused" % label, coverage_problems(script_fn(RUNNER_TEXT), d["jobs"]["allowlist"]) != [], "accepted")
+coverage_mutant("a root suite's line dropped from the script", lambda t: re.sub(r"^.*grep -qxF '%s'.*\n" % re.escape(ROOT_SINGLE[0]), "", t, flags=re.M))
+coverage_mutant("a root suite's line twice in the script", lambda t: t + lit_line(ROOT_SINGLE[0]) + "\n")
+coverage_mutant("an agent-folder suite's line in the script and in the step", lambda t: t + lit_line(AGENT_SINGLE[0]) + "\n", lambda d: lit_edit(d, set_lines(lambda ls: ls + [lit_line(AGENT_SINGLE[0])])))
+coverage_mutant("a root suite's line in the script and in the step", doc_fn=lambda d: lit_edit(d, set_lines(lambda ls: ls + [lit_line(ROOT_SINGLE[0])])))
+coverage_mutant("an own step's suite also written as a line", doc_fn=lambda d: lit_edit(d, set_lines(lambda ls: ls + [lit_line(STEP_SUITES["jwt"])])))
+coverage_mutant("an own step gone", doc_fn=lambda d: drop_steps(d, lambda s: if_literal(s) == STEP_SUITES["panel"]))
+
 
 # ------------------------------------------------------------------------------------------------------------------ AC5: full-suite.yml
 MOVED = {"coverage": [r"go test .*-covermode=atomic.*\./\.\.\.", r"coverage-gate"],

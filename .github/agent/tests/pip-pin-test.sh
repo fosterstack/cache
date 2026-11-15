@@ -8,7 +8,7 @@
 # pin installed INTO THAT VENV first (<venv>/bin/python -m pip install ... -r the file, then <venv>/bin/python -m pip --version).
 # The requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:. Dependabot watches that file's
 # directory (one pip entry for it). bin/select-tests.sh selects this test for a change to the workflows (the changed-path map, REQ-CI-001-AC3) and
-# full-suite.yml runs it whole (case 6); ci.yml's allowlist job does not name it.
+# full-suite.yml runs it whole (case 6); ci.yml's allowlist job runs it only through the selection: one literal `if grep -qxF '<command>' "$selected"; then <command>; fi` line (REQ-CI-001-AC4).
 #
 # Which pin steps pull-request CI actually exercises: ci.yml `allowlist` (every pull request and push to main; its pin steps are judged by case 1 like
 # every other job's), and full-suite.yml `coverage` and the allowlist shards (nightly and before a release-candidate tag). The auditor.yml
@@ -351,7 +351,7 @@ def judge(t):
     else:
         if len(pips) != 1:
             r.append(("C4", f"dependabot.yml has {len(pips)} pip entries for directory /.github/agent, not one"))
-    # case 6: the wiring: selected by the changed-path map for a change to the workflows, run whole by full-suite.yml, not a step of ci.yml's allowlist job
+    # case 6: the wiring: selected by the changed-path map for a change to the workflows, run whole by full-suite.yml, in ci.yml's allowlist job only as a guarded literal line
     me_line = "bash .github/agent/tests/pip-pin-test.sh"
     sel = selected_for(t["selector"], t["map"], ".github/workflows/ci.yml") if t.get("selector") and t.get("map") else None
     if sel is None or me_line not in sel:
@@ -370,9 +370,11 @@ def judge(t):
         elif job.get("if") or str(job.get("continue-on-error", "false")).lower() != "false":
             r.append(("C6", "the job that runs this test has an if or continue-on-error"))
     ci = t["docs"].get(".github/workflows/ci.yml") or {}
-    named = [s for s in (((ci.get("jobs") or {}).get("allowlist") or {}).get("steps") or []) if "pip-pin-test.sh" in str((s or {}).get("run", ""))]
-    if named:
-        r.append(("C6", "ci.yml's allowlist job runs this test by name, not through the selection"))
+    guarded = f"if grep -qxF '{me_line}' \"$selected\"; then {me_line}; fi"
+    for s in (((ci.get("jobs") or {}).get("allowlist") or {}).get("steps") or []):
+        lines = [l.strip() for l in str((s or {}).get("run", "")).splitlines() if "pip-pin-test.sh" in l]
+        if lines and (any(l != guarded for l in lines) or not re.search(r'^\s*selected="\$\{RUNNER_TEMP\}/selected-suites"\s*$', str(s["run"]), re.M)):
+            r.append(("C6", "ci.yml's allowlist job runs this test other than by one literal line guarded by grep -qxF on the selected-suites file, not through the selection"))
     # case 7: job-level `uses:` is a local workflow (read here) or a digest-pinned external one, and the job has no steps of its own
     for f, d in t["docs"].items():
         for jn, j in ((d or {}).get("jobs") or {}).items():
@@ -424,7 +426,7 @@ def pin_sites(t):
 
 def site_key(s): return (s[0], s[1])
 SITE_KEYS = [site_key(s) for s in pin_sites(tree)]
-EXPECT_SITES = 12   # ci coverage + allowlist (system, venv) + the three allowlist-split jobs (allowlist-persona, allowlist-chain, allowlist-pins-auditor: system), auditor audit + panel-probe, dependabot-reviewer review, release + go-freshness persona-uat (system), full-suite.yml wiring (system; the twelfth)
+EXPECT_SITES = 13   # system python unless marked venv: auditor.yml audit, auditor.yml panel-probe, ci.yml allowlist (system), ci.yml allowlist ($RUNNER_TEMP/panel-sdk venv), dependabot-reviewer.yml review, full-suite.yml coverage, full-suite.yml allowlist-persona (system), full-suite.yml allowlist-persona ($RUNNER_TEMP/panel-sdk venv), full-suite.yml allowlist-chain, full-suite.yml allowlist-pins-auditor, full-suite.yml wiring, go-freshness.yml persona-uat, release.yml persona-uat
 def prog_for(env): return "python3" if env == "system" else f"{env}/bin/python"
 
 def edit_run(st, fn):
@@ -596,6 +598,16 @@ def fs_selected(t):
     h[0][1]["run"] = "bash bin/select-tests.sh HEAD~1 HEAD | bash"; return True
 def ci_names_it(t):
     t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"].append({"run": "bash .github/agent/tests/pip-pin-test.sh"}); return True
+def ci_line_unguarded(t):
+    for st in t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"]:
+        if "pip-pin-test.sh'" in str(st.get("run", "")):
+            st["run"] = str(st["run"]).replace("if grep -qxF 'bash .github/agent/tests/pip-pin-test.sh' \"$selected\"; then bash .github/agent/tests/pip-pin-test.sh; fi", "bash .github/agent/tests/pip-pin-test.sh"); return True
+    return False
+def ci_line_wrong_file(t):
+    for st in t["docs"][".github/workflows/ci.yml"]["jobs"]["allowlist"]["steps"]:
+        if "pip-pin-test.sh'" in str(st.get("run", "")):
+            st["run"] = str(st["run"]).replace("pip-pin-test.sh' \"$selected\"", "pip-pin-test.sh' /dev/null"); return True
+    return False
 def map_drops_it(t):
     if not t.get("map") or "pip-pin-test.sh" not in t["map"]: return False
     t["map"] = t["map"].replace("pip-pin-test.sh", "other-test.sh"); return True
@@ -606,6 +618,8 @@ mutants += [("full-suite.yml no longer runs this test", "C6", fs_unwire), ("the 
             ("the step is continue-on-error", "C6", fs_set("continue-on-error", True)), ("the step carries an env", "C6", fs_set("env", {"X": "1"})),
             ("the job is conditional", "C6", fs_job_set("if", "false")), ("the step runs a selection, not the whole test", "C6", fs_selected),
             ("ci.yml's allowlist job runs this test by name", "C6", ci_names_it),
+            ("ci.yml's literal line for this test is not guarded by the selection", "C6", ci_line_unguarded),
+            ("ci.yml's literal line greps a file other than the selected-suites file", "C6", ci_line_wrong_file),
             ("the map no longer selects this test for a workflow change", "C6", map_drops_it), ("the selector prints nothing", "C6", selector_prints_nothing)]
 
 def jobs_with_uses(t):

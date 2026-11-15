@@ -3159,11 +3159,11 @@ printf ' bin/patch-decide.py\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws3=
   && eq "$ws1" "1" && eq "$ws2" "1" && eq "$ws3" "1"; } \
   && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other patch_classifier=$patchx patch_lookalike=$patch_other whitespace=$ws1/$ws2/$ws3"
 
-begin "req18-ac1-layout-check-selected-by-the-map-and-run-whole-by-full-suite" "the changed-path map selects the layout check, the parser tests and the matrix suite for a change under .github/agent/ and the layout check for a change to the allowlist; full-suite.yml runs all three whole, unconditionally; ci.yml's allowlist job names none of them"
+begin "req18-ac1-layout-check-selected-by-the-map-and-run-whole-by-full-suite" "the changed-path map selects the layout check, the parser tests and the matrix suite for a change under .github/agent/ and the layout check for a change to the allowlist; full-suite.yml runs all three whole, unconditionally; ci.yml's allowlist job names them only in guarded literal lines of one step"
 sel_agent="$(selection agent .github/agent/bin/auditor-layout-check.py)"
 sel_allow="$(selection allow bin/check-file-allowlist.sh)"
 hy="$(SEL_AGENT="$sel_agent" SEL_ALLOW="$sel_allow" python3 - <<'HH'
-import os, sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import os, re, sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml  # the vendored reader — never whatever PyYAML the host happens to have
 want = ("auditor-layout-check.py", ".github/agent/tests/auditor-matrix-test.sh", ".github/agent/tests/auditor-parser-tests.sh")
 agent = os.environ["SEL_AGENT"].splitlines(); allow = os.environ["SEL_ALLOW"].splitlines()
@@ -3173,11 +3173,15 @@ def steps(d, j): return (d["jobs"].get(j) or {}).get("steps", [])
 whole = {w: [x for j in fs["jobs"] for x in steps(fs, j) if w in x.get("run", "")] for w in want}
 full_ok = all(len(v) == 1 and "if" not in v[0] and "continue-on-error" not in v[0] and "select-tests" not in v[0]["run"] for v in whole.values())
 ci = yaml.safe_load(open(".github/workflows/ci.yml"))
+guard = re.compile(r"""if grep -qxF '([^']+)' "\$selected"; then (.+); fi""")
+def guarded(l):
+    m = guard.fullmatch(l.strip()); return bool(m) and m.group(1) == m.group(2)
 named = [x for x in steps(ci, "allowlist") if any(w in x.get("run", "") for w in want) and "select-tests" not in x.get("run", "")]
-print("OK" if sel_ok and full_ok and not named else "BAD sel=%s full=%s named=%d" % (sel_ok, full_ok, len(named)))
+loose = [l for x in named for l in x["run"].splitlines() if any(w in l for w in want) and not guarded(l)]
+print("OK" if sel_ok and full_ok and len(named) == 1 and not loose else "BAD sel=%s full=%s steps=%d unguarded=%d" % (sel_ok, full_ok, len(named), len(loose)))
 HH
 )"
-eq "$hy" "OK" && ok || no "layout check + suites selected by the map, run whole and unconditionally by full-suite.yml, not named in ci.yml's allowlist job" "$hy"
+eq "$hy" "OK" && ok || no "layout check + suites selected by the map, run whole and unconditionally by full-suite.yml, named in ci.yml's allowlist job only by guarded literal lines of one step" "$hy"
 
 begin "req18-ac2-python-100pct-coverage-gate-in-full-suite" "the coverage job of full-suite.yml (not ci.yml) runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
 cg="$(python3 - <<'CC'
