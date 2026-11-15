@@ -546,12 +546,12 @@
         },
         {
           "name": "PYTHON3",
-          "text": "subprocess.run([PYTHON3, \"-I\", os.path.join(ctx.policy",
+          "text": "run([PYTHON3, \"-I\", signer, \"route\"",
           "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
         },
         {
           "name": "PYTHON3",
-          "text": "subprocess.run([PYTHON3, \"-I\", script_path, \"check-marker\"",
+          "text": "run([PYTHON3, \"-I\", script_path, \"check-marker\"",
           "why": "the fixed python3 path constant, read as a Python name; no environment variable is read or set"
         }
       ],
@@ -2543,6 +2543,13 @@
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
       "sha256": "4cb87e47b02e6dd8ea9057237be8ff10d3a467718b7d7df2ec9a5e6ba5c552c8",
       "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[ \"${#sealed[@]}\" -ge 4 ] || { echo \"assemble-image.sh: the sealed environment could not be made\" \\",
+          "line_sha256": "798a06eca60f64728b10f32b9a46782fa5d3157113fe861d38a8cc89d5941a22",
+          "count": 1,
+          "why": "a test on the length of an array expansion, not a compound assignment or an array subscript; nothing is set"
+        },
         {
           "rule": "script-name",
           "text": "bin/assemble-image-test.sh",
