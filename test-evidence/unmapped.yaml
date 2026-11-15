@@ -30,3 +30,5 @@ unmapped:
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
   - ac: REQ-DEP-004-AC2
     reason: "deprecated: the fixer dispatch was removed from the repository, so no test remains for it; the requirement is kept, marked deprecated, never deleted"
+  - ac: REQ-REL-010-AC5
+    reason: "no test proves it yet: the automatic VEX patch release is decided in release.yml decide, which the section 1 fix removes; section 3 amends the AC to what remains and the test for that text is credited then"
