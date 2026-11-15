@@ -725,6 +725,108 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+# The byte pins (cache#930 round 9): the whole required-check-guard job, and the workflow's top level, read as raw
+# bytes of the file, never parsed. A trailing comment or blank line under a block is not part of it.
+IFS= read -r -d '' PIN_WIRING_GUARD_JOB <<'JOB' || true
+  required-check-guard:
+    name: required-check guard
+    runs-on: ubuntu-latest
+    outputs:
+      drift_issue: ${{ steps.drift-issue.outputs.issue }}
+    permissions:
+      contents: read
+      issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: guard regressions (offline fixtures)
+        run: bash bin/required-check-guard-test.sh
+
+      # One call of main's guard over this tree's two lists: the ruleset comparison, and the seven release-only entries
+      # pinned in the guard, so a pull request cannot change the pin it is judged by. The verdict uses THIS tree's lists,
+      # so a PR that fixes a stale list goes green on its own run; on push to main the tree is main.
+      - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
+          [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
+          bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
+
+      # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
+      # first; one open issue, updated in place, never duplicated. Best effort: a
+      # Dependabot or fork run has no issues:write, and the red check above still stands.
+      - name: open or update the `required-check drift` issue when main's list has drifted
+        id: drift-issue
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e -uo pipefail   # the runner starts bash with -e; the guard's refusal is data here
+          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
+            --jq '.content' | base64 -d > "${RUNNER_TEMP}/main-required-checks.json" || exit 0
+          out=$(bash bin/required-check-guard.sh "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
+          # Drift (1), or a ruleset that enforces nothing at all (a refusal, not a read error).
+          if [ "$rc" -ne 1 ] && ! grep -q "NO required status checks" <<<"$out"; then
+            echo "main's list vs the ruleset: rc ${rc} — no drift issue to open"; exit 0
+          fi
+          title="required-check drift"
+          # shellcheck disable=SC2016  # literal Markdown backticks, not expansions
+          {
+            echo 'The ruleset on `main` and `.github/policy/required-checks.json` on `main` differ (contexts and integration IDs must both match, exactly). Until they agree the Dependabot auto-merge guard refuses every patch/minor PR and every PR ci run is red.'
+            echo
+            echo 'Fix whichever is wrong: the ruleset (owner, GitHub UI) or the list (a PR).'
+            echo
+            echo "Seen by ${RUN_URL}"
+            echo
+            echo '```'
+            printf '%s\n' "${out}"
+            echo '```'
+          } > "${RUNNER_TEMP}/drift-body.md"
+          n=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \
+                | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          if [ -n "$n" ]; then gh issue edit "$n" --body-file "${RUNNER_TEMP}/drift-body.md" >/dev/null && echo "updated #${n}"
+          else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
+          if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
+JOB
+IFS= read -r -d '' PIN_WIRING_PERMISSIONS <<'TOP' || true
+permissions:
+  contents: read
+TOP
+export PIN_WIRING_GUARD_JOB PIN_WIRING_PERMISSIONS
+
+bytes_judge() { python3 - "$1" <<'PY'
+import os, sys
+lines = open(sys.argv[1], "rb").read().split(b"\n")
+def inert(line):
+    return line.strip(b" ") == b"" or line.lstrip(b" ").startswith(b"#")
+def block(header, indent):   # the header line and what is under it, up to the next line at its own indent or less
+    starts = [i for i, line in enumerate(lines) if line == header]
+    if len(starts) != 1:
+        return None
+    end = starts[0] + 1
+    while end < len(lines) and (inert(lines[end]) or len(lines[end]) - len(lines[end].lstrip(b" ")) > indent):
+        end += 1
+    while inert(lines[end - 1]):
+        end -= 1
+    return b"\n".join(lines[starts[0]:end]) + b"\n"
+bad = []
+if block(b"  required-check-guard:", 2) != os.environ["PIN_WIRING_GUARD_JOB"].encode():
+    bad.append("the required-check-guard job is not the pinned text, byte for byte")
+if block(b"permissions:", 0) != os.environ["PIN_WIRING_PERMISSIONS"].encode():
+    bad.append("the workflow permissions are not the pinned text, byte for byte")
+top_keys = {b"name", b"on", b"concurrency", b"permissions", b"jobs"}
+if any(line.split(b":")[0] not in top_keys for line in lines if line[:1] not in (b"", b" ", b"#")):
+    bad.append("the workflow has a top-level key beyond name, on, concurrency, permissions, jobs (env, defaults)")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+
 # judge mode, for the trusted review gate: judge the ci.yml of one commit of the current repo, read as a git
 # object (never checked out, never run), and nothing else
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
@@ -742,7 +844,7 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
   export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
   export PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json"
-  if main_out=$(judge "$work/head-ci.yml"); then exit 0; fi
+  if main_out=$(judge "$work/head-ci.yml" && bytes_judge "$work/head-ci.yml"); then exit 0; fi
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
   [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
   if land_out=$(bash "$landing" 2>&1); then exit 0; fi
@@ -1253,6 +1355,36 @@ PY
 if out=$(PIN_WIRING_POLICY_FILE="$work/pol-in-both-required.json" judge "$here/.github/workflows/ci.yml"); then
   failn=$((failn+1)); echo "FAIL policy-in-both accepted"
 else pass=$((pass+1)); echo "PASS policy-in-both → bad ($out)"; fi
+
+# ---- byte pins: the whole required-check-guard job and the top-level env/defaults/permissions ----------------
+# bcase_ <name> <ok|bad> <sed script or empty>: the real ci.yml, edited as bytes by sed, judged by bytes_judge.
+bcase_() {
+  local f="$work/$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  if [ -n "$3" ]; then sed -i -e "$3" "$f"; fi
+  if out=$(bytes_judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
+}
+
+guard='/^  required-check-guard:$/,/^  drift-fixer-dispatch:$/'
+guard_head='/^  required-check-guard:$/,/^    steps:$/'
+bcase_ the-real-bytes          ok  ""
+bcase_ job-env-key             bad "$guard_head"'s/^    steps:$/    env:\n      X: "1"\n    steps:/'
+bcase_ step-before-guard       bad "$guard"'{/^    steps:$/a\      - run: echo first
+}'
+path_step='      - run: |\n          hook=GITHUB_'"'PATH'"'\n          echo X=1 >> "${!hook}"'
+bcase_ github-path-built       bad "$guard{/^    steps:\$/a\\$path_step
+}"
+bcase_ top-level-env-key       bad 's/^permissions:$/env:\n  X: "1"\n\npermissions:/'
+bcase_ top-level-defaults-key  bad 's/^permissions:$/defaults:\n  run:\n    shell: bash\n\npermissions:/'
+bcase_ top-level-permissions   bad '/^permissions:$/a\  issues: write'
+bcase_ job-pipe-minus          bad "$guard"'s/^        run: |$/        run: |-/'
+bcase_ job-permissions-changed bad "$guard_head"'s/^      issues: write /      issues: read /'
+comment='# The issue tracks drift '
+bcase_ job-comment-changed     bad "$guard"'s/^      '"$comment"'ON MAIN/      '"$comment"'on main/'
+bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
+bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
