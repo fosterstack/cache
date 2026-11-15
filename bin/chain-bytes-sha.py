@@ -97,7 +97,8 @@ def strict_object(raw, what):
 
 def chain_paths(repo, commit):
     rc, out = finished(lambda: subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--",
-        ".github/workflows", ".github/policy"], capture_output=True, check=False))
+        ".github/workflows", ".github/policy", "build/sealed-env.json", "build/locks/melange.lock",
+        "build/probe"], capture_output=True, check=False))
     if rc != 0:
         refuse("cannot list the files of commit %s" % commit)
     tree = {}
@@ -114,6 +115,8 @@ def chain_paths(repo, commit):
         if re.fullmatch(r"\.github/workflows/(release|stage-[^/]+)\.yml", name):
             paths.add(name)
         elif name.startswith(".github/policy/") and name != MARKER:
+            paths.add(name)
+        elif name in ("build/sealed-env.json", "build/locks/melange.lock") or re.fullmatch(r"build/probe/[^/]+\.yaml\.tmpl", name):
             paths.add(name)
     raw = blob(repo, commit, SCRIPTS)
     if raw is None:
