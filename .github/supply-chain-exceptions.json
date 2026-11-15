@@ -430,7 +430,7 @@
     {
       "file": ".github/agent/supply-chain/pin-age-check.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): reads registry, index, GitHub and Rekor APIs for a pin's age and signature | text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/supply-chain/pin-age-check.py that names the tool",
-      "body-sha256": "ae7afc23f52da41880b813d6fde5768c7c7911fb0e68980f0fc37a32bd317b88"
+      "body-sha256": "664cb6a7c5f1492a57ce0d602f6204cdcef362adc4e239e7936610367e7c8cfc"
     },
     {
       "file": ".github/agent/supply-chain/pin-audit.py",
@@ -440,7 +440,7 @@
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "2a4354da2a6ea8d6b0364e419f2639a4641e0af34b8601f5adc5e504232cfe76"
+      "body-sha256": "c84621ac26bc6f6483900ab835ca7a8f2db62edf1a866f314f8e7257a5823b8b"
     },
     {
       "file": ".github/agent/tests/auditor-matrix-test.sh",
@@ -465,7 +465,7 @@
     {
       "file": ".github/agent/tests/pin-age-check-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-age-check-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/pin-age-check-test.sh that names the tool | text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file) | text, not a command: a line of .github/agent/tests/pin-age-check-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool",
-      "body-sha256": "3700add92808c6b4c0702b96961cd6d8542345a208cbddf17c49ae47180bb0d3"
+      "body-sha256": "89552c4a2cf4d759fee7160466ed424e5aa2a3df1cd12e6d9da9a438d1ca342d"
     },
     {
       "file": ".github/agent/tests/pin-audit-go-major-test.sh",
