@@ -21,20 +21,34 @@ mkdir -p "$out/rel"
 # every release, all pages; the letter's releases are the final ones published in the month, else the newest
 # one before it. A final tag is vX.Y.Z: "v0.3.1" matches; "v0.3.1-rc1" and "0.3.1" do not
 gh api --paginate --slurp "repos/$repo/releases?per_page=100" | jq 'add // []' > "$out/releases.json"
-tags=$(jq -r --arg m "$month" '
-  [.[] | select(.draft == false and .prerelease == false
-                and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] as $final
-  | [$final[] | select(.published_at | startswith($m))] as $in
-  | if ($in | length) > 0 then $in
-    else [$final[] | select(.published_at < ($m + "-01"))] | sort_by(.published_at) | .[-1:] end
-  | .[].tag_name' "$out/releases.json")
-
 asset() { # asset RELEASE.JSON NAME FOLDER: downloads the release's asset of that name by its id
   local id
   id=$(jq -r --arg n "$2" '[.assets[] | select(.name == $n) | .id][0] // empty' "$1")
   [ -n "$id" ] || die "$(jq -r .tag_name "$1") has no asset $2"
   gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$3/$2"
 }
+
+# the release's date is the published_at of its signed release-manifest.json, never the API's unsigned one; a final
+# release with no manifest has no date and is not taken
+mkdir -p "$out/dates"
+: > "$out/dates.jsonl"
+for tag in $(jq -r '.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
+    | .tag_name' "$out/releases.json"); do
+  jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$out/dates/$tag.json"
+  jq -e '.assets[] | select(.name == "release-manifest.json")' "$out/dates/$tag.json" > /dev/null || continue
+  asset "$out/dates/$tag.json" release-manifest.json "$out/dates"
+  # a manifest that holds no readable date selects nothing signed: the API's date stands, and verify() and the letter
+  # then refuse the manifest if it is not the signed one
+  jq -c --arg t "$tag" --slurpfile r "$out/dates/$tag.json" '{tag_name: $t, published_at: (.published_at // $r[0].published_at)}' \
+    "$out/dates/release-manifest.json" 2> /dev/null >> "$out/dates.jsonl" ||
+    jq -c '{tag_name, published_at}' "$out/dates/$tag.json" >> "$out/dates.jsonl"
+done
+tags=$(jq -rs --arg m "$month" '
+  . as $final
+  | [$final[] | select(.published_at | startswith($m))] as $in
+  | if ($in | length) > 0 then $in
+    else [$final[] | select(.published_at < ($m + "-01"))] | sort_by(.published_at) | .[-1:] end
+  | .[].tag_name' "$out/dates.jsonl")
 
 verify() { # verify TAG FOLDER: the checks above, one line on any failure
   local tag=$1 dir=$2 name refusal
