@@ -114,7 +114,19 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 161, 6   # 161: + the exact path bin/run-selected-tests.sh (REQ-CI-001-AC4); 160: + three exact paths bin/select-tests.sh, bin/select-tests-test.sh, bin/full-suite-wiring-test.sh (REQ-CI-001); 157: + ^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$ (REQ-REL-012, the audit record writer); 156: + ^bin/vendor-provenance-records\.py$ (REQ-VEND-001-AC15, the records step); 155: + ^bin/job-isolation-test\.sh$ (REQ-REL-011, owner Oct 21 isolation rule); 154: + ^bin/release-layout\.py$ (the rescan checks its attested layouts with the chain's own layout check, handoff 0521); 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$ (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+# 161: + the exact path bin/run-selected-tests.sh (REQ-CI-001-AC4); +3 the exact paths bin/select-tests.sh, bin/select-tests-test.sh,
+# bin/full-suite-wiring-test.sh (REQ-CI-001); the rest is main's count and its history:
+# 156: - the pattern of the removed supply-chain observer program (the wait for new versions is gone); 157: +
+# ^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$ (REQ-REL-012, the audit record writer); 156: +
+# ^bin/vendor-provenance-records\.py$ (REQ-VEND-001-AC15, the records step); 155: + ^bin/job-isolation-test\.sh$
+# (REQ-REL-011, owner Oct 21 isolation rule); 154: + ^bin/release-layout\.py$ (the rescan checks its attested layouts
+# with the chain's own layout check, handoff 0521); 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$
+# (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: +
+# ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer);
+# 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144:
+# + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) +
+# build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 161, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -161,7 +173,12 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "d594d9961eed6fcb6ec7c8d69de4e47df730fa46d2b52d12e338d3e53f3b1dcf"   # + the bin/audit-record* pattern (REQ-REL-012); + the bin/job-isolation-test.sh pattern (REQ-REL-011); + the bin/release-layout.py pattern (handoff 0521); - the two suppression/set-01 .snyk and osv-scanner.toml fixture patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
+# + the bin/audit-record* pattern (REQ-REL-012); + the bin/job-isolation-test.sh pattern (REQ-REL-011); + the
+# bin/release-layout.py pattern (handoff 0521); - the two suppression/set-01 .snyk and osv-scanner.toml fixture
+# patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns
+# (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner
+# guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
+PINNED_SHA256 = "eefae88f93018c740bfddc43dfbd3b9cc2123abadcc9d62961f488d482374d06"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -792,6 +809,13 @@ passfam "feature/x" "REQ-CI-001: the test selector, the script that runs what it
   "bin/select-tests.sh" "bin/select-tests-test.sh" "bin/full-suite-wiring-test.sh" "bin/run-selected-tests.sh"
 runeach fail "feature/x" "REQ-CI-001: near-miss siblings of the selector refused" \
   "bin/select-tests.py" "bin/select-test.sh" "bin/select-tests.sh.bak" "bin/run-selected-tests.py" "bin/run-selected-test.sh" "bin/run-selected-tests.sh.bak" "bin/Run-Selected-Tests.sh"
+# the reviewer's version script is one of the five files' list-keeper: admitted by its exact path only
+passfam "feature/x" "the reviewer's version script" "bin/dependabot-reviewer-version.sh"
+runeach fail "feature/x" "reviewer-version near-miss refused" \
+  "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
+  "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
+  "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
+
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
 echo "----"

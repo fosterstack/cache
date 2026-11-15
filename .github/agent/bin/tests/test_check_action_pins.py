@@ -871,52 +871,55 @@ class LiteralRunnerMatrix(unittest.TestCase):
         self.assertNotIn("runs-on", out)
 
 
-GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"   # main's gate workflow (commit 538537e8: the pull-request passed-audit record judge)
-GATE_B = "b4bc93d8183b1bf08f5ce77eb698d468a9ac2d95e188da10b86ca57fd0f893c5"   # the gate workflow of the change (the tag-time record; no record judged on a pull request)
-# the edits that turn main's gate workflow into the change's (old text, new text): applied they make the second variant;
-# either variant is derived from whichever one the repository carries
-AUDIT_HUNKS = (
-    ("      audit_pr:\n        description: 'Write the passed-audit record (REQ-REL-012) for this pull request number; with audit_head'\n",
-     "      audit_pr:\n        description: 'The word release: write the tag-time passed-audit record (REQ-REL-012) for the commit audit_head; nothing else is accepted'\n"),
-    ("      audit_head:\n        description: 'The pull request head sha the record is for (40 lower-case hex); empty = run the sweep'\n",
-     "      audit_head:\n        description: 'The commit sha the release record is for (40 lower-case hex); empty = run the sweep'\n"),
-    ("concurrency:\n  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && format('record-{0}', inputs.audit_pr)) || 'sweep' }}\n",
-     "concurrency:\n  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && format('record-{0}', inputs.audit_head)) || 'sweep' }}\n"),
-    ('          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure\n          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main\'s judge and main\'s writers policy read the record\n          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else\n          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure\n',
-     '          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure\n'),
-    ('          set -euo pipefail\n          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record for this head passed."\n          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi\n',
-     '          set -euo pipefail\n          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge and the scanner guard passed."\n          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge or the scanner guard failed (or the judge did not finish) — see the run log."; fi\n'),
-    ("\n  # REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes\n  # nothing else from the pull request. Main's copy of bin/audit-record-write.sh re-reads the pull request (open, into main, this head) and makes ONE signed commit on audit/<head sha>,\n  # through the App's token scoped to contents write and pull-requests read (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.\n",
-     "\n  # REQ-REL-012 (release process rule 7): the writer of the tag-time passed-audit record. Dispatched with the word release and a commit sha that main contains; it takes nothing else.\n  # Main's copy of bin/audit-record-prepare.sh checks the dispatcher and the commit and makes ONE signed commit on audit/<sha> (the signed-commit CLI, through the App's token scoped\n  # to contents write and pull-requests read; the lane guard allows audit/ and only audit/<that sha>). A pull request's record is its cleared row, read outside this repository.\n"),
-    ("    name: agent review gate — passed-audit record writer\n    if: github.event_name == 'workflow_dispatch' && inputs.audit_head != ''\n",
-     "    name: agent review gate — passed-audit record writer\n    if: github.event_name == 'workflow_dispatch' && inputs.audit_pr == 'release' && inputs.audit_head != ''\n"),
-    ('\n      - name: may a record be written? (the pull request is open, into main, with this exact head; no passing record yet)\n',
-     '\n      - name: may a record be written? (the dispatcher is named, main contains the commit; no passing record yet)\n'),
-    ('\n      - name: make the signed record commit (one commit on audit/<head>, parented on the head)\n',
-     '\n      - name: make the signed record commit (one commit on audit/<sha>, parented on the commit)\n'),
-    ('            # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand the\n            # head) and publish only if it has turned to success, so a head that still fails is not\n            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)\n',
-     '            # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand the\n            # head); an older failure is judged once an hour (its age modulo an hour is under one sweep\n            # interval of ten minutes); either way only a verdict that changed is published, so a head that\n            # still fails is not re-posted\n'),
-    ('                    | if . == null then \\"none\\" elif .conclusion == \\"success\\" then \\"success\\"\n                      elif (now - (.completed_at | fromdate)) < 21600 then \\"failure\\" else \\"stale\\" end")" \\\n',
-     '                    | if . == null then \\"none\\" elif .conclusion == \\"success\\" then \\"success\\"\n                      elif (now - (.completed_at | fromdate)) < 21600 then \\"failure\\"\n                      elif ((now - (.completed_at | fromdate)) % 3600) < 600 then \\"stale\\" else \\"wait\\" end")" \\\n'),
-    ('            case "$last" in success) continue ;; esac\n            # an older failure waits for a push or a re-run, EXCEPT when the head has a passed-audit record branch now (REQ-REL-012: the record is written after the review clears, which can be\n            # hours after the first "no record" verdict, and no event of the pull request re-runs its gate): one cheap lookup, then it is judged again like a recent failure\n            if [ "$last" = stale ]; then\n              GH_TOKEN="$LIST_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/audit/${sha}" > /dev/null 2>&1 || continue\n              last=failure\n            fi\n',
-     '            case "$last" in success) continue ;; esac\n            case "$last" in wait) continue ;; stale) last=failure ;; esac\n'),
-    ('               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \\\n               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh \\\n               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then\n              conclusion=success   # every action reference a digest (row 78), main\'s allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)\n',
-     '               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \\\n               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh; then\n              conclusion=success   # every action reference a digest (row 78), main\'s allowlist guard, pin-wiring judge and scanner guard\n'),
+GATE_A = "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89"   # main's gate workflow
+GATE_B = "16f75cd3c9ca3d760e020eb0d4c96b81bb588f114769653d037bdadb564ed5f5"   # the same file after this change
+# this change's edits to main's gate workflow (old text, new text): the record is kept for release tags only, and no pull
+# request is judged for one; the sweep still judges a green Dependabot head again, for the reviewer's verdict only;
+# either variant is derived from the other
+GATE_HUNKS = (
+    ("        description: 'Write the passed-audit record (REQ-REL-012) for this pull request number; with audit_head'\n",
+     "        description: 'The word release: write the tag-time passed-audit record (REQ-REL-012) for the commit audit_head; nothing else is accepted'\n"),
+    ("        description: 'The pull request head sha the record is for (40 lower-case hex); empty = run the sweep'\n",
+     "        description: 'The commit sha the release record is for (40 lower-case hex); empty = run the sweep'\n"),
+    ("  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && format('record-{0}', inputs.audit_pr)) || 'sweep' }}\n",
+     "  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && format('record-{0}', inputs.audit_head)) || 'sweep' }}\n"),
+    ('          # REQ-REL-012 (release process rule 6): a pull request into main carries a passed-audit record for its exact head. Main\'s judge and main\'s writers policy read the record\n          # branch audit/<head sha> through the read-only token; the pull request supplies only its head sha and nothing else\n          bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure\n',
+     '          # REQ-REL-012-AC9: no pull request needs a passed-audit record, but one from a dependabot/ branch passes only on the\n          # Dependabot reviewer\'s verdict, which main\'s judge reads (and refuses unless Dependabot opened it)\n          case "$GITHUB_HEAD_REF" in dependabot/*) bash bin/audit-record-judge.sh "$HEAD_SHA" "$GITHUB_BASE_REF" || verdict=failure ;; esac\n'),
+    ('          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record for this head passed."\n          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge, the scanner guard or the passed-audit record failed (or the judge did not finish) — see the run log."; fi\n',
+     '          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge and the scanner guard passed."\n          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge or the scanner guard failed (or the judge did not finish) — see the run log."; fi\n'),
+    ("  # REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes\n  # nothing else from the pull request. Main's copy of bin/audit-record-write.sh re-reads the pull request (open, into main, this head) and makes ONE signed commit on audit/<head sha>,\n  # through the App's token scoped to contents write and pull-requests read (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.\n",
+     "  # REQ-REL-012 (release process rule 7): the writer of the tag-time passed-audit record. Dispatched with the word release and a commit sha that main contains; it takes nothing else.\n  # Main's copy of bin/audit-record-prepare.sh checks the dispatcher and the commit and makes ONE signed commit on audit/<sha> (the signed-commit CLI, through the App's token scoped\n  # to contents write and pull-requests read; the lane guard allows audit/ and only audit/<that sha>). A pull request's record is its cleared row, read outside this repository.\n"),
+    ("    if: github.event_name == 'workflow_dispatch' && inputs.audit_head != ''\n",
+     "    if: github.event_name == 'workflow_dispatch' && inputs.audit_pr == 'release' && inputs.audit_head != ''\n"),
+    ('      - name: may a record be written? (the pull request is open, into main, with this exact head; no passing record yet)\n',
+     '      - name: may a record be written? (the dispatcher is named, main contains the commit; no passing record yet)\n'),
+    ('      - name: make the signed record commit (one commit on audit/<head>, parented on the head)\n',
+     '      - name: make the signed record commit (one commit on audit/<sha>, parented on the commit)\n'),
+    ('            # head) and publish only if it has turned to success, so a head that still fails is not\n            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)\n',
+     '            # head); an older failure is judged once an hour (its age modulo an hour is under one sweep\n            # interval of ten minutes); either way only a verdict that changed is published, so a head that\n            # still fails is not re-posted\n'),
+    ('                      elif (now - (.completed_at | fromdate)) < 21600 then \\"failure\\" else \\"stale\\" end")" \\\n',
+     '                      elif (now - (.completed_at | fromdate)) < 21600 then \\"failure\\"\n                      elif ((now - (.completed_at | fromdate)) % 3600) < 600 then \\"stale\\" else \\"wait\\" end")" \\\n'),
+    ('            if [ "$last" = success ] && [[ "$headref" != dependabot/* ]]; then continue; fi\n',
+     '            case "$last" in wait) continue ;; stale) last=failure ;; esac\n            if [ "$last" = success ] && [[ "$headref" != dependabot/* ]]; then continue; fi\n'),
+    ('            # an older failure waits for a push or a re-run, EXCEPT when the head has a passed-audit record branch now (REQ-REL-012: the record is written after the review clears, which can be\n            # hours after the first "no record" verdict, and no event of the pull request re-runs its gate): one cheap lookup, then it is judged again like a recent failure\n            if [ "$last" = stale ]; then\n              GH_TOKEN="$LIST_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/audit/${sha}" > /dev/null 2>&1 || continue\n              last=failure\n            fi\n            git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }\n',
+     '            git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }\n'),
+    ('               && GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; then\n              conclusion=success   # every action reference a digest (row 78), main\'s allowlist guard, pin-wiring judge, scanner guard and the passed-audit record (REQ-REL-012)\n',
+     '               && { [[ "$headref" != dependabot/* ]] || GH_TOKEN="$LIST_TOKEN" bash bin/audit-record-judge.sh "$sha" "$DEFAULT"; }; then\n              conclusion=success   # every action reference a digest (row 78), main\'s allowlist guard, pin-wiring judge and scanner guard\n'),
 )
 
 
 def gate_variants():
-    """(main's gate workflow, the change's gate workflow), from the repository's copy."""
+    """(main's gate workflow, the gate workflow after this change), from the repository's copy."""
     with open(GATE) as fh:
         cur = fh.read()
-    if all(cur.count(old) == 1 for old, _ in AUDIT_HUNKS):
+    if all(cur.count(old) == 1 for old, _ in GATE_HUNKS):
         a, b = cur, cur
-        for old, new in AUDIT_HUNKS:
+        for old, new in GATE_HUNKS:
             b = b.replace(old, new)
     else:
-        assert all(cur.count(new) == 1 for _, new in AUDIT_HUNKS), "the gate workflow is neither variant"
+        assert all(cur.count(new) == 1 for _, new in GATE_HUNKS), "the gate workflow is neither variant"
         a, b = cur, cur
-        for old, new in AUDIT_HUNKS:
+        for old, new in GATE_HUNKS:
             a = a.replace(new, old)
     return a, b
 
@@ -955,14 +958,14 @@ class GateWorkflowDigestSet(unittest.TestCase):
         self.assertEqual(M.gate_digest(b), GATE_B)
 
     def test_a_tree_with_either_accepted_gate_workflow_passes(self):
-        for name, text in zip(("main", "change"), gate_variants()):
+        for name, text in zip(("main", "changed"), gate_variants()):
             with self.subTest(gate=name):
                 code, out = run([gate_tree(text)])
                 self.assertEqual(code, 0, out)
                 self.assertIn(", 0 finding(s)", out)
 
     def test_a_dependabot_pin_bump_in_either_still_matches(self):
-        for name, text in zip(("main", "change"), gate_variants()):
+        for name, text in zip(("main", "changed"), gate_variants()):
             with self.subTest(gate=name):
                 bumped = bump_first_pin(text)
                 self.assertNotEqual(bumped, text)
@@ -991,6 +994,16 @@ class GateWorkflowDigestSet(unittest.TestCase):
         code, out = run([d])
         self.assertEqual(code, 1, out)
         self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
+
+
+class ExclusionBreachReasons(unittest.TestCase):
+    def test_two_yaml_documents_are_refused(self):
+        why = M._token_url_breach(HEAD + "---\n" + HEAD, "w", [], ("w", "j", 0))
+        self.assertEqual(why, "the file does not hold exactly one YAML document")
+
+    def test_a_step_past_the_end_of_the_job_cannot_be_found(self):
+        doc = M.yaml.compose(HEAD + "    steps:\n      - run: true\n", Loader=M.StrLoader)
+        self.assertEqual(M._env_breach(doc, ("w", "j", 1)), "the excluded step cannot be found")
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)

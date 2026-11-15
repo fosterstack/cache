@@ -459,6 +459,20 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, its refusals, the wrapper with a fake gh, the writer, the admission step's pinned text with mutants)" }
+  - ac: REQ-REL-012-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the Dependabot cases: whose head it is, the reviewer's verdict on the head and on the heads it only updates, no verdict as no pass, and the judge with a fake gh over a real git repository whose heads merge main in, carry a writer's commit, or carry more than the merge)" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-persona — runs the auditor matrix, whose rel012-ac9 case holds the verdict job and the sweep to checks: read and pull-requests: read" }
+  - ac: REQ-REL-012-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the Dependabot cases: whose head it is, the reviewer's verdict on the head and on the heads it only updates, no verdict as no pass, and the judge with a fake gh over a real git repository whose heads merge main in, carry a writer's commit, or carry more than the merge)" }
+  - ac: REQ-REL-012-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/full-suite.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the Dependabot cases: whose head it is, the reviewer's verdict on the head and on the heads it only updates, no verdict as no pass, and the judge with a fake gh over a real git repository whose heads merge main in, carry a writer's commit, or carry more than the merge)" }
   - ac: REQ-CI-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
@@ -576,6 +590,7 @@ mappings:
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
   - ac: REQ-DEP-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -591,6 +606,28 @@ mappings:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
   - ac: REQ-DEP-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+  - ac: REQ-DEP-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/audit-record-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-003-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -816,13 +853,7 @@ mappings:
       - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
-  - ac: REQ-SUP-001-AC1
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC2
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
-  - ac: REQ-SUP-001-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC4
@@ -831,10 +862,6 @@ mappings:
   - ac: REQ-SUP-001-AC5
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
-  - ac: REQ-SUP-001-AC6
-    evidence:
-      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
-      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC7
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
@@ -890,6 +917,15 @@ mappings:
   - ac: REQ-SUP-001-AC28
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC30
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
+  - ac: REQ-SUP-001-AC32
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
+  - ac: REQ-SUP-001-AC33
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
