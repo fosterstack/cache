@@ -32,8 +32,7 @@ LOCK=build/locks/melange.lock   # TEST-SUBST
 [ -f bin/chain-sandbox-probe.sh ] && [ -f bin/build-apk-helper.py ] && [ -f build/sealed-env.json ] \
   || { echo "chain-sandbox-probe.sh: run it from the repository root" >&2; exit 2; }
 # The one argument is the file name of this job's Witness record in witness-apk/; no other file is read.
-[ -n "${1:-}" ] && [ "${1##*/}" = "$1" ] \
-  || { echo "chain-sandbox-probe.sh: want one argument, the record's file name" >&2; exit 2; }
+[ "$#" -eq 1 ] || { echo "chain-sandbox-probe.sh: want one argument, the record's file name" >&2; exit 2; }
 RECORD=$PWD/witness-apk/$1
 [ -f "$RECORD" ] || { echo "chain-sandbox-probe.sh: the Witness record $RECORD is missing" >&2; exit 2; }
 rt=${RUNNER_TEMP:-}
