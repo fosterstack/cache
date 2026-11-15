@@ -8,7 +8,7 @@ set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
 python3 - "$root" <<'PY'
-import base64, copy, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
+import base64, calendar, copy, datetime, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, time
 import yaml
 ROOT = sys.argv[1]
 passed = failed = 0
@@ -358,12 +358,15 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def put_releases(fix, releases):
+def put_releases(fix, releases, signed=None):
     """releases: [(tag, published, draft, prerelease, page)]; every one gets the assets the fetch needs,
-    ids from 100."""
+    ids from 100. signed: {tag: the published_at its signed release-manifest.json holds} (else the manifest
+    is a plain stand-in)."""
     pages, next_id = {}, 100
     for tag, published, draft, pre, page in releases:
         manifest, vex = ("manifest of " + tag).encode(), ("vex of " + tag).encode()
+        if signed:
+            manifest = json.dumps({"version": tag[1:], "published_at": signed[tag]}).encode()
         files = {"release-manifest.json": manifest, "fosterstack-cache.openvex.json": vex,
                  "release-files.sha256": ("%s  release-manifest.json\n%s  fosterstack-cache.openvex.json\n"
                                           % (sha(manifest), sha(vex))).encode(),
@@ -386,10 +389,10 @@ RELEASES = [("v0.4.0", "2026-11-20T12:00:00Z", False, False, 1), ("v0.6.0", "202
             ("v0.5.0-rc1", "2026-11-21T12:00:00Z", False, True, 2), ("v0.4.5", "2026-11-22T12:00:00Z", True, False, 2)]
 
 
-def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=False):
+def fetch(month, edit=None, today=None, release_list=RELEASES, real_verifier=False, signed=None):
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
-    put_releases(fix, release_list)
+    put_releases(fix, release_list, signed)
     if today:
         open(os.path.join(fix, "today"), "w").write(today + "\n")
     if edit:
@@ -735,10 +738,11 @@ pk, lk, upk, _l = publish(FAIL_UPLOAD="letter", FAIL_DELETE="1")
 check("AC9: if the bundle cannot be removed the one line says so",
       one_line(pk) and "could not be removed" in pk.stderr, pk.stderr)
 # ---- the daily presence check (F7): bin/evidence-letter-present.sh, run by a job of supply-chain.yml
-def present(pages, today="2026-12-10", old_manifest=None, without=None, **extra):
+def present(pages, today="2026-12-10", old_manifest=None, without=None, signed=None, **extra):
     """pages: [[(tag, draft, [asset name, or (name, 'norekor')])]]; every asset gets an id from 500 and a body.
     A release with a letter bundle also gets the key manifest and its signature (today's, or old_manifest's),
-    except the asset named by without."""
+    except the asset named by without. signed: the unix time the letter was signed (the release's published_at and the
+    bundle's Rekor integratedTime both carry it)."""
     tmp = tempfile.mkdtemp()
     fix, env = sandbox(tmp)
     env.update(extra)
@@ -750,7 +754,7 @@ def present(pages, today="2026-12-10", old_manifest=None, without=None, **extra)
             listed = []
             for a in assets:
                 name, kind = (a, "ok") if isinstance(a, str) else a
-                tlog = "[]" if kind == "norekor" else "[{}]"
+                tlog = "[]" if kind == "norekor" else "[{}]" if signed is None else '[{"integratedTime":"%d"}]' % signed
                 body = "a letter\n"
                 if name.endswith(".bundle"):
                     body = '{"verificationMaterial":{"tlogEntries":%s}}' % tlog
@@ -766,6 +770,8 @@ def present(pages, today="2026-12-10", old_manifest=None, without=None, **extra)
                     listed.append({"id": next_id, "name": name})
                     next_id += 1
             rels.append({"tag_name": tag, "draft": draft, "prerelease": False, "assets": listed})
+            if signed is not None:
+                rels[-1]["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(signed))
         out.append(rels)
     json.dump(out, open(os.path.join(fix, "pages.json"), "w"))
     script = os.path.join(env["REPO_DIR"], "bin/evidence-letter-present.sh")
@@ -870,6 +876,43 @@ for asset, n in (("release-key-manifest.json", 18), ("release-key-manifest.sig",
 pr, lr = present([[V4]], without="release-key-manifest.json")
 check("F7 20: with the manifest missing the .json is named first, and today's key is not used",
       "release-key-manifest.sig" not in pr.stderr and not any("policy make" in l for l in lr), (pr.stderr, lr))
+# the key's window is met at the date the letter was SIGNED (the next month's early days), not by the letter's month
+def window_manifest(valid_from, valid_to):
+    """A function of the sandbox folder: the (manifest, signature) of a release key valid from valid_from to
+    valid_to, root-signed."""
+    def make(tmp):
+        keys = os.path.join(tmp, "keys")
+        openssl("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", keys + "/win.key")
+        openssl("pkey", "-in", keys + "/win.key", "-pubout", "-out", keys + "/win.pub")
+        pub = open(keys + "/win.pub").read()
+        der = openssl("pkey", "-pubin", "-in", keys + "/win.pub", "-outform", "DER")
+        body = json.dumps({"public_key": pub, "key_id": sha(der), "valid_from": valid_from, "valid_to": valid_to},
+                          sort_keys=True, indent=1).encode() + b"\n"
+        open(keys + "/win-m.json", "wb").write(body)
+        sig = openssl("dgst", "-sha256", "-sign", keys + "/root.key", keys + "/win-m.json")
+        open(os.path.join(tmp, "old-line"), "w").write(pub.splitlines()[1])
+        return body, base64.b64encode(sig) + b"\n"
+    return make
+
+
+SIGNED_DEC3 = calendar.timegm((2026, 12, 3, 12, 0, 0))
+pr, lr = present([[V4]], old_manifest=window_manifest("2026-12-01T00:00:00Z", None), signed=SIGNED_DEC3)
+check("F7 R8a: a key whose window opens on 1 December signed the November letter on 3 December: it is the usable key",
+      pr.returncode == 0 and verifies(lr) == 1, (pr.stderr, lr))
+ENDED_NOV20 = window_manifest("2026-11-01T00:00:00Z", "2026-11-20T00:00:00Z")
+pr, lr = present([[V4]], old_manifest=ENDED_NOV20, signed=SIGNED_DEC3)
+check("F7 R8b: a key that ended on 20 November met the month but not the signing date of 3 December: "
+      "one line, nothing verified",
+      one_line(pr) and "key" in pr.stderr and verifies(lr) == 0, (pr.stderr, lr))
+# the unsigned publication date of the API decides nothing: the letter's releases are the ones whose SIGNED
+# manifest says they were published in the month
+SIGNED_DECOYS = [("v0.4.0", "2026-12-05T12:00:00Z", False, False, 1),
+                 ("v0.3.1", "2026-11-04T12:00:00Z", False, False, 1)]
+pd_, gotd, _l, _o, _f = fetch("2026-11", release_list=SIGNED_DECOYS,
+                              signed={"v0.4.0": "2026-11-20T12:00:00Z", "v0.3.1": "2026-12-02T12:00:00Z"})
+check("R9 the fetch selects by the signed manifest's date: the release the API dates in December but the "
+      "manifest dates 20 November is taken, the one the API dates 4 November but the manifest dates 2 December "
+      "is not", pd_.returncode == 0 and gotd == ["v0.4.0"], (pd_.stderr, gotd))
 print("%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
