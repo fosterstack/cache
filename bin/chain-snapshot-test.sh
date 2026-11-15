@@ -1,28 +1,25 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC15 — a snapshot record, and anything carrying the snapshot version 0.0.0, is refused everywhere, by name
 #
-# Snapshot mode (REQ-CHAIN-004-AC12) lets the proof workflows (scan.yml, main-candidate-rescan.yml) build with no tag and no admission. Witness still signs
-# the step, and the marker is the step name in the signed collection: snapshot-apk and snapshot-build (Build), snapshot-rapk and snapshot-rebuild (Rebuild),
-# a closed list. So that a pull request's build can never be mistaken for a release build, EVERY reader of a record in bin/chain-verify.py (verify,
-# stage-start, check-build-record, sign --check, record-env, and rebuild-compare through its --build-record) applies ONE RULE to the collection name,
-# BEFORE it looks at a certificate, a signature or a timestamp: a name that is EXACTLY `snapshot-` followed by [a-z0-9_-]* (possibly nothing) is refused as
-# a snapshot record; any other name that is not exactly a release name of that stage is refused by `collection name ...` (see the closed-name section below).
-# The first says:
+# Snapshot mode (REQ-CHAIN-004-AC12) lets the proof workflows build with no tag and no admission; the marker
+# is the step name in the signed
+# collection (snapshot-apk, snapshot-build, snapshot-rapk, snapshot-rebuild). Every reader of a record in
+# bin/chain-verify.py applies one rule to the
+# collection name BEFORE it looks at a certificate, a signature or a timestamp: a name that is exactly
+# `snapshot-` followed by [a-z0-9_-]* is refused with
 #
 #     refused at <stage>: snapshot record
 #
-# where <stage> is the stage whose record it was (verify --stage S: S; stage-start: --previous; check-build-record, sign --check and record-env: build;
-# rebuild-compare: rebuild). The stages and (stage, previous) pairs are read from chain-verify.py's own tables, so a new one needs a case. Nothing in
-# this test needs a key, a network or OpenSSL beyond what `policy make` uses for the committed trust files: the fixtures are unsigned DSSE envelopes with
-# one dummy signature entry, so a record named build gets past the name check and is refused LATER for what it is (a signature that does not verify). That is
-# the control of every case: the same fixture named build is refused, but never as a snapshot record; a refusal that fires for both would prove nothing.
-# The full acceptance of a genuine, signed build record is proven by bin/chain-verify-test.sh.
+# and any other name that is not exactly a release name of that stage is refused by `collection name ...`.
+# The fixtures are unsigned DSSE envelopes, so the same fixture named build gets past the name check and is
+# refused later, for its signature: that is the
+# control of every case (a refusal that fires for both would prove nothing). A genuine signed record is proven
+# by bin/chain-verify-test.sh.
 #
-# SNAPSHOT VERSION (REQ-CHAIN-004-AC15, cache-3f's finding): a snapshot apk is built as version 0.0.0-rc.1 (fscache-0.0.0_rc1-r0.apk), so it could
-# in principle be smuggled into a release by a record that was NOT named snapshot-*. A second, independent refusal covers that: every verifier also
-# refuses a record whose product subjects name a file with the 0.0.0 version (an apk, the fips apk, an archive), `refused at <stage>: snapshot version`,
-# and `policy make` refuses a tag whose X.Y.Z is 0.0.0 (v0.0.0, v0.0.0-rc.1), so no policy, hence no Sign or Release, can exist for it. The same fixture
-# with 0.3.0 is the control.
+# SNAPSHOT VERSION (REQ-CHAIN-004-AC15): a snapshot apk is built as 0.0.0-rc.1, so every verifier also refuses
+# a record whose product subjects name a
+# file with the 0.0.0 version, `refused at <stage>: snapshot version`, and `policy make` refuses a tag whose
+# X.Y.Z is 0.0.0. The same fixture with 0.3.0 is the control.
 #
 # Needs: python3, the committed trust files under .github/policy (policy make reads them).
 exec python3 - "$(cd "$(dirname "$0")/.." && pwd)" <<'PY'
@@ -32,11 +29,13 @@ root = sys.argv[1]
 CV = root + "/bin/chain-verify.py"
 work = tempfile.mkdtemp()
 atexit.register(shutil.rmtree, work, ignore_errors=True)
-passed = failed = 0
-TEMPLATE = work + "/pol/release-policy.template.json"      # the committed template beside a throwaway key manifest (handoff 0713): `policy make` reads the manifest from the template's directory
+passed = failed = skipped = 0
+# the committed template beside a throwaway key manifest: `policy make` reads the manifest from the template's directory
+TEMPLATE = work + "/pol/release-policy.template.json"
 os.makedirs(work + "/pol")
 shutil.copy(root + "/.github/policy/release-policy.template.json", TEMPLATE)
-for _f in ("rekor.pub", "sigstore-trust.json"):      # `policy make` pins the Rekor key from the committed files beside the template (ratify B)
+# `policy make` pins the Rekor key from the committed files beside the template
+for _f in ("rekor.pub", "sigstore-trust.json"):
     shutil.copy(root + "/.github/policy/" + _f, work + "/pol/" + _f)
 subprocess.run([sys.executable, root + "/bin/chain-test-harness.py", "keys", work + "/pol"], check=True, capture_output=True)
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:digests.json"
@@ -81,9 +80,10 @@ rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0",
 check("a policy for v0.3.0 is made from the committed template (the fixture of every case)", rc == 0 and os.path.exists(work + "/policy.json"), err[:120])
 
 SIGN_ENV = {"GITHUB_REF": "refs/tags/v0.3.0", "GITHUB_EVENT_NAME": "push"}
-# THE SUBCOMMANDS ARE GENERATED from chain-verify.py's own tables (step-6 round 1, both seats): every stage `verify` takes and EVERY (stage, previous) pair that
-# `stage-start` takes, so an implementation that refuses snapshot records for one stage or one pair only fails. A pair added to the tables without a case
-# is caught by the first check below, which pins the tables this test was written against.
+# The subcommands are generated from chain-verify.py's own tables: every stage `verify` takes and every
+# (stage, previous) pair that `stage-start` takes.
+# A pair added to the tables without a case is caught by the first check below, which pins the tables this
+# test was written against.
 WRITTEN_FOR = {"stages": ["build", "sign", "rebuild", "check", "release"],
                "starts_from": {"rebuild": ["build"], "check": ["build"], "sign": ["build"], "release": ["build", "sign", "rebuild", "check"]}}
 sys.path.insert(0, root + "/bin")      # chain-verify.py imports its sibling modules
@@ -127,8 +127,8 @@ for name in ("snapshot-apk", "snapshot-rapk", "snapshot-anything", "snapshot-", 
     check("a collection name that is exactly snapshot- plus [a-z0-9_-]* is refused as a snapshot record (%s)" % name,
           rc == 1 and first == "refused at build: snapshot record",
           "exit %s, first line %r" % (rc, first[:140]))
-# ---- every reader of a record, not only the verifiers (step-6 round 1, Sonnet 3): record-env and rebuild-compare read it through the same function --------
-rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0", "--out", "policy.json"])
+# ---- every reader of a record, not only the verifiers: record-env and rebuild-compare
+# read it through the same function ----
 for name, want_snapshot in (("snapshot-build", True), ("build", False)):
     record("rec.json", name)
     rc, out, err = run(["record-env", "--record", "rec.json"])
@@ -161,7 +161,7 @@ def raw_record(path, statement):
         json.dump(envelope, f)
 
 
-# ---- odd statements are refused or accepted cleanly: never as a snapshot, never with a traceback (Sonnet 4) ------------------------------------------------
+# ---- odd statements are refused or accepted cleanly: never as a snapshot, never with a traceback --------------------
 COLLECTION = "https://witness.testifysec.com/attestation-collection/v0.1"
 STMT = "https://in-toto.io/Statement/v0.1"
 ODD = [("a statement with no predicate at all", {"_type": STMT, "predicateType": COLLECTION, "subject": []}),
@@ -184,10 +184,10 @@ for what, statement in ODD[:4]:
     first = err.split("\n", 1)[0]
     check("record-env: %s ends cleanly (accepted or refused), never as a snapshot record" % what,
           rc in (0, 1, 2) and "snapshot" not in err and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
-# ---- ruling (1): a snapshot built in a checkout whose HEAD carries v0.3.0 is still a snapshot, and release verification refuses what it left ----------------
+# ---- a snapshot built in a checkout whose HEAD carries v0.3.0 is still a snapshot,
+# and release verification refuses what it left ----
 # The snapshot scripts ignore the v* tag at HEAD and build 0.0.0-rc.1, so the record they leave names a snapshot step and 0.0.0 files, while the policy is the
 # one for v0.3.0 (the tag that HEAD carried). Both ways of passing it off are refused: under its own name, and renamed to build.
-rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0", "--out", "policy.json"])
 for what, name in (("under its own name (snapshot-build)", "snapshot-build"), ("renamed to build", "build")):
     record("rec.json", name, ["out/x86_64/fscache-0.0.0_rc1-r0.apk"])
     want = "refused at build: snapshot record" if name.startswith("snapshot-") else "refused at build: snapshot version"
@@ -200,9 +200,9 @@ for what, name in (("under its own name (snapshot-build)", "snapshot-build"), ("
     first = err.split("\n", 1)[0]
     check("the same record %s is refused at the Release side (stage-start release from build): %s" % (what, want.split(": ", 1)[1]),
           rc == 1 and first == want, "exit %s, first line %r" % (rc, first[:140]))
-# ---- REQ-CHAIN-004-AC13, the closed-name check (advisor, Oct 9) ------------------------------------------------------------------------------------
+# ---- REQ-CHAIN-004-AC13, the closed-name check ----------------------------------------------------------------------
 # The snapshot- prefix refusal is a denylist; a collection name must also be EXACTLY a release name for the stage that reads it: apk or build for Build,
-# rapk or rebuild for Rebuild (check, sign and release records are unaffected here: PR 3 names the Check steps).
+# rapk or rebuild for Rebuild (check, sign and release records are unaffected here).
 # Anything else, spelling variants and Unicode lookalikes included, is refused BEFORE any certificate with `refused at <stage>: collection name ...`. This is
 # early protection against honest confusion and lookalikes; the real boundary stays the Build Config URI pin of check_identity (a run of scan.yml can name its
 # own record build, but it is not release.yml at the tag).
@@ -260,7 +260,8 @@ for flag, what, name in (("--snapshot", "Build (capital B)", "Build"), ("--snaps
           rc == 1 and first.startswith("refused at rebuild: ") and "Traceback" not in err and "digest: items.json" not in first,
           "exit %s, first line %r" % (rc, first[:140]))
 # ---- REQ-CHAIN-004-AC15: the snapshot version -------------------------------------------------------------------------------------------------------------
-CHECK_COLLECTION = {"check": "scanners"}   # the check stage reads the collections scanners, acceptance, runtime and arm64 (#683 split it); the fixture names one of them
+# the check stage reads the collections scanners, acceptance, runtime and arm64; the fixture names one of them
+CHECK_COLLECTION = {"check": "scanners"}
 SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
 for label, args, stage, env in SUBCOMMANDS:
     for files, want_snapshot in (([SNAP_APK], True), ([REAL_APK], False)):
@@ -295,7 +296,7 @@ check("policy make --ref refs/tags/v0.0.0-rc.1 is refused as a snapshot version 
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--ref", "refs/tags/v0.0.0", "--out", "p2.json"])
 check("policy make --ref refs/tags/v0.0.0 is refused as a snapshot version too (the form sign --check uses)",
       rc == 1 and err.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p2.json"), "exit %s, %r" % (rc, err[:120]))
-# ---- the 0.0.0 check must not over-reach (step-6 round 2, S3): versions that merely CONTAIN the digits are not snapshot versions -----------
+# ---- the 0.0.0 check must not over-reach : versions that merely CONTAIN the digits are not snapshot versions --------
 for what, f in (("fscache-10.0.0-r0.apk (version 10.0.0)", "out/x86_64/fscache-10.0.0-r0.apk"),
                 ("fscache-0.10.0-r0.apk (version 0.10.0)", "out/x86_64/fscache-0.10.0-r0.apk"),
                 ("fscache-1.0.0_rc1-r0.apk", "out/x86_64/fscache-1.0.0_rc1-r0.apk"),
@@ -311,7 +312,7 @@ for tag in ("v10.0.0", "v0.0.1", "v0.10.0", "v1.0.0"):
     check("policy make --tag %s is made (it is not a 0.0.0 tag)" % tag, rc == 0 and os.path.exists(work + "/p3.json"), "exit %s, %r" % (rc, err[:120]))
     if os.path.exists(work + "/p3.json"):
         os.remove(work + "/p3.json")
-# ---- odd subject shapes end cleanly: no traceback, never as a snapshot (step-6 round 2, S3) -------------------------------------------
+# ---- odd subject shapes end cleanly: no traceback, never as a snapshot -------------------------------------------
 ODD_SUBJECTS = [("subject is the number 5", 5), ("subject is a list of a bare string", ["x"]), ("a subject whose name is the number 5", [{"name": 5}]),
                 ("subject is null", None), ("a subject that is a list", [[]]), ("a subject whose digest is a string", [{"name": "a", "digest": "x"}])]
 for what, subject in ODD_SUBJECTS:
@@ -343,11 +344,12 @@ for label, args, stage, env in SUBCOMMANDS:
                   "exit %s, first line %r" % (rc, first[:140]))
 with open(work + "/digests.json", "w") as f:
     json.dump({"image-production": "sha256:" + "a" * 64}, f)
-# ---- REAL git and REAL go (step-6 round 3, F2): the tag lines of the snapshot apk scripts make Go stamp v0.0.0-rc.1 -------------------
+# ---- REAL git and REAL go: the tag lines of the snapshot apk scripts make Go stamp v0.0.0-rc.1 -------------------
 # Go stamps the highest semver tag at HEAD, so with v0.3.0 at HEAD the single line `git tag --force v0.0.0-rc.1 HEAD` still gives the stamp v0.3.0 and cache's
 # driver (which reads the buildinfo `mod` line) would refuse. The lines come from bin/chain-test-shape.py (SNAPSHOT_TAG_LINES, the same text the script judge
-# demands of the committed scripts) and run in a throw-away repository with a go.mod and a tiny main, whose origin is a bare repository. SKIPPED CLEANLY (and
-# counted, so the total is stable) when go or git is missing: the CI runner has both.
+# demands of the committed scripts) and run in a throw-away repository with a go.mod and a tiny main, whose
+# origin is a bare repository. Skipped (counted apart from the passes, so the total is
+# stable) when go or git is missing; in CI a skip fails the suite.
 spec = importlib.util.spec_from_file_location("shape", root + "/bin/chain-test-shape.py")
 shape = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(shape)
@@ -399,8 +401,10 @@ def stamp(clone):
 
 
 def real(label, fn):
+    global skipped
     if not HAVE_TOOLS:
-        check(label + " [SKIP: go or git is not installed here; the CI runner has both]", True)
+        skipped += 1
+        print("skip " + label + " (go or git is not installed here)")
         return
     ok, detail = fn()
     check(label, ok, detail)
@@ -472,6 +476,22 @@ def case_guard():
     return not problems, "; ".join(problems)[:300]
 
 
+def case_git_only():
+    clone, bare = make_repo("gitonly")
+    r = run_lines(clone, shape.SNAPSHOT_TAG_LINES)
+    at_head = git(clone, "tag", "--points-at", "HEAD").stdout.split()
+    remote = subprocess.run(["git", "ls-remote", "--tags", bare], capture_output=True, text=True).stdout
+    good = r.returncode == 0 and at_head == ["v0.0.0-rc.1"] and "v0.3.0" in remote and "rc.1" not in remote
+    return good, "rc %s, tags at HEAD %s, remote %r, stderr %r" % (r.returncode, at_head, remote, r.stderr[:120])
+
+
+# git alone is enough for this one (no go build), so a box without go still runs the tag lines
+label = "real git only: the snapshot tag lines leave HEAD with v0.0.0-rc.1 alone and the remote untouched"
+if shutil.which("git") is None:
+    skipped += 1
+    print("skip " + label + " (git is not installed here)")
+else:
+    check(label, *case_git_only())
 real("real git: outside GitHub Actions (unset, empty, false, FALSE, TRUE, 1, 'true ') the lines exit 2 naming the reason, every tag stays",
      case_guard)
 real("real git and go: CONTROL - with only `git tag --force v0.0.0-rc.1 HEAD` and v0.3.0 at HEAD, Go's stamp is still v0.3.0 (the problem)", case_control)
@@ -480,11 +500,14 @@ real("real git and go: after the lines HEAD carries only v0.0.0-rc.1 (v0.3.0 and
 real("real git and go: the remote is untouched - v0.3.0 is still there, v0.0.0-rc.1 was never pushed", case_remote)
 real("real git and go: a non-v* tag at HEAD fails the lines naming it, and it is not deleted or restored", case_nonv)
 real("real git and go: a second run (v0.0.0-rc.1 already there) succeeds and the stamp is still v0.0.0-rc.1", case_rerun)
-EXPECT = 160
-total = passed + failed
-print("pass=%d fail=%d" % (passed, failed))
+EXPECT = 161
+total = passed + failed + skipped
+print("pass=%d fail=%d skip=%d" % (passed, failed, skipped))
 if total != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (total, EXPECT))
+    sys.exit(1)
+if skipped and (os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"):
+    print("FAIL %d cases were skipped in CI, where go and git must exist" % skipped)
     sys.exit(1)
 sys.exit(1 if failed else 0)
 PY

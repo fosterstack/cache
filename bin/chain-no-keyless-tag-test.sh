@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC6
 # Handoff 0713 P8 (orchestrator ruling R6, owner's Oct 28 rule 2 "no keyless signing anywhere"): the keyless tag
 # signers of the automatic patch release are out. The words below name them: gitsign, smimesign, and the git settings
 # that make git sign with an X.509 certificate (gpg.format=x509, gpg.x509.program). No tracked file that is code, a
@@ -26,6 +25,15 @@ WORDS = re.compile(r"gitsign|smimesign|gpg\.format[\s=]+x509|gpg\.x509\.program"
 passed = failed = 0
 
 
+def unquote(text):
+    """Quotes are dropped first, so a quoted value (gpg.format 'x509') cannot hide the word."""
+    return text.replace("'", "").replace('"', "")
+
+
+def names_signer(text):
+    return WORDS.search(unquote(text))
+
+
 def check(cond, msg):
     global passed, failed
     if cond:
@@ -38,13 +46,16 @@ def check(cond, msg):
 
 # the word list itself: each word is found in any case, and ordinary text is not
 for word in ("gitsign", "smimesign", "gpg.format=x509", "gpg.x509.program"):
-    check(WORDS.search("run: " + word + " sign") and WORDS.search("run: " + word.upper() + " sign") and
-          WORDS.search("run: " + word.title() + " sign"), "the scan finds %s in lower, upper and title case" % word)
-check(WORDS.search("git -c gpg.format = x509 tag -s v1"),
+    check(names_signer("run: " + word + " sign") and names_signer("run: " + word.upper() + " sign") and
+          names_signer("run: " + word.title() + " sign"), "the scan finds %s in lower, upper and title case" % word)
+check(names_signer("git -c gpg.format = x509 tag -s v1"),
       "the scan finds gpg.format = x509 with spaces around the equals sign")
-check(WORDS.search("git config gpg.format x509"),
+check(names_signer("git config gpg.format x509"),
       "the scan finds the config form git config gpg.format x509 (a space, no equals sign)")
-check(not WORDS.search("git tag -s v1 with gpg.format=ssh and a signing key"),
+for form in ("git config gpg.format 'x509'", 'git config gpg.format "x509"', "git -c gpg.format=x509 tag -s v1",
+             "git -c 'gpg.format=x509' tag -s v1", 'git -c "gpg.format=x509" tag -s v1'):
+    check(names_signer(form), "the scan finds the quoted or -c form: %s" % form)
+check(not names_signer("git tag -s v1 with gpg.format=ssh and a signing key"),
       "the scan does not flag an SSH-signed tag")
 
 # two files keep the words on purpose, because they DETECT them: the signer table that makes any use of gitsign in
@@ -59,7 +70,7 @@ for f in files:
         text = open(root + "/" + f, errors="ignore").read()
     except OSError:
         continue
-    n = len(WORDS.findall(text))
+    n = len(WORDS.findall(unquote(text)))
     if n:
         hits[f] = n
 check(not hits, "no tracked code, workflow or policy file names a keyless tag signer%s"
