@@ -1127,6 +1127,70 @@ class AuditRows(unittest.TestCase):
                 for name in ("file:" + T.p2("db"), "file:../x/db", os.fsencode("file:/x"), pathlib.Path("file:" + T.p2("db")), ""):
                     self.refused(G._hook, "sqlite3.connect", (name,))
             self.refused(G._hook, "sqlite3.connect", (5,))
+            for scheme in ("file:", "file://"):
+                with mock.patch.object(G._busy, "uri", True, create=True):
+                    G._hook("sqlite3.connect", (scheme + T.p1(".coverage.host.pid1.x") + "?mode=ro",))
+                self.refused(G._hook, "sqlite3.connect", (scheme + T.p1(".coverage.host.pid1.x") + "?mode=ro",))
+            for name in ("file:/etc/.coverage.x?mode=ro", "file:" + T.p2(".coverage.x") + "?mode=ro", "file:" + T.p1("data") + "?mode=ro",
+                         "file:" + T.p1(".coverage.x") + "?mode=rw", "file:" + T.p1(".coverage.x"), "file:" + T.p1(".coverage.x") + "?mode=ro&x=1",
+                         "file://host" + T.p1(".coverage.x") + "?mode=ro", "file:////etc/.coverage.x?mode=ro", "file:" + T.p1("%2ecoverage.x") + "?mode=ro",
+                         "file:" + T.p1("..", "x", ".coverage.y") + "?mode=ro", "file:.coverage.x?mode=ro"):
+                with mock.patch.object(G._busy, "uri", True, create=True):
+                    self.refused(G._hook, "sqlite3.connect", (name,))
+            class S(str): pass
+            with mock.patch.object(G._busy, "uri", True, create=True):
+                self.refused(G._hook, "sqlite3.connect", (S("file:" + T.p1(".coverage.x") + "?mode=ro"),))
+                os.symlink.__wrapped__(T.p2("x"), T.p1(".coverage.link"))
+                self.refused(G._hook, "sqlite3.connect", ("file:" + T.p1(".coverage.link") + "?mode=ro",))
+            self.addCleanup(os.chdir, os.getcwd())
+            os.chdir(T.t1)
+            with self.assertRaises(sqlite3.OperationalError):                         # judged and let through; mode=ro, no such file
+                sqlite3.connect("file:" + T.p1(".coverage.real") + "?mode=ro", uri=True)
+            self.refused(sqlite3.connect, "file:" + T.p1(".coverage.real") + "?mode=ro", uri=False)
+            self.refused(sqlite3.connect, "file:" + T.p1(".coverage.real") + "?mode=ro")
+            uri = "file:" + T.p1(".coverage.real") + "?mode=ro"
+            class F(sqlite3.Connection): pass
+            def fac(name, *a, **k): return sqlite3.Connection(name, uri=False)      # a factory that opens the literal name with the real flag off
+            for factory in (F, fac):
+                self.refused(sqlite3.connect, uri, uri=True, factory=factory)
+            self.refused(sqlite3.connect, uri, 5.0, 0, "DEFERRED", True, fac, 128, True)
+            self.refused(sqlite3.Connection, uri, uri=True)
+            self.refused(sqlite3.connect, uri, uri=1)
+            for factory in ({}, {"factory": sqlite3.Connection}):
+                with self.assertRaises(sqlite3.OperationalError):
+                    sqlite3.connect(uri, uri=True, **factory)
+            with self.assertRaises(sqlite3.OperationalError):
+                sqlite3.connect(uri, 5.0, 0, "DEFERRED", True, sqlite3.Connection, 128, True)
+            class Lies(str):
+                def startswith(self, *a): return False
+            class Shows(str):
+                def __str__(self): return "x"
+                def __fspath__(self): return "x"
+            class Spells(os.PathLike):
+                def __fspath__(self): return "x"
+            class Dir(type(pathlib.Path())): pass
+            for name in (Lies("file:/x"), Lies("file:" + T.p2("db")), Shows("file:" + T.p2("db")), Spells(), Dir("file:" + T.p2("db")), Dir(T.p1("db"))):
+                self.refused(G._hook, "sqlite3.connect", (name,))
+                with mock.patch.object(G._busy, "uri", True, create=True):
+                    self.refused(G._hook, "sqlite3.connect", (name,))
+            class Convert:                                                  # sqlite calls __index__ while it parses the outer call, with the grant set
+                def __index__(self):
+                    sqlite3.Connection(uri, uri=False).close()
+                    return 0
+            for key in ("detect_types", "cached_statements"):
+                self.refused(sqlite3.connect, ":memory:", uri=True, **{key: Convert()})
+            granted = []
+            class Name(str):                                                # a keyword name's __eq__ runs while the outer call parses its arguments
+                def __eq__(self, other):
+                    granted.append(getattr(G._busy, "uri", False))
+                    return str.__eq__(self, other)
+                __hash__ = str.__hash__
+            sqlite3.connect(":memory:", **{Name("uri"): True}).close()
+            self.assertNotIn(True, granted)
+            with mock.patch.object(G._busy, "uri", True, create=True):      # one grant, one event
+                G._hook("sqlite3.connect", (uri,))
+                self.refused(G._hook, "sqlite3.connect", (uri,))
+            self.assertEqual(sorted(os.listdir(T.t1)), [".coverage.link", "f", "sub"])
         with tempfile.TemporaryDirectory() as d:                                # what coverage does: a real database file in a temp dir
             c = sqlite3.connect(os.path.join(d, ".coverage.1"))
             c.execute("create table t(x)"); c.execute("insert into t values (1)"); c.commit(); c.close()

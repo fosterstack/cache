@@ -130,7 +130,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 232 allow patterns: main's, plus the chain's forms that main's lines do not already match
+# 232 allow patterns: main's (with ^bin/dependabot-reviewer-version\.sh$, without the tag observer's), plus the chain's forms that main's lines do not already match
 EXPECT_ALLOW, EXPECT_SUPPRESSION = 232, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
@@ -179,7 +179,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "3b3d44414e86a0a22d9e80ab476b7c03d13b51c142e84cf3f023e248b3390c75"
+PINNED_SHA256 = "f41cf15aac2d47d8a8739d4eed8bf6556b8734ddeac235d8b9bf6e4bb53837e6"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -861,6 +861,13 @@ runeach fail "feature/x" "chain: unlisted siblings refused" "bin/chain-other.py"
 # pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
 runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
 runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"
+
+# the reviewer's version script is one of the five files' list-keeper: admitted by its exact path only
+passfam "feature/x" "the reviewer's version script" "bin/dependabot-reviewer-version.sh"
+runeach fail "feature/x" "reviewer-version near-miss refused" \
+  "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
+  "bin/dependabot-reviewer-version.py" "bin/Dependabot-Reviewer-Version.sh" \
+  "bin/sub/dependabot-reviewer-version.sh" "bin/dependabot-reviewer-version.sh "
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
