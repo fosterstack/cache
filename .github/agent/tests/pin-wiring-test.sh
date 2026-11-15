@@ -653,6 +653,8 @@ if pol is not None:
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
         bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
     for jid in PROTECTED:
+        if jid == "allowlist-pins-auditor":   # off the ruleset by the owner (Nov 12); it still runs and keeps its name
+            continue
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
             bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
 # the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
@@ -741,13 +743,9 @@ IFS= read -r -d '' PIN_WIRING_GUARD_JOB <<'JOB' || true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: guard regressions (offline fixtures)
-        run: bash bin/required-check-guard-test.sh
-
-      # One call of main's guard over this tree's two lists: the ruleset comparison, and the seven release-only entries
-      # pinned in the guard, so a pull request cannot change the pin it is judged by. The verdict uses THIS tree's lists,
-      # so a PR that fixes a stale list goes green on its own run; on push to main the tree is main.
-      - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
+      # Main's guard, fetched and never taken from this tree: nothing of the checkout runs in this job, so a pull
+      # request cannot reach the verdict. The guard's own regressions run in the allowlist job.
+      - name: fetch main's guard
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -755,7 +753,16 @@ IFS= read -r -d '' PIN_WIRING_GUARD_JOB <<'JOB' || true
           gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
             | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
           [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
-          bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json
+
+      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the seven
+      # release-only entries pinned in the guard. The verdict uses THIS tree's lists, so a PR that fixes a stale list
+      # goes green on its own run; on push to main the tree is main.
+      - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          bash "${RUNNER_TEMP}/required-check-guard.sh"
+          .github/policy/required-checks.json .github/policy/release-only-checks.json
 
       # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
       # first; one open issue, updated in place, never duplicated. Best effort: a
@@ -771,7 +778,8 @@ IFS= read -r -d '' PIN_WIRING_GUARD_JOB <<'JOB' || true
           set +e -uo pipefail   # the runner starts bash with -e; the guard's refusal is data here
           gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
             --jq '.content' | base64 -d > "${RUNNER_TEMP}/main-required-checks.json" || exit 0
-          out=$(bash bin/required-check-guard.sh "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
+          out=$(bash "${RUNNER_TEMP}/required-check-guard.sh" \
+                  "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
           # Drift (1), or a ruleset that enforces nothing at all (a refusal, not a read error).
           if [ "$rc" -ne 1 ] && ! grep -q "NO required status checks" <<<"$out"; then
             echo "main's list vs the ruleset: rc ${rc} — no drift issue to open"; exit 0
@@ -816,8 +824,18 @@ def block(header, indent):   # the header line and what is under it, up to the n
     while inert(lines[end - 1]):
         end -= 1
     return b"\n".join(lines[starts[0]:end]) + b"\n"
+CHECKOUT = b"      - uses: actions/checkout@"
+def shape(job):   # Dependabot moves the checkout's digest and its version comment: any 40 lower-case hex stands for it
+    kept = []
+    for line in job.split(b"\n"):
+        digest, rest = line[len(CHECKOUT):len(CHECKOUT) + 40], line[len(CHECKOUT) + 40:]
+        if line.startswith(CHECKOUT) and all(c in b"0123456789abcdef" for c in digest) and len(digest) == 40 \
+                and rest[:2] in (b"", b" #"):
+            line = CHECKOUT + b"<40 hex>"
+        kept.append(line)
+    return b"\n".join(kept)
 bad = []
-if block(b"  required-check-guard:", 2) != os.environ["PIN_WIRING_GUARD_JOB"].encode():
+if shape(block(b"  required-check-guard:", 2) or b"") != shape(os.environ["PIN_WIRING_GUARD_JOB"].encode()):
     bad.append("the required-check-guard job is not the pinned text, byte for byte")
 if block(b"permissions:", 0) != os.environ["PIN_WIRING_PERMISSIONS"].encode():
     bad.append("the workflow permissions are not the pinned text, byte for byte")
@@ -1314,6 +1332,8 @@ case_ reserved-maven-in-ci         bad "d['jobs']['zz'] = dict($ZZ, name='accept
 case_ reserved-maven-expr-in-ci    bad "d['jobs']['zz'] = dict($ZZ, name='acceptance-maven (\${{ matrix.v }})')"
 case_ reserved-gradle-id-in-ci     bad "d['jobs']['acceptance-gradle'] = $ZZ"
 case_ reserved-coverage-expr-in-ci bad "d['jobs']['lint']['name'] = 'coverage (\${{ matrix.v }})'"
+case_ reserved-pins-auditor-in-ci bad "d['jobs']['zz'] = dict($ZZ, name='allowlist-pins-auditor')"
+case_ reserved-pins-auditor-id-renamed bad "d['jobs']['pins'] = d['jobs'].pop('allowlist-pins-auditor')"
 
 # a name with an expression that could render as a reserved name is refused (REQ-REL-013-AC3), except in the job
 # that produces it
@@ -1399,6 +1419,24 @@ if out=$(PIN_WIRING_POLICY_FILE="$work/pol-in-both-required.json" judge "$here/.
   failn=$((failn+1)); echo "FAIL policy-in-both accepted"
 else pass=$((pass+1)); echo "PASS policy-in-both → bad ($out)"; fi
 
+# allowlist-pins-auditor is no longer a required check (owner, Nov 12) and is not release-only either: the judge
+# accepts the real ci.yml with its entry absent from both lists
+python3 - "$here/.github/policy/required-checks.json" "$work/pol-no-pins-auditor.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["required_checks"] = [c for c in d["required_checks"] if c["context"] != "allowlist-pins-auditor"]
+json.dump(d, open(sys.argv[2], "w"))
+PY
+if out=$(PIN_WIRING_POLICY_FILE="$work/pol-no-pins-auditor.json" judge "$here/.github/workflows/ci.yml")
+then pass=$((pass+1)); echo "PASS policy-pins-auditor-not-required → ok"
+else failn=$((failn+1)); echo "FAIL policy-pins-auditor-not-required → bad, want ok ($out)"; fi
+
+# the name stays reserved without the policy entry: no job of another workflow may take it
+reserved_wf pins-auditor-name "$(printf "  zz:\n    name: allowlist-pins-auditor\n${JOB}")"
+if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-pins-auditor-name" judge "$here/.github/workflows/ci.yml")
+then failn=$((failn+1)); echo "FAIL reserved-pins-auditor-name → ok, want bad ($out)"
+else pass=$((pass+1)); echo "PASS reserved-pins-auditor-name → bad"; fi
+
 # ---- byte pins: the whole required-check-guard job and the top-level env/defaults/permissions ----------------
 # bcase_ <name> <ok|bad> <sed script or empty>: the real ci.yml, edited as bytes by sed, judged by bytes_judge.
 bcase_() {
@@ -1416,16 +1454,31 @@ bcase_ the-real-bytes          ok  ""
 bcase_ job-env-key             bad "$guard_head"'s/^    steps:$/    env:\n      X: "1"\n    steps:/'
 bcase_ step-before-guard       bad "$guard"'{/^    steps:$/a\      - run: echo first
 }'
-path_step='      - run: |\n          hook=GITHUB_'"'PATH'"'\n          echo X=1 >> "${!hook}"'
-bcase_ github-path-built       bad "$guard{/^    steps:\$/a\\$path_step
-}"
+path_step='      - run: hook=GITHUB_'"'PATH'"'; echo X=1 >> "${!hook}"'
+bcase_ github-path-built       bad "$guard"'s/^    steps:$/&\n'"$path_step"'/'
 bcase_ top-level-env-key       bad 's/^permissions:$/env:\n  X: "1"\n\npermissions:/'
 bcase_ top-level-defaults-key  bad 's/^permissions:$/defaults:\n  run:\n    shell: bash\n\npermissions:/'
 bcase_ top-level-permissions   bad '/^permissions:$/a\  issues: write'
 bcase_ job-pipe-minus          bad "$guard"'s/^        run: |$/        run: |-/'
-bcase_ job-permissions-changed bad "$guard_head"'s/^      issues: write /      issues: read /'
+bcase_ job-permissions-changed bad "$guard_head"'s/^      issues: write\b/      issues: read/'
 comment='# The issue tracks drift '
 bcase_ job-comment-changed     bad "$guard"'s/^      '"$comment"'ON MAIN/      '"$comment"'on main/'
+# the checkout digest and its `# vX.Y.Z` comment are what Dependabot rewrites: both stand for any value on this line
+old=3d3c42e5aac5ba805825da76410c181273ba90b1
+new=abababababababababababababababababababab
+ck="$guard{/^      - uses: actions\/checkout@/{"
+bcase_ checkout-digest-and-comment-bumped ok  "${ck}s/@$old/@$new/;s/# v7.0.1/# v7.1.0/}}"
+bcase_ checkout-digest-bumped-no-comment  ok  "${ck}s/@$old/@$new/;s/ # v7.0.1\$//}}"
+bcase_ checkout-comment-only-changed      ok  "${ck}s/# v7.0.1/# v8.0.0/}}"
+bcase_ checkout-tag-ref                   bad "${ck}s/@$old # v7.0.1/@v4/}}"
+bcase_ checkout-short-digest              bad "${ck}s/@$old/@${new:0:39}/}}"
+bcase_ checkout-upper-digest              bad "${ck}s/@$old/@${new^^}/}}"
+bcase_ checkout-other-action-name         bad "${ck}s/actions\/checkout@/evil\/checkout@/}}"
+bcase_ checkout-literal-marker            bad "${ck}s/@$old/@<commit>/}}"
+bcase_ checkout-indent-changed            bad "${ck}s/^      - /       - /}}"
+bcase_ second-uses-line-in-job            bad "$guard{/^    steps:\$/a\\      - uses: actions/checkout@$new
+}"
+bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@$old/@$new/"
 bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
 bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
 

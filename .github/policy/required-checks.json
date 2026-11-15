@@ -50,11 +50,6 @@
       "scope": "push"
     },
     {
-      "context": "allowlist-pins-auditor",
-      "integration_id": 15368,
-      "scope": "push"
-    },
-    {
       "context": "dependency-review",
       "integration_id": 15368,
       "scope": "pull_request"
