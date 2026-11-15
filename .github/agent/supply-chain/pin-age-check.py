@@ -697,8 +697,6 @@ def _checked_pins(pins):
     if not entries:
         raise ValueError("image-publishers.json pins no image")
     for name, pin in entries.items():
-        if "/" not in name:
-            raise ValueError(f"image-publishers.json: {name} names a registry alone, not an image")
         if not isinstance(pin, dict) or not ({"key", "keyless", "unsigned"} & set(pin)) or set(pin) - set(PIN_FIELDS):
             raise ValueError(f"image-publishers.json: {name} has no key, keyless identity or unsigned reason, "
                              "or a field that is not known")
