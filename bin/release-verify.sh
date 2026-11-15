@@ -28,7 +28,8 @@ python3 -I -B bin/chain-verify.py stage-start --stage release --previous rebuild
 # job's small result file and accepts a pass for Build's attested apk digests.
 python3 -I -B bin/chain-verify.py apk-compare --policy policy.json \
   --record witness-rebuild/rebuild-collection.json \
-  --file apk-compare/apk-compare.json --digests witness-build/digests.json
+  --file apk-compare/apk-compare.json --digests witness-build/digests.json \
+  --rapk witness-rapk-ubuntu-24.04/rapk-collection.json --rapk witness-rapk-ubuntu-24.04-arm/rapk-collection.json
 python3 -I -B bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json \
   --dir witness-check
 # The govulncheck stream release-sign hands the evidence step is a product of Check's verified scanners
