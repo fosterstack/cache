@@ -4,7 +4,7 @@
 # reviews, runs .github/agent/tests/auditor-matrix-test.sh against it, and asserts the class buys no
 # undue passes. This is what makes "nothing false-passes" a permanent, on-demand
 # property. The stand-ins under .github/agent/fixtures/mutants/ are TEST INPUTS (adversaries), not auditor code;
-# they were not checked in verbatim: this pull request rewrote effect-standin.py and edited the headers of the other two.
+# each says in its own header what it is.
 #
 #   original-inert     first-pass-inert.py (exit 7, echoes old expectation fields)
 #   stdout-echo        exit-0, prints input files to stdout, writes nothing
@@ -34,7 +34,7 @@ fails=0
 # Static cases parse the workflow file and exported policy fixtures only — they call
 # no auditor command, so any command-mutant replacement passes them legitimately once
 # a valid workflow exists. Command mutants are graded on the cases they can affect.
-STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-conditional-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry req15-ac8-section6-7-removed r16-exactly-one-gh-token-key-in-driver-env req16-ac4-malformed-proposal-dropped req18-ac1-suites-wired-into-required-allowlist-job req18-suite-leaves-checkout-untouched req18-ac2-python-100pct-coverage-gate req18-ac2-identity-claims-logging-stubbed req18-requirements-resolve-in-required-job req18-ac3-gate-runs-from-base-on-pull-request-target rpt-ac5-lint-catches-the-old-defects rpt-r1-lint-catches-spilled-list-lines"
+STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-conditional-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry req15-ac8-section6-7-removed r16-exactly-one-gh-token-key-in-driver-env req16-ac4-malformed-proposal-dropped req18-ac1-suites-wired-into-required-allowlist-job req18-ac2-python-100pct-coverage-gate req18-ac2-identity-claims-logging-stubbed req18-requirements-resolve-in-required-job req18-ac3-gate-runs-from-base-on-pull-request-target rpt-ac5-lint-catches-the-old-defects rpt-r1-lint-catches-spilled-list-lines"
 # These read only the workflow file or the shared library (kept in the copy), and call no auditor command.
 STATIC="$STATIC req3-ac3-workflow-carries-the-nochange-state ol3-3-gvc-module-from-sbom-modules
  req13-ac2-stable-unique-ids req6-ac2-workflow-writes-the-token-budget req17-ac1-fixed-subject-prefix-family
@@ -116,18 +116,18 @@ assert_absent() {  # assert_absent <label> <needle> <haystack-lines...>
 }
 
 echo "=== harness self-checks (the assertions themselves must not pass vacuously) ==="
-self_check() {  # self_check <label> <command...> : the command must raise the failure count
-  local label="$1"; shift
+self_check() {  # self_check <label> <needle> <command...> : the command must raise the failure count, its output naming <needle>
+  local label="$1" needle="$2"; shift 2
   local before="$fails"
-  "$@" >/dev/null
-  if [ "$fails" -gt "$before" ]; then fails="$before"; echo "PASS  self-check ${label}"; else
-    echo "FAIL  self-check ${label}: the assertion did not fail"; fails=$((fails+1)); fi
+  "$@" > "$MK/self-check.out"
+  if [ "$fails" -gt "$before" ] && grep -q -- "$needle" "$MK/self-check.out"; then fails="$before"; echo "PASS  self-check ${label}"; else
+    fails="$before"; echo "FAIL  self-check ${label}: the assertion did not fail, or its failure does not name '${needle}'"; fails=$((fails+1)); fi
 }
-self_check "assert_zero fails on an empty pass list" assert_zero "empty-list"
-self_check "assert_absent fails on an empty pass list" assert_absent "empty-list" "req1-ac1-workflow-path"
+self_check "assert_zero fails on an empty pass list" "no case passed at all" assert_zero "empty-list"
+self_check "assert_absent fails on an empty pass list" "no case passed at all" assert_absent "empty-list" "req1-ac1-workflow-path"
 SUITE="$MK/commented-suite.sh"
 printf '# begin "ghost-case" "a commented-out line"\nbegin "real-case" "a case"\n' > "$SUITE"
-self_check "a commented-out begin line is no case" assert_absent "ghost" "ghost-case" "some-other-case"
+self_check "a commented-out begin line is no case" "ghost-case" assert_absent "ghost" "ghost-case" "some-other-case"
 is_case "real-case" && echo "PASS  self-check a begin at the start of a line is a case" || {
   echo "FAIL  self-check a begin at the start of a line is a case"; fails=$((fails+1)); }
 SUITE="$repo/.github/agent/tests/auditor-matrix-test.sh"

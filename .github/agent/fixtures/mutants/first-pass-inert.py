@@ -1,4 +1,4 @@
-# Checked in verbatim as a TEST INPUT (adversary) for .github/agent/tests/auditor-matrix-mutants.sh. Not auditor code.
+# A TEST INPUT (adversary) for .github/agent/tests/auditor-matrix-mutants.sh. Not auditor code.
 import json,sys
 from pathlib import Path
 name=Path(sys.argv[0]).stem
