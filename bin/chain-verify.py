@@ -1250,12 +1250,12 @@ def check_build_record(a):
         refuse("sign", "digest file is missing or unreadable (format)")
     # a snapshot version in the list: refused before any signature check, from the bytes read once (REQ-CHAIN-004-AC15)
     chain_items.check_digest_bytes("build", d_bytes)
-    digests = parse_digest_bytes(d_bytes)     # the format before the attestation: a hand-made list is refused as one
     # Build's record first, as stage build, under the policy's build identity (a dry-run policy is allowed for this)
     pol_b = dict(pol)
     pol_b.pop("dry_run", None)
     with tempfile.TemporaryDirectory() as tmp:
         stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, tmp)
+    digests = parse_digest_bytes(d_bytes)     # the format before the attestation: a hand-made list is refused as one
     if product_digest(typed_subjects("sign", stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
     return pol, digests, stmt
