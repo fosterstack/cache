@@ -1148,10 +1148,9 @@ open(sys.argv[2], "w").write(re.sub(r"(--variant production --version )\S+", r"\
 PY
 expect caught "005-AC6 the one assemble script gives the production image a version other than its VERSION word" \
        command script "$work/lf_ver.sh" assemble
-replace "$work/build.yml" "$work/lf_apko.yml" "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk" \
-       "run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk "\
-       "&& apko build build/apko.yaml fscache:x out.tar" && expect caught \
-       "AC11 a stage workflow names apko in a run step" apko lockflow "$work/lf_apko.yml" "$work/rebuild.yml"
+apk_run="run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh apk"
+replace "$work/build.yml" "$work/lf_apko.yml" "$apk_run" "$apk_run && apko build build/apko.yaml fscache:x out.tar" \
+  && expect caught "AC11 a stage workflow names apko in a run step" apko lockflow "$work/lf_apko.yml" "$work/rebuild.yml"
 replace "$work/build.yml" "$work/lf_apkoi.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko --version 9' && expect caught \
        "AC11 the apko installer line with an extra argument is not the one admitted line" \
        apko lockflow "$work/lf_apkoi.yml" "$work/rebuild.yml"
