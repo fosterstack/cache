@@ -289,9 +289,6 @@ jobs:
       - name: branch sweep and local prune regressions
         run: bash bin/branch-sweep-test.sh
 
-      - name: required-check guard regressions (offline fixtures)
-        run: bash bin/required-check-guard-test.sh
-
       - name: govulncheck fixture modules materialize (never indexed by the dependency graph)
         run: bash .github/agent/tests/govulncheck-fixtures-test.sh
 
@@ -326,6 +323,8 @@ jobs:
         run: python3 .github/agent/bin/check-action-pins.py --verify-tags .
       - name: the pin check's wiring cannot be skipped or weakened (REQ-REL-005-AC1)
         run: bash .github/agent/tests/pin-wiring-test.sh
+      - name: required-check guard regressions (offline fixtures)
+        run: bash bin/required-check-guard-test.sh
       - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
         run: bash .github/agent/tests/pip-pin-test.sh
       - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
