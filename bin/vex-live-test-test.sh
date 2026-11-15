@@ -307,13 +307,13 @@ for name, d, job in (("release.yml rc job", rel, rel["jobs"].get("live-test") or
     check("%s: runs the committed orchestration" % name, "bin/vex-live-run.sh" in text)
 RJ, PJ = rel["jobs"]["live-test"], rel["jobs"]["live-test-release"]
 check("release.yml: the rc job runs after Check, on release-candidate tags (vX.Y.Z-rcN) only, never in the dry run",
-      RJ.get("needs") in ("check", ["check"]) and RJ.get("if") == "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}",
+      RJ.get("needs") in ("check", ["check"]) and RJ.get("if") == "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}",
       (RJ.get("needs"), RJ.get("if")))
 rtext = json.dumps(RJ.get("steps"))
 check("release.yml: the rc job downloads the candidate's digests, items and images from Build's artifacts and runs in rc mode",
       all(('"name": "%s"' % n) in rtext for n in ("digests", "items", "images")) and "download-artifact" in rtext and '"MODE": "rc"' in rtext and "CANDIDATE_DIR" in rtext)
 check("release.yml: the post-publish job runs after Release, on final tags only, in release mode, never in the dry run",
-      PJ.get("needs") in ("release", ["release"]) and PJ.get("if") == "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+      PJ.get("needs") in ("release", ["release"]) and PJ.get("if") == "${{ inputs.mode != 'snapshot' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
       and '"MODE": "release"' in json.dumps(PJ.get("steps")), (PJ.get("needs"), PJ.get("if")))
 # release.yml has a daily schedule for its decide job (REQ-REL-009); the live-test jobs must still never run on it: both need a v tag ref, which a scheduled run never has
 check("release.yml: the live-test jobs never run on the schedule (both require a v tag ref)", all("startsWith(github.ref, 'refs/tags/v')" in j.get("if", "") for j in (RJ, PJ)))
