@@ -302,6 +302,11 @@ std_case() { # name want_rc regex finding-component-json statement-purl
 }
 std_case "R1 a golang stdlib finding at go1.27.2 is covered by the stdlib@1.27.2 statement" 0 "1 covered" \
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:golang/stdlib@1.27.2"
+# The package type is compared too: a statement for generic stdlib says nothing about the Go standard library.
+std_case "R1 a golang stdlib finding at go1.27.2 is NOT covered by a generic stdlib@1.27.2 statement" 1 "1 finding" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:generic/stdlib@1.27.2"
+std_case "R1 a golang stdlib finding at go1.27.2 is covered by a golang stdlib@go1.27.2 statement (exact)" 0 "1 covered" \
+  '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:golang/stdlib@go1.27.2"}' "pkg:golang/stdlib@go1.27.2"
 std_case "R1 a golang stdlib finding at go1.27.3 is not covered by the stdlib@1.27.2 statement" 1 "1 finding" \
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.3","purl":"pkg:golang/stdlib@go1.27.3"}' "pkg:golang/stdlib@1.27.2"
 std_case "R1 a stdlib finding with no purl, version go1.27.2, is covered by the stdlib@1.27.2 statement" 0 "1 covered" \

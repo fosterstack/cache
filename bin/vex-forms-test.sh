@@ -886,6 +886,19 @@ r_ = run_gen(J(IMAGES), os.path.join(op, "out"), openvex=pp)
 lp = [l for l in r_.stderr.splitlines() if "left out" in l]
 check("R7 one statement naming two products with the same stale stdlib gives two different 'left out' lines",
       r_.returncode == 0 and len(lp) == 2 and len(set(lp)) == 2, (r_.returncode, r_.stderr[-400:]))
+# AC-B2-3: a comment line is not a fetch URL, whatever it names
+DOC_ = sub_doc(f"pkg:golang/stdlib@{BUILD_GO}")
+KEPT = lambda g: [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"]
+                  for f in g.get(FORMS[0], {}).get("filters", [])]
+r_, got_, o_ = run_in_tree(MEL + "\n# uri: https://go.dev/dl/go%s.linux-amd64.tar.gz\n" % OTHER_GO, DOC_)
+check("AC-B2-3 a comment line holding a go.dev Go URL naming another version is not a second version",
+      r_.returncode == 0 and "refused" not in r_.stderr and KEPT(got_) == [f"go{BUILD_GO}"],
+      (r_.returncode, r_.stderr[-300:]))
+# AC-B2-4: only the host the form names (go.dev) is a Go fetch host
+r_, got_, o_ = run_in_tree(MEL.replace("https://go.dev/dl/", "https://example.invalid/dl/"), DOC_)
+check("AC-B2-4 Go fetch lines on a host other than go.dev make the generator refuse (exit 1, nothing written)",
+      r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-300:], list(got_)))
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
