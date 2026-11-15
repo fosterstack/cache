@@ -455,7 +455,7 @@ else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$b
 dead="$(guard_dead "$root" "${ALLOW[@]}")" || dead="the guard itself failed"
 if [ -z "$dead" ]; then echo "ok: every allowed hash matches a live line (no dead entry)"; pass=$((pass+1))
 else echo "FAIL: an allowed hash matches no line any more:"; printf '%s\n' "$dead" | sed 's/^/    /'; fail=$((fail+1)); fi
-fake="$(printf 'no such file\nno such line' | shasum -a 256 | cut -d' ' -f1)"
+fake="$(printf 'no such file\nno such line' | sha256sum | cut -d' ' -f1)"
 dead="$(guard_dead "$root" "${ALLOW[@]}" "$fake")"
 if [ "$dead" = "$fake" ]; then echo "ok: a dead allowed hash is reported (and only it)"; pass=$((pass+1))
 else echo "FAIL: a dead allowed hash was not reported exactly: '$dead'"; fail=$((fail+1)); fi
@@ -489,7 +489,7 @@ guard_passes  "a comment and other git calls"     bin/a.sh '# git commit is not 
 guard_passes  "a word that only contains the name" bin/a.sh 'echo digit commit; mygit commit\n'
 # an exception is the exact whole line: the same line with anything executable around it is still caught
 L='raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"'   # a copy of the one excepted line (the repo-wide scan below still reads the real file)
-sig="$(printf '%s\n%s' "bin/a.py" "$L" | shasum -a 256 | cut -d' ' -f1)"
+sig="$(printf '%s\n%s' "bin/a.py" "$L" | sha256sum | cut -d' ' -f1)"
 n="$(guard_in bin/a.py "${L//\\/\\\\}"'\n' "$sig")"; [ "$n" = 0 ] && { echo "ok: an exception row passes exactly its own line"; pass=$((pass+1)); } || { echo "FAIL: an exception row does not pass its own line ($n)"; fail=$((fail+1)); }
 n="$(guard_in bin/a.py "subprocess.run(['git','commit']); ${L//\\/\\\\}"'\n' "$sig")"; [ "$n" -ge 1 ] && { echo "ok: an executable prefix on an excepted line is caught"; pass=$((pass+1)); } || { echo "FAIL: an executable prefix on an excepted line passes"; fail=$((fail+1)); }
 n="$(guard_in bin/a.py "${L//\\/\\\\}"'; git commit -m x\n' "$sig")"; [ "$n" -ge 1 ] && { echo "ok: an executable suffix on an excepted line is caught"; pass=$((pass+1)); } || { echo "FAIL: an executable suffix on an excepted line passes"; fail=$((fail+1)); }
