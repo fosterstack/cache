@@ -1,6 +1,6 @@
 name: Persona UAT
 
-# Persona UAT (REQ-UAT-001), the one file with a persona job (owner rule docs/ratify/2026-11-13-workflows-grouped-by-purpose.md: one purpose per file). Two legs:
+# Persona UAT (REQ-UAT-001), the one file with a persona job (one purpose per file). Two legs:
 #   persona-uat-rc      the release-candidate leg: release.yml calls this file once, in release mode on a release-candidate tag only (the caller holds the tag and snapshot conditions), and
 #                       the three personas (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator) test the image Build made, BEFORE anything is released; nothing is published.
 #                       Build's production OCI layout (artifact images) is pushed with the pinned crane to a registry:2 service pinned by digest and published on the runner's loopback only;

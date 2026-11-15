@@ -28,6 +28,10 @@ docs/quality/traceability.md|> The site publication and the email to Compliance 
 .github/workflows/main-candidate-rescan.yml|try { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, description, color }); } catch (e) { /* exists, or the create below reports it */ }
 .github/workflows/main-candidate-rescan.yml|const created = await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
 .github/workflows/main-candidate-rescan.yml|const issue = await github.rest.issues.get({ owner: context.repo.owner, repo: context.repo.repo, issue_number: number });
+.github/workflows/persona-uat.yml|REGISTRY_OWNER: ${{ github.repository_owner }}
+.github/workflows/persona-uat.yml|digest=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")
+.github/workflows/persona-uat.yml|echo "image=ghcr.io/${REGISTRY_OWNER}/cache@${digest}" >> "$GITHUB_OUTPUT"
+.github/workflows/persona-uat.yml|for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
 .github/workflows/release.yml|python3 bin/admission-tag-signer.py owner-baselines --tag "${VERSION}" \
 .github/workflows/release.yml|--allowed-signers "$RUNNER_TEMP/allowed_signers" --out "$RUNNER_TEMP/owner-baselines"
 .github/workflows/release.yml|b=$(python3 bin/admission-tag-signer.py baseline --tag "${VERSION}" --owner-baselines "$RUNNER_TEMP/owner-baselines" \
