@@ -256,7 +256,7 @@ jobs:
                   fi
                   case "$last_event" in
                     "auto_merge_disabled github-actions[bot]"|"auto_merge_disabled github-actions")
-                      if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
+                      if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=refs/heads/main" --jq .content \
                            | base64 -d > "$RUNNER_TEMP/work/heal-required-checks.json" \
                          && bash bin/required-check-guard.sh "$RUNNER_TEMP/work/heal-required-checks.json"; then
                         if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
@@ -453,7 +453,7 @@ jobs:
           # main's list and main's ruleset must agree before a bump is armed: the same guard as the
           # patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
           # --auto would merge at once; the guard fails closed.
-          if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
+          if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=refs/heads/main" --jq .content \
                | base64 -d > "$W/main-required-checks.json" \
              && bash bin/required-check-guard.sh "$W/main-required-checks.json"; then guard_ok=1
           else
@@ -660,7 +660,7 @@ jobs:
               "none false"|"neutral false")
                 grep -qx "$n $sha" "$W/lane-arms.txt" 2>/dev/null || continue
                 if [ "$guard" = unknown ]; then
-                  if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
+                  if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=refs/heads/main" \
                        --jq .content \
                        | base64 -d > "$W/settle-required-checks.json" \
                      && bash bin/required-check-guard.sh "$W/settle-required-checks.json"; then
