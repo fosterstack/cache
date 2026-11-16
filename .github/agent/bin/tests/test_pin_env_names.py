@@ -329,5 +329,26 @@ class UnreadableForms(Base):
         self.accepted(self.wf('echo "A=1" >> "$GITHUB_ENV"'))
 
 
+class QuotedRedirectionWords(Base):
+    """Form (1): the only word that starts with > (quotes removed) is the redirection; a backslash-newline is not form (1)."""
+    def wf(self, text):
+        return workflow(run_step(text + ' >> "$GITHUB_ENV"'))
+
+    def test_r2_1_echo_quoted_word_starting_with_gt_then_newline_is_refused(self):
+        self.refused(self.wf("echo 'A=1' '>\nLD_PRE''LOAD=x'"), "GITHUB_ENV")
+
+    def test_r2_2_printf_quoted_word_starting_with_gt_then_newline_is_refused(self):
+        self.refused(self.wf("printf 'A=%s\\n' '>\nLD_PRE''LOAD=x'"), "GITHUB_ENV")
+
+    def test_r2_3_echo_quoted_gtgt_word_then_newline_word_is_refused(self):
+        self.refused(self.wf("echo 'A=1' '>>' '\nLD_PRE''LOAD=x'"), "GITHUB_ENV")
+
+    def test_r2_4_echo_backslash_at_end_of_line_in_quotes_is_refused(self):
+        self.refused(self.wf("echo 'A=1\\\nLD_PRE''LOAD=x'"), "GITHUB_ENV")
+
+    def test_r2_5_echo_single_quoted_argument_is_accepted(self):
+        self.accepted(self.wf("echo 'A=1'"))
+
+
 if __name__ == "__main__":
     unittest.main()
