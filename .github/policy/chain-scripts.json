@@ -1711,7 +1711,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "0f0c379426fc34d12f57eb465dbb524359bdee809e9ebe5b6bf3bc62aae81dbf",
+      "sha256": "b4595fdbd161c935ef3e5f77b638ae8a14b0642cdb817e5b1b6a042d7f301de3",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1766,7 +1766,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "00b5030a74a4b37be88035654437f4e22d93e1876b3759c3a5f8d236c1ba3d2e",
+      "sha256": "39a970760e463eaf81224f0a38819071ee72372f0dcf95f7508c6f062c40a640",
       "exceptions": [
         {
           "rule": "deny",

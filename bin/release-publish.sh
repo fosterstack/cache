@@ -132,7 +132,7 @@ for host in ghcr.io docker.io; do
     got=$(digest_of "$ref")
     if [ "$got" != "$want" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $want" >&2; exit 1; fi
   done
-  # the verified signature and attestation of each image go to its digest on this host, the same files verified above: the signature is the one of the verified bundle
+  # the verified signature and attestation of each image are attached to its digest on this host, the same files verified above; the signature is the one of the verified bundle
   for pair in "production:$prod" "fips:$fips"; do
     hex="${pair#*:sha256:}"; base="release-evidence/registry/$host/$hex"
     jq -j '.messageSignature.signature' "$base.bundle" > "$attach/sig"

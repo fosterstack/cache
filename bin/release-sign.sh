@@ -2,7 +2,7 @@
 # Sign-release's witnessed step (rules 53, 56, 63): signs with the release KMS key (handoff 0713), and with a Rekor entry, everything a customer verifies, and touches no registry:
 # it holds no registry credential. The images are signed by digest for BOTH registries (a signature is a per-registry object) as a simple-signing payload, its signature and a Rekor bundle,
 # release-evidence/registry/<host>/<hex>.{payload,sig,bundle}, and the release manifest as an attestation bundle <hex>.attestation.bundle beside them; release verifies them and attaches them
-# (bin/release-publish.sh). The SBOMs, the lock files, the dependency evidence and the release policy are signed with a bundle each, kept in release-evidence/; the four archives and
+# (the release job). The SBOMs, the lock files, the dependency evidence and the release policy are signed with a bundle each, kept in release-evidence/; the four archives and
 # the archives' checksums file get a <file>.bundle beside them in dist/. The transparency log is never turned off: a bundle without a Rekor entry fails the
 # step and names the file. The four release metadata files (the OpenVEX file, the CSAF file, the inspector-filters file and release-manifest.json) are made
 # from Build's verified digest list and listed, with their hashes, in release-files.sha256, which is signed too. The Witness records of the earlier stages are extra evidence and are not signed again.
