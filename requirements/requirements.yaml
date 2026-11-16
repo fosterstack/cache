@@ -3623,6 +3623,12 @@ requirements:
         then: "a hard link is accepted only when its target is a regular file that the SAME package has already unpacked inside the new directory, the target passing the same inside-the-directory checks as a symlink target; its bytes are then copied into a separate regular file and no link is made, and a hard link to an absolute path, to a path that leaves the directory, to a path another package owns, to a link, a directory or a file not yet unpacked is refused with nothing written; a device, a fifo or any other kind of entry is still refused; a symlink whose target stays inside the directory may stand where another package places files below it (lib64 beside lib) only when no file path is owned by two packages, and a symlink that points outside, however the other links are chained, a directory entry over a link, or a link over a directory are refused with nothing written"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-CHAIN-004-AC19
+        given: "every release script and check that reads a release tag: the release-*, chain-verify, marker-pr-gate, chain_items, evidence-letter, admission-tag-signer, chain-release-shape and install-scanner scripts and the main-candidate-rescan workflow"
+        when: "each decides whether a tag is a release tag"
+        then: "it uses the one tag grammar of bin/build-admit.py (TAG_PATTERN: vX.Y.Z or vX.Y.Z-rcN, no leading zeros, an rc number of at least 1), a Python script by loading that pattern and a shell script or workflow step by calling `bin/build-admit.py tag-ok [--final] TAG` or reading `bin/build-admit.py tag-pattern`, never by a pattern of its own; a final-only step passes --final and refuses a release candidate; v01.2.3, v1.2.3-rc0 and v1.2.3-rc.1 are refused by every one of them"
+        verification: { method: unit, release_blocking: true }
+        status: approved
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
     statement: >
@@ -4122,7 +4128,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CHAIN-007-AC14
-        given: "a tag that matches exactly ^v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; leading zeros accepted as for vX.Y.Z)"
+        given: "a tag that matches exactly ^v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; the one tag grammar of REQ-CHAIN-004-AC19, so no leading zeros and an rc number of at least 1)"
         when: "release.yml runs on it"
         then: "Build, Sign, Rebuild, Check, the hostile jobs and Release's release-verify run exactly as for a final tag, and then the release job ends: every step of stage-promote.yml after release-verify carries `if: ${{ !contains(github.ref_name, '-') }}` and is skipped, so no step reads the apk signing key or a registry credential, nothing is pushed to any registry, no GitHub release is created, no floating tag moves and no patch automation runs; every script after release-verify also refuses a tag that is not vX.Y.Z; a tag that contains rc but does not match (-RC1, -rc, -rc1x, -rc.1, rc in the middle, a missing hyphen) is not a release candidate and release-verify's tag rule refuses it before any record is read; a record made for a release candidate is refused for the final tag with the same digests and the reverse (the policy and the identities carry the tag)"
         verification: { method: unit, release_blocking: true }

@@ -1227,6 +1227,9 @@ mappings:
   - ac: REQ-CHAIN-004-AC18
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC19
+    evidence:
+      - { type: shell-test, ref: "bin/chain-tag-grammar-test.sh" }
   - ac: REQ-CHAIN-005-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
