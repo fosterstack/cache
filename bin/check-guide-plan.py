@@ -47,7 +47,7 @@ TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")
 
 KEY = "release.rsa.pub"
 KEY_PATH = "build/keys/" + KEY       # Check takes the release key from the tagged checkout, no new download
-PROVENANCE = "provenance.bundle.json"   # Sign's output: release-verify holds it
+PROVENANCE = "provenance.bundle.json"   # Sign's output: release-apks verifies it before anything is published
 # the four files release-sign makes after publishing: their commands run in postverify, which fails the run on a missing operand
 AFTER_PUBLISH = {"production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json"}
 
@@ -87,14 +87,14 @@ def after_publish(segs):
 
 
 def classify(c, segs, files):
-    """(place, why): "registry" for a command that needs a registry, else the place that runs it: "check", "release-verify" or "postverify".
-    The commands on provenance.bundle.json, which Check does not hold, run in release-verify, and the four SBOM and lock verifications run in postverify;
+    """(place, why): "registry" for a command that needs a registry, else the place that runs it: "check", "release-apks" or "postverify".
+    The commands on provenance.bundle.json, which Check does not hold, run in release-apks, and the four SBOM and lock verifications run in postverify;
     every other command runs here, so a file it names that is not a local file is a fault, never a later check."""
     names, registry = file_words(segs, files)
     if registry:
         return "registry", "it verifies the image reference %s" % ", ".join(registry)
     if PROVENANCE in names and not_local(PROVENANCE):
-        return "release-verify", "its file %s is Sign's output, release-verify holds it" % PROVENANCE
+        return "release-apks", "its file %s is Sign's output, release-apks runs it before the first push" % PROVENANCE
     if after_publish(segs):
         return "postverify", "its files are made by release-sign after publishing"
     missing = [w for w in names if not w or not_local(w)]
