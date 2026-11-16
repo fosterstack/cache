@@ -158,9 +158,36 @@ def _walk(n, path):
     elif isinstance(n, yaml.SequenceNode):
         for i, v in enumerate(n.value):
             _walk(v, path + "/" + str(i))
-_walk(yaml.compose(_text, Loader=yaml.BaseLoader), "")
+_root = yaml.compose(_text, Loader=yaml.BaseLoader)
+_walk(_root, "")
 if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
+# GitHub reads YAML 1.2, PyYAML's resolver is YAML 1.1: a plain scalar the two type differently (yes, 0755, 1:30, 1_000, a date) is refused.
+# A quoted scalar is a string in both. The one plain scalar both versions are known to split on and the workflow needs is the key `on`.
+class _Core12(yaml.resolver.BaseResolver): pass
+for _tag, _pattern, _first in (("null", r"~|null|Null|NULL|", ["~", "n", "N", ""]), ("bool", r"true|True|TRUE|false|False|FALSE", "tTfF"),
+                               ("int", r"[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+", "-+0123456789"),
+                               ("float", r"[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?|[-+]?\.(inf|Inf|INF)|\.(nan|NaN|NAN)", "-+0123456789.")):
+    _Core12.add_implicit_resolver("tag:yaml.org,2002:" + _tag, re.compile("^(?:" + _pattern + ")$"), list(_first))
+_v11, _v12 = yaml.resolver.Resolver(), _Core12()
+_split = []
+def _ambiguous(n, top_key=False):
+    if isinstance(n, yaml.ScalarNode):
+        if n.style is None and not (top_key and n.value == "on"):
+            t11, t12 = (r.resolve(yaml.ScalarNode, n.value, (True, False)) for r in (_v11, _v12))
+            # 0755 is an int in both, with two values; y and n are booleans in the YAML 1.1 spec, which PyYAML's resolver leaves out
+            if t11 != t12 or (t11.endswith(":int") and re.fullmatch(r"[-+]?0[0-9]+", n.value)) or n.value in ("y", "Y", "n", "N"):
+                _split.append(n.value)
+    elif isinstance(n, yaml.MappingNode):
+        for k, v in n.value:
+            _ambiguous(k, top_key=n is _root)
+            _ambiguous(v)
+    elif isinstance(n, yaml.SequenceNode):
+        for v in n.value:
+            _ambiguous(v)
+_ambiguous(_root)
+if _split:
+    print("the workflow has plain scalar(s) that YAML 1.1 and 1.2 read differently: " + ", ".join(sorted(set(_split))[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
 for k in sorted(set(d) - set(json.loads(os.environ["PIN_WIRING_TOP_KEYS"]))):
