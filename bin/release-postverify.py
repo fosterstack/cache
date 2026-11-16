@@ -21,6 +21,10 @@ directory, so the guide's bare file names resolve as a customer's do. A command 
 when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run time
 only after that verify exited 0. Every command runs without a shell: the words the judge read are the argv, so
 nothing is expanded after the check.
+
+`release-postverify.py --before-publish` is the earlier pass of release-apks, before the first registry push: it runs only the
+commands that name provenance.bundle.json, on release-staged/ (that bundle from provenance/ and the key manifest, removed when
+the pass ends), with the same judge, refusals and key. It reads no list and touches no registry.
 """
 import collections, hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, types
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +36,8 @@ GUIDE = "docs/verify-release.md"
 LIST = "docs/verify-release.cannot-run.json"
 ASSETS = "release-published"   # gh release download -D release-published: the files a customer downloads
 VERIFIER = "bin/chain-verify.py"   # holds the bundle and manifest checks
+STAGED = "release-staged"   # the copy of --before-publish: provenance.bundle.json and the key manifest
+PROVENANCE = "provenance.bundle.json"
 ROOT_KEY = ".github/policy/release-key-root.pub"   # the committed offline root public key that signs the manifest
 LISTED = ".github/policy/chain-scripts.json"   # the sha256 of every file of the chain that runs
 DIGESTS = "witness-build/digests.json"
@@ -320,10 +326,54 @@ def place_release_key(check):
         f.write(key["public_key"])
 
 
+def stage_provenance(check):
+    """release-staged/ holds Sign's bundle and the key manifest, so the guide's bare file names resolve there as they do for a customer."""
+    src = "provenance/" + PROVENANCE
+    if not os.path.isfile(src):
+        refuse("%s is missing: the provenance commands have no bundle to verify" % src)
+    shutil.rmtree(STAGED, ignore_errors=True)
+    os.mkdir(STAGED)
+    copy_keeping_links(src, STAGED + "/" + PROVENANCE)
+    for name in check.MANIFEST_FILES[1:]:
+        copy_keeping_links(".github/policy/" + name, STAGED + "/" + name)
+
+
+def names_provenance(c):
+    segs, files, why = guide_plan_judge.judge(c)
+    return PROVENANCE in set(files or ()) | verify_names(segs)[0]
+
+
+def before_publish(tag):
+    """The provenance commands on the staged copy, before anything is published; a failed run or a missing file stops release-apks."""
+    global ASSETS
+    cmds = [c for c in read_guide_file_commands() if names_provenance(c)]
+    if not cmds:
+        refuse("the guide has no command on %s: nothing is verified (a vacuous pass is not a pass)" % PROVENANCE)
+    plan = make_plan(cmds, read_digests(), tag)
+    check = load_verifier()
+    ASSETS = STAGED
+    try:
+        stage_provenance(check)
+        refuse_missing_files(plan)
+        refuse_certificate_bundles(plan, check)
+        place_release_key(check)
+        failed = run_plan(plan)
+    finally:
+        shutil.rmtree(STAGED, ignore_errors=True)
+    if failed:
+        refuse("provenance verification failed before publish: %d of %d runs failed: %s"
+               % (len(failed), len(plan), "; ".join("[%s] `%s` exited %d" % f for f in failed)))
+    print("release-postverify: all %d provenance runs passed before publish (%d commands)" % (len(plan), len(cmds)))
+
+
 def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
     if not TAG.fullmatch(tag):
         refuse("refused at tag: %r is not vX.Y.Z" % tag)
+    if sys.argv[1:] == ["--before-publish"]:
+        return before_publish(tag)
+    if sys.argv[1:]:
+        refuse("usage: release-postverify.py [--before-publish], not %s" % " ".join(sys.argv[1:]))
     cmds = read_guide_file_commands() + read_commands()
     plan = make_plan(cmds, read_digests(), tag)
     if not os.path.isdir(ASSETS):
