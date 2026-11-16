@@ -203,9 +203,18 @@ def _line_hash(flat):
     return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()
 
 
+_OCC = {}
+
+
 def _occurrences(root, rev):
     """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
-    a group no row can name ('unruled:' + its hash)."""
+    a group no row can name ('unruled:' + its hash). Read once per revision."""
+    if (root, rev) not in _OCC:
+        _OCC[(root, rev)] = _read_occurrences(root, rev)
+    return _OCC[(root, rev)]
+
+
+def _read_occurrences(root, rev):
     out = {}
     for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_surfaces(root, rev), **inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
@@ -570,7 +579,7 @@ def _written_file_used_later(lines, hd):
         rest = any(rx.search(stripped) for rx in rxs)
         if "$(" in stripped:
             return True
-        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", stripped) if sg.strip()]
+        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", re.sub(r"\d*>&(?:\d+|-)(?![\w./-])", " ", stripped)) if sg.strip()]    # 2>&1 is no list operator
         for seg in segs:
             toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
             if toks and all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
@@ -772,6 +781,13 @@ def _heredoc_ok(hd, lines, funcs, python=False):
     return not _written_file_used_later(lines, hd)
 
 
+def _name_used(lines, name, own):
+    """True when the variable's name appears on any line but its own assignment lines and whole-line comments (an expansion, an export, a declaration, a function that reads it),
+    or when the file reads a variable by indirection (${!x}): a string kept in a variable nothing reads cannot reach a shell."""
+    word = re.compile(r"(?<![\w])" + re.escape(name) + r"(?![\w])")
+    return any("${!" in ln or (i not in own and not ln.lstrip().startswith("#") and word.search(ln)) for i, ln in enumerate(lines))
+
+
 def _context_holds(context, proof, text, line_hash):
     """True only when EVERY single-line occurrence of the ruled line (by the hash of its whole flattened text) in `text` has the named context. None found: False."""
     lines = text.split("\n")
@@ -788,12 +804,12 @@ def _context_holds(context, proof, text, line_hash):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
-    if context == "assignment" and re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):
+    if context in ("assignment", "unused") and re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):
         return False                           # a variable with attributes (integer, array, nameref ...) evaluates or redirects its assignment: nothing in this file is judged plain
-    if context in ("comment", "assignment"):
+    if context in ("comment", "assignment", "unused"):
         import shlex
         for i in hits:
-            if not (state[i] == () or in_quoted_heredoc(i)):                          # not in plain code position: the shell state around the line decides what it is
+            if not ((state[i] is not None and not set(state[i]) & {"'", '"', "`", "$(("}) or in_quoted_heredoc(i)):    # inside a quote or arithmetic (or a here-document that runs): the shell state decides what it is; a function or compound body is plain code
                 return False
             s = lines[i].strip()
             if context == "comment":
@@ -806,6 +822,7 @@ def _context_holds(context, proof, text, line_hash):
                 except ValueError:
                     return False
                 if len(toks) != 1 or not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", toks[0]): return False
+                if context == "unused" and _name_used(lines, s.split("=", 1)[0], hits): return False
         return True
     for i in hits:
         hd = next((h for h in hds if h["start"] <= i < (h["end"] if h["end"] is not None else -1)), None)
@@ -970,6 +987,103 @@ def _context_regressions(root, base, head, rulings):
                 out.setdefault(k, {})[lh] = n
     return out
 
+# The owner removed the wait for new versions (owner ratified Nov 11 2026, rules 1-2), so a line that fetches nothing has nothing to pin and no row is needed for it: the
+# checker PROVES from the head file that the line is data, with the contexts above (a comment, a quoted heredoc written by cat and never run, a string of a pure python
+# program, an assignment whose variable nothing reads). A proof that is not made leaves the line measured as before. A live read of repository metadata has the closed
+# shape below instead of a pin.
+AUTO_RULING = TEXT_RULING + "proved from the head file, no row needed"
+LIVE_READ_RULING = "live metadata read, closed shape (nothing downloaded or run): "
+VENDOR_FORM = "a line that names the vendored folder"           # a human gate (REQ-VEND-001): never proved away
+LIVE_READ_HOSTS = ("hub.docker.com",)                          # exactly the hosts of live metadata reads in the repository today
+_LIVE_READ_URL = re.compile(r"https://(?:" + "|".join(re.escape(h) for h in LIVE_READ_HOSTS) + r")/[\w.~+/-]*(?:\$\{[A-Za-z_]\w*\}[\w.~+/-]*)*")
+_LIVE_READ_CRED = re.compile(r"""printf 'user = "%s:%s"\\n' "\$\{?[A-Za-z_]\w*\}?" "\$\{?[A-Za-z_]\w*\}?" \|\s*$""")
+_LIVE_READ_STMT = re.compile(r"[ \t]*([A-Za-z_]\w*)=\$\(")
+
+
+def _plain_joins(text):
+    """True when bash reads the flattened line as the scan does: blanks are spaces and tabs only, and every backslash-newline follows a blank, so a joined line differs from
+    bash's reading in blanks alone (the live-read shape allows no blank inside a word)."""
+    return "\ue000" not in text and all(c in " \t\n" or not c.isspace() for c in text) and not re.search(r"[^ \t]\\\n", text)
+
+
+def _live_read_ok(text, flat):
+    """The flattened line is `NAME=$( ... curl FLAGS "https://HOST/PATH")`: every curl or wget segment on it is one curl (or /usr/bin/curl) with only -f -s -S clusters, --max-time N,
+    --proto =https and `-K -` (only straight after the printf of one user line), one https operand on a listed host, and ends the substitution that captures its output; NAME is then
+    named in the file only as the argument of data consumers."""
+    import shlex
+    m = _LIVE_READ_STMT.match(flat)
+    parts = re.split(r"(\s*(?:;|&&|\|\||\|)\s*)", flat)
+    segs = [i for i in range(0, len(parts), 2) if re.search(r"\b(?:curl|wget)\b", parts[i])]
+    if not m or not segs:
+        return False
+    for i in segs:
+        seg = re.sub(r"^[A-Za-z_]\w*=\$\(", "", parts[i].strip())
+        if not seg.endswith(")") or re.search(r"[<>`$]\(|[<>`&]|\$\(", seg):
+            return False
+        try:
+            w = shlex.split(seg[:-1], posix=True)
+        except ValueError:
+            return False
+        if w[:1] not in (["curl"], ["/usr/bin/curl"]):
+            return False
+        stdin_ok = i > 0 and parts[i - 1].strip() == "|" and _LIVE_READ_CRED.search("".join(parts[:i])) is not None
+        rest, operands, j = w[1:], [], 0
+        while j < len(rest):
+            f = rest[j]
+            if re.fullmatch(r"-[fsS]+", f):
+                j += 1
+            elif f == "--max-time" and j + 1 < len(rest) and re.fullmatch(r"[0-9]+", rest[j + 1]) or f == "--proto" and rest[j + 1:j + 2] == ["=https"]:
+                j += 2
+            elif f == "-K" and rest[j + 1:j + 2] == ["-"] and stdin_ok:
+                j += 2
+            elif f.startswith("-"):
+                return False
+            else:
+                operands.append(f)
+                j += 1
+        if len(operands) != 1 or not _LIVE_READ_URL.fullmatch(operands[0]):
+            return False
+    lines = text.split("\n")
+    return not _written_file_used_later(lines, {"start": -1, "end": -1, "targets": ["$" + m.group(1), "${" + m.group(1) + "}"]})
+
+
+def _proved_row(root, head, k, lh):
+    """The row a line earns from the head file alone, or None: a text context proved for a line that is not a vendored-folder naming, or the closed live-read shape."""
+    path = k[0]
+    if k[1] == VENDOR_FORM or not path.endswith(".sh"):
+        return None
+    text = _scripts_at(root, head).get(path)
+    if k[1] == DOWNLOAD_FORM and text is not None and _plain_joins(text) and not _has_cr(root, head, path) and _live_read_ok(text, _LINE_TEXT.get(lh, "")):
+        return (LIVE_READ_RULING + "one curl on a listed host", sys.maxsize, None, "")
+    if not re.fullmatch(r"[0-9a-f]{64}", lh):
+        return None
+    for context in ("comment", "heredoc", "pystring", "unused"):
+        row = (AUTO_RULING, sys.maxsize, context, "")
+        if _context_proved(root, head, path, lh, row):
+            return row
+    return None
+
+
+def _proof_regressions(root, base, head, rulings):
+    """{key: {line hash: count}} of lines the head file no longer proves but the base file proved: such a line is not "added" (its text and count are unchanged), so the delta never
+    looks at it; without this, a proven line could be moved out of its here-document into plain code and stay unmeasured."""
+    out = {}
+    held = _occurrences(root, base)
+    for k, per in _occurrences(root, head).items():
+        for lh, n in per.items():
+            if lh in held.get(k, {}) and _row_for(rulings, root, head, k, lh) is None and _proved_row(root, base, k, lh) is not None:
+                out.setdefault(k, {})[lh] = n
+    return out
+
+
+def _row_for(rulings, root, head, k, lh):
+    """The base branch's row for the line when its context (if any) holds in the head, else what the head file proves by itself."""
+    r = rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh))
+    if r is not None and _context_proved(root, head, k[0], lh, r):
+        return r
+    return _proved_row(root, head, k, lh)
+
+
 MAX_RULED_COUNT = 100
 
 
@@ -1104,8 +1218,7 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     for k, per in _unmeasured_counts(root, base, head).items():
         if k[1] != UNPINNED_FORM:
             continue
-        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
-        rs = [r if r is None or _context_proved(root, head, k[0], lh, r) else None for r, lh in zip(rs, per)]
+        rs = [_row_for(rulings, root, head, k, lh) for lh in per]
         # a line the base already holds is never ruled here: an item of that line may have moved because an assignment it reads changed, and a copy of
         # the line cannot be told from it (the occurrence is still reported; the item keeps failing)
         if all(r and n <= r[1] and not in_base.get(k, {}).get(lh) for r, (lh, n) in zip(rs, per.items())):
@@ -1221,15 +1334,14 @@ def split_go_install(moved, root, head):
 def _run(a, moved):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
     lines = _unmeasured_counts(a.root, a.base, a.head)
-    for k, per in _context_regressions(a.root, a.base, a.head, rulings).items():
+    for k, per in [*_context_regressions(a.root, a.base, a.head, rulings).items(), *_proof_regressions(a.root, a.base, a.head, rulings).items()]:
         lines.setdefault(k, {}).update(per)
     added, ruled = [], []
     for k in sorted(lines):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
-        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
-        rs = [r if r is None or _context_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]    # a row with a context that does not hold rules nothing
-        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
+        rs = [_row_for(rulings, a.root, a.head, k, lh) for lh in lines[k]]    # a row with a context that does not hold rules nothing; a line the head file proves is data needs no row
+        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_READ_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
@@ -1277,8 +1389,9 @@ def _run(a, moved):
                      "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
         print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
+        where = "is proved from the head file" if ruling.startswith((AUTO_RULING, LIVE_READ_RULING)) else "is listed in the base branch's unmeasured_text"
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True,
-                     "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
+                     "reason": f"ruled text: {what} in {path} ({line[:100]}) {where}: {ruling[:200]}"})
         print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
