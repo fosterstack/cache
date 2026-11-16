@@ -453,9 +453,11 @@ add("rebuild_acr", COLL, None, stmt="v0.1", coll_file="acr-build.json", coll_nam
 add("rebuild_acr_forged", COLL, None, stmt="v0.1", coll_file="acr-forged.json", coll_name="rebuild")
 add("rebuild_acr_throwaway", COLL, None, stmt="v0.1", coll_file="acr-build.json", coll_name="rebuild", key="throwaway")
 # signed rapk records, one per witness: collection rapk, a product per apk named by its file, sha256 = apk digest
-def _rapk(n, arch, runner, fix=lambda d: d, key="rel", pname="rapk", only=None, signed=True, hexfix=lambda x: x):
+# a real apk's whole-file sha256 never equals its control+data digest; whole=False makes them equal (the refused shape)
+def _wf(cd, whole): return hashlib.sha256(("whole:" + cd).encode()).hexdigest() if whole else cd
+def _rapk(n, arch, runner, fix=lambda d: d, key="rel", pname="rapk", only=None, signed=True, hexfix=lambda x: x, whole=True):
     P = "https://witness.dev/attestations/product/v0.1/file:out/" + runner + "/"
-    sub = [{"name": P + nm, "digest": {"sha256": hexfix(fix(AC_BUILD["apk-%s-%s" % (v, arch)]).split(":")[1])}}
+    sub = [{"name": P + nm, "digest": {"sha256": hexfix(_wf(fix(AC_BUILD["apk-%s-%s" % (v, arch)]).split(":")[1], whole))}}
            for v, nm in (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk")) if only in (None, v)]
     ev = {"os": "linux", "variables": {"GITHUB_REF": T}}
     att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": ev}]
@@ -478,6 +480,7 @@ _rapk("rapk_arm64_upper", "arm64", "aarch64", hexfix=lambda x: x.upper())
 _rapk("rapk_arm64_short", "arm64", "aarch64", hexfix=lambda x: x[:63])
 _rapk("rapk_arm64_other", "arm64", "aarch64", lambda d: "sha256:" + "9" * 64)
 _rapk("rapk_arm64_throwaway", "arm64", "aarch64", key="throwaway")
+for _a, _r in (("amd64", "x86_64"), ("arm64", "aarch64")): _rapk("rapk_%s_wcd" % _a, _a, _r, whole=False); _rapk("bapk_%s_wcd" % _a, _a, _r, pname="apk", whole=False)
 # REAL apk bytes (signature + control + data gzip streams, as melange writes them): the whole-file sha256 (what Witness attests as a product) and the
 # control+data digest (what apk-tool prints and Build attests in digests.json) are different numbers; each is only ever compared with its own kind
 import gzip, io, tarfile
@@ -2293,6 +2296,7 @@ expect_refuse "$ACR a rapk whole-file sha256 in capital hex is refused (64 lower
 expect_refuse "$ACR a rapk whole-file sha256 of 63 hex digits is refused" "rapk|hex|sha256|digest" $(ACX) $(RAPK rapk_arm64_short) $(BAPK)
 expect_refuse "$ACR a rapk whole-file sha256 that differs from Build's is refused naming the kind" "rapk|build|digest|whole" $(ACX) $(RAPK rapk_arm64_other) $(BAPK)
 expect_refuse "$ACR a Build whole-file sha256 that differs from the rapk's is refused" "rapk|build|digest|whole" $(ACX) $(RAPK) $(BAPK bapk_arm64_other)
+expect_refuse "$ACR a pair whose control+data digest equals Build's whole-file sha256 (apk and rapk records hold the control+data values) is refused" "control|whole" $(ACX) --rapk "$work/rapk_amd64_wcd.json" --rapk "$work/rapk_arm64_wcd.json" --build-apk "$work/bapk_amd64_wcd.json" --build-apk "$work/bapk_arm64_wcd.json"
 expect_ok "$ACR REAL: Build's whole-file sha256 equals Rebuild's for all four real apks: accepted" $(RAC rebuild_real ac_real_good acr-real rapk_real_amd64 rapk_real_arm64)
 expect_refuse "$ACR REAL: one rapk whole-file digest differs from Build's (Build record good) is refused" "rapk|build|digest|whole" $(RAC rebuild_real ac_real_good acr-real rapk_real_amd64 rapk_real_arm64_wrong)
 expect_refuse "$ACR REAL: one Build whole-file digest differs from Rebuild's rapk (rapk record good) is refused" "rapk|build|digest|whole" $(RAC rebuild_real ac_real_good acr-real rapk_real_amd64 rapk_real_arm64 bapk_real_amd64 bapk_real_arm64_wrong)
@@ -2488,7 +2492,7 @@ for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml")
                 print("%s:%d: does not parse: %s (%s)" % (os.path.relpath(path, root), n, cmd[:100], why))
 sys.exit(0 if found and not failed else 1)
 PY
-EXPECT=852
+EXPECT=853
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
