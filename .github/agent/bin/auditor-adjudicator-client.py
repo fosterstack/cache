@@ -7,6 +7,8 @@ compromised or wrong answer cannot itself produce a suppression. Reads one reque
 JSON on stdin, prints one answer on stdout (same contract as the stub). Never used by the
 suite (which passes --adjudicator <stub>); it is the workflow's default."""
 import json, os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auditorlib import parsers
 
 # The identifiers/tokens that must never reach the uploaded report. We surface the REAL error
 # (class, HTTP status, message) so a failure is diagnosable, but with these values redacted.
@@ -109,7 +111,7 @@ def _handle(req, client):
     if req.get("attempt") == "fallback":
         model = os.environ.get("AUDITOR_MODEL_FALLBACK", model)
     if req.get("mode") == "narrative":
-        # R12 item 3: write the top-of-report Conclusion from the STRUCTURED results only.
+        # write the top-of-report Conclusion from the STRUCTURED results only.
         prompt = _fill(_require_prompt("narrative"), context=json.dumps(req.get("structured"), indent=1))
         msg = client.messages.create(model=model, max_tokens=512,
                                      messages=[{"role": "user", "content": prompt}])
@@ -129,12 +131,12 @@ def _handle(req, client):
         msg = client.messages.create(model=model, max_tokens=1024,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        ans = _extract_json(text) or {}
-        ans["refused"] = bool("cannot" in text.lower() and "pullable" not in ans)
+        ans = _one_object(text, msg)
+        ans["refused"] = ans.get("refused") is True
         ans.setdefault("proposed", True)
         ans["token_usage"] = _usage(msg)
         return ans
-    # Full finding context, not a bare id (R11 rank 6): the model reasons about THIS package,
+    # Full finding context, not a bare id: the model reasons about THIS package,
     # version, scanner set, and reachability summary. Its answer is still only a proposal our
     # code re-verifies against evidence before any VEX is written.
     ctx = "\n".join("- %s: %s" % (k, req.get(k)) for k in
@@ -150,16 +152,17 @@ def _handle(req, client):
     msg = client.messages.create(model=model, max_tokens=512,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)
-    # the category and the refusal are read from the JSON answer's own keys, exact match (rc-5b R5): a substring of free text ("not a false_positive") is not a category, and
-    # a word in prose is not a refusal. No JSON, or a value outside the four = under_investigation, not refused.
-    p = _whole_answer(text)
-    refused = isinstance(p, dict) and p.get("refused") is True          # a refusal wins over any category beside it: it is never converted into a disposition
-    cat = p.get("category") if isinstance(p, dict) and not refused and p.get("category") in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance") else "under_investigation"
+    # Category and refusal come from the answer's own keys, exact match: a word in prose is not a refusal.
+    p = _one_object(text, msg)
+    refused = p.get("refused") is True          # a refusal wins over any category beside it
+    cat = p.get("category")
+    if refused or cat not in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance"):
+        cat = "under_investigation"
     ans = {"refused": refused, "category": cat, "proposed": True, "token_usage": _usage(msg)}
-    # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass
-    # it through under "propose"; the driver delivers it in the draft PR and it takes effect only
-    # after merge. The model never edits its own instructions or the live records here.
-    if isinstance(p, dict) and isinstance(p.get("propose"), dict):
+    # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass it through under
+    # "propose"; the driver delivers it in the draft PR and it takes effect only after merge. The model never edits
+    # its own instructions or the live records here.
+    if isinstance(p.get("propose"), dict):
         ans["propose"] = p["propose"]
     return ans
 
@@ -179,6 +182,8 @@ def main():
             except Exception as e:
                 step, detail = _err_detail("model-call", e)
                 ans = {"error": "adjudicator-client: %s step failed: %s" % (step, detail)}
+                if getattr(e, "token_usage", 0):
+                    ans["token_usage"] = e.token_usage
             sys.stdout.write(json.dumps(ans) + "\n")
             sys.stdout.flush()
         return
@@ -191,43 +196,30 @@ def main():
 
 
 def _whole_answer(text):
-    """The model's disposition answer: the WHOLE response must be exactly one JSON object (the prompt asks for nothing else). An object found inside prose, a second object, an array
-    or any other top-level value is not an answer (rc-5b R5): an example in the model's wording or an injected leading object can never choose the disposition."""
-    def _no_dup(pairs):
-        d = {}
-        for k, v in pairs:
-            if k in d:
-                raise ValueError("duplicate key")        # a repeated key would let the last value erase a refusal
-            d[k] = v
-        return d
+    """The model's answer: the WHOLE response must be exactly one JSON object. An object inside
+    prose, a second object, an array or any other top-level value is not an answer, so an example
+    in the model's wording or an injected leading object can never choose the disposition."""
     try:
-        obj = json.loads(str(text or "").strip(), object_pairs_hook=_no_dup)
-    except ValueError:
+        obj = json.loads(str(text or "").strip(), object_pairs_hook=parsers.no_dup_pairs)
+    except (ValueError, RecursionError):
         return None
     return obj if isinstance(obj, dict) else None
 
 
-def _extract_json(text):
-    """The first top-level JSON OBJECT in a model response (the model may wrap it in prose or a
-    code fence). Uses json.raw_decode from each '{', which respects strings — so a value that
-    itself contains a '}' does not break extraction (Codex round-2 P2). Returns the dict or None."""
-    s = str(text or "")
-    dec = json.JSONDecoder()
-    i = s.find("{")
-    while i != -1:
-        try:
-            obj, _end = dec.raw_decode(s[i:])
-            if isinstance(obj, dict):
-                return obj
-        except ValueError:
-            pass
-        i = s.find("{", i + 1)
-    return None
+def _one_object(text, msg):
+    """The reply as one JSON object. Anything else (prose, a fenced block) raises, so the attempt
+    fails and the chain goes on: nothing is cached from it. The reply was billed, so the error
+    carries its usage."""
+    p = _whole_answer(text)
+    if p is None:
+        e = ValueError("the reply was not one JSON object")
+        e.token_usage = _usage(msg)
+        raise e
+    return p
 
 
 def _usage(msg):
-    """Real token cost from the SDK response so the driver's budget actually advances
-    (R1 outer round-1 #8)."""
+    """Real token cost from the SDK response so the driver's budget actually advances."""
     u = getattr(msg, "usage", None)
     if not u:
         return 0
