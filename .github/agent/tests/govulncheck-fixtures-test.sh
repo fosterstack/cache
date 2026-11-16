@@ -5,7 +5,7 @@
 # The tiny Go modules under .github/agent/fixtures/govulncheck/src/ deliberately require a
 # VULNERABLE dependency (golang.org/x/text v0.3.0) — they are the provenance for the checked-in
 # govulncheck JSON streams (reachable / imported-not-called; GO-2021-0113). If their manifests
-# were named go.mod / go.sum, the dependency graph would index them and Dependency review /
+# were named go.mod / go.sum, the dependency graph would index them and
 # Dependabot would flag the deliberate vulnerable pin. So they are stored as go.mod.fixture /
 # go.sum.fixture (names no ecosystem recognizes) and MATERIALIZED into a throwaway temp module
 # here at test time. Nothing consumes these modules at runtime — tests read the JSON — this
@@ -22,7 +22,7 @@ no()  { echo "FAIL: $1 — $2"; fail=$((fail+1)); }
 # 1) No plain go.mod / go.sum / *.go may be tracked under the fixture src tree. A go.mod/go.sum
 #    would re-index the deliberate vulnerable pin in the dependency graph; a plain *.go (with the
 #    manifests gone) would fold these package-main sources into the PARENT module and break
-#    `go build/vet/test ./...` and gosec with type errors. Everything here must be a .fixture.
+#    `go build/vet/test ./...` with type errors. Everything here must be a .fixture.
 indexed="$(git ls-files "$SRC" | grep -E '/(go\.(mod|sum)|[^/]+\.go)$' || true)"
 if [ -z "$indexed" ]; then ok "nothing indexable (go.mod/go.sum/*.go) tracked under $SRC — dirs are inert to Go tooling"
 else no "an indexable file is tracked under $SRC (rename it to .fixture)" "$indexed"; fi
