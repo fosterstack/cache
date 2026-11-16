@@ -443,11 +443,6 @@
       "body-sha256": "395dd4cb43491371bacda54fcef879c7f9fa22a58aeacd31d813eda04dfbbe97"
     },
     {
-      "file": ".github/agent/tests/docs-snippets-test.sh",
-      "ruling": "text, not a command: a comment in .github/agent/tests/docs-snippets-test.sh that names the tool | text, not a command: a line of a quoted here-document in .github/agent/tests/docs-snippets-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "010efa2396e349912dd7a642da0d6e130ebf7498e1479f48f562e3abb741578a"
-    },
-    {
       "file": ".github/agent/tests/k8s-harness-fence-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/k8s-harness-fence-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
       "body-sha256": "ee7fcb479feebb227278e22df7336444e361e73c6d64836ef7056864be2afe0e"
@@ -463,11 +458,6 @@
       "body-sha256": "902a2085eec1801c582213de456caba298dd1536806d46e560561d6a2bd9cefd"
     },
     {
-      "file": ".github/agent/tests/s2-p2-gh-404-test.sh",
-      "ruling": "text, not a command: a line of .github/agent/tests/s2-p2-gh-404-test.sh that holds the fixture text of a case inside quotes, or a case pattern naming test cases; the shell runs none of it as the tool (checked with a quote-aware scan of the file)",
-      "body-sha256": "c985e0cce2b78c06c270620a2ba41750009ea436998cc905edd26416d649bacc"
-    },
-    {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool",
       "body-sha256": "0ef9f41852581d875ca9d10abdd5ca7c22cf0403c93b8f4587956a32c8f38b73"
@@ -478,39 +468,14 @@
       "body-sha256": "a49d28aff8695aef6d7a7685291422cbb9b8b8347aaa3ed997ed925e16069cfb"
     },
     {
-      "file": "bin/chain-check-scripts-test.sh",
-      "ruling": "text, not a command: a comment in the script; nothing runs it | text, not a command: the value of a plain assignment (a description or data string); nothing runs it | text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network) | text, not a command: fed to check-guide.sh as a command the guide check must refuse (it runs only verify forms; a fake curl on PATH is the backstop); nothing downloads | text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
-      "body-sha256": "dc76df1d91693fc3ce70984afae9173921f08e00699821328d16c3113fcd142e"
-    },
-    {
-      "file": "bin/chain-check-wiring-test.sh",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
-      "body-sha256": "a351198c2b3ca71d5f9a78abe34e0a2ed7367567964884c1badac9bab3f7347a"
-    },
-    {
-      "file": "bin/chain-install-crane-test.sh",
-      "ruling": "text, not a command: a comment in the script; nothing runs it | text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
-      "body-sha256": "2b18c21a9226c2e90f36d9649e3b505a0fe256c5566b4b2737002f64a16a7fea"
-    },
-    {
       "file": "bin/chain-release-scripts-test.sh",
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "body-sha256": "5d658d83f692904648ac77f31bef4460b5a61101a90d5da7bcd9749950da960a"
+      "body-sha256": "fd7f1edc50b6dbe60f26eb50a92a93ba92492669593735513b03fcf01e6e9157"
     },
     {
       "file": "bin/chain-release-shape.py",
       "ruling": "text, not a command: Python source of bin/chain-release-shape.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
       "body-sha256": "383808d886e580a4f488edb58f7d84c630df8b4c994844076da0c91cf23ed0c9"
-    },
-    {
-      "file": "bin/chain-release-wiring-test.sh",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
-      "body-sha256": "2c2d202ad642924656cc40d5c17d0ff19670f743a466855daa6640becb29e61e"
-    },
-    {
-      "file": "bin/chain-sign-wiring-test.sh",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it | text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
-      "body-sha256": "e8c500bbb80b3c496c09476edaea5cbc4f49b74f1566fd85d6ae44011a3c823a"
     },
     {
       "file": "bin/chain-test-signers.py",
@@ -521,11 +486,6 @@
       "file": "bin/chain-verify.py",
       "ruling": "text, not a command: Python source of bin/chain-verify.py (python runs it, no shell reads it): reads and queries the Rekor transparency log",
       "body-sha256": "171ba2954b66c4683331189d0ef53352949edd3b41a5283b15f24c27cba93677"
-    },
-    {
-      "file": "bin/loopback-get-test.sh",
-      "ruling": "text, not a command: a comment in the script; nothing runs it | text, not a command: the value of a plain assignment (a description or data string); nothing runs it",
-      "body-sha256": "c4a0713d9ad2bb44d61275fdfa308777ea9d8d63dfa589ae47e00d4a9c8e2aad"
     },
     {
       "file": "bin/loopback-get.sh",
@@ -546,11 +506,6 @@
       "file": "bin/release-postverify.py",
       "ruling": "text, not a command: Python source of bin/release-postverify.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
       "body-sha256": "8c88a960d1a46be946e1e981edf792009121fe6fbbe8dd0f58c1f6649f56db21"
-    },
-    {
-      "file": "bin/verify-release-guide-test.sh",
-      "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command | text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text | text, not a command: `gh release download` appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
-      "body-sha256": "b1e1c00fc8153c7ea637930778d4b9ac6e29ac8c4b78bef8a42f0c36806c1db7"
     },
     {
       "file": "bin/vex-live-test-test.sh",
