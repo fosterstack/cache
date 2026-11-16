@@ -305,7 +305,7 @@ jobs:
                     [ "$conclusion" = success ] && hit=$id
                     break
                   done < <(jq -r --arg c "$ctx" --argjson a "$app" \
-                    '[.[] | select(.name == $c and .app_id == $a)] | sort_by(-.id) | .[] | [.id, .conclusion // "", .details_url // ""] | @tsv' /tmp/sha-check-runs.json)
+                    '[.[] | select(.name == $c and .app_id == $a)] | sort_by(-.id) | .[] | [.id, .conclusion // "pending", .details_url // ""] | @tsv' /tmp/sha-check-runs.json)
                 fi
                 [ -n "$hit" ] || { echo "::error::required check '${ctx}' (app ${app}) is not green on the tagged commit${want:+ from a schedule or dispatch run of ${want}}" >&2; exit 1; }
                 jq -n --arg c "$ctx" --arg id "$hit" --arg sha "${GITHUB_SHA}" \
