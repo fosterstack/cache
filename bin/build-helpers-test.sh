@@ -697,7 +697,7 @@ fails "rule 15" "apk-tool inputs-manifest: an apk with an EMPTY build environmen
 # vendoring gopkg.in/yaml.v3 v3.0.1 from the local module cache, `GOFLAGS=-mod=vendor GOPROXY=off go build -trimpath`, output pasted verbatim (tabs kept).
 # Note the EMPTY sum field after the dependency version and after the main module's (devel).
 cat >"$work/real-vendored.txt" <<'CAPTURE'
-/private/tmp/claude-501/-Users-asegretto-fosterstack-cache/ea86add7-9e81-43dc-926b-877b5f04b5f2/scratchpad/govm/tiny: go1.27.1
+/tmp/build-helpers-test/tiny: go1.27.1
 	path	example.com/tiny
 	mod	example.com/tiny	(devel)	
 	dep	gopkg.in/yaml.v3	v3.0.1	

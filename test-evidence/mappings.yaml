@@ -411,6 +411,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
       - { type: shell-test, ref: "bin/layout-archive-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
@@ -736,6 +737,7 @@ mappings:
       - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
   - ac: REQ-SCAN-015-AC2
     evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's scanner guard over every PR head's workflows (required check auditor-review-gate)" }
   - ac: REQ-SCAN-015-AC3
     evidence:
@@ -837,10 +839,23 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
+  - ac: REQ-SUP-001-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-strict-lookups-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
   - ac: REQ-SUP-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-gh-404-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-strict-lookups-test.sh" }
+  - ac: REQ-SUP-001-AC6
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC7
@@ -864,9 +879,11 @@ mappings:
   - ac: REQ-SUP-001-AC15
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
   - ac: REQ-SUP-001-AC16
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
   - ac: REQ-SUP-001-AC18
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
@@ -916,6 +933,13 @@ mappings:
   - ac: REQ-SUP-001-AC33
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-SUP-001-AC34
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC35
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC36
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
@@ -1852,21 +1876,26 @@ mappings:
   - ac: REQ-CI-001-AC1
     evidence:
       - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-001-AC2
     evidence:
       - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-001-AC3
     evidence:
       - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-001-AC4
     evidence:
       - { type: inspection, ref: ".github/workflows/ci.yml: the allowlist-chain job" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
   - ac: REQ-CI-005-AC2
     evidence:
       - { type: shell-test, ref: "bin/ci-suites-matrix-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-CI-005-AC3
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
