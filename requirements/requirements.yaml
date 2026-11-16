@@ -2139,11 +2139,12 @@ requirements:
     origin: release process decision 6 (Oct 23 2026); the Dependabot exception, Nov 11 2026
     confidence: implementation-only
     notes: >
-      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
-      main that Dependabot did not open needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
-      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
-      release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
-      something.
+      No new required check: auditor-review-gate is not required per pull request on main (the owner took it off the
+      ruleset on Nov 12 2026; release-only-checks.json still has release admission require it), so a missing record
+      blocks the box merger's clearance, not GitHub's merge button. It therefore lands only after the writer (a later
+      pull request) and the dispatch that calls it exist, on the landing day, together with the ruleset rule that only
+      the writer creates branches under audit/** (the release manager's step). The record commit adds one file,
+      audit-record, because the API can only make a commit that changes something.
       The Dependabot rule (AC9 to AC12) changes only the judge and the record writer. The gate workflow, its check
       name and the required checks are unchanged. Without a passing record, a Dependabot head passes only on the
       reviewer's success on that head, or, with no verdict of its own, as a clean merge of main into a head that passes
@@ -2152,7 +2153,7 @@ requirements:
       - id: REQ-REL-012-AC1
         given: "a pull request whose base is main and that Dependabot did not open (AC9 to AC12 have those), and the head sha it has now"
         when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails; since the owner took the gate off the ruleset (Nov 12 2026) the record no longer blocks GitHub's merge, and the box merger merges only after the review seats and the cleared row"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC2
@@ -2219,6 +2220,55 @@ requirements:
         given: "a head with no passing record"
         when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
         then: "the record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests holds an entry whose state cannot be read or an open entry whose head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed; in that last case GitHub is not asked whose head it is. The judge's release mode, which stage-admission.yml runs, never asks whose head it is."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-013
+    title: Release admission requires the checks the ruleset does not list
+    statement: >
+      Release admission and the patch release's ready step shall require the checks of
+      .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
+      shall be red on every pull request.
+    source: [.github/policy/release-only-checks.json, bin/required-check-guard.sh, .github/workflows/ci.yml, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: the owner's trim of the ruleset (Nov 12 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-013-AC1
+        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, allowlist-pins-auditor, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
+        when: stage admission and the patch release's ready step read the required checks from main
+        then: >-
+          each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
+          a missing, empty, null or malformed file never lowers the requirement, whatever the other file holds;
+          the requirement is the two lists together
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC2
+        given: a pull request or a push to main whose release-only-checks.json is not the eight entries pinned in bin/required-check-guard.sh on main
+        when: the required-check guard runs
+        then: >-
+          the guard fails and prints each entry that differs;
+          each entry is compared whole: its context, its integration_id and its scope;
+          the pin is main's copy of the guard, so a change to the file, the judge and the guard in one pull request is still red
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC3
+        given: a head whose workflows are judged by the pin-wiring judge
+        when: it judges the head
+        then: >-
+          it refuses a head with no release-only-checks.json (the landing form is judged by its own copy);
+          it refuses any job other than the one that produces a reserved name when that job carries the name;
+          the reserved names are the eight above, each by job id, by literal name and by a name with an expression in it
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC4
+        given: a head whose ci.yml the pin-wiring judge reads as bytes
+        when: it judges the head
+        then: >-
+          it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
+          on the landing path too it requires the required-check-guard job and the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free;
+          it requires the guard suite's step (bash bin/required-check-guard-test.sh) in the allowlist job as it requires that job's other pinned steps
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2856,7 +2906,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC26
-        given: "(reviewer reading, Oct 17) a pull request that adds one of the nineteen script lines the checker pins by file and by the sha256 of the whole line: the line of bin/release-assets.sh that downloads the assets of our own release (verified against our signature, failing closed); the line of bin/acceptance-k8s.sh that pulls and tags the client image pinned by digest (the word curl is the image name, not a download); and the fourteen request lines to the cache under test on localhost in bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh and bin/acceptance-maven-capped.sh (they fetch no software); and the three fetches of the Go toolchain tarball or of go.dev's published checksum list in bin/install-scanner.sh and bin/go-bump-open-pr.sh (each in the shape the Go ruling of AC23 accepts, the tarball checked against its pinned sum or go.dev's list before use); and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins with the pinned-fetch exception string PINNED_FETCH_RULING in the pin-age checker"
+        given: "a pull request that adds one of the nineteen script lines the checker pins by file and by the sha256 of the whole line: the line of bin/release-assets.sh that downloads the assets of our own release (verified against our signature, failing closed); the line of bin/acceptance-k8s.sh that pulls and tags the client image pinned by digest (the word curl is the image name, not a download); and the fourteen request lines to the cache under test on localhost in bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh and bin/acceptance-maven-capped.sh (they fetch no software); and the three fetches of the Go toolchain tarball or of go.dev's published checksum list in bin/install-scanner.sh and bin/go-bump-open-pr.sh (each in the shape the Go exception of AC23 accepts, the tarball checked against its pinned sum or go.dev's list before use); and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins with the pinned-fetch exception string PINNED_FETCH_RULING in the pin-age checker"
         when: "pin-age runs"
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
         verification: { method: ci-workflow, release_blocking: false }
