@@ -114,7 +114,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 162: + the exact path bin/run-selected-tests.sh (REQ-CI-001-AC4); +3 the exact paths bin/select-tests.sh, bin/select-tests-test.sh,
+# 163: + the exact path bin/admission-evidence-test.sh (REQ-CI-001-AC7); 162: + the exact path bin/run-selected-tests.sh (REQ-CI-001-AC4); +3 the exact paths bin/select-tests.sh, bin/select-tests-test.sh,
 # bin/full-suite-wiring-test.sh (REQ-CI-001); the rest is main's count and its history:
 # 158: + ^bin/policy-merge-harness\.py$ (the policy merge harness of the required-checks repair);
 # 156: - the pattern of the removed supply-chain observer program (the wait for new versions is gone); 157: +
@@ -127,7 +127,7 @@ ALLOWED_MENTIONS = {
 # 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144:
 # + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) +
 # build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 162, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 163, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -174,12 +174,12 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-# + the bin/audit-record* pattern (REQ-REL-012); + the bin/job-isolation-test.sh pattern (REQ-REL-011); + the
+# + the bin/admission-evidence-test.sh pattern (REQ-CI-001-AC7); + the bin/audit-record* pattern (REQ-REL-012); + the bin/job-isolation-test.sh pattern (REQ-REL-011); + the
 # bin/release-layout.py pattern (handoff 0521); - the two suppression/set-01 .snyk and osv-scanner.toml fixture
 # patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns
 # (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner
 # guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
-PINNED_SHA256 = "0a9beb7c7427223be63dfd76b0ec25d4010642e734f9b7d1afbdf4a0fefb5017"
+PINNED_SHA256 = "30c012852991e6cb69c695c8a4b4ea05833b81587539e3a694dc4d5c1b1926c0"
 if rstart and rend:
     import hashlib
     _b = _rawlines
