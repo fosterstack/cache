@@ -322,6 +322,18 @@ std_case "R1 a generic stdlib finding at go1.27.2 is covered by a generic stdlib
 std_case "R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement" 0 "1 covered" \
   '{"bom-ref":"s0","type":"library","name":"stdlib","version":"1.27.2","purl":"pkg:generic/stdlib@1.27.2"}' "pkg:generic/stdlib@1.27.2"
 
+# The finding's own package-URL type must equal the statement subcomponent's when either is golang.
+GEN_STD='{"bom-ref":"s0","type":"library","name":"stdlib","version":"go1.27.2","purl":"pkg:generic/stdlib@go1.27.2"}'
+GO_STD_BARE='{"bom-ref":"s0","type":"library","name":"stdlib","version":"1.27.2","purl":"pkg:golang/stdlib@1.27.2"}'
+std_case "R2 a generic stdlib finding is NOT covered by a golang stdlib@1.27.2 statement" 1 "1 finding" \
+  "$GEN_STD" "pkg:golang/stdlib@1.27.2"
+std_case "R2 a golang stdlib finding is NOT covered by a generic stdlib@go1.27.2 statement" 1 "1 finding" \
+  "$GO_STD" "pkg:generic/stdlib@go1.27.2"
+std_case "R2 a golang stdlib finding at go1.27.2 is covered by a golang stdlib@1.27.2 statement" 0 "1 covered" \
+  "$GO_STD" "pkg:golang/stdlib@1.27.2"
+std_case "R2 a golang stdlib finding at 1.27.2 is covered by a golang stdlib@1.27.2 statement" 0 "1 covered" \
+  "$GO_STD_BARE" "pkg:golang/stdlib@1.27.2"
+
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
