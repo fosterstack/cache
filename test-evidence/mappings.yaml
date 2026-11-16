@@ -417,6 +417,12 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the ac3-* cases for downloads in a job that runs a committed script" }
+  - ac: REQ-REL-005-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
+  - ac: REQ-REL-005-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_env_names.py" }
   - ac: REQ-REL-011-AC1
     evidence:
       - { type: shell-test, ref: "bin/job-isolation-test.sh" }
