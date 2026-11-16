@@ -987,43 +987,11 @@ def _context_regressions(root, base, head, rulings):
                 out.setdefault(k, {})[lh] = n
     return out
 
-# The owner removed the wait for new versions (Nov 11 2026): a line the head file proves is data (a comment or an inert quoted heredoc) needs no row.
-AUTO_RULING = TEXT_RULING + "proved from the head file, no row needed"
-VENDOR_FORM = "a line that names the vendored folder"           # a human gate (REQ-VEND-001): never proved away
-
-
-def _proved_row(root, head, k, lh):
-    """The row a line earns from the head file alone, or None: a text context proved for a line that is not a vendored-folder naming."""
-    path = k[0]
-    if k[1] == VENDOR_FORM or not path.endswith(".sh"):
-        return None
-    if not re.fullmatch(r"[0-9a-f]{64}", lh):
-        return None
-    for context in ("comment", "heredoc"):
-        row = (AUTO_RULING, sys.maxsize, context, "")
-        if _context_proved(root, head, path, lh, row):
-            return row
-    return None
-
-
-def _proof_regressions(root, base, head, rulings):
-    """{key: {line hash: count}} of lines the head file no longer proves but the base file proved: such a line is not "added" (its text and count are unchanged), so the delta never
-    looks at it; without this, a proven line could be moved out of its here-document into plain code and stay unmeasured."""
-    out = {}
-    held = _occurrences(root, base)
-    for k, per in _occurrences(root, head).items():
-        for lh, n in per.items():
-            if lh in held.get(k, {}) and _row_for(rulings, root, head, k, lh) is None and _proved_row(root, base, k, lh) is not None:
-                out.setdefault(k, {})[lh] = n
-    return out
-
 
 def _row_for(rulings, root, head, k, lh):
-    """The base branch's row for the line when its context (if any) holds in the head, else what the head file proves by itself."""
+    """The base branch's row for the line when its context (if any) holds in the head, else None: a row with a context that does not hold rules nothing."""
     r = rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh))
-    if r is not None and _context_proved(root, head, k[0], lh, r):
-        return r
-    return _proved_row(root, head, k, lh)
+    return r if r is not None and _context_proved(root, head, k[0], lh, r) else None
 
 
 MAX_RULED_COUNT = 100
@@ -1276,13 +1244,13 @@ def split_go_install(moved, root, head):
 def _run(a, moved):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
     lines = _unmeasured_counts(a.root, a.base, a.head)
-    for k, per in [*_context_regressions(a.root, a.base, a.head, rulings).items(), *_proof_regressions(a.root, a.base, a.head, rulings).items()]:
+    for k, per in _context_regressions(a.root, a.base, a.head, rulings).items():
         lines.setdefault(k, {}).update(per)
     added, ruled = [], []
     for k in sorted(lines):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
-        rs = [_row_for(rulings, a.root, a.head, k, lh) for lh in lines[k]]    # a row with a context that does not hold rules nothing; a line the head file proves is data needs no row
+        rs = [_row_for(rulings, a.root, a.head, k, lh) for lh in lines[k]]
         if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
@@ -1331,9 +1299,8 @@ def _run(a, moved):
                      "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
         print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
-        where = "is proved from the head file" if ruling.startswith(AUTO_RULING) else "is listed in the base branch's unmeasured_text"
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True,
-                     "reason": f"ruled text: {what} in {path} ({line[:100]}) {where}: {ruling[:200]}"})
+                     "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
         print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
