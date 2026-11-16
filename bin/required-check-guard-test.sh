@@ -52,7 +52,8 @@ check "list without required_checks = exit 2"     2 "no required_checks array"  
 # cases below hold whatever the committed file says; the first case checks the committed file itself.
 ro_file="$repo/.github/policy/release-only-checks.json"
 jq -c '.required_checks |= (map(select(.context != "allowlist-pins-auditor"))
-  + [{"context":"allowlist-pins-auditor","integration_id":15368,"scope":"push"}])' "$ro_file" > "$w/ro8.json"
+  + [{"context":"allowlist-pins-auditor","integration_id":15368,"scope":"push"}])
+  | .required_checks[].context |= sub("^(acceptance / )?acceptance-"; "acceptance / acceptance-")' "$ro_file" > "$w/ro8.json"
 ro="$w/ro8.json"
 ro_edit() { jq -c "$2" "$ro" > "$w/ro-$1.json"; }
 ro_edit seven   '.required_checks |= map(select(.context != "allowlist-pins-auditor"))'
@@ -93,6 +94,29 @@ check "an eighth entry is drift"                       1 '^[-+] .*"extra-check"'
 check "unreadable release-only file = exit 2"          2 "release-only" "$w/match.json" "$list" "$w/ro-absent.json"
 check "release-only file not JSON = exit 2"            2 "release-only" "$w/match.json" "$list" "$w/ro-garbage.json"
 check "release-only file without the array = exit 2"   2 "release-only" "$w/match.json" "$list" "$w/ro-nolist.json"
+
+# cache#928: the three acceptance checks are pinned as the called workflow names them ("acceptance / <job>"), not bare.
+# ro_acc builds a list from ro8 with the three entries' contexts set here, whatever the committed file says.
+ro_acc() { # name gradle maven120 maven123
+  jq -c --arg a "$2" --arg b "$3" --arg c "$4" '.required_checks |= (map(select(.context | test("^(acceptance / )?acceptance-") | not))
+    + [$a, $b, $c] | map(if type == "string" then {"context":., "integration_id":15368, "scope":"push"} else . end))' \
+    "$ro" > "$w/ro-$1.json"
+}
+ro_acc accnew  "acceptance / acceptance-gradle" "acceptance / acceptance-maven (1.2.0)" "acceptance / acceptance-maven (1.2.3)"
+ro_acc accold  "acceptance-gradle" "acceptance-maven (1.2.0)" "acceptance-maven (1.2.3)"
+ro_acc oldgrad "acceptance-gradle" "acceptance / acceptance-maven (1.2.0)" "acceptance / acceptance-maven (1.2.3)"
+ro_acc oldm120 "acceptance / acceptance-gradle" "acceptance-maven (1.2.0)" "acceptance / acceptance-maven (1.2.3)"
+ro_acc oldm123 "acceptance / acceptance-gradle" "acceptance / acceptance-maven (1.2.0)" "acceptance-maven (1.2.3)"
+check "acceptance checks pinned as 'acceptance / <job>' pass" 0 "release-only list match \(8 entries" \
+  "$w/match.json" "$list" "$w/ro-accnew.json"
+check "the three old bare acceptance names are drift"  1 '^[-+] .*"acceptance / acceptance-gradle"' \
+  "$w/match.json" "$list" "$w/ro-accold.json"
+check "bare acceptance-gradle is drift"                1 '^[-+] .*"acceptance / acceptance-gradle"' \
+  "$w/match.json" "$list" "$w/ro-oldgrad.json"
+check "bare acceptance-maven (1.2.0) is drift"         1 '^[-+] .*"acceptance / acceptance-maven \(1.2.0\)"' \
+  "$w/match.json" "$list" "$w/ro-oldm120.json"
+check "bare acceptance-maven (1.2.3) is drift"         1 '^[-+] .*"acceptance / acceptance-maven \(1.2.3\)"' \
+  "$w/match.json" "$list" "$w/ro-oldm123.json"
 
 # REQ-REL-013-AC2: the pin is main's copy of the guard, so a head that edits the file is still red; the wiring runs
 # the script fetched from main, not the tree's bin/ copy
