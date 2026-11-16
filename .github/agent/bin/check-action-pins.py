@@ -2818,7 +2818,7 @@ DOWNLOAD_EXCLUSIONS = {
         "command substitution that jq reads; it writes no file " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
     (".github/workflows/dependabot-reviewer.yml", "review", 8,
-     "7715c5f9c0f4409f535728b25d9e505f3f709b200f850da10ac21b224e69e274"): (
+     "b0786a7fa2ac09fd6adf8658a0e853d527f2f9e0aea4aeb72fc7bbee9620effd"): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
@@ -2843,7 +2843,7 @@ def _excluded_run_texts(scripts, name):
     return texts
 
 
-def check_runs(where_job, scripts, bad, tree=None):
+def check_runs(where_job, scripts, bad, tree=None, mores=None):
     """scripts: [(where, text, shell)] of ONE job (or one composite action), in order. No image name this job built or tagged is
     trusted (the owner's rule, Oct 3: every image is pinned by digest; reference a build you made by its image id, e.g. --iidfile, or
     a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
@@ -2917,6 +2917,8 @@ def check_runs(where_job, scripts, bad, tree=None):
         where, raw, shell = item[:3]
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
+        if more and mores is not None:
+            mores[where] = more                         # check_step_writes reads it with the step's own text
         own = read(raw)
         raw = raw + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own
         text = read(raw)
@@ -3232,6 +3234,72 @@ def job_keys_are_names(rel, doc, bad):
     return True
 
 
+# names that make bash, curl, a loader or an interpreter read a file, a program or a proxy before the step's own commands
+STARTUP_HOOK_ENV = (
+    "BASH_ENV", "ENV", "CURL_HOME", "PATH", "HOME",
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "NODE_OPTIONS", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PERL5OPT", "RUBYOPT",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO",
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EXEC_PATH",
+    "GIT_TEMPLATE_DIR", "XDG_CONFIG_HOME", "SHELLOPTS", "BASHOPTS", "PS4",
+    "PERL5LIB", "RUBYLIB", "NODE_PATH", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "GCONV_PATH",
+    "GOFLAGS", "GOPROXY", "GOSUMDB", "GONOSUMDB", "PIP_INDEX_URL", "PIP_CONFIG_FILE", "NPM_CONFIG_USERCONFIG",
+    "npm_config_registry")
+# routes into a later step's environment or PATH: the whole word, so `>> "$GITHUB_ENV"` and `${{ github.env }}` match and
+# `$GITHUB_ENV_FIXTURE` does not; the PATH routes refuse with no name
+_ENV_ROUTE = re.compile(r"(?<![A-Za-z0-9_])GITHUB_ENV(?![A-Za-z0-9_])|(?i:\bgithub\.env\b)|::set-env\b|\bexportVariable\b")
+_PATH_ROUTE = re.compile(r"(?<![A-Za-z0-9_])GITHUB_PATH(?![A-Za-z0-9_])|(?i:\bgithub\.path\b)|::add-path|\baddPath\b")
+
+
+def step_texts(steps, outer=""):
+    """The run text, every `with` value and every `env` value of each step of a `steps` sequence, then `outer`."""
+    for step in steps.value:
+        texts = []
+        if isinstance(step, yaml.MappingNode):
+            for k, v in step.value:
+                if isinstance(k, yaml.ScalarNode) and k.value in ("run", "with", "env"):
+                    values = [w for _, w in v.value] if isinstance(v, yaml.MappingNode) else [v]
+                    texts += [w.value for w in values if isinstance(w, yaml.ScalarNode)]
+        yield "\n".join(texts + [outer])
+
+
+def env_values(node):
+    """Every scalar value of the `env` mapping of a workflow or job node, joined."""
+    env = dict((key_of(k), v) for k, v in node.value).get("env") if isinstance(node, yaml.MappingNode) else None
+    return "\n".join(v.value for _, v in env.value if isinstance(v, yaml.ScalarNode)) if isinstance(env, yaml.MappingNode) else ""
+
+
+def steps_context(doc):
+    """{id of a job's steps node: (job name, the workflow's and the job's env values)}."""
+    jobs = dict((key_of(k), v) for k, v in doc.value).get("jobs") if isinstance(doc, yaml.MappingNode) else None
+    found = {}
+    for job, node in jobs.value if isinstance(jobs, yaml.MappingNode) else []:
+        steps = dict((key_of(k), v) for k, v in node.value).get("steps") if isinstance(node, yaml.MappingNode) else None
+        if isinstance(steps, yaml.SequenceNode) and isinstance(job, yaml.ScalarNode):
+            found[id(steps)] = (job.value, env_values(doc) + "\n" + env_values(node))
+    return found
+
+
+def step_write_findings(where, text):
+    """The findings for one text a step runs: a startup-hook name set through an env route, or a PATH route."""
+    names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
+    found = []
+    if path := _PATH_ROUTE.search(text):
+        found.append(f"{where}: uses {path.group()}, which changes PATH for later steps; refused")
+    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text)):
+        found.append(f"{where}: sets {name.group()} through {route.group()}, which changes what later programs load or "
+                     f"where they connect; refused")
+    return found
+
+
+def check_step_writes(rel, steps, bad, job="", outer="", mores={}):
+    """A step that sets a startup-hook name by a route other than an env key, or changes PATH, is a finding. One text per step:
+    its run, `with` and env values, the job's and workflow's env, and the committed scripts it runs (`mores`, by `where`)."""
+    for n, text in enumerate(step_texts(steps, outer), 1):
+        more = mores.get(f"{rel}{'.jobs.' + job + '.steps' if job else '.runs.steps'}[{n - 1}].run")
+        bad += step_write_findings(f"{rel}: {'job ' + job + ', ' if job else ''}step {n}", text + ("\n" + more if more else ""))
+
+
 def check_file(tree, rel, pins, bad):
     text = tree.read(rel)
     lines = text.splitlines()
@@ -3251,7 +3319,11 @@ def check_file(tree, rel, pins, bad):
             if rel.startswith(".github/workflows/"):
                 check_runners(rel, d, bad)
             # every mapping key of the parsed document — quoted, flow-style or block (Codex #164 r3, C13)
+            mores = {}
+            for group, scripts in run_scripts(d).items():
+                check_runs(group, [(rel + item[0],) + tuple(item[1:]) for item in scripts], bad, tree, mores)
             stack = [d]
+            context = steps_context(d)
             while stack:
                 n = stack.pop()
                 if isinstance(n, yaml.MappingNode):
@@ -3260,11 +3332,17 @@ def check_file(tree, rel, pins, bad):
                                                                           "DOCKER_CONFIG"):
                             bad.append(f"{rel}: an env block sets {k.value}, which points docker or buildx elsewhere; "
                                        f"refused")
+                        if isinstance(k, yaml.ScalarNode) and (k.value in STARTUP_HOOK_ENV
+                                                               or k.value.startswith("BASH_FUNC_")):
+                            bad.append(f"{rel}: a mapping sets {k.value}, which changes what later programs "
+                                       f"load or where they connect; refused")
+                        if isinstance(k, yaml.ScalarNode) and k.value == "steps" and isinstance(v, yaml.SequenceNode):
+                            check_step_writes(rel, v, bad, *context.get(id(v), ("", "")), mores)
+                        if isinstance(k, yaml.ScalarNode) and k.value == "env" and not isinstance(v, yaml.MappingNode):
+                            bad.append(f"{rel}: an env that is not a literal mapping hides the names it sets; refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
                     stack.extend(n.value)
-            for group, scripts in run_scripts(d).items():
-                check_runs(group, [(rel + item[0],) + tuple(item[1:]) for item in scripts], bad, tree)
     for key, path, node, parent in refs:
         where = f"{rel}{show(path)}"
         if key == "uses":

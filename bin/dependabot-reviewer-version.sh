@@ -8,7 +8,6 @@ files=(
   .github/policy/dependabot-reviewer-prompt.txt
   .github/workflows/dependabot-reviewer.yml
   .github/policy/required-checks.json
-  bin/required-check-guard.sh
 )
 if [ "${1:-}" = --files ]; then printf '%s\n' "${files[@]}"; exit 0; fi
 cd "${1:-.}"

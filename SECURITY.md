@@ -94,8 +94,7 @@ the paths the test suite executes, built in FIPS mode. The released
 which reads its `/statusz` and requires the validated-module line; the release
 also starts each published image by digest (amd64, and arm64 under emulation)
 and serves traffic from it, but no test yet reads the `/statusz` posture of
-those running images; and its status as a merge-blocking check is set by the repository ruleset,
-which is listed in [.github/policy/required-checks.json](.github/policy/required-checks.json).
+those running images; and its status as a merge-blocking check is set by the repository ruleset.
 
 A `golangci-lint` `depguard` allowlist covers the static side: only
 in-boundary crypto imports are permitted, and third-party cryptographic

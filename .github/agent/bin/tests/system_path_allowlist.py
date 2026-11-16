@@ -30,7 +30,7 @@ LINK_ROWS = [
 # needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
 PINS = {
     '.github/agent/bin/tests/test_check_action_pins.py': (
-        '2abb85677695c893d74f49df9f01b7a0732f15b5da9fd3a07986246d6d8dad28',
+        'dcd31a0dcaf159d035c6fdad32df082842371786da92185b219d51799728f077',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
                  'self.assertEqual(M._downloaded_commands("curl --output=/tmp/x https://e/x\\ncp /tmp/x /usr/local/bin/tool"), {"tool", '
                  '"x"})',
@@ -40,8 +40,9 @@ PINS = {
                  'self.assertTrue(M._outside("$HOME/.docker/x", ""))',
                  'self.assertFalse(M._outside("$d", "d=/tmp/y; d=/home/runner/work/z"))',
                  'self.assertEqual(M._made_executable("curl -o /usr/local/bin/t https://e/t", "/usr/local/bin/t"), "downloads")',
-                 'self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})'],
-        "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time)"),
+                 'self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})',
+                 'for js in ("core.addPath(\'/tmp/bin\')", "core.addPath(p)", "core.addPath(`${dir}/bin`)"):'],
+        "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time); the added for-loop line holds JavaScript test strings (core.addPath arguments) that are written into a throwaway fixture workflow, never used as paths"),
     '.github/agent/bin/tests/test_panel.py': ('f746c6fa3e6f8bbd101227f64de17287fbb8a116532309f70c6ba489d4f1fcdd',
         [        '"package database /var/lib/dpkg/status.d/tzdata:\\nPackage: tzdata\\nVersion: 2026c-0+deb13u1\\n"',
                  '"file: /usr/share/zoneinfo/tzdata.zi (version 2026a)\\n"',
