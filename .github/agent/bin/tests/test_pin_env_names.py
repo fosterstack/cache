@@ -318,7 +318,9 @@ class UnreadableForms(Base):
 
     def test_env_that_is_not_a_literal_mapping_is_refused(self):
         wf = workflow(run_step("echo hi") + "        Env: ${{ fromJSON(inputs.e) }}\n")
-        self.refused(wf, "env")
+        code, out = self.check(wf)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not a literal mapping", out)
 
     def test_printf_single_record_is_accepted(self):
         self.accepted(self.wf("printf 'A=%s\\n' \"$v\" >> \"$GITHUB_ENV\""))
