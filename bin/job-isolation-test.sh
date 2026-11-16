@@ -110,6 +110,32 @@ def holds(d, j):
     if isinstance(perms, dict):
         why += [k + ": write" for k in ("id-token", "packages") if perms.get(k) == "write"]
     return why
+LEVEL = {"none": 0, "read": 1, "write": 2}
+def ceiling(callee_file):
+    """The most the called workflow's own jobs declare, permission by permission (REQ-CHAIN-004-AC14); None when the file cannot be read."""
+    if not os.path.isfile(callee_file):
+        return None
+    cd = yaml.safe_load(open(callee_file)) or {}
+    top = {}
+    for cj in (cd.get("jobs") or {}).values():
+        cp = cj.get("permissions", cd.get("permissions")) if isinstance(cj, dict) else None
+        if cp == "write-all":
+            return "write-all"
+        for k, v in (cp.items() if isinstance(cp, dict) else []):
+            top[k] = max(top.get(k, "none"), v, key=lambda x: LEVEL.get(x, 0))
+    return top
+def caller_excess(d, j, wf):
+    """For a caller (a job with uses and no steps): the permissions it grants beyond its callee's ceiling; None when the callee is not a local file the judge can read."""
+    u = str(j.get("uses") or "")
+    top = ceiling(os.path.join(wf, os.path.basename(u))) if u.startswith("./.github/workflows/") else None
+    perms = j.get("permissions", d.get("permissions"))
+    if top is None:
+        return None
+    if top == "write-all":
+        return []
+    if perms == "write-all":
+        return ["write-all"]
+    return [k + ": " + v for k, v in (perms.items() if isinstance(perms, dict) else []) if LEVEL.get(v, 0) > LEVEL[top.get(k, "none")]]
 bad = []
 jobs_seen = {}
 for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
@@ -186,6 +212,12 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
         if key != ("release.yml", "release"):
             perms_ = j.get("permissions", d.get("permissions"))
             pw_ = perms_ == "write-all" or (isinstance(perms_, dict) and perms_.get("packages") == "write")
+            # a caller (uses, no steps) is judged by its callee's ceiling, not as a job holding packages: write of its own: within the ceiling it passes, beyond it it is refused
+            excess_ = caller_excess(d, j, wf) if j.get("uses") and not j.get("steps") else None
+            if excess_ is not None:
+                pw_ = False
+                if excess_:
+                    bad.append("%s/%s is a caller that grants more than its callee's ceiling (%s): %s" % (key[0], jn, j.get("uses"), ", ".join(excess_)))
             hit_ = re.search(r"\bDOCKERHUB_(?:USERNAME|TOKEN)\b|\bsecrets\s*\[|secrets:\s*inherit", yaml.safe_dump(j) + wf_lv)
             if (key[0], jn, j.get("environment")) not in PROBE_HOLDERS:
                 if hit_ or pw_:
@@ -314,6 +346,14 @@ check() { local name=$1 want=$2 dir=$3 out rc=0
      { [ "$want" = bad ] && [ $rc -ne 0 ] && { [ -z "${want_msg:-}" ] || grep -Fq "$want_msg" <<< "$out"; }; }
   then echo "ok   $name"
   else echo "FAIL $name (want $want, rc=$rc): $out"; fi; }
+# a caller case judges one added job (scan.yml/probe-caller) alone: the real workflows carry other findings, so the verdict is read from the lines that name this job
+check_job() { local name=$1 want=$2 dir=$3 out rc=0 mine
+  out=$(judge "$dir" 2>&1) || rc=$?
+  mine=$(grep -F "scan.yml/probe-caller " <<< "$out" || true)
+  if { [ "$want" = ok ] && [ -z "$mine" ]; } ||
+     { [ "$want" = bad ] && [ -n "$mine" ] && grep -Fq "$want_msg" <<< "$mine"; }
+  then echo "ok   $name"
+  else echo "FAIL $name (want $want): ${mine:-no line names the job}"; fi; }
 # The cases do not depend on each other (each mutates its own copy), so they run four at a time. A case writes its one
 # result file; the end prints the files in call order and counts each once, so a case that died without a line failed.
 slot() { seq=$((seq+1)); "$@" > "$work/r/$(printf %04d "$seq")" 2>&1 &
@@ -338,7 +378,7 @@ def in_refresh(s, old, new):   # the first match inside the refresh job (go-fres
     i = s.index("\n  refresh:"); return s[:i] + s[i:].replace(old, new, 1)
 $py
 PY
-  check "$name" "${mwant:-bad}" "$dir"; }
+  ${mcheck:-check} "$name" "${mwant:-bad}" "$dir"; }
 
 export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the pr_gate check reads (mutated copies of the workflows keep the real one)
 slot check "the real workflows" ok "$root/.github/workflows"
@@ -460,6 +500,23 @@ edit("'$wfile'", lambda s: s.replace("    uses: ./.github/workflows/release.yml\
 edit("'$wfile'", lambda s: s.replace("      mode: snapshot\n", "      mode: release\n", 1))'
   want_msg="calls a reusable workflow that is not"
 done
+# a caller (uses, no steps) is judged by its callee's ceiling (REQ-CHAIN-007-AC3, REQ-CHAIN-004-AC14): release.yml's own jobs declare contents, id-token, packages and issues write, so a caller inside that passes
+# and a caller beyond it is refused; a job with steps and packages: write is still refused
+mcheck=check_job
+mwant=ok
+mutate "a caller of release.yml whose packages: write is within the callee's ceiling passes" '
+edit("scan.yml", lambda s: s.rstrip("\n") + "\n\n  probe-caller:\n    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n")'
+mwant=bad
+want_msg="grants more than its callee's ceiling"
+mutate "a caller of release.yml that also grants actions: write is refused" '
+edit("scan.yml", lambda s: s.rstrip("\n") + "\n\n  probe-caller:\n    permissions:\n      contents: write\n      packages: write\n      actions: write\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n")'
+mutate "a caller of release.yml that grants write-all is refused" '
+edit("scan.yml", lambda s: s.rstrip("\n") + "\n\n  probe-caller:\n    permissions: write-all\n    uses: ./.github/workflows/release.yml\n    with:\n      mode: snapshot\n")'
+want_msg="holds the registry secret or packages: write"
+mutate "a job with steps and packages: write is still refused" '
+edit("scan.yml", lambda s: s.rstrip("\n") + "\n\n  probe-caller:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      packages: write\n    steps:\n      - run: echo x\n")'
+mcheck=check
+want_msg=""
 want_msg="no stage-*.yml file exists"
 mutate "scan.yml build calls a stage file again" '
 edit("scan.yml", lambda s: s.replace("    uses: ./.github/workflows/release.yml\n", "    uses: ./.github/workflows/stage-build.yml\n", 1))'
