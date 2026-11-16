@@ -501,7 +501,8 @@ mkdir -p "$work/gl1/docs" "$work/gl2/docs" "$work/gl3/docs" "$work/gl4/docs" "$w
 for d in gl1 gl2 gl3 gl4 gl5 gl6 gl8; do printf '# guide\n\n```sh\ncosign verify <IMAGE_REF>\n```\n' > "$work/$d/docs/verify-release.md"; done
 printf '# guide\n\n```sh\ngh release view v1\n```\n' > "$work/gl7/docs/verify-release.md"
 R='"reason": "needs the image in a registry; run right after publishing"'
-printf '[{"command": "cosign verify <IMAGE_REF>", %s}]\n' "$R" > "$work/gl1/docs/verify-release.cannot-run.json"
+printf '# guide\n\n```sh\ncosign verify --key release.rsa.pub <IMAGE_REF>\n```\n' > "$work/gl1/docs/verify-release.md"
+printf '[{"command": "cosign verify --key release.rsa.pub <IMAGE_REF>", %s}]\n' "$R" > "$work/gl1/docs/verify-release.cannot-run.json"
 printf '[]\n' > "$work/gl2/docs/verify-release.cannot-run.json"
 printf '[{"command": "cosign verify <IMAGE_REF>", %s}, {"command": "cosign verify <IMAGE_REF>", %s}]\n' "$R" "$R" > "$work/gl4/docs/verify-release.cannot-run.json"
 printf '[{"command": "cosign verify <IMAGE_REF>", "reason": " "}]\n' > "$work/gl5/docs/verify-release.cannot-run.json"
@@ -523,7 +524,7 @@ for n in 9 10; do mkdir -p "$work/gl$n/docs"; done
 printf '# guide\n\n```sh\ncosign verify-evil <IMAGE_REF>\n```\n' > "$work/gl9/docs/verify-release.md"
 printf '[{"command": "cosign verify-evil <IMAGE_REF>", %s}]\n' "$R" > "$work/gl9/docs/verify-release.cannot-run.json"
 expect caught "AC7 round 3 a cannot-run entry whose first words only start with a verify form is refused by the structural judge too" "not a verify form" guidelist "$work/gl9/docs/verify-release.md"
-GJ="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> | jq -e '.[0] | .critical'"
+GJ="cosign verify <IMAGE_REF> --key release.rsa.pub | jq -e '.[0] | .critical'"
 printf '# guide\n\n```sh\n%s\n```\n' "$GJ" > "$work/gl10/docs/verify-release.md"
 python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$GJ" "$work/gl10/docs/verify-release.cannot-run.json"
 expect ok "AC7 round 3 a verify form piped to a jq filter that holds a quoted pipe is one verify form (the planner's rule)" "" guidelist "$work/gl10/docs/verify-release.md"
