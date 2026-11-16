@@ -457,7 +457,7 @@
     {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool",
-      "body-sha256": "e099583a0be8211e72fc78ff3d3737c2cd4b433b2104bdfc92799d0f8f956179"
+      "body-sha256": "c58ee763317853918a1fe23180c3df0150c3790e56d3487927e5d853b16de200"
     },
     {
       "file": "bin/acceptance-k8s-smoke.py",
