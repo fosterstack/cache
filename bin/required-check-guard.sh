@@ -90,7 +90,7 @@ if [ -n "${2:-}" ]; then
     status=1
   fi
   if [ "$(jq -cS . <<<"$list_scopes")" != "$(jq -cS . <<<"$pinned_scopes")" ]; then
-    echo "::error::scope drift: an entry in ${list} (context, integration ID and scope) is not the one pinned in this script (a change needs the pin changed on main first)." >&2
+    echo "::error::scope drift: context, integration ID or scope in ${list} not pinned; pin on main first." >&2
     echo "diff (- pinned only, + ${list} only):"
     diff <(jq -cS '.[]' <<<"$pinned_scopes") <(jq -cS '.[]' <<<"$list_scopes") | grep -E '^[<>]' | sed -e 's/^</-/' -e 's/^>/+/'
     status=1
