@@ -272,5 +272,60 @@ class LetterCase(Base):
         self.refused(self.action('echo "LD_PRELOAD=x" >> "$GITHUB_ENV"'), "GITHUB_ENV", name="action.yml", job="")
 
 
+class UnreadableForms(Base):
+    def wf(self, text):
+        return workflow(run_step(text))
+
+    def test_echo_with_option_and_two_arguments_is_refused(self):
+        self.refused(self.wf("echo -e 'A=1' '\\nLD_PRE''LOAD=x' >> \"$GITHUB_ENV\""), "GITHUB_ENV")
+
+    def test_printf_with_b_conversion_is_refused(self):
+        self.refused(self.wf("printf 'A=1%b\\n' '\\nLD_PRE''LOAD=x' >> \"$GITHUB_ENV\""), "GITHUB_ENV")
+
+    def test_real_newline_in_first_argument_is_refused(self):
+        self.refused(self.wf("echo 'A=1\nLD_PRE''LOAD=x' >> \"$GITHUB_ENV\""), "GITHUB_ENV")
+
+    def test_quote_split_hook_name_is_refused_naming_the_hook(self):
+        self.refused(self.wf("echo 'LD_PRE''LOAD=x' >> \"$GITHUB_ENV\""), "LD_PRELOAD")
+
+    def test_not_export_variable_text_does_not_cancel_dynamic_call(self):
+        js = "const s = \"notexportVariable('A',\";\ncore.exportVariable('LD_PRE' + 'LOAD', v)"
+        self.refused(workflow(script_step(js)), "exportVariable")
+
+    def test_backslash_newline_in_env_route_is_refused_naming_the_hook(self):
+        self.refused(self.wf("echo 'LD_PRELOAD=x' >> \"$GITHUB_\\\nENV\""), "LD_PRELOAD")
+
+    def test_backslash_newline_in_path_route_is_refused(self):
+        self.refused(self.wf("echo x >> \"$GITHUB_PA\\\nTH\""), "PATH")
+
+    def test_echo_function_redefinition_is_refused(self):
+        text = "echo() { builtin printf '%s\\n' \"LD_PRE\"\"LOAD=x\"; }\necho 'SAFE=1' >> \"$GITHUB_ENV\""
+        self.refused(self.wf(text), "GITHUB_ENV")
+
+    def test_echo_alias_is_refused(self):
+        text = "alias echo='printf \"%s\\n\" LD_PRE\"\"LOAD=x'\necho 'SAFE=1' >> \"$GITHUB_ENV\""
+        code, out = self.check(self.wf(text))
+        self.assertEqual(code, 1, out)
+        self.assertIn("alias", out)
+
+    def test_printf_function_redefinition_is_refused(self):
+        text = "printf() { builtin echo 'LD_PRE\"\"LOAD=x'; }\nprintf 'SAFE=%s\\n' 1 >> \"$GITHUB_ENV\""
+        self.refused(self.wf(text), "GITHUB_ENV")
+
+    def test_function_keyword_echo_is_refused(self):
+        text = "function echo { builtin printf '%s\\n' LD_PRE\"\"LOAD=x; }\necho 'SAFE=1' >> \"$GITHUB_ENV\""
+        self.refused(self.wf(text), "GITHUB_ENV")
+
+    def test_env_that_is_not_a_literal_mapping_is_refused(self):
+        wf = workflow(run_step("echo hi") + "        Env: ${{ fromJSON(inputs.e) }}\n")
+        self.refused(wf, "env")
+
+    def test_printf_single_record_is_accepted(self):
+        self.accepted(self.wf("printf 'A=%s\\n' \"$v\" >> \"$GITHUB_ENV\""))
+
+    def test_echo_single_record_is_accepted(self):
+        self.accepted(self.wf('echo "A=1" >> "$GITHUB_ENV"'))
+
+
 if __name__ == "__main__":
     unittest.main()
