@@ -1943,9 +1943,22 @@ streak '[{"databaseId":499,"conclusion":"failure"}]' no "only two runs so far: n
 RUNLIST=fail streak '[]' no "history unreadable: nothing decided, step does not fail"
 
 # a tag named main must not answer a read of main's files: the workflow's reads name the branch ref
-wf="$repo/.github/workflows/dependabot-reviewer.yml"; bare=$(grep -c '?ref=main' "$wf"); full=$(grep -c '?ref=refs/heads/main' "$wf")
-if [ "$bare" -eq 0 ] && [ "$full" -eq 3 ]; then echo "ok: workflow reads of main name ?ref=refs/heads/main, never ?ref=main"; pass=$((pass+1))
-else echo "FAIL: workflow reads of main name ?ref=refs/heads/main, never ?ref=main (found $bare bare ?ref=main, $full ?ref=refs/heads/main; want 0 and 3)"; fail=$((fail+1)); fi
+wf="$repo/.github/workflows/dependabot-reviewer.yml"
+reads_ok() { # file: exactly three ?ref= reads, each ending at refs/heads/main and its closing quote
+  [ "$(grep -o '?ref=' "$1" | wc -l)" -eq 3 ] && [ "$(grep -o '?ref=refs/heads/main"' "$1" | wc -l)" -eq 3 ]
+}
+if reads_ok "$wf"; then echo "ok: workflow reads of main name ?ref=refs/heads/main, never ?ref=main"; pass=$((pass+1))
+else echo "FAIL: workflow reads of main name ?ref=refs/heads/main, never ?ref=main (want exactly 3 reads, each ?ref=refs/heads/main\")"; fail=$((fail+1)); fi
+mut=$(mktemp -d -t reads-mut.XXXXXX)
+sed 's|?ref=refs/heads/main"|?ref=refs/heads/main-x"|' "$wf" > "$mut/branch-prefix.yml"
+{ cat "$wf"; echo '  x: api repos/o/r/contents/f?ref=refs/tags/main"'; } > "$mut/tag-read.yml"
+sed 's|?ref=refs/heads/main"|?ref=main"|' "$wf" > "$mut/bare.yml"
+sed 's|?ref=refs/heads/main"|?ref=refs/heads/main;|' "$wf" > "$mut/no-quote.yml"
+for m in branch-prefix tag-read bare no-quote; do
+  if reads_ok "$mut/$m.yml"; then echo "FAIL: reads check accepts a workflow with a $m read"; fail=$((fail+1))
+  else echo "ok: reads check refuses a workflow with a $m read"; pass=$((pass+1)); fi
+done
+[ -d "$mut" ] && rm -rf -- "$mut"
 echo "----"
 echo "dependabot-reviewer act step: ${pass} passed, ${fail} failed"
 [ "$py_rc" -eq 0 ] && [ "$fail" -eq 0 ]
