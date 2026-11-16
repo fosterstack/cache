@@ -27,12 +27,13 @@ on:
 
 # Caller grants must COVER every called job's requests, or the run is a
 # startup_failure with zero jobs. checks/statuses: read are for the
-# admission stage's required-check verification.
+# admission stage's required-check verification; actions: read is for its read of each producing run's file, event and commit.
 permissions:
   contents: write
   id-token: write
   attestations: write
   packages: write
+  actions: read
   checks: read
   statuses: read
   pull-requests: read   # admission verifies pull_request-scoped checks on the merged-PR head (R01)
@@ -213,7 +214,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # the same query admission makes (filter=latest), against the same policy: protected main's, never the
+          # the same evidence admission reads (every check run of a name; a release-only one from its file's schedule or dispatch run on this commit), against the same policy: protected main's, never the
           # checked-out commit's (Codex #159 r1, B6; pin pass B01/B02) — so "ready" here is what admission will see
           # The release-only contexts come from full-suite.yml, which has no push trigger: a head the nightly has not run on has no
           # run, so start one, once. If the branch moves on, the run is on another commit and the wait ends in no cut.
@@ -232,11 +233,24 @@ jobs:
                 and (.required_checks | length) > 0] | length > 0 and all' "$RUNNER_TEMP/$f.json" > /dev/null \
                 || { echo "::error::$f.json is missing, empty or malformed"; exit 1; }
             done
-            jq -s '{required_checks: (map(.required_checks) | add)}' \
+            jq -s '{required_checks: ((.[0].required_checks | map(. + {release_only: false})) + (.[1].required_checks | map(. + {release_only: true})))}' \
               "$RUNNER_TEMP/ruleset-checks.json" "$RUNNER_TEMP/release-only-checks.json" > "$RUNNER_TEMP/required-checks.json"
-            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
-              --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
-            v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --check-runs "$RUNNER_TEMP/runs.json")
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=all&per_page=100" --paginate \
+              --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id, id, details_url}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
+            # a release-only check counts from the run admission accepts (file, event, commit): read each such run's facts once
+            mkdir -p "$RUNNER_TEMP/runfacts"
+            for run_id in $(jq -r --slurpfile req "$RUNNER_TEMP/required-checks.json" \
+                '.[] | select(.name as $n | $req[0].required_checks | any(.release_only and .context == $n)) | (.details_url // "") | capture("actions/runs/(?<r>[0-9]+)").r' \
+                "$RUNNER_TEMP/runs.json" | sort -u); do
+              [ -s "$RUNNER_TEMP/runfacts/${run_id}.json" ] || gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+                --jq '{id, path, event, head_sha}' > "$RUNNER_TEMP/runfacts/${run_id}.json" 2>/dev/null || rm -f "$RUNNER_TEMP/runfacts/${run_id}.json"
+            done
+            find "$RUNNER_TEMP/runfacts" -name '*.json' -exec cat {} + | jq -s '.' > "$RUNNER_TEMP/facts.json"
+            jq --slurpfile facts "$RUNNER_TEMP/facts.json" \
+              '[.[] | ((.details_url // "") | capture("actions/runs/(?<r>[0-9]+)").r | tonumber? // null) as $rid
+                | . + (($facts[0] | map(select(.id == $rid)) | first) // {} | {path, event, head_sha})]' \
+              "$RUNNER_TEMP/runs.json" > "$RUNNER_TEMP/runs-with-facts.json"
+            v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --check-runs "$RUNNER_TEMP/runs-with-facts.json" --sha "$GITHUB_SHA")
             echo "$v"
             case "${v%% *}" in
               ready) echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
@@ -420,6 +434,8 @@ jobs:
   acceptance:
     needs: [image, reproducibility]
     uses: ./.github/workflows/acceptance.yml
+    with:
+      image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}
 
   acceptance-egress:
     needs: [image, reproducibility]
