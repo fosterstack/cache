@@ -14,6 +14,10 @@ def contexts(path):
     return [c["context"] for c in json.load(open(path))["required_checks"]]
 
 
+def flags(path):
+    return {c["context"]: c.get("release_only") for c in json.load(open(path))["required_checks"]}
+
+
 want = sorted(contexts(f"{pol}/required-checks.json") + contexts(f"{pol}/release-only-checks.json"))
 
 
@@ -22,11 +26,14 @@ def run_step(files):
     origin, clone, stub, seed = f"{w}/origin.git", f"{w}/clone", f"{w}/stub", f"{w}/seed"
     os.makedirs(f"{seed}/.github/policy")
     os.makedirs(f"{seed}/bin")
+    os.makedirs(f"{seed}/.github/workflows")
     os.makedirs(stub)
     for f in os.listdir(pol):
         shutil.copy(f"{pol}/{f}", f"{seed}/.github/policy/{f}")
     for f in ("admission-tag-signer.py", "install-scanner.sh", "patch-decide.py"):
         shutil.copy(f"{root}/bin/{f}", f"{seed}/bin/{f}")
+    # patch-decide.py ready reads admission's context-to-file table from this workflow
+    shutil.copy(f"{root}/.github/workflows/stage-admission.yml", f"{seed}/.github/workflows/stage-admission.yml")
     for f, text in files.items():
         p = f"{seed}/.github/policy/{f}"
         if text is None:
@@ -51,10 +58,11 @@ def run_step(files):
     r = subprocess.run(["bash", "-c", text], cwd=clone, env=env, capture_output=True, text=True, timeout=60)
     try:
         merged = contexts(f"{w}/{merged_rel}")
+        merged_flags = flags(f"{w}/{merged_rel}")
     except (OSError, ValueError, KeyError, TypeError):
-        merged = None
+        merged, merged_flags = None, None
     shutil.rmtree(w)
-    return r.returncode, merged
+    return r.returncode, merged, merged_flags
 
 
 failed = 0
@@ -66,13 +74,18 @@ def report(ok, name, got):
     print(("PASS" if ok else "FAIL"), f"{label}: {name}", "" if ok else f"-> {got}")
 
 
-rc, merged = run_step({})
+rc, merged, merged_flags = run_step({})
 report(sorted(merged or []) == want and rc in (0, 99), f"a good pair merges to all {len(want)} contexts", (rc, merged))
+# a release_only flag per entry: false for the ruleset's contexts, true for the release-only file's
+want_flags = {c: False for c in contexts(f"{pol}/required-checks.json")}
+want_flags.update({c: True for c in contexts(f"{pol}/release-only-checks.json")})
+report(merged_flags == want_flags, "each merged entry carries its release_only flag (ruleset false, release-only true)",
+       merged_flags)
 bad_forms = {"empty-object": "{}", "empty-file": "", "null-list": '{"required_checks": null}',
              "empty-list": '{"required_checks": []}', "top-level-array": "[]", "missing": None}
 for f in ("release-only-checks.json", "required-checks.json"):
     for form, text in bad_forms.items():
-        rc, merged = run_step({f: text})
+        rc, merged, _ = run_step({f: text})
         short = merged is not None and len(merged) < len(want)
         report(rc not in (0, 99) and not short, f"{f} {form} is refused",
                f"exit {rc}, merged {len(merged) if merged is not None else None} contexts")
@@ -80,7 +93,7 @@ for f in ("release-only-checks.json", "required-checks.json"):
 both = {f: open(f"{pol}/{f}").read() for f in ("required-checks.json", "release-only-checks.json")}
 for full, empty in (("required-checks.json", "release-only-checks.json"),
                     ("release-only-checks.json", "required-checks.json")):
-    rc, merged = run_step({full: both[full] + both[full], empty: ""})
+    rc, merged, _ = run_step({full: both[full] + both[full], empty: ""})
     short = merged is not None and len(merged) < len(want)
     report(rc not in (0, 99) and not short, f"{empty} empty beside two objects in {full} is refused",
            f"exit {rc}, merged {len(merged) if merged is not None else None} contexts")
