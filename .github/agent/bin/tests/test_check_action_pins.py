@@ -1237,12 +1237,20 @@ class StartupHookWrites(unittest.TestCase):
                 self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "BASH_ENV=x" >> "$N"'),
                              matched="github.env", says=self.LOADS)
 
-    def test_an_env_value_without_the_other_half_is_accepted(self):
+    def test_an_env_value_with_no_route_in_the_text_is_accepted(self):
         for level in ("workflow", "job", "step"):
             with self.subTest(level=level):
                 self.accepted(self.env_value(level, "BASH_ENV", 'echo "$N=x"'))
-                self.accepted(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'))
-                self.accepted(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'))
+
+    def test_a_route_put_in_an_env_value_is_refused_whatever_name_the_script_writes(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'), matched="github.env")
+
+    def test_a_name_from_a_variable_written_to_github_env_is_refused_even_when_the_value_is_harmless(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'), matched="GITHUB_ENV")
 
     # ---- the PATH routes need no name
     def test_each_path_route_is_refused_on_its_own(self):
