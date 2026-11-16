@@ -3261,6 +3261,8 @@ def check_file(tree, rel, pins, bad):
                                                                or k.value.startswith("BASH_FUNC_")):
                             bad.append(f"{rel}: an env block sets {k.value}, which makes bash or curl read a file or "
                                        f"function before the step's own commands; refused")
+                        if isinstance(k, yaml.ScalarNode) and k.value == "env" and not isinstance(v, yaml.MappingNode):
+                            bad.append(f"{rel}: an env that is not a literal mapping hides the names it sets; refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
                     stack.extend(n.value)
