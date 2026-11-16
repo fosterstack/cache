@@ -483,10 +483,6 @@ def _shell_lex(lines):
 _NOT_CODE = frozenset(("'", '"', "`", "$((", "(("))        # a stack entry that makes a line text or arithmetic, not a command position
 
 
-def _plain_at(state, i):
-    return state[i] is not None and not set(state[i]) & _NOT_CODE
-
-
 def _func_bodies(lines):
     """{name: body text} of the shell functions the file defines (both `name() {` and `function name {`, the brace on the same or the next line)."""
     out = {}
@@ -503,7 +499,7 @@ def _func_bodies(lines):
             body.append(lines[k]); depth += bare.count("{") - bare.count("}"); seen = seen or "{" in bare
             if seen and depth <= 0: break
             k += 1
-        out[name] = "\n".join(body)
+        out[name] = out[name] + "\n" + "\n".join(body) if name in out else "\n".join(body)    # every definition counts, not only the last
     return out
 
 
@@ -654,13 +650,6 @@ def _py_program_flags(body):
         elif isinstance(nd, ast.Assign):
             for t in nd.targets:
                 if isinstance(t, ast.Name) and isinstance(nd.value, ast.Lambda): defined.add(t.id)
-    binds = {}
-    for nd in ast.walk(tree):
-        if isinstance(nd, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): binds[nd.name] = binds.get(nd.name, 0) + 1
-        elif isinstance(nd, ast.Name) and isinstance(nd.ctx, ast.Store): binds[nd.id] = binds.get(nd.id, 0) + 1
-        if isinstance(nd, ast.Name) and nd.id != "__name__" and re.fullmatch(r"__\w+__", nd.id): why.add(nd.id)               # __builtins__, __dict__ ...: a way to the builtins
-        if isinstance(nd, ast.Attribute) and nd.attr != "__name__" and re.fullmatch(r"__\w+__", nd.attr): why.add(nd.attr)
-    why |= {"rebinds " + n for n in defined if binds.get(n, 0) > 1}                                                         # a defined name later bound to something else
     called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
     roots = {id(nd.value) for nd in ast.walk(tree) if isinstance(nd, ast.Attribute)}
     for nd in ast.walk(tree):
@@ -798,7 +787,7 @@ def _heredoc_ok(hd, lines, funcs, python=False):
 def _commands_redefined(lines, text, extra=()):
     """True when the file defines a function named like a command the grammars trust (plus `extra`), or switches aliases on: the command's name then proves nothing."""
     trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"} | set(extra))) + r"|python[\d.]*"
-    return bool((set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"} | set(extra))) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
+    return bool((set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"} | set(extra))) or "expand_aliases" in text or re.search(r"(?m)^[ \t]*alias[ \t]+[^\s=]", text) \
             or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text))
 
 
@@ -998,79 +987,19 @@ def _context_regressions(root, base, head, rulings):
                 out.setdefault(k, {})[lh] = n
     return out
 
-# The owner removed the wait for new versions (Nov 11 2026): a line the head file proves is data (a comment, an inert quoted heredoc, a pure python string, a plain assignment) or the one live-read shape needs no row.
+# The owner removed the wait for new versions (Nov 11 2026): a line the head file proves is data (a comment or an inert quoted heredoc) needs no row.
 AUTO_RULING = TEXT_RULING + "proved from the head file, no row needed"
-LIVE_READ_RULING = "live metadata read, closed shape (nothing downloaded or run): "
 VENDOR_FORM = "a line that names the vendored folder"           # a human gate (REQ-VEND-001): never proved away
-LIVE_READ_HOSTS = ("hub.docker.com",)                          # the hosts of the live metadata reads in the .sh scripts
-_LIVE_READ_HOST = "|".join(re.escape(h) for h in LIVE_READ_HOSTS)
-_LIVE_READ_CRED_NAMES = ("DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")
-_LIVE_READ_CRED = r"""printf 'user = "%s:%s"\\n' "\$""" + _LIVE_READ_CRED_NAMES[0] + r"""" "\$""" + _LIVE_READ_CRED_NAMES[1] + r"""" \| """
-_LIVE_READ_LINE = re.compile(
-    r"(?P<name>[a-z][a-z0-9_]*)=\$\(" + _LIVE_READ_CRED + r"curl -q (?:-[fsS]+ |--max-time [0-9]+ |--proto =https )*-K - "
-    r"\"https://(?:" + _LIVE_READ_HOST + r")/[\w.~+/-]+(?:\$\{DH_REPO\}[\w.~+/-]*)?\"\)(?P<tail>.*)")
-_LIVE_READ_NAME_BAD = re.compile(r"auto_resume|histchars|\w*_proxy")
-_LIVE_READ_FILE_BAD = re.compile(r"\$\{!|\beval\b|\b(?:declare|local|typeset)[ \t]+-\w*n\b|\bset\b[^\n;&|]*?(?:[ \t]-\w*a\w*(?=[ \t;]|$)|allexport)|"
-                                 r"(?<![$\w{])(?:" + "|".join(_LIVE_READ_CRED_NAMES) + r")\b|\$\{(?:" + "|".join(_LIVE_READ_CRED_NAMES) + r")[^}]*=", re.M)
-_LIVE_READ_TAIL_BAD = re.compile(r"\b(?:curl|wget)\b|[`]|[$<>]\(")
-
-
-def _plain_joins(text):
-    """True when bash reads the flattened line as the scan does: blanks are spaces and tabs only, and every backslash-newline follows a blank, so a joined line differs from
-    bash's reading in blanks alone (the live-read shape allows no blank inside a word)."""
-    return "" not in text and all(c in " \t\n" or not c.isspace() for c in text) and not re.search(r"[^ \t]\\\n", text)
-
-
-def _logical_lines(lines):
-    """[(index of the first physical line, flattened text)]: a backslash-newline joins the next line and blanks collapse, as pin-inventory flattens."""
-    out, i = [], 0
-    while i < len(lines):
-        j, joined = i, lines[i]
-        while joined.endswith("\\") and j + 1 < len(lines):
-            j += 1
-            joined = joined[:-1] + " " + lines[j]
-        out.append((i, " ".join(joined.split())))
-        i = j + 1
-    return out
-
-
-def _live_read_ok(text, flat):
-    """The flattened line is the one closed shape `NAME=$(printf 'user = "%s:%s"\\n' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" | curl -q FLAGS -K - "https://HOST/PATH")`
-    with at most `${DH_REPO}` once in the path, in plain code, and nothing else in the file can add to it: no assignment of the two credential names, no redefined command or alias,
-    no indirection, and NAME (lowercase, not one bash or curl reads itself) is named only by `local NAME` and the one jq consumer."""
-    lines = text.split("\n")
-    _, sane, state = _shell_lex(lines)
-    logical = _logical_lines(lines)
-    caps = [i for i, f in logical if f == flat]
-    m = _LIVE_READ_LINE.fullmatch(flat)
-    if not sane or not m or not caps or _LIVE_READ_NAME_BAD.fullmatch(m.group("name")) or _LIVE_READ_FILE_BAD.search(text) or _commands_redefined(lines, text, {"curl"}):
-        return False
-    name = re.escape(m.group("name"))
-    consumer = re.compile(r"(?:local " + name + r"|jq -e '[^']*' >/dev/null 2>&1 <<<\"\$\{?" + name + r"\}?\"(?: \|\| (?P<tail>.*))?)")
-    word = re.compile(r"(?<!\w)" + name + r"(?!\w)")
-    if word.search(m.group("tail")) or _LIVE_READ_TAIL_BAD.search(m.group("tail")):
-        return False
-    for i, f in logical:
-        if f == flat or not word.search(f) or (f.startswith("#") and _plain_at(state, i)):
-            continue
-        c = consumer.fullmatch(f)
-        tail = c.group("tail") if c else None
-        if not c or not _plain_at(state, i) or (tail and (word.search(tail) or _LIVE_READ_TAIL_BAD.search(tail))):
-            return False
-    return all(_plain_at(state, i) for i in caps)
 
 
 def _proved_row(root, head, k, lh):
-    """The row a line earns from the head file alone, or None: a text context proved for a line that is not a vendored-folder naming, or the closed live-read shape."""
+    """The row a line earns from the head file alone, or None: a text context proved for a line that is not a vendored-folder naming."""
     path = k[0]
     if k[1] == VENDOR_FORM or not path.endswith(".sh"):
         return None
-    text = _scripts_at(root, head).get(path)
-    if k[1] == DOWNLOAD_FORM and text is not None and _plain_joins(text) and not _has_cr(root, head, path) and _live_read_ok(text, _LINE_TEXT.get(lh, "")):
-        return (LIVE_READ_RULING + "one curl on a listed host", sys.maxsize, None, "")
     if not re.fullmatch(r"[0-9a-f]{64}", lh):
         return None
-    for context in ("comment", "heredoc", "pystring"):
+    for context in ("comment", "heredoc"):
         row = (AUTO_RULING, sys.maxsize, context, "")
         if _context_proved(root, head, path, lh, row):
             return row
@@ -1354,7 +1283,7 @@ def _run(a, moved):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [_row_for(rulings, a.root, a.head, k, lh) for lh in lines[k]]    # a row with a context that does not hold rules nothing; a line the head file proves is data needs no row
-        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_READ_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
+        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
@@ -1402,7 +1331,7 @@ def _run(a, moved):
                      "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
         print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
-        where = "is proved from the head file" if ruling.startswith((AUTO_RULING, LIVE_READ_RULING)) else "is listed in the base branch's unmeasured_text"
+        where = "is proved from the head file" if ruling.startswith(AUTO_RULING) else "is listed in the base branch's unmeasured_text"
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) {where}: {ruling[:200]}"})
         print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
