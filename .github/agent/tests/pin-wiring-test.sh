@@ -837,11 +837,16 @@ bad = []
 pinned_job, pinned_permissions = os.environ["PIN_WIRING_GUARD_JOB"].encode(), os.environ["PIN_WIRING_PERMISSIONS"].encode()
 if sys.argv[2]:   # the landing path: the pinned text is the landing commit's own ci.yml
     landing = open(sys.argv[2], "rb").read().split(b"\n")
-    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing) or b"x", block(b"permissions:", 0, landing) or b"x"
+    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing) or b"", block(b"permissions:", 0, landing) or b"x"
 # YAML ends a line at each of these four, this judge only at LF: a step could hide behind the freed comment
 if any(b in raw for b in (b"\r", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")):
     bad.append("ci.yml has a carriage return, a next-line, a line separator or a paragraph separator")
-if shape(block(b"  required-check-guard:", 2) or b"") != shape(pinned_job):
+head_job = block(b"  required-check-guard:", 2)
+if not pinned_job:   # two empty texts would compare equal
+    bad.append("the pinned required-check-guard job text is empty")
+elif head_job is None:
+    bad.append("ci.yml has no single required-check-guard job")
+elif shape(head_job) != shape(pinned_job):
     bad.append("the required-check-guard job is not the pinned text, byte for byte")
 if block(b"permissions:", 0) != pinned_permissions:
     bad.append("the workflow permissions are not the pinned text, byte for byte")
