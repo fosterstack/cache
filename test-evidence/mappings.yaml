@@ -511,7 +511,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist-pins-auditor — runs bin/audit-record-test.sh (the release judge, the wrapper's release mode, the admission step's pinned text with mutants, the writer's release mode)" }
   - ac: REQ-REL-013-AC1
     evidence:
-      - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-013-AC2
     evidence:
@@ -1007,6 +1007,9 @@ mappings:
   - ac: REQ-SUP-001-AC33
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/release-age-gone-test.sh" }
+  - ac: REQ-SUP-001-AC35
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC38
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }

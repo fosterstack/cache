@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7
 # proves: REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12
-# proves: REQ-DEP-001-AC13, REQ-DEP-001-AC14, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
-# proves: REQ-DEP-004-AC1, REQ-DEP-004-AC2
+# proves: REQ-DEP-001-AC13, REQ-DEP-001-AC14, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3, REQ-DEP-003-AC4
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
