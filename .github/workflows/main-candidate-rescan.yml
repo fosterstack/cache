@@ -20,7 +20,7 @@ on:
 permissions:
   contents: read
 
-# One rescan at a time, none cancelled: the scratch package's prune and pushes are not safe to interleave.
+# One rescan at a time, none cancelled.
 concurrency:
   group: main-candidate-rescan
   cancel-in-progress: false
@@ -41,125 +41,6 @@ jobs:
       pull-requests: read
     with:
       mode: snapshot
-
-  # ---------------------------------------------------------------------------------------------------------------
-  # Our OpenVEX as the attestation children of each candidate's index (REQ-REL-010 on the rescan; "this is
-  # the preferred path - it gets us knowing our auditor works for a while before launch"). Docker Scout has applied our statements
-  # only this way (probe 0221, run 37555367665: by tag and by exact index digest); every local-file and daemon-loaded form failed.
-  # An attestation survives only in a registry, so the attested candidates go to the SCRATCH package ghcr.io/fosterstack/cache-scout-probe
-  # (a package of its own; never the release package, never any other tag than the attested candidates
-  # and the self-check fixtures), and the same run prunes it to the newest 14 days. Releases are unchanged.
-  vex-attach:
-    name: attach our OpenVEX to each candidate index and push the attested candidates (scratch package)
-    needs: [build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write   # the scratch package only; the token cannot be narrower, the steps below name that one package
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: images
-          path: /tmp/oci/
-      - name: skopeo is on the runner image
-        run: command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
-      - name: log in to GHCR (the scratch package)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      # Condition (b) of the approval: the scratch package holds the newest 14 days of versions, pruned in the run that adds to it. It runs
-      # FIRST, so nothing this run pushes can lose its version to it, and it is strict: a listing that fails (other than "no such package
-      # yet") or a delete that fails fails the job, never a green run that kept old versions.
-      - name: prune the scratch package to the newest 14 days
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -uo pipefail
-          cutoff=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-14d +%Y-%m-%dT%H:%M:%SZ)   # GNU date on the runner, BSD date on a laptop
-          pkg="orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/cache-scout-probe"
-          # Only the package's own lookup may say "none yet" (HTTP 404); once it exists, any listing failure, a 404 included, fails the job.
-          if vis=$(gh api "${pkg}" --jq .visibility 2>"$RUNNER_TEMP/prune.err"); then
-            echo "== the scratch package ghcr.io/fosterstack/cache-scout-probe: visibility ${vis}; keeping versions updated since ${cutoff}" | tee -a "$GITHUB_STEP_SUMMARY"
-            if ! ids=$(gh api --paginate "${pkg}/versions?per_page=100" --jq ".[] | select(.updated_at < \"${cutoff}\") | .id" 2>"$RUNNER_TEMP/prune.err"); then
-              cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not list the scratch package's versions, so it could not be pruned"; exit 1
-            fi
-          elif grep -q "HTTP 404" "$RUNNER_TEMP/prune.err"; then
-            ids=""; echo "no scratch package yet; nothing to prune" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not look up the scratch package, so it could not be pruned"; exit 1
-          fi
-          n=0; kept=0; failed=0
-          for id in ${ids}; do
-            if gh api -X DELETE "${pkg}/versions/${id}" >/dev/null 2>"$RUNNER_TEMP/prune.err"; then n=$((n + 1))
-            # GitHub never deletes a public package version with more than 5000 downloads (only its support can); that exact refusal is kept and named, any other failure still fails the job.
-            elif grep -q "Publicly visible package versions with more than 5000 downloads cannot be deleted" "$RUNNER_TEMP/prune.err"; then kept=$((kept + 1)); echo "::warning::scratch version ${id} kept: GitHub does not delete a public package version with more than 5000 downloads"
-            else cat "$RUNNER_TEMP/prune.err" >&2; failed=$((failed + 1)); fi
-          done
-          echo "pruned ${n} scratch version(s) older than 14 days; ${kept} kept (public, over 5000 downloads, GitHub will not delete them); ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
-          [ "${failed}" -eq 0 ] || { echo "::error::${failed} scratch version(s) older than 14 days could not be deleted"; exit 1; }
-      # Build's assemble has already given each candidate layout its attestation children (our OpenVEX, one per platform: REQ-REL-010-AC1) and
-      # moved the layout's digest file to the final index. Each candidate is therefore copied, checked against Build's own digest file and as a whole
-      # layout, and pushed AS BUILT by skopeo with its digests kept; the digest skopeo reports for the pushed index must be the final index's, or the job
-      # fails. The attestation tool is not run on these layouts again (it refuses a second run); it runs only on the unattested self-check fixture below.
-      - name: push each candidate index as Build attested it
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/layout /tmp/attach
-          jq -n '{}' > /tmp/attach/digests.json
-          for v in production fips; do
-            d="/tmp/layout/${v}"; rm -rf "${d}"; mkdir -p /tmp/layout
-            cp -R "/tmp/oci/${v}" "${d}"
-            chmod -R go-w "${d}"
-            final=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the layout does not hold exactly one index") end' "${d}/index.json")
-            [ "$(cat "/tmp/oci/${v}.digest")" = "${final}" ] || { echo "::error::the ${v} layout names ${final}, not the digest Build recorded"; exit 1; }
-            python3 bin/release-layout.py "${d}" "${final}"
-            tag="cand-${GITHUB_RUN_ID}-${v}"
-            skopeo copy --all --digestfile "/tmp/attach/${v}.pushed" "oci:${d}" "docker://ghcr.io/fosterstack/cache-scout-probe:${tag}"
-            pushed=$(cat "/tmp/attach/${v}.pushed")
-            [ "${pushed}" = "${final}" ] || { echo "::error::the registry took ${pushed} for ${v}, not the final index ${final}"; exit 1; }
-            jq --arg v "${v}" --arg d "${final}" '. + {($v): $d}' /tmp/attach/digests.json > /tmp/attach/next.json
-            mv /tmp/attach/next.json /tmp/attach/digests.json
-            echo "${v}: final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
-          done
-      # The Scout self-check fixtures: the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
-      # of OUR author that covers only CVE-2023-4911, in our published product form, with the fixture's glibc package as the subcomponent (every statement Scout applied in the Oct 23 root-cause round
-      # named the package as a subcomponent of the product; the self-check statement named none and the self-check failed). Two tags, pruned like the rest.
-      - name: build the Scout self-check fixtures and push them
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/layout/fixture /tmp/layout/fixture-image; mkdir -p /tmp/layout
-          # the pinned digest is debian 12.0's linux/amd64 image manifest, not its index: skopeo's layout of it holds one IMAGE descriptor, so it is wrapped
-          # into a one-child OCI index here (the shape of the candidate layouts), and the attestation tool's check of the layout is not loosened
-          skopeo copy --all docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab oci:/tmp/layout/fixture-image
-          cp -R /tmp/layout/fixture-image /tmp/layout/fixture
-          child=$(jq -ec '.manifests | if length == 1 then .[0] | {mediaType, digest, size} + {platform: {architecture: "amd64", os: "linux"}} else error("the fixture image layout is not one manifest") end' /tmp/layout/fixture-image/index.json)
-          jq -nc --argjson c "${child}" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [$c]}' > /tmp/layout/fixture/index.tmp
-          idx=$(sha256sum /tmp/layout/fixture/index.tmp | cut -d' ' -f1)
-          mv /tmp/layout/fixture/index.tmp "/tmp/layout/fixture/blobs/sha256/${idx}"
-          jq -nc --arg d "sha256:${idx}" --argjson s "$(wc -c < "/tmp/layout/fixture/blobs/sha256/${idx}")" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{mediaType: "application/vnd.oci.image.index.v1+json", digest: $d, size: $s}]}' > /tmp/layout/fixture/index.json
-          chmod -R go-w /tmp/layout/fixture
-          jq --arg p "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" '.["@id"] = "https://github.com/fosterstack/cache/scout-selfcheck" | .timestamp = "2026-10-03T00:00:00Z" | .version = 1
-            | .statements = [{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
-                              "justification": "vulnerable_code_not_present", "products": [{"@id": $p, "subcomponents": [{"@id": "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"}]}]}]' .vex/fosterstack-cache.openvex.json > /tmp/attach/selfcheck-ours.json
-          before=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the fixture is not one index") end' /tmp/layout/fixture/index.json)
-          skopeo copy --all --digestfile /tmp/attach/before.pushed oci:/tmp/layout/fixture "docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-before-${GITHUB_RUN_ID}"
-          [ "$(cat /tmp/attach/before.pushed)" = "${before}" ] || { echo "::error::the registry took $(cat /tmp/attach/before.pushed) for the plain fixture, not ${before}"; exit 1; }
-          rm -rf /tmp/layout/fixture-ours; cp -R /tmp/layout/fixture /tmp/layout/fixture-ours
-          python3 bin/vex-index.py layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json
-          final=$(jq -er '.manifests | if length == 1 then .[0].digest else error("not one index") end' /tmp/layout/fixture-ours/index.json)
-          python3 bin/vex-index.py verify-layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json --base-digest "${before}"
-          skopeo copy --all --digestfile /tmp/attach/ours.pushed oci:/tmp/layout/fixture-ours "docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-ours-${GITHUB_RUN_ID}"
-          [ "$(cat /tmp/attach/ours.pushed)" = "${final}" ] || { echo "::error::the registry took $(cat /tmp/attach/ours.pushed) for the attested fixture, not ${final}"; exit 1; }
-          jq --arg b "${before}" --arg o "${final}" '. + {"fixture-before": $b, "fixture-ours": $o}' /tmp/attach/digests.json > /tmp/attach/next.json && mv /tmp/attach/next.json /tmp/attach/digests.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: vex-attach
-          path: /tmp/attach/digests.json
-          if-no-files-found: error
-          retention-days: 1
 
   # ---------------------------------------------------------------------------------------------------------
   # The scanner panel (REQ-SCAN-001..009). Four scanner jobs, each
@@ -218,22 +99,21 @@ jobs:
 
   panel-scout:
     name: panel — Docker Scout (four images)
-    needs: [build, vex-attach]
+    needs: [build]
     runs-on: ubuntu-latest
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
     environment: agent   # the read-only Docker Hub token for Scout lives here
     permissions:
       contents: read
-      packages: read   # the attested candidates in the scratch package, read only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: vex-attach
-          path: ${{ runner.temp }}/attach
+          name: images
+          path: /tmp/oci/
       - name: install docker-scout (pinned by checksum)
         run: |
           set -euo pipefail
@@ -244,33 +124,16 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-      - name: log in to GHCR (read only, the scratch package)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-      # Scout applies a statement only when its author matches --vex-author (default Docker's own) AND only through the index's
-      # attestation (every local form failed, Oct 3-6). The self-check scans the pinned debian fixture twice by exact index digest,
-      # plain and with our attestation covering only CVE-2023-4911 (built by the vex-attach job in the registry); bin/scout-selfcheck.py
-      # passes only when exactly that CVE drops and every other finding stays (REQ-SCAN-004-AC2), and refuses an empty or
-      # malformed report. A red self-check keeps the rescan red (fail closed): Scout never scans the candidates behind it.
-      - name: Scout applies our attestation to a fixture index
-        run: |
-          set -euo pipefail
-          before=$(jq -er '."fixture-before"' "$RUNNER_TEMP/attach/digests.json")
-          after=$(jq -er '."fixture-ours"' "$RUNNER_TEMP/attach/digests.json")
-          mkdir -p "$RUNNER_TEMP/selfcheck"
-          docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${before}" > "$RUNNER_TEMP/selfcheck/before.json"
-          docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${after}" > "$RUNNER_TEMP/selfcheck/after.json"
-          python3 bin/scout-selfcheck.py "$RUNNER_TEMP/selfcheck/before.json" "$RUNNER_TEMP/selfcheck/after.json" CVE-2023-4911
-      - name: Docker Scout every image, given our VEX as the index's attestation
+      # The rescan stays mechanical (release audit row C1): no job of this file writes to a registry, so Scout scans the candidate layouts Build uploaded, by local reference, and is given our
+      # OpenVEX file and its author. A finding no statement filters is reported as it is; the tally counts what Scout reports.
+      - name: Docker Scout every image, given our OpenVEX file
         run: |
           set -uo pipefail
           for v in production fips; do
-            dig=$(jq -er --arg v "${v}" '.[$v]' "$RUNNER_TEMP/attach/digests.json") || { echo "::warning::no attested digest for ${v} (the tally counts both its images as did not run)"; continue; }
             for arch in amd64 arm64; do
               d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
-              docker scout sbom --format json --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/sbom.json" \
-                && docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/cves.json" \
+              docker scout sbom --format json --platform "linux/${arch}" "oci-dir:///tmp/oci/${v}" > "${d}/sbom.json" \
+                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "oci-dir:///tmp/oci/${v}" > "${d}/cves.json" \
                 || { rm -rf "${d}"; echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"; }
             done
           done
