@@ -1534,6 +1534,12 @@ done
 bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@$old/@$new/"
 bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
 bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
+# a head and a landing file that both lack the guard job must not pass as "same pinned text" (empty == empty)
+sed "$guard"'{/^  drift-fixer-dispatch:$/!d}' "$here/.github/workflows/ci.yml" > "$work/no-guard-head.yml"
+cp "$work/no-guard-head.yml" "$work/no-guard-landing.yml"
+if out=$(bytes_judge "$work/no-guard-head.yml" "$work/no-guard-landing.yml")
+then failn=$((failn+1)); echo "FAIL landing-bytes-both-without-guard → ok, want bad ($out)"
+else pass=$((pass+1)); echo "PASS landing-bytes-both-without-guard → bad ($out)"; fi
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
