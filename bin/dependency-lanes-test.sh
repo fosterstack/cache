@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9
-# proves: REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12, REQ-DEP-001-AC13, REQ-DEP-002-AC1
+# proves: REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12, REQ-DEP-001-AC13
 # proves: REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3, REQ-DEP-001-AC14
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it reads every Dependabot bump, arms or holds and posts its check but opens no PR and
 # edits nothing; it carries a success to a new head only past the same-diff proof, and settles the arms after its act
-# step; its evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
-# patch/minor lane arms squash auto-merge only after the guard, never for a major and never for a head the reviewer
+# step; its evidence upload can never fail a run; the
+# patch/minor lane arms squash auto-merge never for a major and never for a head the reviewer
 # failed, and its last step turns off an arm the reviewer's verdict does not allow. Each real workflow must pass;
 # each mutated copy must be caught.
 set -euo pipefail
@@ -148,8 +148,8 @@ if kind == "reviewer":
                            or '[ "$g" = stale ] || return 0' not in cand[0] or "(now - (.completed_at | fromdate)) < "
                            "21600" not in cand[0]):
         bad.append("the candidate step does not publish a stale gate failure again over a success verdict")
-    if len(cand) == 1 and ("auto_merge_disabled github-actions" not in cand[0] or "required-check-guard.sh" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
-        bad.append("the candidate step does not put back (guard first, exact head) an arm the lane turned off after the reviewer approved the head")
+    if len(cand) == 1 and ("auto_merge_disabled github-actions" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
+        bad.append("the candidate step does not put back (exact head) an arm the lane turned off after the reviewer approved the head")
     # REQ-DEP-001-AC11: the one success this step publishes itself (the carried one) comes only past the same-diff
     # proof, never on a forced run
     if len(cand) == 1:
@@ -174,10 +174,9 @@ if kind == "reviewer":
         bad.append("no settle step after the act step and the cancellation cleanup, always run, able to fail the run")
     elif len(cand) == 1 and ('>> "$RUNNER_TEMP/work/lane-arms.txt"' not in cand[0] or 'grep -qx "$n $sha" '
             '"$W/lane-arms.txt"' not in (st[0].get("run") or "")
-                             or "required-check-guard.sh" not in (st[0].get("run") or "")
                              or '"failure true")' not in (st[0].get("run") or "")):
-        bad.append("the settle step does not turn off an arm over a failure verdict, or does not put back (guard "
-                "first) exactly the lane's arms the candidate step remembered")
+        bad.append("the settle step does not turn off an arm over a failure verdict, or does not put back "
+                "exactly the lane's arms the candidate step remembered")
     # AC9: auto-merge is armed only for the reviewed head
     arms = re.findall(r"gh pr merge --auto[^\n]*", text)
     if not arms or any('--match-head-commit "$sha"' not in a for a in arms):
@@ -250,19 +249,6 @@ elif kind == "reviewer-py":
                     r"/contents/\S*.*-X\s*(PUT|DELETE)", r"-X\s*(PUT|DELETE)\b.*/contents/"):
             if re.search(pat, st):
                 bad.append("the reviewer runs: " + st[:60])
-elif kind == "guard":
-    if "pull_request" not in on or (isinstance(on.get("pull_request"), dict) and on.get("pull_request")):
-        bad.append("not on every pull request")
-    push = on.get("push") if isinstance(on, dict) else None
-    if not isinstance(push, dict) or push != {"branches": ["main"]}:
-        bad.append("not on every push to main")
-    job = d.get("jobs", {}).get("required-check-guard", {})
-    if "if" in job or "continue-on-error" in job:
-        bad.append("the guard job is conditional")
-    guard_call = 'bash "${RUNNER_TEMP}/required-check-guard.sh" .github/policy/required-checks.json .github/policy/release-only-checks.json'
-    hit = [s for s, r in runs(job) if r.strip().splitlines()[-1:] == [guard_call]]
-    if len(hit) != 1 or any(k in hit[0] for k in ("if", "continue-on-error", "shell")):
-        bad.append("the guard step is missing, conditional or re-shelled")
 elif kind == "automerge":
     if on != "pull_request":
         bad.append(f"trigger is {on!r}, not pull_request")
@@ -290,7 +276,6 @@ elif kind == "automerge":
             bad.append("the screen interpolates an expression into a script (pass it by env)")
         if "github.event.pull_request.body" not in str((st.get("env") or {}).get("PR_BODY", "")):
             bad.append("the screen does not take the PR body from env PR_BODY")
-    guard = [i for i, (s, r) in enumerate(runs(job)) if "required-check-guard.sh" in r]
     arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r) and "--disable-auto" not in r]
     if len(arm) != 1:
         bad.append("no single squash auto-merge step")
@@ -332,10 +317,6 @@ elif kind == "automerge":
                 "while the lane arms would stay armed")
     if (job.get("permissions") or {}).get("checks") != "read":
         bad.append("the lane cannot read the reviewer's check (permissions: checks: read)")
-    if len(guard) != 1 or steps[guard[0]].get("if") != nonmajor or "continue-on-error" in steps[guard[0]]:
-        bad.append("the guard step is missing, wrongly conditioned, or can fail silently")
-    elif arm and guard[0] > arm[0]:
-        bad.append("auto-merge is armed before the guard")
     if scr and arm and scr[0] > arm[0]:
         bad.append("auto-merge is armed before the screen")
 print("; ".join(bad) or "ok")
@@ -368,8 +349,8 @@ PY
   else failn=$((failn+1)); echo "FAIL $3 → $got, want $4 ($out)"; fi
 }
 
-R=dependabot-reviewer.yml; H=ci.yml; A=dependabot-auto-merge.yml
-rs='d["jobs"]["review"]["steps"]'; gs='d["jobs"]["required-check-guard"]["steps"]'; as_='d["jobs"]["auto-merge"]["steps"]'
+R=dependabot-reviewer.yml; A=dependabot-auto-merge.yml
+rs='d["jobs"]["review"]["steps"]'; as_='d["jobs"]["auto-merge"]["steps"]'
 case_ reviewer $R reviewer-real            ok  ""
 case_ reviewer $R reviewer-on-pr           bad "d['on']['pull_request'] = ''"
 case_ reviewer $R reviewer-on-push         bad "d['on']['push'] = {'branches': ['main']}"
@@ -398,18 +379,10 @@ pycase reviewer-py-method-eq   bad '_gh_json(["repos/o/r/contents/x", "--method=
 pycase reviewer-py-method-var  bad 'm = "PUT"; _gh_json(["repos/o/r/contents/x", "-X", m])'
 pycase reviewer-py-scans       bad '_run(["grype", "dir:."])'
 pycase reviewer-py-edits-file  bad 'open("go.mod", "w").write("module changed")'
-case_ guard    $H guard-real               ok  ""
-case_ guard    $H guard-pr-filtered        bad "d['on']['pull_request'] = {'paths': ['bin/**']}"
-case_ guard    $H guard-job-if             bad "d['jobs']['required-check-guard']['if'] = 'false'"
-case_ guard    $H guard-step-continue      bad "[s.__setitem__('continue-on-error', 'true') for s in $gs if 'release-only-checks.json' in s.get('run','')]"
-case_ guard    $H guard-step-removed       bad "$gs[:] = [s for s in $gs if 'release-only-checks.json' not in s.get('run','')]"
 case_ automerge $A automerge-real          ok  ""
 case_ automerge $A automerge-target        bad "d['on'] = 'pull_request_target'"
 case_ automerge $A automerge-any-author    bad "d['jobs']['auto-merge']['if'] = 'true'"
 case_ automerge $A automerge-majors-too    bad "[s.pop('if', None) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
-case_ automerge $A automerge-no-guard      bad "$as_[:] = [s for s in $as_ if 'required-check-guard.sh' not in (s.get('run') or '')]"
-case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if 'required-check-guard.sh' in (s.get('run') or '')]"
-case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'required-check-guard.sh' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('all(.[]; .kind == \
@@ -452,13 +425,10 @@ case_ reviewer $R reviewer-settle-early    bad "i = [n for n, s in enumerate($rs
 $rs.pop(i); $rs.insert([n for n, s in enumerate($rs) if s.get('id') == 'act'][0], g)"
 case_ reviewer $R reviewer-settle-not-always bad "[s.__setitem__('if', s['if'].replace('always()', '!cancelled()')) \
 for s in $rs if s.get('id') == 'settle']"
-case_ reviewer $R reviewer-settle-unguarded bad "[s.__setitem__('run', s['run'].replace('bash \
-bin/required-check-guard.sh \"\$W/settle-required-checks.json\"', 'true')) for s in $rs if s.get('id') == 'settle']"
 case_ reviewer $R reviewer-settle-keeps-failed-arm bad "[s.__setitem__('run', s['run'].replace('\"failure true\")', \
 '\"failure never\")')) for s in $rs if s.get('id') == 'settle']"
 case_ reviewer $R reviewer-lane-arm-forgotten bad "[s.__setitem__('run', s['run'].replace('>> \
 \"\$RUNNER_TEMP/work/lane-arms.txt\"', '>> /dev/null')) for s in $rs if s.get('id') == 'candidates']"
-case_ reviewer $R reviewer-put-back-unguarded bad "[s.__setitem__('run', s['run'].replace('bash bin/required-check-guard.sh \"\$RUNNER_TEMP/work/heal-required-checks.json\"', 'true')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-put-back     bad "[s.__setitem__('run', s['run'].replace('auto_merge_disabled github-actions', 'auto_merge_disabled nobody')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
 case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].replace('headRefOid', 'title')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
@@ -505,12 +475,12 @@ steps = d["jobs"]["auto-merge"]["steps"]
 SCRIPT = "bin/dependabot-reviewer-version.sh"
 PATHS = ("bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
         ".github/workflows/dependabot-reviewer.yml",
-         ".github/policy/required-checks.json", "bin/required-check-guard.sh")
+         ".github/policy/required-checks.json")
 # the script is the code author's: main's copy is served as it is checked in (empty while it does not exist yet)
 MAIN = {p: open(os.path.join(root, p), "rb").read() for p in PATHS}
 MAIN[SCRIPT] = open(os.path.join(root, SCRIPT), "rb").read() if os.path.exists(os.path.join(root, SCRIPT)) else b""
 def version(files):
-    """REQ-DEP-001-AC14, computed here and not by the script: sha256 of the output of sha256sum over the five files
+    """REQ-DEP-001-AC14, computed here and not by the script: sha256 of the output of sha256sum over the four files
     in order"""
     return hashlib.sha256("".join("%s  %s\n" % (hashlib.sha256(files[p]).hexdigest(),
             p) for p in PATHS).encode()).hexdigest()
@@ -532,15 +502,24 @@ def runs_of(verdict, total=None):
 LASTOUT = ""
 CWD = TMP = ""
 def go(run, verdict, armed="true", waits="true", lookup_fails=False, main=None, contents_fail=False, fail_paths=(),
-        view_fails=False, total=None, partial=False):
+        view_fails=False, total=None, partial=False, rules="one"):
     """total: the check runs' total_count; partial: a failed read prints half a file before it fails;
     main: {path: its content on main}, where it is not the checked-in one;
     fail_paths: paths whose read through the contents API fails;
-    view_fails: the one read of the pull request (head and arm state) fails.
+    view_fails: the one read of the pull request (head and arm state) fails;
+    rules: what gh api repos/o/r/rules/branches/main answers: one (a required_status_checks rule listing one check),
+    two, none (other rules only), empty (a required_status_checks rule with an empty list), fails (gh exits 1),
+    junk (exit 0, not JSON).
     The step runs in the empty folder CWD, with RUNNER_TEMP set to the empty folder TMP"""
     bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
     log = os.path.join(bd, "log"); open(log, "w").close()
     json.dump(runs_of(verdict, total), open(os.path.join(bd, "runs.json"), "w"))
+    RULE = lambda n: {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": False,
+            "required_status_checks": [{"context": "check%d" % i, "integration_id": 15368} for i in range(n)]}}
+    json.dump({"one": [{"type": "deletion"}, RULE(1)], "two": [RULE(2)], "none": [{"type": "deletion"},
+            {"type": "non_fast_forward"}], "empty": [{"type": "deletion"}, RULE(0)], "fails": [], "junk": []}[rules],
+            open(os.path.join(bd, "rules.json"), "w"))
+    if rules == "junk": open(os.path.join(bd, "rules.json"), "w").write("<html>not json")
     json.dump({"headRefOid": "HEAD1", "autoMergeRequest": {"mergeMethod": "SQUASH"} if armed == "true" else None},
             open(os.path.join(bd, "view.json"), "w"))
     for path, text in {**MAIN, **(main or {})}.items():
@@ -552,9 +531,10 @@ f=; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" = --jq ] && f="${
 case "$1 $2" in
   "pr view") %(view)s jq -r "${f:-.}" %(bd)s/view.json ;;
   "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer"*) %(lookup)s jq -r "$f" %(bd)s/runs.json ;;
+  "api repos/o/r/rules/branches/main") %(rfail)s cat %(bd)s/rules.json ;;
   "api repos/o/r/contents/"*)
-    case "$2" in *"?ref=main") ;; *) exit 1 ;; esac
-    p=${2#*contents/}; p=${p%%%%"?ref=main"}
+    case "$2" in *"?ref=refs/heads/main") ;; *) exit 1 ;; esac
+    p=${2#*contents/}; p=${p%%%%"?ref=refs/heads/main"}
     %(cfail)s
     case " %(fails)s " in *" $p "*) %(half)s echo 'gh: HTTP 503' >&2; exit 1 ;; esac
     [ -f %(bd)s/main/"$p" ] || exit 1
@@ -563,6 +543,7 @@ esac
 """ % {"log": log, "bd": bd, "fails": " ".join(fail_paths),
        "view": "echo 'gh: HTTP 503' >&2; exit 1;" if view_fails else "",
        "lookup": "echo 'gh: HTTP 503' >&2; exit 1;" if lookup_fails else "",
+       "rfail": "echo 'gh: HTTP 503' >&2; exit 1;" if rules == "fails" else "",
        "half": "printf cGFydA;" if partial else "",
        "cfail": "echo 'gh: HTTP 503' >&2; exit 1" if contents_fail else ""})
     os.chmod(os.path.join(bd, "gh"), 0o755)
@@ -635,7 +616,7 @@ for what, runs in (("another version", [("success", OLDVER)]), ("no external_id"
 for what, runs in (("the current version", [("success", VER)]), ("another version replaced by a newer one of the "
         "current version", [("success", OLDVER), ("success", VER)])):
     rc, log = go(last, runs, waits="true")
-    if rc != 0 or "--disable-auto" in log or any("contents/%s?ref=main" % p not in log for p in PATHS):
+    if rc != 0 or "--disable-auto" in log or any("contents/%s?ref=refs/heads/main" % p not in log for p in PATHS):
         bad.append("a success with %s on a major's head, read against main's copies of the program, the prompt and "
                 "the workflow: auto-merge stands (rc %s)\n%s" % (what, rc, log))
 # a plain patch or minor needs no verdict: its step reads no version, and says it needs none
@@ -673,7 +654,7 @@ for verdict in ("none", "neutral", "failure"):
     rc, log = go(last, verdict, waits="true")
     if "contents/" in log:
         bad.append("the verdict is %s: the version is read only for a success\n%s" % (verdict, log))
-# REQ-DEP-001-AC14: the version is of the five files on main, in that order (sha256 of the output of sha256sum): a
+# REQ-DEP-001-AC14: the version is of the four files on main, in that order (sha256 of the output of sha256sum): a
 # change to any of them voids every earlier success
 old_files = (("the program, the prompt and the workflow alone (the version before the guard and the checks list "
         "counted)",
@@ -683,7 +664,7 @@ old_files = (("the program, the prompt and the workflow alone (the version befor
              ("the three files hashed together without sha256sum's lines",
              hashlib.sha256(b"".join(MAIN[p] for p in PATHS)).hexdigest(), None))
 for path in PATHS:
-    old_files += (("the five files before main's %s changed" % path, VER, changed(path)),)
+    old_files += (("the four files before main's %s changed" % path, VER, changed(path)),)
 for what, ver, main in old_files:
     rc, log = go(last, [("success", ver)], waits="true", main=main)
     if rc != 0 or "pr merge --disable-auto" not in log:
@@ -699,13 +680,15 @@ for path in PATHS:
         bad.append("a success of the version with main's changed %s: auto-merge stands (rc %s)\n%s" % (path, rc, log))
 # the script is fetched from main and run there: then the files it lists
 rc, log = go(last, [("success", VER)], waits="true")
-if rc != 0 or "--disable-auto" in log or "contents/%s?ref=main" % SCRIPT not in log or log.index("contents/%s?ref=main"
-        % SCRIPT) > log.index("contents/%s?ref=main" % PATHS[0]):
+if (rc != 0 or "--disable-auto" in log
+        or "contents/%s?ref=refs/heads/main" % SCRIPT not in log
+        or log.index("contents/%s?ref=refs/heads/main" % SCRIPT)
+        > log.index("contents/%s?ref=refs/heads/main" % PATHS[0])):
     bad.append("the script is read from main before the files it lists (rc %s)\n%s" % (rc, log))
 # the script is fetched by one literal gh api line into RUNNER_TEMP and run from there, with no cd
 # a command wrapped with a backslash-newline is one line, as the pin checker reads it
 code = [" ".join(l.split()) for l in last.replace("\\\n", " ").splitlines() if not l.strip().startswith("#")]
-fetches = [l for l in code if "contents/%s?ref=main" % SCRIPT in l]
+fetches = [l for l in code if "contents/%s?ref=refs/heads/main" % SCRIPT in l]
 FETCH_INTO = '--jq .content | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh"'
 if len(fetches) != 1 or "gh api " not in fetches[0] or FETCH_INTO not in fetches[0]:
     bad.append("the script is fetched by ONE literal gh api line with %s; got %s" % (FETCH_INTO, fetches))
@@ -735,7 +718,7 @@ if any(l.startswith("missing") for l in seen):
 # an empty file list, or an empty version, after a read that succeeded is no version either: it turns auto-merge off
 # and fails the step, as a failed read does
 LISTS_ONLY = ("#!/usr/bin/env bash\n" + FILES_LINE).encode()
-for what, script in (("is empty", b""), ("lists the five files but prints no version", LISTS_ONLY)):
+for what, script in (("is empty", b""), ("lists the four files but prints no version", LISTS_ONLY)):
     rc, log = go(last, [("success", VER)], waits="true", main={SCRIPT: script})
     if rc == 0 or "auto-merge stands" in LASTOUT or "pr merge --disable-auto" not in log:
         bad.append("the script on main %s: the step must turn auto-merge off and fail, never say it stands (rc "
@@ -748,7 +731,7 @@ for path in (PATHS[0], PATHS[1], PATHS[-1], SCRIPT):
         if (rc == 0) == (waits == "true") or ("pr merge --disable-auto" in log) != disarmed:
             bad.append("the read of %s fails (waits=%s): no version, so the success is no verdict, the major's arm "
                     "comes off and the patch's stands (rc %s)\n%s" % (path, waits, rc, log))
-# a failed fetch of any of the five files (nothing printed, or half a file) ends the step nonzero with auto-merge off,
+# a failed fetch of any of the four files (nothing printed, or half a file) ends the step nonzero with auto-merge off,
 # and the hash is never taken of what was read; an old version's success must not stand because of a short file
 for path in PATHS:
     for what, partial in (("prints nothing", False), ("prints half a file", True)):
@@ -811,6 +794,25 @@ if rc != 0 or "pr merge" in log:
 rc, log = go(arm, "none", armed="false", lookup_fails=True)
 if rc == 0 or "pr merge" in log:
     bad.append("the arm step when the verdict cannot be read: it must fail and arm nothing (rc %s)\n%s" % (rc, log))
+# REQ-DEP-003-AC1: armed only when main's ruleset lists at least one required status check, read when arming
+for r in ("one", "two"):
+    rc, log = go(arm, "success", armed="false", rules=r)
+    if rc != 0 or "pr merge --auto --squash --match-head-commit HEAD1 https://example.invalid/pr/1" not in log:
+        bad.append("ruleset-%s: main lists required status checks, so it must arm (rc %s)\n%s" % (r, rc, log))
+for r in ("none", "empty", "fails", "junk"):
+    rc, log = go(arm, "success", armed="false", rules=r)
+    if "pr merge --auto" in log:
+        bad.append("ruleset-%s: it must NOT arm\n%s" % (r, log))
+    if rc == 0:
+        bad.append("ruleset-%s: the step must fail (rc 0)\n%s" % (r, log))
+    if r in ("none", "empty") and ("::error::" not in LASTOUT or "required status check" not in LASTOUT):
+        bad.append("ruleset-%s: the step must print an ::error:: line saying main enforces no required status checks, "
+                "got %r" % (r, LASTOUT))
+    if "rules/branches/main" not in log:
+        bad.append("ruleset-%s: the step must read main's rules (gh api repos/o/r/rules/branches/main)\n%s" % (r, log))
+rc, log = go(arm, "failure", armed="false", rules="none")
+if "pr merge" in log:
+    bad.append("ruleset-none and a failed head: nothing may be armed\n%s" % log)
 print("lane arm and last step: " + ("ok" if not bad else "; ".join(bad)))
 sys.exit(1 if bad else 0)
 PY
@@ -934,7 +936,7 @@ then pass=$((pass+1)); echo "PASS gate-window-same-in-both"
 else failn=$((failn+1)); echo "FAIL gate-window-same-in-both"; fi
 
 # REQ-DEP-001-AC14: bin/dependabot-reviewer-version.sh, run from a checkout root, prints the version: the sha256 of the
-# output of sha256sum over the five files in order (computed here, not by the script); --files prints the five paths one
+# output of sha256sum over the four files in order (computed here, not by the script); --files prints the four paths one
 # per line; a file it cannot read fails it. The root folder may be its argument (from any working directory); with none
 # it works in the current directory.
 if python3 - "$root" "$work" <<'PY'
@@ -942,7 +944,7 @@ import hashlib, os, shutil, subprocess, sys
 root, work = sys.argv[1], sys.argv[2]
 PATHS = ["bin/dependabot-reviewer.py", ".github/policy/dependabot-reviewer-prompt.txt",
         ".github/workflows/dependabot-reviewer.yml",
-         ".github/policy/required-checks.json", "bin/required-check-guard.sh"]
+         ".github/policy/required-checks.json"]
 SCRIPT = "bin/dependabot-reviewer-version.sh"
 def expected(tree):
     lines = "".join("%s  %s\n" % (hashlib.sha256(open(os.path.join(tree, p), "rb").read()).hexdigest(),
@@ -971,7 +973,7 @@ if rc != 0 or out.strip() != expected(tree) or len(out.strip()) != 64:
     bad.append("the version of the fixture tree: want %s, got rc %s %r %r" % (expected(tree), rc, out, err[-80:]))
 rc, out, err = run(tree, "--files")
 if rc != 0 or out.split("\n") != PATHS + [""]:
-    bad.append("--files: want the five paths in order, one per line; got rc %s %r %r" % (rc, out, err[-80:]))
+    bad.append("--files: want the four paths in order, one per line; got rc %s %r %r" % (rc, out, err[-80:]))
 rc, out, err = run(root)
 if rc != 0 or out.strip() != expected(root):
     bad.append("the version of this checkout: want %s, got rc %s %r %r" % (expected(root), rc, out, err[-80:]))
@@ -984,7 +986,7 @@ gone = fixture("gone-by-argument")
 os.remove(os.path.join(gone, PATHS[1]))
 if run_with_root(gone)[0] == 0:
     bad.append("a file missing under the root given as the argument must fail the script")
-for path in (PATHS[3], PATHS[4]):
+for path in (PATHS[3],):
     changed = fixture("changed")
     before = run(changed)[1].strip()
     open(os.path.join(changed, path), "a").write("one more line\n")
@@ -1003,6 +1005,27 @@ sys.exit(1 if bad else 0)
 PY
 then pass=$((pass+1)); echo "PASS reviewer-version-script"
 else failn=$((failn+1)); echo "FAIL reviewer-version-script"; fi
+
+# g3: a tag named main must not answer a read of main, so every read of main's files names the branch ref
+am="$root/.github/workflows/dependabot-auto-merge.yml"
+reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly two copies of the one string
+  local want='?ref=refs/heads/main"'
+  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s' "$want" "$want")" ]
+}
+if reads_main_branch "$am"
+then pass=$((pass+1)); echo "PASS g3-auto-merge-reads-refs-heads-main"
+else failn=$((failn+1)); echo "FAIL g3-auto-merge-reads-refs-heads-main"; fi
+
+# bash joins text after the closing quote into the same word, so the ref would no longer end at main
+joins=$(mktemp -d -t cache5-tests.XXXXXX)
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}|' "$am" > "$joins/quote-join-a.yml"
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"-x|' "$am" > "$joins/quote-join-b.yml"
+for m in quote-join-a quote-join-b; do
+  if reads_main_branch "$joins/$m.yml"
+  then failn=$((failn+1)); echo "FAIL g3-auto-merge-refuses-$m"
+  else pass=$((pass+1)); echo "PASS g3-auto-merge-refuses-$m"; fi
+done
+[ -d "$joins" ] && rm -rf -- "$joins"
 
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
