@@ -172,7 +172,7 @@ done
 for pair in "cosign verify-blob $K $B x.txt:release.rsa.pub" \
             "cosign verify-blob $K $B x.txt:x.txt"; do
   c=${pair%:*}; file=${pair##*:}
-  # ROW 3: the provenance.bundle.json commands are release-verify's (Check does not hold the file: cases below); the key is also taken from build/keys/
+  # ROW 3: the provenance.bundle.json commands are release-apks's (Check does not hold the file: cases below); the key is also taken from build/keys/
   t=$(tree "$c" 0); rm -f "$t/$file"; [ "$file" != release.rsa.pub ] || rm -f "$t/build/keys/release.rsa.pub"
   v=$(check_says "$t")
   [ "$v" = refuse ] && [[ $(cat "$work/last") == *"$file"* ]] && ok "check-guide-plan: a missing operand fails naming it: $file (${c:0:40})" \
@@ -181,7 +181,7 @@ for pair in "cosign verify-blob $K $B x.txt:release.rsa.pub" \
     && ok "check-guide-plan: no passing not-run row for the missing $file" \
     || bad "check-guide-plan: a not-run row was planned for the missing $file" "$(head -c 200 "$t/plan.json")"
 done
-# ROW 3: the plan NAMES the place of each command: check, release-verify or postverify. place_is TREE COMMAND PLACE
+# ROW 3: the plan NAMES the place of each command: check, release-apks or postverify (release-verify is not a place). place_is TREE COMMAND PLACE
 place_is() { jq -e -s --arg c "$2" --arg p "$3" 'any(.[]; .command == $c and .place == $p)' "$1/plan.json" > /dev/null 2>&1 && echo yes || echo no; }
 for c in "cosign verify-blob $K $B x.txt" "cosign verify-blob-attestation $K $B --check-claims=false x.txt" "jq -e '.ok' f.json"; do
   t=$(tree "$c" 0); check_says "$t" > /dev/null
@@ -192,14 +192,14 @@ PC="cosign verify-blob-attestation --key release.rsa.pub --bundle provenance.bun
 PJ="jq -e '.ok' provenance.bundle.json"
 for c in "$PC" "$PJ"; do
   t=$(NOPROV=1 tree "$c" 0); v=$(check_says "$t")
-  [ "$v" = accept ] && ok "ROW3 a provenance.bundle.json command is accepted by Check without the file (it runs in release-verify): ${c:0:50}" \
+  [ "$v" = accept ] && ok "ROW3 a provenance.bundle.json command is accepted by Check without the file (it runs in release-apks, before publish): ${c:0:50}" \
     || bad "ROW3 provenance command without the file at Check: ${c:0:50}" "got $v: $(head -c 160 "$work/last")"
-  [ "$(place_is "$t" "$c" release-verify)" = yes ] && ok "ROW3 place: a provenance.bundle.json command is placed in release-verify: ${c:0:50}" \
-    || bad "ROW3 place: ${c:0:50} must be placed in release-verify" "$(head -c 200 "$t/plan.json" 2>&1)"
+  [ "$(place_is "$t" "$c" release-apks)" = yes ] && ok "ROW3 place: a provenance.bundle.json command is placed in release-apks: ${c:0:50}" \
+    || bad "ROW3 place: ${c:0:50} must be placed in release-apks" "$(head -c 200 "$t/plan.json" 2>&1)"
 done
 t=$(NOPROV=1 tree "$PC" 0); printf '%s\n' '```sh' "$PJ" '```' >> "$t/docs/verify-release.md"; check_says "$t" > /dev/null
-[ "$(place_is "$t" "$PJ" release-verify)" = yes ] && ok "ROW3 place: a jq read of provenance.bundle.json is placed in release-verify" \
-  || bad "ROW3 place: the jq read of provenance.bundle.json must be placed in release-verify" "$(head -c 200 "$t/plan.json" 2>&1)"
+[ "$(place_is "$t" "$PJ" release-apks)" = yes ] && ok "ROW3 place: a jq read of provenance.bundle.json is placed in release-apks" \
+  || bad "ROW3 place: the jq read of provenance.bundle.json must be placed in release-apks" "$(head -c 200 "$t/plan.json" 2>&1)"
 # the key: only build/keys/release.rsa.pub of the tagged checkout is there; the plan places the command in check and Check accepts
 KC="cosign verify-blob $K $B x.txt"
 t=$(NOROOTKEY=1 tree "$KC" 0); v=$(check_says "$t")
@@ -282,16 +282,18 @@ rt=$(mktemp -d "$work/real.XXXXXX"); rc=0
   "sha256:$A" "$rt/plan.json" "sha256:$A") > "$rt/out" 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "check-guide-plan: the real guide with the real list plans (accept)" \
   || bad "check-guide-plan: the real guide with the real list" "rc=$rc: $(head -c 200 "$rt/out")"
-# ROW 3 on the real tree: each of the four SBOM/lock commands is placed in postverify, every provenance.bundle.json command in release-verify, and every row names a known place
-jq -e -s 'length > 0 and all(.[]; .place == "check" or .place == "release-verify" or .place == "postverify")' "$rt/plan.json" > /dev/null 2>&1 \
-  && ok "ROW3 the real plan names a place (check, release-verify or postverify) for every command" \
+# ROW 3 on the real tree: each of the four SBOM/lock commands is placed in postverify, every provenance.bundle.json command in release-apks, and every row names a known place
+jq -e -s 'length > 0 and all(.[]; .place == "check" or .place == "release-apks" or .place == "postverify")' "$rt/plan.json" > /dev/null 2>&1 \
+  && ok "ROW3 the real plan names a place (check, release-apks or postverify) for every command" \
   || bad "ROW3 the real plan names a place for every command" "$(jq -c '[.[] | .place]' -s "$rt/plan.json" 2>&1 | head -c 200)"
+jq -e -s 'all(.[]; .place != "release-verify")' "$rt/plan.json" > /dev/null 2>&1 \
+  && ok "ROW3 release-verify is not a place of the real plan" || bad "ROW3 release-verify is not a place of the real plan" "a row names release-verify"
 for n in production.sbom.json fips.sbom.json production.full.lock.json fips.full.lock.json; do
   jq -e -s --arg n "$n" '[.[] | select(.command | test("verify-blob .*--bundle " + ($n | gsub("\\."; "\\.")) + "\\.bundle " + ($n | gsub("\\."; "\\."))))] | length == 1 and all(.[]; .place == "postverify")' "$rt/plan.json" > /dev/null 2>&1 \
     && ok "ROW3 the real plan places the $n verification in postverify" || bad "ROW3 the real plan places the $n verification in postverify" "$(jq -c '[.[] | {command: .command[0:60], place}]' -s "$rt/plan.json" 2>&1 | head -c 400)"
 done
-jq -e -s '[.[] | select(.command | test("provenance\\.bundle\\.json"))] | length == 3 and all(.[]; .place == "release-verify")' "$rt/plan.json" > /dev/null 2>&1 \
-  && ok "ROW3 the real plan places the three provenance.bundle.json commands in release-verify" || bad "ROW3 the real plan places the three provenance.bundle.json commands in release-verify" "$(jq -c '[.[] | {command: .command[0:60], place}]' -s "$rt/plan.json" 2>&1 | head -c 400)"
+jq -e -s '[.[] | select(.command | test("provenance\\.bundle\\.json"))] | length == 3 and all(.[]; .place == "release-apks")' "$rt/plan.json" > /dev/null 2>&1 \
+  && ok "ROW3 the real plan places the three provenance.bundle.json commands in release-apks" || bad "ROW3 the real plan places the three provenance.bundle.json commands in release-apks" "$(jq -c '[.[] | {command: .command[0:60], place}]' -s "$rt/plan.json" 2>&1 | head -c 400)"
 jq -e -s '[.[] | select(.place == "postverify")] | length >= 4 and ([.[] | select(.place == "postverify" and (.command | test("sbom|lock")))] | length == 4)' "$rt/plan.json" > /dev/null 2>&1 \
   && ok "ROW3 the real plan holds exactly four SBOM/lock commands in postverify" || bad "ROW3 the real plan holds exactly four SBOM/lock commands in postverify" "no"
 rc=0; g=$(cd "$root" && python3 -I $GL 2>&1) || rc=$?
