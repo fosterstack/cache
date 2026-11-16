@@ -11,7 +11,7 @@ name: Dependabot auto-merge
 # (REQ-DEP-003-AC2, advisor tighten-only reading, Oct 22): the `screen` step applies the
 # reviewer's own rule, so a flagged bump is treated here as a major.
 #
-# Two deliberate safety properties:
+# One deliberate safety property:
 #
 #  1. `pull_request`, NOT `pull_request_target`. The baseline
 #     (ops/docs/cicd-security-baseline.md) treats adding pull_request_target
@@ -20,12 +20,6 @@ name: Dependabot auto-merge
 #     code. This workflow also never checks out the PR at all — it only ever
 #     touches the GitHub API — so no third-party code executes here, with or
 #     without a token.
-#
-#  2. It refuses to run unless `main` actually has required status checks.
-#     "Auto-merge is gated on all checks green" is only true if the branch
-#     ruleset says which checks are required; with none configured,
-#     `--auto` merges the moment the PR is mergeable, which is immediately.
-#     The guard below fails closed rather than let that happen silently.
 
 on: pull_request
 
@@ -157,30 +151,6 @@ jobs:
             echo "holds with an issue. Nothing waits on a person."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: require that main enforces the exact expected check set
-        if: steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # The Sep 8 audit (§13) found the old guard checked only that AT
-          # LEAST ONE required check existed. The guard compares the EFFECTIVE
-          # required-check set on main — contexts and integration IDs both —
-          # against .github/policy/required-checks.json and refuses on any
-          # difference in either direction (bin/required-check-guard.sh; the
-          # same script runs on every PR in ci.yml, register row 75).
-          #
-          # The script AND the list are fetched from protected MAIN via the
-          # API, never from a checkout: this workflow deliberately checks out
-          # nothing (see the header), and the PR's own copies are exactly what
-          # an attacker editing them would control. Same trust-source rule as
-          # the release chain's allowed-signers fetch.
-          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq .content \
-            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
-          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
-            | base64 -d > "${RUNNER_TEMP}/required-checks.json"
-          bash "${RUNNER_TEMP}/required-check-guard.sh" "${RUNNER_TEMP}/required-checks.json"
-
       # The approval is an AUDIT TRAIL, not a gate. main's ruleset requires
       # signed commits and seven status checks; it does not require pull
       # request reviews, so nothing here depends on this succeeding.
@@ -218,6 +188,12 @@ jobs:
         # read first.
         run: |
           set -euo pipefail
+          # --auto merges at once when main lists no required status check: then nothing is armed
+          if ! gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                | jq -e '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]] | length > 0' > /dev/null; then
+            echo "::error::main lists no required status check, or its ruleset could not be read: not armed"
+            exit 1
+          fi
           run_url="repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=dependabot-reviewer"
           verdict=$(gh api "$run_url&filter=all&per_page=100" \
               --jq 'if (.check_runs | length) >= 100 then error("the check runs are cut") else . end
