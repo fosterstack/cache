@@ -2317,8 +2317,9 @@ _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install
 
 def _resolve_script(path, text, entries, bases=()):
     """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a COPY that a real
-    `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` (or `?ref=refs/heads/main`) command of the
-    job writes (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
+    `git show <ref>:<file> > <dir>/<name>` or
+    `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` (or `?ref=refs/heads/main`) command of the job writes
+    (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
     write of the copy do not count). <dir> is $RUNNER_TEMP or a directory under /tmp, and the write may be in another step
     of the job than the run (main's own stage-admission.yml writes /tmp/policy/<name> in one step and runs it in the next;
     Sonnet #164 r20, B2). None otherwise."""
@@ -2362,8 +2363,9 @@ def _resolve_script(path, text, entries, bases=()):
                         return None      # something else writes the copy (sed -i, cp, mv, tee ...): it is not main's committed bytes
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:
-            # ?ref=main and ?ref=refs/heads/main end there: ?ref=mainline and ?ref=main&ref=x name another ref
-            g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=(?:refs/heads/)?main(?=[\"\s]|$)\"?", chunk)
+            # the word bash passes, not the text: `"…?ref=main"-x` is one word, ?ref=main-x
+            g = next((m for t in _tokens(chunk)[2:] if (m := re.fullmatch(
+                r"repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^?\s]+)\?ref=(?:refs/heads/)?main", t))), None)
             if not g:
                 continue
             want = g.group(1)
