@@ -136,7 +136,7 @@ NO_ITEMS = {"accepted_items": []}      # what a missing .auditor/accepted-items.
 
 def _is_date(value):
     try:
-        return isinstance(value, str) and len(value) == 10 and datetime.date.fromisoformat(value) is not None
+        return isinstance(value, str) and datetime.date.fromisoformat(value).isoformat() == value
     except ValueError:
         return False
 
