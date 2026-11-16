@@ -699,8 +699,10 @@ for path in PATHS:
         bad.append("a success of the version with main's changed %s: auto-merge stands (rc %s)\n%s" % (path, rc, log))
 # the script is fetched from main and run there: then the files it lists
 rc, log = go(last, [("success", VER)], waits="true")
-if rc != 0 or "--disable-auto" in log or "contents/%s?ref=refs/heads/main" % SCRIPT not in log or log.index("contents/%s?ref=refs/heads/main"
-        % SCRIPT) > log.index("contents/%s?ref=refs/heads/main" % PATHS[0]):
+if (rc != 0 or "--disable-auto" in log
+        or "contents/%s?ref=refs/heads/main" % SCRIPT not in log
+        or log.index("contents/%s?ref=refs/heads/main" % SCRIPT)
+        > log.index("contents/%s?ref=refs/heads/main" % PATHS[0])):
     bad.append("the script is read from main before the files it lists (rc %s)\n%s" % (rc, log))
 # the script is fetched by one literal gh api line into RUNNER_TEMP and run from there, with no cd
 # a command wrapped with a backslash-newline is one line, as the pin checker reads it
