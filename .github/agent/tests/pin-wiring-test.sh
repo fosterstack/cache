@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-REL-013-AC2 — the release-only list is the eight entries pinned in this judge (the pinned-release-only cases)
 # proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4 — the scanner guard step is required, exactly, in the allowlist job
 # (the scanguard cases);
 # the eight release-only names belong to the jobs that produce them (the reserved cases)
@@ -1416,6 +1417,41 @@ done
 bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@3d3c42e5aac5ba805825da76410c181273ba90b1/@abababababababababababababababababababab/"
 bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
 bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
+
+# ---- the release-only list is pinned by the judge itself (REQ-REL-013-AC2, AC3) ---------------------------------
+# pincase <name> <ok|bad> <python edit of req and rel (the two lists, dicts) and optionally of the ci.yml dict d> <text the output names, or empty>
+pincase() {
+  local f="$work/pin-$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  python3 - "$here/.github/policy" "$work/pin-$1" "$f" "$3" <<'PY'
+import json, sys, yaml
+req = json.load(open(sys.argv[1] + "/required-checks.json"))
+rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
+d = yaml.load(open(sys.argv[3]), Loader=yaml.BaseLoader)
+exec(sys.argv[4])
+json.dump(req, open(sys.argv[2] + "-required.json", "w")); json.dump(rel, open(sys.argv[2] + "-release.json", "w"))
+yaml.safe_dump(d, open(sys.argv[3], "w"), sort_keys=False)
+PY
+  if out=$(PIN_WIRING_POLICY_FILE="$work/pin-$1-required.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/pin-$1-release.json" judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ] && { [ -z "${4:-}" ] || grep -qF -- "$4" <<<"$out"; }; then pass=$((pass+1)); echo "PASS pinned-release-only:$1 → $got ${4:+names: $4}"
+  else failn=$((failn+1)); echo "FAIL pinned-release-only:$1 → $got, want $2 ${4:+naming: $4} ($out)"; fi
+}
+MOVE_COV='e = [c for c in rel["required_checks"] if c["context"] == "coverage"][0]; rel["required_checks"].remove(e); req["required_checks"].append(e)'
+pincase real-lists-pass                ok  "pass" ""
+pincase coverage-moved-fake-producer   bad "$MOVE_COV; d['jobs']['coverage']['steps'] = [{'run': 'true'}]" "coverage"
+pincase coverage-moved-producer-kept   bad "$MOVE_COV" "coverage"
+pincase entry-integration-changed      bad "[c for c in rel['required_checks'] if c['context'] == 'acceptance-gradle'][0]['integration_id'] = 1" "acceptance-gradle"
+pincase entry-scope-changed            bad "[c for c in rel['required_checks'] if c['context'] == 'coverage'][0]['scope'] = 'pull_request'" "coverage"
+pincase entry-context-renamed          bad "[c for c in rel['required_checks'] if c['context'] == 'acceptance-maven (1.2.0)'][0]['context'] = 'acceptance-maven (1.2.9)'" "acceptance-maven (1.2.0)"
+pincase gate-integration-changed       bad "[c for c in rel['required_checks'] if c['context'] == 'auditor-review-gate'][0]['integration_id'] = 15368" "auditor-review-gate"
+pincase entry-dropped                  bad "rel['required_checks'][:] = [c for c in rel['required_checks'] if c['context'] != 'acceptance-maven (1.2.3)']" "acceptance-maven (1.2.3)"
+pincase entry-added                    bad "rel['required_checks'].append({'context': 'extra-x', 'integration_id': 15368, 'scope': 'push'})" "extra-x"
+pincase entry-extra-field              bad "[c for c in rel['required_checks'] if c['context'] == 'coverage'][0]['note'] = 'x'" "coverage"
+
+# judge mode on a commit with ci.yml and required-checks.json but no release-only-checks.json is refused by main's form,
+# even when the ruleset list carries all eight entries (no empty-list judging)
+gitcase no-release-only-all-eight-in-required-at-a-commit bad "" \
+  "jq -s '{required_checks: (.[0].required_checks + .[1].required_checks)}' .github/policy/required-checks.json $RO > rc.tmp && mv rc.tmp .github/policy/required-checks.json && rm $RO"
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
