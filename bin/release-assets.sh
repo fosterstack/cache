@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Release, fifth witnessed step (rules 56 and 64): attaches the evidence to the GitHub release. It uploads what the earlier steps made, nothing
-# is rebuilt and nothing is signed here. A release is created only when none exists, only with --verify-tag (the tag must already exist), and
+# is rebuilt and nothing is signed here: every archive, checksums.txt and apk must carry the <file>.bundle sign-release made, verified against the public release key (REQ-CHAIN-007-AC22). A release is created only when none exists, only with --verify-tag (the tag must already exist), and
 # nothing in the chain creates, moves or pushes a tag. The apks of the two architectures, and the SBOMs and lock files of the two images, have
 # the same file names, so each is attached under its architecture's or variant's name.
 set -euo pipefail
@@ -37,6 +37,13 @@ for f in release-key-manifest.json release-key-manifest.sig; do
   [ -f ".github/policy/$f" ] && [ ! -L ".github/policy/$f" ] || { echo "release-assets: .github/policy/$f is missing: the signed key manifest is attached to every release" >&2; exit 1; }
 done
 python3 bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
+# REQ-CHAIN-007-AC22: nothing is attached that sign-release did not sign. Each of the four archives, checksums.txt and the four apks has its <file>.bundle, with a Rekor entry, and verifies
+# against the public release key; a missing, unverifiable or Rekor-less one stops the step here, before a release is created or anything is staged, naming the file. The log is checked, never turned off.
+for f in dist/*.tar.gz dist/checksums.txt release-apks/*/*.apk; do
+  [ -f "$f.bundle" ] && [ ! -L "$f.bundle" ] || { echo "release-assets: $f has no signature from sign-release ($f.bundle is missing)" >&2; exit 1; }
+  jq -e '(.verificationMaterial.tlogEntries // []) | length > 0' "$f.bundle" > /dev/null || { echo "release-assets: $f.bundle has no Rekor entry: $f cannot be attached" >&2; exit 1; }
+  cosign verify-blob --key build/keys/release.rsa.pub --bundle "$f.bundle" "$f" > /dev/null || { echo "release-assets: the signature of $f does not verify ($f.bundle)" >&2; exit 1; }
+done
 rm -rf release-upload release-published
 mkdir release-upload
 # Everything attached comes from an explicit inventory, and a release name has exactly one origin (round 1 F4): a second file under a name already
@@ -70,9 +77,9 @@ only witness-build build-collection.json build-collection.rekor.json digests.jso
 only witness-rebuild rebuild-collection.json rebuild-collection.rekor.json verdict.json
 only provenance provenance.json provenance.rekor.json provenance.bundle.json
 for c in "${runners[@]}"; do for n in scanners acceptance runtime; do only "witness-check/$c/witness-$n" "$n-collection.json" "$n-collection.rekor.json"; done; done
-for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
+for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-assets: $f is not in the inventory of dist (the four archives, checksums.txt and their bundles)" >&2; exit 1; }; done
 for f in release-key-manifest.json release-key-manifest.sig; do stage ".github/policy/$f" "$f"; done
-for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 release-policy/policy.json \
+for f in dist/*.tar.gz dist/*.bundle dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 release-policy/policy.json \
          witness-build/build-collection.json witness-build/build-collection.rekor.json witness-build/digests.json witness-build/items.json witness-build/admission-baseline.json witness-rebuild/rebuild-collection.json witness-rebuild/rebuild-collection.rekor.json provenance/provenance.json provenance/provenance.rekor.json provenance/provenance.bundle.json; do
   stage "$f" "${f##*/}"
 done
