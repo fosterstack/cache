@@ -20,6 +20,8 @@ tree() {
   local t; t=$(mktemp -d "$work/t.XXXXXX")
   ln -s "$root/bin" "$t/bin"; ln -s "$root/.github" "$t/.github"
   mkdir "$t/docs" "$t/witness-build"
+  # Check holds the candidate's release.rsa.pub and provenance.bundle.json (finding 3; rule 79): present by default, NOFILES=1 leaves them out
+  if [ "${NOFILES:-0}" != 1 ]; then touch "$t/release.rsa.pub" "$t/provenance.bundle.json" "$t/b.json" "$t/x.txt" "$t/f.json"; fi
   printf '{"image-production":"sha256:%s","image-fips":"sha256:%s"}\n' "$A" "$A" > "$t/witness-build/digests.json"
   printf '%s\n' '- `<IMAGE_REF>`: the image' '- `<IMAGE_REF_FIPS>`: the fips image' '- `<TAG>`: the tag' \
     '- `<RELEASE_KEY>`: the key' '```sh' "$1" '```' > "$t/docs/verify-release.md"
@@ -145,15 +147,36 @@ plan_says() {
   jq -e -s 'length > 0 and all(.[]; .run == null and (.reason | contains("run by postverify before publishing")))' \
     "$1/plan.json" > /dev/null 2>&1 && echo yes || echo no
 }
+# finding 3 (AC7, guide line 35): Check runs EVERY file command against the candidate and checks the result; the operands are present,
+# so the row is planned to run (run set, never "not-run", never postverify's reason)
+plan_runs() { # plan_runs TREE: every row has a non-null run and no reason
+  jq -e -s 'length > 0 and all(.[]; .run != null and .reason == null)' "$1/plan.json" > /dev/null 2>&1 && echo yes || echo no
+}
 for c in "cosign verify-blob $K $B x.txt" \
          "cosign verify-blob-attestation $K $B --check-claims=false x.txt" \
          "jq -e '.ok' f.json" \
-         "cosign verify-blob $K $B x.txt | jq -e '.ok'"; do
+         "cosign verify-blob $K $B x.txt | jq -e '.ok'" \
+         "cosign verify-blob-attestation $K --bundle provenance.bundle.json --check-claims=false x.txt" \
+         "jq -e '.ok' provenance.bundle.json"; do
   t=$(tree "$c" 0); v=$(check_says "$t")
-  [ "$v" = accept ] && ok "check-guide-plan: unlisted file-subject command, file absent (accept): ${c:0:50}" \
-    || bad "check-guide-plan: unlisted file-subject command, file absent: ${c:0:50}" "got $v: $(head -c 120 "$work/last")"
-  [ "$(plan_says "$t")" = yes ] && ok "check-guide-plan: its plan row says run by postverify before publishing, run null" \
-    || bad "check-guide-plan: plan row of ${c:0:50}" "$(head -c 200 "$t/plan.json" 2>&1)"
+  [ "$v" = accept ] && ok "check-guide-plan: unlisted file command, operands present (accept): ${c:0:50}" \
+    || bad "check-guide-plan: unlisted file command, operands present: ${c:0:50}" "got $v: $(head -c 120 "$work/last")"
+  [ "$(plan_runs "$t")" = yes ] && ok "check-guide-plan: its plan row is run (a command to execute), not not-run: ${c:0:50}" \
+    || bad "check-guide-plan: plan row of ${c:0:50} must carry a run and no reason" "$(head -c 200 "$t/plan.json" 2>&1)"
+done
+# a missing operand FAILS (never a passing not-run row, never left to postverify), naming the file
+for pair in "cosign verify-blob $K $B x.txt:release.rsa.pub" \
+            "cosign verify-blob --key release.rsa.pub --bundle provenance.bundle.json x.txt:provenance.bundle.json" \
+            "jq -e '.ok' provenance.bundle.json:provenance.bundle.json" \
+            "cosign verify-blob $K $B x.txt:x.txt"; do
+  c=${pair%:*}; file=${pair##*:}
+  t=$(tree "$c" 0); rm -f "$t/$file"
+  v=$(check_says "$t")
+  [ "$v" = refuse ] && [[ $(cat "$work/last") == *"$file"* ]] && ok "check-guide-plan: a missing operand fails naming it: $file (${c:0:40})" \
+    || bad "check-guide-plan: missing operand $file of ${c:0:40} must fail naming it" "got $v: $(head -c 160 "$work/last")"
+  [ ! -s "$t/plan.json" ] || [ "$(jq -s 'any(.[]; .run == null)' "$t/plan.json" 2>/dev/null)" != true ] \
+    && ok "check-guide-plan: no passing not-run row for the missing $file" \
+    || bad "check-guide-plan: a not-run row was planned for the missing $file" "$(head -c 200 "$t/plan.json")"
 done
 # an image reference is not a file subject: unlisted, it still fails
 for c in "cosign verify <IMAGE_REF> $K" "cosign verify <IMAGE_REF_FIPS> $K" \
@@ -175,8 +198,10 @@ IMG="cosign verify <IMAGE_REF> $K"; FILEC="cosign verify-blob $K $B x.txt"
 t=$(tree "$IMG" 0); printf '%s\n' '```sh' "$FILEC" '```' >> "$t/docs/verify-release.md"; setlist "$t" "$IMG"
 v=$(check_says "$t"); [ "$v" = accept ] && ok "check-guide-plan: listed image command beside a file command (accept)" \
   || bad "check-guide-plan: listed image command beside a file command" "got $v: $(head -c 120 "$work/last")"
-[ "$(jq -s '[.[] | select(.run == null)] | length' "$t/plan.json" 2>/dev/null)" = 2 ] \
-  && ok "check-guide-plan: both rows of the mixed guide have run null" || bad "check-guide-plan: mixed guide rows" "not two null rows"
+[ "$(jq -s '[.[] | select(.run == null)] | length' "$t/plan.json" 2>/dev/null)" = 1 ] \
+  && [ "$(jq -s '[.[] | select(.run != null)] | length' "$t/plan.json" 2>/dev/null)" = 1 ] \
+  && ok "check-guide-plan: the mixed guide plans the image row as not-run and the file row to run" \
+  || bad "check-guide-plan: mixed guide rows" "wanted one null row (image) and one run row (file)"
 
 # the list keeps image-reference commands only: a file-subject entry is refused, naming the entry (Check and guidelist)
 GL="bin/chain-check-shape.py guidelist docs/verify-release.md"
