@@ -13,7 +13,6 @@ today=$(date -u +%Y-%m-%d)
 year=${today:0:4}; mon=$((10#${today:5:2}))
 if [ "$mon" -eq 1 ]; then year=$((year - 1)); mon=12; else mon=$((mon - 1)); fi
 month=$(printf '%04d-%02d' "$year" "$mon")
-next=${today:0:7}
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # every page of the releases; a draft never counts
 gh api --paginate --slurp "repos/$repo/releases?per_page=100" |
@@ -41,14 +40,13 @@ key_policy() {
   openssl dgst -sha256 -verify .github/policy/release-key-root.pub -signature "$dir/manifest.sig" \
     "$dir/release-key-manifest.json" > /dev/null 2>&1 ||
     { echo "the key manifest is not signed by the root key"; return 1; }
-  # the key's window meets the date the letter was SIGNED (the bundle's Rekor time, else the release's published_at), not
-  # the month it is about; with neither date it meets the month. A revoked key is refused
+  # the key's window meets the date the letter was SIGNED (the bundle's Rekor time), not the month it is about and not the
+  # release's unsigned published_at; a bundle with no readable Rekor time has no signed date and is refused. A revoked key is refused
   signed=$(jq -r '.verificationMaterial.tlogEntries[0].integratedTime // empty' "$dir/$md.bundle" 2> /dev/null) || signed=
-  if [[ "$signed" =~ ^[0-9]+$ ]]; then signed=$(date -u -d "@$signed" +%Y-%m-%dT%H:%M:%SZ)
-  else signed=$(jq -r '.published_at // empty' <<< "$release"); fi
-  jq -e --arg from "$month-01T00:00:00Z" --arg to "$next-01T00:00:00Z" --arg s "$signed" '.revoked_at == null and
-    (if $s != "" then .valid_from <= $s and (.valid_to == null or .valid_to > $s)
-     else .valid_from < $to and (.valid_to == null or .valid_to > $from) end)' "$dir/release-key-manifest.json" > /dev/null ||
+  [[ "$signed" =~ ^[0-9]+$ ]] || { echo "the bundle holds no readable Rekor time: no signed date"; return 1; }
+  signed=$(date -u -d "@$signed" +%Y-%m-%dT%H:%M:%SZ)
+  jq -e --arg s "$signed" '.revoked_at == null and .valid_from <= $s and (.valid_to == null or .valid_to > $s)' \
+    "$dir/release-key-manifest.json" > /dev/null ||
     { echo "the key manifest lists no usable key for $month"; return 1; }
   jq '{release_key: {public_key: .public_key}}' "$dir/release-key-manifest.json" > "$dir/policy.json"
   echo "$dir/policy.json"
