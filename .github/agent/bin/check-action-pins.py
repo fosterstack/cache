@@ -2364,8 +2364,10 @@ def _resolve_script(path, text, entries, bases=()):
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:
             # the word bash passes, not the text: `"…?ref=main"-x` is one word, ?ref=main-x
-            g = next((m for t in _tokens(chunk)[2:] if (m := re.fullmatch(
-                r"repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^?\s]+)\?ref=(?:refs/heads/)?main", t))), None)
+            # argv after `api` = the endpoint, then `--jq .content`; any other word (-X, -f, -H) may add a second ref
+            args = _tokens(chunk)[2:]
+            g = re.fullmatch(r"repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^?\s]+)\?ref=(?:refs/heads/)?main", args[0]) \
+                if args[1:] == ["--jq", ".content"] else None
             if not g:
                 continue
             want = g.group(1)
