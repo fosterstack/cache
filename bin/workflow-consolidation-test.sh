@@ -483,28 +483,39 @@ import os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
-text = open(sys.argv[1]).read()
-for word in ("image-ref", "IMAGE_REF", "ghcr.io"):
-    if word in text:
-        bad.append("acceptance.yml still carries %s (it has no registry mode)" % word)
 on = d.get("on") or {}
 if sorted(on) != ["workflow_call"]:
     bad.append("acceptance.yml's events are not workflow_call alone (REQ-CI-001-AC2): %s" % list(on))
-outs = (on.get("workflow_call") or {}).get("outputs") or {}
+call = on.get("workflow_call") or {}
+if (call.get("inputs") or {}).get("image-ref", {}).get("type") != "string":
+    bad.append("acceptance.yml has no image-ref input (release.yml's call needs the registry mode, REQ-SUP-001-AC29)")
+outs = call.get("outputs") or {}
 if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.acceptance-gradle.outputs.results }}",
                                                    "maven-results": "${{ jobs.acceptance-maven.outputs.results }}"}:
     bad.append("the workflow_call outputs are not both suites' results: %s" % outs)
 jobs = d.get("jobs") or {}
 g, m = jobs.get("acceptance-gradle") or {}, jobs.get("acceptance-maven") or {}
-if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read"}:
+PERMS = {"contents": "read", "packages": "read"}   # the registry mode pulls the private candidates package
+if g.get("name") != "acceptance-gradle" or g.get("permissions") != PERMS:
     bad.append("acceptance-gradle changed: %s" % {k: g.get(k) for k in ("name", "permissions")})
-if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read"} or \
+if m.get("name") != "acceptance-maven" or m.get("permissions") != PERMS or \
         (m.get("strategy") or {}).get("matrix", {}).get("extension-version") != ["1.2.0", "1.2.3"]:
     bad.append("acceptance-maven changed: %s" % {k: m.get(k) for k in ("name", "permissions", "strategy")})
 if m.get("env") != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):
     bad.append("maven's scenario environment did not move onto its job unchanged")
 if d.get("permissions") != {"contents": "read"}:
     bad.append("top-level permissions changed")
+# each job that can start the candidate image refuses a ref that is not a digest pin, then logs in and starts it
+for name, job in (("acceptance-gradle", g), ("acceptance-maven", m)):
+    steps = job.get("steps") or []
+    refusals = [i for i, s in enumerate(steps) if "inputs.image-ref != ''" in (s.get("if") or "")
+                and "sha256:[0-9a-f]{64}" in (s.get("run") or "")]
+    starts = [i for i, s in enumerate(steps) if "docker login ghcr.io" in (s.get("run") or "")
+              and "IMAGE_REF" in (s.get("env") or {})]
+    if not refusals or not starts:
+        bad.append("%s has no digest-pin refusal step or no ghcr login and IMAGE_REF start step" % name)
+    elif refusals[0] > starts[0]:
+        bad.append("%s starts the image before it refuses a ref that is not a digest pin" % name)
 for gone in ("acceptance-gradle.yml", "acceptance-maven.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
         bad.append("%s still exists" % gone)
@@ -512,8 +523,11 @@ rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loade
 calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", "")) and "stage-" not in str(v.get("uses", ""))]
 if calls != ["acceptance"] or rel["acceptance"].get("uses") != "./.github/workflows/acceptance.yml":
     bad.append("release.yml does not call acceptance.yml once: %s" % calls)
-elif "image-ref" in (rel["acceptance"].get("with") or {}):
-    bad.append("release.yml still passes image-ref to acceptance.yml")
+elif "image-ref" not in (rel["acceptance"].get("with") or {}):
+    bad.append("release.yml does not pass image-ref to acceptance.yml (the acceptance predicate would sign digests that were never tested)")
+fs = yaml.load(open(os.path.join(root, ".github/workflows/full-suite.yml")), Loader=yaml.BaseLoader)["jobs"]
+if "image-ref" in (fs["acceptance"].get("with") or {}):
+    bad.append("full-suite.yml passes image-ref to acceptance.yml (it stays in source mode)")
 pred = (rel.get("acceptance-predicate") or {}).get("with") or {}
 if pred.get("gradle-results") != "${{ needs.acceptance.outputs.gradle-results }}" or \
         pred.get("maven-results") != "${{ needs.acceptance.outputs.maven-results }}":
@@ -545,10 +559,13 @@ case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('mav
 case_acc pr-trigger-back       bad "d['on']['pull_request'] = ''"
 case_acc push-trigger-back     bad "d['on']['push'] = {'branches': ['main']}"
 case_acc dispatch-added        bad "d['on']['workflow_dispatch'] = ''"
-case_acc image-ref-input       bad "d['on']['workflow_call'].setdefault('inputs', {})['image-ref'] = {'type': 'string'}"
-case_acc packages-read-back    bad "d['jobs']['acceptance-gradle']['permissions']['packages'] = 'read'"
-case_acc ghcr-login-back       bad "d['jobs']['acceptance-gradle']['steps'].append({'run': 'docker login ghcr.io'})"
-case_acc image-ref-env-back    bad "d['jobs']['acceptance-gradle']['steps'].append({'run': 'docker run \"\${IMAGE_REF}\"'})"
+case_acc image-ref-input-lost  bad "d['on']['workflow_call']['inputs'].pop('image-ref')"
+case_acc packages-read-lost    bad "d['jobs']['acceptance-gradle']['permissions'].pop('packages')"
+case_acc maven-packages-lost   bad "d['jobs']['acceptance-maven']['permissions'].pop('packages')"
+case_acc ghcr-login-lost       bad "d['jobs']['acceptance-gradle']['steps'] = [x for x in d['jobs']['acceptance-gradle']['steps'] if 'docker login' not in (x.get('run') or '')]"
+case_acc refusal-lost          bad "d['jobs']['acceptance-gradle']['steps'] = [x for x in d['jobs']['acceptance-gradle']['steps'] if 'sha256:[0-9a-f]{64}' not in (x.get('run') or '')]"
+case_acc maven-refusal-lost    bad "d['jobs']['acceptance-maven']['steps'] = [x for x in d['jobs']['acceptance-maven']['steps'] if 'sha256:[0-9a-f]{64}' not in (x.get('run') or '')]"
+case_acc refusal-after-start   bad "st = d['jobs']['acceptance-gradle']['steps']; i = [n for n, x in enumerate(st) if 'sha256:[0-9a-f]{64}' in (x.get('run') or '')][0]; st.append(st.pop(i))"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
@@ -921,6 +938,15 @@ for k in ci scan supply-chain acceptance codeql; do
 done
 case_conc supply-chain-daily-group-dropped bad supply-chain "d['jobs']['daily-audit'].pop('concurrency')"
 case_conc supply-chain-daily-cancels bad supply-chain "d['jobs']['daily-audit']['concurrency']['cancel-in-progress'] = 'true'"
+
+# REQ-CI-001-AC7: "analyze (go)" on a chosen release-candidate commit needs a run that can be dispatched
+codeql_out=$(python3 - "$root/.github/workflows/codeql.yml" <<'PY'
+import sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+print("ok" if "workflow_dispatch" in (d.get("on") or {}) else "codeql.yml has no workflow_dispatch trigger")
+PY
+)
+if [ "$codeql_out" = ok ]; then pass=$((pass+1)); echo "PASS codeql-has-workflow-dispatch → ok"; else failn=$((failn+1)); echo "FAIL codeql-has-workflow-dispatch ($codeql_out)"; fi
 
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
