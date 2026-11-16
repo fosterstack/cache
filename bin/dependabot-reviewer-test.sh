@@ -2,7 +2,7 @@
 # proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7
 # proves: REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-001-AC11, REQ-DEP-001-AC12
 # proves: REQ-DEP-001-AC13, REQ-DEP-001-AC14, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
-# proves: REQ-DEP-004-AC1, REQ-DEP-004-AC2
+# proves: REQ-DEP-004-AC1
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -302,33 +302,35 @@ check(
       "moved INTO vendor/ from outside",
       all(x in sd for x in ("+require a/b v1.1.0", "+OURS()", "+SPACED()", "+MOVED()", "rename from cmd/z.go")), sd)
 check("shown_diff: with the vendor check not required, nothing is left out", r.shown_diff(VDIFF, False) == VDIFF, "")
-_t = tempfile.mkdtemp()
-json.dump({"required_checks": [{"context": "test"}, {"context": "vendor"}]}, open(os.path.join(_t, "with.json"), "w"))
-json.dump({"required_checks": [{"context": "test"}]}, open(os.path.join(_t, "without.json"), "w"))
-open(os.path.join(_t, "broken.json"), "w").write("{")
-check(
-      "vendor_is_required: only when main's required-check list holds `vendor`; a list without it, unreadable or "
-      "missing is no",
-      [r.vendor_is_required(os.path.join(_t, f))
-      for f in ("with.json", "without.json", "broken.json", "missing.json")] == [True, False, False, False], "")
-check("vendor_is_required: this repository's list holds it (so a module bump's vendored files are left to that check)",
-      r.vendor_is_required(
-      os.path.join(os.path.dirname(os.environ["REVIEWER_PY"]), "..", ".github/policy/required-checks.json")) is True,
-      "")
 ran = []
-def gather_diff(diff, required, sha="a" * 40):
+RULES_GOT = []
+def ruleset(*contexts):
+    return [{"type": "required_status_checks", "parameters": {"required_status_checks": [
+        {"context": c, "integration_id": 15368} for c in contexts]}}]
+RULES_VENDOR = ruleset("lint", "vendor")
+RULES_NO_VENDOR = ruleset("lint", "test")
+def gather_diff(diff, required, sha="a" * 40, rules="default"):
+    # required: True/False = main's ruleset lists `vendor` / does not; rules: the answer of the ruleset read itself
+    # (a JSON value, or None for a read that failed), overriding that
     del ran[:]
     d = tempfile.mkdtemp()
     u = os.path.join(d, "u.json")
     json.dump([{"name": "a/b", "from": "1.0.0", "to": "1.1.0", "major": True, "kind": "not-major"}], open(u, "w"))
     class A: pass
     a = A(); a.pr, a.sha, a.base, a.updates, a.out = 7, sha, "main", u, os.path.join(d, "out")
-    saved = (r._run, r.release_notes, r.our_usage, r._gh_json, r.vendor_is_required)
+    saved = (r._run, r.release_notes, r.our_usage, r._gh_json)
+    del RULES_GOT[:]
+    if rules == "default":
+        rules = RULES_VENDOR if required else RULES_NO_VENDOR
+    def gh_json(args):
+        if args == ["repos/%s/rules/branches/main" % (os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}")]:
+            RULES_GOT.append(args)
+            return rules
+        return [commit("a")]
     r._run = lambda cmd: (ran.append(cmd) or (diff, 0))
-    r._gh_json = lambda args: [commit("a")]
+    r._gh_json = gh_json
     r.release_notes = lambda n, o, nw: ("notes\n", 1)
     r.our_usage = lambda n: "usage\n"
-    r.vendor_is_required = lambda: required
     try:
         with _gcl.redirect_stdout(_gio.StringIO()), _gcl.redirect_stderr(_gio.StringIO()) as err:
             try:
@@ -338,7 +340,7 @@ def gather_diff(diff, required, sha="a" * 40):
         return code, (open(os.path.join(a.out, "bundle.md")).read()
               if os.path.exists(os.path.join(a.out, "bundle.md")) else None), err.getvalue()
     finally:
-        r._run, r.release_notes, r.our_usage, r._gh_json, r.vendor_is_required = saved
+        r._run, r.release_notes, r.our_usage, r._gh_json = saved
 # well over the 20000 the diff used to be cut at
 big = "diff --git a/x b/x\n" + "".join("+line %06d of what the pull request changes\n" % i for i in range(1200))
 code, b, _ = gather_diff(big, False)
@@ -364,6 +366,42 @@ code, b, _ = gather_diff(vend, False)
 check(
       "gather: the same bump while `vendor` is NOT a required check is shown whole, so it is over the limit: no "
       "bundle", code == 3 and b is None, code)
+
+# REQ-DEP-001-AC2: vendored files are given by header only while main's ruleset lists the vendor check, read once at
+# gather time; a read that fails, or a ruleset without vendor, shows them in full
+code, b, _ = gather_diff(vend, True)
+check("gather: main's ruleset lists `vendor` -> a vendored file is given by its header and a count of the lines not shown",
+      code == 0 and "a vendored module file: 1 added and 0 removed line(s) not shown" in b and "yyyy" not in b, code)
+code, b, _ = gather_diff(VDIFF, False)
+check("gather: main's ruleset lists checks but not `vendor` -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "+more()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=[])
+check("gather: main's ruleset has no rules at all -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=[{"type": "pull_request", "parameters": {}}])
+check("gather: main's ruleset has no required_status_checks rule -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=ruleset())
+check("gather: main's ruleset lists an empty set of required checks -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=ruleset("lint") + ruleset("vendor"))
+check("gather: `vendor` listed in a second required_status_checks rule -> vendored files are given by header",
+      code == 0 and "+new()" not in b and "x.go b/vendor/a/b/x.go\n(a vendored module file:" in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=None)
+check("gather: the ruleset read fails -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "+more()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules={"message": "Not Found"})
+check("gather: the ruleset answer is not a list of rules -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=[{"type": "required_status_checks", "parameters": {}}, "x", None])
+check("gather: a ruleset answer with malformed entries lists no vendor -> shown in full, no crash",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(vend, False, rules=None)
+check("gather: the ruleset read fails and the vendored file alone is over the limit -> exit 3, no bundle",
+      code == 3 and b is None, code)
+code, b, _ = gather_diff(VDIFF, True)
+check("gather: the ruleset is read once per gather, as repos/<repo>/rules/branches/main",
+      code == 0 and len(RULES_GOT) == 1, RULES_GOT)
 
 # --- the verdict's commit (REQ-DEP-001-AC2): the diff is GitHub's diff of exactly that commit against main, read by
 # its id
@@ -673,17 +711,16 @@ py_rc=$?
 # ============================================================================ the act step
 # The committed "gather, read twice, decide, act" step, run as written under GitHub's default
 # `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), the
-# committed required-check guard fed a matching or drifted ruleset, and a fake SDK module that
-# returns each reader's canned answer. Asserts WHAT is called, in WHAT order, and whether a check
+# a fake SDK module that returns each reader's canned answer. Asserts WHAT is called, in WHAT order, and whether a check
 # goes up — the round-1 paths (malformed answer, failed diff, re-hold with auto-merge armed,
-# partial failures, -e aborting the loop, guard drift).
+# partial failures, -e aborting the loop).
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 pass=0; fail=0
 # <checkout>: the reviewer's version (REQ-DEP-001-AC14), computed here and not by bin/dependabot-reviewer-version.sh:
-# the sha256 of the output of sha256sum over the five files in order
+# the sha256 of the output of sha256sum over the four files in order
 ver3() {
   (cd "$1" && sha256sum bin/dependabot-reviewer.py .github/policy/dependabot-reviewer-prompt.txt \
-    .github/workflows/dependabot-reviewer.yml .github/policy/required-checks.json bin/required-check-guard.sh |
+    .github/workflows/dependabot-reviewer.yml .github/policy/required-checks.json |
     sha256sum | cut -d' ' -f1)
 }
 VER=$(ver3 "$repo"); OLDVER=$(printf '%064d' 0); PYVER=$(sha256sum "$repo/bin/dependabot-reviewer.py" | cut -d' ' -f1)
@@ -692,8 +729,8 @@ OLD3=$(cd "$repo" && cat bin/dependabot-reviewer.py .github/policy/dependabot-re
   .github/workflows/dependabot-reviewer.yml | sha256sum | cut -d' ' -f1)
 OLD3S=$(cd "$repo" && sha256sum bin/dependabot-reviewer.py .github/policy/dependabot-reviewer-prompt.txt \
   .github/workflows/dependabot-reviewer.yml | sha256sum | cut -d' ' -f1)
-# <dir> <prompt-changed|workflow-changed|checks-changed|guard-changed|no-prompt|no-workflow|no-checks|no-guard>: the
-# files the steps read, with one of the five reviewer files changed or left out
+# <dir> <prompt-changed|workflow-changed|checks-changed|no-prompt|no-workflow|no-checks>: the
+# files the steps read, with one of the four reviewer files changed or left out
 mkalt() {
   local d="$1" f
   # git grep reads the usage
@@ -701,18 +738,16 @@ mkalt() {
   for f in "$repo"/bin/*; do ln -s "$f" "$d/bin/"; done
   for f in "$repo"/.github/policy/*; do ln -s "$f" "$d/.github/policy/"; done
   for f in .github/policy/dependabot-reviewer-prompt.txt .github/workflows/dependabot-reviewer.yml \
-    .github/policy/required-checks.json bin/required-check-guard.sh; do
+    .github/policy/required-checks.json; do
     rm -f "$d/$f"; cp "$repo/$f" "$d/$f"
   done
   case "$2" in
     prompt-changed) printf '\nAlso read the lockfile.\n' >> "$d/.github/policy/dependabot-reviewer-prompt.txt" ;;
     workflow-changed) printf '# changed\n' >> "$d/.github/workflows/dependabot-reviewer.yml" ;;
     checks-changed) printf '\n' >> "$d/.github/policy/required-checks.json" ;;
-    guard-changed) printf '# changed\n' >> "$d/bin/required-check-guard.sh" ;;
     no-prompt) rm "$d/.github/policy/dependabot-reviewer-prompt.txt" ;;
     no-workflow) rm "$d/.github/workflows/dependabot-reviewer.yml" ;;
     no-checks) rm "$d/.github/policy/required-checks.json" ;;
-    no-guard) rm "$d/bin/required-check-guard.sh" ;;
   esac
 }
 verdicts() { # <[[conclusion, external_id (left out: none), app slug], ...]> oldest first, as GitHub lists them
@@ -757,12 +792,19 @@ PY
 mkdir -p "$w/bin" "$w/py/anthropic" "$w/noprog/bin"
 jq -n --slurpfile a "$FIX/pr-99.json" --slurpfile b "$FIX/pr-90.json" --slurpfile c "$FIX/pr-91.json" --slurpfile d "$FIX/pr-400.json" \
   '[($a[0] + {number: 99, headRefOid: "sha99"}), ($b[0] + {number: 90, headRefOid: "sha90"}), ($c[0] + {number: 91, headRefOid: "sha91"}), ($d[0] + {number: 400, headRefOid: "sha400"})]' > "$w/prs-flagged.json"
+# main's ruleset as the stubs answer it: one required status check; RULES_JSON names another file
+RULES_DEFAULT="$w/rules-default.json"
+echo '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"test","integration_id":15368}]}}]' > "$RULES_DEFAULT"
+echo '[{"type":"pull_request","parameters":{}}]' > "$w/rules-none.json"
+echo '[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]' > "$w/rules-empty.json"
+echo '[]' > "$w/rules-norules.json"
+echo 'not json' > "$w/rules-garbage.json"
+export RULES_DEFAULT
 cat > "$w/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
 fails() { case " ${FAIL:-} " in *" $1 "*) exit 1 ;; esac; }
 case "$1 $2" in
-  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$LIST" | tr -d '\n' ;;
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) fails gate ;; *) fails check ;; esac ;;
   "api repos/fosterstack/ops/dispatches") fails dispatch ;;
   # cancellation cleanup lookups: success, or CANCELA_JSON through the step's own filter
@@ -780,6 +822,8 @@ case "$1 $2" in
     printf -- \
     '--- a/.github/workflows/x.yml\n+++ b/.github/workflows/x.yml\n-      - uses: a/b@v4\n+      - uses: a/b@v7\n' ;;
     *) exit 1 ;; esac ;;
+  # main's ruleset: RULES_JSON (a file), else one required status check; FAIL=rules: the read fails
+  "api repos/o/r/rules/branches/main") fails rules; cat "${RULES_JSON:-$RULES_DEFAULT}" ;;
   "api "*) exit 1 ;;
   "pr merge") if [ "$3" = "--disable-auto" ]; then fails disarm; else fails merge; fi ;;
   "pr view") case "$*" in *headRefOid*) fails head; echo "${HEAD_NOW:-$(printf '%040d' "$3")}" ;; *) fails view;
@@ -830,16 +874,13 @@ cat > "$w/commits.json" <<'EOF'
   "commit": {"message": "Keep our pin in step", "verification": {"verified": true}}}]
 EOF
 export COMMITS="$w/commits.json"
-jq '[{"type":"required_status_checks","parameters":{"required_status_checks":[.required_checks[]|{context,integration_id}]}}]' \
-  "$repo/.github/policy/required-checks.json" > "$w/rules-match.json"
-jq '(.[0].parameters.required_status_checks) |= .[1:]' "$w/rules-match.json" > "$w/rules-drift.json"
 CLEAN='{"findings": [{"severity": "check", "title": "node24 runtime", "release_note": "v5: node24", "our_line": ".github/workflows/x.yml:3", "why": "runtime"}]}'
 BREAKS='{"findings": [{"severity": "breaks-us", "title": "input removed", "release_note": "v7: removed foo", "our_line": ".github/workflows/x.yml:3", "why": "we pass foo"}]}'
 TRUNC='{"findings": [], "unfinished": {"findings": []}'
 
 S99=$(printf '%040d' 99)
 MAJOR_UPDATE='[{"name":"a/b","from":"4","to":"7","major":true}]'
-# name; env: A B (answers), PRS, FAIL, ARMED, RULES, UPDATES (the updates file the candidates step would have written)
+# name; env: A B (answers), PRS, FAIL, ARMED, UPDATES (the updates file the candidates step would have written)
 act() {
   local W="$w/run"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   : > "$W/work/candidates.txt"
@@ -849,8 +890,8 @@ act() {
     echo "${UPDATES:-$MAJOR_UPDATE}" > "$W/work/updates-$n.json"
   done
   (cd "${ACTDIR:-$repo}" &&
-    env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" LIST="$repo/.github/policy/required-checks.json" \
-     GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" FAIL="${FAIL:-}" ARMED="${ARMED:-false}" \
+    env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" \
+     FAIL="${FAIL:-}" ARMED="${ARMED:-false}" \
      GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" GITHUB_STEP_SUMMARY="$W/summary" GITHUB_OUTPUT="$W/output" \
      RUN_URL=https://example.invalid/run ANTHROPIC_IDENTITY_TOKEN_FILE="$W/token" \
      ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://example.invalid/oidc?x=1" \
@@ -968,15 +1009,15 @@ A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act;
   "act: the neutral check of a forced review that errors carries the reviewer's version as external_id"
 # the version is of the program, the prompt and the workflow as this run checked them out: a change to any of them is
 # a new version
-for what in prompt-changed workflow-changed checks-changed guard-changed; do
+for what in prompt-changed workflow-changed checks-changed; do
   mkalt "$w/alt" "$what"
   A="$CLEAN" B="$CLEAN" ACTDIR="$w/alt" act;
-    ext_on_every_check "act: with the $what the success check carries the version of the five files as they are" \
+    ext_on_every_check "act: with the $what the success check carries the version of the four files as they are" \
     "$(ver3 "$w/alt")"
 done
 # a version that cannot be computed stops the step before any verdict: nothing armed, disarmed or published, not even
 # a neutral
-for what in no-prompt no-workflow no-checks no-guard; do
+for what in no-prompt no-workflow no-checks; do
   mkalt "$w/alt" "$what"
   A="$CLEAN" B="$CLEAN" ARMED=true PRIOR=success ACTDIR="$w/alt" act;
     expect "act: $what: the version cannot be computed -> no arm, no disarm, no check of any kind" "-pr merge" "-$CHK"
@@ -1015,8 +1056,19 @@ A="$CLEAN" B="$BREAKS" ARMED=false act; expect "hold, not armed -> no disarm cal
 A="$CLEAN" B="$BREAKS" FAIL="issue" act; expect "held issue cannot be created -> no check; retry (round-1 P1)" "-$CHK" ERRORED=1
 A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" act; expect "auto-merge cannot be disarmed -> no issue, no check" "-issue create" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" FAIL="merge" act; expect "auto-merge cannot be armed -> no success check; retry (round-1 P1)" "-$CHK" ERRORED=1
-A="$CLEAN" B="$CLEAN" RULES="$w/rules-drift.json" act; expect "required-check drift -> no major armed, no check (Sonnet round 1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "a reader raises -> no merge, no check" "-pr merge" "-$CHK" ERRORED=1
+# REQ-DEP-001-AC4: arming needs main's ruleset to list at least one required status check, read when arming
+A="$CLEAN" B="$CLEAN" act; expect "ruleset with a required check -> the ruleset is read as repos/o/r/rules/branches/main, then the arm" \
+  "+api repos/o/r/rules/branches/main" "ORDER:rules/branches/main>pr merge --auto" "+pr merge --auto --squash" ERRORED=0
+for rj in none empty norules garbage; do
+  RULES_JSON="$w/rules-$rj.json" A="$CLEAN" B="$CLEAN" act
+  expect "ruleset answer '$rj' lists no required status check -> nothing is armed, no success check, unfinished" \
+    "-pr merge --auto" "-$CHK" ERRORED=1
+done
+A="$CLEAN" B="$CLEAN" FAIL="rules" act; expect "the ruleset cannot be read -> nothing is armed, no success check, unfinished" \
+  "-pr merge --auto" "-$CHK" ERRORED=1
+RULES_JSON="$w/rules-none.json" A="$CLEAN" B="$BREAKS" act; expect "no required check, a hold decision -> the hold still stands (issue and failure check): nothing to arm" \
+  "+issue create" "+$CHK" "-pr merge --auto" ERRORED=0
 A="$CLEAN" B="$CLEAN" FAIL="notes" act; expect "release notes cannot be read -> UNAVAILABLE: no reader, no merge, no check; retried (owner, Oct 1)" "-pr merge" "-$CHK" ERRORED=1
 grep -q "release notes UNAVAILABLE" "$w/run/work/pr-99/bundle.md" 2>/dev/null \
   && { echo "ok: act: the bundle labels the failed read UNAVAILABLE"; pass=$((pass+1)); } || { echo "FAIL: act: unavailable label"; fail=$((fail+1)); }
@@ -1050,20 +1102,6 @@ out=$(bash "$here/dispatch-fixer.sh" fix-something 5 2>&1); rc=$?
 [ "$rc" = 1 ] && grep -q "unknown event type" <<<"$out" && { echo "ok: dispatch-fixer: unknown event type refused"; pass=$((pass+1)); } || { echo "FAIL: unknown event"; fail=$((fail+1)); }
 out=$(DISPATCH_TOKEN=t bash "$here/dispatch-fixer.sh" fix-held-bump "" 2>&1); rc=$?
 [ "$rc" = 1 ] && grep -q "no issue number" <<<"$out" && { echo "ok: dispatch-fixer: no issue number refused"; pass=$((pass+1)); } || { echo "FAIL: no issue"; fail=$((fail+1)); }
-python3 - "$repo/.github/workflows/ci.yml" "$w/drift-dispatch.sh" <<'PY5'
-import sys, yaml
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]["drift-fixer-dispatch"]
-assert "push" in j["if"] and "refs/heads/main" in j["if"] and j["environment"] == "agent"
-open(sys.argv[2], "w").write([s for s in j["steps"] if s.get("name") == "dispatch"][0]["run"])
-PY5
-for mode in ok dispatch; do
-  : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" FAIL="$([ $mode = dispatch ] && echo dispatch)" DISPATCH_TOKEN=ops ISSUE=12 GITHUB_REPOSITORY=o/r \
-     bash --noprofile --norc -e -o pipefail "$w/drift-dispatch.sh") >/dev/null 2>&1; rc=$?
-  if [ "$rc" = 0 ] && grep -q "ops/dispatches -f event_type=fix-required-check-drift -f client_payload\[issue\]=12 -f client_payload\[pr\]= " "$w/gh.log"; then
-    echo "ok: hygiene drift dispatch ($mode): fix-required-check-drift for issue 12, step never fails"; pass=$((pass+1))
-  else echo "FAIL: hygiene drift dispatch ($mode) rc=$rc"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); fi
-done
 
 # --- round 2
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act; expect "armed but the success check fails -> counted unfinished, auto-merge turned back off (round-2)" \
@@ -1180,14 +1218,14 @@ cancel_one "$(verdicts_page 99 "[\"success\",\"$VER\",\"s\"]" | more_than_read)"
   "a success of the current version among 99 runs is read: the arm is recorded"
 cancel_one "$(verdicts_page 99 "[\"success\",\"$OLDVER\",\"s\"]")" no \
   "a success of another version among 99 runs is read: the arm comes off"
-for what in prompt-changed workflow-changed checks-changed guard-changed; do
+for what in prompt-changed workflow-changed checks-changed; do
   mkalt "$w/alt" "$what"
   CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$VER\",\"s\"]]")" no \
     "with the $what a success of the version of the old text is no success: the arm comes off"
   CANCELDIR="$w/alt" cancel_one "$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\",\"s\"]]")" yes \
-    "with the $what a success of the version of the five files as they are is recorded"
+    "with the $what a success of the version of the four files as they are is recorded"
 done
-for what in no-prompt no-workflow no-checks no-guard; do
+for what in no-prompt no-workflow no-checks; do
   mkalt "$w/alt" "$what"
   printf '99 shaC\n' > "$w/cx/work/armed-unpublished.txt"; : > "$w/gh.log"
   (cd "$w/alt" &&
@@ -1270,7 +1308,6 @@ case "$1 $2" in
               if [ -n "${EVENTS99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done;
                 jq -r "$f" <<<"$EVENTS99_JSON"
               else printf '%b' "${EVENTS99:-}"; fi ;;
-  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *)
     [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   # the review gate's own check on a head (the App's latest): GATE99, none unless set; no gate check on any other head
@@ -1298,6 +1335,8 @@ case "$1 $2" in
               jq -c "${f:-.}" <<<"${HISTORY:-[]}" ;;
   "issue list") echo '[]' ;;
   "issue create"|"issue comment") ;;
+  # main's ruleset: RULES_JSON (a file), else one required status check; RULESFAIL=1: the read fails
+  "api repos/o/r/rules/branches/main") [ "${RULESFAIL:-}" = 1 ] && exit 1; cat "${RULES_JSON:-$RULES_DEFAULT}" ;;
 esac
 EOF
 chmod +x "$w/bin/gh"
@@ -1308,8 +1347,7 @@ cand() { # expected-candidates (* = any) expected-rc (nz = any failure); env PRI
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
   (cd "${CANDDIR:-$repo}" &&
     env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-$w/prs.json}" GITHUB_REPOSITORY=o/r \
-    RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" \
-    GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" \
+    RUNNER_TEMP="$W" \
      GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
@@ -1456,7 +1494,7 @@ PRIOR99=success GATE99_JSON=$(gate_page 99 "[\"failure\",\"$OLD\"]") cand "91 no
 also "candidates: the stale failure among 99 gate runs is published again" "+$GREFRESH"
 
 # REQ-DEP-001-AC14: a success counts only if its external_id is the version of the reviewer as this run checked it out
-# (the sha256 of the sha256sum lines of the five files). A success of another version, or with none, is no verdict:
+# (the sha256 of the sha256sum lines of the four files). A success of another version, or with none, is no verdict:
 # the head is read as a head with none is.
 CUR_OK="[\"success\",\"$VER\"]"; OLD_OK="[\"success\",\"$OLDVER\"]"; OWN99='name=dependabot-reviewer -f head_sha=sha99'
 ONLY=99 ARMED99=true PRIOR99_JSON=$(verdicts "[$CUR_OK,$OLD_OK]") cand "99 none," 0 \
@@ -1545,18 +1583,18 @@ also "candidates: nothing is listed, read or published without the version" "-pr
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$PYVER\"]]") cand "99 none," 0 \
   "a success carrying the sha256 of the program alone (the version before the prompt and the workflow counted) is read"
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$OLD3\"]]") cand "99 none," 0 \
-  "a success carrying the version of the three files joined (the version before the five files and sha256sum) is read"
+  "a success carrying the version of the three files joined (the version before the four files and sha256sum) is read"
 ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$OLD3S\"]]") cand "99 none," 0 \
   "a success carrying the version of the three files' sha256sum lines is read"
-for what in prompt-changed workflow-changed checks-changed guard-changed; do
+for what in prompt-changed workflow-changed checks-changed; do
   mkalt "$w/alt" "$what"
   CANDDIR="$w/alt" ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$VER\"]]") cand "99 none," 0 \
     "with the $what a success of the version of the old text is read"
   also "candidates: it is not superseded, forced or published over" "-check-runs -f name=dependabot-reviewer"
   CANDDIR="$w/alt" ONLY=99 PRIOR99_JSON=$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\"]]") cand "" 0 \
-    "with the $what a success of the version of the five files as they are is still a success"
+    "with the $what a success of the version of the four files as they are is still a success"
 done
-for what in no-prompt no-workflow no-checks no-guard; do
+for what in no-prompt no-workflow no-checks; do
   mkalt "$w/alt" "$what"
   CANDDIR="$w/alt" PRIOR99=success cand "" 1 \
     "a missing file ($what): the version cannot be computed -> the step fails before any verdict is read"
@@ -1701,7 +1739,7 @@ carried "the walk went back over the unjudged merge to the passed head" sha99 p0
 ONLY=99 PARENT=p1 PRIORP1=success \
   EVENTS99='auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]\n' cand "" 0 \
   "a carried major whose arm the lane turned off on the new head"
-also "candidates: the carried success puts the lane-voided arm back for exactly that head, after the guard" \
+also "candidates: the carried success puts the lane-voided arm back for exactly that head" \
   "+pr merge --auto --squash --match-head-commit sha99 99"
 ONLY=99 PARENT=p1 PRIORP1=success DIFF_NEW="${DIFF_SAME}+one more line\n" cand "99 none," 0 \
   "the new head's diff against main differs from the passed head's -> read"
@@ -1742,10 +1780,10 @@ ONLY=99 PRIOR99=neutral PARENT=p1 PRIORP1=success cand "99 neutral," 0 \
 also "candidates: no walk from a neutral head" "-commits/sha99 " "-compare/"
 
 # The lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
-# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back, after
-# the required-check guard; a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
+# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back;
+# a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
 LANE_OFF='auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]\n'
-heal() { # <events> <rc> <expect-rearm yes|no> <name>   (PRIOR99=success; ARMED99, RULES, REARMFAIL, EVENTSFAIL from the environment)
+heal() { # <events> <rc> <expect-rearm yes|no> <name>   (PRIOR99=success; ARMED99, REARMFAIL, EVENTSFAIL from the environment)
   PRIOR99=success EVENTS99="$1" cand "91 none," "$2" "$4"
   if grep -q "pr merge --auto --squash --match-head-commit sha99 99" "$w/gh.log"; then got=yes; else got=no; fi
   [ "$got" = "$3" ] && { echo "ok: candidates: $4 (re-arm: $got)"; pass=$((pass+1)); } || { echo "FAIL: candidates: $4 (re-arm: $got, want $3)"; fail=$((fail+1)); }
@@ -1759,9 +1797,14 @@ heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-acti
 heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]x\n' 0 no "github-actions[bot] followed by anything else is not the workflow token"
 heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions\n' 0 yes "the bare login github-actions is accepted too (the API names the bot either way)"
 ARMED99=true heal "$LANE_OFF" 0 no "already armed -> nothing to do"
-RULES="$w/rules-drift.json" heal "$LANE_OFF" 1 no "the required-check guard refuses -> no arm, the step fails (the approved arm stays off, retried next hour)"
 REARMFAIL=1 heal "$LANE_OFF" 1 yes "the re-arm cannot be made -> the step fails (retry next hour)"
 EVENTSFAIL=1 heal "$LANE_OFF" 1 no "the events cannot be read -> skipped, the step fails"
+for rj in none empty norules garbage; do
+  RULES_JSON="$w/rules-$rj.json" heal "$LANE_OFF" 1 no "heal: ruleset answer '$rj' lists no required status check -> the arm is not put back, the step fails"
+done
+RULESFAIL=1 heal "$LANE_OFF" 1 no "heal: the ruleset cannot be read -> the arm is not put back, the step fails"
+heal "$LANE_OFF" 0 yes "heal: ruleset with a required check -> the arm is put back (the ruleset was read)"
+also "heal: the ruleset is read as repos/o/r/rules/branches/main before the arm" "+api repos/o/r/rules/branches/main"
 PRIOR99=failure EVENTS99="$LANE_OFF" cand "91 none," 0 "a FAILURE verdict is never re-armed"
 grep -q "pr merge --auto" "$w/gh.log" && { echo "FAIL: candidates: a failure verdict was armed"; fail=$((fail+1)); } || { echo "ok: candidates: no arm for a failure verdict"; pass=$((pass+1)); }
 # The step's own filter over events as GitHub records them (issues/N/events of this repository's bumps, Nov 2026):
@@ -1788,16 +1831,15 @@ EVENTS99_JSON=$(ev '[["auto_squash_enabled","fosterstack-automation[bot]"],["aut
 # ============================================================================ settle step
 # REQ-DEP-001-AC12: after the act step (and the cancellation cleanup), for every head taken up for review: none is
 # armed over a failure verdict. A plain patch the lane had armed, whose review did not finish, is armed again for that
-# exact head after the guard.
+# exact head.
 # settle <candidates lines> <lane-arms lines> <rc> <name>
-# env: PRIOR99 PRIOR90 ARMED99 ARMED90 RULES REARMFAIL DISARMFAIL LOOKUP90
+# env: PRIOR99 PRIOR90 ARMED99 ARMED90 REARMFAIL DISARMFAIL LOOKUP90
 settle() {
   local W="$w/settle"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   printf '%b' "$1" > "$W/work/candidates.txt"; printf '%b' "$2" > "$W/work/lane-arms.txt"
   (cd "${SETTLEDIR:-$repo}" &&
     env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
-    REPO_CHECKS="$repo/.github/policy/required-checks.json" \
-     GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m \
+     APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m \
        GH_TOKEN=job \
      bash --noprofile --norc -e -o pipefail "$w/settle.sh") > "$w/settle.out" 2>&1; local rc=$?
   SETTLE_RC="$rc"
@@ -1820,8 +1862,8 @@ PRIOR90=failure settle "$BOTH" '90 sha90\n' 0 "a failure verdict that is not arm
 also "settle: nothing to turn off, nothing armed" "-pr merge"
 settle "$BOTH" '90 sha90\n' 0 \
   "a lane-armed patch whose review did not finish (no verdict) and that the act step disarmed"
-also "settle: the lane's arm is put back for exactly that head, after the required-check guard; the major stays off" \
-  "+pr merge --auto --squash --match-head-commit sha90 90" "+required-checks.json\?ref=main" "-match-head-commit sha99"
+also "settle: the lane's arm is put back for exactly that head; the major stays off" \
+  "+pr merge --auto --squash --match-head-commit sha90 90" "-match-head-commit sha99"
 PRIOR90=neutral settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch left neutral by an unfinished review"
 also "settle: the lane's arm is put back over a neutral too" "+pr merge --auto --squash --match-head-commit sha90 90"
 settle "$BOTH" '' 0 "an unfinished patch the lane had NOT armed (not in lane-arms.txt)"
@@ -1830,9 +1872,16 @@ ARMED90=true settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch that is still arm
 also "settle: nothing to do for an arm that is still on" "-pr merge"
 PRIOR90=success settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch that passed"
 also "settle: a success verdict is left as the act step left it" "-pr merge"
-RULES="$w/rules-drift.json" settle "$BOTH" '90 sha90\n' 1 \
-  "the required-check guard refuses -> the lane's arm stays off and the step fails"
-also "settle: nothing is armed past a refusing guard" "-pr merge --auto"
+settle "$BOTH" '90 sha90\n' 0 "ruleset with a required check -> the lane's arm is put back after reading it"
+also "settle: the ruleset is read as repos/o/r/rules/branches/main before the arm" "+api repos/o/r/rules/branches/main" \
+  "+pr merge --auto --squash --match-head-commit sha90 90"
+for rj in none empty norules garbage; do
+  RULES_JSON="$w/rules-$rj.json" settle "$BOTH" '90 sha90\n' 1 \
+    "ruleset answer '$rj' lists no required status check -> the lane's arm is not put back, the step fails"
+  also "settle: no arm without a required status check ('$rj')" "-pr merge --auto"
+done
+RULESFAIL=1 settle "$BOTH" '90 sha90\n' 1 "the ruleset cannot be read -> the lane's arm is not put back, the step fails"
+also "settle: no arm when the ruleset cannot be read" "-pr merge --auto"
 REARMFAIL=1 settle "$BOTH" '90 sha90\n' 1 "the lane's arm cannot be put back -> the step fails"
 PRIOR90=failure ARMED90=true DISARMFAIL=1 settle "$BOTH" '90 sha90\n' 1 \
   "an arm over a failure verdict cannot be turned off -> the step fails"
@@ -1851,8 +1900,7 @@ also "settle: nothing is done to a PR that is not open" "-pr merge"
 REARM90="+pr merge --auto --squash --match-head-commit sha90 90"
 PRIOR90_JSON=$(verdicts "[$OLD_OK]") settle "$BOTH" '90 sha90\n' 0 \
   "a lane-armed patch whose review did not finish, its newest check a success of another version"
-also "settle: a success of another version is no verdict: the lane's arm is put back, after the guard" "$REARM90" \
-  "+required-checks.json\?ref=main"
+also "settle: a success of another version is no verdict: the lane's arm is put back" "$REARM90"
 PRIOR90_JSON=$(verdicts '[["success"]]') settle "$BOTH" '90 sha90\n' 0 \
   "a lane-armed patch whose review did not finish, its newest check an unversioned success"
 also "settle: an unversioned success is no verdict: the lane's arm is put back" "$REARM90"
@@ -1894,16 +1942,16 @@ PRIOR90_JSON=$(verdicts_page 99 "$OLD_OK" | more_than_read) settle "$BOTH" '90 s
   "99 runs read, the newest a success of another version"
 also "settle: a success of another version among 99 runs is no verdict: the lane's arm is put back" "$REARM90"
 asks_all_runs "settle: the check runs are asked with filter=all, 100 at a time"
-for what in prompt-changed workflow-changed checks-changed guard-changed; do
+for what in prompt-changed workflow-changed checks-changed; do
   mkalt "$w/alt" "$what"
   SETTLEDIR="$w/alt" PRIOR90_JSON=$(verdicts "[$CUR_OK]") settle "$BOTH" '90 sha90\n' 0 \
     "with the $what a success of the version of the old text"
   also "settle: it is no verdict: the lane's arm is put back" "$REARM90"
   SETTLEDIR="$w/alt" PRIOR90_JSON=$(verdicts "[[\"success\",\"$(ver3 "$w/alt")\"]]") settle "$BOTH" '90 sha90\n' 0 \
-    "with the $what a success of the version of the five files as they are"
+    "with the $what a success of the version of the four files as they are"
   also "settle: it is a success: left as the act step left it" "-pr merge"
 done
-for what in no-prompt no-workflow no-checks no-guard; do
+for what in no-prompt no-workflow no-checks; do
   mkalt "$w/alt" "$what"
   SETTLEDIR="$w/alt" settle "$BOTH" '90 sha90\n' 1 \
     "a missing file ($what): the version cannot be computed -> the step fails"
