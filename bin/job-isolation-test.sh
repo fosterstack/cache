@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-011-AC1, REQ-REL-011-AC2
+# proves: REQ-REL-011-AC1, REQ-REL-011-AC2, REQ-REL-011-AC3
 # The owner's isolation rule (ratified Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): on GitHub-hosted runners
 # the separate job is the isolation unit. AC1: a job that holds a credential (a secrets.* reference, an environment, id-token: write or
 # packages: write) never compiles or builds; govulncheck, which publishes no release binary, is built in a job with no credential and
@@ -92,6 +92,11 @@ def steps_text(s):
     t = (s.get("run") or "") + " " + (s.get("uses") or "") + " " + yaml.safe_dump(s.get("env") or {})
     return "\n".join(l for l in t.split("\n") if not l.strip().startswith("#"))
 RELEASE_SECRETS = {"DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"}   # ruling R5: the release job that pushes images holds exactly these, nothing else
+# AC3 (b): DOCKERHUB_USERNAME, DOCKERHUB_TOKEN and packages: write live in the release job of release.yml alone. The only exceptions are three read-only probe holders, each keyed on the triple
+# (workflow file, job, environment): a same-named job whose environment changed or went away is not the holder. None holds packages: write or runs a login for a push, a push, a signature or an attach.
+PROBE_HOLDERS = {("main-candidate-rescan.yml", "panel-scout", "agent"), ("release.yml", "live-test", "live-test"), ("release.yml", "live-test-release", "live-test")}
+PUSH_WORDS = re.compile(r"\bcrane\s+auth\s+login\b|\bcosign\s+login\b|\bcrane\s+(?:push|copy|cp|append|mutate|tag)\b|\bdocker\s+(?:push|buildx\s+imagetools\s+create)\b|\bcosign\s+(?:sign|sign-blob|attach|attest|copy)\b|\boras\s+(?:login|push)\b|\bskopeo\s+(?:login|copy)\b|\bregctl\s+(?:registry\s+login|image\s+copy)\b")
+READ_ONLY_LOGIN = re.compile(r"\bdocker\s+login\b")   # a docker login passes only in a step that carries a read-only token (DOCKERHUB_SCOUT_TOKEN or the job's own GH_TOKEN with packages: read)
 def holds(d, j):
     perms = j.get("permissions", d.get("permissions"))
     why = []
@@ -128,6 +133,7 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
                 unresolved += [(s.get("name") or "?", l) for l in installer_problems(s.get("run") or "", key)]
             comp += [s.get("name") or s.get("uses") or "?"] * n
         w = holds(d, j)
+        wf_lv = yaml.safe_dump({k: v for k, v in d.items() if k not in ("jobs", "on", True)})
         if w and comp and key not in EXCLUDED_AC1:
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
         if w and unresolved:
@@ -171,6 +177,26 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
                     n_ = re.sub(r"\$\{?(?:RUNNER_TEMP|GITHUB_WORKSPACE)\}?", "/runner", n_)   # the runner's own fixed directories are not a hidden path
                     if re.search(r"\bbin/[^\s;&|)]*[$`]", n_) or re.search(r"(?:(?<![\w./-])(?:bash|sh|source|exec)\s+|(?<![\w.])\.\s+|(?<![\w.])\./)[^\s;&|)]*[$`]", n_) or re.search(r"\b\w+=[^\s$(`]*\bbin/", n_) or re.search(r"^\s*\w+:\s+\S*\bbin/", n_):
                         bad.append("%s/%s holds %s and names a script path under bin/ through a variable: %r" % (key[0], jn, ", ".join(w), l_.strip()[:100]))
+        # AC3 (a): sign-release references no secrets.* at all, GITHUB_TOKEN/GH_TOKEN/github.token included, and its permissions are exactly contents: read and id-token: write
+        if key == ("release.yml", "sign-release"):
+            jt_ = yaml.safe_dump(j) + wf_lv
+            if re.search(r"\bsecrets\b|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bgithub\s*\.\s*token\b", jt_) or j.get("permissions") != {"contents": "read", "id-token": "write"}:
+                bad.append("%s/%s references a secret or a token, or its permissions are not exactly contents: read and id-token: write: sign-release hands signatures over as artifacts and holds no credential" % key)
+        # AC3 (b): the registry secret and packages: write, in every job but the release job of release.yml, except the three probe holders (keyed on workflow, job and environment)
+        if key != ("release.yml", "release"):
+            perms_ = j.get("permissions", d.get("permissions"))
+            pw_ = perms_ == "write-all" or (isinstance(perms_, dict) and perms_.get("packages") == "write")
+            hit_ = re.search(r"\bDOCKERHUB_(?:USERNAME|TOKEN)\b|\bsecrets\s*\[|secrets:\s*inherit", yaml.safe_dump(j) + wf_lv)
+            if (key[0], jn, j.get("environment")) not in PROBE_HOLDERS:
+                if hit_ or pw_:
+                    bad.append("%s/%s holds the registry secret or packages: write: only the release job of release.yml does, whatever script the step runs" % key)
+            else:
+                if pw_:
+                    bad.append("%s/%s is a read-only probe holder and holds packages: write" % key)
+                for s_ in (j.get("steps") or []):
+                    st_ = re.sub(r"\\\n[ \t]*", "", steps_text(s_))
+                    if PUSH_WORDS.search(st_) or (READ_ONLY_LOGIN.search(st_) and not re.search(r"\bDOCKERHUB_SCOUT_TOKEN\b|\bGH_TOKEN\b", st_)):
+                        bad.append("%s/%s is a read-only probe holder and runs a login for a push, a push, a signature or an attach in the step %r" % (key[0], jn, s_.get("name") or "?"))
         if len(comp) >= 2 and key not in EXCLUDED_AC2:
             bad.append("%s/%s runs two builds: %r and %r" % (key[0], jn, comp[0], comp[1]))
 # a listed installer exception must name a job that exists, and scan.yml's scanner jobs must be the two the policy file names
@@ -582,6 +608,70 @@ mutate "install-scanner.sh govulncheck added to a job with an environment (audit
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
 edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n"))'
+
+# AC3: sign-release holds no registry credential, no GH_TOKEN and no packages write; a stored secret in any other job is refused whatever the script, under witnessed-local.sh or not
+want_msg="sign-release hands signatures over as artifacts"
+mutate "release.yml sign-release names DOCKERHUB_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "sign-release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n", regex=True))'
+mutate "release.yml sign-release names GH_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "sign-release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: echo x\n", regex=True))'
+mutate "release.yml sign-release is granted packages: write" '
+edit("release.yml", lambda s: in_job(s, "sign-release", r"(    permissions:\n)", r"\1      packages: write\n", regex=True))'
+want_msg="holds the registry secret"
+mutate "ci.yml lint reads secrets.DOCKERHUB_TOKEN under a plain script" '
+edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/release-publish.sh\n", s, count=1, flags=re.S))'
+mutate "ci.yml lint reads secrets.DOCKERHUB_USERNAME under bin/witnessed-local.sh" '
+edit("ci.yml", lambda s: re.sub(r"(  lint:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_USERNAME }}\n        run: bash bin/witnessed-local.sh release-publish bin/release-publish.sh\n", s, count=1, flags=re.S))'
+mutate "release.yml release-evidence reads secrets.DOCKERHUB_TOKEN under bin/witnessed-local.sh" '
+edit("release.yml", lambda s: in_job(s, "release-evidence", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/witnessed-local.sh release-assets bin/release-assets.sh\n", regex=True))'
+# AC3 (a): sign-release names no secrets.* at all and its permissions are exactly contents: read and id-token: write
+want_msg="sign-release hands signatures over as artifacts"
+mutate "release.yml sign-release references secrets.GITHUB_TOKEN" '
+edit("release.yml", lambda s: in_job(s, "sign-release", r"(    steps:\n)", r"\1      - name: leak\n        env:\n          T: ${{ secrets.GITHUB_TOKEN }}\n        run: echo x\n", regex=True))'
+mutate "release.yml sign-release is granted an extra permission (actions: read)" '
+edit("release.yml", lambda s: in_job(s, "sign-release", r"(    permissions:\n)", r"\1      actions: read\n", regex=True))'
+# AC3 (b): the three probe holders are keyed on (workflow, job, environment); each holds no packages: write and runs no login for a push, push, signature or attach
+want_msg="holds the registry secret or packages: write"
+mutate "release.yml live-test (a probe holder) has its environment switched to release" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"    environment: live-test[^\n]*\n", "    environment: release\n", regex=True))'
+mutate "release.yml live-test-release (a probe holder) has its environment removed" '
+edit("release.yml", lambda s: in_job(s, "live-test-release", r"    environment: live-test[^\n]*\n", "", regex=True))'
+mutate "main-candidate-rescan.yml panel-scout (a probe holder) has its environment switched to release" '
+edit("main-candidate-rescan.yml", lambda s: in_job(s, "panel-scout", r"    environment: agent[^\n]*\n", "    environment: release\n", regex=True))'
+mutate "a new job in scan.yml references secrets.DOCKERHUB_TOKEN" '
+edit("scan.yml", lambda s: s.rstrip("\n") + "\n\n  leak:\n    runs-on: ubuntu-latest\n    steps:\n      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n")'
+want_msg="is a read-only probe holder and holds packages: write"
+mutate "main-candidate-rescan.yml panel-scout (a probe holder) is granted packages: write" '
+edit("main-candidate-rescan.yml", lambda s: in_job(s, "panel-scout", r"packages: read[^\n]*", "packages: write", regex=True))'
+want_msg="is a read-only probe holder and runs a login for a push"
+mutate "release.yml live-test (a probe holder) runs crane auth login" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: crane auth login index.docker.io -u x -p y\n", regex=True))'
+mutate "main-candidate-rescan.yml panel-scout (a probe holder) pushes with crane push" '
+edit("main-candidate-rescan.yml", lambda s: in_job(s, "panel-scout", r"(    steps:\n)", r"\1      - name: mutant\n        run: crane push img.tar docker.io/x/y:z\n", regex=True))'
+mutate "release.yml live-test-release (a probe holder) runs docker login with no read-only token" '
+edit("release.yml", lambda s: in_job(s, "live-test-release", r"(    steps:\n)", r"\1      - name: mutant\n        run: docker login -u x -p y\n", regex=True))'
+mutate "release.yml live-test (a probe holder) signs with cosign sign" '
+edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: cosign sign --key k docker.io/x/y@sha256:0\n", regex=True))'
+want_msg=""
+# the judge's own rows: DOCKERHUB_* is bound at the release job alone and GH_TOKEN is not bound at sign-release
+rows_case() { local out rc=0
+  out=$(CHAIN_ROOT="$root" python3 - <<'PY' 2>&1
+import importlib.util, os, sys
+sp = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
+m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+R = m.SECRET_ROWS; rel = m._R
+bad = []
+for n in ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"):
+    if set(R.get(n, {})) != {(rel, "release")}:
+        bad.append("%s rows are %s, not the release job alone" % (n, sorted(j for _f, j in R.get(n, {}))))
+if (rel, "sign-release") in R.get("GH_TOKEN", {}):
+    bad.append("GH_TOKEN is still bound at sign-release")
+print("; ".join(bad)); sys.exit(1 if bad else 0)
+PY
+  ) || rc=$?
+  if [ "$rc" = 0 ]; then echo "ok   the judge's secret rows list the release job alone for DOCKERHUB_* and not sign-release for GH_TOKEN"
+  else echo "FAIL the judge's secret rows: $out"; fi; }
+slot rows_case
 
 wait
 pass=0 failn=0
