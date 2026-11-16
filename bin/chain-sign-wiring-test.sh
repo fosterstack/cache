@@ -61,7 +61,9 @@ EXPECT_STEPS = {
             + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
             + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
             + [("install", "cosign"), ("install", "aws-cli"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
-               ("upload", "signed-witness-build", "signed/witness-build")],
+               ("upload", "signed-witness-build", "signed/witness-build")]
+            # ROW 2: Build's signed apk records leave Sign too, each as its own artifact (apk-compare --build-apk reads them in Release)
+            + [("upload", "signed-witness-apk-" + r, "signed/witness-apk-" + r) for r in RUNNERS],
     "sign-rebuild": [("checkout",)]
             + [("download", "witness-rapk-" + r, "witness-rapk-" + r) for r in RUNNERS]
             + [("download", "witness-rebuild", "witness-rebuild"), ("install", "cosign"), ("install", "aws-cli"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
@@ -693,6 +695,14 @@ jobs:
         with:
           name: signed-witness-build
           path: signed/witness-build
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-apk-ubuntu-24.04
+          path: signed/witness-apk-ubuntu-24.04
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-apk-ubuntu-24.04-arm
+          path: signed/witness-apk-ubuntu-24.04-arm
   sign-rebuild:
     if: \${{ inputs.stage == 'rebuild' }}
     runs-on: ubuntu-24.04
@@ -843,7 +853,12 @@ caught "REL-011 sign-check gets the wrong records env" 'RECORDS_ARM64: \${{ inpu
 caught "REL-011 sign-check holds a write permission beyond id-token" '(  sign-check:.*?permissions:\n      contents: read\n      id-token: write)' '\1\n      packages: write'
 caught "R2 the Rebuild call drops the expected record digests" ' --expect-digests rebuild-records.json' ''
 caught "R2 the Rebuild records step reads the digests from another file" '--expect-digests rebuild-records.json' '--expect-digests digests.json'
-caught "item 4 the unused signed apk records are uploaded again" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed/witness-build\n      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n        with:\n          name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04'
+caught "ROW2 an extra artifact of the apk record folder under another name" 'name: signed-witness-apk-ubuntu-24.04-arm\n          path: signed/witness-apk-ubuntu-24.04-arm' 'name: signed-witness-apk-ubuntu-24.04-arm\n          path: signed/witness-apk-ubuntu-24.04-arm\n      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7\n        with:\n          name: signed-witness-apk-evil\n          path: signed/witness-apk-ubuntu-24.04'
+caught "ROW2 Sign does not upload the amd64 signed Build apk record" '      - uses: actions/upload-artifact@a{40} # v7\n        with:\n          name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04\n' ''
+caught "ROW2 Sign does not upload the arm64 signed Build apk record" '      - uses: actions/upload-artifact@a{40} # v7\n        with:\n          name: signed-witness-apk-ubuntu-24.04-arm\n          path: signed/witness-apk-ubuntu-24.04-arm\n' ''
+caught "ROW2 the amd64 signed apk record is uploaded from the unsigned folder" 'name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04' 'name: signed-witness-apk-ubuntu-24.04\n          path: witness-apk-ubuntu-24.04'
+caught "ROW2 both apk records in one artifact" 'name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04' 'name: signed-witness-apk-ubuntu-24.04\n          path: |-\n            signed/witness-apk-ubuntu-24.04\n            signed/witness-apk-ubuntu-24.04-arm'
+caught "ROW2 the sign job gains a write permission for the apk record uploads" '(  sign:.*?permissions:\n      contents: read\n      id-token: write)' '\1\n      actions: write'
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
 caught "AC1 second job" '    steps:' '    steps: []\n  other:\n    runs-on: ubuntu-24.04\n    steps:'
@@ -5302,7 +5317,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2158
+EXPECT=2163
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
