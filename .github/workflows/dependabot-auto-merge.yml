@@ -175,9 +175,13 @@ jobs:
           # nothing (see the header), and the PR's own copies are exactly what
           # an attacker editing them would control. Same trust-source rule as
           # the release chain's allowed-signers fetch.
-          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=refs/heads/main" --jq .content \
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=refs/heads/main" \
+            --jq .content \
             | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
-          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=refs/heads/main" --jq .content \
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=refs/heads/main" \
+            --jq .content \
             | base64 -d > "${RUNNER_TEMP}/required-checks.json"
           bash "${RUNNER_TEMP}/required-check-guard.sh" "${RUNNER_TEMP}/required-checks.json"
 
@@ -271,10 +275,13 @@ jobs:
             fail() { disarm; echo "::error::$1: the reviewer's version is unknown"; exit 1; }
             fetch() { # <path>
               mkdir -p "$main/$(dirname "$1")"
-              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=refs/heads/main" --jq .content | base64 -d > "$main/$1" ||
+              gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=refs/heads/main" --jq .content \
+                | base64 -d > "$main/$1" ||
                 fail "could not read $1 on main"
             }
-            gh api "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=refs/heads/main" --jq .content \
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/contents/bin/dependabot-reviewer-version.sh?ref=refs/heads/main" \
+              --jq .content \
               | base64 -d > "$RUNNER_TEMP/dependabot-reviewer-version.sh" || fail "could not read the version script"
             files=$(bash "$RUNNER_TEMP/dependabot-reviewer-version.sh" --files) ||
               fail "could not list the reviewer's files"
