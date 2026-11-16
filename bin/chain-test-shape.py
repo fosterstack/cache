@@ -908,7 +908,7 @@ NS_SHA = {
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
     "bin/chain-bytes-sha.py": "56fd0c141d17e1efa2676370bfe9527a1186b0234f3584884d75e2ac162cf3fc",
     "bin/chain-hostile-step.sh": "c21890f9b96910a61c6dbe4dc644e0d823c46d8d258ca74fbb28f9d6c4c78b6a",
-    "bin/chain-sandbox-probe.sh": "a38924b14b80dd5cf60c5121a3c1984c7cbee7dda8cc34b4a2c058a5d75948ab",
+    "bin/chain-sandbox-probe.sh": "9fa97f930da63ab30780b474111b1652fe51057fd1fe712821dc8c0dcc3a2a11",
     "bin/chain-verify.py": "74155ac98f179e347cdfa397a20a1ebd28d631efcafbd7a8d0ddce117ab1e6a9",
     "bin/chain_common.py": "a8730d0504aeedc592286a2b9bbf1b835c9817a421c7dea656e8e4630da5a56d",
     "bin/chain_hostile.py": "2bfc791820bc71ed5294b3e0f042e72aecac8279b4cd3932e6008720f274b631",
