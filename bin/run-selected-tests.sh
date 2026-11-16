@@ -20,6 +20,7 @@ if grep -qxF 'bash bin/job-isolation-test.sh' "$selected"; then bash bin/job-iso
 if grep -qxF 'bash bin/rescan-current-only-test.sh' "$selected"; then bash bin/rescan-current-only-test.sh; fi
 if grep -qxF 'bash bin/panel-wiring-test.sh' "$selected"; then bash bin/panel-wiring-test.sh; fi
 if grep -qxF 'bash bin/admission-tag-signer-test.sh' "$selected"; then bash bin/admission-tag-signer-test.sh; fi
+if grep -qxF 'bash bin/admission-evidence-test.sh' "$selected"; then bash bin/admission-evidence-test.sh; fi
 if grep -qxF 'bash bin/acceptance-maven-413-test.sh' "$selected"; then bash bin/acceptance-maven-413-test.sh; fi
 if grep -qxF 'bash bin/audit-record-test.sh' "$selected"; then bash bin/audit-record-test.sh; fi
 if grep -qxF 'python3 bin/check-workflow-permissions.py' "$selected"; then python3 bin/check-workflow-permissions.py; fi
