@@ -1421,11 +1421,13 @@ printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n 
   "$SHA1" "$(python3 -c "print('x'*9100)")" >"$r/.github/workflows/ci.yml"
 LT_B=$(commit_at 30 "a dependency and a go tool at the end of a line of 9100 characters")
 oversize_ci "$SHA1" 0; LT_C=$(commit_at 5 "readable C")
-CASE="long-line history: a package and a go tool named at the END of a run line over 9000 characters, in a revision replaced within 90 days, are in the history items"
+CASE="long-line history: a run line over 9000 characters, in a revision replaced within 90 days, is a finding of its own (an unmeasured "
+CASE+="command line in the history items); the package and the go tool named at its end are not read out of it"
 check python3 - "$aud" "$r" <<PY
 $OVPY
 got, _ = hist()
-assert "package:pypi/evilpkg@9.9.9" in got and "gotool:example.org/evil@v9.9.9" in got, got[:2000]
+assert "package:pypi/(unmeasured:" in got, "the long line is no item of its own: " + got[:2000]
+assert "package:pypi/evilpkg@9.9.9" not in got and "gotool:example.org/evil@v9.9.9" not in got, "read by pattern out of a long line: " + got[:2000]
 PY
 r="$work/r-oversize"
 CASE="oversize history: no other error is swallowed: a revision unreadable for another reason (a broken "
@@ -1879,6 +1881,29 @@ def _runtime(fn):
         fn()
     except RuntimeError as e:
         raise age.CouldNotLook(str(e))
+def _valerr(fn):
+    try:
+        return fn()
+    except ValueError as e:
+        raise age.CouldNotLook(str(e))
+def c_reviewed_files():
+    # reviewed_files (REQ-SUP-001-AC16): rows of exactly file, ruling and body-sha256 (64 lowercase hex); a file that is not an object, a missing or non-list list, a bad row or field, a repeated file and a repeated JSON key are refused (ValueError), never "nothing ruled"
+    f = os.path.join(tmp, "rf.json"); open(f, "w").write("{}")
+    refuse("reviewed_files {} (no list)", lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
+    open(f, "w").write('{"reviewed_files": [{}]}')
+    refuse("reviewed_files [{}] (a row with no field)", lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
+    h = "a" * 64
+    ok = {"file": "bin/x.sh", "ruling": "reviewed", "body-sha256": h}
+    for body in ("[]", "null", "not json", '{"reviewed_files": 5}', '{"reviewed_files": {}}', '{"reviewed_files": [5]}', '{"reviewed_files": [[]]}',
+                 json.dumps({"reviewed_files": [dict(ok, key="x")]}), json.dumps({"reviewed_files": [{"file": "bin/x.sh", "ruling": "r"}]}),
+                 json.dumps({"reviewed_files": [dict(ok, ruling="")]}), json.dumps({"reviewed_files": [dict(ok, file=7)]}),
+                 json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "A" * 64})]}), json.dumps({"reviewed_files": [dict(ok, **{"body-sha256": "a" * 63})]}),
+                 json.dumps({"reviewed_files": [ok, dict(ok, ruling="again")]}),
+                 '{"reviewed_files": [], "reviewed_files": []}'):
+        open(f, "w").write(body); refuse(("reviewed_files", body), lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
+    open(f, "w").write(json.dumps({"reviewed_files": [ok]}))
+    assert accepts("reviewed_files one good row", lambda: _valerr(lambda: age.load_reviewed_files(f, True)))
+    assert not accepts("reviewed_files missing file, not required", lambda: age.load_reviewed_files(os.path.join(tmp, "absent-rf.json"), False))
 def c_gh_json_raw():
     for body in ("null", "not json"):
         gh({"api": body}); refuse(("gh_json", body), lambda: net._gh_json("repos/x", need=()))
@@ -2000,7 +2025,7 @@ CASES = {
     ("pin-age-check.py", "_run_times", "_gh_api"): c_pr_clock, ("pin-age-check.py", "_run_times", "loads"): c_pr_clock,
     ("pin-age-check.py", "_release_with_assets", "_gh_api"): c_release_assets, ("pin-age-check.py", "live_proofs", "_http_dict"): c_live_pypi,
     ("pin-age-check.py", "_registry_push", "_gh_list"): c_registry, ("pin-age-check.py", "_registry_push", "_http_dict"): c_registry,
-    ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_file_pins", "load"): c_local_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
+    ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_file_pins", "load"): c_local_files, ("pin-age-check.py", "load_reviewed_files", "load"): c_reviewed_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
     ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
     ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
     ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,
