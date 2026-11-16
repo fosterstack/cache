@@ -85,18 +85,43 @@ import sys, yaml
 j = yaml.safe_load(open(sys.argv[1]))["jobs"]
 if "pin-age" not in j and not any(v.get("name") == "pin-age" for v in j.values()): sys.exit("no job named pin-age")
 PY
-py >"$work/aw" 2>&1 <<'PY' && ok "no workflow holds actions: write, at the top or in any job" || { bad "no workflow \
-holds actions: write, at the top or in any job"; sed 's/^/     /' "$work/aw"; }
-import glob, yaml, sys
+# The one holder is release.yml job decide (bin/release-patch-wiring-test.sh pins the same exception). The checker
+# takes a workflow folder, so the mutant cases below can run it on edited copies.
+cat >"$work/holders.py" <<'PY'
+import glob, os, sys, yaml
 bad = []
-for p in sorted(glob.glob(".github/workflows/*.y*ml")):
+for p in sorted(glob.glob(os.path.join(sys.argv[1], "*.y*ml"))):
     d = yaml.safe_load(open(p)) or {}
     def w(perm): return isinstance(perm, dict) and perm.get("actions") == "write" or perm == "write-all"
-    if w(d.get("permissions")): bad.append(p + " (workflow)")
+    if w(d.get("permissions")): bad.append(os.path.basename(p) + " (workflow)")
     for n, j in (d.get("jobs") or {}).items():
-        if isinstance(j, dict) and w(j.get("permissions")): bad.append("%s job %s" % (p, n))
+        if isinstance(j, dict) and w(j.get("permissions")) and (os.path.basename(p), n) != ("release.yml", "decide"):
+            bad.append("%s job %s" % (os.path.basename(p), n))
 if bad: sys.exit("actions: write in " + ", ".join(bad))
 PY
+if python3 -I "$work/holders.py" .github/workflows >"$work/aw" 2>&1; then ok "actions: write is held by release.yml \
+job decide alone"; else bad "actions: write is held by release.yml job decide alone"; sed 's/^/     /' "$work/aw"; fi
+
+# mutant: edit a copy of the workflows with $1 (python, sees dict w of file name -> parsed yaml), expect refusal
+mutant_refused() {
+  local name=$1 edit=$2 dir="$work/mut-$1"
+  mkdir "$dir"; cp .github/workflows/*.y*ml "$dir"/
+  python3 -I - "$dir" <<PY
+import glob, os, sys, yaml
+w = {}
+for p in glob.glob(os.path.join(sys.argv[1], "*.y*ml")):
+    w[os.path.basename(p)] = yaml.safe_load(open(p))
+$edit
+for n, d in w.items():
+    yaml.safe_dump(d, open(os.path.join(sys.argv[1], n), "w"))
+PY
+  if python3 -I "$work/holders.py" "$dir" >/dev/null 2>&1; then bad "mutant $name: actions: write is still refused"; \
+  else ok "mutant $name: actions: write is still refused"; fi
+}
+mutant_refused other-job-in-release "w['release.yml']['jobs']['patch-notes']['permissions'] = {'actions': 'write'}"
+mutant_refused other-file-job "j = w['supply-chain.yml']['jobs']; j[next(iter(j))]['permissions'] = {'actions': 'write'}"
+mutant_refused decide-in-other-file "w['supply-chain.yml']['jobs']['decide'] = {'permissions': {'actions': 'write'}}"
+mutant_refused release-workflow-level "w['release.yml']['permissions'] = {'actions': 'write'}"
 # the pin-age job's steps run no re-run of runs and no timing of versions
 py .github/workflows/supply-chain.yml >"$work/sc2" 2>&1 <<'PY' && ok "the pin-age job runs no re-run, no run listing \
 and no publication-time lookup" || { bad "the pin-age job runs no re-run, no run listing and no publication-time \
