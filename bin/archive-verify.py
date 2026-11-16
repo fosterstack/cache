@@ -231,15 +231,17 @@ def cmd_unpack(a):
         with open(os.path.join(layout, "index.json"), "rb") as f:
             idx = json.loads(f.read().decode("utf-8"))
         ms = idx["manifests"]
-        assert isinstance(ms, list) and len(ms) == 1 and ms[0]["digest"] == digest
-    except (OSError, ValueError, KeyError, TypeError, AssertionError):
+        if not (isinstance(ms, list) and len(ms) == 1 and ms[0]["digest"] == digest):
+            raise ValueError("wrong manifest list")
+    except (OSError, ValueError, KeyError, TypeError):
         die("the layout's index.json does not name exactly the committed manifest %s" % digest, 1)
     raw = blob(layout, digest)
     try:
         manifest = json.loads(raw.decode("utf-8"))
         layers = manifest["layers"]
-        assert isinstance(layers, list)
-    except (ValueError, KeyError, AssertionError):
+        if not isinstance(layers, list):
+            raise ValueError("layers is not a list")
+    except (ValueError, KeyError):
         die("the manifest is not an archive manifest", 1)
     got = {}
     for L in layers:

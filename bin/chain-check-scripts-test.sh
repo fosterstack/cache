@@ -329,7 +329,7 @@ if grep -Fq 'OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY' <<< "$out" && ! grep -Fq 'osv
 # exit 0 does not mean an empty report: osv-scanner can list findings and still exit 0 (findings it classes as unimportant or, with call analysis, uncalled). The report is judged at ANY exit code.
 mkfake osv-scanner 0 80
 FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 e osv-scanner exits 0 with an uncovered finding in its report: the scan fails" "found vulnerabilities" "${SCAN[@]}"
-FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]' want_ok "AC4 e osv-scanner exits 0 with a finding the published VEX excepts: the scan passes" "${SCAN[@]}"
+FAKE_OSV_RC=0 FAKE_OSV_ECO_ONLY="Debian:12" FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]' want_ok "AC4 e osv-scanner exits 0 with a finding the published VEX excepts: the scan passes" "${SCAN[@]}"
 FAKE_OSV_RC=0 FAKE_OSV_GARBAGE=1 want_fail "AC4 e osv-scanner exits 0 with a report that cannot be read: the scan did not run" "could not run" "${SCAN[@]}"
 FAKE_OSV_RC=0 want_ok "AC4 e osv-scanner exits 0 with an empty report: the scan passes" "${SCAN[@]}"
 for sh_ in 'vulnerabilities is null|{"results":[{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"},"vulnerabilities":null}]}]}' 'vulnerabilities is a string|{"results":[{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"},"vulnerabilities":"x"}]}]}' 'results is not a list|{"results":"x"}' 'packages is not a list|{"results":[{"packages":"x"}]}' 'packages is null beside a result with packages|{"results":[{"packages":null},{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'packages is false|{"results":[{"packages":false},{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'results is null|{"results":null}' 'a result that is not an object|{"results":["x"]}' 'a null result beside a good one|{"results":[null,{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'a null package entry beside a good one|{"results":[{"packages":[null,{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'the report itself is a list|[]'; do
@@ -545,7 +545,7 @@ cp "$work/dig.f1" "$fx/digests.json"
 # package at its version. Every finding must be covered; one that is not, an unreadable VEX or a failure with nothing parseable to cover fails.
 VBUSY='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]'
 mkfake grype 0 120; mkfake osv-scanner 1 80
-FAKE_OSV_VULNS="$VBUSY" want_ok "AC4 F3 osv-scanner exit 1 on a finding the published VEX excepts (CVE-2025-60876 on busybox 1.37.0) passes" "${SCAN[@]}"
+FAKE_OSV_ECO_ONLY="Debian:12" FAKE_OSV_VULNS="$VBUSY" want_ok "AC4 F3 osv-scanner exit 1 on a finding the published VEX excepts (CVE-2025-60876 on busybox 1.37.0) passes" "${SCAN[@]}"
 if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name | test("^production/linux/"))] | length == 2 and all(.[]; .verdict == "pass" and .vex_suppressed == 1)' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 the result says how many findings the VEX excepted on the subject"; else bad "AC4 F3 vex_suppressed missing from the osv subject: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[0]]' "$fx/out/scan-results.json" 2>&1 | cut -c1-200)"; fi
 FAKE_OSV_VULNS='[{"pkg": "github.com/golang-jwt/jwt/v4@v4.5.0", "id": "GHSA-29wx-vh33-7x7r", "aliases": ["CVE-2024-51744", "GO-2024-3250"]}]' \
   want_ok "AC4 F3 a finding whose id differs from the statement's name but whose alias equals it is excepted (the OSV id is the GHSA, the VEX names the CVE)" "${SCAN[@]}"
@@ -1833,9 +1833,21 @@ if [ "$rc" != 0 ] && [ "$rc" != 127 ] && [ ! -s "$work/gvlog" ] && [ ! -e "$gvt/
 mv "$gvt/vendor.hide" "$gvt/vendor"
 if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
 else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
-# the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
-sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
-if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
+# the static strace of the egress suite is built from a pinned source: STRACE_VER is the only place the
+# version is written (passed into the builder container as V, used as ${V} in the URL), the URL is the
+# github.com/strace/strace release, and the comments never name strace.io
+ae_f="$root/bin/acceptance-egress.sh"
+ae_url='https://github.com/strace/strace/releases/download/v${V}/strace-${V}.tar.xz'
+# the non-comment lines, so the version test below needs no pipe
+ae_code=$(grep -v '^[[:space:]]*#' "$ae_f" || true)
+sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$ae_f" | head -1)
+if [ -n "$sv_" ] && grep -Fq -- '-e V="$STRACE_VER"' "$ae_f" && grep -Fq "\"$ae_url\"" "$ae_f" \
+  && ! grep -Eq 'strace-?[0-9]+\.[0-9]|download/v[0-9]' <<< "$ae_code" \
+  && grep -q '^# .*github\.com/strace/strace' "$ae_f" && ! grep -q 'strace\.io' "$ae_f"; then
+  ok "acceptance-egress.sh: strace URL uses \${V} from STRACE_VER=$sv_, no literal version, github.com/strace/strace"
+else
+  bad "acceptance-egress.sh: strace not pinned via STRACE_VER/V, or a literal version, or strace.io named"
+fi
 # the egress suite's strace target is the image's real entrypoint: the path in the script equals both apko
 # entrypoints and the path the recipes install to
 ce_=$(sed -n 's/^CANDIDATE_ENTRYPOINT=\(.*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)

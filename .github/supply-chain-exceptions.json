@@ -351,22 +351,22 @@
     {
       "file": "bin/go-bump-open-pr.sh",
       "form": "a download",
-      "key": "953689ae64856c73b377ed46e8fa9caf842119547c28b44d505cc7ab9331a2a4",
-      "line": "122789dd18ce1f7e0c9d9e34f02d10435f6ba715ccc666bd8a8409e44da163f4",
+      "key": "d9cbfa065b269d05ee09a08e4136ded6b73601bbece6d37c38671afbeb116f9f",
+      "line": "9deac0d1003e47ede2bbb0c688862ad337321257308adfb4f41c232b3846c188",
       "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
     },
     {
       "file": "bin/go-bump-open-pr.sh",
       "form": "a download",
-      "key": "9216ecefa744f0521f512c89a19f3fa14fc754f16b31bd010d0fcc4d523121ce",
-      "line": "33cb527c703c825a14170872548ce54e176df30ca86f7e86eac54a823e885320",
+      "key": "cd911d5ab586a8b1faf8e800a9191ad8196ecd7fd2ecf78b49757196d4f36131",
+      "line": "7d12504f59f46f70f485dbe1d91ad4e2f3462dad855fa6d7abf9f089214e357b",
       "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
     },
     {
       "file": "bin/acceptance-egress.sh",
       "form": "a system package install",
-      "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
-      "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
+      "key": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
+      "line": "4bbd5f87ccadd37315f40e60b70c95ba4b0b7d950ca9c460c8976a1aaa005a79",
       "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     }
   ],
@@ -430,7 +430,7 @@
     {
       "file": ".github/agent/supply-chain/pin-age-check.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): reads registry, index, GitHub and Rekor APIs for a pin's age and signature | text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/supply-chain/pin-age-check.py that names the tool",
-      "body-sha256": "faf50a36907bc356e5bcd66a75ab2c9a2448c4f6cf9058117f968d149db443ba"
+      "body-sha256": "5ee27ba2baab0f5676223c256ef2c8f2d2fcb7db6e9e115011557cb29a85ca8d"
     },
     {
       "file": ".github/agent/supply-chain/pin-audit.py",
@@ -480,7 +480,7 @@
     {
       "file": "bin/chain-test-signers.py",
       "ruling": "text, not a command: a comment in bin/chain-test-signers.py that names the tool | text, not a command: Python source of bin/chain-test-signers.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "cf39f9e9e18f0af6804e1714a5c60f1f7bcb38cadb6a0f1710522fb5d0d64516"
+      "body-sha256": "c7e063b3b69e471eaf3598ddd1feb80839b53853f39ccc8ddffc1b140947cd67"
     },
     {
       "file": "bin/chain-verify.py",
