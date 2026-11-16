@@ -974,6 +974,10 @@ jobs:
         with:
           name: release-policy
           path: release-policy
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ needs.build-assemble.outputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
       - name: release-apks under Witness
         run: bash bin/witnessed.sh release-apks bin/release-apks.sh
       - name: release-sign under Witness
