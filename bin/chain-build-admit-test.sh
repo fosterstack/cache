@@ -668,8 +668,9 @@ printf '{"accepted_items":[{"cve":"CVE-2099-1","severity":"Critical","package":"
   > "$W/c/repo/.auditor/accepted-items.json"
 G add .auditor/accepted-items.json; commit_move owner "main now holds an open item"
 G checkout -q --detach "$TAGGED"; gh_fixtures "$W/c/gh" "$TAGGED"
-if G show "$TAGGED:.auditor/accepted-items.json" | grep -Fq '"below"' && ! G show "$TAGGED:.auditor/accepted-items.json" | grep -Fq at_or_above \
-    && G show "origin/main:.auditor/accepted-items.json" | grep -Fq at_or_above && [ "$(G rev-parse v0.3.0^{commit})" = "$TAGGED" ] \
+tagged_copy=$(G show "$TAGGED:.auditor/accepted-items.json"); main_copy=$(G show "origin/main:.auditor/accepted-items.json")
+if [[ "$tagged_copy" == *'"below"'* && "$tagged_copy" != *at_or_above* && "$main_copy" == *at_or_above* ]] \
+    && [ "$(G rev-parse v0.3.0^{commit})" = "$TAGGED" ] \
     && G merge-base --is-ancestor "$TAGGED" origin/main && [ "$TAGGED" != "$(G rev-parse origin/main)" ]; then
   ok "fixture: the tagged commit's accepted-items copy has no open item, origin/main's (a later commit) holds an at_or_above one"
 else bad "fixture: the tagged commit's accepted-items copy and origin/main's are not as the case claims"; fi
