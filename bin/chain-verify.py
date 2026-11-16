@@ -955,6 +955,28 @@ def cmd_bind_check(a):
     print("ok")
 
 
+APK_FILE_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def _signed_apk_files(pol, stage, paths, step, label):
+    """The whole-file sha256 of every product in the signed records of one step (apk is Build's, rapk is Rebuild's), each verified under the stage's
+    identity; an unverified record, a record of another step, or a product held by two records is refused."""
+    files = {}
+    for path in paths:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                rs, _rp, rd = verify_record(pol, stage, path, tmp)
+        except Refuse as ex:
+            refuse(ex.stage, "%s: the signed apk record %s is refused: %s" % (label, path, ex.reason))
+        if rd["payloadType"] == POLT or (rs.get("predicate") or {}).get("name") != step:
+            refuse("rebuild", "%s: %s is not a signed %s record" % (label, path, step))
+        for x in typed_subjects(stage, rs):
+            if x["name"] in files:
+                refuse("rebuild", "%s: the product %s is in two signed %s records" % (label, x["name"], step))
+            files[x["name"]] = x["digest"].get("sha256")
+    return files
+
+
 def cmd_apk_compare(a):
     """The comparison job's result (run in a job with no key and no token: the signer and the builder never share a
     machine, Rebuild's apks never reach a job that holds a credential) is a small unsigned file: verdict pass and
@@ -969,6 +991,9 @@ def cmd_apk_compare(a):
     if len(a.rapk or []) != 2:
         refuse(stage, "apk-compare: exactly two signed rapk records (--rapk, one per witness) are required, got %d"
                % len(a.rapk or []))
+    if len(a.build_apk or []) != 2:
+        refuse(stage, "apk-compare: exactly two signed apk records of Build (--build-apk, one per runner) are required, got %d"
+               % len(a.build_apk or []))
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
@@ -1036,25 +1061,18 @@ def cmd_apk_compare(a):
     if product_digest(typed_subjects(stage, stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse(stage, "apk-compare: Rebuild's verified record attests another digest list than Build attested "
                       "(the rebuild digests are not Build's)")
-    rapk = {}
-    for path in a.rapk or []:
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                rs, _rp, rd = verify_record(pol, stage, path, tmp)
-        except Refuse as ex:
-            refuse(ex.stage, "rapk: the signed rapk record %s is refused: %s" % (path, ex.reason))
-        if rd["payloadType"] == POLT or (rs.get("predicate") or {}).get("name") != "rapk":
-            refuse(stage, "rapk: %s is not a signed rapk record of Rebuild" % path)
-        for x in typed_subjects(stage, rs):
-            if x["name"] in rapk:
-                refuse(stage, "rapk: the product %s is in two signed rapk records" % x["name"])
-            rapk[x["name"]] = x["digest"].get("sha256")
+    rapk = _signed_apk_files(pol, stage, a.rapk, "rapk", "rapk")
+    bapk = _signed_apk_files(pol, "build", a.build_apk, "apk", "build-apk")
     for p in pairs:
         runner = "x86_64" if p["arch"] == "amd64" else "aarch64"
-        have = rapk.get(PRODUCT_PREFIX + "out/%s/%s" % (runner, p["name"]))
-        if have != p["build_digest"].split(":")[1]:
-            refuse(stage, "rapk: the signed rapk records do not hold %s/%s with digest %s" % (p["arch"], p["variant"],
-                                                                                           p["build_digest"]))
+        product = PRODUCT_PREFIX + "out/%s/%s" % (runner, p["name"])
+        for label, files in (("rapk", rapk), ("build-apk", bapk)):
+            if not APK_FILE_SHA256.fullmatch(files.get(product) or ""):
+                refuse(stage, "%s: the signed records do not hold %s/%s with a whole-file sha256 of 64 lower-case hex"
+                       % (label, p["arch"], p["variant"]))
+        if rapk[product] != bapk[product]:
+            refuse(stage, "rapk: the whole-file digest of the %s/%s apk in Rebuild's signed rapk records differs from "
+                          "Build's signed apk record (build-apk)" % (p["arch"], p["variant"]))
     print("ok")
 
 
@@ -2616,6 +2634,7 @@ def build_parser():
     ap.add_argument("--file", required=True)
     ap.add_argument("--digests", required=True)
     ap.add_argument("--rapk", action="append")       # the signed rapk records, one per witness: the apk digests
+    ap.add_argument("--build-apk", action="append")  # Build's signed apk records, one per runner: the whole-file digests Rebuild's must equal
     cl = sub.add_parser("check-list")
     cl.add_argument("--policy", required=True)
     cl.add_argument("--digests", required=True)
