@@ -197,11 +197,25 @@ PY
       echo "FAIL: ci.yml with ${shape} run steps (rc ${rc}, want non-zero and the sentence)"; fail=$((fail+1))
     fi
   done
+
+  # bash joins text after the closing quote into the same word, so the ref would no longer end at main
+  joined_a='?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}'
+  joined_b='?ref=refs/heads/main"-x'
+  for join in a b; do
+    read_text=joined_$join
+    sed '0,\|?ref=refs/heads/main"|s||'"${!read_text}"'|' "$ci" > "$w/ci-join-$join.yml"
+    out="$(CI_YML="$w/ci-join-$join.yml" bash "$0" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ] && grep -q '^FAIL: g3-every read of main in the job names refs/heads/main' <<<"$out"; then
+      echo "ok: ci.yml with a quote-join-${join} read fails the g3 check"; pass=$((pass+1))
+    else
+      echo "FAIL: ci.yml with a quote-join-${join} read (rc ${rc}, want non-zero and the g3 FAIL line)"; fail=$((fail+1))
+    fi
+  done
 fi
 
 # What ci.yml must say, read as text: the step list, the fetch and run steps, no code of the checkout run, the drift
 # step on the fetched file, and the guard's own suite in the allowlist job.
-python3 - "$repo/.github/workflows/ci.yml" > "$w/static.out" 2>&1 <<'PY'
+python3 - "$ci" > "$w/static.out" 2>&1 <<'PY'
 import sys, re, json, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 steps = wf["jobs"]["required-check-guard"]["steps"]
@@ -235,9 +249,9 @@ t("no step of the job sources a file or uses a local action",
   and not any(s.get("uses", "").startswith("./") for s in steps))
 d = by.get("drift-issue", {}).get("run", "")
 t("drift step runs the guard fetched into RUNNER_TEMP", bool(re.search(r"bash " + T, d)))
-reads = [m for x in runs for m in re.findall(r"\?ref=[^\s\"']+", x)]
+reads = [m for x in runs for m in re.findall(r"\?ref=\S*", x)]
 t("g3-every read of main in the job names refs/heads/main (got %s)" % reads,
-  len(reads) >= 2 and set(reads) == {"?ref=refs/heads/main"})
+  len(reads) >= 2 and set(reads) == {'?ref=refs/heads/main"'})
 t("the guard's fetch path occurs in exactly one step of the job",
   sum("contents/bin/required-check-guard.sh" in json.dumps(s) for s in steps) == 1)
 al = [s for s in wf["jobs"]["allowlist"]["steps"] if "required-check-guard-test.sh" in json.dumps(s)]
