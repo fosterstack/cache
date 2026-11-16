@@ -855,7 +855,7 @@ case "$1" in
       exit 1
     fi
     [ "$detach" = 1 ] || exit 0
-    port=$((41000 + $(ls "$FAKE_DIR" | grep -c '^srv-')))
+    port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
     FSCACHE_ADDR=":$port" FAKE_KIND=${img#fscache:} python3 "$FAKE_DIR/server.py" > /dev/null 2>&1 &
     echo $! > "$FAKE_DIR/srv-$port"; echo "$port" > "$FAKE_DIR/port-$nm"; echo cid;;
   port) echo "127.0.0.1:$(cat "$FAKE_DIR/port-$2" 2> /dev/null || echo 1)";;
@@ -866,6 +866,7 @@ esac
 exit 0
 DKEOF
 chmod +x "$fake2/go" "$fake2/docker"
+if ! grep -q '41000' "$fake2/docker" && grep -q '127.0.0.1", 0' "$fake2/docker"; then ok "AC33 the fake docker picks a free port per container, never a fixed one"; else bad "AC33 the fake docker still holds a fixed base port (suites side by side would answer for each other)"; fi
 ART=(check-artifacts.sh --digests digests.json --images images --archives dist --out out)
 arun() { # arun [VAR=val ...] -- SCRIPT ARGS : the artifact check in its own tree with the artifact fakes first on PATH
   local envs=(FAKE_NONE=1); while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
@@ -1898,7 +1899,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=664
+EXPECT=665
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
