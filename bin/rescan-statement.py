@@ -499,17 +499,17 @@ def _osv_finding(v, pkg, src, platform):
         "severity": _osv_severity(v),
         "package": pk.get("name"),
         "version": pk.get("version"),
-        "type": _osv_type(pk.get("ecosystem")),
+        "type": _osv_type(pk.get("ecosystem"), pk.get("name")),
         "fixed_in": None,
         "platform": platform,
         "target": src,
     }
 
 
-def _osv_type(ecosystem):
+def _osv_type(ecosystem, name):
     """the purl type of an OSV ecosystem name: Go is golang, PyPI is pypi"""
     if not isinstance(ecosystem, str):
-        return None
+        return "golang" if name == "stdlib" else None
     return "golang" if ecosystem == "Go" else ecosystem.lower()
 
 
