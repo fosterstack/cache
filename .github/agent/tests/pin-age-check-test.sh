@@ -1963,14 +1963,14 @@ assert rows
 bad = [(r["file"], r["line"][:12], WORDS.findall(r["ruling"])) for r in rows if WORDS.search(r["ruling"])]
 assert not bad, bad
 PY
-CASE="plain-count: 21 committed rows begin with the three constants together"
+CASE="plain-count: 22 committed rows begin with the three constants together"
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
 ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
 rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
-assert len(rows) == 21, len(rows)
+assert len(rows) == 22, len(rows)
 PY
 CASE="plain-old-prefixes: no committed row begins with an old prefix"
 check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
