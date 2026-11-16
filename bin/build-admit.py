@@ -36,6 +36,8 @@ TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")  # fullmatch: no
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
 SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)$', re.M)
 OWNER_SSH = "owner-ssh"
+KMS_RELEASE = "kms-release"         # the one release KMS key, admitted on a patch tag only (REQ-REL-009-AC6)
+PATCH_TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.[1-9][0-9]*")
 # The freeze check (the requirements tool, Go code of the tagged commit) runs in the `freeze` job before Build, not
 # here. That job writes this file, one `freeze-ok COMMIT BASE` line per baseline file that passed, and Build's apk job
 # downloads it. Admission starts no Go: it reads the file and prints what it trusted.
@@ -49,7 +51,9 @@ SIGNER = "bin/admission-tag-signer.py"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
 # gate 7 (REQ-REL-012-AC7): main's judge, its helper and the writers policy, read from origin/main into a scratch root and never taken from the tagged commit
 AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
-POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER)
+RELEASE_SIGNER = ".github/policy/release_tag_signer"    # one ssh-rsa line, the release KMS public key; absent until a human commits it
+POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER,
+                RELEASE_SIGNER)
 
 
 class Refusal(Exception):
@@ -108,6 +112,7 @@ class Context:
         self.tmp = tmp
         self.policy = os.path.join(tmp, "policy")
         self.allowed = os.path.join(self.policy, "allowed_signers")
+        self.release_signer = os.path.join(self.policy, os.path.basename(RELEASE_SIGNER))
         self.method = None
         self.tag_object = None
         self.principal = None
@@ -155,6 +160,8 @@ def check_policy_from_main(ctx):
         raise Refusal("policy-from-main", "cannot fetch origin main: %s" % one_line(text(err)))
     for path in POLICY_FILES:
         data = git_show("origin/main:" + path)
+        if data is None and path == RELEASE_SIGNER:
+            data = b""      # not committed yet: no tag is admitted by that key
         if data is None:
             raise Refusal("policy-from-main", "%s is not on origin/main" % path)
         with open(os.path.join(ctx.policy, os.path.basename(path)), "wb") as fh:
@@ -174,10 +181,9 @@ def check_tag_annotated(ctx):
 # ---------------------------------------------------------------- 5. tag-signature (REQ-REL-009-AC6)
 
 def route_tag(ctx):
-    """Ask main's bin/admission-tag-signer.py whether the owner's SSH signature decides ('ssh'); anything else is
-    refused:
-    a keyless signature on any tag, an unsigned tag, a PGP signature. An owner SSH signature is accepted on every tag,
-    patch tags included."""
+    """Ask main's bin/admission-tag-signer.py whether an SSH signature decides ('ssh'); anything else is refused:
+    a keyless signature on any tag, an unsigned tag, a PGP signature. The owner's SSH signature is accepted on every
+    tag; the release KMS key's (also an SSH signature) on a patch tag only (check_tag_signature)."""
     rc, obj, _ = outcome(lambda: subprocess.run(["git", "cat-file", "tag", "refs/tags/" + ctx.tag], capture_output=True,
         check=False))
     if rc != 0:
@@ -197,9 +203,10 @@ def route_tag(ctx):
     return route, obj
 
 
-def verify_tag_ssh(ctx):
-    """The owner's SSH signature against main's allowed signers. Returns (principal, fingerprint)."""
-    rc, out, err = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + ctx.allowed,
+def verify_tag_ssh(ctx, signers=None):
+    """The SSH signature against one allowed-signers file (default: the owner's, main's allowed_signers). Returns
+    (principal, fingerprint)."""
+    rc, out, err = outcome(lambda: subprocess.run(["git", "-c", "gpg.ssh.allowedSignersFile=" + (signers or ctx.allowed),
         "verify-tag", "refs/tags/" + ctx.tag], capture_output=True, env=dict(os.environ, **{"LC_ALL": "C"}),
         check=False))
     if rc != 0:
@@ -211,9 +218,15 @@ def verify_tag_ssh(ctx):
 
 
 def check_tag_signature(ctx):
-    route_tag(ctx)      # the router refuses everything but an owner SSH signature, on any tag
-    ctx.method = OWNER_SSH
-    ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
+    route_tag(ctx)      # the router refuses everything but an SSH signature
+    try:
+        ctx.method = OWNER_SSH
+        ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx)
+    except Refusal:     # the release KMS key signs a patch tag only; no other signer reads its file
+        if not PATCH_TAG.fullmatch(ctx.tag) or not os.path.getsize(ctx.release_signer):
+            raise
+        ctx.method = KMS_RELEASE
+        ctx.principal, ctx.fingerprint = verify_tag_ssh(ctx, ctx.release_signer)
     if not ctx.principal or not ctx.fingerprint:
         raise Refusal("tag-signature", "tag signature verified but signer metadata could not be extracted: no empty evidence is admitted")
 

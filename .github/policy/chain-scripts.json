@@ -404,6 +404,14 @@
       ]
     },
     {
+      "path": "bin/tag-sign.py",
+      "sha256": "2fd85972d9edf974274713e39437d8ea8caf118b003090d7a9e65c1fec180c1b",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "the offline halves of signing an automatic patch release's tag (REQ-REL-009-AC5): prepare writes the unsigned tag object and the digest the release KMS key signs, assemble checks the returned RSA signature against the release key's public line and puts it into the object as one SSH SIGNATURE block; it holds no key, calls no tool and signs nothing itself (stage-sign.yml's sign-tag runs the KMS call between the two)"
+    },
+    {
       "path": "bin/rebuild-records-digests.sh",
       "tools": [
         "basename",

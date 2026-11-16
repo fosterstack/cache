@@ -30,7 +30,7 @@ on:
         required: true
         type: string
       stage:
-        description: 'build, rebuild or check: which records this call signs (the release graph calls this file once for each)'
+        description: 'build, rebuild, check or tag: which records (or the patch tag) this call signs (the release graph calls this file once for each)'
         required: true
         type: string
       records:
@@ -338,3 +338,52 @@ jobs:
         with:
           name: release-signed
           path: release-signed
+
+  # sign-tag: the automatic patch release's tag. Receives the tag request decide made (the tag, the time, the notes), makes the annotated tag object of the
+  # commit this run is on, and signs it with the one release key: tag-sign.py prepare writes the object and the sha256 of its SSH signed-data blob, kms-sign signs that
+  # digest (RSASSA_PKCS1_V1_5_SHA_256, which is what an rsa-sha2-256 SSH signature is), tag-sign.py assemble puts the signature into the object. It holds
+  # no push right: the job that pushes the tag (cut in release.yml) holds no key.
+  sign-tag:
+    name: sign-tag
+    if: ${{ inputs.stage == 'tag' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tag-request
+          path: tag-request
+
+      - name: install the pinned aws CLI
+        run: bash bin/install-scanner.sh aws-cli
+
+      - name: make the tag object and the digest to sign
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir tag-work
+          python3 bin/tag-sign.py prepare --tag "$(cat tag-request/tag)" --commit "$COMMIT" --notes tag-request/notes.md \
+            --tagger 'fosterstack release <release@users.noreply.github.com>' --time "$(cat tag-request/time)" \
+            --object tag-work/tag.object --digest tag-work/tag.digest
+
+      - name: sign the digest with the release key
+        env:
+          AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing
+          AWS_REGION: us-east-1
+          RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing
+        run: bash bin/with-aws-token.sh kms-sign --aws "$RUNNER_TEMP/aws-cli/aws" --key-ref "$RELEASE_KMS_KEY_REF" --digest "$(cat tag-work/tag.digest)" --signing-config .github/policy/cosign-signing-config.json --public-key build/keys/release.rsa.pub --out tag-work/tag.sig --bundle tag-work/tag.bundle
+
+      - name: put the signature into the tag object
+        run: python3 bin/tag-sign.py assemble --object tag-work/tag.object --signature tag-work/tag.sig --signer-file .github/policy/release_tag_signer --out tag-work/tag.signed
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-tag
+          path: tag-work/tag.signed

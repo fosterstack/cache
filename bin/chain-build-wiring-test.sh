@@ -272,9 +272,28 @@ jobs:
       issues: write
     steps:
       - run: echo decide
-  patch-notes:
+  sign-tag:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
+    if: ${{ needs.decide.outputs.tag != '' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      stage: tag
+      digests: '{}'
+  cut:
+    needs: [decide, sign-tag]
+    if: ${{ needs.decide.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - run: echo ${{ secrets.AUDITOR_APP_ID }}
+  patch-notes:
+    needs: [cut, decide]
+    if: ${{ needs.decide.outputs.tag != '' }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -1399,7 +1418,7 @@ GATE_BODY="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 GATE="\${{ $GATE_BODY }}"
 OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
-PNIF="\${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+PNIF="\${{ needs.decide.outputs.tag != '' }}"
 RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
@@ -1484,13 +1503,13 @@ gr g27 "005-AC5 hostile-verify with environment: agent" "  hostile-verify:\n    
     "  hostile-verify:\n    environment: agent\n    needs: sign" "may not name an environment"
 HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:'
 gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
-gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" \
+gr g29 "005-AC5 patch-notes needing sign as well as decide and cut" "  patch-notes:\n    needs: [cut, decide]" "  patch-notes:\n    needs: [cut, decide, sign]" \
     "patch-notes must need exactly"
 gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" \
     "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "may not name an environment"
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
-gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" \
-       "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
+gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: [cut, decide]\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" \
+       "  patch-notes:\n    needs: [cut, decide]\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
 gr g34 "005-AC5 sign without the gate (it would run on every push and the daily cron)" "$SIGN_HEAD" "  sign:\n    needs: build" "sign must carry exactly one if"
 gr g35 "005-AC5 sign gated by another condition" "$SIGN_HEAD" "  sign:\n    if: always()\n    needs: build" "sign must carry exactly one if"
 gr g36 "005-AC5 sign gated by PR 1's dry-run-only gate (a tag push would not run it)" "$SIGN_HEAD" \
@@ -1518,7 +1537,23 @@ gr g52 "AC12 release.yml's build call passes mode: release (a second input: the 
 gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mode: snapshot would be a snapshot Rebuild)" "  rebuild:\n    needs: [build, sign]" \
        "  rebuild:\n    needs: [build, sign]\n    with:\n      mode: snapshot" "rebuild may not pass"
 gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
-gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
+gr g43 "005-AC5 patch-notes without its if" "    needs: [cut, decide]\n    if: $PNIF" "    needs: [cut, decide]" "must carry exactly the if"
+# the tag jobs (REQ-REL-009-AC5): sign-tag (stage-sign.yml, stage tag) -> cut -> patch-notes, after decide
+gr t1 "REL-009-AC5 patch-notes that does not wait for cut (the tag may not exist yet)" "  patch-notes:\n    needs: [cut, decide]" "  patch-notes:\n    needs: decide" "patch-notes must need exactly"
+gr t2 "REL-009-AC5 cut that does not wait for sign-tag (it could push an unsigned tag)" "  cut:\n    needs: [decide, sign-tag]" "  cut:\n    needs: [decide]" "cut must need exactly"
+gr t3 "REL-009-AC5 cut that also waits for the chain" "  cut:\n    needs: [decide, sign-tag]" "  cut:\n    needs: [decide, sign-tag, check]" "cut must need exactly"
+gr t4 "REL-009-AC5 cut that runs after a failed sign-tag (always())" "  cut:\n    needs: [decide, sign-tag]\n    if: $PNIF" "  cut:\n    needs: [decide, sign-tag]\n    if: always()" "must carry exactly the if"
+gr t5 "REL-009-AC5 cut that holds contents write on its own token" "    environment: agent\n    permissions:\n      contents: read\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}\n  patch-notes:" "    environment: agent\n    permissions:\n      contents: write\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}\n  patch-notes:" "exactly the permissions"
+gr t6 "REL-009-AC5 cut that holds id-token" "    environment: agent\n    permissions:\n      contents: read\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}\n  patch-notes:" "    environment: agent\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo \${{ secrets.AUDITOR_APP_ID }}\n  patch-notes:" "exactly the permissions"
+gr t7 "REL-009-AC5 cut in the release environment" "  cut:\n    needs: [decide, sign-tag]\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" "  cut:\n    needs: [decide, sign-tag]\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
+gr t8 "REL-009-AC5 sign-tag that does not wait for decide" "  sign-tag:\n    needs: decide" "  sign-tag:\n    needs: []" "sign-tag must need exactly"
+gr t9 "REL-009-AC5 sign-tag that holds contents write" "      contents: read\n      id-token: write\n    uses: ./.github/workflows/stage-sign.yml\n    with:\n      stage: tag" "      contents: write\n      id-token: write\n    uses: ./.github/workflows/stage-sign.yml\n    with:\n      stage: tag" "exactly the permissions"
+gr t10 "REL-009-AC5 sign-tag that holds no id-token (the call would be a startup_failure)" "      contents: read\n      id-token: write\n    uses: ./.github/workflows/stage-sign.yml\n    with:\n      stage: tag" "      contents: read\n    uses: ./.github/workflows/stage-sign.yml\n    with:\n      stage: tag" "exactly the permissions"
+gr t11 "REL-009-AC5 sign-tag with another stage" "      stage: tag" "      stage: build" "sign-tag must call"
+gr t12 "REL-009-AC5 sign-tag calling another workflow" "    uses: ./.github/workflows/stage-sign.yml\n    with:\n      stage: tag" "    uses: ./.github/workflows/stage-promote.yml\n    with:\n      stage: tag" "sign-tag must call"
+gr t13 "REL-009-AC5 sign-tag passing the secrets" "  sign-tag:\n    needs: decide" "  sign-tag:\n    secrets: inherit\n    needs: decide" "may not use secrets."
+gr t14 "REL-009-AC5 sign-tag in an environment" "  sign-tag:\n    needs: decide" "  sign-tag:\n    environment: agent\n    needs: decide" "may not name an environment"
+gr t15 "REL-009-AC5 sign-tag that runs whatever decide said" "  sign-tag:\n    needs: decide\n    if: $PNIF" "  sign-tag:\n    needs: decide" "must carry exactly the if"
 gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
        "    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "    needs: [build]" "patch-failed must need exactly"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
@@ -3836,7 +3871,7 @@ if [ "$rc" = 1 ] \
 else
   bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
 fi
-EXPECT=1317
+EXPECT=1332
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

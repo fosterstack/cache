@@ -1465,7 +1465,7 @@ check("AC8 VEX line-local redaction (r3, B1): the changelog cleans line by line,
       "(r5: the redacted line is written escaped, A R4-4)",
       "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n" in cl_, cl_)
 tr_ = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + raw_
-       + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+       + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
 check("AC8 VEX line-local redaction (r3, B1): a patch tag's notes are cleaned line by line too",
       "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n" in (P.tag_notes(tr_) or ""), P.tag_notes(tr_))
 # B3: Markdown and GitHub rendering never make two values read alike, hide a value or add a line
@@ -1725,7 +1725,7 @@ for t_ in TERMS:
     cl_, _ = P.changelog(raw_, None, "")
     check("AC8 line-local redaction (r4, A R3-4): the changelog splits at %r too" % t_, want_ in cl_ and t_ not in cl_.replace("\n", ""), cl_)
     tr_ = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + raw_
-           + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+           + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
     got_ = P.tag_notes(tr_) or ""
     check("AC8 line-local redaction (r4, A R3-4): a patch tag's notes split at %r too" % t_, want_ in got_ and t_ not in got_.replace("\n", ""), got_)
 check("AC8 line-local redaction (r4): a trailing boundary and an empty text keep their shape",
@@ -1799,7 +1799,7 @@ def esc_line(l):
     return re.fullmatch(r"(?:\\[%s]|[^%s])*" % (PUNCT_, PUNCT_), body) is not None and "\\(redacted\\)" in body
 def mktag(tag, body):
     return ("object 0123\ntype commit\ntag %s\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" % tag + body
-            + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+            + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
 nt_ = P.notes("v0.2.3", [], [], behavior=["[click]gpt (decided 2026-10-05)."])
 check("AC8 redaction marker (r5, A R4-4 / B F3): '[click]gpt' in a behavior entry prints '\\[click\\]\\(redacted\\)', never a link",
       "- \\[click\\]\\(redacted\\) \\(decided 2026\\-10\\-05\\)\\.\n" in nt_ and "](redacted)" not in nt_, nt_)
@@ -2094,7 +2094,7 @@ check("0135 an entry an earlier patch published is not published again (tag mess
       P.unpublished(ents, pub) == ["Second change, one line (decided 2026-10-05)."], P.unpublished(ents, pub))
 check("0135 nothing published yet: every entry stays", P.unpublished(ents, "") == ents)
 tagraw = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + pub
-          + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+          + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
 check("AC8w tag-notes: a generated patch tag's message is its notes, the signature dropped", P.tag_notes(tagraw) == pub, P.tag_notes(tagraw))
 check("AC8w tag-notes: an owner's tag message is not taken as notes",
       P.tag_notes("object 1\ntype commit\ntag v0.3.0\ntagger o <o@x> 1 +0000\n\nv0.3.0\n") is None)
@@ -2117,34 +2117,37 @@ subprocess.run(["git", "-C", tg, "tag", "-a", "--cleanup=verbatim", "-F", os.pat
                env=dict(os.environ, GIT_COMMITTER_NAME="fosterstack release", GIT_COMMITTER_EMAIL="release@users.noreply.github.com"))
 raw_ = subprocess.run(["git", "cat-file", "tag", "v0.2.3"], cwd=tg, capture_output=True, text=True).stdout
 check("AC8w the tag made with --cleanup=verbatim keeps the notes' headings",
-      P.tag_notes(raw_.replace("tag v0.2.3", "tag v0.2.2") + "-----BEGIN SIGNED MESSAGE-----\nx\n-----END SIGNED MESSAGE-----\n") == pub)
-# Sonnet #159 r2, BLOCKER-1: only the release workflow's own patch tag carries notes — its tagger and a gitsign (x509)
-# signature; an owner's tag (SSH-signed, any message) or an unsigned one never does; what is posted is always redacted
-check("B1 an owner's SSH-signed tag shaped like a patch tag carries no notes",
-      P.tag_notes(tagraw.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Owner <o@x>")
-                  .replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
-check("B1 the release tagger with an SSH signature carries no notes", P.tag_notes(tagraw.replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
+      P.tag_notes(raw_.replace("tag v0.2.3", "tag v0.2.2") + "-----BEGIN SSH SIGNATURE-----\nx\n-----END SSH SIGNATURE-----\n") == pub)
+# Sonnet #159 r2, BLOCKER-1: only the release workflow's own patch tag carries notes — its tagger and an SSH signature
+# (the release KMS key signs it: REQ-REL-009-AC5); an owner's tag (any message, another tagger) or an unsigned one never does,
+# and neither does a keyless (x509) signature; what is posted is always redacted
+check("B1 an owner's tag shaped like a patch tag (another tagger) carries no notes",
+      P.tag_notes(tagraw.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Owner <o@x>")) is None)
+check("B1 the release tagger with a keyless (x509) signature carries no notes (the KMS-signed SSH signature is the one read)",
+      P.tag_notes(tagraw.replace("SSH SIGNATURE", "SIGNED MESSAGE")) is None)
+check("B1 the release tagger with a PGP signature carries no notes", P.tag_notes(tagraw.replace("SSH SIGNATURE", "PGP SIGNATURE")) is None)
 check("B1 an unsigned tag carries no notes", P.tag_notes(tagraw.split("-----BEGIN")[0]) is None)
 # Sonnet #159 r2b (BLOCKER-1 reopened): the real signature is always the LAST such block in a genuine `git cat-file
 # tag` (git appends it after the full message); splitting on the FIRST occurrence lets an attacker-embedded fake
-# "-----BEGIN SIGNED MESSAGE-----" block earlier in the message pass as if it were the real one
+# "-----BEGIN SIGNED MESSAGE-----" block earlier in the message pass as if it were the real one (now: the real one is the SSH SIGNATURE block)
 raw2 = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
         + pub.replace("### Behavior changes", "-----BEGIN SIGNED MESSAGE-----\nAAAA\n-----END SIGNED MESSAGE-----\n\n### Behavior changes")
         + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
-check("B1 (r2b) a fake signature block embedded earlier in the message does not stand in for the real, LAST one",
-      P.tag_notes(raw2) is None, P.tag_notes(raw2))
+check("B1 (r2b) a fake signature block embedded earlier in the message does not stand in for the real, LAST one: a '-----BEGIN ' before "
+      "the last SSH signature is refused (ValueError, exit 2)",
+      str(refused(P.tag_notes, raw2)).startswith("ValueError"), refused(P.tag_notes, raw2))
 # Codex #159 fresh r2d: more than one signature-shaped block anywhere, in either order, is never a genuine tag —
 # ssh-keygen's own signature check does not require the signature to be the object's literal last bytes, so "the real
 # signature is last" alone is not fail-closed against a hand-crafted object with trailing bytes appended after it
-fake_ = "-----BEGIN SIGNED MESSAGE-----\nAAAA\n-----END SIGNED MESSAGE-----\n"
-real_sig_ = tagraw[tagraw.index("-----BEGIN SIGNED MESSAGE-----"):]
-raw_after = tagraw[:tagraw.index("-----BEGIN SIGNED MESSAGE-----")] + real_sig_ + fake_
+fake_ = "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"
+real_sig_ = tagraw[tagraw.index("-----BEGIN SSH SIGNATURE-----"):]
+raw_after = tagraw[:tagraw.index("-----BEGIN SSH SIGNATURE-----")] + real_sig_ + fake_
 check("B1 (fresh r2d; r9 A (c) / B F4) a second signature-shaped block appended AFTER the real one is refused, not read as notes "
       "(a generated tag's notes region holding '-----BEGIN ': ValueError, exit 2)",
       str(refused(P.tag_notes, raw_after)).startswith("ValueError"), refused(P.tag_notes, raw_after))
 check("B1 (fresh r2d) exactly one signature block, genuinely last, is still read", P.tag_notes(tagraw) == pub)
 check("B1 (r2b) the real signature is still read when it is genuinely the last block", P.tag_notes(tagraw) == pub)
-check("B1 another tagger with a gitsign signature carries no notes",
+check("B1 another tagger with an SSH signature carries no notes",
       P.tag_notes(tagraw.replace("fosterstack release <release@users.noreply.github.com>", "fosterstack release <x@evil>")) is None)
 leak_ = P.tag_notes(tagraw.replace("### Behavior changes", "Thanks to OpenAI Codex and the Anthropic Claude team.\n\n### Behavior changes"))
 check("B1 the notes a tag carries are redacted before they are posted", leak_ and not re.search(r"(?i)openai|codex|anthropic|claude", leak_), leak_)
@@ -2655,8 +2658,8 @@ for l_ in ("- -----BEGIN BAD", "- -----BEGIN injected (decided 2026-10-05)."):
           rc_ == 2 and sout_ == "" and "tag message:10:" in err_, (rc_, err_, sout_))
 for what_, raw_ in (("an owner's tag", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")).replace(
                         "fosterstack release <release@users.noreply.github.com>", "Owner <o@x>")),
-                    ("an SSH signature last", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")).replace(
-                        "SIGNED MESSAGE", "SSH SIGNATURE")),
+                    ("an x509 (keyless) signature last", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")).replace(
+                        "SSH SIGNATURE", "SIGNED MESSAGE")),
                     ("another version's heading", mktag("v0.2.4", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN BAD")))):
     rc_, err_, sout_ = cli(["tag-notes"], stdin=raw_)
     check("r9 A (c): %s holding a second '-----BEGIN ' is not ours: exit 1 as before" % what_, rc_ == 1 and sout_ == "", (rc_, err_))
@@ -2819,7 +2822,7 @@ check("r9 self-review selection property: 300 random multi-variant scans: every 
       "values are exactly the printed ones", bad_ == [], bad_[:2])
 # family 4, exit codes: a generated tag's notes region holding a refused form exits 2 naming the line; a tag that is not
 # ours exits 1; notes and changelog refusals exit 2 with nothing on stdout
-SIGB_ = "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n"
+SIGB_ = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n"
 EXM_ = [("a behavior line", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- a -----BEGIN b (decided 2026-10-05).")), 2, ":10:"),
         ("the Fixes line", mktag("v0.2.3", GEN_B.replace("- none (dependency or VEX maintenance only)", "- -----BEGIN x")), 2, ":4:"),
         ("a VEX line", mktag("v0.2.3", GEN_B.replace("- no change", "- -----BEGIN x")), 2, ":7:"),
@@ -2829,8 +2832,8 @@ EXM_ = [("a behavior line", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-
         ("'<b>' in a behavior line", mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- <b> (decided 2026-10-05).")), 2, ":10:"),
         ("a marker line continuing the line above", mktag("v0.2.3", GEN_B + "\n[a](/u \"\nx gpt\n\")\n"), 2, ":13:"),
         ("an owner's tag with two delimiters", (mktag("v0.2.3", GEN_B) + SIGB_).replace("fosterstack release <release@users.noreply.github.com>", "O <o@x>"), 1, None),
-        ("the release tagger with an SSH signature last", (mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN x")))
-         .replace("SIGNED MESSAGE", "SSH SIGNATURE"), 1, None),
+        ("the release tagger with an x509 (keyless) signature last", (mktag("v0.2.3", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN x")))
+         .replace("SSH SIGNATURE", "SIGNED MESSAGE"), 1, None),
         ("another version's heading with a delimiter", mktag("v0.2.4", GEN_B.replace("- x (decided 2026-10-05).", "- -----BEGIN x")), 1, None),
         ("no signature at all", mktag("v0.2.3", GEN_B).split("-----BEGIN")[0], 1, None)]
 for what_, raw_, want_rc, line_ in EXM_:

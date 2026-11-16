@@ -442,7 +442,7 @@ PATCH_HEAD = re.compile(r"^## (v[0-9]+\.[0-9]+\.[0-9]+) \u2014 patch release$")
 
 def cmd_tag_notes(a):
     """TAG-NOTES (REQ-REL-009-AC8; round 1 F5): --object is a file holding the release tag's object text; stdout is the notes a generated patch tag carries, else exit 1
-    with nothing on stdout (the release then keeps the fixed evidence text). Only the release workflow's own patch tag counts: its tagger, an x509
+    with nothing on stdout (the release then keeps the fixed evidence text). Only the release workflow's own patch tag counts: its tagger, an SSH
     signature as the message's one and last signature block, and a first line `## <this tag> \u2014 patch release`. The notes were already cleaned of vendor
     and model names when decide made the tag (the decide step applies the same rule when it reads the tag), and the signature block is dropped."""
     try:
@@ -457,7 +457,7 @@ def cmd_tag_notes(a):
         body, _, sig = body.partition("-----BEGIN ")
     else:
         sig = ""
-    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
+    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SSH SIGNATURE-----"):
         sys.exit(1)
     m = PATCH_HEAD.match(body.split("\n", 1)[0])
     if not m or m.group(1) != tag or m.group(1) != a.tag:

@@ -236,13 +236,15 @@ import importlib.util
 spec = importlib.util.spec_from_file_location("patch_decide", os.path.join(BIN, "patch-decide.py")); PD = importlib.util.module_from_spec(spec); spec.loader.exec_module(PD)
 GEN = ("object 0123\ntype commit\ntag v0.3.1\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
        "## v0.3.1 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
-       "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+       "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
 cases = [("a generated patch tag", GEN, "v0.3.1"),
          ("an owner's tag", "object 1\ntype commit\ntag v0.3.1\ntagger o <o@x> 1 +0000\n\nv0.3.1\n", "v0.3.1"),
          ("another tagger", GEN.replace("fosterstack release <release@users.noreply.github.com>", "Someone <s@x>"), "v0.3.1"),
          ("a heading for another version", GEN.replace("## v0.3.1 \u2014", "## v0.3.2 \u2014"), "v0.3.1"),
-         ("an ssh signature, not gitsign", GEN.replace("SIGNED MESSAGE-----", "SSH SIGNATURE-----"), "v0.3.1"),
-         ("two signature blocks", GEN + "-----BEGIN SIGNED MESSAGE-----\nfake\n-----END SIGNED MESSAGE-----\n", "v0.3.1"),
+         ("an x509 (keyless) signature, not the release key's SSH signature", GEN.replace("SSH SIGNATURE-----", "SIGNED MESSAGE-----"), "v0.3.1"),
+         ("a PGP signature", GEN.replace("SSH SIGNATURE-----", "PGP SIGNATURE-----"), "v0.3.1"),
+         ("two signature blocks", GEN + "-----BEGIN SSH SIGNATURE-----\nfake\n-----END SSH SIGNATURE-----\n", "v0.3.1"),
+         ("a signature-shaped block earlier in the notes", GEN.replace("### VEX", "-----BEGIN SIGNED MESSAGE-----\nfake\n-----END SIGNED MESSAGE-----\n### VEX"), "v0.3.1"),
          ("no signature block", GEN.split("-----BEGIN")[0], "v0.3.1"),
          ("the right tag object for another release tag", GEN, "v0.3.2")]
 for what, raw, tag in cases:
@@ -255,6 +257,10 @@ for what, raw, tag in cases:
         pd = None
     same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
     check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
+    # the decision itself, not only agreement: the release key's SSH signature on the release tagger's patch tag carries notes, every other case none (exit 1, nothing on stdout)
+    want_rc = 0 if what == "a generated patch tag" else 1
+    check(r.returncode == want_rc and (r.returncode != 0 or r.stdout.startswith("## v0.3.1 \u2014 patch release")) and (r.returncode == 0 or r.stdout == ""),
+          "tag-notes: %s exits %d" % (what, want_rc), "rc=%s out=%r" % (r.returncode, r.stdout[:60]))
 # ---- requirements.yaml says what the code does ----------------------------------------------------------
 import yaml
 REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "requirements", "requirements.yaml")))["requirements"]}
@@ -353,7 +359,7 @@ check(row["tools"] == ["bash", "git", "jq", "python3", "sha256sum", "trap"] and 
 check(row["sha256"] == hashlib.sha256(open(os.path.join(BIN, "release-signatures.sh"), "rb").read()).hexdigest(),
       "G2 the sha256 of that row is the script's own, after the policy make line was added")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "128"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "140"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

@@ -465,13 +465,30 @@ def graph(path):
                        % (n, "exactly the if %s" % IFS_OF[n] if n in IFS_OF else "no if", j.get("if")))
         if "continue-on-error" in j or "secrets" in j:
             bad.append("job %s has continue-on-error or secrets" % n)
-    # no job of release.yml creates a tag or a release, decide included (handoff 0713 P8: nothing here signs a tag, so
-    # nothing cuts one)
-    rest = json.dumps(jobs)
+    # the tag jobs of the automatic patch release (REQ-REL-009-AC5): decide -> sign-tag -> cut, and patch-notes after cut. The shape of each
+    # job is judged by bin/chain-tag-jobs-test.sh; here only the graph and the one rule that bounds every other job: no job but `cut` creates or
+    # pushes a tag or makes a release (decide, sign-tag, patch-notes and the chain jobs included)
+    for n in ("decide", "sign-tag", "cut", "patch-notes"):
+        if n not in jobs:
+            bad.append("release.yml has no job %s (the automatic patch release: decide, sign-tag, cut, patch-notes)" % n)
+    if bad:
+        return bad
+    for who, want in (("sign-tag", {"decide"}), ("cut", {"decide", "sign-tag"}), ("patch-notes", {"decide", "cut"})):
+        got = jobs[who].get("needs", [])
+        got = {got} if isinstance(got, str) else set(got)
+        if not want <= got:
+            bad.append("%s must need at least %s, found %s" % (who, " and ".join(sorted(want)), sorted(got)))
+    if (jobs["sign-tag"].get("with") or {}).get("stage") != "tag" or jobs["sign-tag"].get("uses") != "./.github/workflows/stage-sign.yml":
+        bad.append("the sign-tag job must call ./.github/workflows/stage-sign.yml with stage: tag")
+    # no job but sign-tag signs a tag: the other three calls of stage-sign.yml keep their own stage
+    for n, stg in (("sign", "build"), ("sign-rebuild", "rebuild"), ("sign-check", "check")):
+        if (jobs[n].get("with") or {}).get("stage") != stg:
+            bad.append("job %s must call stage-sign.yml with stage: %s (only sign-tag has stage: tag)" % (n, stg))
     # matches `gh api repos/o/r/git/refs -f ref=refs/tags/v9.9.9` (the refs API makes a tag); refuses nothing in
     # `gh api repos/o/r/git/commits/abc` (reading a commit makes no tag)
-    if re.search(r"git tag|git push|git/(refs|tags)|create-release|gh release create", rest):
-        bad.append("release.yml creates a tag or a release (git tag, git push, the refs API or gh release create): no job may")
+    for n, j in jobs.items():
+        if n != "cut" and re.search(r"git tag|git push|git/(refs|tags)|create-release|gh release create", json.dumps(j)):
+            bad.append("job %s of release.yml creates a tag or a release (git tag, git push, the refs API or gh release create): only the cut job may push a tag" % n)
     return bad
 
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-009-AC6, REQ-REL-009-AC13
-# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057; KMS rule 2): only the owner's
-# SSH signature (allowed-signers), on any tag. An unsigned tag, any other signature format (PGP, or a keyless x509 signature such as the
+# Which signer source admission accepts for a release tag (automatic patch releases rule 3; advisor 0057; KMS rule 2): an SSH signature,
+# the owner's (allowed-signers) on any tag or the release KMS key's (release_tag_signer) on a patch tag, which build-admit.py's check decides
+# (bin/chain-build-admit-test.sh); the router here reports kind ssh for both and refuses everything else. An unsigned tag, any other signature format (PGP, or a keyless x509 signature such as the
 # release.yml gitsign identity), or an ambiguous tag object is refused. The route only picks the verifier; the verifier
 # (git verify-tag against allowed-signers) still has to pass.
 set -euo pipefail
@@ -194,6 +195,8 @@ def run(*a, cwd=None, inp=None):
 g = tempfile.mkdtemp(); keys = tempfile.mkdtemp()
 for k in ("owner", "other"):
     run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", k, "-f", os.path.join(keys, k))
+# the fixture stand-in for the release KMS key: an RSA key made now, never a real one
+run("ssh-keygen", "-q", "-t", "rsa", "-b", "3072", "-N", "", "-C", "kms", "-f", os.path.join(keys, "kms"))
 allowed = os.path.join(keys, "allowed_signers")
 open(allowed, "w").write("owner@x " + open(os.path.join(keys, "owner.pub")).read())
 run("git", "init", "-q", "-b", "main", cwd=g)
@@ -226,6 +229,19 @@ check("B01 the baseline is read from the owner tag's own tree", open(os.path.joi
 freeze, reqs = T._load_baselines(out)
 v, why = T.baseline("v0.2.5", freeze, reqs, open(os.path.join(g, "requirements", "requirements.yaml"), "rb").read())
 check("B01 the tagged commit's self-approved baselines are never used: v0.2.5 -> v0.2.0", v == "v0.2.0", (v, why))
+# the release KMS key's signature is an SSH signature too: kind reports ssh for both signers and the route still only picks the verifier
+# (which key is admitted on which tag is build-admit.py's check against allowed_signers and release_tag_signer)
+commit_baselines(["v0.2.0", "v0.2.1", "v0.2.3", "v0.2.4", "v0.2.5"]); tag("v0.2.5", "kms")
+kms_obj = run("git", "cat-file", "tag", "v0.2.5", cwd=g).stdout
+check("kind of a tag signed by the release KMS key (an RSA key) is ssh, as the owner's", T.kind(kms_obj) == "ssh", T.kind(kms_obj))
+check("route of a KMS-signed tag object is ssh (the verifier decides the key)", T.route(kms_obj)[0] == "ssh", T.route(kms_obj))
+run("git", "tag", "-d", "v0.2.5", cwd=g)
+commit_baselines(["v0.2.0", "v0.2.1", "v0.2.3", "v0.2.4", "v0.2.5", "v0.2.6"]); tag("v0.2.5", "kms")
+out_k = os.path.join(g, "owner-baselines-kms")
+T.main(["owner-baselines", "--tag", "v0.2.6", "--repo", g, "--allowed-signers", allowed, "--out", out_k])
+check("a patch tag signed by the release KMS key never supplies a baseline (only owner-signed tags do: the KMS key is not in allowed_signers)",
+      sorted(os.listdir(out_k)) == sorted(["v0.2.0.yaml", "v0.2.0.requirements.yaml"]), sorted(os.listdir(out_k)))
+run("git", "tag", "-d", "v0.2.5", cwd=g)
 commit_baselines(["v0.2.0"], req=req_yaml(BASE + [(not_pipe_req, not_pipe_req + "-AC1", False)]))
 rc = T.main(["owner-baselines", "--tag", "v0.2.6", "--repo", g, "--allowed-signers", allowed, "--out", out + "2"])
 freeze2, reqs2 = T._load_baselines(out + "2")

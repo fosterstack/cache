@@ -87,6 +87,11 @@
    "reason": "Sign: the signer of the Check records (REQ-REL-011-AC1, cache#606): the Check jobs hold no identity token; Sign checks their records against the results and signs them with the release key"
   },
   {
+   "workflow": "stage-sign.yml",
+   "job": "sign-tag",
+   "reason": "makes the automatic patch release's tag object and signs it with the release KMS key through the job's federation role; no push right (REQ-REL-009-AC5)"
+  },
+  {
    "workflow": "release.yml",
    "job": "live-test",
    "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
@@ -95,6 +100,11 @@
    "workflow": "release.yml",
    "job": "live-test-release",
    "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign-tag",
+   "reason": "calls stage-sign.yml for the tag stage: the automatic patch release's tag is signed there with the release key and pushed by another job that holds no key (REQ-REL-009-AC5)"
   }
  ]
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC1, REQ-CHAIN-007-AC2, REQ-CHAIN-007-AC3, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC11, REQ-CHAIN-007-AC12, REQ-CHAIN-007-AC13, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC16, REQ-CHAIN-007-AC19, REQ-CHAIN-005-AC4
+# proves: REQ-CHAIN-007-AC1, REQ-CHAIN-007-AC2, REQ-CHAIN-007-AC3, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC11, REQ-CHAIN-007-AC12, REQ-CHAIN-007-AC13, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC16, REQ-CHAIN-007-AC19, REQ-CHAIN-005-AC4, REQ-REL-009-AC5
 #
 # Release, static half. Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml). No
 # network, no secrets, no keys.
@@ -95,6 +95,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
+  sign-tag:
+    needs: decide
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      stage: tag
+  cut:
+    needs: [decide, sign-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - run: git push origin refs/tags/v9.9.9
+  patch-notes:
+    needs: [decide, cut]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo notes
   build:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
@@ -102,18 +117,24 @@ jobs:
     needs: build
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-sign.yml
+    with:
+      stage: build
   rebuild:
     needs: [build, sign]
     uses: ./.github/workflows/stage-reproducibility.yml
   sign-rebuild:
     needs: [build, rebuild]
     uses: ./.github/workflows/stage-sign.yml
+    with:
+      stage: rebuild
   check:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
   sign-check:
     needs: [build, check]
     uses: ./.github/workflows/stage-sign.yml
+    with:
+      stage: check
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [check, sign, sign-rebuild, sign-check]
@@ -502,6 +523,18 @@ dm g_dpush  'git push origin refs/tags/v9.9.9'                                  
 dm g_dtag   'git tag v9.9.9'                                                             'creates a tag' "AC11 the decide job making a tag is refused"
 dm g_drefs  'gh api repos/fosterstack/cache/git/refs -f ref=refs/tags/v9.9.9 -f sha=abc' 'creates a tag' "AC11 the decide job creating a tag through the refs API is refused"
 dm g_drel   'gh release create v9.9.9'                                                   'creates a tag' "AC11 the decide job creating a release is refused"
+# the tag jobs (REQ-REL-009-AC5): decide -> sign-tag -> cut, patch-notes after cut; only cut pushes a tag; only sign-tag calls Sign with stage tag
+gm g_nocut   '  cut:\n    needs: \[decide, sign-tag\]\n    runs-on: ubuntu-latest\n    steps:\n      - run: git push origin refs/tags/v9.9.9\n' ''                       'no job cut'          "AC5 release.yml has no cut job"
+gm g_nosigntag '  sign-tag:\n    needs: decide\n    uses: ./.github/workflows/stage-sign.yml\n    with:\n      stage: tag\n' ''  'no job sign-tag'     "AC5 release.yml has no sign-tag job"
+gm g_nopn    '  patch-notes:\n    needs: \[decide, cut\]\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo notes\n' ''  'no job patch-notes'  "AC5 release.yml has no patch-notes job"
+gm g_cutneed '  cut:\n    needs: \[decide, sign-tag\]'        '  cut:\n    needs: [decide]'                 'cut must need'       "AC5 cut does not wait for sign-tag (it could push an unsigned tag)"
+gm g_stneed  '  sign-tag:\n    needs: decide'                  '  sign-tag:\n    needs: []'                     'sign-tag must need'  "AC5 sign-tag does not wait for decide"
+gm g_pnneed  '  patch-notes:\n    needs: \[decide, cut\]'       '  patch-notes:\n    needs: [decide]'             'patch-notes must need' "AC5 patch-notes does not wait for cut (the tag may not exist yet)"
+gm g_stage   '      stage: tag'                                '      stage: build'                  'with stage: tag'     "AC5 sign-tag calls Sign with another stage"
+gm g_sstage  '    with:\n      stage: build\n  rebuild:'      '    with:\n      stage: tag\n  rebuild:'    'stage: build'        "AC5 the build-stage Sign call is made for the tag stage (a second signer of tags)"
+gm g_stpush  '  sign-tag:\n    needs: decide\n    uses: ./.github/workflows/stage-sign.yml' '  sign-tag:\n    needs: decide\n    steps:\n      - run: git push origin refs/tags/v9.9.9\n    uses: ./.github/workflows/stage-sign.yml' 'only the cut job' "AC5 sign-tag pushes a tag (only cut may)"
+gm g_pnpush  '      - run: echo notes'                         '      - run: git push origin refs/tags/v9.9.9' 'only the cut job' "AC5 patch-notes pushes a tag (only cut may)"
+gm g_buildpush '  build:\n    if: ' '  build:\n    steps:\n      - run: git tag v9.9.9\n    if: ' 'only the cut job' "AC5 a chain job makes a tag (only cut may push one)"
 gm g_noif    '=    if: ${{ startsWith(github.ref, '\''refs/tags/v'\'') && !inputs.dry-run }}\n' ''                                                       'exactly the if'    "AC11 release carries no positive tag conjunct (a branch run would not be refused by its own if)"
 gm g_gate    '  rebuild:\n    needs: \[build, sign\]'                  "  rebuild:\n    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\n    needs: [build, sign]" 'no if' "AC11 the gate G on rebuild (only build, sign and sign-rebuild carry it)"
 # ---- AC4: the order of bin/release-verify.sh ------------------------------------------------------------------------------------
@@ -887,9 +920,9 @@ for pth in sys.argv[1:]:
             print("%s:%s" % (os.path.basename(pth), job))
 JOBSPY
 }
-ALLOWED_AWS_JOBS=$'stage-sign.yml:sign\nstage-sign.yml:sign-check\nstage-sign.yml:sign-rebuild'
+ALLOWED_AWS_JOBS=$'stage-sign.yml:sign\nstage-sign.yml:sign-check\nstage-sign.yml:sign-rebuild\nstage-sign.yml:sign-tag'
 mapfile -t aw_files < <(awsfiles "$root"); aj=$(awsjobs "${aw_files[@]}" | sort)
-if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' R1 the aws CLI is installed in exactly the three signing jobs (stage-sign sign, sign-rebuild, sign-check) and in no other job of any workflow, the Release job holds none"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
+if [ "$aj" = "$ALLOWED_AWS_JOBS" ]; then ok "KA-2 p4 r2 1b' R1 the aws CLI is installed in exactly the four signing jobs (stage-sign sign, sign-rebuild, sign-check and sign-tag, the one release key) and in no other job of any workflow, the Release job holds none"; else bad "KA-2 p4 r2 1b' the aws CLI install runs in: $(tr '\n' ' ' <<< "$aj")"; fi
 mkdir -p "$work/awsjobs"; python3 - "$root/.github/workflows/stage-build.yml" "$work/awsjobs/stage-build.yml" <<'JOBMUT'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -919,7 +952,7 @@ if [ "$mj" = "action.yml:(action)" ] && ! grep -qxF "$mj" <<< "$ALLOWED_AWS_JOBS
 else
   bad "mutant: the aws CLI install in a local composite action was not found by the scan ($mj)"
 fi
-EXPECT=407
+EXPECT=418
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

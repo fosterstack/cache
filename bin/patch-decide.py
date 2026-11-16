@@ -1101,10 +1101,10 @@ def tag_notes(raw):
     if cut < 0:
         return None
     body, sig = body[:cut], body[cut + len(SIG_DELIM):]
-    # only the release workflow's own patch tag: its tagger and an x509 signature (no job signs one now: handoff 0713
-    # P8) — an owner's tag is SSH-signed
-    # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
-    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
+    # only the release workflow's own patch tag: its tagger and the release key's SSH signature (an x509 or PGP block
+    # is no generated tag) and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified
+    # the signature
+    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SSH SIGNATURE-----"):
         return None
     # the generated heading ends in LF and nothing else: CR, CRLF, VT, FF, FS, GS, RS, NEL, LS or PS after it is refused
     # (as in round 3; Codex #300 r5, B low)

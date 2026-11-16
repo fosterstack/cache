@@ -871,7 +871,7 @@ NS_SHA = {
     "bin/archive-verify.py": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31",
     "bin/audit-record-judge.sh": "f5e0359ceecc866f58ef7ee55f91b4a3fef084f29e9e6420949d1a34b6491a2b",
     "bin/audit-record.py": "eeeabbdef3cbaf01659b7df275e8cdacf0958a2de0e9c72fbddca91d629144bf",
-    "bin/build-admit.py": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
+    "bin/build-admit.py": "ec300f052ad19617739193c0b423da681dcb7016dff88b1115f22a48ff182877",
     "bin/build-apk-helper.py": "2ad751350705c16e69a88699123ca8e18766a5cf9c0e8d08521b10646713eab4",
     "bin/build-archives.py": "8a2f8998521cf83e941221169051dbfa4903c31e5866fe0fb62896d186751a77",
     "bin/build-version-check.py": "71513126e5c2db74a381089711bb763c0d7aedde1502abae0fb24a1c51938a4a",
@@ -1372,7 +1372,10 @@ SIGN_WITH = {"sign": {"digests": "${{ needs.build.outputs.digests }}", "stage": 
 # secret: it cuts no tag since handoff 0713 P8), patch-notes and patch-failed exist today (automatic patch releases,
 # REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
-PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+# The automatic patch release is three jobs after decide, in this order: sign-tag (Sign's tag stage, the one signature) -> cut (the one push of the signed tag, with the auditor App's
+# token) -> patch-notes (the changelog PR). decide's job output `tag` is the tag due, or empty: each of the three runs only when it is non-empty (decide's own if keeps a dry run out).
+TAG_DUE_IF = "${{ needs.decide.outputs.tag != '' }}"
+PATCH_NOTES_IF = TAG_DUE_IF
 LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LIVE_TEST_FINAL_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 PERSONA_RC_IF = "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
@@ -1408,7 +1411,11 @@ def names_secrets(obj):
     return False
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "issues": "write"}, "agent": False, "if": DECIDE_IF},
-    "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
+    # sign-tag calls stage-sign.yml with stage: tag (the one job-level uses outside the chain): contents read and id-token write, no environment and no secret
+    "sign-tag": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "needs": ["decide"], "if": TAG_DUE_IF},
+    # cut pushes the signed tag with the auditor App's token (environment agent holds the App's secrets): its own token reads contents only, it holds no id-token
+    "cut": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide", "sign-tag"], "if": TAG_DUE_IF},
+    "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["cut", "decide"], "if": PATCH_NOTES_IF},
     "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
     # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
     # else), after Check on a release candidate and after Release on a final tag; they publish nothing, hold no secrets but the live-test environment's four Docker Hub test credentials (LIVE_TEST_SECRETS), and cannot run in the dry run.
@@ -1497,8 +1504,10 @@ def graph(path):
             continue
         job = job or {}
         granted = job.get("permissions", d.get("permissions"))
-        if "uses" in job:
-            bad.append("job %s has a job-level uses (%s): only the five chain jobs call a workflow" % (name, job["uses"]))
+        if "uses" in job and name != "sign-tag":
+            bad.append("job %s has a job-level uses (%s): only the chain jobs and sign-tag call a workflow" % (name, job["uses"]))
+        if name == "sign-tag" and (job.get("uses") != "./.github/workflows/stage-sign.yml" or (job.get("with") or {}).get("stage") != "tag"):
+            bad.append("sign-tag must call ./.github/workflows/stage-sign.yml with stage: tag, got %r with %s" % (job.get("uses"), job.get("with")))
         if name == "patch-failed" and job.get("if") != PATCH_FAILED_IF:
             bad.append("patch-failed must carry exactly the if %s (a cancelled, replaced release opens an issue too), got %r" % (PATCH_FAILED_IF, job.get("if")))
         spec = HOSTILE if name.startswith("hostile-") else NON_CHAIN.get(name)

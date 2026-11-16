@@ -102,26 +102,28 @@ def judge_sign(path):
         bad.append("AC1: on: must be exactly workflow_call: %s" % on)
     call = (on or {}).get("workflow_call") or {} if isinstance(on, dict) else {}
     inputs = call.get("inputs") or {}
-    if set(inputs) != {"digests", "stage", "records", "records-arm64"} or any((inputs.get(k) or {}).get("type") != "string" for k in ("digests", "stage", "records", "records-arm64")):
-        bad.append("AC2: the only inputs must be `digests`, `stage`, `records` and `records-arm64` (all string; records is the Rebuild record digests for the rebuild call and the check job's for the check call, records-arm64 the arm64 job's), found %s" % sorted(inputs))
+    # the four inputs of the three signing stages, and at most one more, `tag` (string), for the tag stage; the tag job's notes reach it as an artifact of the decide job
+    if not {"digests", "stage", "records", "records-arm64"} <= set(inputs) <= {"digests", "stage", "records", "records-arm64", "tag"} or any((inputs.get(k) or {}).get("type") != "string" for k in inputs):
+        bad.append("AC2: the only inputs must be `digests`, `stage`, `records` and `records-arm64` (all string; records is the Rebuild record digests for the rebuild call and the check job's for the check call, records-arm64 the arm64 job's), and at most `tag` (string) for the tag stage, found %s" % sorted(inputs))
     if call.get("secrets"): bad.append("AC3: the workflow declares secrets")
     if call.get("outputs"): bad.append("AC3 (step output sink): workflow_call outputs are not allowed")
     if d.get("env"): bad.append("AC3: workflow-level env is not allowed")
     if re.search(r"secrets\b|toJSON|\bcontext\b", text): bad.append("AC3/002-AC4: secrets, toJSON or context appear in the file")
     jobs = d.get("jobs") or {}
-    if set(jobs) != {"sign", "sign-rebuild", "sign-check"}: bad.append("AC1: exactly the jobs sign, sign-rebuild and sign-check are required, found %s" % sorted(jobs))
+    if set(jobs) != {"sign", "sign-rebuild", "sign-check", "sign-tag"}: bad.append("AC1: exactly the jobs sign, sign-rebuild, sign-check and sign-tag are required (sign-tag signs the automatic patch tag with the release key), found %s" % sorted(jobs))
     for name, j in jobs.items():
         ro = j.get("runs-on")
         if not isinstance(ro, str) or not _cts.HOSTED.fullmatch(ro):   # the ONE closed runner set, shared with the stage grammar (Sonnet r7 R2)
             bad.append("AC1: job %s must run on a GitHub-hosted ubuntu runner, got %r" % (name, ro))
         for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "secrets"):
             if k in j: bad.append("AC2/AC3: job %s has `%s`, which Sign's job must not have" % (name, k))
-        stg = {"sign": "build", "sign-rebuild": "rebuild", "sign-check": "check"}.get(name, "?")
+        stg = {"sign": "build", "sign-rebuild": "rebuild", "sign-check": "check", "sign-tag": "tag"}.get(name, "?")
         if j.get("if") != "${{ inputs.stage == '%s' }}" % stg:
             bad.append("AC1: job %s must have exactly `if: ${{ inputs.stage == '%s' }}` (the release graph calls this file once per stage), found %r" % (name, stg, j.get("if")))
         perm = j.get("permissions")
         if not isinstance(perm, dict) or perm.get("id-token") != "write" or any(v == "write" for k, v in perm.items() if k != "id-token"):
             bad.append("AC3: Sign's permissions must be id-token: write and no other write: %s" % perm)
+        if name == "sign-tag": continue    # its steps are judged by bin/chain-tag-jobs-test.sh (the tag stage's own grammar: prepare, kms-sign, assemble, upload)
         seq = []
         for s in j.get("steps") or []:
             sn = s.get("name") or s.get("uses") or s.get("run")
@@ -863,6 +865,16 @@ jobs:
         with:
           name: release-signed
           path: release-signed
+  sign-tag:
+    if: \${{ inputs.stage == 'tag' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@$sha # v7.0.1
+        with:
+          persist-credentials: false
 EOF
 # mutate LABEL  python-regex  replacement : writes $work/LABEL.yml, or counts a FAILURE if the mutation did not apply
 mutate() {
@@ -1039,7 +1051,16 @@ caughtx "S1 sign-check holds contents write" "$SC(      contents: )read" '\1\2wr
 caughtx "S1 sign-check holds packages write" "$SC(      id-token: write\n)" '\1\2      packages: write\n'
 caughtx "S1 sign holds contents write" "(  sign:\n.*?      contents: )read" '\1write'
 caughtx "S1 sign-rebuild holds id-token read" "(  sign-rebuild:\n.*?id-token: )write" '\1read'
-caughtx "S1 a fourth job is added" "(  sign-check:)" '  fourth:\n    runs-on: ubuntu-24.04\n    steps: []\n\1'
+caughtx "S1 a fifth job is added" "(  sign-check:)" '  fourth:\n    runs-on: ubuntu-24.04\n    steps: []\n\1'
+# S6: the tag stage's job: the fourth job, for the automatic patch tag; id-token write and nothing else written, its own stage if
+caughtx "S6 the sign-tag job is missing" "(  sign-tag:.*)" ''
+caughtx "S6 sign-tag holds contents write" "(  sign-tag:\n.*?      contents: )read" '\1write'
+caughtx "S6 sign-tag holds id-token read" "(  sign-tag:\n.*?id-token: )write" '\1read'
+caughtx "S6 sign-tag holds packages write" "(  sign-tag:\n.*?      id-token: write\n)" '\1      packages: write\n'
+caughtx "S6 sign-tag runs for every stage but build" "(  sign-tag:\n    if: )[^\n]*" "\\1\${{ inputs.stage != 'build' }}"
+caughtx "S6 sign-tag has a needs" "(  sign-tag:\n)" '\1    needs: sign\n'
+caughtx "S6 sign-tag passes secrets" "(  sign-tag:\n)" '\1    secrets: inherit\n'
+caughtx "S6 sign (the build stage) also runs for the tag stage" "(  sign:\n    if: )[^\n]*" "\\1\${{ inputs.stage == 'build' || inputs.stage == 'tag' }}"
 # S5: the judge's header and its refusal messages describe the new job: sign-check also signs the release files from Build's verified outputs
 says() { # LABEL WORD regex replacement : the refusal text of the mutated file must name WORD
   if mutatex "$1" "$3" "$4"; then
@@ -1240,7 +1261,7 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho fetched\n' > "$d/bin/with-aws-token.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho release-signed\n' > "$d/bin/release-signatures.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
-  printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"stage-sign.yml","job":"sign-check","reason":"Sign, the signer of the Check records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
+  printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"stage-sign.yml","job":"sign-check","reason":"Sign, the signer of the Check records"},{"workflow":"stage-sign.yml","job":"sign-tag","reason":"Sign, the signer of the automatic patch tag"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
   gen "$d"; echo "$d"
 }
@@ -5424,7 +5445,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2223
+EXPECT=2231
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
