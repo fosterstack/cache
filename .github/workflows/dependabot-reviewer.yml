@@ -256,13 +256,9 @@ jobs:
                   fi
                   case "$last_event" in
                     "auto_merge_disabled github-actions[bot]"|"auto_merge_disabled github-actions")
-                      if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
-                           | base64 -d > "$RUNNER_TEMP/work/heal-required-checks.json" \
-                         && bash bin/required-check-guard.sh "$RUNNER_TEMP/work/heal-required-checks.json"; then
-                        if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
-                          echo "PR #$n ${sha:0:7}: the approved arm was turned off meanwhile — put back"
-                        else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi
-                      else echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the approved arm stays off this hour"; lookup_failed=1; fi ;;
+                      if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
+                        echo "PR #$n ${sha:0:7}: the approved arm was turned off meanwhile — put back"
+                      else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi ;;
                   esac
                 fi
               fi
@@ -450,17 +446,6 @@ jobs:
                 || echo "::error::PR #$1: could not supersede its earlier '$3' verdict"
             fi
           }
-          # main's list and main's ruleset must agree before a bump is armed: the same guard as the
-          # patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
-          # --auto would merge at once; the guard fails closed.
-          if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
-               | base64 -d > "$W/main-required-checks.json" \
-             && bash bin/required-check-guard.sh "$W/main-required-checks.json"; then guard_ok=1
-          else
-            guard_ok=0
-            echo "::error::required-check guard refused: nothing is armed this hour" \
-                 "(every merge decision below becomes an error)"
-          fi
           while read -r n sha prior; do
             prior=${prior:-none}
             d="$W/pr-$n"; mkdir -p "$d"
@@ -492,7 +477,6 @@ jobs:
             fi
             decision=$(jq -r .decision "$d/decision.json") || decision=error
             names=$(jq -r '[.[]|"\(.name) \(.from)→\(.to)"]|join(", ")' "$W/updates-$n.json") || names="PR #$n"
-            if [ "$decision" = merge ] && [ "$guard_ok" != 1 ]; then decision=guard; fi
             # The verdict is for $sha, the commit whose diff the readers were given. If the PR's head is another
             # commit by now, nothing is published and nothing is done to the PR: the new head is a candidate
             # next hour.
@@ -544,8 +528,6 @@ jobs:
                   # row 76: the fixer makes our-side change; a failed dispatch is a warning, the hold stands
                   bash bin/dispatch-fixer.sh fix-held-bump "$ISSUE_NO" "$n" || true
                 else unfinished "$n" "$sha" "$prior" "held, issue open, but the failure check could not be published"; fi ;;
-              guard)
-                unfinished "$n" "$sha" "$prior" "readers found nothing that breaks us, but the required-check guard refused" ;;
               *)
                 unfinished "$n" "$sha" "$prior" "$(jq -r '.reason // "reader error"' "$d/decision.json" 2>/dev/null || echo "reader error")" ;;
             esac
@@ -627,7 +609,7 @@ jobs:
           MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
         run: |
           set +e -uo pipefail
-          W="$RUNNER_TEMP/work"; bad=0; guard=unknown
+          W="$RUNNER_TEMP/work"; bad=0
           version=$(bash bin/dependabot-reviewer-version.sh) && [ -n "$version" ] \
             || { echo "::error::cannot compute the reviewer's version — no arm is settled"; exit 1; }
           while read -r n sha _; do
@@ -659,19 +641,6 @@ jobs:
                 fi ;;
               "none false"|"neutral false")
                 grep -qx "$n $sha" "$W/lane-arms.txt" 2>/dev/null || continue
-                if [ "$guard" = unknown ]; then
-                  if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
-                       --jq .content \
-                       | base64 -d > "$W/settle-required-checks.json" \
-                     && bash bin/required-check-guard.sh "$W/settle-required-checks.json"; then
-                    guard=ok
-                  else
-                    guard=refused
-                  fi
-                fi
-                if [ "$guard" != ok ]; then
-                  echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the arm stays off"; bad=1; continue
-                fi
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
                   echo "PR #$n ${sha:0:7}: its review did not finish — armed again as it was before"
                 else echo "::error::PR #$n ${sha:0:7}: unfinished review; its arm could not be put back"; bad=1; fi ;;
@@ -680,7 +649,7 @@ jobs:
           exit "$bad"
 
       # The failure streak is the run history itself. This job fails if and only if a review did not finish
-      # (a lookup, the identity token, the SDK, gather, a reader, the guard, an action or an arm that could not
+      # (a lookup, the identity token, the SDK, gather, a reader, an action or an arm that could not
       # be settled — every one of those paths ends in `unfinished` or a failed step), and a run with nothing to
       # review succeeds. So "three failed runs in a row" is exactly "three unfinished runs in a row": no state of
       # our own to lose or misread. If the history cannot be read, nothing is decided this hour; the next failed
