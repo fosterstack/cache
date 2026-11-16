@@ -2005,6 +2005,8 @@ rows = json.load(open(sys.argv[2]))["unmeasured_text"]
 calls = [r for r in rows if r["form"] == "a local reusable workflow call"]
 assert len(calls) == 3 and all(r["ruling"] == "local reusable workflow call; inputs reviewed in the PR that added them" for r in calls), calls
 assert sum(r["ruling"].startswith("build-container install, test-only: ") for r in rows) == 1
+assert sum(r["ruling"].startswith("build-container install, test-only: build container, never shipped; ") for r in rows) == 1
+assert sum(r["ruling"].count("test-only") for r in rows) == 1
 assert sum(r["ruling"].startswith(ac.LIVE_RULING) for r in rows) == 3
 assert not [r for r in rows if "handoff 0432" in r["ruling"]]
 PY
@@ -3706,9 +3708,9 @@ with tempfile.TemporaryDirectory(dir=sys.argv[1]) as td:
 PY
 CASE="the exact list: an absent listed path is accepted and a present listed file that names nothing is refused"
 check test $? -eq 0
-# --- advisor ruling Oct 15 (owner rule 48 of Oct 9 and exception 2 of Oct 15): one narrow ruled-row kind for a LIVE fetch from the fixed host. A row of form `a download`
-#     carries one of two rulings: the convention `text, not a command: ...` (a line that only mentions a tool), or `live fetch, owner ratified (Oct 9 rule 48 / Oct 15
-#     exception 2): ...`, honored ONLY when every URL on the bound line is https on the host packages.wolfi.dev exactly. Any other ruling text on a download row rules nothing. Rows are read from the base branch only and bound to the file and the whole-line hash, so any edit of the line voids the row.
+# --- a live fetch from the fixed host: a row of form `a download` carries one of two rulings: the convention `text, not a command: ...` (a line that only mentions a
+#     tool), or `live fetch from the Wolfi package host: ...`, honored ONLY when every URL on the bound line is https on the host packages.wolfi.dev exactly. Any other
+#     ruling text on a download row rules nothing. Rows are read from the base branch only and bound to the file and the whole-line hash, so any edit of the line voids the row.
 LIVEP=$(python3 -c 'import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 print(ac.LIVE_RULING, end="")' "$chk")
