@@ -20,9 +20,9 @@
 # Exit: 0 match; 1 drift (the diff is printed, one JSON entry per line, `-` ruleset only,
 #       `+` list only); 2 could not read either side (never a pass).
 set -uo pipefail
-PINNED='[{"context":"acceptance-gradle","integration_id":15368,"scope":"push"},
-{"context":"acceptance-maven (1.2.0)","integration_id":15368,"scope":"push"},
-{"context":"acceptance-maven (1.2.3)","integration_id":15368,"scope":"push"},
+PINNED='[{"context":"acceptance / acceptance-gradle","integration_id":15368,"scope":"push"},
+{"context":"acceptance / acceptance-maven (1.2.0)","integration_id":15368,"scope":"push"},
+{"context":"acceptance / acceptance-maven (1.2.3)","integration_id":15368,"scope":"push"},
 {"context":"allowlist-chain","integration_id":15368,"scope":"push"},
 {"context":"allowlist-persona","integration_id":15368,"scope":"push"},
 {"context":"allowlist-pins-auditor","integration_id":15368,"scope":"push"},
