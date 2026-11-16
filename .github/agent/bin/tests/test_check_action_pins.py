@@ -129,8 +129,10 @@ class VerifyTags(unittest.TestCase):
     def test_tag_on_another_commit_is_a_finding(self):
         f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": OTHER}},
                     **CHECKOUT})
-        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t"}, clear=True), \
-                mock.patch.object(M.urllib.request, "urlopen", f):
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t"}, clear=True),
+            mock.patch.object(M.urllib.request, "urlopen", f),
+        ):
             (msg,) = M.verify_pins(self.PIN)
         self.assertIn(f"v7.0.1 is {OTHER}, not the pinned {SHA}", msg)
 
