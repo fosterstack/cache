@@ -757,9 +757,7 @@ def hub_sweep(repository, user, token, opener=None):
 
 
 def hub_private(repository, user, token, opener=None):
-    """Prove the Docker Hub test repository is private, through the registry API the sweep already uses (the Hub's own API refuses the organization access token).
-    With the user and the token its tag list must answer 200 (a refused login, 401 or 403, raises and is never read as public); with no credential the same tag
-    list must be refused (401, 403 or 404). An anonymous 200 means the repository is public and raises; any other answer raises too."""
+    """Prove the Docker Hub test repository is private, through the registry API the sweep already uses (the Hub's own API refuses the organization access token)."""
     import base64, urllib.error, urllib.parse
     if not HUB_REPO.fullmatch(repository or ""):
         raise ValueError("not a Docker Hub repository name (namespace/name): %r" % (repository,))
