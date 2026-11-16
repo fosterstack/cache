@@ -1614,6 +1614,13 @@ reserved_wf g2-head-policy-lacks-lint "$(printf "  zz:\n    name: lint\n${JOB}")
 if out=$(PIN_WIRING_POLICY_FILE="$work/pol-no-lint.json" PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-head-policy-lacks-lint" judge "$here/.github/workflows/ci.yml")
 then failn=$((failn+1)); echo "FAIL g2-head-policy-lacks-lint → ok, want bad ($out)"
 else pass=$((pass+1)); echo "PASS g2-head-policy-lacks-lint → bad ($out)"; fi
+jq '.required_checks |= map(select(.context != "auditor-review-gate"))' \
+  "$here/.github/policy/release-only-checks.json" > "$work/pol-no-gate.json"
+reserved_wf g2-head-policy-lacks-auditor-gate "$(printf "  zz:\n    name: auditor-review-gate\n${JOB}")"
+if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-no-gate.json" \
+  PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-head-policy-lacks-auditor-gate" judge "$here/.github/workflows/ci.yml")
+then failn=$((failn+1)); echo "FAIL g2-head-policy-lacks-auditor-gate → ok, want bad ($out)"
+else pass=$((pass+1)); echo "PASS g2-head-policy-lacks-auditor-gate → bad ($out)"; fi
 # a producer in its own file carrying another context's name is refused, as acceptance.yml's is
 g2_swap() {  # g2_swap <name> <file> <job id> <name it takes>
   rm -rf "$work/rs-g2-$1"; mkdir -p "$work/rs-g2-$1"; cp "$here"/.github/workflows/*.y*ml "$work/rs-g2-$1/"
