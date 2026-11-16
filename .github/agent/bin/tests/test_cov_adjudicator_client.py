@@ -275,7 +275,8 @@ class Handle(Base):
         self.assertEqual(ans["narrative"], "AB")
 
     def test_fallback_model_selected_and_default_when_unset(self):
-        client = FakeClient([Msg("real_fixable"), Msg("real_fixable")])
+        ok = '{"category": "real_fixable"}'
+        client = FakeClient([Msg(ok), Msg(ok)])
         C._handle({"attempt": "fallback", "finding_id": "CVE-1"}, client)
         self.assertEqual(client.messages.calls[0]["model"], "claude-fallback-y2")
         del os.environ["AUDITOR_MODEL_FALLBACK"]
@@ -311,47 +312,97 @@ class Handle(Base):
         self.assertEqual(ans["category"], "not_affected_unreachable")
 
     def test_category_priority_order(self):
-        # rc-5b R5: the category is the JSON key, exact; two words in one value, or words in prose, are not a category
+        # rc-5b R5: the category is the JSON key, exact; two words in one value is not a category
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"category": "risk_acceptance or false_positive"}')]))
-        self.assertEqual(ans["category"], "under_investigation")
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('This is not a false_positive, it is risk_acceptance')]))
         self.assertEqual(ans["category"], "under_investigation")
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"category": "risk_acceptance"}')]))
         self.assertEqual(ans["category"], "risk_acceptance")
+        # words in prose are a failed attempt, not a category
+        with self.assertRaises(ValueError):
+            C._handle({"finding_id": "X"}, FakeClient([Msg('This is not a false_positive, it is risk_acceptance')]))
 
     def test_refusal_only_when_no_category(self):
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"refused": true}')]))
         self.assertEqual((ans["refused"], ans["category"]), (True, "under_investigation"))
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("I CANNOT decide this.")]))               # a word in prose is not a refusal (rc-5b R5)
-        self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"))
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"refused": true, "category": "not_affected_unreachable"}')]))
         self.assertEqual((ans["refused"], ans["category"]), (True, "under_investigation"))                  # a refusal is never converted into a disposition
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("unclear")]))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"refused": false}')]))
         self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("{}")]))
+        self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"))
+        for text in ("I CANNOT decide this.", "unclear"):    # prose, even a refusal in words: a failed attempt, never cached
+            with self.assertRaises(ValueError, msg=text):
+                C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
 
     def test_the_whole_response_must_be_one_json_object(self):
         for text in ('example {"category": "false_positive"} final {"category": "real_fixable"}', 'Example only: {"category":"false_positive"}. I decline: {"refused":true}',
-                     '[{"category": "real_fixable"}]', '{"category": "real_fixable"} {"category": "false_positive"}', 'Analysis: {"category": "real_fixable"}', '"real_fixable"', ''):
-            ans = C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
-            self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"), text)
+                     '[{"category": "real_fixable"}]', '{"category": "real_fixable"} {"category": "false_positive"}', 'Analysis: {"category": "real_fixable"}', '"real_fixable"', '',
+                     '```json\n{"category": "real_fixable"}\n```', '{"category": "real_fixable"}\nThat is my answer.',
+                     'I cannot help with that.', '{"refused": true} but also prose'):
+            with self.assertRaises(ValueError, msg=text):
+                C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('  {"category": "real_fixable"}\n')]))
         self.assertEqual(ans["category"], "real_fixable")
+
+    def test_a_repeated_key_is_no_answer(self):
+        for text in ('{"category": "real_fixable", "category": "false_positive"}',
+                     '{"refused": true, "refused": false}'):
+            with self.assertRaises(ValueError, msg=text):
+                C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
+
+    def test_the_duplicate_key_check_is_the_shared_one(self):
+        """The client imports parsers.no_dup_pairs (auditorlib) and keeps no private copy: its duplicate-pair check
+        IS the same function object, and the whole-answer reader calls whatever parsers.no_dup_pairs is."""
+        sys.path.insert(0, os.path.abspath(BIN))
+        try:
+            from auditorlib import parsers
+        finally:
+            sys.path.pop(0)
+        self.assertIs(C.parsers.no_dup_pairs, parsers.no_dup_pairs)
+        seen, real = [], parsers.no_dup_pairs
+        def spy(pairs):
+            seen.append(list(pairs)); return real(pairs)
+        with mock.patch.object(parsers, "no_dup_pairs", spy):
+            self.assertEqual(C._whole_answer('{"category": "real_fixable"}'), {"category": "real_fixable"})
+            self.assertIsNone(C._whole_answer('{"category": "a", "category": "b"}'))
+        self.assertEqual(seen[0], [("category", "real_fixable")])
+        self.assertEqual(len(seen), 2)
+        # the same function refuses the same repeated key, here and through the client
+        with self.assertRaises(ValueError):
+            parsers.no_dup_pairs([("k", 1), ("k", 2)])
+        self.assertEqual(parsers.no_dup_pairs([("k", 1), ("j", 2)]), {"k": 1, "j": 2})
+        own = [n for n, v in vars(C).items() if callable(v) and getattr(v, "__module__", None) == C.__name__]
+        self.assertFalse([n for n in own if "dup" in n.lower()], own)      # no private copy of the check under any name
+
+    def test_the_client_puts_the_bin_directory_on_sys_path_so_it_loads_where_auditorlib_is_not_importable(self):
+        code = ("import importlib.util, sys\n"
+                "import os\nassert not any(os.path.isdir(os.path.join(p, 'auditorlib')) for p in sys.path if p)\n"
+                "spec = importlib.util.spec_from_file_location('c', %r)\n"
+                "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+                "from auditorlib import parsers\n"
+                "assert m.parsers.no_dup_pairs is parsers.no_dup_pairs\n"
+                "assert m._whole_answer('{\"a\": 1, \"a\": 2}') is None\n"
+                "print('ok')\n") % SRC
+        import subprocess
+        r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
+                           cwd=tempfile.gettempdir())
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "ok"), r.stderr)
 
     def test_propose_passthrough_only_when_dict(self):
         text = '{"category": "real_fixable", "propose": {"kind": "defect", "evidence": "a}b"}}'
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
         self.assertEqual(ans["propose"], {"kind": "defect", "evidence": "a}b"})
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('real_fixable {"propose": "free text"}')]))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"category": "real_fixable", "propose": "free text"}')]))
         self.assertNotIn("propose", ans)
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("real_fixable, no json")]))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"category": "real_fixable"}')]))
         self.assertNotIn("propose", ans)
 
     def test_no_usage_is_zero(self):
-        ans = C._handle({"finding_id": "X"}, FakeClient([Msg("real_fixable", usage=None)]))
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"category": "real_fixable"}', usage=None)]))
         self.assertEqual(ans["token_usage"], 0)
 
     def test_pullability(self):
-        text = 'Analysis... {"pullable": false, "hold": "base", "lift_trigger": "rebase"} done'
+        text = '{"pullable": false, "hold": "base", "lift_trigger": "rebase"}'
         client = FakeClient([Msg(text, usage=(4, 4))])
         ans = C._handle({"kind": "pullability", "finding_id": "CVE-9", "carrier": "busybox",
                          "base": None}, client)
@@ -361,16 +412,29 @@ class Handle(Base):
         self.assertEqual(call["max_tokens"], 1024)
         p = call["messages"][0]["content"]
         self.assertIn(json.dumps({"finding_id": "CVE-9", "carrier": "busybox"}, indent=1), p)
-        ans = C._handle({"attempt": "pullability"}, FakeClient([Msg("I cannot tell")]))
+        ans = C._handle({"attempt": "pullability"}, FakeClient([Msg('{"refused": true}')]))
         self.assertEqual(ans, {"refused": True, "proposed": True, "token_usage": 15})
 
+    def test_pullability_accepts_only_one_whole_object(self):
+        req = {"kind": "pullability", "finding_id": "CVE-9"}
+        for text in ('Analysis... {"pullable": false, "hold": "base"} done',
+                     'Quoting the example {"pullable": true} and then {"refused": true}',
+                     '```json\n{"pullable": false}\n```', 'I cannot tell', '', '[{"pullable": false}]',
+                     '{"pullable": false} {"pullable": true}'):
+            try:
+                ans = C._handle(req, FakeClient([Msg(text)]))
+            except ValueError:
+                continue
+            self.assertNotIn("pullable", ans, text)       # if it answers at all, the quoted object decided nothing
+            self.assertFalse(ans.get("refused"), text)
 
-class ExtractJson(unittest.TestCase):
-    def test_cases(self):
-        self.assertIsNone(C._extract_json(None))
-        self.assertIsNone(C._extract_json("no braces"))
-        self.assertIsNone(C._extract_json("{broken [1,2] {also"))
-        self.assertEqual(C._extract_json('x {bad} y {"a": "}"} z'), {"a": "}"})
+    def test_pullability_cannot_in_text_is_not_a_refusal(self):
+        text = '{"pullable": false, "hold": "we cannot lift this", "lift_trigger": "cannot say"}'
+        ans = C._handle({"kind": "pullability", "finding_id": "CVE-9"}, FakeClient([Msg(text)]))
+        self.assertFalse(ans["refused"])
+        self.assertIs(ans["pullable"], False)
+        ans = C._handle({"kind": "pullability", "finding_id": "CVE-9"}, FakeClient([Msg('{"refused": false}')]))
+        self.assertFalse(ans["refused"])
 
 
 # ---------------------------------------------------------------- main()
@@ -397,6 +461,56 @@ class Main(Base):
         code, _out, err = self.run_main([], json.dumps({"finding_id": "CVE-1"}), sdk)
         self.assertEqual(code, 5)
         self.assertIn("identity/federation step failed: SDKError status=401", err)
+
+    def test_one_shot_prose_reply_exits_5_nothing_printed(self):
+        for text in ("I cannot decide this.", '```json\n{"category": "real_fixable"}\n```',
+                     'Sure: {"category": "real_fixable"}'):
+            sdk = fake_sdk([Msg(text)])
+            code, out, err = self.run_main([], json.dumps({"finding_id": "CVE-1"}), sdk)
+            self.assertEqual((code, out), (5, ""), text)
+            self.assertIn("adjudicator-client:", err)
+
+    def test_serve_prose_reply_answers_error_and_continues(self):
+        sdk = fake_sdk([Msg("I cannot decide this."), Msg('{"category": "real_fixable"}')])
+        lines = [json.dumps({"finding_id": "A"}), json.dumps({"finding_id": "B"})]
+        code, out, _err = self.run_main(["--serve"], "\n".join(lines) + "\n", sdk)
+        self.assertIsNone(code)
+        answers = [json.loads(l) for l in out.splitlines()]
+        self.assertEqual(len(answers), 2)
+        self.assertIn("error", answers[0])
+        self.assertNotIn("category", answers[0])
+        self.assertEqual(answers[1]["category"], "real_fixable")
+
+    def test_serve_malformed_reply_answers_error_with_the_tokens_it_cost(self):
+        sdk = fake_sdk([Msg("I cannot decide this.", usage=(10, 5)),
+                        Msg('{"category": "real_fixable"} {"x": 1}', usage=(7, 3))])
+        lines = [json.dumps({"finding_id": "A"}), json.dumps({"finding_id": "B"})]
+        code, out, _err = self.run_main(["--serve"], "\n".join(lines) + "\n", sdk)
+        self.assertIsNone(code)
+        answers = [json.loads(l) for l in out.splitlines()]
+        self.assertEqual([a["token_usage"] for a in answers], [15, 10])
+        self.assertTrue(all(a["error"].startswith("adjudicator-client:") for a in answers))
+
+    def test_serve_deeply_nested_reply_is_a_failed_answer_not_a_crash(self):
+        deep = "[" * 100000 + "]" * 100000
+        sdk = fake_sdk([Msg(deep, usage=(10, 5)), Msg('{"category": "real_fixable"}', usage=(7, 3))])
+        lines = [json.dumps({"finding_id": "A"}), json.dumps({"finding_id": "B"})]
+        code, out, _err = self.run_main(["--serve"], "\n".join(lines) + "\n", sdk)
+        self.assertIsNone(code)
+        answers = [json.loads(l) for l in out.splitlines()]
+        self.assertEqual(len(answers), 2)
+        self.assertEqual(answers[0]["token_usage"], 15)
+        self.assertTrue(answers[0]["error"].startswith("adjudicator-client:"))
+        self.assertEqual(answers[1]["category"], "real_fixable")
+
+    def test_whole_answer_of_a_deeply_nested_reply_is_none(self):
+        self.assertIsNone(C._whole_answer("[" * 100000 + "]" * 100000))
+        self.assertIsNone(C._whole_answer('{"a": ' * 100000))
+
+    def test_serve_malformed_reply_without_usage_costs_zero(self):
+        sdk = fake_sdk([Msg("I cannot decide this.", usage=None)])
+        code, out, _err = self.run_main(["--serve"], json.dumps({"finding_id": "A"}) + "\n", sdk)
+        self.assertEqual(json.loads(out).get("token_usage", 0), 0)
 
     def test_one_shot_no_token_exits_before_reading(self):
         del os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"]

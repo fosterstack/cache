@@ -58,8 +58,9 @@ RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin
 RC_BYTES = "bin/chain-bytes-sha.py"
 SIGNER = "bin/admission-tag-signer.py"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
-# gate 7 (REQ-REL-012-AC7): main's judge, its helper and the writers policy, read from origin/main into a scratch root and never taken from the tagged commit
+# gate 7 (REQ-REL-012-AC7): main's judge, its helper, the writers policy and (when main has it) the owner-decision items, read from origin/main into a scratch root and never taken from the tagged commit
 AUDIT_FILES = ("bin/audit-record-judge.sh", "bin/audit-record.py", ".github/policy/audit-writers.json")
+AUDIT_ITEMS = ".auditor/accepted-items.json"      # the judge also reads it when main has it: an open owner-decision item holds the tag
 POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER)
 
 
@@ -266,6 +267,20 @@ def check_ancestor_of_main(ctx):
 
 # ---------------------------------------------------------------- 8. audit-approval (REQ-REL-012-AC7)
 
+def is_on_main(path):
+    """True when origin/main has the file; only a path that is not in its tree is absent, any git error refuses."""
+    rc, out, err = run([GIT, "ls-tree", "--name-only", "origin/main", "--", path])
+    if rc != 0:
+        raise Refusal("audit-approval", "git could not list origin/main: %s" % one_line(text(err), 300))
+    return out.strip() != b""
+
+
+def copy_into(root, path, data):
+    os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
+    with open(os.path.join(root, path), "wb") as fh:
+        fh.write(data)
+
+
 def check_audit_approval(ctx):
     """Release process rule 7: a tag that is not a patch tag needs the passed-audit record of the tagged commit AND the owner's
     `Audit-approved: <record commit>` line in the signed tag message (the signature was verified above, so the line is the owner's).
@@ -276,9 +291,12 @@ def check_audit_approval(ctx):
         data = git_show("origin/main:" + path)
         if data is None:
             raise Refusal("audit-approval", "%s is not on origin/main, so the whole-release audit cannot be judged" % path)
-        os.makedirs(os.path.dirname(os.path.join(root, path)), exist_ok=True)
-        with open(os.path.join(root, path), "wb") as fh:
-            fh.write(data)
+        copy_into(root, path, data)
+    if is_on_main(AUDIT_ITEMS):
+        data = git_show("origin/main:" + AUDIT_ITEMS)
+        if data is None:
+            raise Refusal("audit-approval", "%s is on origin/main but cannot be read, so the whole-release audit cannot be judged" % AUDIT_ITEMS)
+        copy_into(root, AUDIT_ITEMS, data)
     judge = os.path.join(root, AUDIT_FILES[0])
     rc, out, err = run([BASH, judge, ctx.sha, "main", "--release", ctx.tag, ctx.tag_object])
     why = one_line(text(out) or text(err), 300)
