@@ -74,12 +74,20 @@ if [ -n "${FAKE_NEEDFILES:-}" ]; then for a in "$@"; do case "$a" in *.json|*.bu
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
 if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
-[ "$1" != attest ] || [ -z "${COSIGN_ATTEST_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) echo "cosign attest failed" >&2; exit 1;; esac
+case "$1" in attest|attest-blob) false;; *) true;; esac || [ -z "${COSIGN_ATTEST_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_ATTEST_FAIL_ON"*) echo "cosign attest failed" >&2; exit 1;; esac
 if [ "$1" = sign-blob ]; then
   while [ $# -gt 0 ]; do [ "$1" = --bundle ] && b=$2; shift; done
   if [ "${KMSSIGN_NOBUNDLE:-}" = ALL ] || [ "${KMSSIGN_NOBUNDLE:-}" = "$(basename "$b")" ]; then exit 0       # a signer that exits 0 and leaves no bundle (KA-2 p4)
   elif [ -n "${COSIGN_NOREKOR:-}" ] && [ "$(basename "$b")" = "${COSIGN_NOREKOR}" ]; then echo '{"verificationMaterial":{"tlogEntries":[]}}' > "$b"
-  else echo '{"verificationMaterial":{"tlogEntries":[{"logIndex":"1"}]}}' > "$b"; fi
+  else echo '{"verificationMaterial":{"tlogEntries":[{"logIndex":"1"}]},"messageSignature":{"signature":"c2ln"}}' > "$b"; fi
+fi
+# a model of cosign attest-blob (AC8, sign-release): the statement's subject is the --hash, the bundle carries the DSSE envelope and, unless COSIGN_NOREKOR names it, one Rekor entry; a signer that leaves no bundle is KMSSIGN_NOBUNDLE
+if [ "$1" = attest-blob ]; then
+  h=; b=; while [ $# -gt 0 ]; do case "$1" in --bundle) b=$2;; --hash) h=$2;; esac; shift; done
+  if [ "${KMSSIGN_NOBUNDLE:-}" = ALL ] || [ "${KMSSIGN_NOBUNDLE:-}" = "$(basename "$b")" ]; then exit 0; fi
+  tl='[{"logIndex":"1"}]'; [ -z "${COSIGN_NOREKOR:-}" ] || [ "$(basename "$b")" != "${COSIGN_NOREKOR}" ] || tl='[]'
+  stm=$(printf '{"_type":"https://in-toto.io/Statement/v1","subject":[{"digest":{"sha256":"%s"}}]}' "$h" | base64 | tr -d '\n')
+  printf '{"verificationMaterial":{"tlogEntries":%s},"dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":"%s","signatures":[{"sig":"c2ln"}]}}\n' "$tl" "$stm" > "$b"
 fi
 # a model of cosign verify-blob for the signatures sign-release hands over (FAKE_VERIFY=1, set for release-publish and release-assets only; the post-publish cases keep the plain fake):
 # --key build/keys/release.rsa.pub and --bundle are required, the file and the bundle must exist, a file holding BAD-SIGNATURE does not verify, a bundle with no Rekor entry
@@ -657,9 +665,15 @@ def login_gone(t, what):
     )
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG); login_gone(t, "release-publish (success)")
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"}); login_gone(t, "release-publish (a registry mismatch stops it)")
-t = tree(); rc, so, se = run(t, "release-sign", creds=REG); login_gone(t, "release-sign")
-# a failed mktemp stops the step before any login (an empty DOCKER_CONFIG would fall back to ~/.docker)
-for s_ in ("release-publish", "release-sign"):
+# release-sign (sign-release job) holds no registry credential and touches no registry: it makes no login at all, so it has no private configuration directory to remove
+# (the cases that proved "the login is not in the shared ~/.docker" and "the private directory is removed" for it have no subject any more; the two cases below replace them)
+for what, creds_ in (("with no credential in its environment", None), ("with the registry sentinels in its environment (it must not read them)", REG)):
+    t = tree(); rc, so, se = run(t, "release-sign", creds=creds_)
+    cfgs = [l for l in log(t) if re.match(r"(cosign login|crane|docker)", l)]
+    check(rc == 0 and not cfgs and not os.path.exists(os.path.join(t, ".docker")) and not os.path.exists(os.path.join(t, "calls.log.dockercfg")) and not any(SENT[k] in tree_text(t) for k in SENT),
+          "AC10 release-sign %s: no login at all (no cosign login, no crane, no docker configuration written, no credential in any file)" % what, "rc=%s cfgs=%s %s" % (rc, cfgs, first(se)))
+# a failed mktemp stops release-publish before any login (an empty DOCKER_CONFIG would fall back to ~/.docker); release-sign makes no login and uses no private directory, so its F2b case is deleted
+for s_ in ("release-publish",):
     t = tree(); fb = os.path.join(t, ".fakebin"); open(os.path.join(fb, "mktemp"), "w").write("#!/usr/bin/env bash\nexit 1\n"); os.chmod(os.path.join(fb, "mktemp"), 0o755)
     rc, so, se = run(t, s_, creds=REG)
     check(rc != 0 and not [l for l in log(t) if "auth login" in l or l.startswith("cosign login") or "push" in l or l.startswith("cosign sign")], "AC10 F2b %s: a failed mktemp stops the step before any login or push" % s_, "rc=%s %s" % (rc, first(se)))
@@ -702,24 +716,72 @@ for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, GV
 for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT_EPOCH": ""}), ("negative", {"GIT_EPOCH": "-5"}), ("git failing", {"GIT_FAIL": "1"}), ("two lines", {"GIT_EPOCH": "1760000000\n1760000001"})):
     tg = tree(); rc, so, se = run(tg, "release-sign", creds=REG, env=env)
     check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G a commit date that is %s stops before the evidence step and any signature" % label, "rc=%s %s" % (rc, first(se)))
-imgs = [l for l in L if l.startswith("cosign sign ")]
-check({(re.search(r"(ghcr\.io|docker\.io)/fosterstack/cache@(sha256:\w+)", l).groups()) for l in imgs} == {(h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()}, "AC8 each published image digest is signed in BOTH registries", str(imgs))
-# REQ-CHAIN-007-AC8: the release manifest stays attached to each public image digest as an OCI referrer (as on
-# v0.2.x), type
-# https://fosterstack.com/attestations/release-manifest/v1; the GHCR referrer is required, the Docker Hub mirror is best-effort with a loud warning
-ATT = "cosign attest --yes --key " + KMS + " --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "
-atts = [l for l in L if l.startswith("cosign attest ")]
-want_refs = sorted("%s/fosterstack/cache@%s" % (h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values())
-check(sorted(l[len(ATT):] for l in atts if l.startswith(ATT)) == want_refs and len(atts) == 4, "AC8 the release manifest is attested on each public digest in both registries, with exactly the pinned flags and type (four attestations)", str(atts))
-last_sign = max((i for i, l in enumerate(L) if l.startswith("cosign sign ")), default=-1); first_att = next((i for i, l in enumerate(L) if l.startswith("cosign attest ")), -2)
-check(last_sign >= 0 and first_att > last_sign, "AC8 the manifest attestations come AFTER the image signatures (nothing is attached to an unsigned image)", "sign %s attest %s" % (last_sign, first_att))
 mfile = os.path.join(t, "release-metadata/release-manifest.json"); lf2 = os.path.join(t, "release-metadata/release-files.sha256")
 check(os.path.exists(mfile) and ("%s  release-manifest.json" % hashlib.sha256(open(mfile, "rb").read()).hexdigest()) in open(lf2).read(), "AC8 the attested predicate is the manifest release-files.sha256 lists (made from Build's verified material, not another file)")
-t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "docker.io/"})
-check(rc5 == 0 and "docker.io" in so5 + se5 and "::warning::" in so5 and len([l for l in log(t5) if l.startswith("cosign attest ")]) == 4 and any(l.startswith("cosign sign-blob") for l in log(t5)),
-      "AC8 a Docker Hub mirror referrer that cannot be attached is a loud warning, never a silent skip, and the run continues (GHCR is authoritative)", "rc=%s %s" % (rc5, first(se5)))
-t5 = tree(); rc5, so5, se5 = run(t5, "release-sign", creds=REG, env={"COSIGN_ATTEST_FAIL_ON": "ghcr.io/"})
-check(rc5 != 0 and not any(l.startswith("cosign sign-blob") for l in log(t5)), "AC8 a GHCR referrer that cannot be attached stops the run before any file is signed", "rc=%s %s" % (rc5, first(se5)))
+# REQ-CHAIN-007-AC22 / AC1: sign-release makes every signature as files and touches no registry. For each registry host and image digest it makes the simple-signing payload, signs
+# it with cosign sign-blob --bundle (the .sig is the bundle's signature) and attests the release manifest with cosign attest-blob --hash --bundle <hex>.attestation.bundle host/fosterstack/cache.
+# A fresh tree: tree() carries a ready-made hand-over, which this run must not be judged by.
+t8 = tree(); shutil.rmtree(os.path.join(t8, SIGDIR)); rc8, so8, se8 = run(t8, "release-sign"); L8 = [l for l in log(t8) if not l.startswith("chain-verify key-ref-check")]
+KEYSC = " --yes --key " + KMS + " --signing-config .github/policy/cosign-signing-config.json "
+def rel_(host, v, ext): return "%s/%s/%s%s" % (SIGDIR, host, HEX[v], ext)
+def read_(t, rel):
+    p = os.path.join(t, rel); return open(p, "rb").read() if os.path.isfile(p) else None
+def json_(t, rel):
+    try: return json.loads(read_(t, rel))
+    except Exception: return None
+SBL = {(h, v): "cosign sign-blob" + KEYSC + "--bundle " + rel_(h, v, ".bundle") + " " + rel_(h, v, ".payload") for h in HOSTS for v in ("production", "fips")}
+ATL = {(h, v): "cosign attest-blob" + KEYSC + "--hash " + HEX[v] + " --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 --bundle " + rel_(h, v, ".attestation.bundle") + " " + h + "/fosterstack/cache" for h in HOSTS for v in ("production", "fips")}
+def payload_ok(h, v):
+    j = json_(t8, rel_(h, v, ".payload")); c = (j or {}).get("critical", {})
+    return j is not None and c.get("identity", {}).get("docker-reference") == h + "/fosterstack/cache" and c.get("image", {}).get("docker-manifest-digest") == DIG["image-" + v] and c.get("type") == "cosign container image signature"
+def has_rekor_(t, rel):
+    j = json_(t, rel); return bool(j and j.get("verificationMaterial", {}).get("tlogEntries"))
+check(rc8 == 0 and all(payload_ok(h, v) and SBL[(h, v)] in L8 for h in HOSTS for v in ("production", "fips")),
+      "AC8 both registries (ghcr.io, docker.io) get, for each digest (production, fips), a simple-signing payload (docker-reference host/fosterstack/cache, docker-manifest-digest, type cosign container image signature) signed with cosign sign-blob --yes --key --signing-config --bundle <hex>.bundle <hex>.payload",
+      "rc=%s %s" % (rc8, [k for k in SBL if SBL[k] not in L8]))
+sigok = lambda h, v: (read_(t8, rel_(h, v, ".sig")) or b"").strip() in (b"c2ln", b"sig")
+check(all(sigok(h, v) and has_rekor_(t8, rel_(h, v, ".bundle")) for h in HOSTS for v in ("production", "fips")),
+      "AC8 each image digest in each registry has a <hex>.sig holding the bundle's signature and a <hex>.bundle with a Rekor entry",
+      str([(h, v) for h in HOSTS for v in ("production", "fips") if not sigok(h, v) or not has_rekor_(t8, rel_(h, v, ".bundle"))]))
+# REQ-CHAIN-007-AC8: the release manifest is attested on each public digest in both registries, as a bundle that carries the DSSE envelope (never attached to a registry)
+def att_ok(h, v):
+    j = json_(t8, rel_(h, v, ".attestation.bundle"))
+    if not j or not j.get("verificationMaterial", {}).get("tlogEntries") or "dsseEnvelope" not in j: return False
+    try: return json.loads(base64.b64decode(j["dsseEnvelope"]["payload"]))["subject"][0]["digest"]["sha256"] == HEX[v]
+    except Exception: return False
+check(all(ATL[k] in L8 for k in ATL) and len([l for l in L8 if l.startswith("cosign attest-blob")]) == 4 and all(att_ok(h, v) for h in HOSTS for v in ("production", "fips")),
+      "AC8 the release manifest is attested on each digest for both registries (four attestations) with exactly the pinned cosign attest-blob flags (--hash <hex> --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 --bundle <hex>.attestation.bundle host/fosterstack/cache), each bundle carrying the DSSE envelope and a Rekor entry",
+      str([l for l in L8 if l.startswith("cosign attest")]))
+check(all(k in SBL and SBL[k] in L8 and ATL[k] in L8 and L8.index(SBL[k]) < L8.index(ATL[k]) for k in SBL),
+      "AC8 the manifest attestation of a digest in a registry comes AFTER the signature of that digest's payload (nothing is attested for an unsigned digest)",
+      str([k for k in SBL if SBL[k] not in L8 or ATL[k] not in L8]))
+check(rc8 == 0 and all(l.startswith(("cosign sign-blob", "cosign attest-blob")) for l in L8 if l.startswith("cosign")) and not [l for l in L8 if l.startswith(("crane", "docker", "gh ", "cosign login", "cosign sign ", "cosign attest ", "cosign attach"))],
+      "AC8 sign-release touches no registry: no cosign login, no cosign sign <image>, no cosign attest <image>, no crane, no docker call; only sign-blob and attest-blob make signatures",
+      str([l for l in L8 if l.startswith("cosign") and not l.startswith(("cosign sign-blob", "cosign attest-blob"))][:3]))
+t5 = tree(); shutil.rmtree(os.path.join(t5, SIGDIR)); rc5, so5, se5 = run(t5, "release-sign", env={"COSIGN_ATTEST_FAIL_ON": "docker.io/"})
+t5b = tree(); shutil.rmtree(os.path.join(t5b, SIGDIR)); rc5b, so5b, se5b = run(t5b, "release-sign", env={"COSIGN_ATTEST_FAIL_ON": "ghcr.io/"})
+check(rc5 != 0 and rc5b != 0 and "::warning::" not in so5 + se5 + so5b + se5b,
+      "AC8 an attestation that cannot be made on a digest of either registry (docker.io or ghcr.io) fails the step: there is no mirror referrer left to warn about and nothing is skipped",
+      "rc=%s/%s %s" % (rc5, rc5b, first(se5)))
+for label, env in (("a Rekor entry", {"COSIGN_NOREKOR": HEX["production"] + ".bundle"}), ("a Rekor entry on the attestation", {"COSIGN_NOREKOR": HEX["fips"] + ".attestation.bundle"}),
+                   ("a bundle left by the signer", {"KMSSIGN_NOBUNDLE": HEX["production"] + ".bundle"}), ("an attestation bundle left by the signer", {"KMSSIGN_NOBUNDLE": HEX["production"] + ".attestation.bundle"})):
+    tr = tree(); shutil.rmtree(os.path.join(tr, SIGDIR)); rcr, sor, ser = run(tr, "release-sign", env=env); nm = list(env.values())[0]
+    check(rcr != 0 and nm in ser and "Traceback" not in ser, "AC8 an image bundle with no %s stops the step, naming the file (%s)" % (label.replace("a Rekor entry on the attestation", "Rekor entry (the attestation)").replace("a Rekor entry", "Rekor entry"), nm), "rc=%s %s" % (rcr, first(ser)))
+# the signature of the first payload fails: it is the only payload signed and no attestation follows it
+t = tree(); shutil.rmtree(os.path.join(t, SIGDIR)); rc, so, se = run(t, "release-sign", env={"COSIGN_FAIL_ON": ".payload"})
+Lf = log(t)
+check(rc != 0 and len([l for l in Lf if l.startswith("cosign sign-blob") and ".payload" in l]) == 1 and not any(l.startswith("cosign attest-blob") for l in Lf),
+      "AC8 a failing payload signature stops at the first one: no other payload is signed and no attestation is made after it", "rc=%s %s" % (rc, first(se)))
+# REQ-CHAIN-007-AC22 (the hand-over): the four archives and checksums.txt get their bundle beside them in dist/, the release policy is signed from release-policy/policy.json
+BL8 = " ".join(L8)
+check(all(("cosign sign-blob" + KEYSC + "--bundle dist/%s.bundle dist/%s" % (n, n)) in L8 for n in ("fscache_0.3.0_linux_amd64.tar.gz", "fscache_0.3.0_linux_arm64.tar.gz", "fscache-fips_0.3.0_linux_amd64.tar.gz", "fscache-fips_0.3.0_linux_arm64.tar.gz")),
+      "AC22 each of the four archives is signed with cosign sign-blob --bundle dist/<archive>.bundle dist/<archive>", str([l for l in L8 if "dist/" in l]))
+check(("cosign sign-blob" + KEYSC + "--bundle dist/checksums.txt.bundle dist/checksums.txt") in L8 and "release-evidence/checksums.txt.bundle" not in BL8 and not os.path.exists(os.path.join(t8, "release-evidence/checksums.txt.bundle")) and has_rekor_(t8, "dist/checksums.txt.bundle"),
+      "AC22 checksums.txt is signed into dist/checksums.txt.bundle (not release-evidence/checksums.txt.bundle) and that bundle carries a Rekor entry", str([l for l in L8 if "checksums" in l]))
+check(all(has_rekor_(t8, "dist/%s.bundle" % n) for n in sorted(os.listdir(os.path.join(t8, "dist"))) if n.endswith(".tar.gz")) and len([n for n in os.listdir(os.path.join(t8, "dist")) if n.endswith(".bundle")]) == 5,
+      "AC22 dist/ holds exactly five bundles after the run (the four archives' and checksums.txt's), each with a Rekor entry", str(sorted(os.listdir(os.path.join(t8, "dist")))))
+check(("cosign sign-blob" + KEYSC + "--bundle release-evidence/release-policy.bundle release-policy/policy.json") in L8 and has_rekor_(t8, "release-evidence/release-policy.bundle"),
+      "AC22 release-policy/policy.json (the artifact release-policy) is signed into release-evidence/release-policy.bundle with a Rekor entry", str([l for l in L8 if "policy" in l]))
 blobs = " ".join(l for l in L if l.startswith("cosign sign-blob"))
 for f in ("production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json",
           "vendor-evidence.json", "dependency-list.json", "checksums.txt", "policy.json",
@@ -816,11 +878,6 @@ for variant, name in MODULE_SBOMS:
           "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"EVIDENCE_FAIL": "1"}); check(rc != 0 and not signs(t), "AC8 failing evidence stops everything before anything is signed")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(signs(t)) == 1, "AC8 a failing cosign (it fails at login, the first call) stops at the first call")
-# the signature itself fails (the login passes): the failing `cosign sign` is the only one made, and no attestation and no blob signature follows it
-t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL_ON": "sign --yes"})
-Lf = log(t)
-check(rc != 0 and len([l for l in Lf if l.startswith("cosign sign ")]) == 1 and not any(l.startswith(("cosign attest ", "cosign sign-blob")) for l in Lf),
-      "AC8 a failing image signature stops at the first one: no attestation and no file is signed after it", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 0 and os.path.exists(os.path.join(t, "release-evidence")), "AC8 the bundles and the evidence land in release-evidence/")
 # AC13: the four metadata files and the signed list are made in release-sign, before the first signature, from Build's verified digests only
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)
@@ -980,7 +1037,9 @@ three = pub_bytes(tc)
 manifest = os.path.join(tc, "release-metadata", "release-manifest.json")
 man1 = open(manifest, "rb").read()
 # the job ran again: it signs again, and its manifest carries the new run attempt
-shutil.rmtree(os.path.join(tc, "release-evidence"))     # a re-run is a new job on a fresh workspace: kms-sign never overwrites a bundle, so the first run's bundles are not there
+shutil.rmtree(os.path.join(tc, "release-evidence"))     # a re-run is a new job on a fresh workspace: the first run's bundles (release-evidence/ and the dist/*.bundle beside the archives) are not there
+for n_ in os.listdir(os.path.join(tc, "dist")):
+    if n_.endswith(".bundle"): os.remove(os.path.join(tc, "dist", n_))
 rcs, sos, ses = run(tc, "release-sign", creds=REG, env={"GITHUB_RUN_ATTEMPT": "2"})
 man2 = open(manifest, "rb").read()
 rcc, soc, sec = run(tc, "release-assets", creds=["GH_TOKEN"])
@@ -1759,7 +1818,7 @@ check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
       "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
       "rc=%s %s" % (rc, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "563"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "571"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
