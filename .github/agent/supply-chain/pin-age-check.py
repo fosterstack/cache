@@ -480,6 +480,13 @@ def _shell_lex(lines):
     return hds, not stack and not insane, state
 
 
+_NOT_CODE = frozenset(("'", '"', "`", "$((", "(("))        # a stack entry that makes a line text or arithmetic, not a command position
+
+
+def _plain_at(state, i):
+    return state[i] is not None and not set(state[i]) & _NOT_CODE
+
+
 def _func_bodies(lines):
     """{name: body text} of the shell functions the file defines (both `name() {` and `function name {`, the brace on the same or the next line)."""
     out = {}
@@ -553,7 +560,8 @@ def _written_file_used_later(lines, hd):
     """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
     nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
     chmod'ing, a pipe to anything else, a substitution that is evaluated, a program or function the checker does not know all refuse."""
-    later = lines[(hd["end"] or hd["start"]) + 1:]
+    funcs = _func_bodies(lines)
+    later = lines[(hd["end"] or hd["start"]) + 1:] + [ln for body in funcs.values() for ln in body.split("\n")]       # a function may be defined above the heredoc and run later
     names = set(hd["targets"])
     for _ in range(4):                                          # a variable that holds the name (set before or after the heredoc; one assignment at a time, a few levels)
         for ln in lines:
@@ -565,7 +573,6 @@ def _written_file_used_later(lines, hd):
         if not t.startswith("$"):
             spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
     rxs = [re.compile(r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])") if not t.startswith("$") else re.compile(re.escape(t)) for t in spell if t]
-    funcs = _func_bodies(lines)
     reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
     readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
     for ln in later:
@@ -647,6 +654,13 @@ def _py_program_flags(body):
         elif isinstance(nd, ast.Assign):
             for t in nd.targets:
                 if isinstance(t, ast.Name) and isinstance(nd.value, ast.Lambda): defined.add(t.id)
+    binds = {}
+    for nd in ast.walk(tree):
+        if isinstance(nd, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): binds[nd.name] = binds.get(nd.name, 0) + 1
+        elif isinstance(nd, ast.Name) and isinstance(nd.ctx, ast.Store): binds[nd.id] = binds.get(nd.id, 0) + 1
+        if isinstance(nd, ast.Name) and nd.id != "__name__" and re.fullmatch(r"__\w+__", nd.id): why.add(nd.id)               # __builtins__, __dict__ ...: a way to the builtins
+        if isinstance(nd, ast.Attribute) and nd.attr != "__name__" and re.fullmatch(r"__\w+__", nd.attr): why.add(nd.attr)
+    why |= {"rebinds " + n for n in defined if binds.get(n, 0) > 1}                                                         # a defined name later bound to something else
     called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
     roots = {id(nd.value) for nd in ast.walk(tree) if isinstance(nd, ast.Attribute)}
     for nd in ast.walk(tree):
@@ -781,11 +795,11 @@ def _heredoc_ok(hd, lines, funcs, python=False):
     return not _written_file_used_later(lines, hd)
 
 
-def _name_used(lines, name, own):
-    """True when the variable's name appears on any line but its own assignment lines and whole-line comments (an expansion, an export, a declaration, a function that reads it),
-    or when the file reads a variable by indirection (${!x}): a string kept in a variable nothing reads cannot reach a shell."""
-    word = re.compile(r"(?<![\w])" + re.escape(name) + r"(?![\w])")
-    return any("${!" in ln or (i not in own and not ln.lstrip().startswith("#") and word.search(ln)) for i, ln in enumerate(lines))
+def _commands_redefined(lines, text, extra=()):
+    """True when the file defines a function named like a command the grammars trust (plus `extra`), or switches aliases on: the command's name then proves nothing."""
+    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"} | set(extra))) + r"|python[\d.]*"
+    return bool((set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"} | set(extra))) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
+            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text))
 
 
 def _context_holds(context, proof, text, line_hash):
@@ -798,18 +812,16 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
-    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
-    if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text):
+    if _commands_redefined(lines, text):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
-    if context in ("assignment", "unused") and re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):
+    if context == "assignment" and re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):
         return False                           # a variable with attributes (integer, array, nameref ...) evaluates or redirects its assignment: nothing in this file is judged plain
-    if context in ("comment", "assignment", "unused"):
+    if context in ("comment", "assignment"):
         import shlex
         for i in hits:
-            if not ((state[i] is not None and not set(state[i]) & {"'", '"', "`", "$(("}) or in_quoted_heredoc(i)):    # inside a quote or arithmetic (or a here-document that runs): the shell state decides what it is; a function or compound body is plain code
+            if not ((state[i] is not None and not set(state[i]) & _NOT_CODE) or in_quoted_heredoc(i)):    # inside a quote or arithmetic (or a here-document that runs): the shell state decides what it is; a function or compound body is plain code
                 return False
             s = lines[i].strip()
             if context == "comment":
@@ -822,7 +834,6 @@ def _context_holds(context, proof, text, line_hash):
                 except ValueError:
                     return False
                 if len(toks) != 1 or not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", toks[0]): return False
-                if context == "unused" and _name_used(lines, s.split("=", 1)[0], hits): return False
         return True
     for i in hits:
         hd = next((h for h in hds if h["start"] <= i < (h["end"] if h["end"] is not None else -1)), None)
@@ -987,64 +998,66 @@ def _context_regressions(root, base, head, rulings):
                 out.setdefault(k, {})[lh] = n
     return out
 
-# The owner removed the wait for new versions (owner ratified Nov 11 2026, rules 1-2), so a line that fetches nothing has nothing to pin and no row is needed for it: the
-# checker PROVES from the head file that the line is data, with the contexts above (a comment, a quoted heredoc written by cat and never run, a string of a pure python
-# program, an assignment whose variable nothing reads). A proof that is not made leaves the line measured as before. A live read of repository metadata has the closed
-# shape below instead of a pin.
+# The owner removed the wait for new versions (Nov 11 2026): a line the head file proves is data (a comment, an inert quoted heredoc, a pure python string, a plain assignment) or the one live-read shape needs no row.
 AUTO_RULING = TEXT_RULING + "proved from the head file, no row needed"
 LIVE_READ_RULING = "live metadata read, closed shape (nothing downloaded or run): "
 VENDOR_FORM = "a line that names the vendored folder"           # a human gate (REQ-VEND-001): never proved away
-LIVE_READ_HOSTS = ("hub.docker.com",)                          # exactly the hosts of live metadata reads in the repository today
-_LIVE_READ_URL = re.compile(r"https://(?:" + "|".join(re.escape(h) for h in LIVE_READ_HOSTS) + r")/[\w.~+/-]*(?:\$\{[A-Za-z_]\w*\}[\w.~+/-]*)*")
-_LIVE_READ_CRED = re.compile(r"""printf 'user = "%s:%s"\\n' "\$\{?[A-Za-z_]\w*\}?" "\$\{?[A-Za-z_]\w*\}?" \|\s*$""")
-_LIVE_READ_STMT = re.compile(r"[ \t]*([A-Za-z_]\w*)=\$\(")
+LIVE_READ_HOSTS = ("hub.docker.com",)                          # the hosts of the live metadata reads in the .sh scripts
+_LIVE_READ_HOST = "|".join(re.escape(h) for h in LIVE_READ_HOSTS)
+_LIVE_READ_CRED_NAMES = ("DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")
+_LIVE_READ_CRED = r"""printf 'user = "%s:%s"\\n' "\$""" + _LIVE_READ_CRED_NAMES[0] + r"""" "\$""" + _LIVE_READ_CRED_NAMES[1] + r"""" \| """
+_LIVE_READ_LINE = re.compile(
+    r"(?P<name>[a-z][a-z0-9_]*)=\$\(" + _LIVE_READ_CRED + r"curl -q (?:-[fsS]+ |--max-time [0-9]+ |--proto =https )*-K - "
+    r"\"https://(?:" + _LIVE_READ_HOST + r")/[\w.~+/-]+(?:\$\{DH_REPO\}[\w.~+/-]*)?\"\)(?P<tail>.*)")
+_LIVE_READ_NAME_BAD = re.compile(r"auto_resume|histchars|\w*_proxy")
+_LIVE_READ_FILE_BAD = re.compile(r"\$\{!|\beval\b|\b(?:declare|local|typeset)[ \t]+-\w*n\b|\bset\b[^\n;&|]*?(?:[ \t]-\w*a\w*(?=[ \t;]|$)|allexport)|"
+                                 r"(?<![$\w{])(?:" + "|".join(_LIVE_READ_CRED_NAMES) + r")\b|\$\{(?:" + "|".join(_LIVE_READ_CRED_NAMES) + r")[^}]*=", re.M)
+_LIVE_READ_TAIL_BAD = re.compile(r"\b(?:curl|wget)\b|[`]|[$<>]\(")
 
 
 def _plain_joins(text):
     """True when bash reads the flattened line as the scan does: blanks are spaces and tabs only, and every backslash-newline follows a blank, so a joined line differs from
     bash's reading in blanks alone (the live-read shape allows no blank inside a word)."""
-    return "\ue000" not in text and all(c in " \t\n" or not c.isspace() for c in text) and not re.search(r"[^ \t]\\\n", text)
+    return "" not in text and all(c in " \t\n" or not c.isspace() for c in text) and not re.search(r"[^ \t]\\\n", text)
+
+
+def _logical_lines(lines):
+    """[(index of the first physical line, flattened text)]: a backslash-newline joins the next line and blanks collapse, as pin-inventory flattens."""
+    out, i = [], 0
+    while i < len(lines):
+        j, joined = i, lines[i]
+        while joined.endswith("\\") and j + 1 < len(lines):
+            j += 1
+            joined = joined[:-1] + " " + lines[j]
+        out.append((i, " ".join(joined.split())))
+        i = j + 1
+    return out
 
 
 def _live_read_ok(text, flat):
-    """The flattened line is `NAME=$( ... curl FLAGS "https://HOST/PATH")`: every curl or wget segment on it is one curl (or /usr/bin/curl) with only -f -s -S clusters, --max-time N,
-    --proto =https and `-K -` (only straight after the printf of one user line), one https operand on a listed host, and ends the substitution that captures its output; NAME is then
-    named in the file only as the argument of data consumers."""
-    import shlex
-    m = _LIVE_READ_STMT.match(flat)
-    parts = re.split(r"(\s*(?:;|&&|\|\||\|)\s*)", flat)
-    segs = [i for i in range(0, len(parts), 2) if re.search(r"\b(?:curl|wget)\b", parts[i])]
-    if not m or not segs:
-        return False
-    for i in segs:
-        seg = re.sub(r"^[A-Za-z_]\w*=\$\(", "", parts[i].strip())
-        if not seg.endswith(")") or re.search(r"[<>`$]\(|[<>`&]|\$\(", seg):
-            return False
-        try:
-            w = shlex.split(seg[:-1], posix=True)
-        except ValueError:
-            return False
-        if w[:1] not in (["curl"], ["/usr/bin/curl"]):
-            return False
-        stdin_ok = i > 0 and parts[i - 1].strip() == "|" and _LIVE_READ_CRED.search("".join(parts[:i])) is not None
-        rest, operands, j = w[1:], [], 0
-        while j < len(rest):
-            f = rest[j]
-            if re.fullmatch(r"-[fsS]+", f):
-                j += 1
-            elif f == "--max-time" and j + 1 < len(rest) and re.fullmatch(r"[0-9]+", rest[j + 1]) or f == "--proto" and rest[j + 1:j + 2] == ["=https"]:
-                j += 2
-            elif f == "-K" and rest[j + 1:j + 2] == ["-"] and stdin_ok:
-                j += 2
-            elif f.startswith("-"):
-                return False
-            else:
-                operands.append(f)
-                j += 1
-        if len(operands) != 1 or not _LIVE_READ_URL.fullmatch(operands[0]):
-            return False
+    """The flattened line is the one closed shape `NAME=$(printf 'user = "%s:%s"\\n' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" | curl -q FLAGS -K - "https://HOST/PATH")`
+    with at most `${DH_REPO}` once in the path, in plain code, and nothing else in the file can add to it: no assignment of the two credential names, no redefined command or alias,
+    no indirection, and NAME (lowercase, not one bash or curl reads itself) is named only by `local NAME` and the one jq consumer."""
     lines = text.split("\n")
-    return not _written_file_used_later(lines, {"start": -1, "end": -1, "targets": ["$" + m.group(1), "${" + m.group(1) + "}"]})
+    _, sane, state = _shell_lex(lines)
+    logical = _logical_lines(lines)
+    caps = [i for i, f in logical if f == flat]
+    m = _LIVE_READ_LINE.fullmatch(flat)
+    if not sane or not m or not caps or _LIVE_READ_NAME_BAD.fullmatch(m.group("name")) or _LIVE_READ_FILE_BAD.search(text) or _commands_redefined(lines, text, {"curl"}):
+        return False
+    name = re.escape(m.group("name"))
+    consumer = re.compile(r"(?:local " + name + r"|jq -e '[^']*' >/dev/null 2>&1 <<<\"\$\{?" + name + r"\}?\"(?: \|\| (?P<tail>.*))?)")
+    word = re.compile(r"(?<!\w)" + name + r"(?!\w)")
+    if word.search(m.group("tail")) or _LIVE_READ_TAIL_BAD.search(m.group("tail")):
+        return False
+    for i, f in logical:
+        if f == flat or not word.search(f) or (f.startswith("#") and _plain_at(state, i)):
+            continue
+        c = consumer.fullmatch(f)
+        tail = c.group("tail") if c else None
+        if not c or not _plain_at(state, i) or (tail and (word.search(tail) or _LIVE_READ_TAIL_BAD.search(tail))):
+            return False
+    return all(_plain_at(state, i) for i in caps)
 
 
 def _proved_row(root, head, k, lh):
@@ -1057,7 +1070,7 @@ def _proved_row(root, head, k, lh):
         return (LIVE_READ_RULING + "one curl on a listed host", sys.maxsize, None, "")
     if not re.fullmatch(r"[0-9a-f]{64}", lh):
         return None
-    for context in ("comment", "heredoc", "pystring", "unused"):
+    for context in ("comment", "heredoc", "pystring"):
         row = (AUTO_RULING, sys.maxsize, context, "")
         if _context_proved(root, head, path, lh, row):
             return row
