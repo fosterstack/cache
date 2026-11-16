@@ -260,9 +260,9 @@ PRODUCES = {"ci.yml": PROTECTED, "full-suite.yml": ("allowlist-persona", "allowl
             "release.yml": ("acceptance",)}
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = jid in PRODUCES.get(wf, ()) and nm == jid
-    def reserved(n):   # a bound base name before " (" or an expression is not judged here: admission refuses it from any other file
+    def reserved(n):   # a bound base name before " (" or an expression is judged only in its own producing file: admission refuses it from any other
         base = re.split(r" \(|\$\{\{", n)[0]
-        return n in RESERVED or (base in RESERVED and not is_bound(base))
+        return n in RESERVED or (base in RESERVED and not bound_elsewhere(base, wf))
     return not produces and any(reserved(n) for n in (jid, str(nm)))
 def spells(parts, name):   # parts in order: the first starts name, the last ends it, text between
     # two or more parts (the caller checks); stop is where the last part starts, so a stop before the first part's
@@ -277,22 +277,41 @@ def spells(parts, name):   # parts in order: the first starts name, the last end
             return False
         at = found + len(part)
     return True
-def bound_patterns():   # the contexts stage-admission binds to a producing workflow file: the left sides of its `<patterns>) want=<file> ;;` lines
+def bound_patterns():   # [(pattern, file)] from the case arms of stage-admission's required-check step: `<patterns>) want=<file> ;;`
     try:
         text = open(os.path.join(os.environ["PIN_WIRING_WORKFLOWS_DIR"], "stage-admission.yml")).read()
     except OSError:
         return []   # no table, no exemption
-    return [alt.strip() for m in re.finditer(r"^ *(\S.*?)\) want=\S+ ;;$", text, re.M) for alt in m.group(1).split("|")]
+    arms, inside = [], False
+    for line in text.splitlines():
+        if 'case "$ctx" in' in line:
+            inside = True
+        elif inside and line.strip() == "esac":
+            inside = False
+        elif inside:
+            m = re.match(r"^ *([^\s#].*?)\) want=(\S+) ;;$", line)
+            if m:
+                arms += [(alt.strip(), m.group(2)) for alt in m.group(1).split("|")]
+    return arms
 BOUND = bound_patterns()
-def is_bound(name):   # a pattern is a quoted name, a bare name, or a quoted prefix followed by *
-    return any(name.startswith(p[:-1].strip('"')) if p.endswith("*") else name == p.strip('"') for p in BOUND)
-def could_render_reserved(nm):   # a plain `${{ matrix.a.b }}` stands for any text; any other expression is refused (fail closed)
+# only a release-only or promotion context can be exempt: a table line for any other name (or a bare `*` arm) exempts nothing
+EXEMPTIBLE = {n for c in [str(c.get("context")) for c in release_only] + [ctx for _b, ctx in PROMO] for n in (c, c.split(" (")[0], c.split(" / ")[0])}
+def bound_file(name):   # a pattern is a quoted name, a bare name, or a quoted prefix followed by *; a bare * is no pattern
+    if name not in EXEMPTIBLE:
+        return None
+    for p, f in BOUND:
+        if p.endswith("*") and p != "*" and name.startswith(p[:-1].strip('"')) or not p.endswith("*") and name == p.strip('"'):
+            return f
+    return None
+def bound_elsewhere(name, wf):   # admission refuses a check run of a bound name from any file but its own, so only the own file is judged
+    return bound_file(name) not in (None, wf)
+def could_render_reserved(nm, wf):   # a plain `${{ matrix.a.b }}` stands for any text; any other expression is refused (fail closed)
     plain = r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}"
     parts = re.split(plain, str(nm))[::2]
     if any("${{" in p or "}}" in p for p in parts):
         return True
-    # a bound context is not judged here: admission refuses a check run of that name from any other workflow file
-    return len(parts) > 1 and any(spells(parts, r) for r in RESERVED if not is_bound(r))
+    # a bound context is not judged in another file: admission refuses a check run of that name from there; in its own file it is
+    return len(parts) > 1 and any(spells(parts, r) for r in RESERVED if not bound_elsewhere(r, wf))
 def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
     return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
@@ -301,7 +320,7 @@ for jid_, j_ in d.get("jobs", {}).items():
     nm = j_.get("name", jid_)
     if takes_reserved("ci.yml", jid_, nm):
         bad.append(f"the job {jid_} produces the reserved check name {nm}")
-    if could_render_reserved(nm):
+    if could_render_reserved(nm, "ci.yml"):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
     for _base, _ctx in PROMO:
         if _base in (nm, jid_):
@@ -334,7 +353,7 @@ for _f in sorted(os.listdir(_wdir)):
         _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
         if takes_reserved(_f, _jid, _nm):
             bad.append(f"{_f}: the job {_jid} takes the reserved check name {_nm}")
-        elif could_render_reserved(_nm):
+        elif could_render_reserved(_nm, _f):
             bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
         if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
             bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
@@ -893,6 +912,28 @@ PY
 reserved_wf unbound-context "$(printf "  zz:\n    name: 'zz-unbound (\${{ matrix.v }})'\n${JOB}")"
 if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/ro-unbound.json" PIN_WIRING_WORKFLOWS_DIR="$work/rs-unbound-context" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
 if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS unbound-context-expr → bad"; else failn=$((failn+1)); echo "FAIL unbound-context-expr → $got, want bad ($out)"; fi
+
+# the bound file is judged too: inside full-suite.yml a name that could render a bound context is refused, unless the job
+# is the one the wiring suite pins for that context (the real full-suite.yml, which the main judge run passes)
+for mut in "coverage-expr-in-bound-file|  zz:\n    name: 'coverage\${{ matrix.v }}'\n" \
+  "acceptance-expr-in-bound-file|  zz:\n    name: 'acceptance / \${{ matrix.v }}'\n"; do
+  rm -rf "$work/rs-${mut%%|*}"; mkdir -p "$work/rs-${mut%%|*}"; cp "$here"/.github/workflows/*.y*ml "$work/rs-${mut%%|*}/"
+  printf "\n${mut#*|}${JOB}" >> "$work/rs-${mut%%|*}/full-suite.yml"
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS ${mut%%|*} → bad"; else failn=$((failn+1)); echo "FAIL ${mut%%|*} → $got, want bad ($out)"; fi
+done
+# the table is read only from the admission step's case arms: a table line in a comment, or a bare `*` arm, exempts nothing
+for mut in "table-line-in-comment|# a table line: x|zz-unbound) want=full-suite.yml ;;" "table-bare-star-arm|                    *) want=full-suite.yml ;;"; do
+  reserved_wf "${mut%%|*}" "$(printf "  zz:\n    name: 'zz-unbound (\${{ matrix.v }})'\n${JOB}")"
+  if [ "${mut%%|*}" = table-line-in-comment ]; then
+    printf '%s\n' "${mut#*|}" >> "$work/rs-${mut%%|*}/stage-admission.yml"
+  else   # a real arm placed before the table's closing `*)` arm
+    sed -i -E "s/^( *)\*\) echo \"::error::required check/${mut#*|}\n&/" "$work/rs-${mut%%|*}/stage-admission.yml"
+    grep -q 'want=full-suite.yml ;;$' "$work/rs-${mut%%|*}/stage-admission.yml" && grep -qE '^ +\*\) want=' "$work/rs-${mut%%|*}/stage-admission.yml" || { echo "FAIL ${mut%%|*}: the bare arm was not inserted"; exit 1; }
+  fi
+  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/ro-unbound.json" PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS ${mut%%|*} → bad"; else failn=$((failn+1)); echo "FAIL ${mut%%|*} → $got, want bad ($out)"; fi
+done
 
 # REQ-REL-013-AC3: 64 plain matrix expressions with no text between and a final "!" (in no reserved name) cannot render
 # as a reserved name, so the judge says ok; the old matcher backtracked on that name for over 30 s, so the only time
