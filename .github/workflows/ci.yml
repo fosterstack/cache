@@ -633,9 +633,10 @@ jobs:
             | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
           [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
 
-      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the eight
-      # release-only entries pinned in the guard. The verdict uses THIS tree's lists, so a PR that fixes a stale list
-      # goes green on its own run; on push to main the tree is main.
+      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, the eight
+      # release-only entries pinned in the guard, and the context, integration ID and scope of each ruleset check,
+      # pinned in PINNED_SCOPES. A PR that changes the ruleset check list needs main's PINNED_SCOPES changed first.
+      # The verdict uses THIS tree's lists; on push to main the tree is main.
       - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
         env:
           GH_TOKEN: ${{ github.token }}
