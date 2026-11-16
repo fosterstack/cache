@@ -18,7 +18,6 @@ docs/quality/traceability.md|> The site publication and the email to Compliance 
 .github/workflows/go-freshness.yml|digest=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")
 .github/workflows/go-freshness.yml|echo "image=ghcr.io/${REGISTRY_OWNER}/cache@${digest}" >> "$GITHUB_OUTPUT"
 .github/workflows/go-freshness.yml|for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
-.github/workflows/main-candidate-rescan.yml|pkg="orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/cache-scout-probe"
 .github/workflows/main-candidate-rescan.yml|ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
 .github/workflows/main-candidate-rescan.yml|--repo "ghcr.io/${{ github.repository_owner }}/cache" \
 .github/workflows/main-candidate-rescan.yml|--image-ref "ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}" \
