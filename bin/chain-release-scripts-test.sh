@@ -238,6 +238,53 @@ def adm(t, tag, base, **over):
     d = {"tag": tag, "sha": "c" * 40, "baseline_version": base, "baseline": "requirements/releases/%s.yaml" % base}
     d.update(over)
     json.dump(d, open(os.path.join(t, "witness-build/admission-baseline.json"), "w"))
+# (moved up from the post-publish section: release-apks runs the same key helpers)
+# ---- REQ-CHAIN-008: the keys and the manifests of these cases, made with openssl here (a throwaway root key signs; no real key is read) -----------------
+KEYS = tempfile.TemporaryDirectory(prefix="release-key-manifest-")
+def kfile(n): return os.path.join(KEYS.name, n)
+def openssl(*a): return subprocess.run(["openssl", *a], check=True, capture_output=True).stdout
+def genkey(name, *opts):
+    openssl("genpkey", *opts, "-out", kfile(name + ".key")); openssl("pkey", "-in", kfile(name + ".key"), "-pubout", "-out", kfile(name + ".pub"))
+for n in ("root", "otherroot"): genkey(n, "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
+genkey("rel", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")      # the release key, as in KMS
+genkey("rsaroot", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048")
+genkey("edroot", "-algorithm", "ED25519")
+def kpem(n): return open(kfile(n + ".pub")).read()
+def kid(n): return hashlib.sha256(openssl("pkey", "-pubin", "-in", kfile(n + ".pub"), "-outform", "DER")).hexdigest()
+def at(days):      # the window is judged by the real clock, so a window is a date in the past or the future
+    return (datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0) + datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def manifest(**over):
+    m = {"public_key": kpem("rel"), "key_id": kid("rel"), "valid_from": at(-30)}
+    m.update(over)
+    return {k: v for k, v in m.items() if v is not None}
+def body_of(m): return json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
+def sig_of(signer, body):
+    if signer == "edroot": return base64.b64encode(os.urandom(64)).decode() + "\n"      # openssl dgst cannot sign with Ed25519
+    open(kfile("body.tmp"), "wb").write(body)
+    return base64.b64encode(openssl("dgst", "-sha256", "-sign", kfile(signer + ".key"), kfile("body.tmp"))).decode() + "\n"
+def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(), link=None, as_dir=None, no_root=False):
+    """A good release's key files: the committed root key in .github/policy/, the manifest and its signature as downloaded into release-published/.
+    body: a dict (made into JSON) or the file's bytes; sig: the signature file's text, else made by `signer`; drop: file names to remove; link: a file name made a symlink; as_dir: a file name made an empty directory."""
+    body = body_of(manifest()) if body is None else body_of(body) if isinstance(body, dict) else body
+    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)
+    root = os.path.join(t, ".github/policy/release-key-root.pub")
+    if no_root and os.path.exists(root): os.remove(root)      # tree() already holds a placeholder root key
+    if not no_root: open(root, "w").write(kpem(root_pub))
+    rp = os.path.join(t, "release-published")
+    if not os.path.isdir(rp): return
+    files = {"release-key-manifest.json": body, "release-key-manifest.sig": (sig if sig is not None else sig_of(signer, body)).encode()}
+    for n, data in files.items(): open(os.path.join(rp, n), "wb").write(data)
+    for n in drop: os.remove(os.path.join(rp, n))
+    if link:
+        os.replace(os.path.join(rp, link), os.path.join(t, "elsewhere-" + link)); os.symlink(os.path.join(t, "elsewhere-" + link), os.path.join(rp, link))
+    if as_dir:
+        os.remove(os.path.join(rp, as_dir)); os.mkdir(os.path.join(rp, as_dir))
+def real_verifier(t):
+    """release-postverify.py loads the verifier and the verifier loads its helpers, each by the sha256 in chain-scripts.json: the real files go over the fake chain-verify.py the other scripts' tests use"""
+    for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
+        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
+    if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
+        os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
 KEYTXT = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA-release-key-test\n-----END PUBLIC KEY-----\n"
 KEYFILES = ("release-key-manifest.json", "release-key-manifest.sig", "release-key-root.pub")
 def tree():
@@ -305,6 +352,24 @@ def tree():
     for n in KEYFILES: open(os.path.join(t, ".github/policy", n), "w").write("committed " + n + "\n")
     return t
 KMS = "awskms:///alias/fosterstack-release-signing"      # the value stage-promote.yml gives RELEASE_KMS_KEY_REF; the P3 workflow cases below read it from that file
+def stage_before_publish(t):
+    """What release-apks needs for its pre-publish pass (R2): a guide with provenance commands, the committed key manifest, and a key-signed provenance bundle."""
+    if not os.path.exists(os.path.join(t, "bin/release-postverify.py")): return
+    real_verifier(t); seed_manifest(t)
+    guide_with(t, [PBF0, PJX0])
+    open(os.path.join(t, "provenance/provenance.bundle.json"), "w").write(OKB)
+    rp = os.path.join(t, "release-published")
+    for n in ("release-key-manifest.json", "release-key-manifest.sig"):
+        if os.path.exists(os.path.join(rp, n)): os.replace(os.path.join(rp, n), os.path.join(t, ".github/policy", n))
+def guide_with(t, cmds, listed=()):
+    open(os.path.join(t, "docs/verify-release.md"), "w").write("# Verify a release\n\n```sh\n" + "\n".join(cmds) + "\n```\n")
+    json.dump([{"command": c, "reason": "needs the image in a registry"} for c in listed], open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w"))
+IDQ0 = "--key release.rsa.pub"
+PBF0 = "cosign verify-blob-attestation --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false " + IDQ0
+PJX0 = "jq -e '.messageSignature' provenance.bundle.json"
+SBOM0 = "cosign verify-blob " + IDQ0 + " --bundle production.sbom.json.bundle production.sbom.json"
+IMG0 = "cosign verify " + IDQ0 + " <IMAGE_REF>"
+OKB = json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": {"publicKey": {"hint": "k"}}, "messageSignature": True})
 def run(t, script, env=None, creds=None, tag="v0.3.0", args=()):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
@@ -325,6 +390,7 @@ def run(t, script, env=None, creds=None, tag="v0.3.0", args=()):
     e.pop("NO_KMS_REF", None)
     if script in ("release-sign", "release-apks") and not (env or {}).get("NO_RUNNER_TEMP"): e.setdefault("RUNNER_TEMP", os.path.join(t, "rt"))      # KA-2 p4 group 4: the pinned aws CLI is at RUNNER_TEMP/aws-cli/aws (bin/install-scanner.sh aws-cli puts it there)
     e.pop("NO_RUNNER_TEMP", None)
+    if script == "release-apks": stage_before_publish(t)
     r = subprocess.run(["bash", path, *args], cwd=t, env=e, capture_output=True, text=True)
     LAST[0] = r.returncode if r.returncode == 127 else 0
     return r.returncode, r.stdout, r.stderr
@@ -608,7 +674,7 @@ layout_refused(t, "an index.json whose descriptor is not the attested digest (th
 t = tree(); ix = os.path.join(t, "images/production/index.json"); j = json.load(open(ix)); j["manifests"].append(dict(j["manifests"][0])); json.dump(j, open(ix, "w"))
 layout_refused(t, "an index.json with two descriptors", "production")
 t = tree(); d, bl = blobs_of(t, "production"); idx_hex = DIG["image-production"].split(":")[1]
-kid = [b for b in bl if b != idx_hex][0]; os.remove(os.path.join(d, kid)); open(os.path.join(d, kid), "wb").write(b"swapped")
+blob_id = [b for b in bl if b != idx_hex][0]; os.remove(os.path.join(d, blob_id)); open(os.path.join(d, blob_id), "wb").write(b"swapped")
 layout_refused(t, "a child blob replaced under its name", "production")
 t = tree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = run(t, "release-publish", creds=REG)
 check(rc != 0 and "fips" in se and not pushes(t), "AC7 a layout directory without index.json is refused before any push", "rc=%s %s" % (rc, first(se)))
@@ -799,6 +865,74 @@ t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"VEXFORMS_FAIL":
 t = tree(); open(os.path.join(t, "images/fips.manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\n"); rc, so, se = run(t, "release-sign", creds=REG); check(rc != 0 and "fips.manifests" in se and not signs(t), "AC13 an images/<variant>.manifests that is not complete stops before anything is signed")
 for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
     t = tree(); rc, so, se = run(t, "release-sign", creds=REG, tag=tag); check(rc != 0 and "tag" in se and not log(t), "AC14 release-sign refuses the tag %r" % tag, "rc=%s %s" % (rc, first(se)))
+# ---- R2/R3: release-postverify.py --before-publish, called by release-apks.sh before anything is signed ----------------------------------------
+def bp_tree(cmds=None, listed=(IMG0,)):
+    """A tree for the pre-publish pass: the guide (provenance, SBOM and image commands), the committed key manifest, provenance/provenance.bundle.json."""
+    t = tree(); real_verifier(t); stage_before_publish(t)
+    guide_with(t, [PBF0, PJX0, SBOM0, IMG0] if cmds is None else cmds, listed)
+    return t
+def bp_run(t, args=("--before-publish",), env=None):
+    e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_REF_NAME": "v0.3.0"}
+    e.update(env or {})
+    r = subprocess.run(["python3", "-I", "-B", "bin/release-postverify.py", *args], cwd=t, env=e, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+def cos(t): return [l for l in log(t) if l.startswith(("cosign ", "gh ", "crane "))]
+def one_line(se): return len(se.strip().split("\n")) == 1 and se.startswith("release-postverify:")
+RA2 = open(os.path.join(BIN, "release-apks.sh")).read()
+CALL = "python3 -I -B bin/release-postverify.py --before-publish"
+check(CALL in RA2 and RA2.count("release-postverify.py") == 1, "R2 release-apks.sh runs `%s`" % CALL)
+check(CALL in RA2 and "release-sign-apks" in RA2 and RA2.index(CALL) < RA2.index("release-sign-apks"), "R2 release-apks.sh runs the pre-publish pass before release-sign-apks")
+check(CALL in RA2 and not re.search(r"cosign|sign", RA2[:RA2.index(CALL)].replace("release-apks", "")) if CALL in RA2 else False, "R2 nothing in release-apks.sh signs before the pre-publish pass")
+t = tree(); rc, so, se = run(t, "release-apks", creds=KEY); L = log(t)
+iv = next((i for i, l in enumerate(L) if l.startswith("cosign verify-blob-attestation")), None); isg = next((i for i, l in enumerate(L) if l.startswith("release-sign-apks")), None)
+check(rc == 0 and iv is not None and isg is not None and iv < isg, "R2 a good release-apks run verifies the provenance (cosign verify-blob-attestation) before release-sign-apks runs", "rc=%s iv=%s isg=%s %s" % (rc, iv, isg, first(se)))
+t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"COSIGN_FAIL_ON": "verify-blob-attestation"})
+check(rc != 0 and any(l.startswith("cosign verify-blob-attestation") for l in log(t)) and not [l for l in log(t) if l.startswith("release-sign-apks")] and not os.path.exists(os.path.join(t, "release-apks")),
+      "R2 a failing provenance check stops release-apks: non-zero exit, nothing signed, nothing in release-apks/", "rc=%s %s" % (rc, first(se)))
+t = tree(); stage_before_publish(t); os.remove(os.path.join(t, "provenance/provenance.bundle.json"))
+e_ = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": "v0.3.0", "GITHUB_REPOSITORY": "fosterstack/cache", "RELEASE_KMS_KEY_REF": KMS, "RUNNER_TEMP": os.path.join(t, "rt"), "RELEASE_ROLE_ARN": "arn:aws:iam::111122223333:role/release-signing", "RELEASE_TOKEN_FILE": os.path.join(t, "idtoken")}
+r_ = subprocess.run(["bash", os.path.join(t, "bin/release-apks.sh")], cwd=t, env=e_, capture_output=True, text=True)
+check(r_.returncode != 0 and "provenance.bundle.json" in r_.stderr and not [l for l in log(t) if l.startswith("release-sign-apks")], "R2 release-apks with no provenance/provenance.bundle.json stops, naming the file, nothing signed", "rc=%s %s" % (r_.returncode, first(r_.stderr)))
+# R3: the pass itself
+t = bp_tree(); rc, so, se = bp_run(t, env={"FAKE_NEEDFILES": "1"}); C = cos(t)
+cwds = open(os.path.join(t, "calls.log.cwd")).read().split() if os.path.exists(os.path.join(t, "calls.log.cwd")) else []
+check(rc == 0 and len(C) == 1 and C[0].startswith("cosign verify-blob-attestation") and "--bundle provenance.bundle.json" in C[0], "R3 --before-publish runs the provenance cosign command once and passes", "rc=%s calls=%s %s" % (rc, C, first(se)))
+check(rc == 0 and cwds and all(os.path.realpath(c) == os.path.realpath(os.path.join(t, "release-staged")) for c in cwds), "R3 the provenance commands run in release-staged/", "rc=%s cwds=%s %s" % (rc, cwds, first(se)))
+keyseen = open(os.path.join(t, "calls.log.keyseen")).read() if os.path.exists(os.path.join(t, "calls.log.keyseen")) else ""
+check(rc == 0 and keyseen == kpem("rel"), "R3 release.rsa.pub in release-staged/ is the manifest's public_key", "rc=%s %r" % (rc, keyseen[:40]))
+check(rc == 0 and not os.path.exists(os.path.join(t, "release-staged")) and not os.path.exists(os.path.join(t, "release-published/release.rsa.pub")), "R3 release-staged/ is removed when the pass ends (and release-published/ is not used)", "rc=%s %s" % (rc, first(se)))
+check(rc == 0 and C and all(c.startswith("cosign verify-blob-attestation") for c in C) and not [l for l in log(t) if l.startswith(("gh ", "crane ")) or "ghcr.io" in l or "docker.io" in l or "sbom" in l], "R3 no image command, no non-provenance file command and no registry call is run", "rc=%s calls=%s" % (rc, log(t)))
+t = bp_tree(); rc, so, se = bp_run(t, env={"COSIGN_FAIL": "1"})
+cwds = open(os.path.join(t, "calls.log.cwd")).read().split() if os.path.exists(os.path.join(t, "calls.log.cwd")) else []
+check(rc != 0 and cos(t) and cwds and all(os.path.basename(c) == "release-staged" for c in cwds) and ("release-postverify:" in se or "::error::" in se), "R3 a provenance command that fails (stub cosign exits 1) fails the run", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and cwds and not os.path.exists(os.path.join(t, "release-staged")), "R3 release-staged/ is removed when the pass fails too", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); os.remove(os.path.join(t, "provenance/provenance.bundle.json")); rc, so, se = bp_run(t)
+check(rc != 0 and "provenance/provenance.bundle.json" in se and not cos(t), "R3 a missing provenance/provenance.bundle.json fails the run, naming the file, nothing runs", "rc=%s %s" % (rc, first(se)))
+for a in (["--other"], ["--before-publish", "x"], ["--before-publish", "--before-publish"], ["x"], ["--before-publish=1"], ["-h"]):
+    t = bp_tree(); rc, so, se = bp_run(t, args=a)
+    check(rc == 1 and not cos(t) and one_line(se) and not os.path.exists(os.path.join(t, "release-staged")) and a[-1] in se, "R3 the argument list %r is refused: exit 1, one release-postverify: line, nothing runs" % (a,), "rc=%s %s" % (rc, se[:160]))
+t = bp_tree(cmds=[SBOM0, IMG0]); rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and se.startswith("release-postverify:") and "provenance" in se and "release-published" not in se, "R3 a guide with no provenance command fails the run (no vacuous pass), nothing runs", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(cmds=[PBF0, PJX0]); rc, so, se = bp_run(t)
+check(rc == 0 and len(cos(t)) == 1, "R3 a guide of provenance commands only passes", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(cmds=[PJX0]); rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "earlier" in se and "release-published" not in se, "R3 a guide whose only provenance command is a jq with no earlier verify is refused by the same judge", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); os.remove(os.path.join(t, ".github/policy/release-key-manifest.sig")); rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "release-published" not in se and not os.path.exists(os.path.join(t, "release-staged")), "R3 a missing committed key manifest signature fails the run, nothing runs", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); open(os.path.join(t, ".github/policy/release-key-manifest.json"), "a").write(" ")
+rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "release-published" not in se, "R3 a committed key manifest that does not match its signature fails the run, nothing runs", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); open(os.path.join(t, "bin/chain-verify.py"), "a").write("# altered\n"); rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "release-published" not in se, "R3 an altered verifier is refused here as in the post-publish pass, nothing runs", "rc=%s %s" % (rc, first(se)))
+t = bp_tree(); open(os.path.join(t, "provenance/provenance.bundle.json"), "w").write(json.dumps({"verificationMaterial": {"certificate": {"rawBytes": "eA=="}}}))
+rc, so, se = bp_run(t)
+check(rc != 0 and not cos(t) and "release-published" not in se, "R3 a staged provenance bundle that carries a certificate is refused, nothing runs", "rc=%s %s" % (rc, first(se)))
+# R4: without the argument the pass is the post-publish pass, on release-published/, with every file command (provenance included) and the list's image commands
+t = tree(); real_verifier(t); seed_manifest(t); guide_with(t, [PBF0, PJX0], [IMG0.replace("<IMAGE_REF>", "<IMAGE_REF>")])
+open(os.path.join(t, "release-published/provenance.bundle.json"), "w").write(OKB)
+rc, so, se = run(t, "release-postverify", env={"GITHUB_REPOSITORY": "fosterstack/cache"}, creds=["GH_TOKEN"]); C = cos(t)
+check(rc == 0 and len(C) == 3 and sum("provenance.bundle.json" in c for c in C) == 1 and sum("<" not in c and "@sha256:" in c for c in C) == 2, "R4 without the argument the post-publish pass runs the provenance command once and the image command in both registries", "rc=%s calls=%s %s" % (rc, C, first(se)))
+check(rc == 0 and not os.path.exists(os.path.join(t, "release-staged")) and os.path.exists(os.path.join(t, "release-published/release.rsa.pub")), "R4 the post-publish pass places the key in release-published/ and makes no release-staged/", "rc=%s %s" % (rc, first(se)))
 # ---- AC9: release-assets.sh ----------------------------------------------------------------------------------------------------------------------
 def full_assets():
     t = tree(); rc_, so_, se_ = run(t, "release-sign", creds=REG)
@@ -1010,52 +1144,6 @@ PV1 = "cosign verify <IMAGE_REF> " + IDQ
 PV2 = "cosign verify <IMAGE_REF_FIPS> " + IDQ
 PV3 = "cosign verify-attestation --type https://slsa.dev/provenance/v1 " + IDQ + " <IMAGE_REF>"
 PV4 = "cosign verify-blob " + IDQ + " --type slsa-<TAG> --bundle b.json x.txt"
-# ---- REQ-CHAIN-008: the keys and the manifests of these cases, made with openssl here (a throwaway root key signs; no real key is read) -----------------
-KEYS = tempfile.TemporaryDirectory(prefix="release-key-manifest-")
-def kfile(n): return os.path.join(KEYS.name, n)
-def openssl(*a): return subprocess.run(["openssl", *a], check=True, capture_output=True).stdout
-def genkey(name, *opts):
-    openssl("genpkey", *opts, "-out", kfile(name + ".key")); openssl("pkey", "-in", kfile(name + ".key"), "-pubout", "-out", kfile(name + ".pub"))
-for n in ("root", "otherroot"): genkey(n, "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256")
-genkey("rel", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096")      # the release key, as in KMS
-genkey("rsaroot", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048")
-genkey("edroot", "-algorithm", "ED25519")
-def kpem(n): return open(kfile(n + ".pub")).read()
-def kid(n): return hashlib.sha256(openssl("pkey", "-pubin", "-in", kfile(n + ".pub"), "-outform", "DER")).hexdigest()
-def at(days):      # the window is judged by the real clock, so a window is a date in the past or the future
-    return (datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0) + datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-def manifest(**over):
-    m = {"public_key": kpem("rel"), "key_id": kid("rel"), "valid_from": at(-30)}
-    m.update(over)
-    return {k: v for k, v in m.items() if v is not None}
-def body_of(m): return json.dumps(m, sort_keys=True, indent=1).encode() + b"\n"
-def sig_of(signer, body):
-    if signer == "edroot": return base64.b64encode(os.urandom(64)).decode() + "\n"      # openssl dgst cannot sign with Ed25519
-    open(kfile("body.tmp"), "wb").write(body)
-    return base64.b64encode(openssl("dgst", "-sha256", "-sign", kfile(signer + ".key"), kfile("body.tmp"))).decode() + "\n"
-def seed_manifest(t, body=None, signer="root", root_pub="root", sig=None, drop=(), link=None, as_dir=None, no_root=False):
-    """A good release's key files: the committed root key in .github/policy/, the manifest and its signature as downloaded into release-published/.
-    body: a dict (made into JSON) or the file's bytes; sig: the signature file's text, else made by `signer`; drop: file names to remove; link: a file name made a symlink; as_dir: a file name made an empty directory."""
-    body = body_of(manifest()) if body is None else body_of(body) if isinstance(body, dict) else body
-    os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True)
-    root = os.path.join(t, ".github/policy/release-key-root.pub")
-    if no_root and os.path.exists(root): os.remove(root)      # tree() already holds a placeholder root key
-    if not no_root: open(root, "w").write(kpem(root_pub))
-    rp = os.path.join(t, "release-published")
-    if not os.path.isdir(rp): return
-    files = {"release-key-manifest.json": body, "release-key-manifest.sig": (sig if sig is not None else sig_of(signer, body)).encode()}
-    for n, data in files.items(): open(os.path.join(rp, n), "wb").write(data)
-    for n in drop: os.remove(os.path.join(rp, n))
-    if link:
-        os.replace(os.path.join(rp, link), os.path.join(t, "elsewhere-" + link)); os.symlink(os.path.join(t, "elsewhere-" + link), os.path.join(rp, link))
-    if as_dir:
-        os.remove(os.path.join(rp, as_dir)); os.mkdir(os.path.join(rp, as_dir))
-def real_verifier(t):
-    """release-postverify.py loads the verifier and the verifier loads its helpers, each by the sha256 in chain-scripts.json: the real files go over the fake chain-verify.py the other scripts' tests use"""
-    for extra in ("chain-verify.py", "chain_common.py", "chain_hostile.py", "chain_items.py"):
-        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
-    if os.path.exists(os.path.join(BIN, "..", ".github/policy/chain-scripts.json")):
-        os.makedirs(os.path.join(t, ".github/policy"), exist_ok=True); shutil.copy(os.path.join(BIN, "..", ".github/policy/chain-scripts.json"), os.path.join(t, ".github/policy/chain-scripts.json"))
 def stub_verifier(t, extra_source):
     """The verifier with extra_source appended and its row in chain-scripts.json re-pinned, so it still loads"""
     path, listed = os.path.join(t, "bin/chain-verify.py"), os.path.join(t, ".github/policy/chain-scripts.json")
@@ -1701,7 +1789,7 @@ check(rc == 0 and os.path.isfile(os.path.join(t, "out/guide-results.json")),
       "AC7 check-guide.sh passes a passing guide command and writes guide-results.json",
       "rc=%s %s" % (rc, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "636"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "665"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
