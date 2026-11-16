@@ -266,6 +266,28 @@ vexdoc "$D/v/sub-std.json" "[$(st CVE-2024-9999 '[]' not_affected "[$SUBSTD]")]"
 vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/sub-std.json"; expect "R1 osv: a stdlib finding at go1.27.2 is covered by the pkg:golang/stdlib@1.27.2 statement" clean false 0 1
 vrun osv-scanner 1 "$(osv_std go1.27.3)" "$D/v/sub-std.json"; expect "R1 osv: a stdlib finding at go1.27.3 is not covered by the stdlib@1.27.2 statement" findings true 1 0
 vrun osv-scanner 1 "$(osv_std 1.27.2)" "$D/v/sub-std.json"; expect "R1 osv: a stdlib finding at 1.27.2 (no go prefix) is covered by the stdlib@1.27.2 statement" clean false 0 1
+# R6: a golang subcomponent covers only a Go finding, and only a golang statement covers a Go finding
+# (a grype finding's type is its artifact purl, an osv-scanner finding's is its ecosystem)
+grype_std() {
+  printf '{"matches":[{"vulnerability":{"id":"CVE-2024-9999","severity":"High"},'"$(
+    )"'"artifact":{"name":"stdlib","version":"go1.27.2","purl":"%s"}}],"descriptor":{"name":"grype"}}' "$1"
+}
+osv_eco() {
+  printf '{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":'"$(
+    )"'{"name":"stdlib","version":"1.27.2","ecosystem":"%s"},"vulnerabilities":'"$(
+    )"'[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"]}]}]}]}' "$1"
+}
+SUBGEN='{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",'
+SUBGEN+='"subcomponents":[{"@id":"pkg:generic/stdlib@go1.27.2"}]}'
+vexdoc "$D/v/sub-gen.json" "[$(st CVE-2024-9999 '[]' not_affected "[$SUBGEN]")]"
+vrun grype 2 "$(grype_std pkg:generic/stdlib@go1.27.2)" "$D/v/sub-std.json"
+expect "R6 grype: a generic-typed stdlib finding is not covered by the golang statement" findings true 1 0
+vrun grype 2 "$(grype_std pkg:golang/stdlib@go1.27.2)" "$D/v/sub-gen.json"
+expect "R6 grype: a golang-typed stdlib finding is not covered by the generic statement" findings true 1 0
+vrun osv-scanner 1 "$(osv_eco PyPI)" "$D/v/sub-std.json"
+expect "R6 osv: a stdlib finding of ecosystem PyPI is not covered by the golang statement" findings true 1 0
+vrun osv-scanner 1 "$(osv_std go1.27.2)" "$D/v/sub-gen.json"
+expect "R6 osv: a stdlib finding of ecosystem Go is not covered by the generic statement" findings true 1 0
 # every other finding still counts at any severity
 OSV_TWO='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0","ecosystem":"Go"},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"]},{"id":"GO-2024-0002","aliases":["CVE-2024-8888"]}]}]}]}'
 vrun osv-scanner 1 "$OSV_TWO" "$D/v/by-cve.json"; expect "osv: with two findings only the covered one is removed (verdict findings, one counts, one suppressed)" findings true 1 1
