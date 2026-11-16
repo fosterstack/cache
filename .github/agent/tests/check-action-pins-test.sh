@@ -205,6 +205,8 @@ refusal_reason() {
     w-fence-*|a-*) echo 'is not a committed file' ;;
     w-tmp-copy-*|r20-tmp-copy-*|r21-b10-tmp-copy-*) echo 'is not a committed file' ;;
     ac3-non-bash-step-bad) echo 'POSIX shell only' ;;
+    hook-*) echo 'which changes what later programs load or where they connect' ;;
+    hookexpr-*) echo 'hides the names it sets' ;;
     run-*|exec-*|create-*|container-create-inner-bad|b1-*|b2-*|b3-*|b4-*|b7-*|b8-* \
       |n4-inner-still-read|n13-*|n22-*|n30-*|c01-*|c02-*|c03-*|c06-*|c10-*|r2c02-*|r2c10-*|r3c02-* \
       |r3c10-*|r2r03-*|r2n01-*|r3n01-*|r4b*|r17-*|r18-*|r19-*|r20-*|r21-*|r22-*|r23-*|r24-*|r26-* \
