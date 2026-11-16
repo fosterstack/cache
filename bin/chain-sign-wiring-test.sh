@@ -1130,7 +1130,7 @@ mk() {
     for j in sign sign-rebuild sign-check sign-release; do      # Sign's four jobs: the only jobs of release.yml that sign provenance
       printf '  %s:\n    runs-on: ubuntu-24.04\n    environment: sign\n' "$j"
       printf '    env:\n      AWS_ROLE_ARN: arn:aws:iam::821302803867:role/fosterstack-cache-release-signing\n      AWS_REGION: us-east-1\n      RELEASE_KMS_KEY_REF: awskms:///alias/fosterstack-release-signing\n'      # the chain jobs are judged by the stage grammar: each sign job holds the KMS role's three literals as its job env
-      if [ "$j" = sign-release ]; then printf '    permissions:\n      contents: read\n      id-token: write\n      packages: write\n'
+      if [ "$j" = sign-release ]; then printf '    permissions:\n      contents: read\n      id-token: write\n'      # exactly contents read and id-token write: no packages write
       else printf '    permissions:\n      id-token: write\n'; fi
       printf '    steps:\n      - run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json\n'; done; } > "$d/.github/workflows/release.yml"
   printf '#!/usr/bin/env bash\nset -euo pipefail\ncurl -fsSL "$1" -o x\nsha256sum -c x\n' > "$d/bin/install-scanner.sh"
@@ -5127,11 +5127,10 @@ PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
 # ---- the named secrets of Release (rule 56: only Release holds a stored secret; advisor 0386 J, the corrected binding list) ----------------------------
-# ONE closed list, four rows: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
-# pull-requests read + id-token write (Witness); in stage-promote.yml job release (contents/packages/id-token write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN
-# -> release-publish.sh and release-sign.sh, (4) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh and
-# release-assets.sh (release-postverify.sh holds no token). bin/witnessed.sh is bound for GH_TOKEN at exactly those two
-# places and for the secrets in Release. Every other name, place or script is refused.
+# ONE closed list: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed-local.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
+# pull-requests read; in release.yml job release (contents/packages write): (2) DOCKERHUB_USERNAME and (3) DOCKERHUB_TOKEN -> release-publish.sh alone, (4) GH_TOKEN (the run's own) -> release-publish.sh;
+# in job release-evidence (contents write): (5) GH_TOKEN -> release-assets.sh (release-postverify.sh holds no token). The job sign-release holds no row at all: no secret, no GH_TOKEN, no DOCKERHUB_*,
+# and exactly contents read and id-token write (REQ-REL-011-AC3, REQ-CHAIN-007-AC18). Every other name, place or script is refused.
 repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
 probe sec_release_extra "stored secret outside the named env entries" "a stored secret (secrets.X_KEY) in a step env of an added job of release.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/release.yml"
 probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step other than the admission step" \
@@ -5158,6 +5157,17 @@ probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret inst
   "repl .github/workflows/release.yml 'GH_TOKEN: \${{ github.token }}' 'GH_TOKEN: \${{ secrets.GH_TOKEN }}'"
 probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
   "repl .github/workflows/release.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
+# sign-release holds no row (REQ-REL-011-AC3 (a), REQ-CHAIN-007-AC2, AC18): the run's token, either registry credential, any other stored secret and packages write are each refused in it
+probe sg_gh_token "GH_TOKEN is allowed only" "the run's token (GH_TOKEN) in a step of sign-release: it holds no secret row" \
+  "jstep $REL sign-release '      - name: x\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh cosign\n'"
+probe sg_hub_user "in the named step of the release job" "DOCKERHUB_USERNAME in a step of sign-release: the registry credentials are the release job's alone" \
+  "jstep $REL sign-release '      - name: x\n        env:\n          DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}\n        run: bash bin/install-scanner.sh cosign\n'"
+probe sg_hub_token "in the named step of the release job" "DOCKERHUB_TOKEN in a step of sign-release: the registry credentials are the release job's alone" \
+  "jstep $REL sign-release '      - name: x\n        env:\n          DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/install-scanner.sh cosign\n'"
+probe sg_any_secret "stored secret outside the named env entries" "a stored secret of another name in a step of sign-release" \
+  "jstep $REL sign-release '      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n'"
+probe sg_packages "must hold exactly the permissions" "packages write on sign-release (it holds contents read and id-token write only: no registry write)" \
+  "jrepl $REL sign-release '      id-token: write\n' '      id-token: write\n      packages: write\n'"
 probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
   "repl .github/workflows/release.yml '      - name: release-publish under Witness (a throwaway key, no identity token)\n' '      - name: release-publish under Witness (a throwaway key, no identity token)\n        if: \${{ secrets.DOCKERHUB_TOKEN != \"\" }}\n'"
 
@@ -5445,7 +5455,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2289
+EXPECT=2294
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
