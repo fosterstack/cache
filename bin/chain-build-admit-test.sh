@@ -661,6 +661,20 @@ if [ -n "$(G ls-tree --name-only origin/main -- .auditor/accepted-items.json)" ]
 else bad "fixture: the accepted-items blob is still readable (or main does not list the file)"; fi
 run_admit
 expect_refuse "REQ-AUD-17-AC5 an accepted-items file that main lists but cannot be read is refused at audit-approval, naming it" audit-approval ".auditor/accepted-items.json"
+# the hold is main's, never the tagged commit's: the tagged commit (an older commit on main) carries a copy of the file with no open
+# item, main later makes the file hold an at_or_above item without moving the tag; the tagged copy must not drop main's hold
+fresh; accepted_on_main below; TAGGED=$(G rev-parse HEAD)
+printf '{"accepted_items":[{"cve":"CVE-2099-1","severity":"Critical","package":"p","threshold":"at_or_above","owner_issue":1,"expiry":"2099-01-01"}]}\n' \
+  > "$W/c/repo/.auditor/accepted-items.json"
+G add .auditor/accepted-items.json; commit_move owner "main now holds an open item"
+G checkout -q --detach "$TAGGED"; gh_fixtures "$W/c/gh" "$TAGGED"
+if G show "$TAGGED:.auditor/accepted-items.json" | grep -Fq '"below"' && ! G show "$TAGGED:.auditor/accepted-items.json" | grep -Fq at_or_above \
+    && G show "origin/main:.auditor/accepted-items.json" | grep -Fq at_or_above && [ "$(G rev-parse v0.3.0^{commit})" = "$TAGGED" ] \
+    && G merge-base --is-ancestor "$TAGGED" origin/main && [ "$TAGGED" != "$(G rev-parse origin/main)" ]; then
+  ok "fixture: the tagged commit's accepted-items copy has no open item, origin/main's (a later commit) holds an at_or_above one"
+else bad "fixture: the tagged commit's accepted-items copy and origin/main's are not as the case claims"; fi
+run_admit
+expect_refuse "REQ-AUD-17-AC5 the open owner-decision item in origin/main's accepted-items file holds the release though the tagged commit's own copy has none" audit-approval "owner-decision"
 # release candidates are held to the same rule, in the chain's -rcN form (and -rc.N is not a chain tag at all)
 fresh; sig_tag v0.3.0-rc1; run_admit GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_REF_NAME=v0.3.0-rc1
 expect_refuse "AC7 a release candidate tag with no approval line is refused at audit-approval" audit-approval Audit-approved
@@ -1039,6 +1053,6 @@ wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # a skipped or added case fails the suite
-EXPECT_TOTAL=191
+EXPECT_TOTAL=193
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
