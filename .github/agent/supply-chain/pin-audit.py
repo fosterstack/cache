@@ -895,6 +895,31 @@ class LiveNet:
 
 
 
+def _is_text_list(x):
+    return isinstance(x, list) and bool(x) and all(isinstance(i, str) for i in x)
+
+
+def _well_formed_exception(e):
+    """One exceptions row: the ids it covers, the authoritative advisory, the ruling, its evidence and the one version
+    it covers."""
+    if not isinstance(e, dict) or not _is_text_list(e.get("ids")):
+        return False
+    au = e.get("authoritative")
+    if (not isinstance(au, dict) or str(au.get("source")).lower() not in ("github", "osv") or not au.get("id")
+            or not _is_text_list(au.get("ranges"))):
+        return False
+    if (not isinstance(e.get("modified"), dict) or not e.get("package") or not set(e["ids"]) <= set(e["modified"])
+            or au["id"] not in e["ids"]):
+        return False
+    if not isinstance(e.get("ruling"), str) or not e["ruling"] or not isinstance(e.get("osv_modified", {}), dict):
+        return False
+    if (not isinstance(e.get("evidence"), list) or not e["evidence"] or not isinstance(e.get("date"), str)
+            or not e["date"]):
+        return False
+    # every exception names the one version it covers
+    return isinstance(e.get("version"), str) and bool(e["version"].strip())
+
+
 # ---------- exceptions (the same format as the ops repo's docs/supply-chain-exceptions.json) ----------
 def load_exceptions(path, required):
     if not path or not os.path.exists(path):

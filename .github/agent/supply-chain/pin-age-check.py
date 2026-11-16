@@ -155,7 +155,6 @@ def _gh_pages(path, rows):
     return _dicts(got, f"GitHub API {path.split('?')[0]}", rows)
 
 
-_FAILED = object()      # the server could not be asked (lenient mode)
 _GONE = object()        # strict mode: the server said 404 or 410, the one answer that means "not there"
 
 
@@ -302,6 +301,24 @@ def _checked_pins(pins):
             raise ValueError(f"image-publishers.json: {name} has keyless identities that are not a list of "
                              "issuer and subject")
     return entries
+
+
+HUB_HOSTS = ("docker.io", "index.docker.io", "registry-1.docker.io")
+
+
+def _split_image(name):
+    """(registry, path) of an image name. A first part with a dot, a colon or localhost is the registry, lowercase,
+    without :443, Docker Hub's hosts as docker.io; else Docker Hub (a name of three parts without a host has no
+    registry we know, so its first part stands)."""
+    first, _, rest = name.partition("/")
+    if rest and ("." in first or ":" in first or first == "localhost"):
+        host = first.lower().removesuffix(":443")
+        return ("docker.io" if host in HUB_HOSTS else host), rest
+    return ("docker.io" if name.count("/") <= 1 else first), name
+
+
+def _image_registry(name):
+    return _split_image(name)[0]
 
 
 def _publisher_entry(name, pins=None):
@@ -481,10 +498,6 @@ _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
 LIVE_RULING = "live fetch from the Wolfi package host: "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
 GO_RULING = "pinned toolchain fetch (the recipe pin is verified before storing): "   # the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
-LOOPBACK_RULING = "loopback fetch (REQ-SUP-001-AC25): "   # the one line of the loopback helper that starts the fetch program (REQ-SUP-001-AC24): honored for that file and that line's sha256 only
-LOOPBACK_FILE = "bin/loopback-get.sh"
-LOOPBACK_LINE = """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?"""    # the raw text of the line, byte for byte (no indent, no trailing space, no carriage return)
-LOOPBACK_LINE_SHA256 = "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd"   # sha256 of that line as the scan hashes it (whitespace collapsed); the raw text above is what the head file must hold
 DOWNLOAD_FORM = "a download"
 _LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
 # the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash
@@ -669,7 +682,7 @@ def _hash_files(root, head, path):
 
 
 # the pinned script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
-PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "
+PINNED_FETCH_RULING = "pinned fetch (REQ-SUP-001-AC26): "
 # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must
 # hold each exactly once
 PINNED_FETCH = {

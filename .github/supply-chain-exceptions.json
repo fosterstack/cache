@@ -375,13 +375,6 @@
       "key": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
       "line": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
-      "line": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
-      "ruling": "text, not a command: the one line of the refresh test that names the fetch tool, a printf -v of a constant word; every other line of the suite uses the variable"
     }
   ],
   "_format_reviewed_files": "REQ-SUP-001-AC16 (orchestrator ruling, Nov 14): one row per file that holds text the strict scan reads as an unmeasured download or package install but that only MENTIONS the tool (a comment, an echo string, a stub written as data, a package name). file; ruling: what the text is, never empty; body-sha256: the sha256 of the lines '<path> <sha256 of the file's bytes>' (newline after each), the file first, then every file it sources by a plain line 'source PATH' or '. PATH' (PATH one literal path in the repository), by path. While the head's files hash to it, the row rules every unmeasured occurrence in the file; any edit to the file or to a file it sources stops the row matching, and every occurrence in the file is then a finding. A file with a source that is no plain line (if, time, eval, builtin, command, a variable, a cd before it) or a file that is missing, a link or unreadable has no hash: its row never matches. No other field. Read from the base branch only. unmeasured_text keeps only the rows that prove their own line: pinned, live and Go fetches, a build container and local reusable workflow calls (with REQ-SUP-001-AC19 form).",
@@ -399,17 +392,17 @@
     {
       "file": ".github/agent/bin/check-action-pins.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/check-action-pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/bin/check-action-pins.py that names the tool",
-      "body-sha256": "07683c93eba965d0156a920138bf5d446774ccad1faf233365e0d76c8e088167"
+      "body-sha256": "ad17eddae11817d87be8214405634e160201cfec2c8897b692072f3b21b649c0"
     },
     {
       "file": ".github/agent/bin/tests/system_path_allowlist.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/system_path_allowlist.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "e616dc6d2a90f7f08b17738a02acd8ffedfb184f69476a2d946ba8cfffae19d1"
+      "body-sha256": "88cdbffcf3165936402c852ffe65dbca08c48c7885068df7773e5e2274b4b33d"
     },
     {
       "file": ".github/agent/bin/tests/test_check_action_pins.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_check_action_pins.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "80844b0074d5d7d0e8012138da736fac9af96bca1a03d1ce406c9236d0adee65"
+      "body-sha256": "967a6c9a2a0e3e9b411af494731f176b04c00a9b27bbb112bd3e24754a848bab"
     },
     {
       "file": ".github/agent/bin/tests/test_cov_manifest.py",
@@ -429,22 +422,22 @@
     {
       "file": ".github/agent/bin/tests/test_pin_plain_forms.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_pin_plain_forms.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "2781b610532bb693687e0fe1aec2ac82c1aac1b42491197e8122913a60b2f2a1"
+      "body-sha256": "ba67a5cb0b55657746f5609ea578621580a04963174eab05343730c3c0fbf225"
     },
     {
       "file": ".github/agent/supply-chain/pin-age-check.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): reads registry, index, GitHub and Rekor APIs for a pin's age and signature | text, not a command: Python source of .github/agent/supply-chain/pin-age-check.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: a comment in .github/agent/supply-chain/pin-age-check.py that names the tool",
-      "body-sha256": "faf50a36907bc356e5bcd66a75ab2c9a2448c4f6cf9058117f968d149db443ba"
+      "body-sha256": "a579d823eaa76f47848c2931c5484113068fefc8a672acb2e18c183c9c1899b3"
     },
     {
       "file": ".github/agent/supply-chain/pin-audit.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-audit.py (python runs it, no shell reads it): reads the OSV API for advisories",
-      "body-sha256": "cab28dee933d3276e68ed354f7854ac1691b95a5011672c712364c0d1934299f"
+      "body-sha256": "079f7e6977b4ef8fed07ca36299ed1eb2fbf75464bbe17a3ce6c1de09b465e8d"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "59e810b31014019f2f1f00863249cfcf81e393d9e892a84c63ee59be55af1a0a"
+      "body-sha256": "846422a9697995883375d62164355cc9440b582dec76698ef99127f20146588a"
     },
     {
       "file": ".github/agent/tests/k8s-harness-fence-test.sh",
@@ -454,17 +447,17 @@
     {
       "file": ".github/agent/tests/pin-audit-go-major-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-go-major-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "39151fc73c55b5582000fdede799b75aba6472d6ad1c925697ca2db24bb677ff"
+      "body-sha256": "3b8cc6de7153d7d0bc61b9f6335e5e0be6212fa3972f19cde53e6b7a007d7290"
     },
     {
       "file": ".github/agent/tests/pip-pin-test.sh",
       "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool | text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "902a2085eec1801c582213de456caba298dd1536806d46e560561d6a2bd9cefd"
+      "body-sha256": "00e3ef2013fb86a1b8d1893f71ad712cf2ec10beecdd38c8be01145867a5e99a"
     },
     {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool",
-      "body-sha256": "0ef9f41852581d875ca9d10abdd5ca7c22cf0403c93b8f4587956a32c8f38b73"
+      "body-sha256": "e099583a0be8211e72fc78ff3d3737c2cd4b433b2104bdfc92799d0f8f956179"
     },
     {
       "file": "bin/acceptance-k8s-smoke.py",
