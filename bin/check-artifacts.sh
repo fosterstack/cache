@@ -149,10 +149,12 @@ for v in production fips; do
   loaded=$(docker load -i "$tmp/$v.tar") || fail "the $v image could not be loaded"
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || fail "docker load named no image for the $v candidate"
-  docker tag "$ref" "localhost/fscache-$v-image"   # a fixed local name per image, run below with --pull=never: no variable image for pin-age to refuse
+  docker tag "$ref" "localhost/fscache-$v-image"   # a fixed local name per image, run below with --pull=never, its name written out in each docker run
   for probe in busybox:sh busybox:ash bin:sh bin:ash bin:bash bin:dash usr-bin:sh usr-bin:bash sbin:sh; do
     sh="${probe%%:*}"; sh="${sh//-//}/${probe##*:}"   # the directory (a - stands for /) and the shell name
-    src=0; docker run --pull=never --rm --entrypoint "/$sh" "localhost/fscache-$v-image" -c true > /dev/null 2>&1 || src=$?
+    src=0
+    if [ "$v" = fips ]; then docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-fips-image -c true > /dev/null 2>&1 || src=$?
+    else docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-production-image -c true > /dev/null 2>&1 || src=$?; fi
     [ "$src" != 0 ] || fail "the $v image has a shell at /$sh"
     case "$src" in 126|127) ;; *) fail "docker could not run /$sh in the $v image (exit $src): only 126 or 127 mean no shell" ;; esac   # not found / not executable
   done
