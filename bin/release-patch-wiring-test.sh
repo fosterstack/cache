@@ -82,7 +82,8 @@ wait = [s for s in steps if s.get("id") == "checks"]
 if len(wait) != 1 or "patch-decide.py ready" not in (wait[0].get("run") or "") or \
         not (wait[0].get("timeout-minutes") or "").isdigit() or int(wait[0]["timeout-minutes"]) > 70 or \
         "steps.basecheck.outputs.ok == 'true'" not in wait[0].get("if", "") or \
-        "check-runs?filter=latest" not in (wait[0].get("run") or ""):
+        "check-runs?filter=all&per_page=100" not in (wait[0].get("run") or "") or \
+        '--sha "$GITHUB_SHA"' not in (wait[0].get("run") or ""):
     bad.append("no bounded wait for the tagged commit's required checks (patch-decide.py ready) before a cut")
 gated = [s.get("name") or s.get("id") for s in steps
          if ("tag -s" in (s.get("run") or "") or s.get("id") == "app-token" or "git push" in (s.get("run") or ""))]
@@ -345,7 +346,7 @@ case_ precheck-local-signers bad "[s.__setitem__('run', s['run'].replace('git sh
 case_ no-baseline-check       bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'basecheck']"
 case_ wait-ignores-baseline   bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if s.get('id') == 'checks']"
 case_ no-check-wait           bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'checks']"
-case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=latest', 'filter=all')) for s in $D['steps'] if s.get('id') == 'checks']"
+case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=all', 'filter=latest')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ wait-unbounded          bad "[s.pop('timeout-minutes') for s in $D['steps'] if s.get('id') == 'checks']"
 case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
 case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
@@ -570,15 +571,17 @@ echo "$*" >> "$GH_LOG"
 case "$*" in
   *workflows/full-suite.yml/runs*) if [[ "$*" == *--jq* ]]; then echo "$RUNS"; else echo "{\\"total_count\\": $RUNS}"; fi ;;
   *check-runs*) echo '[]' ;;
+  *actions/runs/*) echo '{}' ;;
 esac
 exit 0
 """
 def run(runs):
     w = tempfile.mkdtemp(dir=os.environ["W"])
     seed, origin, clone, stub = w + "/seed", w + "/origin.git", w + "/clone", w + "/stub"
-    os.makedirs(seed + "/.github/policy"); os.makedirs(seed + "/bin"); os.makedirs(stub); os.makedirs(w + "/tmp")
+    os.makedirs(seed + "/.github/policy"); os.makedirs(seed + "/.github/workflows"); os.makedirs(seed + "/bin"); os.makedirs(stub); os.makedirs(w + "/tmp")
     for f in os.listdir(pol):
         shutil.copy(pol + "/" + f, seed + "/.github/policy/" + f)
+    shutil.copy(pol.rsplit("/policy", 1)[0] + "/workflows/stage-admission.yml", seed + "/.github/workflows/stage-admission.yml")
     shutil.copy(os.environ["WF"].rsplit("/.github/", 1)[0] + "/bin/patch-decide.py", seed + "/bin/patch-decide.py")
     g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
@@ -610,6 +613,77 @@ print("; ".join(bad) or "ok")
 PY
 )
 if [ "$dispatch_out" = ok ]; then pass=$((pass+1)); echo "PASS patch-dispatches-full-suite-once-when-no-run → ok"; else failn=$((failn+1)); echo "FAIL patch-dispatches-full-suite-once-when-no-run ($dispatch_out)"; fi
+# a release-only check counts only from the run admission accepts: the step's real text against a stub gh that serves every
+# required check green, each release-only one from a run (actions/runs/<id>) of its file on the tagged commit. A tag-push
+# run is not one admission accepts, so the step says ready=false; the same runs as schedule runs say ready=true.
+ready_out=$(WF="$root/.github/workflows/release.yml" W="$work" python3 - <<'PY'
+import importlib.util, json, os, shutil, subprocess, tempfile, yaml
+wf = os.environ["WF"]
+root = wf.rsplit("/.github/", 1)[0]
+d = yaml.load(open(wf), Loader=yaml.BaseLoader)
+step = next(s for s in d["jobs"]["decide"]["steps"] if "wait for the tagged commit's required checks" in s.get("name", ""))
+spec = importlib.util.spec_from_file_location("patch_decide", root + "/bin/patch-decide.py")
+pd = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pd)
+table = pd.admission_table(root + "/.github/workflows/stage-admission.yml")
+SHA = "0" * 40
+GH = """#!/bin/bash
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  *workflows/full-suite.yml/runs*) echo 1 ;;
+  *commits/*/check-runs*) cat "$FIXTURE/check-runs.json" ;;
+  *actions/runs/*) args="$*"; id="${args##*/runs/}"; cat "$FIXTURE/run-${id%% *}.json" ;;
+esac
+exit 0
+"""
+def run(event):
+    w = tempfile.mkdtemp(dir=os.environ["W"])
+    seed, origin, clone, stub, fix = w + "/seed", w + "/origin.git", w + "/clone", w + "/stub", w + "/fixture"
+    for p in (seed + "/.github/policy", seed + "/.github/workflows", seed + "/bin", stub, fix, w + "/tmp"):
+        os.makedirs(p)
+    pol = root + "/.github/policy"
+    for f in ("required-checks.json", "release-only-checks.json"):
+        shutil.copy(pol + "/" + f, seed + "/.github/policy/" + f)
+    shutil.copy(root + "/.github/workflows/stage-admission.yml", seed + "/.github/workflows/stage-admission.yml")
+    shutil.copy(root + "/bin/patch-decide.py", seed + "/bin/patch-decide.py")
+    ruleset = json.load(open(pol + "/required-checks.json"))["required_checks"]
+    release_only = json.load(open(pol + "/release-only-checks.json"))["required_checks"]
+    runs = []
+    for n, req in enumerate(ruleset + release_only, start=100):
+        runs.append({"name": req["context"], "status": "completed", "conclusion": "success", "app_id": req["integration_id"],
+                     "id": n, "details_url": "https://github.com/o/r/actions/runs/%d" % n})
+        workflow = pd._bound_file(req["context"], table)
+        # a release-only context with no file in admission's table counts from any green run
+        if req in release_only and workflow:
+            facts = {"id": n, "path": ".github/workflows/" + workflow, "event": event, "head_sha": SHA}
+            open("%s/run-%d.json" % (fix, n), "w").write(json.dumps(facts))
+    open(fix + "/check-runs.json", "w").write(json.dumps(runs))
+    g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "c"], ["push", "-q", origin, "main"]):
+        subprocess.run(g + cmd, cwd=seed, check=True)
+    subprocess.run(["git", "clone", "-q", origin, clone], check=True)
+    open(stub + "/gh", "w").write(GH)
+    open(stub + "/sleep", "w").write("#!/bin/bash\nexit 99\n")
+    for x in ("gh", "sleep"):
+        os.chmod(stub + "/" + x, 0o755)
+    env = dict(os.environ, PATH=stub + ":" + os.environ["PATH"], RUNNER_TEMP=w + "/tmp", GH_TOKEN="x", GH_LOG=w + "/log", FIXTURE=fix,
+               GITHUB_REPOSITORY="o/r", GITHUB_SHA=SHA, GITHUB_REF_NAME="main", GITHUB_OUTPUT=w + "/out")
+    r = subprocess.run(["bash", "-c", step["run"]], cwd=clone, env=env, capture_output=True, text=True, timeout=60)
+    out = open(w + "/out").read() if os.path.exists(w + "/out") else ""
+    shutil.rmtree(w)
+    return r, out
+bad = []
+r, out = run("push")
+if "ready=false" not in out or "ready=true" in out:
+    bad.append("release-only checks green only from tag-push runs: want ready=false, got rc=%s output=%r stdout=%r stderr=%r" % (r.returncode, out, r.stdout[-200:], r.stderr[-200:]))
+r, out = run("schedule")
+if "ready=true" not in out:
+    bad.append("the same checks from schedule runs: want ready=true, got rc=%s output=%r stdout=%r stderr=%r" % (r.returncode, out, r.stdout[-200:], r.stderr[-200:]))
+print("; ".join(bad) or "ok")
+PY
+)
+if [ "$ready_out" = ok ]; then pass=$((pass+1)); echo "PASS ready-ignores-tag-push-runs-of-release-only-checks → ok"; else failn=$((failn+1)); echo "FAIL ready-ignores-tag-push-runs-of-release-only-checks ($ready_out)"; fi
 # the permission actions: write is held by decide alone, at job level; no other job and not the workflow
 perm_out=$(WF="$root/.github/workflows/release.yml" python3 - <<'PY'
 import os, yaml
@@ -626,5 +700,18 @@ print("; ".join(bad) or "ok")
 PY
 )
 if [ "$perm_out" = ok ]; then pass=$((pass+1)); echo "PASS actions-write-held-by-decide-alone → ok"; else failn=$((failn+1)); echo "FAIL actions-write-held-by-decide-alone ($perm_out)"; fi
+# the admission job reads the run behind each check (actions/runs/<id>), so its token holds actions: read, and release.yml, its caller, grants it
+read_out=$(ROOT="$root" python3 - <<'PY'
+import os, yaml
+load = lambda f: yaml.load(open(os.path.join(os.environ["ROOT"], ".github/workflows", f)), Loader=yaml.BaseLoader)
+bad = []
+if (load("stage-admission.yml")["jobs"]["admit"].get("permissions") or {}).get("actions") != "read":
+    bad.append("stage-admission's admit job has no actions: read")
+if (load("release.yml").get("permissions") or {}).get("actions") != "read":
+    bad.append("release.yml's workflow-level permissions have no actions: read")
+print("; ".join(bad) or "ok")
+PY
+)
+if [ "$read_out" = ok ]; then pass=$((pass+1)); echo "PASS admission-and-its-caller-hold-actions-read → ok"; else failn=$((failn+1)); echo "FAIL admission-and-its-caller-hold-actions-read ($read_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
