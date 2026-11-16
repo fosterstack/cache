@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3 — the scanner guard step is required, exactly, in the allowlist job
+# proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4 — the scanner guard step is required, exactly, in the allowlist job
 # (the scanguard cases);
 # the eight release-only names belong to the jobs that produce them (the reserved cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and

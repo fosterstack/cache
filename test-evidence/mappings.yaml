@@ -469,6 +469,9 @@ mappings:
   - ac: REQ-REL-013-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-REL-013-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
   - ac: REQ-REL-012-AC9
     evidence:
       - { type: shell-test, ref: "bin/audit-record-test.sh" }
