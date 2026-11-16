@@ -1541,8 +1541,7 @@ def vendor_list_extras(root, files):
     return sorted(p for p in _VENDOR_NAMING_FILES - naming if os.path.lexists(os.path.join(root, p)))
 
 
-_WRAPPERS = frozenset(("if", "elif", "while", "until", "then", "do", "else", "!", "time", "exec", "env", "sudo", "nohup",
-    "xargs", "--"))
+_KEYWORDS = frozenset(("if", "elif", "while", "until", "then", "do", "else", "!"))
 SHELLS = frozenset(("sh", "bash", "dash", "zsh", "ksh", "ash"))
 RUNS_A_FILE = frozenset(("source", ".", "eval", "builtin"))
 _HEREDOC = re.compile(r"<<-?[ \t]*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")     # matches "python3 - <<'PY'", refuses "x << 2"
@@ -1557,7 +1556,7 @@ def shell_segments(line):
     segments, words, word, quote, escaped, param, comment = [], [], "", None, False, None, False
     for i, ch in enumerate(line):
         if comment:
-            comment = ch != "\n"
+            comment = ch not in "\n\x0b"
         elif escaped or (quote and (quote == "'" or ch != "\\")):
             word, escaped, quote = word + ch, False, None if ch == quote else quote
         elif ch == "\\":
@@ -1574,11 +1573,11 @@ def shell_segments(line):
             word = ""
         elif ch == "#" and not word:
             comment = True
-        elif ch in " \t\n" or ch in ";&|(){}":
+        elif ch in " \t\n\x0b" or ch in ";&|(){}":
             if word:
                 words.append(word)
             word = ""
-            if ch not in " \t" and words:
+            if ch not in " \t\x0b" and words:
                 segments.append(words)
                 words = []
         else:
@@ -1589,10 +1588,10 @@ def shell_segments(line):
 
 
 def command_of(words):
-    """(words, hidden): the words from the command word on (assignments and wrappers like if, time, env dropped), and
+    """(words, hidden): the words from the command word on (assignments and the keywords if, then, do ... dropped), and
     whether an assignment gave a variable a word that runs a file."""
     hidden = False
-    while words and (_ASSIGNMENT.match(words[0]) or words[0] in _WRAPPERS):
+    while words and (_ASSIGNMENT.match(words[0]) or words[0] in _KEYWORDS):
         m = _ASSIGNMENT.match(words[0])
         hidden = hidden or bool(m and QUOTING.sub("", m.group(1)) in RUNS_A_FILE)
         words = words[1:]
@@ -1600,19 +1599,20 @@ def command_of(words):
 
 
 def _fed_to_shell(line):
-    """True when a command of line is a shell, or source or . reading /dev/stdin."""
+    """True when a word of a command of line is a shell (by basename), or the command is source or . reading /dev/stdin."""
     for seg in shell_segments(line)[0]:
         clean = [QUOTING.sub("", w) for w in command_of(seg)[0]]
-        if clean[:1] and (clean[0] in SHELLS or (clean[0] in ("source", ".") and clean[1:2] == ["/dev/stdin"])):
+        if any(os.path.basename(w) in SHELLS for w in clean) or (clean[:2] in (["source", "/dev/stdin"], [".", "/dev/stdin"])):
             return True
     return False
 
 
 def logical_lines(text):
-    """(line, body) for each line of text, a line that leaves a quote open joined with the next ones. body is the
+    """(line, body) for each line of text, a backslash-newline continuation folded into one blank (a vertical tab: no
+    row may rule such a line) and a line that leaves a quote open joined with the next ones. body is the
     lines of a heredoc that no shell reads (data) and is left out of the lines; a heredoc fed to a shell is read like
     any other lines, so its body is []. A line over MAX_LINE is never tokenised: its readers refuse or skip it."""
-    lines, i = text.split("\n"), 0
+    lines, i = re.sub(r"\\\n\s*", "\x0b", text).split("\n"), 0
     while i < len(lines):
         line, i = lines[i], i + 1
         while len(line) <= MAX_LINE and shell_segments(line)[1] and i < len(lines):
@@ -1632,22 +1632,28 @@ INTERPRETERS = SHELLS | {"python", "python3"}
 _VARIABLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 _LITERAL = re.compile(r"[A-Za-z0-9_./-]+")
 _REPO_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")      # refuses "../x" and "/x"
-_PY_BODY_RUNS = re.compile(r"\b(?:subprocess|pty|os\s*\.\s*(?:system|popen|exec\w*|spawn\w*))\b")
-DATA_MARK = "\ue001"      # starts each line of a heredoc body that is data, in the text unmeasured_occurrences reads
+_NONPLAIN = re.compile(r"\$\{(?![A-Za-z_][A-Za-z0-9_]*\})")      # a parameter expansion other than ${NAME}
 
 
 def holder_names(text):
-    """The variables of text that are given curl, wget, a shell, or source, ., eval or builtin as their value."""
-    names = set()
+    """The variables of text that are given curl, wget, a shell, or source, ., eval or builtin as their value (by
+    basename), or the value of another such variable; and SHELL."""
+    assigned = []
     for line, _body in logical_lines(text):
         if len(line) > MAX_LINE:
             continue
         for seg in shell_segments(line)[0]:
             for word in seg:
                 m = _ASSIGNMENT.match(word)
-                if m and QUOTING.sub("", m.group(1)) in DOWNLOADERS | SHELLS | RUNS_A_FILE:
-                    names.add(word.split("=")[0])
-    return names
+                if m:
+                    assigned.append((word.split("=")[0], QUOTING.sub("", m.group(1))))
+    names = {"SHELL"}
+    while True:
+        more = {n for n, v in assigned if n not in names and (os.path.basename(v) in DOWNLOADERS | SHELLS | RUNS_A_FILE
+            or is_holder_word(v, names))}
+        if not more:
+            return names
+        names |= more
 
 
 def is_holder_word(word, holders):
@@ -1660,6 +1666,8 @@ def script_operand(clean):
     """The script a shell or interpreter command runs (clean: its words, quotes dropped, the command word first): its
     first operand; "" when it runs inline code or reads its program from stdin."""
     for w in clean[1:]:
+        if not w:
+            continue
         if w in ("-c", "-m", "-") or w[:1] in "<>" or re.match(r"[0-9][<>]", w):
             return ""
         if not w.startswith("-"):
@@ -1673,19 +1681,26 @@ def repo_path(operand):
     return path if _LITERAL.fullmatch(operand) and _REPO_PATH.fullmatch(path) else None
 
 
+def runs_unbound_file(seg, files):
+    """True when a word of seg is a shell or interpreter (by basename) and the first operand after it that is no
+    option is not a literal path of a file in files."""
+    every = [QUOTING.sub("", w) for w in seg]
+    for i, w in enumerate(every):
+        if os.path.basename(w) in INTERPRETERS:
+            operand = script_operand(every[i:])
+            if operand and repo_path(operand) not in files:
+                return True
+    return False
+
+
 def _runs_no_bound_file(seg, holders, files):
     words = command_of(seg)[0]
-    clean = [QUOTING.sub("", w) for w in words]
     every = [QUOTING.sub("", w) for w in seg]
     if any(w in ("xargs", "-exec", "-execdir", "-ok", "-okdir") for w in every) and "-c" in every \
-            and any(w in SHELLS for w in every):
+            and any(os.path.basename(w) in SHELLS for w in every):
         return True
-    if not clean:
-        return False
-    if is_holder_word(words[0], holders):
-        return True
-    operand = script_operand(clean) if clean[0] in INTERPRETERS else ""
-    return bool(operand) and repo_path(operand) not in files
+    return any(is_holder_word(w, holders) for w in seg) or bool(words and _NONPLAIN.search(words[0])) \
+        or runs_unbound_file(seg, files)
 
 
 def unbound_runs(text, files):
@@ -1696,20 +1711,6 @@ def unbound_runs(text, files):
     for line, _body in logical_lines(text):
         if len(line) <= MAX_LINE and any(_runs_no_bound_file(seg, holders, files) for seg in shell_segments(line)[0]):
             yield line
-
-
-def data_bodies_marked(text):
-    """text with each line of a heredoc body that only data can be (not read by a shell, parsed as Python that
-    imports no client and runs no program) starting with DATA_MARK. The closing line of such a heredoc is dropped."""
-    out = []
-    for line, body in logical_lines(text):
-        out.append(line)
-        source = "\n".join(body)
-        if body and not _imports_client(source) and not _PY_BODY_RUNS.search(source):
-            out += [DATA_MARK + b for b in body]
-        else:
-            out += body
-    return "\n".join(out)
 
 
 def unmeasured_occurrences(files):
@@ -1738,13 +1739,11 @@ def unmeasured_occurrences(files):
                 flat = " ".join(line.split())
                 yield (path, "a command that runs a file no row can bind", hashlib.sha256(flat.encode("utf-8", "replace"))
                     .hexdigest() + ":" + _hide(flat)[:100]), flat, all(c in " \t" or not c.isspace() for c in line)
-            text = data_bodies_marked(text)
         # marks where a continuation was joined; a file that already holds it is never bash-like
         client = path.endswith(".py") and _imports_client(text)
         mark = "\ue000"
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
-            data, line = DATA_MARK in line, line.replace(DATA_MARK, "")
             flat = " ".join((line if tainted else line.replace(mark, "")).split())
             if len(flat) > MAX_LINE:
                 yield (path, "a command line over 4000 characters", _long_line_name(flat)), flat, False
@@ -1756,7 +1755,7 @@ def unmeasured_occurrences(files):
                 yield (path, "a line that names the vendored folder",
                     hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":"
                     + _hide(flat)[:100]), flat, bashlike
-            if data or not scan_all:
+            if not scan_all:
                 continue
             # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):
