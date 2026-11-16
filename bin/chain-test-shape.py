@@ -799,7 +799,9 @@ def listed(path, root):
 NS_ROOTS = ("bin/build-stage-*.sh", "bin/witnessed-local.sh", "bin/archive-pull.sh", "bin/install-host-bwrap.py",
             # what the run: lines of stage-build.yml and stage-reproducibility.yml start, bar NS_SKIP
             "bin/chain-hostile-step.sh", "bin/chain-sandbox-probe.sh", "bin/rebuild-records-digests.sh")
-NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh")
+# The last two are only named by bin/dependabot-reviewer-version.sh, whose hash covers them; no stage starts them.
+NS_SKIP = ("bin/install-scanner.sh", "bin/install-build-tools.sh", "bin/required-check-guard.sh",
+           "bin/dependabot-reviewer.py")
 # The freeze job's script starts go of the tagged tree. It is no root of the closure; a closure file that names it or
 # lists
 # it in `runs` is a finding (ns_closure), and stage() lets only the freeze job run it.
