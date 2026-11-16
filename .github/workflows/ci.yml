@@ -227,6 +227,7 @@ jobs:
           if grep -qxF 'bash .github/agent/tests/check-action-pins-test.sh' "$selected"; then bash .github/agent/tests/check-action-pins-test.sh; fi
           if grep -qxF 'bash .github/agent/tests/pin-age-check-test.sh' "$selected"; then bash .github/agent/tests/pin-age-check-test.sh; fi
           if grep -qxF 'bash .github/agent/tests/pin-audit-test.sh' "$selected"; then bash .github/agent/tests/pin-audit-test.sh; fi
+          if grep -qxF 'bash .github/agent/tests/release-age-gone-test.sh' "$selected"; then bash .github/agent/tests/release-age-gone-test.sh; fi
           if grep -qxF 'bash .github/agent/tests/auditor-variants-test.sh' "$selected"; then bash .github/agent/tests/auditor-variants-test.sh; fi
           if grep -qxF 'bash .github/agent/tests/auditor-parser-tests.sh' "$selected"; then bash .github/agent/tests/auditor-parser-tests.sh; fi
           if grep -qxF 'bash .github/agent/tests/auditor-matrix-test.sh' "$selected"; then bash .github/agent/tests/auditor-matrix-test.sh; fi
