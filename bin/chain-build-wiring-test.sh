@@ -3849,7 +3849,7 @@ if [ "$rc" = 1 ] \
 else
   bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
 fi
-EXPECT=1324
+EXPECT=1325
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
