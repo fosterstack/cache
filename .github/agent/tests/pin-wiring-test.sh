@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-REL-013-AC2 — the release-only list is the eight entries pinned in this judge (the pinned-release-only cases)
 # proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4 — the scanner guard step is required, exactly, in the allowlist job
 # (the scanguard cases);
 # the eight release-only names belong to the jobs that produce them (the reserved cases)
@@ -202,7 +203,7 @@ for k in sorted(set(job) - {"name", "runs-on", "steps"}):
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
-        "bash .github/agent/tests/pin-wiring-test.sh", "bash bin/required-check-guard-test.sh"}  # this test's own step, too
+        "bash .github/agent/tests/pin-wiring-test.sh"}  # this test's own step, too
 seen = set()
 for st in job.get("steps", []):
     run = (st.get("run") or "").strip()
@@ -632,14 +633,26 @@ for jid, want_steps in SPLIT_STEPS.items():
             bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
 # the required-check policy (release admission reads it): required-checks.json (the ruleset's list) and release-only-checks.json (admission's extra
 # list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
-# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The eight release-only entries
-# are pinned whole in bin/required-check-guard.sh, not here.
+# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The release-only entries
+# must be the eight pinned below, whole.
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
 def read_checks(env_name):
     checks = json.load(open(os.environ[env_name]))["required_checks"]
     if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
         raise ValueError("required_checks is not a list of objects")
     return checks
+# the eight checks release admission requires and the ruleset does not list, whole (REQ-REL-013-AC2): main's copy of this judge
+# holds the pin, so a pull request cannot move the list it is judged by
+PINNED_RELEASE_ONLY = [
+    {"context": "acceptance-gradle", "integration_id": 15368, "scope": "push"},
+    {"context": "acceptance-maven (1.2.0)", "integration_id": 15368, "scope": "push"},
+    {"context": "acceptance-maven (1.2.3)", "integration_id": 15368, "scope": "push"},
+    {"context": "allowlist-chain", "integration_id": 15368, "scope": "push"},
+    {"context": "allowlist-persona", "integration_id": 15368, "scope": "push"},
+    {"context": "allowlist-pins-auditor", "integration_id": 15368, "scope": "push"},
+    {"context": "auditor-review-gate", "integration_id": 5054756, "scope": "pull_request"},
+    {"context": "coverage", "integration_id": 15368, "scope": "push"},
+]
 release_only = []
 try:
     ruleset = read_checks("PIN_WIRING_POLICY_FILE")
@@ -648,7 +661,14 @@ try:
 except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
     bad.append(f"required-checks.json or release-only-checks.json is unreadable or malformed ({type(e).__name__})")
+def entry_key(c):
+    return json.dumps(c, sort_keys=True)
 if pol is not None:
+    pinned, have = {entry_key(c) for c in PINNED_RELEASE_ONLY}, {entry_key(c) for c in release_only}
+    for key in sorted(have - pinned):
+        bad.append(f"release-only-checks.json has an entry the judge does not pin: {key}")
+    for key in sorted(pinned - have):
+        bad.append(f"release-only-checks.json lacks the pinned entry: {key}")
     ctxs = [c.get("context") for c in pol]
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
         bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
@@ -658,7 +678,7 @@ if pol is not None:
 # the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression that could render as one. auditor-review-gate is the App's alone: nothing produces it.
-RESERVED = set(PROTECTED) | {n for c in release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
+RESERVED = set(PROTECTED) | {n for c in PINNED_RELEASE_ONLY for n in (c["context"], c["context"].split(" (")[0])}
 PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-gradle", "acceptance-maven")}
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = jid in PRODUCES.get(wf, ()) and nm == jid
@@ -727,85 +747,13 @@ sys.exit(1 if bad else 0)
 PY
 }
 
-# The byte pins (cache#930 round 9): the whole required-check-guard job, and the workflow's top level, read as raw
-# bytes of the file, never parsed. A trailing comment or blank line under a block is not part of it.
-IFS= read -r -d '' PIN_WIRING_GUARD_JOB <<'JOB' || true
-  required-check-guard:
-    name: required-check guard
-    runs-on: ubuntu-latest
-    outputs:
-      drift_issue: ${{ steps.drift-issue.outputs.issue }}
-    permissions:
-      contents: read
-      issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Main's guard, fetched and never taken from this tree: nothing of the checkout runs in this job, so a pull
-      # request cannot reach the verdict. The guard's own regressions run in the allowlist job.
-      - name: fetch main's guard
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
-            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
-          [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
-
-      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the eight
-      # release-only entries pinned in the guard. The verdict uses THIS tree's lists, so a PR that fixes a stale list
-      # goes green on its own run; on push to main the tree is main.
-      - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          bash "${RUNNER_TEMP}/required-check-guard.sh"
-          .github/policy/required-checks.json .github/policy/release-only-checks.json
-
-      # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
-      # first; one open issue, updated in place, never duplicated. Best effort: a
-      # Dependabot or fork run has no issues:write, and the red check above still stands.
-      - name: open or update the `required-check drift` issue when main's list has drifted
-        id: drift-issue
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set +e -uo pipefail   # the runner starts bash with -e; the guard's refusal is data here
-          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
-            --jq '.content' | base64 -d > "${RUNNER_TEMP}/main-required-checks.json" || exit 0
-          out=$(bash "${RUNNER_TEMP}/required-check-guard.sh" \
-                  "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
-          # Drift (1), or a ruleset that enforces nothing at all (a refusal, not a read error).
-          if [ "$rc" -ne 1 ] && ! grep -q "NO required status checks" <<<"$out"; then
-            echo "main's list vs the ruleset: rc ${rc} — no drift issue to open"; exit 0
-          fi
-          title="required-check drift"
-          # shellcheck disable=SC2016  # literal Markdown backticks, not expansions
-          {
-            echo 'The ruleset on `main` and `.github/policy/required-checks.json` on `main` differ (contexts and integration IDs must both match, exactly). Until they agree the Dependabot auto-merge guard refuses every patch/minor PR and every PR ci run is red.'
-            echo
-            echo 'Fix whichever is wrong: the ruleset (owner, GitHub UI) or the list (a PR).'
-            echo
-            echo "Seen by ${RUN_URL}"
-            echo
-            echo '```'
-            printf '%s\n' "${out}"
-            echo '```'
-          } > "${RUNNER_TEMP}/drift-body.md"
-          n=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \
-                | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
-          if [ -n "$n" ]; then gh issue edit "$n" --body-file "${RUNNER_TEMP}/drift-body.md" >/dev/null && echo "updated #${n}"
-          else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
-          if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
-JOB
+# The byte pins (cache#930 round 9): the workflow's top level, read as raw bytes of the file, never parsed. A trailing comment or
+# blank line under a block is not part of it.
 IFS= read -r -d '' PIN_WIRING_PERMISSIONS <<'TOP' || true
 permissions:
   contents: read
 TOP
-export PIN_WIRING_GUARD_JOB PIN_WIRING_PERMISSIONS
+export PIN_WIRING_PERMISSIONS
 
 bytes_judge() { python3 - "$1" "${2:-}" <<'PY'
 import os, sys
@@ -823,26 +771,14 @@ def block(header, indent, lines=lines):   # the header line and what is under it
     while inert(lines[end - 1]):
         end -= 1
     return b"\n".join(lines[starts[0]:end]) + b"\n"
-CHECKOUT = b"      - uses: actions/checkout@"
-def shape(job):   # Dependabot moves the checkout's digest and its version comment: any 40 lower-case hex stands for it
-    kept = []
-    for line in job.split(b"\n"):
-        digest, rest = line[len(CHECKOUT):len(CHECKOUT) + 40], line[len(CHECKOUT) + 40:]
-        if line.startswith(CHECKOUT) and all(c in b"0123456789abcdef" for c in digest) and len(digest) == 40 \
-                and rest[:2] in (b"", b" #"):
-            line = CHECKOUT + b"<40 hex>"
-        kept.append(line)
-    return b"\n".join(kept)
 bad = []
-pinned_job, pinned_permissions = os.environ["PIN_WIRING_GUARD_JOB"].encode(), os.environ["PIN_WIRING_PERMISSIONS"].encode()
+pinned_permissions = os.environ["PIN_WIRING_PERMISSIONS"].encode()
 if sys.argv[2]:   # the landing path: the pinned text is the landing commit's own ci.yml
     landing = open(sys.argv[2], "rb").read().split(b"\n")
-    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing) or b"x", block(b"permissions:", 0, landing) or b"x"
+    pinned_permissions = block(b"permissions:", 0, landing) or b"x"
 # YAML ends a line at each of these four, this judge only at LF: a step could hide behind the freed comment
 if any(b in raw for b in (b"\r", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")):
     bad.append("ci.yml has a carriage return, a next-line, a line separator or a paragraph separator")
-if shape(block(b"  required-check-guard:", 2) or b"") != shape(pinned_job):
-    bad.append("the required-check-guard job is not the pinned text, byte for byte")
 if block(b"permissions:", 0) != pinned_permissions:
     bad.append("the workflow permissions are not the pinned text, byte for byte")
 top_keys = {b"name", b"on", b"concurrency", b"permissions", b"jobs"}
@@ -860,10 +796,10 @@ LANDING_COMMIT=d7cab1463cef8ac9fac38696dc13d1ff80778840   # chain-v030's commit;
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  # the landing form (chain-v030) has no release-only list: a commit without one is judged with an empty list
+  # only the landing form (chain-v030) has no release-only list: main's form refuses a commit without one (the judge
+  # reads the file that is not there and says so)
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" \
-    2> /dev/null \
-    || echo '{"required_checks": []}' > "$work/head-release-only.json"
+    2> /dev/null || rm -f "$work/head-release-only.json"
   mkdir -p "$work/head-wf"
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
@@ -875,7 +811,7 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   if main_out=$(judge "$work/head-ci.yml" && bytes_judge "$work/head-ci.yml"); then exit 0; fi
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
   [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
-  # the landing form's guard job and top-level keys are judged against the landing commit's own ci.yml, read as a git object
+  # the landing form's top-level keys are judged against the landing commit's own ci.yml, read as a git object
   if land_out=$({ bash "$landing" && git show "$LANDING_COMMIT:.github/workflows/ci.yml" > "$work/landing-ci.yml" \
                   && bytes_judge "$work/head-ci.yml" "$work/landing-ci.yml"; } 2>&1); then exit 0; fi
   printf '%s\nthe landing form also refuses it: %s\n' "$main_out" "$land_out"
@@ -941,12 +877,6 @@ case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
 case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
 case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
-gs='[s for s in '"$steps"' if (s.get("run") or "").strip() == "bash bin/required-check-guard-test.sh"][0]'
-case_ guard-suite-step-removed  bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash bin/required-check-guard-test.sh']"
-case_ guard-suite-if-false      bad "$gs['if'] = 'false'"
-case_ guard-suite-continue      bad "$gs['continue-on-error'] = 'true'"
-case_ guard-suite-shell         bad "$gs['shell'] = \"bash -c 'true' {0}\""
-case_ guard-suite-workdir       bad "$gs['working-directory'] = 'bin'"
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
 fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
@@ -1456,7 +1386,10 @@ if w in ("required", "both"): req["required_checks"].append(dict(e))
 json.dump(req, open(sys.argv[2] + "-required.json", "w")); json.dump(rel, open(sys.argv[2] + "-release.json", "w"))
 PY
 }
-for pa in "release ok" "required ok" "neither bad" "both bad" "bad-id bad" "bad-scope bad" "bad-ctx bad"; do
+# "required" is bad: REQ-REL-013-AC2 pins the release-only list itself (the eight entries, whole), so the entry cannot
+# move to the ruleset list (required-checks.json) unless the judge's pin changes on main; the head's release-only
+# list then lacks a pinned entry and is refused.
+for pa in "release ok" "required bad" "neither bad" "both bad" "bad-id bad" "bad-scope bad" "bad-ctx bad"; do
   set -- $pa; pol_pa "$1" "$1"
   if out=$(PIN_WIRING_POLICY_FILE="$work/pol-pa-$1-required.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-pa-$1-release.json" \
        judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
@@ -1484,7 +1417,7 @@ if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-pins-auditor-name" judge "$here/.git
 then failn=$((failn+1)); echo "FAIL reserved-pins-auditor-name → ok, want bad ($out)"
 else pass=$((pass+1)); echo "PASS reserved-pins-auditor-name → bad"; fi
 
-# ---- byte pins: the whole required-check-guard job and the top-level env/defaults/permissions ----------------
+# ---- byte pins: the workflow's top level (env/defaults/permissions), and the line-ending refusal ----------------
 # bcase_ <name> <ok|bad> <sed script or empty>: the real ci.yml, edited as bytes by sed, judged by bytes_judge.
 bcase_() {
   local f="$work/$1.yml"
@@ -1495,51 +1428,52 @@ bcase_() {
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
 
-guard='/^  required-check-guard:$/,/^  drift-fixer-dispatch:$/'
-guard_head='/^  required-check-guard:$/,/^    steps:$/'
 bcase_ the-real-bytes          ok  ""
-bcase_ job-env-key             bad "$guard_head"'s/^    steps:$/    env:\n      X: "1"\n    steps:/'
-bcase_ step-before-guard       bad "$guard"'{/^    steps:$/a\      - run: echo first
-}'
-path_step='      - run: hook=GITHUB_'"'PATH'"'; echo X=1 >> "${!hook}"'
-bcase_ github-path-built       bad "$guard"'s/^    steps:$/&\n'"$path_step"'/'
 bcase_ top-level-env-key       bad 's/^permissions:$/env:\n  X: "1"\n\npermissions:/'
 bcase_ top-level-defaults-key  bad 's/^permissions:$/defaults:\n  run:\n    shell: bash\n\npermissions:/'
 bcase_ top-level-permissions   bad '/^permissions:$/a\  issues: write'
-bcase_ job-pipe-minus          bad "$guard"'s/^        run: |$/        run: |-/'
-bcase_ job-permissions-changed bad "$guard_head"'s/^      issues: write\b/      issues: read/'
-comment='# The issue tracks drift '
-bcase_ job-comment-changed     bad "$guard"'s/^      '"$comment"'ON MAIN/      '"$comment"'on main/'
-# the checkout digest and its `# vX.Y.Z` comment are what Dependabot rewrites: both stand for any value on this line
-old=3d3c42e5aac5ba805825da76410c181273ba90b1
-new=abababababababababababababababababababab
-ck="$guard{/^      - uses: actions\/checkout@/{"
-bcase_ checkout-digest-and-comment-bumped ok  "${ck}s/@$old/@$new/;s/# v7.0.1/# v7.1.0/}}"
-bcase_ checkout-digest-bumped-no-comment  ok  "${ck}s/@$old/@$new/;s/ # v7.0.1\$//}}"
-bcase_ checkout-comment-only-changed      ok  "${ck}s/# v7.0.1/# v8.0.0/}}"
-bcase_ checkout-tag-ref                   bad "${ck}s/@$old # v7.0.1/@v4/}}"
-bcase_ checkout-short-digest              bad "${ck}s/@$old/@${new:0:39}/}}"
-bcase_ checkout-upper-digest              bad "${ck}s/@$old/@${new^^}/}}"
-bcase_ checkout-other-action-name         bad "${ck}s/actions\/checkout@/evil\/checkout@/}}"
-bcase_ checkout-literal-marker            bad "${ck}s/@$old/@<commit>/}}"
-bcase_ checkout-indent-changed            bad "${ck}s/^      - /       - /}}"
-bcase_ second-uses-line-in-job            bad "$guard{/^    steps:\$/a\\      - uses: actions/checkout@$new
-}"
 # YAML ends a line at CR, U+0085, U+2028 and U+2029; bytes_judge splits on LF only, so a step can hide after them
-bcase_ checkout-comment-plain-bump         ok  "${ck}s/# v7.0.1/# v7.1.0/}}"
 for b in cr:$'\r' nel:$'\xc2\x85' ls:$'\xe2\x80\xa8' ps:$'\xe2\x80\xa9'; do
-  bcase_ "checkout-comment-has-${b%%:*}" bad "${ck}s/# v7.0.1/# v7.0.1${b#*:}      - run: echo hidden/}}"
-  bcase_ "after-guard-comment-line-has-${b%%:*}" bad "s/^  drift-fixer-dispatch:\$/    # note${b#*:}      - run: echo hidden\n&/"
+  bcase_ "comment-line-has-${b%%:*}" bad "s/^permissions:\$/# note${b#*:}      - run: echo hidden\n&/"
 done
-bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@$old/@$new/"
+bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@3d3c42e5aac5ba805825da76410c181273ba90b1/@abababababababababababababababababababab/"
 bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
 bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
-# a head and a landing file that both lack the guard job must not pass as "same pinned text" (empty == empty)
-sed "$guard"'{/^  drift-fixer-dispatch:$/!d}' "$here/.github/workflows/ci.yml" > "$work/no-guard-head.yml"
-cp "$work/no-guard-head.yml" "$work/no-guard-landing.yml"
-if out=$(bytes_judge "$work/no-guard-head.yml" "$work/no-guard-landing.yml")
-then failn=$((failn+1)); echo "FAIL landing-bytes-both-without-guard → ok, want bad ($out)"
-else pass=$((pass+1)); echo "PASS landing-bytes-both-without-guard → bad ($out)"; fi
+
+# ---- the release-only list is pinned by the judge itself (REQ-REL-013-AC2, AC3) ---------------------------------
+# pincase <name> <ok|bad> <python edit of req and rel (the two lists, dicts) and optionally of the ci.yml dict d> <text the output names, or empty>
+pincase() {
+  local f="$work/pin-$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  python3 - "$here/.github/policy" "$work/pin-$1" "$f" "$3" <<'PY'
+import json, sys, yaml
+req = json.load(open(sys.argv[1] + "/required-checks.json"))
+rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
+d = yaml.load(open(sys.argv[3]), Loader=yaml.BaseLoader)
+exec(sys.argv[4])
+json.dump(req, open(sys.argv[2] + "-required.json", "w")); json.dump(rel, open(sys.argv[2] + "-release.json", "w"))
+yaml.safe_dump(d, open(sys.argv[3], "w"), sort_keys=False)
+PY
+  if out=$(PIN_WIRING_POLICY_FILE="$work/pin-$1-required.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/pin-$1-release.json" judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ] && { [ -z "${4:-}" ] || grep -qF -- "$4" <<<"$out"; }; then pass=$((pass+1)); echo "PASS pinned-release-only:$1 → $got ${4:+names: $4}"
+  else failn=$((failn+1)); echo "FAIL pinned-release-only:$1 → $got, want $2 ${4:+naming: $4} ($out)"; fi
+}
+MOVE_COV='e = [c for c in rel["required_checks"] if c["context"] == "coverage"][0]; rel["required_checks"].remove(e); req["required_checks"].append(e)'
+pincase real-lists-pass                ok  "pass" ""
+pincase coverage-moved-fake-producer   bad "$MOVE_COV; d['jobs']['coverage']['steps'] = [{'run': 'true'}]" "coverage"
+pincase coverage-moved-producer-kept   bad "$MOVE_COV" "coverage"
+pincase entry-integration-changed      bad "[c for c in rel['required_checks'] if c['context'] == 'acceptance-gradle'][0]['integration_id'] = 1" "acceptance-gradle"
+pincase entry-scope-changed            bad "[c for c in rel['required_checks'] if c['context'] == 'coverage'][0]['scope'] = 'pull_request'" "coverage"
+pincase entry-context-renamed          bad "[c for c in rel['required_checks'] if c['context'] == 'acceptance-maven (1.2.0)'][0]['context'] = 'acceptance-maven (1.2.9)'" "acceptance-maven (1.2.0)"
+pincase gate-integration-changed       bad "[c for c in rel['required_checks'] if c['context'] == 'auditor-review-gate'][0]['integration_id'] = 15368" "auditor-review-gate"
+pincase entry-dropped                  bad "rel['required_checks'][:] = [c for c in rel['required_checks'] if c['context'] != 'acceptance-maven (1.2.3)']" "acceptance-maven (1.2.3)"
+pincase entry-added                    bad "rel['required_checks'].append({'context': 'extra-x', 'integration_id': 15368, 'scope': 'push'})" "extra-x"
+pincase entry-extra-field              bad "[c for c in rel['required_checks'] if c['context'] == 'coverage'][0]['note'] = 'x'" "coverage"
+
+# judge mode on a commit with ci.yml and required-checks.json but no release-only-checks.json is refused by main's form,
+# even when the ruleset list carries all eight entries (no empty-list judging)
+gitcase no-release-only-all-eight-in-required-at-a-commit bad "" \
+  "jq -s '{required_checks: (.[0].required_checks + .[1].required_checks)}' .github/policy/required-checks.json $RO > rc.tmp && mv rc.tmp .github/policy/required-checks.json && rm $RO"
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
@@ -1574,7 +1508,7 @@ lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty> [tex
   then pass=$((pass+1)); echo "PASS landing:$1 -> $got"
   else failn=$((failn+1)); echo "FAIL landing:$1 -> $got, want $2 ($out)"; fi
 }
-lbcase() {  # <name> <ok|bad> <python edit of the BYTES b of chain-v030's ci.yml; g0, g1 = span of its required-check-guard job> [nocov]
+lbcase() {  # <name> <ok|bad> <python edit of the BYTES b of chain-v030's ci.yml>
   local r="$work/landb-$1"; rm -rf "$r"; mkdir -p "$r/.github/policy" "$r/test-evidence" "$r/tools/govulncheck"
   git archive "$landing_ref" .github/workflows | tar -x -C "$r"
   git show "$landing_ref:.github/policy/required-checks.json" > "$r/.github/policy/required-checks.json"
@@ -1584,27 +1518,9 @@ lbcase() {  # <name> <ok|bad> <python edit of the BYTES b of chain-v030's ci.yml
 import sys
 p = sys.argv[1]
 b = open(p, "rb").read()
-lines = b.split(b"\n")
-g0 = b.index(b"  required-check-guard:\n")
-g1 = g0 + 1
-rest = b[g0:].split(b"\n")
-n = 1
-while n < len(rest) and (rest[n].strip() == b"" or rest[n].startswith(b"   ") or rest[n].lstrip().startswith(b"#")):
-    n += 1
-while rest[n - 1].strip() == b"" or rest[n - 1].lstrip().startswith(b"#"):
-    n -= 1
-g1 = g0 + len(b"\n".join(rest[:n])) + 1
 exec(sys.argv[2])
 open(p, "wb").write(b)
 PYB
-  if [ "${4:-}" = nocov ]; then
-    python3 - "$r/.github/policy/required-checks.json" <<'PYC'
-import json, sys
-d = json.load(open(sys.argv[1]))
-d["required_checks"] = [c for c in d["required_checks"] if c["context"] != "coverage"]
-json.dump(d, open(sys.argv[1], "w"), indent=2)
-PYC
-  fi
   ( cd "$r" && git init -q . && git add -A && git_commit )
   head=$(cd "$r" && git rev-parse HEAD)
   # the temp repo lacks the landing commit the judge reads: borrow the clone's objects for this one command
@@ -1649,13 +1565,7 @@ else
   SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; "
   SINGLE+="$J['allowlist-chain'] = m['jobs']['allowlist-chain']"
   lcase mixed-single-job-chain                 bad "$SINGLE"
-  # the landing form is also held to main's pinned guard job half and top-level half, taken from the landing commit's own ci.yml
-  GUARD_TRUE='b = b[:g0] + b"  required-check-guard:\n    name: required-check guard\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n" + b[g1:]'
-  lbcase guard-run-true                        bad "$GUARD_TRUE"
-  lbcase guard-run-true-coverage-removed       bad "$GUARD_TRUE" nocov
-  lbcase guard-digest-moved                    ok  'b = b[:g0] + b[g0:g1].replace(b"3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", b"0123456789abcdef0123456789abcdef01234567 # v7.0.2") + b[g1:]'
-  lbcase guard-permissions-changed             bad 'b = b[:g0] + b[g0:g1].replace(b"      issues: write", b"      issues: write\n      actions: write", 1) + b[g1:]'
-  lbcase guard-extra-step                      bad 'b = b[:g0] + b[g0:g1].replace(b"      - name: guard regressions (offline fixtures)", b"      - run: true\n\n      - name: guard regressions (offline fixtures)", 1) + b[g1:]'
+  # the landing form is also held to main's pinned top-level half, taken from the landing commit's own ci.yml
   lbcase top-level-env-added                   bad 'b = b.replace(b"\njobs:\n", b"\nenv:\n  X: y\n\njobs:\n", 1)'
   # the landing judge is chain-v030's own, byte for byte
   judge_file=.github/agent/tests/pin-wiring-test.sh

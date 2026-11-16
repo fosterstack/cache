@@ -42,7 +42,7 @@ ALLOW_PATTERNS=(
   '^\.github/dependabot\.yml$'
   '^\.github/PULL_REQUEST_TEMPLATE\.md$'
   # Policy lists: the single sources of truth for the required-check set
-  # and the scanner set, consumed by the auto-merge guard and the release
+  # and the scanner set, read by the release
   # workflows.
   '^\.github/policy/[A-Za-z0-9._-]+\.json$'
   '^\.github/policy/allowed_signers$'
@@ -106,8 +106,6 @@ ALLOW_PATTERNS=(
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
   '^bin/install-scanner-test\.sh$'
-  '^bin/required-check-guard\.sh$'
-  '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-version\.sh$'
   '^bin/dependabot-reviewer-test\.sh$'

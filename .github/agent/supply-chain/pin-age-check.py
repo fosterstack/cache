@@ -203,9 +203,18 @@ def _line_hash(flat):
     return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()
 
 
+_OCC = {}
+
+
 def _occurrences(root, rev):
     """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
-    a group no row can name ('unruled:' + its hash)."""
+    a group no row can name ('unruled:' + its hash). Read once per revision."""
+    if (root, rev) not in _OCC:
+        _OCC[(root, rev)] = _read_occurrences(root, rev)
+    return _OCC[(root, rev)]
+
+
+def _read_occurrences(root, rev):
     out = {}
     for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_surfaces(root, rev), **inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
@@ -471,6 +480,9 @@ def _shell_lex(lines):
     return hds, not stack and not insane, state
 
 
+_NOT_CODE = frozenset(("'", '"', "`", "$((", "(("))        # a stack entry that makes a line text or arithmetic, not a command position
+
+
 def _func_bodies(lines):
     """{name: body text} of the shell functions the file defines (both `name() {` and `function name {`, the brace on the same or the next line)."""
     out = {}
@@ -487,7 +499,7 @@ def _func_bodies(lines):
             body.append(lines[k]); depth += bare.count("{") - bare.count("}"); seen = seen or "{" in bare
             if seen and depth <= 0: break
             k += 1
-        out[name] = "\n".join(body)
+        out[name] = out[name] + "\n" + "\n".join(body) if name in out else "\n".join(body)    # every definition counts, not only the last
     return out
 
 
@@ -544,7 +556,8 @@ def _written_file_used_later(lines, hd):
     """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
     nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
     chmod'ing, a pipe to anything else, a substitution that is evaluated, a program or function the checker does not know all refuse."""
-    later = lines[(hd["end"] or hd["start"]) + 1:]
+    funcs = _func_bodies(lines)
+    later = lines[(hd["end"] or hd["start"]) + 1:] + [ln for body in funcs.values() for ln in body.split("\n")]       # a function may be defined above the heredoc and run later
     names = set(hd["targets"])
     for _ in range(4):                                          # a variable that holds the name (set before or after the heredoc; one assignment at a time, a few levels)
         for ln in lines:
@@ -556,7 +569,6 @@ def _written_file_used_later(lines, hd):
         if not t.startswith("$"):
             spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
     rxs = [re.compile(r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])") if not t.startswith("$") else re.compile(re.escape(t)) for t in spell if t]
-    funcs = _func_bodies(lines)
     reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
     readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
     for ln in later:
@@ -570,7 +582,7 @@ def _written_file_used_later(lines, hd):
         rest = any(rx.search(stripped) for rx in rxs)
         if "$(" in stripped:
             return True
-        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", stripped) if sg.strip()]
+        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", re.sub(r"\d*>&(?:\d+|-)(?![\w./-])", " ", stripped)) if sg.strip()]    # 2>&1 is no list operator
         for seg in segs:
             toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
             if toks and all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
@@ -772,6 +784,13 @@ def _heredoc_ok(hd, lines, funcs, python=False):
     return not _written_file_used_later(lines, hd)
 
 
+def _commands_redefined(lines, text, extra=()):
+    """True when the file defines a function named like a command the grammars trust (plus `extra`), or switches aliases on: the command's name then proves nothing."""
+    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"} | set(extra))) + r"|python[\d.]*"
+    return bool((set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"} | set(extra))) or "expand_aliases" in text or re.search(r"(?m)^[ \t]*alias[ \t]+[^\s=]", text) \
+            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text))
+
+
 def _context_holds(context, proof, text, line_hash):
     """True only when EVERY single-line occurrence of the ruled line (by the hash of its whole flattened text) in `text` has the named context. None found: False."""
     lines = text.split("\n")
@@ -782,9 +801,7 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
-    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
-    if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text):
+    if _commands_redefined(lines, text):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
@@ -793,7 +810,7 @@ def _context_holds(context, proof, text, line_hash):
     if context in ("comment", "assignment"):
         import shlex
         for i in hits:
-            if not (state[i] == () or in_quoted_heredoc(i)):                          # not in plain code position: the shell state around the line decides what it is
+            if not ((state[i] is not None and not set(state[i]) & _NOT_CODE) or in_quoted_heredoc(i)):    # inside a quote or arithmetic (or a here-document that runs): the shell state decides what it is; a function or compound body is plain code
                 return False
             s = lines[i].strip()
             if context == "comment":
@@ -970,6 +987,13 @@ def _context_regressions(root, base, head, rulings):
                 out.setdefault(k, {})[lh] = n
     return out
 
+
+def _row_for(rulings, root, head, k, lh):
+    """The base branch's row for the line when its context (if any) holds in the head, else None: a row with a context that does not hold rules nothing."""
+    r = rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh))
+    return r if r is not None and _context_proved(root, head, k[0], lh, r) else None
+
+
 MAX_RULED_COUNT = 100
 
 
@@ -1104,8 +1128,7 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     for k, per in _unmeasured_counts(root, base, head).items():
         if k[1] != UNPINNED_FORM:
             continue
-        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
-        rs = [r if r is None or _context_proved(root, head, k[0], lh, r) else None for r, lh in zip(rs, per)]
+        rs = [_row_for(rulings, root, head, k, lh) for lh in per]
         # a line the base already holds is never ruled here: an item of that line may have moved because an assignment it reads changed, and a copy of
         # the line cannot be told from it (the occurrence is still reported; the item keeps failing)
         if all(r and n <= r[1] and not in_base.get(k, {}).get(lh) for r, (lh, n) in zip(rs, per.items())):
@@ -1227,8 +1250,7 @@ def _run(a, moved):
     for k in sorted(lines):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
-        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
-        rs = [r if r is None or _context_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]    # a row with a context that does not hold rules nothing
+        rs = [_row_for(rulings, a.root, a.head, k, lh) for lh in lines[k]]
         if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):

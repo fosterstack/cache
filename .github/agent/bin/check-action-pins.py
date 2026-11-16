@@ -2850,7 +2850,7 @@ DOWNLOAD_EXCLUSIONS = {
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
     (".github/workflows/dependabot-reviewer.yml", "review", 8,
-     "ed79b6846c1729e3ffd034f935b130636b5c32502c6daa191323e0ac1c11398a"): (
+     "b0786a7fa2ac09fd6adf8658a0e853d527f2f9e0aea4aeb72fc7bbee9620effd"): (
         "the same identity-token request inside the decision loop's token refresh: "
         "stdout into a command substitution that jq reads, no file written " + _TOKEN_URL_CONDITION,
         "ACTIONS_ID_TOKEN_REQUEST_URL", None),
