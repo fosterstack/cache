@@ -115,7 +115,7 @@ check("the dropped finding is recorded as covered by the VEX", any(c["id"] == "C
 vexf = os.path.join(tempfile.mkdtemp(), "v.json")
 json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected",
     "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production&arch=amd64",
-                  "subcomponents": [{"@id": "pkg:deb/debian/tzdata@2026%63?arch=all"}]}]}]}, open(vexf, "w"))   # %63 = c
+                  "subcomponents": [{"@id": "pkg:generic/tzdata@2026%63"}]}]}]}, open(vexf, "w"))   # %63 = c; generic like tree()'s Inspector purls
 row = ("CVE-2099-0009", "tzdata", "2026c")
 r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64")})
 v = P.tally(r, P.load_vex(vexf))
@@ -262,6 +262,15 @@ for what, fp, ver, sp, want in (
         ("R1 a generic stdlib finding at go1.27.2 whose purl the verdict refuses (a repeated qualifier) keeps its identity: NOT covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@go1.27.2?a=1&a=2", "go1.27.2", "pkg:generic/stdlib@1.27.2", False),
         ("R1 a generic stdlib finding at 1.27.2 is covered by a generic stdlib@1.27.2 statement", "pkg:generic/stdlib@1.27.2", "1.27.2", "pkg:generic/stdlib@1.27.2", True)):
     check(what, purl_covered(fp, "stdlib", ver, sp) == want, purl_covered(fp, "stdlib", ver, sp))
+# a golang statement covers only a golang finding, and a golang finding only a golang statement
+for what, fp, name, ver, sp in (
+        ("R1 a generic stdlib finding at go1.27.2 is NOT covered by a golang stdlib@1.27.2 statement",
+         "pkg:generic/stdlib@go1.27.2", "stdlib", "go1.27.2", "pkg:golang/stdlib@1.27.2"),
+        ("R1 a golang stdlib finding at go1.27.2 is NOT covered by a generic stdlib@go1.27.2 statement",
+         "pkg:golang/stdlib@go1.27.2", "stdlib", "go1.27.2", "pkg:generic/stdlib@go1.27.2"),
+        ("R1 an apk busybox finding at 1.37.0 is NOT covered by a golang busybox@1.37.0 statement",
+         "pkg:apk/alpine/busybox@1.37.0", "busybox", "1.37.0", "pkg:golang/busybox@1.37.0")):
+    check(what, purl_covered(fp, name, ver, sp) is False, purl_covered(fp, name, ver, sp))
 pub = P.load_vex(VEX)
 want_ids = ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"]
 check("the published VEX covers the same ids (the four CVEs and their aliases) on every one of the four images as before",
