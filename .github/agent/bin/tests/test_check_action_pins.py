@@ -1073,11 +1073,17 @@ class StartupHookWrites(unittest.TestCase):
     def script(self, js):
         return HEAD + "    steps:\n" + GH_SCRIPT % js
 
-    def refused(self, workflow, name="w.yml"):
+    def refused(self, workflow, name="w.yml", job="j", step=1, matched=None, says=None):
         code, out = self.findings(workflow, name)
         self.assertEqual(code, 1, out)
         self.assertIn(f".github/workflows/{name}", out)
         self.assertNotIn(" 0 finding(s)", out)
+        self.assertIn(job, out)
+        self.assertIn(f"step {step}", out)
+        if matched:
+            self.assertIn(matched.lower(), out.lower())
+        if says:
+            self.assertIn(says, out)
 
     def accepted(self, workflow):
         code, out = self.findings(workflow)
@@ -1180,6 +1186,114 @@ class StartupHookWrites(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(name, M.STARTUP_HOOK_ENV)
         self.assertNotIn("ANTHROPIC_IDENTITY_TOKEN_FILE", M.STARTUP_HOOK_ENV)
+
+    # ---- more routes into the env file
+    LOADS = "changes what later programs load or where they connect"
+    PATH_SAYS = "changes PATH for later steps"
+
+    def test_more_forms_of_the_env_file_refuse_a_startup_hook_name(self):
+        forms = {
+            "single redirect": 'echo BASH_ENV=x > "$GITHUB_ENV"',
+            "clobber redirect": 'echo BASH_ENV=x >| "$GITHUB_ENV"',
+            "tee": 'echo BASH_ENV=x | tee -a "$GITHUB_ENV"',
+            "line break": 'echo BASH_ENV=x >> \\\n"$GITHUB_ENV"',
+            "variable": 'f=$GITHUB_ENV; echo BASH_ENV=x >> "$f"',
+            "command substitution": 'echo BASH_ENV=x >> "$(echo "$GITHUB_ENV")"',
+            "python": 'python3 -c \'import os; open(os.environ["GITHUB_ENV"], "a").write("BASH_ENV=x\\n")\'',
+            "node": 'node -e "require(\'fs\').appendFileSync(process.env.GITHUB_ENV, \'BASH_ENV=x\\n\')"',
+        }
+        for label, text in forms.items():
+            with self.subTest(form=label):
+                self.refused(self.step(text), matched="GITHUB_ENV", says=self.LOADS)
+
+    def test_the_github_env_context_in_any_letter_case_refuses_a_startup_hook_name(self):
+        for ctx in ("github.env", "GitHub.ENV"):
+            with self.subTest(ctx=ctx):
+                self.refused(self.step('echo BASH_ENV=x >> ${{ %s }}' % ctx), matched="github.env", says=self.LOADS)
+
+    def test_a_longer_word_that_starts_like_the_env_file_is_not_the_route(self):
+        self.accepted(self.step('echo "REF=x" >> "$GITHUB_ENV_FIXTURE"'))
+        self.accepted(self.step('echo "BASH_ENV GITHUB_ENV_FIXTURE"'))
+        self.accepted(self.step('echo "BASH_ENV=x" >> "$GITHUB_ENV_FIXTURE"'))
+
+    # ---- env values in force for a step
+    def env_value(self, level, value, run_text):
+        step = "      - run: |\n          " + run_text.replace("\n", "\n          ") + "\n"
+        if level == "step":
+            return HEAD + "    steps:\n" + step + "        env:\n          N: " + value + "\n"
+        if level == "job":
+            return HEAD.replace("    runs-on", "    env:\n      N: " + value + "\n    runs-on") + "    steps:\n" + step
+        return "env:\n  N: " + value + "\n" + HEAD + "    steps:\n" + step
+
+    def test_a_name_held_in_an_env_value_at_any_level_is_refused_through_the_env_file(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, "BASH_ENV", 'echo "$N=x" >> "$GITHUB_ENV"'),
+                             matched="BASH_ENV", says=self.LOADS)
+
+    def test_the_env_file_held_in_an_env_value_is_refused_with_a_name_in_the_step(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.refused(self.env_value(level, '"${{ github.env }}"', 'echo "BASH_ENV=x" >> "$N"'),
+                             matched="github.env", says=self.LOADS)
+
+    def test_an_env_value_without_the_other_half_is_accepted(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.accepted(self.env_value(level, "BASH_ENV", 'echo "$N=x"'))
+                self.accepted(self.env_value(level, '"${{ github.env }}"', 'echo "REF=x" >> "$N"'))
+                self.accepted(self.env_value(level, "REF", 'echo "$N=x" >> "$GITHUB_ENV"'))
+
+    # ---- the PATH routes need no name
+    def test_each_path_route_is_refused_on_its_own(self):
+        forms = {
+            "GITHUB_PATH": 'echo /x >> "$GITHUB_PATH"',
+            "github.path": 'echo /x >> ${{ github.path }}',
+            "GitHub.PATH": 'echo /x >> ${{ GitHub.PATH }}',
+            "::add-path": 'echo "::add-path::/x"',
+            "::add-path ": 'echo "::add-path ::x"',
+        }
+        for matched, text in forms.items():
+            with self.subTest(route=matched):
+                self.refused(self.step(text), matched=matched.strip(), says=self.PATH_SAYS)
+
+    def test_a_longer_word_that_starts_like_the_path_file_is_accepted(self):
+        self.accepted(self.step('echo /x >> "$GITHUB_PATH_X"'))
+
+    # ---- more startup-hook names
+    NEW_NAMES = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_SSH", "GIT_SSH_COMMAND",
+                 "GIT_EXEC_PATH", "GIT_TEMPLATE_DIR", "XDG_CONFIG_HOME", "SHELLOPTS", "BASHOPTS", "PS4", "PERL5LIB",
+                 "RUBYLIB", "NODE_PATH", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "GCONV_PATH", "GOFLAGS", "GOPROXY",
+                 "GOSUMDB", "GONOSUMDB", "PIP_INDEX_URL", "PIP_CONFIG_FILE", "NPM_CONFIG_USERCONFIG",
+                 "npm_config_registry"]
+
+    def test_each_further_name_is_refused_as_an_env_key(self):
+        for name in self.NEW_NAMES:
+            with self.subTest(name=name):
+                code, out = self.findings(self.env_at("step", name))
+                self.assertEqual(code, 1, out)
+                self.assertIn(name, out)
+
+    def test_each_further_name_is_refused_when_written_through_the_env_file(self):
+        for name in self.NEW_NAMES:
+            with self.subTest(name=name):
+                self.refused(self.step(f'echo "{name}=x" >> "$GITHUB_ENV"'), matched=name, says=self.LOADS)
+
+    # ---- what a refusal says
+    def test_a_step_write_refusal_names_the_file_job_step_and_name(self):
+        wf = ("on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+              "      - run: |\n          echo \"BASH_ENV=x\" >> \"$GITHUB_ENV\"\n")
+        self.refused(wf, "other-name.yml", job="build", step=2, matched="BASH_ENV", says=self.LOADS)
+        wf = wf.replace('echo \"BASH_ENV=x\" >> \"$GITHUB_ENV\"', 'echo /x >> \"$GITHUB_PATH\"')
+        self.refused(wf, "other-name.yml", job="build", step=2, matched="GITHUB_PATH", says=self.PATH_SAYS)
+
+    def test_the_env_key_refusal_names_the_key_and_what_it_changes(self):
+        code, out = self.findings(self.env_at("step", "BASH_ENV"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("BASH_ENV", out)
+        self.assertIn(self.LOADS, out)
+        self.assertNotIn("bash or curl read a file or function", out)
+        self.assertNotIn("an env block", out)
 
     # ---- R3: the repository's own workflows
     def test_the_real_tree_has_no_finding(self):
