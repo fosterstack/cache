@@ -1782,7 +1782,7 @@
       "form": "a system package install",
       "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
       "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
-      "ruling": "build-container install, test-only: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
+      "ruling": "build-container install, test-only: build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     }
   ]
 }
