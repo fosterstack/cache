@@ -2988,6 +2988,41 @@ expect caught "002-AC4 a secret on the step that runs bin/witnessed-local.sh" bu
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$REAL"
 label="the real tree: only stage-sign.yml and evidence-letter.yml are new and only stage-sign.yml signs provenance"
 expect ok "$label" tree "$REAL"
+# a grant covers a whole file: the grants of these two files excused one literal and one prose word (B1)
+b1() { # b1 0|1 LABEL [DETAIL]: 0 is a pass
+  if [ "$1" = 0 ]; then pass=$((pass + 1)); echo "ok   B1 $2"
+  else failn=$((failn + 1)); echo "FAIL B1 $2 ${3:+-> ${3:0:300}}"; fi
+}
+row_has() { # row_has PATH KEY VALUE: 0 when the real chain-scripts.json row of PATH lists VALUE under KEY
+  python3 - "$root/.github/policy/chain-scripts.json" "$1" "$2" "$3" <<'PYR'
+import json, sys
+rows = {r["path"]: r for r in json.load(open(sys.argv[1]))["scripts"]}
+sys.exit(0 if sys.argv[4] in rows[sys.argv[2]].get(sys.argv[3], []) else 1)
+PYR
+}
+rc=0; row_has bin/inspector-gate.py tools go || rc=$?
+b1 "$((rc != 0 ? 0 : 1))" 'the bin/inspector-gate.py row has no "go" tools grant'
+rc=0; row_has bin/chain-bytes-sha.py tools script || rc=$?
+b1 "$((rc != 0 ? 0 : 1))" 'the bin/chain-bytes-sha.py row has no "script" tools grant'
+# guard, green before the fix too: the judge names neither file
+tout=$(judge tree "$REAL" 2>&1) || true
+rc=0; grep -F -q -e inspector-gate.py -e chain-bytes-sha.py <<< "$tout" || rc=$?
+b1 "$((rc != 0 ? 0 : 1))" \
+  'the judge over the real files reports no finding for bin/inspector-gate.py and bin/chain-bytes-sha.py' "$tout"
+# the literal is excused by a line-bound deny exception (line, its sha256, count), as bin/assemble-image.sh's are
+rc=0
+python3 - "$root" <<'PYL' || rc=$?
+import hashlib, json, sys
+root = sys.argv[1]
+rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
+row = rows["bin/inspector-gate.py"]
+lines = open(root + "/bin/inspector-gate.py").read().split("\n")
+found = [e for e in row.get("exceptions", [])
+         if e["rule"] == "deny" and e["line"] in lines and e["count"] == lines.count(e["line"])
+         and e["line_sha256"] == hashlib.sha256(e["line"].encode()).hexdigest() and e["why"]]
+sys.exit(0 if found and "go" not in row["tools"] else 1)
+PYL
+b1 "$rc" 'the bin/inspector-gate.py row carries a line-bound deny exception, not a tools grant'
 # every probe is a copy of the real tree with ONE change; the tree judge must fail it and name the changed file
 SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
 probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the copy)
@@ -3464,7 +3499,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='e8a74583c1e08b097bc5d08054d96f92c4526ea29b025974926c2f955b8f6a7f'
+FX_PIN='5160bc24abca0f843b936b1560e81b6eddddfaf4bd311d5ebde9185f423883ab'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5319,7 +5354,7 @@ wr_mutant "the token is fetched before a caller's option is refused" \
   's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2165
+EXPECT=2169
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"
