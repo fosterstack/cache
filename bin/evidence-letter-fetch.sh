@@ -29,19 +29,15 @@ asset() { # asset RELEASE.JSON NAME FOLDER: downloads the release's asset of tha
 }
 
 # the release's date is the published_at of its signed release-manifest.json, never the API's unsigned one; a final
-# release with no manifest has no date and is not taken
+# release with no readable manifest date has no signed date, and the fetch refuses
 mkdir -p "$out/dates"
 : > "$out/dates.jsonl"
 for tag in $(jq -r '.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
     | .tag_name' "$out/releases.json"); do
   jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$out/dates/$tag.json"
-  jq -e '.assets[] | select(.name == "release-manifest.json")' "$out/dates/$tag.json" > /dev/null || continue
   asset "$out/dates/$tag.json" release-manifest.json "$out/dates"
-  # a manifest that holds no readable date selects nothing signed: the API's date stands, and verify() and the letter
-  # then refuse the manifest if it is not the signed one
-  jq -c --arg t "$tag" --slurpfile r "$out/dates/$tag.json" '{tag_name: $t, published_at: (.published_at // $r[0].published_at)}' \
-    "$out/dates/release-manifest.json" 2> /dev/null >> "$out/dates.jsonl" ||
-    jq -c '{tag_name, published_at}' "$out/dates/$tag.json" >> "$out/dates.jsonl"
+  jq -ce --arg t "$tag" '{tag_name: $t, published_at: (.published_at | if type == "string" then . else error("no date") end)}' "$out/dates/release-manifest.json" \
+    >> "$out/dates.jsonl" 2> /dev/null || die "$tag: release-manifest.json holds no readable published_at: no signed date"
 done
 tags=$(jq -rs --arg m "$month" '
   . as $final
