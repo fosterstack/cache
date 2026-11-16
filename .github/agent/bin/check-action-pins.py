@@ -2837,7 +2837,7 @@ def _excluded_run_texts(scripts, name):
     return texts
 
 
-def check_runs(where_job, scripts, bad, tree=None):
+def check_runs(where_job, scripts, bad, tree=None, mores=None):
     """scripts: [(where, text, shell)] of ONE job (or one composite action), in order. No image name this job built or tagged is
     trusted (the owner's rule, Oct 3: every image is pinned by digest; reference a build you made by its image id, e.g. --iidfile, or
     a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
@@ -2911,8 +2911,8 @@ def check_runs(where_job, scripts, bad, tree=None):
         where, raw, shell = item[:3]
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
-        if more and (step := re.fullmatch(r"(.*?)(?:\.jobs\.(.*)\.steps|\.runs\.steps)\[(\d+)\]\.run", where)):
-            bad += step_write_findings(f"{step[1]}: {'job ' + step[2] + ', ' if step[2] else ''}step {int(step[3]) + 1}", more)
+        if more and mores is not None:
+            mores[where] = more                         # check_step_writes reads it with the step's own text
         own = read(raw)
         raw = raw + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own
         text = read(raw)
@@ -3286,10 +3286,12 @@ def step_write_findings(where, text):
     return found
 
 
-def check_step_writes(rel, steps, bad, job="", outer=""):
-    """A step that sets a startup-hook name by a route other than an env key, or changes PATH, is a finding."""
+def check_step_writes(rel, steps, bad, job="", outer="", mores={}):
+    """A step that sets a startup-hook name by a route other than an env key, or changes PATH, is a finding. One text per step:
+    its run, `with` and env values, the job's and workflow's env, and the committed scripts it runs (`mores`, by `where`)."""
     for n, text in enumerate(step_texts(steps, outer), 1):
-        bad += step_write_findings(f"{rel}: {'job ' + job + ', ' if job else ''}step {n}", text)
+        more = mores.get(f"{rel}{'.jobs.' + job + '.steps' if job else '.runs.steps'}[{n - 1}].run")
+        bad += step_write_findings(f"{rel}: {'job ' + job + ', ' if job else ''}step {n}", text + ("\n" + more if more else ""))
 
 
 def check_file(tree, rel, pins, bad):
@@ -3311,6 +3313,9 @@ def check_file(tree, rel, pins, bad):
             if rel.startswith(".github/workflows/"):
                 check_runners(rel, d, bad)
             # every mapping key of the parsed document — quoted, flow-style or block (Codex #164 r3, C13)
+            mores = {}
+            for group, scripts in run_scripts(d).items():
+                check_runs(group, [(rel + item[0],) + tuple(item[1:]) for item in scripts], bad, tree, mores)
             stack = [d]
             context = steps_context(d)
             while stack:
@@ -3326,14 +3331,12 @@ def check_file(tree, rel, pins, bad):
                             bad.append(f"{rel}: a mapping sets {k.value}, which changes what later programs "
                                        f"load or where they connect; refused")
                         if isinstance(k, yaml.ScalarNode) and k.value == "steps" and isinstance(v, yaml.SequenceNode):
-                            check_step_writes(rel, v, bad, *context.get(id(v), ()))
+                            check_step_writes(rel, v, bad, *context.get(id(v), ("", "")), mores)
                         if isinstance(k, yaml.ScalarNode) and k.value == "env" and not isinstance(v, yaml.MappingNode):
                             bad.append(f"{rel}: an env that is not a literal mapping hides the names it sets; refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
                     stack.extend(n.value)
-            for group, scripts in run_scripts(d).items():
-                check_runs(group, [(rel + item[0],) + tuple(item[1:]) for item in scripts], bad, tree)
     for key, path, node, parent in refs:
         where = f"{rel}{show(path)}"
         if key == "uses":
