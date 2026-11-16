@@ -988,12 +988,12 @@ def cmd_apk_compare(a):
     repeated or unknown pair, a key that is not in the schema, or a digest that is not sha256:<64 lower-case hex> is refused."""
     stage = "rebuild"
     pol = _release_policy(a, stage)
-    if len(a.rapk or []) != 2:
-        refuse(stage, "apk-compare: exactly two signed rapk records (--rapk, one per witness) are required, got %d"
-               % len(a.rapk or []))
     if len(a.build_apk or []) != 2:
         refuse(stage, "apk-compare: exactly two signed apk records of Build (--build-apk, one per runner) are required, got %d"
                % len(a.build_apk or []))
+    if len(a.rapk or []) != 2:
+        refuse(stage, "apk-compare: exactly two signed rapk records (--rapk, one per witness) are required, got %d"
+               % len(a.rapk or []))
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
@@ -1070,6 +1070,9 @@ def cmd_apk_compare(a):
             if not APK_FILE_SHA256.fullmatch(files.get(product) or ""):
                 refuse(stage, "%s: the signed records do not hold %s/%s with a whole-file sha256 of 64 lower-case hex"
                        % (label, p["arch"], p["variant"]))
+        if p["build_digest"] == "sha256:" + bapk[product]:
+            refuse(stage, "apk-compare: the control+data digest of the %s/%s apk is Build's whole-file sha256 (a whole-file digest is never "
+                          "the control+data digest Build attested)" % (p["arch"], p["variant"]))
         if rapk[product] != bapk[product]:
             refuse(stage, "rapk: the whole-file digest of the %s/%s apk in Rebuild's signed rapk records differs from "
                           "Build's signed apk record (build-apk)" % (p["arch"], p["variant"]))
@@ -1954,7 +1957,9 @@ def release_key_algorithm_guard(who, aws):
 
 def cmd_manifest_at(a):
     """The evidence letter's key manifest, the checks of check_manifest at the time the letter was signed."""
-    check_manifest(a.dir, dt.datetime.fromtimestamp(a.at, dt.timezone.utc))
+    if not re.fullmatch(r"[0-9]{1,12}", a.at):
+        refuse("release", "manifest-at: --at %r is not a unix time (digits only)" % a.at)
+    check_manifest(a.dir, dt.datetime.fromtimestamp(int(a.at), dt.timezone.utc))
     print("ok")
 
 
@@ -2586,7 +2591,7 @@ def build_parser():
     kc.add_argument("--aws")
     ma = sub.add_parser("manifest-at")
     ma.add_argument("--dir", required=True)           # holds release-key-root.pub, release-key-manifest.json and release-key-manifest.sig
-    ma.add_argument("--at", type=int, required=True)  # unix time the letter was signed
+    ma.add_argument("--at", required=True)            # unix time the letter was signed: digits only
     ks = sub.add_parser("kms-sign")
     ks.add_argument("--key-ref", required=True)       # awskms:///<key>
     ks.add_argument("--digest")                       # the sha256 of the signed bytes, 64 lowercase hex (the digest kind: with --out)
