@@ -193,8 +193,13 @@ def cmd_empty_except(args):
     print("known-red: no entry besides %s" % keep)
 
 
+class OneLineParser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.exit("%s: error: %s" % (self.prog, message))
+
+
 def parser():
-    ap = argparse.ArgumentParser(prog="chain-known-red.py")
+    ap = OneLineParser(prog="chain-known-red.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, fn in (("judge", cmd_judge), ("base-check", cmd_base_check), ("empty", cmd_empty), ("empty-except", cmd_empty_except)):
         p = sub.add_parser(name)
