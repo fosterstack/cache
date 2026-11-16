@@ -1605,6 +1605,12 @@ case_ g2-second-ci-job-matrix-suffix    bad "d['jobs']['zz'] = dict($ZZ, name='t
 case_ g2-ci-job-renamed-to-another-context bad "d['jobs']['lint']['name'] = 'test'"
 case_ g2-ci-job-id-is-a-context         bad "d['jobs']['pin-age'] = d['jobs'].pop('lint')"
 case_ g2-ci-guard-job-keeps-its-name    ok  "d['jobs']['required-check-guard']['name'] = 'required-check guard'"
+# row 2: the names main produces stay reserved when the head's own required-checks.json no longer lists them
+jq '.required_checks |= map(select(.context != "lint"))' "$here/.github/policy/required-checks.json" > "$work/pol-no-lint.json"
+reserved_wf g2-head-policy-lacks-lint "$(printf "  zz:\n    name: lint\n${JOB}")"
+if out=$(PIN_WIRING_POLICY_FILE="$work/pol-no-lint.json" PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-head-policy-lacks-lint" judge "$here/.github/workflows/ci.yml")
+then failn=$((failn+1)); echo "FAIL g2-head-policy-lacks-lint → ok, want bad ($out)"
+else pass=$((pass+1)); echo "PASS g2-head-policy-lacks-lint → bad ($out)"; fi
 # a producer in its own file carrying another context's name is refused, as acceptance.yml's is
 g2_swap() {  # g2_swap <name> <file> <job id> <name it takes>
   rm -rf "$work/rs-g2-$1"; mkdir -p "$work/rs-g2-$1"; cp "$here"/.github/workflows/*.y*ml "$work/rs-g2-$1/"
@@ -1698,6 +1704,26 @@ g1_case landing-and-head-without-guard        bad "$work/g1-no-guard.yml"   "$wo
 g1_case head-without-guard-header             bad "$work/g1-no-guard.yml"   ""                 "$PIN_WIRING_GUARD_JOB"
 g1_case head-with-two-guard-headers           bad "$work/g1-two-guards.yml" ""                 "$PIN_WIRING_GUARD_JOB"
 g1_case real-head-and-real-landing            ok  "$real"                   "$real"            "$PIN_WIRING_GUARD_JOB"
+# each empty-guard refusal names its own cause: the main path the pinned text, the landing path the landing commit's ci.yml
+out=$(PIN_WIRING_GUARD_JOB="" bytes_judge "$real" || true)
+if grep -qE "pinned.*text is empty" <<<"$out"
+then pass=$((pass+1)); echo "PASS g1-main-path-says-pinned-text-is-empty ($out)"
+else failn=$((failn+1)); echo "FAIL g1-main-path-says-pinned-text-is-empty ($out)"; fi
+out=$(bytes_judge "$real" "$work/g1-no-guard.yml" || true)
+if grep -qF landing <<<"$out" && grep -qF ci.yml <<<"$out" && ! grep -qE "pinned.*text is empty" <<<"$out"
+then pass=$((pass+1)); echo "PASS g1-landing-path-names-the-landing-ci-yml ($out)"
+else failn=$((failn+1)); echo "FAIL g1-landing-path-names-the-landing-ci-yml ($out)"; fi
+
+# row 12: the refusal names the key it found, and lists no allowed keys of its own besides PIN_WIRING_TOP_KEYS
+sed '0,/^permissions:$/s//zzz-extra: 1\n\npermissions:/' "$real" > "$work/g4-extra-key.yml"
+out=$(bytes_judge "$work/g4-extra-key.yml" || true)
+if grep -qF zzz-extra <<<"$out"
+then pass=$((pass+1)); echo "PASS g4-message-names-the-found-key ($out)"
+else failn=$((failn+1)); echo "FAIL g4-message-names-the-found-key ($out)"; fi
+out=$(PIN_WIRING_TOP_KEYS="${PIN_WIRING_TOP_KEYS%]}, \"qqq-only-in-pin\"]" bytes_judge "$work/g4-extra-key.yml" || true)
+if grep -qF qqq-only-in-pin <<<"$out" || ! grep -qF "concurrency, permissions, jobs" <<<"$out"
+then pass=$((pass+1)); echo "PASS g4-message-has-no-typed-key-list ($out)"
+else failn=$((failn+1)); echo "FAIL g4-message-has-no-typed-key-list ($out)"; fi
 
 # g4: the workflow's top-level keys are written once in this file, for bytes_judge and judge alike
 if python3 - "$here/.github/agent/tests/pin-wiring-test.sh" <<'PY'
