@@ -162,12 +162,17 @@ _root = yaml.compose(_text, Loader=yaml.BaseLoader)
 _walk(_root, "")
 if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
-# GitHub reads YAML 1.2, PyYAML's resolver is YAML 1.1: a plain scalar the two type differently (yes, 0755, 1:30, 1_000, a date) is refused.
-# A quoted scalar is a string in both. The one plain scalar both versions are known to split on and the workflow needs is the key `on`.
+# GitHub reads YAML 1.2, PyYAML's resolver is YAML 1.1: a plain scalar the two type differently
+# (yes, 0755, 1:30, 1_000, a date) is refused. A quoted scalar is a string in both.
+# The one plain scalar both versions are known to split on and the workflow needs is the key `on`.
 class _Core12(yaml.resolver.BaseResolver): pass
-for _tag, _pattern, _first in (("null", r"~|null|Null|NULL|", ["~", "n", "N", ""]), ("bool", r"true|True|TRUE|false|False|FALSE", "tTfF"),
+for _tag, _pattern, _first in (("null", r"~|null|Null|NULL|", ["~", "n", "N", ""]),
+                               ("bool", r"true|True|TRUE|false|False|FALSE", "tTfF"),
                                ("int", r"[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+", "-+0123456789"),
-                               ("float", r"[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?|[-+]?\.(inf|Inf|INF)|\.(nan|NaN|NAN)", "-+0123456789.")):
+                               ("float",
+                                r"[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?"
+                                r"|[-+]?\.(inf|Inf|INF)|\.(nan|NaN|NAN)",
+                                "-+0123456789.")):
     _Core12.add_implicit_resolver("tag:yaml.org,2002:" + _tag, re.compile("^(?:" + _pattern + ")$"), list(_first))
 _v11, _v12 = yaml.resolver.Resolver(), _Core12()
 _split = []
@@ -175,8 +180,11 @@ def _ambiguous(n, top_key=False):
     if isinstance(n, yaml.ScalarNode):
         if n.style is None and not (top_key and n.value == "on"):
             t11, t12 = (r.resolve(yaml.ScalarNode, n.value, (True, False)) for r in (_v11, _v12))
-            # 0755 is an int in both, with two values; y and n are booleans in the YAML 1.1 spec, which PyYAML's resolver leaves out
-            if t11 != t12 or (t11.endswith(":int") and re.fullmatch(r"[-+]?0[0-9]+", n.value)) or n.value in ("y", "Y", "n", "N"):
+            # 0755 is an int in both, with two values;
+            # y and n are booleans in the YAML 1.1 spec, which PyYAML's resolver leaves out
+            if (t11 != t12
+                    or (t11.endswith(":int") and re.fullmatch(r"[-+]?0[0-9]+", n.value))
+                    or n.value in ("y", "Y", "n", "N")):
                 _split.append(n.value)
     elif isinstance(n, yaml.MappingNode):
         for k, v in n.value:
@@ -187,7 +195,9 @@ def _ambiguous(n, top_key=False):
             _ambiguous(v)
 _ambiguous(_root)
 if _split:
-    print("the workflow has plain scalar(s) that YAML 1.1 and 1.2 read differently: " + ", ".join(sorted(set(_split))[:5])); sys.exit(1)
+    print("the workflow has plain scalar(s) that YAML 1.1 and 1.2 read differently: "
+          + ", ".join(sorted(set(_split))[:5]))
+    sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
 for k in sorted(set(d) - set(json.loads(os.environ["PIN_WIRING_TOP_KEYS"]))):
@@ -685,16 +695,19 @@ if pol is not None:
     for jid in PROTECTED:
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
             bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
-# Reserved check names: the protected jobs, the guard's own check, every ruleset and release-only context, and every name
-# PRODUCES (main's pinned copy) gives, so a head cannot free a name by editing its own lists. Only a (job id, name) of
-# PRODUCES may carry one, and no job name may be an expression that could render as one; auditor-review-gate is the App's alone.
+# Reserved check names: the protected jobs, the guard's own check, every ruleset and release-only context,
+# and every name PRODUCES (main's pinned copy) gives, so a head cannot free a name by editing its own lists.
+# Only a (job id, name) of PRODUCES may carry one, and no job name may be an expression that could render as one;
+# auditor-review-gate is the App's alone.
 # the (job id, job name) pairs that produce a reserved name on main, by workflow file
-PRODUCES = {"ci.yml": tuple((j, j) for j in PROTECTED + ("coverage", "test", "lint", "gosec", "govulncheck", "vendor", "fips140-only",
-                                                          "requirements", "dependency-review")) + (("required-check-guard", "required-check guard"),),
+PRODUCES = {"ci.yml": tuple((j, j) for j in PROTECTED + ("coverage", "test", "lint", "gosec", "govulncheck", "vendor",
+                                                          "fips140-only", "requirements", "dependency-review"))
+                      + (("required-check-guard", "required-check guard"),),
             "acceptance.yml": (("acceptance-gradle", "acceptance-gradle"), ("acceptance-maven", "acceptance-maven")),
             "codeql.yml": (("analyze", "analyze (go)"),),
             "release.yml": (("reproducibility", "reproducibility"),),
-            "scan.yml": (("scan", "scan"), ("reproducibility", "reproducibility"), ("scanner", "scan (${{ matrix.scanner }})")),
+            "scan.yml": (("scan", "scan"), ("reproducibility", "reproducibility"),
+                         ("scanner", "scan (${{ matrix.scanner }})")),
             "stage-reproducibility.yml": (("reproduce", "reproducibility"),),
             "stage-verify.yml": (("scan", "scan (${{ matrix.scanner }})"),),
             "supply-chain.yml": (("pin-age", "pin-age"),)}
@@ -879,7 +892,8 @@ bad = []
 pinned_job, pinned_permissions = os.environ["PIN_WIRING_GUARD_JOB"].encode(), os.environ["PIN_WIRING_PERMISSIONS"].encode()
 if sys.argv[2]:   # the landing path: the pinned text is the landing commit's own ci.yml
     landing = open(sys.argv[2], "rb").read().split(b"\n")
-    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing), block(b"permissions:", 0, landing) or b"x"
+    pinned_job = block(b"  required-check-guard:", 2, landing)
+    pinned_permissions = block(b"permissions:", 0, landing) or b"x"
 # YAML ends a line at each of these four, this judge only at LF: a step could hide behind the freed comment
 if any(b in raw for b in (b"\r", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")):
     bad.append("ci.yml has a carriage return, a next-line, a line separator or a paragraph separator")
@@ -1322,7 +1336,8 @@ assert old in t
 open(sys.argv[2], "w").write(t.replace(old, "          check-latest: " + os.environ["SCALAR"] + "\n", 1))
 PY
   if out=$(judge "$f"); then got=ok; else got=bad; fi
-  if [ "$got" = "$2" ] && { [ "$2" = ok ] || grep -qF -- "$3" <<<"$out"; }; then pass=$((pass+1)); echo "PASS g5-$1 → $got"
+  if [ "$got" = "$2" ] && { [ "$2" = ok ] || grep -qF -- "$3" <<<"$out"; }
+  then pass=$((pass+1)); echo "PASS g5-$1 → $got"
   else failn=$((failn+1)); echo "FAIL g5-$1 → $got, want $2 naming $3 ($out)"; fi
 }
 for v in y Y n N yes No YES no on On off OFF; do g5case "bool-$v" bad "$v"; done
@@ -1391,7 +1406,10 @@ jobs:
       - run: "true"
 WF
       ;;
-    scanexpr) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: scan (${{ matrix.n }})\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    scanexpr)
+      printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: scan (${{ matrix.n }})\n' \
+        > "$work/wf-$mut/zz.yml"
+      printf '    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' >> "$work/wf-$mut/zz.yml" ;;
   esac
   want=bad
   if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/wf-$mut" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
@@ -1456,7 +1474,8 @@ for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    st
   "exprname-suffix|  zz:\n    name: 'auditor-review-gate\${{ matrix.s }}'\n    strategy:\n      matrix:\n        s: ['']\n|bad" \
   "exprname-alone|  zz:\n    name: '\${{ matrix.n }}'\n    strategy:\n      matrix:\n        n: [coverage]\n|bad" \
   "exprname-ok-os|  zz:\n    name: 'build \${{ matrix.os }} (1.2.0)'\n    strategy:\n      matrix:\n        os: [ubuntu]\n|ok" \
-  "exprname-scan|  zz:\n    name: 'scan (\${{ matrix.scanner }})'\n    strategy:\n      matrix:\n        scanner: [grype]\n|bad" \
+  "exprname-scan|  zz:\n    name: 'scan (\${{ matrix.scanner }})'\n    strategy:\n      matrix:\n\
+        scanner: [grype]\n|bad" \
   "exprname-bang|  zz:\n    name: '\${{ matrix.n }}!'\n    strategy:\n      matrix:\n        n: [x]\n|ok" \
   "exprname-ok-rescan|  zz:\n    name: '${RS}'\n    strategy:\n      matrix:\n        target: [${RT}]\n|ok"; do
   want="${mut##*|}"; body="${mut%|*}"
@@ -1582,7 +1601,8 @@ else pass=$((pass+1)); echo "PASS reserved-pins-auditor-name → bad"; fi
 # that takes one, by id, name or a name that can render as one, is refused; the producers that exist today are not
 g2_case() {  # g2_case <name> <ok|bad> <jobs of an extra workflow zz.yml>
   reserved_wf "g2-$1" "$3"
-  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-$1" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-$1" judge "$here/.github/workflows/ci.yml"); then got=ok
+  else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS g2-$1 → $got"
   else failn=$((failn+1)); echo "FAIL g2-$1 → $got, want $2 ($out)"; fi
 }
@@ -1611,9 +1631,12 @@ case_ g2-ci-job-renamed-to-another-context bad "d['jobs']['lint']['name'] = 'tes
 case_ g2-ci-job-id-is-a-context         bad "d['jobs']['pin-age'] = d['jobs'].pop('lint')"
 case_ g2-ci-guard-job-keeps-its-name    ok  "d['jobs']['required-check-guard']['name'] = 'required-check guard'"
 # row 2: the names main produces stay reserved when the head's own required-checks.json no longer lists them
-jq '.required_checks |= map(select(.context != "lint"))' "$here/.github/policy/required-checks.json" > "$work/pol-no-lint.json"
+jq '.required_checks |= map(select(.context != "lint"))' "$here/.github/policy/required-checks.json" \
+  > "$work/pol-no-lint.json"
 reserved_wf g2-head-policy-lacks-lint "$(printf "  zz:\n    name: lint\n${JOB}")"
-if out=$(PIN_WIRING_POLICY_FILE="$work/pol-no-lint.json" PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-head-policy-lacks-lint" judge "$here/.github/workflows/ci.yml")
+if out=$(PIN_WIRING_POLICY_FILE="$work/pol-no-lint.json" \
+         PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-head-policy-lacks-lint" \
+         judge "$here/.github/workflows/ci.yml")
 then failn=$((failn+1)); echo "FAIL g2-head-policy-lacks-lint → ok, want bad ($out)"
 else pass=$((pass+1)); echo "PASS g2-head-policy-lacks-lint → bad ($out)"; fi
 jq '.required_checks |= map(select(.context != "auditor-review-gate"))' \
@@ -1633,7 +1656,8 @@ w = yaml.load(open(p).read(), Loader=yaml.BaseLoader)
 w["jobs"][job]["name"] = name
 yaml.safe_dump(w, open(p, "w"), sort_keys=False)
 PY
-  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-$1" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-g2-$1" judge "$here/.github/workflows/ci.yml"); then got=ok
+  else got=bad; fi
   if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS g2-$1 → bad"
   else failn=$((failn+1)); echo "FAIL g2-$1 → ok, want bad ($out)"; fi
 }
@@ -1705,18 +1729,22 @@ sed '/^  required-check-guard:$/p' "$here/.github/workflows/ci.yml" > "$work/g1-
 real="$here/.github/workflows/ci.yml"
 g1_case() {  # g1_case <name> <ok|bad> <head> <landing file or empty> <pinned guard job text>
   if out=$(PIN_WIRING_GUARD_JOB="$5" bytes_judge "$3" ${4:+"$4"}); then got=ok; else got=bad; fi
-  if [ "$got" = "$2" ] && { [ "$2" = ok ] || { grep -qF required-check-guard <<<"$out" && ! grep -qF "byte for byte" <<<"$out"; }; }
+  if [ "$got" = "$2" ] \
+     && { [ "$2" = ok ] || { grep -qF required-check-guard <<<"$out" && ! grep -qF "byte for byte" <<<"$out"; }; }
   then pass=$((pass+1)); echo "PASS g1-$1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL g1-$1 → $got, want $2 naming the guard job, not the byte message ($out)"; fi
 }
 g1_case empty-pinned-text-real-head           bad "$real"                   ""                 ""
 g1_case empty-pinned-text-head-without-guard  bad "$work/g1-no-guard.yml"   ""                 ""
-g1_case landing-without-guard-real-head       bad "$real"                   "$work/g1-no-guard.yml" "$PIN_WIRING_GUARD_JOB"
-g1_case landing-and-head-without-guard        bad "$work/g1-no-guard.yml"   "$work/g1-no-guard.yml" "$PIN_WIRING_GUARD_JOB"
+g1_case landing-without-guard-real-head       bad "$real" \
+  "$work/g1-no-guard.yml" "$PIN_WIRING_GUARD_JOB"
+g1_case landing-and-head-without-guard        bad "$work/g1-no-guard.yml" \
+  "$work/g1-no-guard.yml" "$PIN_WIRING_GUARD_JOB"
 g1_case head-without-guard-header             bad "$work/g1-no-guard.yml"   ""                 "$PIN_WIRING_GUARD_JOB"
 g1_case head-with-two-guard-headers           bad "$work/g1-two-guards.yml" ""                 "$PIN_WIRING_GUARD_JOB"
 g1_case real-head-and-real-landing            ok  "$real"                   "$real"            "$PIN_WIRING_GUARD_JOB"
-# each empty-guard refusal names its own cause: the main path the pinned text, the landing path the landing commit's ci.yml
+# each empty-guard refusal names its own cause: the main path the pinned text,
+# the landing path the landing commit's ci.yml
 out=$(PIN_WIRING_GUARD_JOB="" bytes_judge "$real" || true)
 if grep -qE "pinned.*text is empty" <<<"$out"
 then pass=$((pass+1)); echo "PASS g1-main-path-says-pinned-text-is-empty ($out)"
