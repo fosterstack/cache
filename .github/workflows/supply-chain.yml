@@ -81,7 +81,8 @@ jobs:
   image-signatures:
     # Reads only: the base branch's checker runs `cosign verify` (never sign, attest or upload) from the cosign
     # image the repository pins by digest, once per pinned publisher identity of each pinned third-party image
-    # the pull request's tree names. It cross-checks the offline proof of the pin-age job.
+    # the pull request's tree names. It checks who signed an image, never its age: the pin-age job fails an image
+    # outside ghcr.io and Docker Hub, whose registry gives no push time.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20   # a real run takes seconds; the checker also guards each docker call against a hang

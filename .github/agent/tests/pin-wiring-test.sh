@@ -769,6 +769,26 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "where the supply-chain checks run \u2014 Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)",
    "run": "bash .github/agent/tests/supply-chain-wiring-test.sh"
+  },
+  {
+   "name": "the pin age check's GitHub lookups \u2014 a plain miss and a failed lookup told apart (REQ-SUP-001 AC5)",
+   "run": "bash .github/agent/tests/s2-p2-gh-404-test.sh"
+  },
+  {
+   "name": "the supply-chain readers \u2014 links, size and child timeouts (REQ-SUP-001 AC2, AC16)",
+   "run": "bash .github/agent/tests/s2-p2-readers-test.sh"
+  },
+  {
+   "name": "the pin age check's release series rule (REQ-SUP-001 AC2, AC3)",
+   "run": "bash .github/agent/tests/s2-p2-series-rule-test.sh"
+  },
+  {
+   "name": "the pin age check's strict lookups (REQ-SUP-001 AC3, AC5)",
+   "run": "bash .github/agent/tests/s2-p2-strict-lookups-test.sh"
+  },
+  {
+   "name": "the pin age check's time exceptions (REQ-SUP-001 AC3, AC15)",
+   "run": "bash .github/agent/tests/s2-p2-time-exceptions-test.sh"
   }
  ]
 }''')

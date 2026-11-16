@@ -138,8 +138,12 @@ class Harness(unittest.TestCase):
             if k not in (env_extra or {}):
                 env.pop(k, None)
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(M.cli, "ARGS", list(args)), \
-                mock.patch("urllib.request.urlopen", _fake_urlopen), contextlib.redirect_stdout(buf):
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(M.cli, "ARGS", list(args)),
+            mock.patch("urllib.request.urlopen", _fake_urlopen),
+            contextlib.redirect_stdout(buf),
+        ):
             (runner or M.main)()
         return buf.getvalue()
 
