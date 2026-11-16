@@ -118,6 +118,30 @@ check "g3-the real list passes the scope comparison"             0 "release-only
 check "g3-without the second argument no scope is compared"      0 "match \([0-9]+ checks" \
   "$w/g3-flipped-rules.json" "$w/g3-flipped-list.json"
 
+# Hardening of the guard script and its wiring. verdict NAME CONDITION-RESULT: one line per case, same counters.
+verdict() { # name rc(0 = holds) detail
+  if [ "$2" -eq 0 ]; then echo "ok: $1"; pass=$((pass+1)); else echo "FAIL: $1"; echo "    $3"; fail=$((fail+1)); fi
+}
+ciyml="$repo/.github/workflows/ci.yml"
+drift_out="$(GUARD_RULES_JSON="$w/g3-flipped-rules.json" bash "$sut" "$w/g3-flipped-list.json" "$ro" 2>&1 >/dev/null | grep '^::error::scope drift')"
+msg_ok=0; for word in 'context' 'integration ID' 'scope'; do grep -q "$word" <<<"${drift_out#::error::scope drift}" || msg_ok=1; done
+verdict "g4-scope drift error names context, integration ID and scope" "$msg_ok" "got: ${drift_out}"
+sed -n '/^# Usage:/,/^# Exit:/p' "$sut" | tr -d '\n#' | tr -s ' ' | grep -q 'context, integration ID and scope'
+verdict "g4-usage says the scope pin compares context, integration ID and scope" "$?" "usage text lacks that phrase"
+guard_comment="$(awk '/^  required-check-guard:/{g=1} g&&/^ *#/{print} g&&/- name: this tree.s policy lists/{exit}' "$ciyml")"
+grep -q 'PINNED_SCOPES' <<<"$guard_comment" && tr -d '\n#' <<<"$guard_comment" | tr -s ' ' | grep -qi "ruleset check list.*PINNED_SCOPES.*main.*first\|PINNED_SCOPES.*first"
+verdict "g4-ci.yml guard comment says a ruleset check list change needs main's PINNED_SCOPES changed first" "$?" "comment: ${guard_comment}"
+adjacent="$(awk '/jq length <<<"\$actual"/{exit} /^fi$/{f=1;next} f&&/^if \[ -n "\$\{2:-\}" \]/{print NR} {f=0}' "$sut")"
+verdict "g4-no two if [ -n \"\${2:-}\" ] blocks are adjacent" "$([ -z "$adjacent" ]; echo $?)" "adjacent block at line(s): ${adjacent}"
+scopes_jq="$(grep -A1 'list_scopes=\$(jq' "$sut")"
+grep -q '|| fail2' <<<"$scopes_jq"
+verdict "g4-the list_scopes jq ends with || fail2 like its siblings" "$?" "got: ${scopes_jq}"
+long_comments="$(grep -E '^[[:space:]]*#' "$sut" | awk 'length>120 {print length ": " substr($0,1,60) "..."}')"
+verdict "g4-no comment line of the guard is over 120 characters" "$([ -z "$long_comments" ]; echo $?)" "${long_comments}"
+above="$(grep -B3 '^PINNED_SCOPES=' "$sut" | grep '^#')"
+grep -q 'refus' <<<"$above"
+verdict "g4-the comment above PINNED_SCOPES says a moved check is refused" "$?" "comment: ${above}"
+
 # REQ-REL-013-AC2: the pin is main's copy of the guard, so a head that edits the file is still red; the wiring runs
 # the script fetched from main, not the tree's bin/ copy
 mkdir -p "$w/main" "$w/head/.github/policy"
