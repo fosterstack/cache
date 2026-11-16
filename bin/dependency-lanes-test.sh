@@ -1006,10 +1006,24 @@ else failn=$((failn+1)); echo "FAIL reviewer-version-script"; fi
 
 # g3: a tag named main must not answer a read of main, so every read of main's files names the branch ref
 am="$root/.github/workflows/dependabot-auto-merge.yml"
-if [ "$(grep -c 'gh api .*contents/.*?ref=' "$am")" -ge 4 ] && ! grep -q '?ref=main' "$am" \
-   && [ "$(grep -c '?ref=refs/heads/main' "$am")" -eq "$(grep -c '?ref=' "$am")" ]
+reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly four copies of the one string
+  local want='?ref=refs/heads/main"'
+  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s\n%s\n%s' "$want" "$want" "$want" "$want")" ]
+}
+if reads_main_branch "$am"
 then pass=$((pass+1)); echo "PASS g3-auto-merge-reads-refs-heads-main"
 else failn=$((failn+1)); echo "FAIL g3-auto-merge-reads-refs-heads-main"; fi
+
+# bash joins text after the closing quote into the same word, so the ref would no longer end at main
+joins=$(mktemp -d -t cache5-tests.XXXXXX)
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}|' "$am" > "$joins/quote-join-a.yml"
+sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"-x|' "$am" > "$joins/quote-join-b.yml"
+for m in quote-join-a quote-join-b; do
+  if reads_main_branch "$joins/$m.yml"
+  then failn=$((failn+1)); echo "FAIL g3-auto-merge-refuses-$m"
+  else pass=$((pass+1)); echo "PASS g3-auto-merge-refuses-$m"; fi
+done
+[ -d "$joins" ] && rm -rf -- "$joins"
 
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
