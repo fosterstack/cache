@@ -362,10 +362,10 @@ def tally(root, vexidx, dirs=None):
             st["counts"][s] = n
             st["ran"].append(s)
             for vid, name, ver, purl, extra in found:
-                ident = purl
+                typ = _gate.package_type(purl or "", name.lower())
                 if purl and not purl_ok(purl):
                     purl = None           # a package URL outside the verdict's grammar is dropped, never written (the finding still counts)
-                if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver)):
+                if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver), typ=typ):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
                 key = key_of(img, vid, name, ver)
