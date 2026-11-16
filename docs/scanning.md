@@ -122,8 +122,8 @@ is the gate itself. The scanners are the ones in
 Both scan the exact built images by digest (Grype also scans the four Linux
 archives, OSV-Scanner the Go modules). The same Check stage also runs
 `govulncheck` once on the tagged source, a separate Go source scan with its own
-policy that the rest of this section does not describe. Pull requests are
-scanned by [`scan.yml`](../.github/workflows/scan.yml) on the candidate images,
+policy that the rest of this section does not describe. On every pull request,
+[`scan.yml`](../.github/workflows/scan.yml) scans the candidate images,
 with Grype and Amazon Inspector.
 
 The gate's policy is every severity, with the published VEX applied, and the

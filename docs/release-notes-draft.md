@@ -33,7 +33,7 @@ This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5
 ### What this release does not do
 
 - The jobs are separated at the level of a virtual machine, not on separate physical hardware.
-- The package signing key is not rotated automatically.
+- The release key is not rotated automatically.
 - The release pipeline's own signing tools are not FIPS-validated. (The `-fips` image uses Go's FIPS 140-3 module, which is a different claim.)
 
 See `release-manifest.json` for the evidence bundle: the commit and CI run, image, archive and package digests, the module SBOMs, the requirements baseline and test evidence files with their checksums, and the VEX files with their checksums.

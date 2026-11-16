@@ -197,15 +197,14 @@ check("R4 docs/scanning.md says the CSAF file leaves out Go standard library ver
 CA_BUNDLE = re.compile(r"\bca[-\s]+(certificates?[-\s]+)?bundle|\bca-certificates?\b", re.I)
 REVIEWED_CA = [
     ("README.md",
-        'Both images hold only the `fscache` binary and the few packages it needs (base layout, '
-        'time zone data): there is no base image, no CA certificate bundle, no shell to exec into '
-        'and no package manager.'),
+        'There is no base image, no CA certificate bundle, no shell to exec into and no package '
+        'manager.'),
     ("docs/docker-deploy.md",
         'The image has no CA certificate bundle, so the server cannot verify any outside '
         'certificate;'),
     ("docs/install.md",
         '**The container images carry no CA certificate bundle.** The server makes no outbound '
-        'connection and verifies no certificate;'),
+        'connection and verifies no certificate.'),
     ("docs/quality/traceability.md",
         'then the configs declare only our base-layout package fscache-baselayout, tzdata and our '
         'apk, no CA bundle, no base image and no shell, take packages only from /work/archive and '
