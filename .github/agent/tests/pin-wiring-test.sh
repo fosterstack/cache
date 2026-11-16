@@ -916,7 +916,8 @@ if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS unbound-context-expr → 
 # the bound file is judged too: inside full-suite.yml a name that could render a bound context is refused, unless the job
 # is the one the wiring suite pins for that context (the real full-suite.yml, which the main judge run passes)
 for mut in "coverage-expr-in-bound-file|  zz:\n    name: 'coverage\${{ matrix.v }}'\n" \
-  "acceptance-expr-in-bound-file|  zz:\n    name: 'acceptance / \${{ matrix.v }}'\n"; do
+  "acceptance-expr-in-bound-file|  zz:\n    name: 'acceptance / \${{ matrix.v }}'\n" \
+  "fips140-only-expr-in-bound-file|  zz:\n    name: 'fips140-only\${{ matrix.s }}'\n"; do
   rm -rf "$work/rs-${mut%%|*}"; mkdir -p "$work/rs-${mut%%|*}"; cp "$here"/.github/workflows/*.y*ml "$work/rs-${mut%%|*}/"
   printf "\n${mut#*|}${JOB}" >> "$work/rs-${mut%%|*}/full-suite.yml"
   if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
@@ -1180,6 +1181,9 @@ else
   COUNTING+=' if "chain-hostile-test.sh" in (s.get("run") or "") and "suite-guard-run.py run" in s["run"]][0]'
   # the landing judge reads the new layout: the old ci.yml has `concurrency` on a job
   lcase chain-v030-old-layout-refused          bad ""
+  # one judge: its refusal never speaks of a second form
+  case "$out" in *landing*) failn=$((failn+1)); echo "FAIL judge-refusal-names-no-landing -> the refusal mentions landing ($out)";;
+    *) pass=$((pass+1)); echo "PASS judge-refusal-names-no-landing";; esac
   lcase wrong-workflow-concurrency             bad "$WF_CONC"
   lcase job-concurrency-on-lint                bad "$J['lint']['concurrency'] = {'group': 'x'}"
   lcase live-test-group-cancels                bad "$J['live-test']['concurrency']['cancel-in-progress'] = 'true'"
