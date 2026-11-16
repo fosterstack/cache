@@ -17,8 +17,6 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 #   this test                      names the phrases it forbids.
 #   docs/quality/traceability.md   is GENERATED from requirements.yaml (its first lines say so), so it repeats that
 #   file.
-#   .github/agent/tests/pin-wiring-landing.sh is chain-v030's judge byte for byte (pin-wiring-test.sh checks it with
-#   cmp), and names the old steps until chain-v030 takes main.
 #   vendor/                        is third-party Go source (time-window prose in prometheus), not ours; go.sum/go.mod
 #   hold no prose.
 # No CHANGELOG or release-history file is tracked (checked by the name test below), so none is excluded.
@@ -29,7 +27,7 @@ excluded)"; else bad "docs/quality/traceability.md is generated (so excluded)"; 
 
 self=.github/agent/tests/release-age-gone-test.sh
 git ls-files -z | grep -zvE \
-    "^(vendor/|$self\$|docs/quality/traceability\.md\$|\.github/agent/tests/pin-wiring-landing\.sh\$)" >"$work/files"
+    "^(vendor/|$self\$|docs/quality/traceability\.md\$)" >"$work/files"
 # The hold's own phrases only (not 'cooldown' or '7-day', which the Wolfi no-wait rule 48 also uses). This test's own
 # file name contains 'release-age': (?!-gone-test) skips it.
 # grep exits 1 for no match and 2 for an error: an unreadable file fails the test. Symlinks and submodules (not
