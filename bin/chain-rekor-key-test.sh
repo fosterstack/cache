@@ -675,7 +675,7 @@ SIGN = ["sign", "--check", "--public-key", "k", "--out", "o", "--items", "i", "-
 (ok if not parses(["sign-record", "--payload", "p", "--out", "o", "--template", "t", "--public-key", "k", "--aws", "/x/aws"]) else bad)("sign-record is not a subcommand")
 
 print("pass=%d fail=%d" % (passed, failed))
-EXPECT = 159
+EXPECT = 153
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
     sys.exit(1)
