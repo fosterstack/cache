@@ -327,6 +327,16 @@ for runs, want, why in [
     got = P.ready(REQ, runs)
     check("ready: %s -> %s" % (why, want), got[0] == want, got)
 check("ready: names what it waits on", "scan" in P.ready(REQ, [run("test")])[1])
+# a check with no bound workflow file is read as admission reads it: the run with the highest id decides
+def numbered(id, name, **kw):
+    return dict(run(name, **kw), id=id)
+for runs, want, why in [
+    ([numbered(1, "scan"), numbered(2, "scan", conclusion="failure")], "no", "a later failure beside an earlier success"),
+    ([numbered(1, "scan"), numbered(2, "scan", status="in_progress")], "wait", "a later run still going beside an earlier success"),
+    ([numbered(1, "scan", conclusion="failure"), numbered(2, "scan")], "ready", "a later success beside an earlier failure"),
+]:
+    got = P.ready(REQ, [run("test")] + runs)
+    check("ready: by run id, %s -> %s" % (why, want), got[0] == want, got)
 
 # A promotion or release-only check counts only from the workflow file that produces it, from a schedule or workflow_dispatch run,
 # on the tagged commit: the rule stage-admission applies, read from one table (a tag-push run is never the evidence)
