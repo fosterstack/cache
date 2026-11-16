@@ -87,6 +87,10 @@ refused("a later failing dispatch run beside an earlier green one", [scan_run(1)
 refused("a later failing dispatch run, with a tag-push run after it still running",
         [scan_run(1), scan_run(2, conclusion="failure"), scan_run(3, event="push", status="in_progress", conclusion=None)])
 admitted("an earlier failing dispatch run before a later green one", [scan_run(1, conclusion="failure"), scan_run(2)])
+# a run with no conclusion yet is not green, whatever an older run said
+refused("a later dispatch run still in progress beside an earlier green one",
+        [scan_run(1), scan_run(2, status="in_progress", conclusion=None)])
+admitted("a later dispatch run that finished green beside an earlier green one", [scan_run(1), scan_run(2)])
 # a run that cannot be read is no evidence, and says so in words of its own
 rc, out = admission([scan_run(1)], unreadable=(1,))
 check("admission: a scan run the token cannot read stops it with a message of its own, not 'is not green'",
