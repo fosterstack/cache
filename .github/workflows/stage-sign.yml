@@ -364,12 +364,10 @@ jobs:
         run: bash bin/install-scanner.sh aws-cli
 
       - name: make the tag object and the digest to sign
-        env:
-          COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           mkdir tag-work
-          python3 bin/tag-sign.py prepare --tag "$(cat tag-request/tag)" --commit "$COMMIT" --notes tag-request/notes.md \
+          python3 bin/tag-sign.py prepare --tag "$(cat tag-request/tag)" --commit "$GITHUB_SHA" --notes tag-request/notes.md \
             --tagger 'fosterstack release <release@users.noreply.github.com>' --time "$(cat tag-request/time)" \
             --object tag-work/tag.object --digest tag-work/tag.digest
 
