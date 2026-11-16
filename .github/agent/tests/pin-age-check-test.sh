@@ -1705,12 +1705,15 @@ EOF
 while IFS= read -r line; do
   case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
 done <"$work/hf-real.txt"
-CASE="AC16 harness form: bin/refresh-inputs-test.sh, the file of the real fetch-tool line (printf -v FETCH %s curl), is ruled by a committed reviewed_files row (the text is no per-line row)"
-check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-assert [r["file"] for r in d["reviewed_files"]].count("bin/refresh-inputs-test.sh") == 1
+CASE="AC16 harness form: bin/refresh-inputs-test.sh (the file of the real fetch-tool line printf -v FETCH %s curl) can be bound by no row: the committed reviewed_files holds no row for it, and the checker's _files_hash of it is None (fails closed)"
+check python3 - "$root" "$chk" <<'PY'
+import importlib.util, json, os, sys
+root, chk = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("pac", chk); pac = importlib.util.module_from_spec(spec); sys.path.insert(0, os.path.dirname(chk)); spec.loader.exec_module(pac)
+d = json.load(open(root + "/.github/supply-chain-exceptions.json"))
+assert not [r for r in d["reviewed_files"] if r["file"] == "bin/refresh-inputs-test.sh"]
 assert not [r for r in d["unmeasured_text"] if r["file"] == "bin/refresh-inputs-test.sh"]
+assert pac._files_hash(root, "HEAD", "bin/refresh-inputs-test.sh") is None
 PY
 # --- RUNTIME proof (Sonnet R1): every corpus line is EXECUTED under every bash on PATH (one per version: bash 5, whose test -v / -R / arithmetic operands
 # evaluate $(...) even in single quotes, and, where present, an older bash such as 3.2), with a stub directory first on PATH whose curl, wget, touch, cmd and
@@ -2111,7 +2114,8 @@ def body_hash(root, first):
         full = os.path.join(root, path)
         assert os.path.isfile(full) and not os.path.islink(full), ("a reviewed or sourced file is no plain file", path)
         seen[path] = open(full, "rb").read()
-        todo += sourced(seen[path].decode("utf-8", "replace"))
+        if not (path == os.path.normpath(first) and path.endswith(".py")):    # a Python file is read by Python: no shell sources from it
+            todo += sourced(seen[path].decode("utf-8", "replace"))
     first = os.path.normpath(first)
     out = "".join("%s %s\n" % (p, hashlib.sha256(seen[p]).hexdigest()) for p in [first] + sorted(set(seen) - {first}))
     return hashlib.sha256(out.encode()).hexdigest()
