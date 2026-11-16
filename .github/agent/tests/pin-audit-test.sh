@@ -1885,7 +1885,7 @@ def c_reviewed_files():
     # reviewed_files (REQ-SUP-001-AC16): an absent list is no rows (nothing is ruled); anything else malformed is refused (RuntimeError): a file that is not an object, invalid JSON, a list that is not a list, a bad row or field, a bad hash, a repeated file, a repeated JSON key
     load = lambda f, req=True: _runtime(lambda: age.load_reviewed_files(f, req))
     f = os.path.join(tmp, "rf.json"); open(f, "w").write("{}")
-    assert not accepts("reviewed_files {} (no rows)", lambda: load(f))
+    assert accepts("reviewed_files {} (no rows)", lambda: age.load_reviewed_files(f, True) == {}) is True
     open(f, "w").write('{"reviewed_files": [{}]}')
     refuse("reviewed_files [{}] (a row with no field)", lambda: load(f))
     h = "a" * 64
@@ -1899,10 +1899,10 @@ def c_reviewed_files():
                  '{"reviewed_files": [], "reviewed_files": []}'):
         open(f, "w").write(body); refuse(("reviewed_files", body), lambda: load(f))
     open(f, "w").write(json.dumps({"reviewed_files": [ok]}))
-    assert accepts("reviewed_files one good row", lambda: load(f))
+    accepts("reviewed_files one good row", lambda: load(f))
     absent = os.path.join(tmp, "absent-rf.json")
     refuse("reviewed_files missing file, required", lambda: load(absent, True))
-    assert not accepts("reviewed_files missing file, not required", lambda: load(absent, False))
+    assert accepts("reviewed_files missing file, not required", lambda: age.load_reviewed_files(absent, False) == {}) is True
 def c_gh_json_raw():
     for body in ("null", "not json"):
         gh({"api": body}); refuse(("gh_json", body), lambda: net._gh_json("repos/x", need=()))
