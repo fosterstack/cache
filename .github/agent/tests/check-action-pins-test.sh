@@ -1910,6 +1910,31 @@ case_ g3-main-double-ref-copy-bad bad "$(rb 'gh api'\
     "mkdir -p bin; printf 'docker run alpine"\
 "@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
 " > bin/g.sh"
+case_ g6-main-copy-extra-field-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" -X GET -f ref=x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-method-before-bad bad "$(rb 'gh api'\
+' -X GET "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-method-raw-field-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --method GET -F ref=x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-header-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main"'\
+" -H 'Accept: application/vnd.github.raw' --jq .content"\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
 case_ c02-foreign-heredoc-ok   ok  "$(rb "python3 - <<'PY'
           import os
           os.system('docker run alpine')
