@@ -246,7 +246,7 @@ def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
-LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
+LIVE_RULING = "live fetch from the Wolfi package host: "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
 GO_RULING = "pinned toolchain fetch (the recipe pin is verified before storing): "   # the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
 LOOPBACK_RULING = "loopback fetch (REQ-SUP-001-AC25): "   # the one line of the loopback helper that starts the fetch program (REQ-SUP-001-AC24): honored for that file and that line's sha256 only
 LOOPBACK_FILE = "bin/loopback-get.sh"
@@ -1137,7 +1137,7 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
 
 
 GO_INSTALL_REASON = ("Go's own release, downloaded from go.dev and verified against its pinned sha256 "
-                     "(owner ratified Nov 11 2026, REQ-SUP-001-AC27); the advisory check still applies")
+                     "(REQ-SUP-001-AC27); the advisory check still applies")
 _GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
 _GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
 _GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
