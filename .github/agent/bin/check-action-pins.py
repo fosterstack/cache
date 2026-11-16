@@ -2362,7 +2362,7 @@ def _resolve_script(path, text, entries, bases=()):
                         return None      # something else writes the copy (sed -i, cp, mv, tee ...): it is not main's committed bytes
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:
-            g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=main\"?", chunk)
+            g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=(?:refs/heads/)?main\"?", chunk)
             if not g:
                 continue
             want = g.group(1)

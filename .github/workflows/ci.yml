@@ -629,7 +629,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=refs/heads/main" --jq '.content' \
             | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
           [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
 
@@ -655,7 +655,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; the guard's refusal is data here
-          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
+          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=refs/heads/main" \
             --jq '.content' | base64 -d > "${RUNNER_TEMP}/main-required-checks.json" || exit 0
           out=$(bash "${RUNNER_TEMP}/required-check-guard.sh" \
                   "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?

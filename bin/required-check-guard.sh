@@ -12,7 +12,7 @@
 #
 # Usage: required-check-guard.sh <required-checks.json> [<release-only-checks.json>]
 #   With the second file, its eight entries (the checks release admission requires but the ruleset does not
-#   list) must also equal PINNED below, whole. ci.yml runs main's copy of this script over a pull request's
+#   list) must also equal PINNED below, whole, and the scope of every entry of the first file must equal PINNED_SCOPES. ci.yml runs main's copy of this script over a pull request's
 #   files, so a pull request cannot move the pin it is judged by.
 #   The ruleset side is read from `gh api repos/$GITHUB_REPOSITORY/rules/branches/main`
 #   (effective rules aggregated across every ruleset), or from $GUARD_RULES_JSON (a file
@@ -28,6 +28,20 @@ PINNED='[{"context":"acceptance-gradle","integration_id":15368,"scope":"push"},
 {"context":"allowlist-pins-auditor","integration_id":15368,"scope":"push"},
 {"context":"auditor-review-gate","integration_id":5054756,"scope":"pull_request"},
 {"context":"coverage","integration_id":15368,"scope":"push"}]'
+# The scope of each ruleset check: the ruleset has no scope, so it is pinned here and compared with the list.
+PINNED_SCOPES='[{"context":"test","integration_id":15368,"scope":"push"},
+{"context":"lint","integration_id":15368,"scope":"push"},
+{"context":"gosec","integration_id":15368,"scope":"push"},
+{"context":"govulncheck","integration_id":15368,"scope":"push"},
+{"context":"analyze (go)","integration_id":15368,"scope":"push"},
+{"context":"allowlist","integration_id":15368,"scope":"push"},
+{"context":"dependency-review","integration_id":15368,"scope":"pull_request"},
+{"context":"fips140-only","integration_id":15368,"scope":"push"},
+{"context":"requirements","integration_id":15368,"scope":"push"},
+{"context":"reproducibility","integration_id":15368,"scope":"push"},
+{"context":"scan","integration_id":15368,"scope":"push"},
+{"context":"pin-age","integration_id":15368,"scope":"pull_request"},
+{"context":"vendor","integration_id":15368,"scope":"push"}]'
 list="${1:?usage: required-check-guard.sh <required-checks.json>}"
 
 fail2() { echo "::error::required-check guard: $* — could not compare, not a pass" >&2; exit 2; }
@@ -47,6 +61,10 @@ expected=$(jq -c '[.required_checks[] | {context, integration_id}] | sort_by(.co
 if [ -n "${2:-}" ]; then
   release_only=$(jq -c '[.required_checks[] | {context, integration_id, scope}] | sort_by(.context)' "$2" 2>/dev/null) \
     || fail2 "release-only list ${2} is missing or has no required_checks array"
+fi
+if [ -n "${2:-}" ]; then
+  list_scopes=$(jq -c '[.required_checks[] | {context, integration_id, scope}] | sort_by(.context)' "$list")
+  pinned_scopes=$(jq -c 'sort_by(.context)' <<<"$PINNED_SCOPES")
 fi
 [ "$(jq length <<<"$actual")" -gt 0 ] || fail2 "main enforces NO required status checks"
 
@@ -68,6 +86,14 @@ if [ -n "${2:-}" ]; then
     echo "::error::release-only drift: ${2} is not the eight entries pinned in this script (a change needs the pin changed on main first)." >&2
     echo "diff (- pinned only, + ${2} only):"
     diff <(jq -cS '.[]' <<<"$PINNED") <(jq -cS '.[]' <<<"$release_only") | grep -E '^[<>]' | sed -e 's/^</-/' -e 's/^>/+/'
+    status=1
+  fi
+fi
+if [ -n "${2:-}" ]; then
+  if [ "$(jq -cS . <<<"$list_scopes")" != "$(jq -cS . <<<"$pinned_scopes")" ]; then
+    echo "::error::scope drift: the scope of an entry in ${list} is not the one pinned in this script (a change needs the pin changed on main first)." >&2
+    echo "diff (- pinned only, + ${list} only):"
+    diff <(jq -cS '.[]' <<<"$pinned_scopes") <(jq -cS '.[]' <<<"$list_scopes") | grep -E '^[<>]' | sed -e 's/^</-/' -e 's/^>/+/'
     status=1
   fi
 fi
