@@ -446,7 +446,7 @@ for name, raw, tags in (("a list instead of an object", "[]", ("v0.3.0", "v0.3.1
             r.returncode == 1 and "accepted-items.json" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr,
             (r.returncode, r.stdout, r.stderr))
 # an expiry that is a string but not a YYYY-MM-DD date is malformed too: the gate fails closed on doubt
-for expiry in ("soon", "", "2026-13-01"):
+for expiry in ("soon", "", "2026-13-01", "2026-W01-1"):
     for tag in ("v0.3.0", "v0.3.1"):
         r = owner_run(sys.argv[1], [item("below", expiry)], tag)
         check("cli release: an accepted-items expiry %r with %s exits 1, says the expiry is not a date and names the file" % (expiry, tag),
