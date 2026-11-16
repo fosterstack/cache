@@ -19,9 +19,13 @@ A=$(printf 'a%.0s' $(seq 64))
 tree() {
   local t; t=$(mktemp -d "$work/t.XXXXXX")
   ln -s "$root/bin" "$t/bin"; ln -s "$root/.github" "$t/.github"
-  mkdir "$t/docs" "$t/witness-build"
+  mkdir "$t/docs" "$t/witness-build" "$t/build" "$t/build/keys"
+  # ROW 3: Check takes release.rsa.pub from build/keys/ of the tagged checkout; NOROOTKEY=1 leaves the loose copy out, so only that file is there
+  touch "$t/build/keys/release.rsa.pub"
   # Check holds the candidate's release.rsa.pub and provenance.bundle.json (finding 3; rule 79): present by default, NOFILES=1 leaves them out
   if [ "${NOFILES:-0}" != 1 ]; then touch "$t/release.rsa.pub" "$t/provenance.bundle.json" "$t/b.json" "$t/x.txt" "$t/f.json"; fi
+  if [ "${NOROOTKEY:-0}" = 1 ]; then rm -f "$t/release.rsa.pub"; fi
+  if [ "${NOPROV:-0}" = 1 ]; then rm -f "$t/provenance.bundle.json"; fi
   printf '{"image-production":"sha256:%s","image-fips":"sha256:%s"}\n' "$A" "$A" > "$t/witness-build/digests.json"
   printf '%s\n' '- `<IMAGE_REF>`: the image' '- `<IMAGE_REF_FIPS>`: the fips image' '- `<TAG>`: the tag' \
     '- `<RELEASE_KEY>`: the key' '```sh' "$1" '```' > "$t/docs/verify-release.md"
@@ -166,17 +170,68 @@ for c in "cosign verify-blob $K $B x.txt" \
 done
 # a missing operand FAILS (never a passing not-run row, never left to postverify), naming the file
 for pair in "cosign verify-blob $K $B x.txt:release.rsa.pub" \
-            "cosign verify-blob --key release.rsa.pub --bundle provenance.bundle.json x.txt:provenance.bundle.json" \
-            "jq -e '.ok' provenance.bundle.json:provenance.bundle.json" \
             "cosign verify-blob $K $B x.txt:x.txt"; do
   c=${pair%:*}; file=${pair##*:}
-  t=$(tree "$c" 0); rm -f "$t/$file"
+  # ROW 3: the provenance.bundle.json commands are release-verify's (Check does not hold the file: cases below); the key is also taken from build/keys/
+  t=$(tree "$c" 0); rm -f "$t/$file"; [ "$file" != release.rsa.pub ] || rm -f "$t/build/keys/release.rsa.pub"
   v=$(check_says "$t")
   [ "$v" = refuse ] && [[ $(cat "$work/last") == *"$file"* ]] && ok "check-guide-plan: a missing operand fails naming it: $file (${c:0:40})" \
     || bad "check-guide-plan: missing operand $file of ${c:0:40} must fail naming it" "got $v: $(head -c 160 "$work/last")"
   [ ! -s "$t/plan.json" ] || [ "$(jq -s 'any(.[]; .run == null)' "$t/plan.json" 2>/dev/null)" != true ] \
     && ok "check-guide-plan: no passing not-run row for the missing $file" \
     || bad "check-guide-plan: a not-run row was planned for the missing $file" "$(head -c 200 "$t/plan.json")"
+done
+# ROW 3: the plan NAMES the place of each command: check, release-verify or postverify. place_is TREE COMMAND PLACE
+place_is() { jq -e -s --arg c "$2" --arg p "$3" 'any(.[]; .command == $c and .place == $p)' "$1/plan.json" > /dev/null 2>&1 && echo yes || echo no; }
+for c in "cosign verify-blob $K $B x.txt" "cosign verify-blob-attestation $K $B --check-claims=false x.txt" "jq -e '.ok' f.json"; do
+  t=$(tree "$c" 0); check_says "$t" > /dev/null
+  [ "$(place_is "$t" "$c" check)" = yes ] && ok "ROW3 place: a file command before publish is placed in check: ${c:0:50}" \
+    || bad "ROW3 place: ${c:0:50} must be placed in check" "$(head -c 200 "$t/plan.json" 2>&1)"
+done
+PC="cosign verify-blob-attestation --key release.rsa.pub --bundle provenance.bundle.json --type https://slsa.dev/provenance/v1 --check-claims=false"
+PJ="jq -e '.ok' provenance.bundle.json"
+for c in "$PC" "$PJ"; do
+  t=$(NOPROV=1 tree "$c" 0); v=$(check_says "$t")
+  [ "$v" = accept ] && ok "ROW3 a provenance.bundle.json command is accepted by Check without the file (it runs in release-verify): ${c:0:50}" \
+    || bad "ROW3 provenance command without the file at Check: ${c:0:50}" "got $v: $(head -c 160 "$work/last")"
+  [ "$(place_is "$t" "$c" release-verify)" = yes ] && ok "ROW3 place: a provenance.bundle.json command is placed in release-verify: ${c:0:50}" \
+    || bad "ROW3 place: ${c:0:50} must be placed in release-verify" "$(head -c 200 "$t/plan.json" 2>&1)"
+done
+t=$(NOPROV=1 tree "$PC" 0); printf '%s\n' '```sh' "$PJ" '```' >> "$t/docs/verify-release.md"; check_says "$t" > /dev/null
+[ "$(place_is "$t" "$PJ" release-verify)" = yes ] && ok "ROW3 place: a jq read of provenance.bundle.json is placed in release-verify" \
+  || bad "ROW3 place: the jq read of provenance.bundle.json must be placed in release-verify" "$(head -c 200 "$t/plan.json" 2>&1)"
+# the key: only build/keys/release.rsa.pub of the tagged checkout is there; the plan places the command in check and Check accepts
+KC="cosign verify-blob $K $B x.txt"
+t=$(NOROOTKEY=1 tree "$KC" 0); v=$(check_says "$t")
+[ "$v" = accept ] && ok "ROW3 release.rsa.pub is taken from build/keys/ of the tagged checkout (accept)" \
+  || bad "ROW3 release.rsa.pub from build/keys/" "got $v: $(head -c 160 "$work/last")"
+[ "$(place_is "$t" "$KC" check)" = yes ] && ok "ROW3 place: the release.rsa.pub command is placed in check" \
+  || bad "ROW3 place: the release.rsa.pub command must be placed in check" "$(head -c 200 "$t/plan.json" 2>&1)"
+# no key in build/keys/ either: the command FAILS naming release.rsa.pub (never not-run, never left for later)
+t=$(NOROOTKEY=1 tree "$KC" 0); rm -f "$t/build/keys/release.rsa.pub"; v=$(check_says "$t")
+[ "$v" = refuse ] && [[ $(cat "$work/last") == *release.rsa.pub* ]] && ok "ROW3 no release.rsa.pub in build/keys/ fails naming it" \
+  || bad "ROW3 no release.rsa.pub in build/keys/" "got $v: $(head -c 160 "$work/last")"
+# the four SBOM and lock commands exist only after publish: placed in postverify, accepted by Check without their files, and not in cannot-run
+GL="bin/chain-check-shape.py guidelist docs/verify-release.md"
+SB="cosign verify-blob $K --bundle production.sbom.json.bundle production.sbom.json"
+SF="cosign verify-blob $K --bundle fips.sbom.json.bundle fips.sbom.json"
+LP="cosign verify-blob $K --bundle production.full.lock.json.bundle production.full.lock.json"
+LF="cosign verify-blob $K --bundle fips.full.lock.json.bundle fips.full.lock.json"
+for c in "$SB" "$SF" "$LP" "$LF"; do
+  t=$(tree "$c" 0); v=$(check_says "$t")
+  [ "$v" = accept ] && ok "ROW3 a post-publish SBOM/lock command is accepted by Check without its files: ${c:0:70}" \
+    || bad "ROW3 post-publish command without its files at Check: ${c:0:70}" "got $v: $(head -c 160 "$work/last")"
+  [ "$(place_is "$t" "$c" postverify)" = yes ] && ok "ROW3 place: the SBOM/lock command is placed in postverify: ${c:0:70}" \
+    || bad "ROW3 place: ${c:0:70} must be placed in postverify" "$(head -c 200 "$t/plan.json" 2>&1)"
+  t=$(tree "$c" 1); rc=0; g=$(cd "$t" && python3 -I $GL 2>&1) || rc=$?
+  [ "$rc" != 0 ] && [[ $g == *"${c:0:40}"* ]] && ok "ROW3 a post-publish SBOM/lock command in cannot-run.json is refused by name: ${c:0:70}" \
+    || bad "ROW3 a post-publish command in cannot-run.json: ${c:0:70}" "rc=$rc: ${g:0:160}"
+done
+# only those four names are postverify's: a similar command with other files is a before-publish command, so its missing operands fail
+for c in "cosign verify-blob $K --bundle other.sbom.json.bundle other.sbom.json" "cosign verify-blob $K --bundle production.sbom.json.bundle other.sbom.json"; do
+  t=$(tree "$c" 0); v=$(check_says "$t")
+  [ "$v" = refuse ] && ok "ROW3 a command that only resembles the four fails on its missing operand: ${c:0:70}" \
+    || bad "ROW3 resembling command ${c:0:70} must fail on its missing operand" "got $v"
 done
 # an image reference is not a file subject: unlisted, it still fails
 for c in "cosign verify <IMAGE_REF> $K" "cosign verify <IMAGE_REF_FIPS> $K" \
@@ -227,6 +282,18 @@ rt=$(mktemp -d "$work/real.XXXXXX"); rc=0
   "sha256:$A" "$rt/plan.json" "sha256:$A") > "$rt/out" 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "check-guide-plan: the real guide with the real list plans (accept)" \
   || bad "check-guide-plan: the real guide with the real list" "rc=$rc: $(head -c 200 "$rt/out")"
+# ROW 3 on the real tree: each of the four SBOM/lock commands is placed in postverify, every provenance.bundle.json command in release-verify, and every row names a known place
+jq -e -s 'length > 0 and all(.[]; .place == "check" or .place == "release-verify" or .place == "postverify")' "$rt/plan.json" > /dev/null 2>&1 \
+  && ok "ROW3 the real plan names a place (check, release-verify or postverify) for every command" \
+  || bad "ROW3 the real plan names a place for every command" "$(jq -c '[.[] | .place]' -s "$rt/plan.json" 2>&1 | head -c 200)"
+for n in production.sbom.json fips.sbom.json production.full.lock.json fips.full.lock.json; do
+  jq -e -s --arg n "$n" '[.[] | select(.command | test("verify-blob .*--bundle " + ($n | gsub("\\."; "\\.")) + "\\.bundle " + ($n | gsub("\\."; "\\."))))] | length == 1 and all(.[]; .place == "postverify")' "$rt/plan.json" > /dev/null 2>&1 \
+    && ok "ROW3 the real plan places the $n verification in postverify" || bad "ROW3 the real plan places the $n verification in postverify" "$(jq -c '[.[] | {command: .command[0:60], place}]' -s "$rt/plan.json" 2>&1 | head -c 400)"
+done
+jq -e -s '[.[] | select(.command | test("provenance\\.bundle\\.json"))] | length == 3 and all(.[]; .place == "release-verify")' "$rt/plan.json" > /dev/null 2>&1 \
+  && ok "ROW3 the real plan places the three provenance.bundle.json commands in release-verify" || bad "ROW3 the real plan places the three provenance.bundle.json commands in release-verify" "$(jq -c '[.[] | {command: .command[0:60], place}]' -s "$rt/plan.json" 2>&1 | head -c 400)"
+jq -e -s '[.[] | select(.place == "postverify")] | length >= 4 and ([.[] | select(.place == "postverify" and (.command | test("sbom|lock")))] | length == 4)' "$rt/plan.json" > /dev/null 2>&1 \
+  && ok "ROW3 the real plan holds exactly four SBOM/lock commands in postverify" || bad "ROW3 the real plan holds exactly four SBOM/lock commands in postverify" "no"
 rc=0; g=$(cd "$root" && python3 -I $GL 2>&1) || rc=$?
 [ "$rc" = 0 ] && ok "guidelist: the real list is accepted" || bad "guidelist: the real list" "rc=$rc: ${g:0:200}"
 jq -e 'length > 0 and all(.[]; .command | test("<IMAGE_REF(_FIPS)?>"))' "$root/docs/verify-release.cannot-run.json" > /dev/null \
@@ -243,6 +310,16 @@ for pair in "cosign verify-blob $K $B absent.txt:absent.txt" "cosign verify-blob
   [ "$rc" = 1 ] && [[ $out == *"$file"* ]] && [[ $out != *Traceback* ]] \
     && ok "release-postverify: a guide file absent from release-published/ fails naming it: $file" \
     || bad "release-postverify: absent file $file" "rc=$rc: ${out:0:200}"
+done
+# ROW 3 (5): the four SBOM/lock commands run in postverify from the folder of published assets; a missing operand fails the run (non-zero exit) naming it
+for miss in production.sbom.json.bundle production.sbom.json fips.sbom.json.bundle fips.sbom.json production.full.lock.json.bundle production.full.lock.json fips.full.lock.json.bundle fips.full.lock.json; do
+  t=$(tree "$SB" 0); printf '%s\n' '```sh' "$SF" "$LP" "$LF" '```' >> "$t/docs/verify-release.md"
+  mkdir "$t/release-published"; for x in production.sbom.json production.sbom.json.bundle fips.sbom.json fips.sbom.json.bundle production.full.lock.json production.full.lock.json.bundle fips.full.lock.json fips.full.lock.json.bundle; do : > "$t/release-published/$x"; done
+  rm -f "$t/release-published/$miss"
+  rc=0; out=$(cd "$t" && GITHUB_REF_NAME=v0.3.0 GITHUB_REPOSITORY=fosterstack/cache python3 -I bin/release-postverify.py 2>&1) || rc=$?
+  [ "$rc" != 0 ] && [[ $out == *"$miss"* ]] && [[ $out != *Traceback* ]] \
+    && ok "ROW3 release-postverify: the SBOM/lock commands fail the run on a missing operand, naming it: $miss" \
+    || bad "ROW3 release-postverify: missing $miss must fail the run naming it" "rc=$rc: ${out:0:200}"
 done
 # an image-only guide with an image-only list behaves as before: it reaches the staged-copy step
 t=$(tree "cosign verify <IMAGE_REF> $K" 1); v=$(release_says "$t")
