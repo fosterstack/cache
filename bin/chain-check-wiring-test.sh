@@ -107,6 +107,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\n    outputs:\n      recor
 stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n      contents: read\n    outputs:\n      records-arm64: ${{ steps.records-arm64.outputs.records-arm64 }}\n    steps:\n"
           f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
           "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
+          "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
           + dn("signed-witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist") + dn("images", "images")
           + "      - name: arm64 under Witness\n        run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh\n"
           + "      - id: records-arm64\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-arm64) && echo \"records-arm64=$r\" >> \"$GITHUB_OUTPUT\"\n"
@@ -337,15 +338,20 @@ m a_pkg    'ubuntu-24.04-arm\n    permissions:\n      contents: read' 'ubuntu-24
 m a_sec    'name: arm64 under Witness\n'                       'name: arm64 under Witness\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}\n' 'secret'  "AC1 a secret in the arm64 job"
 m a_extra  'name: arm64 under Witness\n'                       'name: extra\n        run: kind version\n      - name: arm64 under Witness\n' 'check-arm64' "AC1 an extra step in the arm64 job"
 m a_nokind '      - name: arm64 under Witness\n        run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh\n' '' 'check-arm64' "AC1 the arm64 job without its witnessed step"
-m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' 'check-arm64' "AC1 the arm64 job without the Witness install"
+m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' 'check-arm64' "AC1 the arm64 job without the Witness install"
 m a_nowb   '          name: signed-witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job without the Build record download"
 m a_prov   'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job downloads Sign's provenance"
 m a_stepwhat 'run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed-local.sh arm64 bin/check-phase-runtime.sh' 'check-arm64' "AC1 the arm64 step with another target"
 m a_stepname 'run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh' 'check-arm64' "AC1 the arm64 job running another step"
+# finding 3b: check-artifacts.sh calls fscache-go's `go` on the arm64 runner, so the arm64 job installs the pinned Go exactly as the amd64 Check job does
+m a_nogo   '(install-scanner.sh witness\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n(      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build)' '\1\2' 'check-arm64' "3b the arm64 job without the pinned Go install (check-artifacts.sh exits 127 on go)"
+m a_gosetup '(install-scanner.sh witness\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '\1      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'check-arm64' "3b the setup-go action in place of the pinned Go install in the arm64 job"
+m a_goarg  'run: bash bin/install-scanner.sh go\n(      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build)' 'run: bash bin/install-scanner.sh go /tmp\n\1' 'check-arm64' "3b the Go install of the arm64 job with another directory"
+m a_goord  '(      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n)(      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n)(      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build)' '\2\1\3' 'check-arm64' "3b the Go install of the arm64 job before the Witness install"
 m a_upname 'name: witness-check-arm64'                         'name: check-results'                                    'check-arm64'       "AC1 the arm64 upload under another artifact name"
 m a_uppath 'path: witness-arm64'                               'path: witness-scanners'                                 'check-arm64'       "AC1 the arm64 upload of another directory"
 m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
-m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
+m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
 # the amd64 job is judged as exactly as the arm64 job: its listed steps in order, each download by name and
 # path and once, the witness-check upload by name and path.
 m s_xnowb '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-build\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of witness-build (the record Check verifies)"
@@ -644,6 +650,16 @@ mkr q11; printf 'DENY = "docker buildx goreleaser"\n' > "$work/q11/bin/chain-rel
 expect ok "fixture: the deny list of a judge may name the removed tools (it refuses them)" "" removed "$work/q11"
 # ---- the real repository ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
+python3 -I - "$root/.github/workflows/stage-verify.yml" <<'PY' > "$work/arm_go.out" 2>&1 && ok "3b the real check-arm64 job has the same pinned Go install step as the amd64 check job" || bad "3b the real check-arm64 job has the same pinned Go install step as the amd64 check job -> $(head -c 200 "$work/arm_go.out")"
+import sys, re
+t = open(sys.argv[1]).read()
+jobs = re.split(r"\n  (?=[a-z0-9-]+:\n    )", t)
+job = {j.split(":", 1)[0].strip(): j for j in jobs}
+step = "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
+assert step in job["check"], "the amd64 check job lost its Go step"
+assert step in job["check-arm64"], "check-arm64 has no install Go (pinned by checksum) step: check-artifacts.sh exits 127 on go"
+assert job["check-arm64"].index("install-scanner.sh go") < job["check-arm64"].index("witnessed-local.sh"), "Go is installed after the witnessed step"
+PY
 expect ok "AC4 round 1 F2: the real stage-verify.yml installs every scanner .github/policy/scanners.json lists (check-scan.sh runs them)" "" installs "$root/.github/workflows/stage-verify.yml" "$root/.github/policy/scanners.json"
 expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
 for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
@@ -722,7 +738,7 @@ else
   bad "AC2 witnessed-local.sh exit $rc, ran the script under: $(grep -o -- ' -- .*' "$fw/args" 2> /dev/null)"
 fi
 
-EXPECT=318
+EXPECT=323
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
