@@ -28,7 +28,7 @@ reported clean), 3 a crash of this script.
 usage: panel.py tally --in DIR --vex F --out DIR
        panel.py google-packages HTTP_LOG   (the package list gcloud sent, from its --log-http output)
 """
-import argparse, copy, importlib.util, json, os, re, sys, traceback, urllib.parse
+import argparse, importlib.util, json, os, re, sys, traceback, urllib.parse
 
 _gate_spec = importlib.util.spec_from_file_location(
     "inspector_gate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "inspector-gate.py"))
@@ -76,27 +76,31 @@ def _covers(product, image):
     return scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
 
 
+def _unquoted_id(sub):
+    """`sub` with the purl in its @id decoded once (the query, if any, as it is)."""
+    purl, mark, query = sub.get("@id", "").partition("?")
+    return dict(sub, **{"@id": urllib.parse.unquote(purl) + mark + query}) if "@id" in sub else sub
+
+
 def load_vex(path):
-    """Per-image VEX indexes ({image: index}): each image is filtered only by the statements whose product covers it,
-    with subcomponent purls decoded once (%2B is +, %252B is %2B) on a copy, so every image reads the same ids and the
-    statement matches the version the scanner reports. An unreadable file or a statements field that is no list is
-    ValueError or OSError."""
-    doc = copy.deepcopy(_gate.load(path))
+    """Per-image VEX indexes ({image: index}): each image is filtered only by the statements whose product covers it.
+
+    The part of each purl before "?" is decoded once (%2B is +, %252B is %2B), on a copy, so every image reads the same
+    ids and a statement matches the version the scanner reports; the qualifiers stay as written. An unreadable file or
+    a statements field that is no list is ValueError or OSError."""
+    doc = _gate.load(path)
     if not isinstance(doc, dict) or not isinstance(doc.get("statements") or [], list):
         raise ValueError("%s is not an OpenVEX document (an object with a list of statements)" % path)
-    for st in doc.get("statements") or []:
-        for p in st.get("products") or []:
-            for sub in p.get("subcomponents") or []:
-                if isinstance(sub.get("@id"), str):
-                    base, q, query = sub["@id"].partition("?")
-                    sub["@id"] = urllib.parse.unquote(base) + q + query
     out = {}
     for img in sorted({i for imgs in EXPECTED.values() for i in imgs}):
         stmts = []
         for st in doc.get("statements") or []:
             prods = [p for p in st.get("products") or [] if _covers(_product_id(p), img)]
-            if prods:
-                stmts.append(dict(st, products=prods))
+            if not prods:
+                continue
+            prods = [dict(p, subcomponents=[_unquoted_id(sub) for sub in p["subcomponents"]])
+                     if p.get("subcomponents") else p for p in prods]
+            stmts.append(dict(st, products=prods))
         out[img] = _gate.vex_index(dict(doc, statements=stmts))
     return out
 
@@ -109,7 +113,7 @@ def _cdx_packages(doc):
     return [c for c in doc.get("components") or [] if isinstance(c, dict) and _gate.is_package_url(c.get("purl"))]
 
 
-def _purl_name_version(purl):
+def purl_name_version(purl):
     """(name, version) from a package URL, as the other scanners name it: a distro package without its distro
     namespace (pkg:deb/debian/libc-bin -> libc-bin), a Go module by its full path; the version un-escaped."""
     name, ver = _gate.name_version(purl)
@@ -188,7 +192,7 @@ def _cdx_findings(doc, comps, inspector=False):
             c = by_ref.get(a.get("ref"))
             if c is None:   # a finding that names no component of the report cannot be attributed: incomplete, never a nameless "?" finding
                 raise ValueError("vulnerability %s affects %r, which is not a component of the report: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
-            name, ver = _purl_name_version(c.get("purl") or "")
+            name, ver = purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
             if name == "?":   # the component has neither a package URL nor a name: still a finding nobody can attribute
@@ -236,7 +240,7 @@ def read_scout(d):
         purl = None
         if name.startswith("pkg:"):   # Scout's GitLab report puts the package URL in name (scout-selfcheck.py:124): name it as the other scanners do
             purl = name
-            name, pver = _purl_name_version(purl)
+            name, pver = purl_name_version(purl)
             ver = ver or pver
         purl = purl or next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
         out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
