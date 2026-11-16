@@ -293,7 +293,7 @@ def _vex_match(doc, finding, variant, image_repo):
                 subs.append((typ, name, _gate.stdlib_version(typ, name, ver)))
             if subs and not pkg[0]:
                 continue   # a finding with no package identity never matches a statement that names packages
-            if not subs or any(ftype in (None, t) and _same_package(pkg[0], fver, n, sv) for t, n, sv in subs):
+            if not subs or any(_gate.types_cover(ftype, (t,)) and _same_package(pkg[0], fver, n, sv) for t, n, sv in subs):
                 return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v["name"], "status": st["status"], "product": p.get("@id")}
     return None
 
