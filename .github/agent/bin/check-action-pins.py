@@ -2911,6 +2911,8 @@ def check_runs(where_job, scripts, bad, tree=None):
         where, raw, shell = item[:3]
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
+        if more and (step := re.fullmatch(r"(.*?)(?:\.jobs\.(.*)\.steps|\.runs\.steps)\[(\d+)\]\.run", where)):
+            bad += step_write_findings(f"{step[1]}: {'job ' + step[2] + ', ' if step[2] else ''}step {int(step[3]) + 1}", more)
         own = read(raw)
         raw = raw + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own
         text = read(raw)
@@ -3272,16 +3274,22 @@ def steps_context(doc):
     return found
 
 
+def step_write_findings(where, text):
+    """The findings for one text a step runs: a startup-hook name set through an env route, or a PATH route."""
+    names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
+    found = []
+    if path := _PATH_ROUTE.search(text):
+        found.append(f"{where}: uses {path.group()}, which changes PATH for later steps; refused")
+    if (route := _ENV_ROUTE.search(text)) and (name := names.search(text)):
+        found.append(f"{where}: sets {name.group()} through {route.group()}, which changes what later programs load or "
+                     f"where they connect; refused")
+    return found
+
+
 def check_step_writes(rel, steps, bad, job="", outer=""):
     """A step that sets a startup-hook name by a route other than an env key, or changes PATH, is a finding."""
-    names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
     for n, text in enumerate(step_texts(steps, outer), 1):
-        where = f"{rel}: {'job ' + job + ', ' if job else ''}step {n}"
-        if path := _PATH_ROUTE.search(text):
-            bad.append(f"{where}: uses {path.group()}, which changes PATH for later steps; refused")
-        if (route := _ENV_ROUTE.search(text)) and (name := names.search(text)):
-            bad.append(f"{where}: sets {name.group()} through {route.group()}, which changes what later programs load or "
-                       f"where they connect; refused")
+        bad += step_write_findings(f"{rel}: {'job ' + job + ', ' if job else ''}step {n}", text)
 
 
 def check_file(tree, rel, pins, bad):
