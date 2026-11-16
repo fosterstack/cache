@@ -113,7 +113,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 158: + ^bin/policy-merge-harness\.py$ (the policy merge harness of the required-checks repair);
+# 156: - ^bin/required-check-guard(-test)?\.sh$ (the guard is deleted); 158: + ^bin/policy-merge-harness\.py$ (the policy merge harness of the required-checks repair);
 # 156: - the pattern of the removed supply-chain observer program (the wait for new versions is gone); 157: +
 # ^bin/audit-record(\.py|-(judge|prepare|request|test)\.sh)$ (REQ-REL-012, the audit record writer); 156: +
 # ^bin/vendor-provenance-records\.py$ (REQ-VEND-001-AC15, the records step); 155: + ^bin/job-isolation-test\.sh$
@@ -124,7 +124,7 @@ ALLOWED_MENTIONS = {
 # 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144:
 # + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) +
 # build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 158, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 156, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -803,7 +803,7 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-mis
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
 
-# the reviewer's version script is one of the five files' list-keeper: admitted by its exact path only
+# the reviewer's version script is one of the four files' list-keeper: admitted by its exact path only
 passfam "feature/x" "the reviewer's version script" "bin/dependabot-reviewer-version.sh"
 runeach fail "feature/x" "reviewer-version near-miss refused" \
   "bin/dependabot-reviewer-version.sh.bak" "bin/dependabot-reviewer-version-x.sh" \
