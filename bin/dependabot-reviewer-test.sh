@@ -1270,7 +1270,8 @@ case "$1 $2" in
               if [ -n "${EVENTS99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done;
                 jq -r "$f" <<<"$EVENTS99_JSON"
               else printf '%b' "${EVENTS99:-}"; fi ;;
-  "api repos/o/r/contents/.github/policy/required-checks.json?ref=refs/heads/main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
+  "api repos/o/r/contents/.github/policy/required-checks.json?ref=refs/heads/main")
+    base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *)
     [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   # the review gate's own check on a head (the App's latest): GATE99, none unless set; no gate check on any other head
@@ -1821,7 +1822,8 @@ also "settle: nothing to turn off, nothing armed" "-pr merge"
 settle "$BOTH" '90 sha90\n' 0 \
   "a lane-armed patch whose review did not finish (no verdict) and that the act step disarmed"
 also "settle: the lane's arm is put back for exactly that head, after the required-check guard; the major stays off" \
-  "+pr merge --auto --squash --match-head-commit sha90 90" "+required-checks.json\?ref=refs/heads/main" "-match-head-commit sha99"
+  "+pr merge --auto --squash --match-head-commit sha90 90" "+required-checks.json\?ref=refs/heads/main" \
+  "-match-head-commit sha99"
 PRIOR90=neutral settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch left neutral by an unfinished review"
 also "settle: the lane's arm is put back over a neutral too" "+pr merge --auto --squash --match-head-commit sha90 90"
 settle "$BOTH" '' 0 "an unfinished patch the lane had NOT armed (not in lane-arms.txt)"
@@ -1949,7 +1951,11 @@ reads_ok() { # file: its ?ref= words, to the end of the shell word, are exactly 
   [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s\n%s' "$want" "$want" "$want")" ]
 }
 if reads_ok "$wf"; then echo "ok: workflow reads of main name ?ref=refs/heads/main, never ?ref=main"; pass=$((pass+1))
-else echo "FAIL: workflow reads of main name ?ref=refs/heads/main, never ?ref=main (want exactly 3 reads, each ?ref=refs/heads/main\")"; fail=$((fail+1)); fi
+else
+  echo "FAIL: workflow reads of main name ?ref=refs/heads/main, never ?ref=main" \
+    "(want exactly 3 reads, each ?ref=refs/heads/main\")"
+  fail=$((fail+1))
+fi
 mut=$(mktemp -d -t cache5-tests.XXXXXX)
 sed 's|?ref=refs/heads/main"|?ref=refs/heads/main-x"|' "$wf" > "$mut/branch-prefix.yml"
 { cat "$wf"; echo '  x: api repos/o/r/contents/f?ref=refs/tags/main"'; } > "$mut/tag-read.yml"
