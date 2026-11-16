@@ -1606,7 +1606,7 @@ requirements:
       - id: REQ-REL-005-AC3
         given: "a workflow job (or composite action) with a step that runs a script committed in the repository, and a step of the same job that runs curl, wget or aria2c in any form (also inside sh -c, eval, a command substitution or behind a wrapper such as env, sudo or xargs)"
         when: "the action-pin check reads the workflow"
-        then: "the check reports a finding that names the step and the command unless that command is demonstrably writing only to standard output or /dev/null: a closed list of read-only options (the destination of a download is never read from its options), no output redirection except to /dev/null, no bare variable where an option may stand, no word the parser cannot read, and for wget an output of - ; anything else, aria2c always, and any unreadable form is a finding; an exclusion is one exact workflow, job, step index and sha256 of the step's run text with its reason in the check, and a copy of an excluded step elsewhere or an edit of it is a finding again (reviewer reading Oct 16, under the release manager's fail-closed rule and the Oct 3 pin-checker scope; it only tightens the check)"
+        then: "the check reports a finding that names the step and the command unless that command is demonstrably writing only to standard output or /dev/null: a closed list of read-only options (the destination of a download is never read from its options), no output redirection except to /dev/null, no bare variable where an option may stand, no word the parser cannot read, and for wget an output of - ; anything else, aria2c always, and any unreadable form is a finding; an exclusion is one exact workflow, job, step index and sha256 of the step's run text with its reason in the check, and a copy of an excluded step elsewhere or an edit of it is a finding again; the exclusion of a token request also fails when the word curlrc stands in the workflow outside the excluded steps' run text, or when the env of an excluded step, the env of its job or the env of the workflow is not exactly the mapping the check holds for it (the reviewer's token-request step and its job and workflow have none; the decision step has the keys and values committed in the reviewer workflow): a key added, removed or changed, and a value changed, is a finding, whatever the name; a job with container: or services: is refused the exclusion too, since their env reaches its steps and the check does not read it (reviewer reading Oct 16, under the release manager's fail-closed rule and the Oct 3 pin-checker scope; it only tightens the check)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -1678,17 +1678,18 @@ requirements:
         status: approved
 
   - id: REQ-DEP-001
-    title: Dependabot majors are judged by a machine
+    title: Dependabot pull requests are judged by a machine
     statement: >
-      A Dependabot major version bump shall be judged by the Dependabot
-      reviewer, not by a person: from main, hourly, it gathers the evidence
-      with no model involved, has two readers rank findings without a verdict,
-      and decides mechanically to merge or to hold with an issue; it posts its
-      result as a check and edits nothing.
-    source: [.github/workflows/dependabot-reviewer.yml, bin/dependabot-reviewer.py]
+      Every pull request Dependabot opens into main, whatever its update kind
+      (patch, minor, major) and whoever pushed commits onto it since, shall be
+      judged by the Dependabot reviewer, not by a person: from main, hourly, it
+      gathers the evidence with no model involved, has two readers rank
+      findings without a verdict, and decides mechanically to merge or to hold
+      with an issue; it posts its result as a check and edits nothing.
+    source: [.github/workflows/dependabot-reviewer.yml, bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt]
     tier: community
     introduced: v0.3.0
-    origin: the release manager's approvals (Sep 29 2026; Sep 30 2026, sentences 4-5)
+    origin: the release manager's approvals (Sep 29 2026; Sep 30 2026, sentences 4-5); every update kind, with the reviewer as a Dependabot pull request's only review (Nov 11 2026)
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-DEP-001-AC1
@@ -1698,13 +1699,13 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC2
-        given: an open Dependabot major with no verdict yet
+        given: an open Dependabot pull request into main with no verdict on its head yet, whatever its updates are (patch, minor, major, flagged) and whoever pushed commits onto it
         when: the reviewer runs
-        then: it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency; a read of release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never "none found"
+        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit, or one that names a changed binary file, whose bytes a diff does not carry, gives no bundle and no verdict; only while the vendor check is on main's required-check list, a file under vendor/ is given by its header line and a count of the lines not shown); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC3
-        given: the gathered evidence for one major
+        given: the gathered evidence for one pull request
         when: the two readers answer
         then: "the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked \"breaks us\", \"check\" or \"noise\", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier, in any letter case, reaches a finding, an issue or the uploaded evidence, the evidence bundle included"
         verification: { method: unit, release_blocking: false }
@@ -1740,15 +1741,39 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC9
-        given: a merge verdict on a Dependabot major
+        given: a merge verdict on a Dependabot pull request
         when: auto-merge is armed, and when a new commit is pushed to the PR
-        then: auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh
+        then: "auto-merge is armed only for the exact head commit that was reviewed; after the readers have answered the reviewer reads the pull request's head again, and when it is another commit than the one whose diff was gathered it publishes no check, arms nothing, holds nothing and leaves the pull request as it is (not an error: the new head is a candidate at the next run); a new push voids the verdict, and the new head is reviewed afresh unless AC11 passes it; on a pull request with a major or flagged update the push also turns auto-merge off until the new head has its success"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC10
         given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
         when: the reviewer picks its candidates and gathers its evidence
-        then: it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor track
+        then: "it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it, it is named flagged in the bundle, and an auto-merge armed on its head with no verdict is turned off before the review; a bump whose notes say neither is read by the same readers too, and keeps through the review the arm the auto-merge workflow gave it; a pull request whose update lines cannot be read is read as one update of its own kind (unparsed) and is never treated as a plain patch or minor: an auto-merge armed on its head with no verdict is turned off before the review"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC11
+        given: an open Dependabot pull request whose head has no verdict and is a merge commit, and a reviewer run that is not forced
+        when: the reviewer picks its candidates
+        then: "it walks back over first parents, at most five commits, while each commit passed is a merge commit, to the first commit that carries a reviewer verdict (a success of another version is no verdict); only if that verdict is a success of the current reviewer version (AC14) and GitHub's diff of the head against its merge base with main is byte for byte the same text as that commit's (not empty, within the readers' limit, naming no binary file) it publishes success on the head, naming the commit it carries it from, and calls no reader; a failure or neutral verdict met first, no verdict within reach, a diff that differs or a read that fails means the head is read like any other; a carried success that cannot be published fails the run and is retried"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC12
+        given: a reviewer run that took one or more heads up for review
+        when: its act step and its cancellation cleanup have ended, whether the run finished, failed or was cancelled
+        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head whose every update is a plain patch or minor (none major, flagged or unparsed) that was armed when the reviewer took it up (the auto-merge workflow arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head, after the required-check guard matches; a head with a success verdict is left as the act step left it; the verdict is read as REQ-DEP-001-AC14 reads it, so a success of another version, or with no version, is no verdict: such a head whose review did not finish is armed again as it was, never left disarmed; a lookup or a write that fails fails the run"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC13
+        given: a verdict of the reviewer on a head that is not success (failure; or neutral, for a forced re-review, a review that did not finish over an earlier verdict, or a cancelled run whose verdict cannot be confirmed)
+        when: the reviewer publishes it
+        then: "it first publishes the review gate's own check on that head as failure (the check run named auditor-review-gate, created with the same App token as its own check, with the gate's fields), and publishes its own check only after that succeeded; it never publishes that check as anything but failure; at every hourly run, a head whose latest verdict is failure or neutral and whose latest auditor-review-gate check from the App is success gets the gate failure again; and a head whose latest verdict is success (read or carried) and whose latest auditor-review-gate check from the App is a failure more than six hours old, which the gate's sweep no longer judges, gets that gate failure published again, so that the sweep judges the head anew; a head whose newest verdict is anything but a success of the current version (none: no reviewer check, or a success of another version or with no version; failure; neutral; cancelled, timed_out, action_required or any other conclusion) never keeps a gate success: the reviewer at every hourly run, and the gate's sweep for every Dependabot head, fail it; the sweep judges a head that already has a gate success, and is a Dependabot head, only for that verdict (the passed-audit judge), not for the pin, allowlist, wiring and scanner checks, since its head did not change; the passed-audit judge answering with a GitHub API error (exit 3) on such a head publishes nothing for it and fails the run; a gate failure that cannot be published or read fails the run"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC14
+        given: "the five files that decide the reviewer's verdict, as a run checked them out: bin/dependabot-reviewer.py, .github/policy/dependabot-reviewer-prompt.txt, .github/workflows/dependabot-reviewer.yml, .github/policy/required-checks.json and bin/required-check-guard.sh; their version is the sha256 of the output of sha256sum over them in that order (64 lower-case hex digits), so each file has its own boundary; one script, bin/dependabot-reviewer-version.sh, holds the list and computes it, and a file it cannot read fails it"
+        when: the reviewer publishes a verdict, whatever its conclusion (success carried from an earlier head, neutral for a forced or unfinished review, success, failure), and when it, the auto-merge workflow or the review gate's judge reads a verdict
+        then: "every check the reviewer publishes carries its version as the check run's external_id; a reader counts a success only where a verdict is needed, and then only when its external_id is the version printed by bin/dependabot-reviewer-version.sh on main now (the reviewer reads its own checkout, the auto-merge workflow fetches main's copy of the script and then the files it lists through the contents API, and runs the script with the folder of those files as its argument, the judge reads the checkout of main), so a change to any of the five makes every earlier success not count; a success with another external_id, or with none, is no success: for the reviewer it is no verdict (the head is read as a head with none is, the success is never carried to a new head, the newest check run still decides, so a new success with the current version replaces it), for the judge it is a verdict that does not pass; a failure or neutral verdict counts whatever its external_id; no time is read from GitHub and no workflow-change time decides anything; a version that cannot be computed stops the step that needs it before any verdict is published (no verdict at all, not a neutral), and gives the judge its record rule; every reader of a head's check runs (the reviewer, the auto-merge workflow, the judge, the gate's own check read by the reviewer and by the gate's sweep) asks for 100 runs a page and fails closed, as a read that failed, when it gets 100 runs, a full page that GitHub may have cut (fewer than 100 is the whole answer under the filter it asked; the judge exits 3 on it); a reader that wants the newest run per check name keeps GitHub's latest-per-name list, the others read all runs; the auto-merge workflow reads the verdict first and the version only for a success of a major, a flagged or an unparsed bump, which needs a verdict; a plain patch or minor reads no version, needs no verdict, and its step says so, armed or not, unless the reviewer failed its head, which the step says and turns off any arm over; when the verdict cannot be read it turns off the head's auto-merge before it fails; a version that cannot be read there is no verdict, and so is an empty file list or an empty version after a read that succeeded: the step turns the auto-merge off and fails"
         verification: { method: unit, release_blocking: false }
         status: approved
 
@@ -1780,8 +1805,9 @@ requirements:
   - id: REQ-DEP-003
     title: Patch and minor bumps merge on green
     statement: >
-      A Dependabot patch or minor bump shall merge on its own once every
-      required check is green; a major shall be left to the reviewer.
+      A Dependabot patch or minor bump shall be armed at once to merge on its
+      own once every required check is green, unless the reviewer failed it; a
+      major shall be armed by the reviewer only.
     source: [.github/workflows/dependabot-auto-merge.yml]
     tier: community
     introduced: v0.3.0
@@ -1791,20 +1817,26 @@ requirements:
       - id: REQ-DEP-003-AC1
         given: a Dependabot patch or minor pull request
         when: the auto-merge job runs
-        then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer
+        then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
         given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
         when: the auto-merge job runs
-        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the job cannot tell, it arms nothing
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the auto-merge workflow cannot tell (its metadata step or its screen failed), it arms nothing and turns off an auto-merge not backed by the reviewer's success on the current head (a success counts with the current version only, REQ-DEP-001-AC14)
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-003-AC3
+        given: a Dependabot pull request, of any update kind, whose head carries the reviewer's failure verdict
+        when: the auto-merge workflow runs on it, and at every hourly reviewer run
+        then: "the auto-merge workflow reads the reviewer's verdict on the head before it arms and does not arm a failed head (if it cannot read the verdict the step fails and nothing is armed); its last step, after the arm, reads the pull request's current head and its auto-merge state in one read and turns off any auto-merge armed on a current head that carries the failure verdict; a read of the verdict, of the head or of the arm state that fails turns off the pull request's auto-merge before the step fails; and the reviewer turns off any auto-merge it finds armed on a head with the failure verdict, in its settle step and at every hourly run"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
   - id: REQ-DEP-004
     title: A held bump or drift dispatches the fixer
     statement: >
-      A held Dependabot major, or a required-check drift issue, shall send one
+      A held Dependabot bump, or a required-check drift issue, shall send one
       generic dispatch to the agent repository so an agent fixes our side; a
       failed dispatch shall be a warning and never undo the hold.
     source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/ci.yml]
@@ -2099,20 +2131,26 @@ requirements:
       record no longer applies. The verdict is part of the
       existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
       cannot edit or skip it, and a retarget re-runs it.
+      For a pull request Dependabot opened the Dependabot reviewer is the review: no record is written for it, and
+      the same judge passes its head on the reviewer's success (AC9 to AC12).
     source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
     tier: community
     introduced: v0.3.0
-    origin: release process decision 6 (Oct 23 2026)
+    origin: release process decision 6 (Oct 23 2026); the Dependabot exception, Nov 11 2026
     confidence: implementation-only
     notes: >
       No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
-      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
+      main that Dependabot did not open needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
       exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
       release manager's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
       something.
+      The Dependabot rule (AC9 to AC12) changes only the judge and the record writer. The gate workflow, its check
+      name and the required checks are unchanged. Without a passing record, a Dependabot head passes only on the
+      reviewer's success on that head, or, with no verdict of its own, as a clean merge of main into a head that passes
+      this way.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
-        given: "a pull request whose base is main, and the head sha it has now"
+        given: "a pull request whose base is main and that Dependabot did not open (AC9 to AC12 have those), and the head sha it has now"
         when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
         then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
         verification: { method: ci-workflow, release_blocking: false }
@@ -2157,6 +2195,30 @@ requirements:
         given: "a dispatch of the record job with the word release as the pull request and a commit sha"
         when: "the writer's prepare script runs"
         then: "a whole-release record is written only for a commit that main contains (main is identical to it or ahead of it) and only for a named dispatcher, with the same signed commit on audit/<sha> as for a pull request; bin/audit-record-request.sh makes the request after the same check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC9
+        given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
+        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        then: "it passes without a record on the Dependabot reviewer's success and nothing else: the newest dependabot-reviewer check run that an audit writer's App (an App whose bot account is listed under writers in .github/policy/audit-writers.json) put on the head (all runs read, not only GitHub's latest) is completed with the conclusion success and an external_id equal to the version of the reviewer's files in the checked-out main (REQ-DEP-001-AC14; a success with another external_id, or none, refuses); or the head has no such check run and is a clean merge of main into the head before it and nothing more (two parents, the first the head before it, the second a commit of the checked-out main, its tree the one git makes of merging the two), and that parent passes in the same way, at most 50 such merges back; a read of GitHub that fails, or a full page of 100 (which GitHub may have cut), is no verdict and the judge exits 3; the verdict job and the sweep hold the read scope of each endpoint the judge reads there: contents: read for the record branch and its commit, checks: read and pull-requests: read; the record job keeps contents: read, uses the App token and fails closed."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC10
+        given: "a dispatch of the record job for an open pull request into main that Dependabot opened (its user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself"
+        when: "the writer's prepare script runs"
+        then: "it refuses and writes nothing, whatever the reviewer says of the head. Any other pull request is recorded as before, including one Dependabot opened from another branch or from a fork. A passed-audit record on the exact head also passes the gate, even on a head the reviewer failed."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC11
+        given: "a head with no passing record that GitHub names as the head of exactly one open pull request, which Dependabot opened into main (the pull request's user is dependabot[bot], id 49699333, a bot) from a dependabot/ branch of the repository itself, and a well-formed writers policy on the default branch"
+        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        then: "a head that does not pass as AC9 says is refused, saying why: no verdict on the head (or, for a clean merge of main, on the head before it, and so on back), on a patch as on a major; a newest verdict that is a failure, neutral, any other conclusion, or unfinished; a verdict that cannot be read (for example a check entry with a missing or empty check name or App slug, which is the App's short name); a head that carries a commit or a change of its own after the passed head. A GitHub API error is reported as an API error, not as a refusal, and the judge exits 3."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC12
+        given: "a head with no passing record"
+        when: "the judge runs (main's copy, in the verdict job and the sweep, which hold the head's commits as git objects and check none of the head out)"
+        then: "the record rule stands, as for every other pull request, when another open pull request has the same head, when GitHub's page of pull requests holds an entry whose state cannot be read or an open entry whose head sha cannot be read, when Dependabot did not open it (another author, id or account type, a branch not under dependabot/, a fork, another base, closed, another head), or when the writers policy is missing or malformed; in that last case GitHub is not asked whose head it is. The judge's release mode, which stage-admission.yml runs, never asks whose head it is."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2667,16 +2729,17 @@ requirements:
   - id: REQ-SUP-001
     title: Actions supply-chain checks
     statement: >
-      Our workflows shall take no new version of an action, or of a tool, image or package they download, until it has been public 7 days; shall check every version we use, every day, against the public advisory and malware lists; and shall say publicly only what they know.
+      Our workflows shall check every version of an action, tool, image or package we use, every day, against the public advisory and malware lists; and shall say publicly only what they know.
     source: [.github/workflows/supply-chain.yml, .github/dependabot.yml, .github/supply-chain-exceptions.json]
     tier: community
     introduced: v0.3.0
-    origin: actions supply-chain checks (maintainers, Oct 5 2026, items 1-3 and 5); AC14 comes from the reviewer-approved proposal of Oct 9 (pin-audit Go major path), which lets cosign be pinned as a tool; AC16 comes from the reviewer ruling of Oct 10 (ruled text lines instead of a lexer)
+    origin: actions supply-chain checks (maintainers, Oct 5 2026, items 1-3 and 5); AC14 comes from the reviewer-approved proposal of Oct 9 (pin-audit Go major path), which lets cosign be pinned as a tool; AC16 comes from the reviewer ruling of Oct 10 (ruled text lines instead of a lexer); the 7-day wait for new versions and its exceptions were removed by the owner's ruling of Nov 11 2026
     notes: >
       AC14 design decision (automated review round 1, B2): a non-plain version of a table tool is a HIT only on the records the databases return for it. A version with no OSV record and no GitHub advisory (cosign@latest, or the (default) pins of cosign and kind in the real tree) reads clean, deliberately: with no record nothing is known to be affected at any version, and making every non-plain pin a hit would open a daily issue forever with nothing to report. The rule is about the verdict on records, not about the pin.
       AC14 evaluation: range events are evaluated as OSV evaluates them: sorted by version (introduced 0 is the minimum, at one version the fixed wins), last_affected inclusive; Go versions compare as strict semver (pseudo-versions, numeric pre-releases and +incompatible are valid; r1, p1, post1 and rev1 are pre-release identifiers). A limit event is refused in SEMVER and ECOSYSTEM ranges (the record is a hit, a fail-closed refusal): the Go vulnerability database never writes limit, the OSV schema text could not be consulted offline, so any use of it in a Go range is treated as unreadable, which also removes the any-or-all question for several limits (the evaluator, used for other ecosystems, reads below ANY limit as affected). The schema asks for id and modified on a record, ecosystem and name on a package, an introduced event in every range (their order is free), and not both fixed and last_affected in one range; aliases may be absent or null. An independent interval oracle in the test compares the evaluator on a generated grid. The 240 recorded verdicts did not change.
       AC14 residual: the rule judges the OSV record's affected entries only; GitHub's ranges are read as before. An OSV answer that is not a record (not an object, no string id or modified) is a hit under the id UNREADABLE-OSV-RECORD; a GIT range together with a SEMVER or ECOSYSTEM range in one entry is a hit in every branch. The gh and git calls of pin-audit.py and of the shared helpers in pin-age-check.py have a 120 s timeout that stops the run (exit 2).
       AC14 residual (semver): bounds that SemVer 2.0.0 forbids (a numeric pre-release identifier with a leading zero such as 3.0.0-01, an empty identifier in the pre-release or the build metadata) are unparsable and read as affected, so the record is a hit. Go pseudo-versions with a zero-time stamp (0.0.0-00010101000000-000000000000) are one valid alphanumeric identifier, because it contains a hyphen, and parse normally.
+      Removed Nov 11 2026 with the wait for new versions: AC1 (Dependabot cooldown), AC3 (age measurement) and AC6 (re-run of the pull requests the wait stopped); their ids are not reused and the gaps are deliberate, like AC16/AC17 below. AC31 is also left empty here: it is held for the go.dev archive signature check, which a second pull request adds (the owner's rule 3 of Nov 11 2026); no AC31 exists until then.
       AC16/AC17 history: the AC16 and AC17 first accepted for this requirement (a lexer telling text from commands, pull request 272, closed: an open-ended class) are WITHDRAWN; the AC16 above replaces both, and there is no AC17 (the gap is deliberate). AC18 (literal downloads in install-build-tools.sh) belongs to pull request 271.
       AC16 design: the scan stays strict. A row is {file, form, key, line, ruling} plus an optional count (default 1): key is the scan's own 64-hex sha256 prefix (for a download, of the one command segment that names curl or wget), and line is the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in (the automated reviewer, pull request 273 round 1: a segment hash alone ruled the same segment inside another line that pipes it to sh); an item is ruled only when every occurrence in the head sits in a line a row names, and a row covers at most count occurrences of that line, so a second copy of a ruled line fails unless the row counts it. Editing the line other than in spaces and tabs (which the scan normalises) voids the row; changing only a row's ruling prose does not void it (the prose is the reason, not the identity). An occurrence is ADDED when the head has more of its (file, form, key, whole line) than the base (the automated reviewer, pull request 273 round 2: counting by key alone let an edit that kept the download segment, such as a ruled echo rewritten to pipe into sh, pass as no addition); a replay of the 150 first-parent commits of main from 7c6077b (Sep 11) to 09b30af (Oct 10) found no commit that this newly fails. A row never matches a line holding whitespace other than a space or a tab, or a line joined from a backslash-newline continuation: bash reads those differently from the flattening (automated review round 1); count is at most 100. Intended: editing only a row's ruling prose does not void it, and a space- or tab-only edit of the line stays ruled. The exceptions file must be strict JSON: NaN, Infinity and -Infinity (which Python's reader accepts) and a repeated key stop the check (exit 2). AC16 delta accepted by the reviewer Oct 10 (automated review round 3, P7): the given names the command hash (key) and the whole-line hash (line); the then states the count limit and the edited-line, whitespace and continuation failures. Limit of line identity (automated review round 3, P4; the maintainers' decision, Oct 10): shell CONTEXT is not part of a line's identity, so moving a line out of a heredoc (above its opener) or commenting the opener out keeps (file, form, key, line) and is no addition. Therefore a row is only ever written for a line that is HARMLESS IN ANY CONTEXT: read as a shell command it runs no download (a comment, an echo or printf, a cat into a file, Python source or a package list that bash cannot parse), and the reviewer reviews each row for exactly that; a row for a line that would download when run is the reviewer's to refuse. The test holds the text of each committed row's line and checks it is harmless that way. Allowed row forms (reviewer, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ followed by at most nine path arguments "$NAME" or "$NAME/path" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (the automated reviewer, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole "$1".."$9"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN ["$N"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only "$N" (the automated reviewer, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- "$N"; test and [ only the file tests -f -s -e -d -r on a positional "$N" (never a literal path or a substitution: the automated reviewer, pull request 289 round 6), = and !=, and count comparisons between digits and "$(grep -c ...)" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions "$(grep -c OPTION... -- PATTERN "$N")" and "$(cat -- "$N")" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (the automated reviewer, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (the automated reviewer, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (maintainers, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. The test decides form (2) with a quote-aware parser (harness_form.py in the test) and proves each refused variant as its own case. The rows are read from the exceptions file beside the checkout the script runs from (in CI trusted/, the base branch), never from the pull request's tree; a missing default file is no rows; a malformed list (not a list, a row that is not an object, a missing, empty or extra field, a key or line that is not 16 lowercase hex, a JSON object that repeats a key, a count that is not a whole number from 1 to 100, a repeated row) stops the check with exit 2.
       AC15 limit: the pins nested inside an action are not counted as held, so a ruling for a pin that is only nested can be dormant, never dead.
@@ -2684,22 +2747,10 @@ requirements:
       Finding (Oct 9): with the corrected table paths, the existing package-name filter of the audit already clears cosign 3.1.3 against GO-2026-4309. The real work of AC14 is (1) the corrected table (goreleaser, osv and golangci-lint need their /v2 path), (2) GitHub names matched under both the bare and the /vMAJOR path so the five existing rulings keep working, (3) the log of ignored entries, (4) the OSV query by the /vMAJOR path.
     confidence: implementation-only
     acceptance_criteria:
-      - id: REQ-SUP-001-AC1
-        given: "Dependabot's configuration"
-        when: "it is read"
-        then: "the github-actions and pip entries wait 7 days (a 7-day cooldown), and the gomod and docker entries are unchanged"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
       - id: REQ-SUP-001-AC2
         given: "a pull request that moves an action pin, or the version of a tool, image or package a workflow downloads (the version inputs of installer actions, install-scanner.sh pins, go install, pip install and release-asset downloads (curl or wget of a GitHub release) in run steps, container images our workflows run, local composite actions under .github/actions, the auditor's hash-pinned Python packages)"
-        when: "the age check runs"
+        when: "the pin check runs"
         then: "it names every version that moved; the product's base image (build/docker FROM lines), Go modules and the Go toolchain are not covered and are skipped"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC3
-        given: "a moved version"
-        when: "its age is measured"
-        then: "only a server-side time counts: for an action, the first time our own scheduled run on main saw the tag point at the exact commit (the tag in the version comment must resolve to that commit) or the PR clock, whichever is older, and a release date alone never counts; for a downloaded tool, the newest of the release date and its asset's own created and updated times; a package index's newest upload time; the Go module index's timestamp; a registry's own push or creation time for an image; the PR clock is the earliest workflow run on the commit that introduced the version in the pull request; never a commit or tag date and never an image's own created field; a version public less than 7 days, or whose age cannot be proven, fails the check"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC4
@@ -2711,23 +2762,17 @@ requirements:
       - id: REQ-SUP-001-AC5
         given: "any day"
         when: "the daily check runs"
-        then: "it lists every version the age check covers, plus the actions and images called inside the actions we pin (each pinned action read at its commit; ones on moving tags are reported as information), checks each against the GitHub advisory database and OSV with its malicious-package reports, and checks that each pinned commit is reachable from a branch or tag of the action's own repository, not only a fork"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-SUP-001-AC6
-        given: "a pull request held by the age check (for example a Dependabot security update, which skips the cooldown)"
-        when: "the daily check runs"
-        then: "it re-runs that pull request's age check, so it turns green on day 7 with no human step"
+        then: "it lists every version the pin check covers, plus the actions and images called inside the actions we pin (each pinned action read at its commit; ones on moving tags are reported as information), checks each against the GitHub advisory database and OSV with its malicious-package reports, and checks that each pinned commit is reachable from a branch or tag of the action's own repository, not only a fork"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC7
         given: "a hit"
         when: "the daily check finds it"
-        then: "it opens one issue, updated on later days and never a new one each day, that names the pinned version, the advisory id and the rollback: the newest clean version that is at least 7 days old, or dropping the action, never a brand-new release"
+        then: "it opens one issue, updated on later days and never a new one each day, that names the pinned version, the advisory id and the rollback: the newest clean version, or dropping the action"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC8
-        given: "a hit with no clean version at least 7 days old, or a hit whose bad version we ran in the last 90 days"
+        given: "a hit with no clean version, or a hit whose bad version we ran in the last 90 days"
         when: "the issue is opened"
         then: "it is labelled owner-decision (every hit carries supply-chain-hit), and the workflow never produces the runs, their environments or the secret names they could reach: not in the issue, a log or an artifact"
         verification: { method: ci-workflow, release_blocking: false }
@@ -2747,7 +2792,7 @@ requirements:
       - id: REQ-SUP-001-AC13
         given: "a workflow job that runs pip install"
         when: "the workflows are read"
-        then: "an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown"
+        then: "an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC14
@@ -2763,7 +2808,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC16
-        given: "a pull request that adds a line the pin-age check cannot measure (a download whose repository, version or file cannot be read), and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text whose file, form, command hash (key) and whole-line hash (line) equal the added item and whose ruling is non-empty"
+        given: "a pull request that adds a line the pin-age check cannot read (a download whose repository, version or file cannot be read), and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text whose file, form, command hash (key) and whole-line hash (line) equal the added item and whose ruling is non-empty"
         when: "pin-age runs"
         then: "that item is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100) (accepted by the reviewer Oct 10); and an added item with no such row, a row whose hash does not match (the line was edited), an edited line (any change other than spaces or tabs, including one that keeps its download command), a line holding whitespace other than a space or a tab or joined from a backslash-newline continuation, more occurrences than the row's count, a row with an empty ruling, a malformed list, or a row brought by the pull request itself (not present on the base branch) fails as before; a ruling row may carry an optional context and proof, which the check proves from the head file; a row whose proof fails rules nothing (reviewer ruling Oct 16, wording that only tightens)"
         verification: { method: ci-workflow, release_blocking: false }
@@ -2771,31 +2816,31 @@ requirements:
       - id: REQ-SUP-001-AC18
         given: "bin/install-build-tools.sh"
         when: "pin-age inventories it"
-        then: "every tool download is a literal command carrying the exact release version and the sha256 it is verified against, so the version is measured (7 days public) like any pin (accepted by the reviewer Oct 10)"
+        then: "every tool download is a literal command carrying the exact release version and the sha256 it is verified against, so the pin scan reads the version like any pin (accepted by the reviewer Oct 10)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC19
         given: "a pull request that adds a job (a job, never a step) calling a reusable workflow by the exact form ./.github/workflows/<name>.yml as YAML parses it (a plain file name of letters, digits, dot, underscore and hyphen, with no .., no other directory, no @ref, no expression, no surrounding space), where that file is in the tree and is a workflow with a workflow_call trigger and jobs, and the call has no with: block (absent or empty)"
-        when: "the age check runs"
-        then: "the call is no item and no finding: nothing can be handed to the called file, which is itself inventoried, so every version it moves is measured there by its own rules; a call with any with: value, and a local reference of any other form, stays an item that cannot pass, as before, unless a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text names it (file of the call, form \"a local reusable workflow call\", key and line both the 64-hex hash of the item's whole identity, which carries the hash of its with: block, so an edited block is another item; ruling non-empty) (decided at review Oct 14: the closed form, because every attempt at a looser one let some caller input reach a version position through the callee)"
+        when: "the pin check runs"
+        then: "the call is no item and no finding: nothing can be handed to the called file, which is itself inventoried, so every version it moves is scanned there by its own rules; a call with any with: value, and a local reference of any other form, stays an item that cannot pass, as before, unless a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text names it (file of the call, form \"a local reusable workflow call\", key and line both the 64-hex hash of the item's whole identity, which carries the hash of its with: block, so an edited block is another item; ruling non-empty) (decided at review Oct 14: the closed form, because every attempt at a looser one let some caller input reach a version position through the callee)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC20
         given: "a pull request that adds a script line (a *.sh file outside the auditor's own tree) that names a package with no version in a pip install, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text (for a line that the base branch does not hold: a copy of a line the base holds is never ruled, because an item of the unchanged line may have moved with an assignment it reads) whose file, form \"an unpinned package install\", key and line (both the 64-hex hash of the whole whitespace-flattened line) equal that line and whose ruling is non-empty"
         when: "pin-age and the advisory audit run"
-        then: "the line is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100), and only the package items THAT line made (by its own path and line id) leave the moved list, in the age check and in the advisory audit alike; a line with no such row, an edited line, a line joined from a continuation or holding whitespace other than a space or a tab, the same text in a workflow step, an unchanged line whose item moved because an assignment it reads changed, and one copy too many fail as before (decided by the reviewer Oct 14: the AC16 mechanism, no parser; the ruling text for a test fixture is the fixture text the check's own test uses in pin-age-check-test.sh)"
+        then: "the line is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100), and only the package items THAT line made (by its own path and line id) leave the moved list, in the pin check and in the advisory audit alike; a line with no such row, an edited line, a line joined from a continuation or holding whitespace other than a space or a tab, the same text in a workflow step, an unchanged line whose item moved because an assignment it reads changed, and one copy too many fail as before (decided by the reviewer Oct 14: the AC16 mechanism, no parser; the ruling text for a test fixture is the fixture text the check's own test uses in pin-age-check-test.sh)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC21
         given: "a pull request that adds or changes a checksum or version record file (an item whose identity is the file's content) at a path that .github/policy/base-inputs.json, as the base branch holds it, lists in base_inputs"
-        when: "the age check runs"
+        when: "the pin check runs"
         then: "that file is no item and no finding (it is the repository's own base record: its content change is the release chain's base-input-changed signal, and the list is itself a reviewed file); a file at any other path, a path spelled differently from the list (a ./ prefix, a .. inside), and every item that is not a file item stay as before; a list the pull request brings never counts (the base branch's copy is read), a missing list exempts nothing and a malformed one stops the check (decided at review Oct 14, the plainest closed form: no pattern on names or directories)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC22
         given: "the committed .github/policy/base-inputs.json, and a pull request (the daily refresh pull request) that changes build/locks/archive-index.sha256, the record of the digests of the Wolfi-signed package index that every refresh run checks against the archived index"
-        when: "the age check runs"
-        then: "the list names build/locks/archive-index.sha256 exactly and, by AC21, that record is no item and no finding: it records Wolfi's own index and cannot be seven days old, and the maintainers' Oct 9 decision allows no seven-day hold on Wolfi; the same name at any other path, a name with a suffix, and every installer checksum file stay items (reviewer reading Oct 16)"
+        when: "the pin check runs"
+        then: "the list names build/locks/archive-index.sha256 exactly and, by AC21, that record is no item and no finding: it records Wolfi's own index; the same name at any other path, a name with a suffix, and every installer checksum file stay items (reviewer reading Oct 16)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC23
@@ -2817,9 +2862,9 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC27
-        given: "(the release manager approved Oct 21 2026: \"yes skip the 7 day hold lets unblock stuff - go.\") a pull request that moves the tool item go, Go's own toolchain release, in bin/install-scanner.sh"
+        given: "a pull request that moves the tool item go, Go's own toolchain release, in bin/install-scanner.sh"
         when: "pin-age runs"
-        then: "that one item is exempt from the 7-day age and from nothing else: the exemption holds only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, a second Go download or any other tool at 0 days still fails; the advisory and malware audit and every other check still apply to go"
+        then: "the item passes only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, or a second Go download fails; the advisory and malware audit and every other check apply to go"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC28
@@ -2834,6 +2879,25 @@ requirements:
         then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the release manager's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC30
+        given: "the repository (workflows, scripts, tests, docs and configuration)"
+        when: "it is read"
+        then: "nothing in it names a wait before a new version may be used, or enforces one: no check, job, script or test measures how long a version has been public before it may be used, and no document describes such a wait"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC32
+        given: "Dependabot's configuration"
+        when: "it is read"
+        then: "it has one entry per ecosystem root we use, and no entry carries a cooldown key; every version bump it proposes is a reviewed pull request"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC33
+        given: "the workflow supply-chain.yml and the required-check list .github/policy/required-checks.json"
+        when: "they are read"
+        then: "the context pin-age stays in the list, and the job named pin-age runs only the pin scan of the moved versions and the advisory report on them (pin-audit.py --report-only), never a measurement of how long a version has been public; no job holds actions: write; dropping the context name is a later change of the ruleset, which is the owner's"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3151,7 +3215,7 @@ requirements:
     origin: v0.3.0 items 14, 15, 16, 21, 22, 27-29, 31, 33, 37, 40 and 44 (Oct 9 2026)
     confidence: implementation-only
     notes: >
-      Each tool's argv and exit codes are in its header comment (the pipeline reads them). The drivers that call them (bin/build-apk.sh, bin/assemble-image.sh) belong to the melange and apko pull requests. melange 0.61.2 and apko 1.4.6 (both public for more than 7 days when pinned) are pinned by the sha256 values in the release checksums.txt files fetched over HTTPS from the projects' GitHub releases.
+      Each tool's argv and exit codes are in its header comment (the pipeline reads them). The drivers that call them (bin/build-apk.sh, bin/assemble-image.sh) belong to the melange and apko pull requests. melange 0.61.2 and apko 1.4.6 are pinned by the sha256 values in the release checksums.txt files fetched over HTTPS from the projects' GitHub releases.
       Known residuals: bin/apk-tool.py refuses a PAX extended header as the FIRST header of stream 0 (the signature stream must start with a plain header); elsewhere only the exact key APK-TOOLS.checksum.SHA1 is accepted. A forwarded-value echo in error messages is not escaped. The real melange and apko runs are pending the runner proof. Review-round-9 ruling: the generator closes the placeholders, the substitutions, the step conditions and the places of the name and description, and pins the template by sha256; it does NOT judge the shell in the template (that is the human and reviewer checklist at the top of build/melange.yaml.tmpl); the final control for the FIPS binary is build-apk.sh's check of the packaged binary. The proof greps only the GOFIPS140 stamp (a go.mod godebug fips140=off would show in DefaultGODEBUG, which is not checked) and writes to the fixed path /tmp/fscache-gobuildinfo.txt inside the melange sandbox. The apk is read whole into memory. The header walk is the check; the tar reader is used only after the walk agrees with it on the number of entries. Data files (review round 9): the package pins of the build environment come from build/locks/melange.lock and the certified Go Cryptographic Module from build/locks/fips-module.txt, each with a closed line grammar; the generator holds no FIPS constant, so the daily refresh and the FIPS-module check change only those files and the generated recipes stay equal to the generator's output.
     acceptance_criteria:
       - id: REQ-BUILDTOOLS-001-AC1

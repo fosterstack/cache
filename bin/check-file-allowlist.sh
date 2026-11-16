@@ -105,6 +105,7 @@ ALLOW_PATTERNS=(
   '^bin/required-check-guard\.sh$'
   '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
+  '^bin/dependabot-reviewer-version\.sh$'
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
@@ -127,7 +128,6 @@ ALLOW_PATTERNS=(
   '^bin/persona-uat-tools\.json$'
   '^bin/persona-uat-requirements\.txt$'
   '^\.github/agent/supply-chain/pin-(inventory|age-check|audit)\.py$'
-  '^\.github/agent/supply-chain/tag_observer\.py$'
   '^\.github/supply-chain-exceptions\.json$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
@@ -167,7 +167,7 @@ ALLOW_PATTERNS=(
   # with --require-hashes on real/schedule runs; bumped by the pip ecosystem in dependabot.yml.
   '^\.github/agent/adjudicator-requirements\.txt$'
   # pip itself, pinned and hash-checked for CI (REQ-SUP-001-AC13); one requirement, bumped by the pip
-  # ecosystem in dependabot.yml under the 7-day cooldown.
+  # ecosystem in dependabot.yml.
   '^\.github/agent/pip-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
