@@ -465,6 +465,54 @@ def _rapk(n, arch, runner, fix=lambda d: d, key="rel"):
 _rapk("rapk_amd64", "amd64", "x86_64"); _rapk("rapk_arm64", "arm64", "aarch64")
 _rapk("rapk_arm64_other", "arm64", "aarch64", lambda d: "sha256:" + "9" * 64)
 _rapk("rapk_arm64_throwaway", "arm64", "aarch64", key="throwaway")
+# REAL apk bytes (signature + control + data gzip streams, as melange writes them): the whole-file sha256 (what Witness attests as a product) and the
+# control+data digest (what apk-tool prints and Build attests in digests.json) are different numbers; each is only ever compared with its own kind
+import gzip, io, tarfile
+def _gz(members):
+    b = io.BytesIO()
+    with tarfile.open(fileobj=b, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for nm, body in members:
+            ti = tarfile.TarInfo(nm); ti.size = len(body); ti.mtime = 0; ti.mode = 0o644; t.addfile(ti, io.BytesIO(body))
+    o = io.BytesIO()
+    with gzip.GzipFile(fileobj=o, mode="wb", mtime=0) as g: g.write(b.getvalue())
+    return o.getvalue()
+def _real_apk(tag):
+    sig = _gz([(".SIGN.RSA.release.rsa.pub", b"signature-" + tag.encode())])
+    ctrl = _gz([(".PKGINFO", b"pkgname = fscache\npkgver = 0.3.0-r0\n# " + tag.encode() + b"\n")])
+    data = _gz([("usr/bin/fscache", b"binary-" + tag.encode())])
+    cd = hashlib.sha256()
+    for raw in (ctrl, data): cd.update(len(raw).to_bytes(8, "big") + raw)
+    return sig + ctrl + data, cd.hexdigest()
+RW, RC = {}, {}
+for _a in ("amd64", "arm64"):
+    for _v in ("standard", "fips"):
+        _bytes, RC[(_v, _a)] = _real_apk(_v + _a)
+        RW[(_v, _a)] = hashlib.sha256(_bytes).hexdigest()
+        open(p("real-%s-%s.apk" % (_v, _a)), "wb").write(_bytes)
+assert all(RW[k] != RC[k] for k in RW)
+RLIST = lambda m: dict(AC_BUILD, **{"apk-%s-%s" % k: "sha256:" + m[k] for k in m})
+dj("acr-real.json", RLIST(RC)); dj("acr-realwhole.json", RLIST(RW))
+add("rebuild_real", COLL, None, stmt="v0.1", coll_file="acr-real.json", coll_name="rebuild")
+add("rebuild_realwhole", COLL, None, stmt="v0.1", coll_file="acr-realwhole.json", coll_name="rebuild")
+def _rapk_real(n, arch, runner, m):
+    P = "https://witness.dev/attestations/product/v0.1/file:out/" + runner + "/"
+    sub = [{"name": P + nm, "digest": {"sha256": m[(v, arch)]}} for v, nm in (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk"))]
+    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"os": "linux", "variables": {"GITHUB_REF": T}}}]
+    add(n, COLL, None, payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "subject": sub, "predicate": {"name": "rapk", "attestations": att}}).encode())
+_rapk_real("rapk_real_amd64", "amd64", "x86_64", RW); _rapk_real("rapk_real_arm64", "arm64", "aarch64", RW)
+_rapk_real("rapk_real_arm64_wrong", "arm64", "aarch64", {**RW, ("fips", "arm64"): "9" * 64})
+_rapk_real("rapk_real_arm64_cd", "arm64", "aarch64", RC)
+_rapk_real("rapk_real_amd64_cd", "amd64", "x86_64", RC)
+def _pairs(m, bad=None):
+    out = []
+    for arch in ("amd64", "arm64"):
+        for v, nm in (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk")):
+            d = "sha256:" + (bad if bad and (v, arch) == ("fips", "arm64") else m[(v, arch)])
+            out.append({"arch": arch, "variant": v, "name": nm, "build_digest": d, "rebuild_digest": d})
+    return out
+dj("ac_real_good.json", {"verdict": "pass", "pairs": _pairs(RC)})
+dj("ac_real_wrongcd.json", {"verdict": "pass", "pairs": _pairs(RC, "9" * 64)})
+dj("ac_real_whole.json", {"verdict": "pass", "pairs": _pairs(RW)})
 # the key binds a Witness collection too: signed by another key, by the building job's throwaway key, and unsigned
 for _s, _name in (("build", "build"), ("rebuild", "rebuild"), ("check", "scanners")):
     add(_s + "_coll_otherkey", COLL, None, stmt="v0.1", coll_file="digests.json", coll_name=_name, key="other")
@@ -2190,6 +2238,18 @@ R1="apk-compare: a rapk record attesting another apk digest than the pair's is r
 expect_refuse "$R1" "rapk|digest" $(ACN) $(RAPK rapk_arm64_other)
 R1="apk-compare: a rapk record signed by the throwaway key is refused"
 expect_refuse "$R1" "rapk|signature" $(ACN) $(RAPK rapk_arm64_throwaway)
+# REAL apk bytes: the apk-tool digest (control+data) is in Build's digests.json and the result file; Witness's whole-file sha256 is in the signed rapk records; they differ for every real apk
+RAC() { echo apk-compare --policy "$work/policy.json" --record "$work/$1.json" --file "$work/$2.json" --digests "$work/$3.json" --rapk "$work/$4.json" --rapk "$work/$5.json"; }
+for k in standard-amd64 standard-arm64 fips-amd64 fips-arm64; do
+  [ "$(python3 -I "$root/bin/apk-tool.py" digest "$work/real-$k.apk")" = "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["apk-"+sys.argv[2]])' "$work/acr-real.json" "$k")" ] \
+    && ok "apk-compare: the real apk $k holds the control+data digest apk-tool prints in Build's list" || bad "apk-compare: fixture, the real apk $k digest is not apk-tool's"
+done
+expect_ok     "apk-compare REAL: a real apk (whole-file sha256 differs from control+data digest) with a whole-file rapk attestation and a control+data Build attestation is accepted" $(RAC rebuild_real ac_real_good acr-real rapk_real_amd64 rapk_real_arm64)
+expect_refuse "apk-compare REAL: a wrong whole-file sha256 in a signed rapk record is refused" "apk|rapk|digest" $(RAC rebuild_real ac_real_good acr-real rapk_real_amd64 rapk_real_arm64_wrong)
+expect_refuse "apk-compare REAL: a wrong control+data digest in the result file is refused" "apk|attested|digest" $(RAC rebuild_real ac_real_wrongcd acr-real rapk_real_amd64 rapk_real_arm64)
+expect_refuse "apk-compare REAL: a control+data digest in a rapk record never satisfies the whole-file check" "apk|rapk|digest|whole" $(RAC rebuild_real ac_real_good acr-real rapk_real_amd64_cd rapk_real_arm64_cd)
+expect_refuse "apk-compare REAL: a whole-file sha256 in Build's list and the result file never satisfies the control+data check" "apk|attested|digest|control" $(RAC rebuild_realwhole ac_real_whole acr-realwhole rapk_real_amd64 rapk_real_arm64)
+expect_refuse "apk-compare REAL: a control+data result file beside a Build list that holds whole-file digests is refused" "apk|attested|digest" $(RAC rebuild_realwhole ac_real_good acr-realwhole rapk_real_amd64 rapk_real_arm64)
 # ---- the ref a collection carries, Sign's workflow ref and the Rekor entry bind a record to its tag and run
 expect_refuse "001-AC2 Build's record from another tag is refused" "build|ref" $(S build_coll_otherref) --digests "$work/digests.json"
 expect_refuse "003-AC1 wrong tag through stage-start" "build|ref" $(ST rebuild build) $(rec build_coll_otherref) --digests "$work/digests.json"
@@ -2380,7 +2440,7 @@ for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml")
                 print("%s:%d: does not parse: %s (%s)" % (os.path.relpath(path, root), n, cmd[:100], why))
 sys.exit(0 if found and not failed else 1)
 PY
-EXPECT=819
+EXPECT=829
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
