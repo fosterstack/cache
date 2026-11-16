@@ -25,7 +25,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 python3 -I - "$root" "$work" <<'PY'
-import copy, json, os, re, subprocess, sys, yaml
+import copy, json, os, re, subprocess, sys, tempfile, yaml
 root, work = sys.argv[1], sys.argv[2]
 passed = failed = 0
 def check(name, ok, got=""):
@@ -511,7 +511,7 @@ runner_mutant("the vex-scope suite merged back into the script",
               lambda t: before_first_if(t, "if grep -qxF '%s' \"$1\"; then ./bin/install-scanner.sh grype; bash bin/vex-scope-test.sh; fi" % STEP_SUITES["vex-scope"]))
 
 check("bin/run-selected-tests.sh names %s 0 times" % AGENT, RUNNER_TEXT.count(AGENT) == 0, "%d times" % RUNNER_TEXT.count(AGENT))
-check("test-paths.json holds 16 single-file suites that name %s" % AGENT, len(AGENT_SINGLE) == 16, len(AGENT_SINGLE))
+check("test-paths.json holds 17 single-file suites that name %s" % AGENT, len(AGENT_SINGLE) == 17, len(AGENT_SINGLE))
 
 # the literal-line step of ci.yml, run in the scratch tree: each suite of the agent folder runs when selected, and only then
 def literal_step_run(job, lines, fail=""):
@@ -775,23 +775,132 @@ def full_problems(w):
 verdict("full-suite.yml: a daily schedule, dispatch and call; the five moved jobs whole; the two wiring suites; "
         "acceptance called; no gosec", full_problems(fs), True)
 
-# acceptance.yml has no registry mode (REQ-SUP-001): release.yml calls it once with no image-ref, as full-suite.yml's one acceptance job does
-def acceptance_calls_problems(rel, acc_text, acc):
+# acceptance.yml's image-ref mode (REQ-SUP-001): release.yml hands it the candidate by digest, full-suite.yml's one acceptance job passes none (source mode)
+RELEASE_REF = re.compile(r"^ghcr\.io/\$\{\{ github\.repository_owner \}\}/cache-candidates@\$\{\{ fromJSON\(needs\.image\.outputs\.digests\)\.production \}\}$")
+def acceptance_callers(w):
+    return {jid: j for jid, j in (w.get("jobs") or {}).items() if j.get("uses") == "./.github/workflows/acceptance.yml"}
+def refusal_index(job):
+    """index of the first step that runs only when an image-ref is given, reads IMAGE_REF and starts no container, else None"""
+    for i, s in enumerate(job.get("steps") or []):
+        starts_container = "docker" in (s.get("run") or "").replace("docker login", "")
+        if "inputs.image-ref != ''" in str(s.get("if", "")) and "IMAGE_REF" in (s.get("env") or {}) and not starts_container:
+            return i
+    return None
+def image_starting_jobs(acc):
+    """the jobs of acceptance.yml with a step that runs docker on IMAGE_REF"""
+    return {jid: j for jid, j in (acc.get("jobs") or {}).items()
+            if any("IMAGE_REF" in (s.get("env") or {}) and "docker run" in (s.get("run") or "") for s in j.get("steps") or [])}
+def acceptance_calls_problems(d):
     bad = []
-    calls = {jid: j for jid, j in (rel.get("jobs") or {}).items() if j.get("uses") == "./.github/workflows/acceptance.yml"}
-    if len(calls) != 1: bad.append("release.yml does not call acceptance.yml from exactly one job: %s" % sorted(calls))
-    for jid, j in calls.items():
-        if "image-ref" in (j.get("with") or {}): bad.append("release.yml job %s passes image-ref" % jid)
-    for word in ("image-ref", "IMAGE_REF", "ghcr.io"):
-        if word in acc_text: bad.append("acceptance.yml still has %s" % word)
-    if sorted((acc.get("on") or {})) != ["workflow_call"]: bad.append("acceptance.yml is not workflow_call alone")
-    if sorted(((acc.get("on") or {}).get("workflow_call") or {}).get("outputs") or {}) != ["gradle-results", "maven-results"]:
+    rel_calls, full_calls, acc = acceptance_callers(d["rel"]), acceptance_callers(d["fs"]), d["acc"]
+    if len(rel_calls) != 1: bad.append("release.yml does not call acceptance.yml from exactly one job: %s" % sorted(rel_calls))
+    for jid, j in rel_calls.items():
+        ref = (j.get("with") or {}).get("image-ref")
+        if not ref or not RELEASE_REF.match(ref): bad.append("release.yml job %s does not pass the candidate digest as image-ref: %s" % (jid, ref))
+    for jid, j in full_calls.items():
+        if "image-ref" in (j.get("with") or {}): bad.append("full-suite.yml job %s passes image-ref (it runs from source)" % jid)
+    on = acc.get("on") or {}
+    spec = ((on.get("workflow_call") or {}).get("inputs") or {}).get("image-ref") or {}
+    if spec.get("type") != "string" or spec.get("required") == "true" or spec.get("default") != "":
+        bad.append("acceptance.yml has no optional string input image-ref defaulting to empty: %s" % spec)
+    if sorted(on) != ["workflow_call"]: bad.append("acceptance.yml is not workflow_call alone")
+    if sorted((on.get("workflow_call") or {}).get("outputs") or {}) != ["gradle-results", "maven-results"]:
         bad.append("acceptance.yml lost an output")
-    for jid, j in (acc.get("jobs") or {}).items():
-        if j.get("permissions") != {"contents": "read"}: bad.append("acceptance.yml job %s permissions are %s" % (jid, j.get("permissions")))
+    starting = image_starting_jobs(acc)
+    if sorted(starting) != ["acceptance-gradle", "acceptance-maven"]: bad.append("the jobs that start an image from IMAGE_REF are %s" % sorted(starting))
+    for jid, j in starting.items():
+        first_run = [i for i, s in enumerate(j["steps"]) if "IMAGE_REF" in (s.get("env") or {}) and "docker run" in (s.get("run") or "")][0]
+        refusal = refusal_index(j)
+        if refusal is None: bad.append("acceptance.yml job %s starts an image with no refuse-unpinned step" % jid)
+        elif refusal > first_run: bad.append("acceptance.yml job %s refuses the image-ref after its first docker run" % jid)
     return bad
-verdict("release.yml calls acceptance.yml once without image-ref; acceptance.yml has no registry mode",
-        acceptance_calls_problems(load(WF + "release.yml"), open(os.path.join(root, WF + "acceptance.yml")).read(), load(WF + "acceptance.yml")), True)
+def acceptance_docs():
+    return {"rel": load(WF + "release.yml"), "fs": fs, "acc": load(WF + "acceptance.yml")}
+verdict("release.yml passes the candidate digest as image-ref; acceptance.yml refuses an unpinned one in every job that starts an image; full-suite.yml passes none",
+        acceptance_calls_problems(acceptance_docs()), True)
+def drop_refusal(job):
+    i = refusal_index(job)
+    if i is None: raise ValueError("the job has no refuse-unpinned step")
+    del job["steps"][i]
+mutants("acceptance wiring", acceptance_calls_problems, acceptance_docs(), [
+    ("release.yml passing no image-ref", lambda d: d["rel"]["jobs"]["acceptance"].pop("with")),
+    ("release.yml passing a tag instead of a digest",
+     lambda d: d["rel"]["jobs"]["acceptance"]["with"].__setitem__("image-ref", "ghcr.io/${{ github.repository_owner }}/cache-candidates:latest")),
+    ("full-suite.yml passing an image-ref", lambda d: d["fs"]["jobs"]["acceptance"].__setitem__("with", {"image-ref": "ghcr.io/x/y@sha256:" + "a" * 64})),
+    ("no image-ref input in acceptance.yml", lambda d: d["acc"]["on"]["workflow_call"]["inputs"].pop("image-ref")),
+    ("a required image-ref input", lambda d: d["acc"]["on"]["workflow_call"]["inputs"]["image-ref"].__setitem__("required", "true")),
+    ("no refuse step in acceptance-gradle", lambda d: drop_refusal(d["acc"]["jobs"]["acceptance-gradle"])),
+    ("no refuse step in acceptance-maven", lambda d: drop_refusal(d["acc"]["jobs"]["acceptance-maven"])),
+])
+
+# REQ-SUP-001-AC29: the refuse step's own script is run here against hostile references; docker, curl and sleep are stand-ins that only record a call
+DIGEST = "ghcr.io/fosterstack/cache@sha256:" + "a" * 64
+BAD_REFS = ["ghcr.io/fosterstack/cache:latest", "ghcr.io/fosterstack/cache",
+            "ghcr.io/fosterstack/cache@sha256:" + "a" * 63, "ghcr.io/fosterstack/cache@sha256:" + "A" * 64,
+            "ghcr.io/fosterstack/cache@sha256:" + "g" * 64, "ghcr.io/fosterstack/Cache@sha256:" + "a" * 64,
+            "@sha256:" + "a" * 64, "-v/:/host@sha256:" + "a" * 64,
+            DIGEST + "x", DIGEST + " --privileged", DIGEST + "\nextra", ""]
+def run_refusal(script, ref):
+    stubs = tempfile.mkdtemp(dir=work)
+    calls = os.path.join(stubs, "calls")
+    for tool in ("docker", "curl", "sleep"):
+        path = os.path.join(stubs, tool)
+        open(path, "w").write('#!/bin/sh\necho "%s $*" >>"%s"\n' % (tool, calls))
+        os.chmod(path, 0o755)
+    env = {"PATH": stubs + os.pathsep + os.environ.get("PATH", ""), "IMAGE_REF": ref}
+    r = subprocess.run(["bash", "-c", re.sub(r"\$\{\{[^}]*\}\}", "x", script)], env=env, capture_output=True, text=True, timeout=60)
+    return r, (open(calls).read() if os.path.exists(calls) else "")
+def refusal_problems(acc):
+    bad = []
+    starting = image_starting_jobs(acc)
+    if not starting: return ["no job of acceptance.yml starts an image from IMAGE_REF"]
+    for jid, j in starting.items():
+        i = refusal_index(j)
+        if i is None: bad.append("job %s has no refuse-unpinned step" % jid); continue
+        script = j["steps"][i]["run"]
+        for ref in BAD_REFS:
+            r, calls = run_refusal(script, ref)
+            if r.returncode == 0: bad.append("job %s accepted %r" % (jid, ref))
+            if calls: bad.append("job %s ran %s for %r" % (jid, calls.split()[0], ref))
+        r, _ = run_refusal(script, "ghcr.io/x/y:latest")
+        if "ghcr.io/x/y" not in r.stderr: bad.append("job %s does not name the refused reference" % jid)
+        r, _ = run_refusal(script, DIGEST)
+        if r.returncode != 0: bad.append("job %s refused a pinned reference: %s" % (jid, r.stderr))
+    return bad
+def refusal_step_of(d, jid): return d["jobs"][jid]["steps"][refusal_index(d["jobs"][jid])]
+verdict("acceptance.yml refuses every reference that is not name@sha256:<64 lowercase hex> before a docker run, and accepts a pinned one",
+        refusal_problems(load(WF + "acceptance.yml")), True)
+mutants("acceptance.yml refusal", refusal_problems, load(WF + "acceptance.yml"), [
+    ("the gradle refusal doing nothing", lambda d: refusal_step_of(d, "acceptance-gradle").__setitem__("run", "true")),
+    ("the maven refusal doing nothing", lambda d: refusal_step_of(d, "acceptance-maven").__setitem__("run", "true")),
+    ("the gradle refusal accepting any reference ending in a digest",
+     lambda d: refusal_step_of(d, "acceptance-gradle").__setitem__("run", 'case "$IMAGE_REF" in *@sha256:*) exit 0;; esac; exit 1')),
+])
+
+# the caller of acceptance.yml grants exactly what the called jobs ask for: a caller ceiling below a job's permission fails the call, one above it is a grant nobody uses
+def called_permissions(acc):
+    asked = {}
+    for j in (acc.get("jobs") or {}).values():
+        asked.update(j.get("permissions") or {})
+    return asked
+def caller_permissions_problems(d):
+    asked = called_permissions(d["acc"])
+    granted = (d["fs"]["jobs"]["acceptance"].get("permissions"))
+    if not isinstance(granted, dict): return ["the acceptance caller's permissions are not a mapping: %s" % granted]
+    bad = []
+    for name in sorted(set(asked) - set(granted)): bad.append("the caller does not grant %s, which a called job asks for" % name)
+    for name in sorted(set(granted) - set(asked)): bad.append("the caller grants %s, which no called job asks for" % name)
+    for name in sorted(set(asked) & set(granted)):
+        if asked[name] != granted[name]: bad.append("%s: the caller grants %s, the jobs ask for %s" % (name, granted[name], asked[name]))
+    return bad
+verdict("full-suite.yml's acceptance caller grants exactly the permissions acceptance.yml's jobs ask for", caller_permissions_problems(acceptance_docs()), True)
+mutants("acceptance caller", caller_permissions_problems, acceptance_docs(), [
+    ("an extra permission (issues: write)", lambda d: d["fs"]["jobs"]["acceptance"]["permissions"].__setitem__("issues", "write")),
+    ("packages: write where the jobs ask for read", lambda d: d["fs"]["jobs"]["acceptance"]["permissions"].__setitem__("packages", "write")),
+    ("no packages permission", lambda d: d["fs"]["jobs"]["acceptance"]["permissions"].pop("packages")),
+    ("no permissions block", lambda d: d["fs"]["jobs"]["acceptance"].pop("permissions")),
+    ("a called job asking for one more (actions: read)", lambda d: d["acc"]["jobs"]["acceptance-maven"]["permissions"].__setitem__("actions", "read")),
+])
 def turn_off(d, suite):
     hit = [s for j in d["jobs"].values() for s in j.get("steps") or [] if suite in (s.get("run") or "")]
     if not hit: raise ValueError("no step runs " + suite)
@@ -984,6 +1093,7 @@ import json, os, subprocess, sys
 a = sys.argv[1:]
 if a[0] != "api": sys.stderr.write("unexpected gh %s\n" % a); sys.exit(9)
 path = a[1].split("?")[0]
+query = a[1].partition("?")[2]
 f = os.path.join(os.environ["FX"], path.strip("/").replace("/", "_") + ".json")
 if not os.path.exists(f):
     if path.endswith("/check-runs"): data = {"check_runs": []}
@@ -991,6 +1101,13 @@ if not os.path.exists(f):
     elif path.endswith("/pulls"): data = []
     else: sys.stderr.write("gh: Not Found (HTTP 404) %s\n" % path); sys.exit(1)
 else: data = json.load(open(f))
+if path.endswith("/check-runs") and "filter=all" not in query:
+    # filter=latest (the default) serves the newest run of each name and app only
+    newest = {}
+    for run in data["check_runs"]:
+        key = (run["name"], run["app"]["id"])
+        if key not in newest or run["id"] > newest[key]["id"]: newest[key] = run
+    data = {"check_runs": list(newest.values())}
 filt = [a[i + 1] for i, x in enumerate(a) if x in ("--jq", "-q") and i + 1 < len(a)]
 if filt:
     r = subprocess.run(["jq", "-c", filt[0]], input=json.dumps(data), capture_output=True, text=True)
@@ -1005,10 +1122,11 @@ T, O, P = "1" * 40, "2" * 40, "3" * 40          # the tagged commit, an older co
 SOURCE = {"analyze (go)": "codeql.yml", "reproducibility": "scan.yml", "scan": "scan.yml"}
 def source_of(policy, key, ctx):
     return SOURCE.get(ctx, "full-suite.yml") if key == "promotion_checks" else "ci.yml"
-def admission(policy, mutate=None, tag="v0.3.0-rc.1", script=None, paths=None, no_details=(), no_run=()):
+def admission(policy, mutate=None, tag="v0.3.0-rc.1", script=None, paths=None, no_details=(), no_run=(), events=None, heads=None):
     """run the admission check step; mutate(runs) edits {sha: [check runs]}; returns (rc, stderr+stdout)
     paths {context: workflow file}: whose run backs a check; no_details: contexts whose check run names no workflow run;
-    no_run: contexts whose workflow run answers 404"""
+    no_run: contexts whose workflow run answers 404; events {context: event} and heads {context: sha}: what its workflow run
+    says it ran for and on (default: workflow_dispatch, the tagged commit)"""
     d = os.path.join(work, "adm%d" % len(os.listdir(work))); os.makedirs(d + "/fake"); os.makedirs(d + "/fx"); os.makedirs(d + "/policy")
     mkexec(d + "/fake/gh", FAKE_ADM)
     json.dump(policy, open(d + "/policy/required-checks.json", "w"))
@@ -1024,9 +1142,9 @@ def admission(policy, mutate=None, tag="v0.3.0-rc.1", script=None, paths=None, n
                                      "id": n[0], "head_sha": sha, "details_url": url})
             if ctx not in no_run:
                 own = "full-suite.yml" if e.get("release_only") else source_of(policy, key, ctx)
-                workflow_runs[run_id] = ".github/workflows/" + (paths or {}).get(ctx, own)
-    for run_id, path in workflow_runs.items():
-        json.dump({"id": run_id, "path": path}, open(d + "/fx/repos_o_r_actions_runs_%d.json" % run_id, "w"))
+                workflow_runs[run_id] = (".github/workflows/" + (paths or {}).get(ctx, own), (events or {}).get(ctx, "workflow_dispatch"), (heads or {}).get(ctx, T))
+    for run_id, (path, event, head_sha) in workflow_runs.items():
+        json.dump({"id": run_id, "path": path, "event": event, "head_sha": head_sha}, open(d + "/fx/repos_o_r_actions_runs_%d.json" % run_id, "w"))
     if mutate: mutate(runs_by_sha)
     for sha, rs in runs_by_sha.items(): json.dump({"check_runs": rs}, open(d + "/fx/repos_o_r_commits_%s_check-runs.json" % sha, "w"))
     json.dump([{"number": 5, "merge_commit_sha": T, "base": {"ref": "main"}, "merged_at": "2026-11-12T00:00:00Z", "head": {"sha": P}}], open(d + "/fx/repos_o_r_commits_%s_pulls.json" % T, "w"))
@@ -1082,6 +1200,12 @@ if len(hit) == 1:
         return move
     stopped("'coverage' green only on the merged pull request's head, not the tagged commit", "coverage",
             admission(POLICY_RO, on_pr_head("coverage")))
+    # a run counts only from a schedule or a manual dispatch, on the tagged commit (the full suite's own evidence)
+    for c in ("coverage", "scan"):
+        for event in ("push", "pull_request"):
+            stopped("%r whose run of its own workflow file is a %s event" % (c, event), c, admission(POLICY_RO, events={c: event}))
+        stopped("%r whose run of its own workflow file is on another commit" % c, c, admission(POLICY_RO, heads={c: O}))
+    rc, out = admission(POLICY_RO, events={"coverage": "schedule"}); check("admission: 'coverage' from a scheduled run is admitted", rc == 0, (rc, out[-300:]))
     rc, out = admission(SYN, tag="v0.3.0-rc.2", mutate=drop("scan")); check("admission: the second candidate of a line is held to the same rule", rc != 0 and "scan" in out, (rc, out[-200:]))
     pushed = [e["context"] for e in RELEASE_ONLY if e["scope"] == "push"]
     rc, out = admission(POLICY_RO); check("admission: every release-only and promotion context green, each from its own file, is admitted", rc == 0, (rc, out[-300:]))
