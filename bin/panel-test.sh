@@ -115,7 +115,7 @@ check("the dropped finding is recorded as covered by the VEX", any(c["id"] == "C
 vexf = os.path.join(tempfile.mkdtemp(), "v.json")
 json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected",
     "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production&arch=amd64",
-                  "subcomponents": [{"@id": "pkg:generic/tzdata@2026%63"}]}]}]}, open(vexf, "w"))   # %63 = c; generic like tree()'s Inspector purls
+                  "subcomponents": [{"@id": "pkg:deb/debian/tzdata@2026%63?arch=all"}]}]}]}, open(vexf, "w"))   # %63 = c
 row = ("CVE-2099-0009", "tzdata", "2026c")
 r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64")})
 v = P.tally(r, P.load_vex(vexf))
