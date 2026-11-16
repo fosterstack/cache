@@ -177,14 +177,14 @@
       "form": "a local reusable workflow call",
       "key": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
       "line": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
-      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them"
     },
     {
       "file": ".github/workflows/release.yml",
       "form": "a local reusable workflow call",
       "key": "64aea209513fa6dafd7b1259b6444f55af7d7c9d1de5d6486fff443b010e2e42",
       "line": "64aea209513fa6dafd7b1259b6444f55af7d7c9d1de5d6486fff443b010e2e42",
-      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586 round 2: the records input of the Sign-rebuild call, the Rebuild record digests); advisor ruling Oct 23"
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them"
     },
     {
       "file": "bin/refresh-inputs.sh",
@@ -432,12 +432,12 @@
     {
       "file": ".github/agent/supply-chain/pin-audit.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-audit.py (python runs it, no shell reads it): reads the OSV API for advisories",
-      "body-sha256": "079f7e6977b4ef8fed07ca36299ed1eb2fbf75464bbe17a3ce6c1de09b465e8d"
+      "body-sha256": "04399675d87ddffeb48962ed62f19d1fa11ee858c29042cda79eeaa31fc843b3"
     },
     {
       "file": ".github/agent/supply-chain/pin-inventory.py",
       "ruling": "text, not a command: Python source of .github/agent/supply-chain/pin-inventory.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made | text, not a command: the tuple of client module names in .github/agent/supply-chain/pin-inventory.py (data; it runs nothing)",
-      "body-sha256": "846422a9697995883375d62164355cc9440b582dec76698ef99127f20146588a"
+      "body-sha256": "1b83cdbd864f5a13ed539bc9ee694cf3dae782e6de8dbc4779fc5b568938d740"
     },
     {
       "file": ".github/agent/tests/k8s-harness-fence-test.sh",
