@@ -183,6 +183,20 @@ while IFS= read -r line; do
   case "$line" in ok:*) echo "$line"; pass=$((pass+1)) ;; *) echo "$line"; fail=$((fail+1)) ;; esac
 done < <(python3 "$work/awsjudge.py" "$sut" "$AWS_SHA" 2>&1 || echo "FAIL: aws-cli judge did not accept the real installer")
 
+# 5. The second dispatch (the installer's own `case "$TOOL"` block) fails closed on a name it does not know, and has
+#    an arm for every name the first dispatch accepts. The first dispatch hides this from a run of the script, so the
+#    second block is cut out of the script and run on its own.
+sed -n '/^case "\$TOOL" in$/,/^esac$/p' "$sut" > "$work/dispatch2.sh"
+{ echo 'pipeline_fail() { echo "::error::PIPELINE failure: $*" >&2; exit 1; }'; echo 'TOOL=bogus'
+  cat "$work/dispatch2.sh"; echo 'echo fell-through'; } > "$work/dispatch2-run.sh"
+check "second dispatch rejects an unknown scanner" 1 "unknown scanner" bash "$work/dispatch2-run.sh"
+names="$(grep -m1 '^case "\$TOOL" in trivy' "$sut" | sed 's/^case "\$TOOL" in //; s/) ;;.*//' | tr '|' '\n')"
+arms="$(grep -E '^  [a-z][a-z0-9|.-]*\)$' "$work/dispatch2.sh" | tr -d ' )' | tr '|' '\n')"
+missing="$(grep -vxFf <(echo "$arms") <<<"$names" | tr '\n' ' ')"
+if [ -n "$names" ] && [ -z "$missing" ]; then
+  echo "ok: every accepted scanner name has an arm in the second dispatch"; pass=$((pass+1))
+else echo "FAIL: accepted names with no arm in the second dispatch: ${missing:-none read}"; fail=$((fail+1)); fi
+
 echo "----"
 echo "install-scanner: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
