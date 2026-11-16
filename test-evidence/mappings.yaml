@@ -846,6 +846,9 @@ mappings:
       - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
+  - ac: REQ-SUP-001-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }

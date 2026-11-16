@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC4, REQ-SUP-001-AC36
+# proves: REQ-SUP-001-AC1, REQ-SUP-001-AC4, REQ-SUP-001-AC36
 # Where the supply-chain checks run (owner ratified Oct 5; advisor 0172, 0175): Dependabot carries no cooldown and one entry per ecosystem root; the pull request check is a
 # job that runs on EVERY pull request on pull_request (never pull_request_target), with a read-only token and no secrets, so it can be the owner's required check without
 # ever blocking an unrelated PR (AC4); the daily job may write issues and nothing else; no job holds actions: write; REQ-SUP-001 is pipeline-only for automatic patches; CI
