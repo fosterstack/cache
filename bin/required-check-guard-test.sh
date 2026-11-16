@@ -383,3 +383,4 @@ done <<< "$ac3pairs"
 
 echo "----"
 echo "merge-queue-wiring: ${pass} passed, ${fail} failed"
+[ "$fail" -eq 0 ]
