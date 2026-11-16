@@ -282,7 +282,15 @@ def judge_rest(src=None, tmap=None, selector=None, full=None, ci=None):
         runs = [x for j in (full.get("jobs") or {}).values() for x in j.get("steps") or [] if t in str(x.get("run", ""))]
         if len(runs) != 1 or str(runs[0].get("run", "")).strip() != line or any(k in runs[0] for k in ("if", "continue-on-error", "shell", "working-directory", "env")):
             bad.append(f"full-suite.yml does not run .github/agent/tests/{t} whole, exactly once, unconditionally")
-        if t in ci:
+        guarded = f"if grep -qxF '{line}' \"$selected\"; then {line}; fi"
+        ok_lines = 0
+        for jn, j in ((yaml.safe_load(ci) or {}).get("jobs") or {}).items():
+            for st in (j or {}).get("steps") or []:
+                run = str((st or {}).get("run", ""))
+                mine = [l.strip() for l in run.splitlines() if t in l]
+                if mine and jn == "allowlist" and all(l == guarded for l in mine) and re.search(r'^\s*selected="\$\{RUNNER_TEMP\}/selected-suites"\s*$', run, re.M):
+                    ok_lines += len(mine)
+        if sum(t in l for l in ci.splitlines()) != ok_lines:
             bad.append(f"ci.yml runs .github/agent/tests/{t} by name, not through the selection")
     return bad
 
@@ -327,13 +335,17 @@ def full_with(t, k, v):
             if t in str(x.get("run", "")): x[k] = v
     return d
 real_ci = open(CI).read()
-assert "pin-audit-test.sh" in real_map and "pin-audit-test.sh" not in real_ci
+assert "pin-audit-test.sh" in real_map and "pin-audit-test.sh" in real_ci
+assert real_ci != re.sub(r"if grep -qxF 'bash .github/agent/tests/pin-audit-test.sh' \"\$selected\"; then (bash .github/agent/tests/pin-audit-test.sh); fi", r"\1", real_ci)
+assert real_ci != real_ci.replace("pin-audit-test.sh' \"$selected\"", "pin-audit-test.sh' /dev/null")
 mut_rest("the map no longer names pin-audit-test.sh", "map does not select .github/agent/tests/pin-audit-test.sh for a change to the workflows or the pin tools", tmap=real_map.replace("pin-audit-test.sh", "other-test.sh"))
 mut_rest("the selector prints nothing", "map does not select .github/agent/tests/pin-age-check-test.sh for a change to the workflows or the pin tools", selector="#!/usr/bin/env bash\nexit 0\n")
 mut_rest("full-suite.yml no longer runs pin-age-check-test.sh", "full-suite.yml does not run .github/agent/tests/pin-age-check-test.sh", full=full_without("pin-age-check-test.sh"))
 mut_rest("full-suite.yml's supply-chain-wiring step is conditional", "full-suite.yml does not run .github/agent/tests/supply-chain-wiring-test.sh", full=full_with("supply-chain-wiring-test.sh", "if", "false"))
 mut_rest("full-suite.yml's pin-audit step may fail", "full-suite.yml does not run .github/agent/tests/pin-audit-test.sh", full=full_with("pin-audit-test.sh", "continue-on-error", True))
 mut_rest("ci.yml names pin-audit-test.sh", "ci.yml runs .github/agent/tests/pin-audit-test.sh by name", ci=real_ci + "\n      - run: bash .github/agent/tests/pin-audit-test.sh\n")
+mut_rest("ci.yml's literal line for pin-audit-test.sh is not guarded by the selection", "ci.yml runs .github/agent/tests/pin-audit-test.sh by name", ci=re.sub(r"if grep -qxF 'bash .github/agent/tests/pin-audit-test.sh' \"\$selected\"; then (bash .github/agent/tests/pin-audit-test.sh); fi", r"\1", real_ci))
+mut_rest("ci.yml's literal line for pin-audit-test.sh greps another file", "ci.yml runs .github/agent/tests/pin-audit-test.sh by name", ci=real_ci.replace("pin-audit-test.sh' \"$selected\"", "pin-audit-test.sh' /dev/null"))
 mut_rest("REQ-SUP-001 off PIPELINE_ONLY", "not in PIPELINE_ONLY", src="PIPELINE_ONLY = frozenset(['REQ-X'])")
 
 def mut_wf(name, expect, fn):
