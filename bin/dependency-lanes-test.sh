@@ -1008,9 +1008,9 @@ else failn=$((failn+1)); echo "FAIL reviewer-version-script"; fi
 
 # g3: a tag named main must not answer a read of main, so every read of main's files names the branch ref
 am="$root/.github/workflows/dependabot-auto-merge.yml"
-reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly four copies of the one string
+reads_main_branch() { # file: its ?ref= words, to the end of the shell word, are exactly two copies of the one string
   local want='?ref=refs/heads/main"'
-  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s\n%s\n%s' "$want" "$want" "$want" "$want")" ]
+  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s' "$want" "$want")" ]
 }
 if reads_main_branch "$am"
 then pass=$((pass+1)); echo "PASS g3-auto-merge-reads-refs-heads-main"

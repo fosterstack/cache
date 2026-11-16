@@ -1992,24 +1992,25 @@ RUNLIST=fail streak '[]' no "history unreadable: nothing decided, step does not 
 
 # a tag named main must not answer a read of main's files: the workflow's reads name the branch ref
 wf="$repo/.github/workflows/dependabot-reviewer.yml"
-reads_ok() { # file: its ?ref= words, to the end of the shell word, are exactly three copies of the one string
-  local want='?ref=refs/heads/main"'
-  [ "$(grep -o '?ref=[^[:space:]]*' "$1")" = "$(printf '%s\n%s\n%s' "$want" "$want" "$want")" ]
+reads_ok() { # file: it has no ?ref= word at all, so every word a read adds, to the end of the shell word, is refused
+  [ -z "$(grep -o '?ref=[^[:space:]]*' "$1")" ]
 }
-if reads_ok "$wf"; then echo "ok: workflow reads of main name ?ref=refs/heads/main, never ?ref=main"; pass=$((pass+1))
+if reads_ok "$wf"; then echo "ok: workflow has no read of main by ?ref=, so no tag named main can answer one"; pass=$((pass+1))
 else
-  echo "FAIL: workflow reads of main name ?ref=refs/heads/main, never ?ref=main" \
-    "(want exactly 3 reads, each ?ref=refs/heads/main\")"
+  echo "FAIL: workflow has no read of main by ?ref=, so no tag named main can answer one" \
+    "(want exactly 0 reads)"
   fail=$((fail+1))
 fi
+# the workflow has no read left to mutate: each refusal case is a copy with one read line of the bad shape appended
 mut=$(mktemp -d -t cache5-tests.XXXXXX)
-sed 's|?ref=refs/heads/main"|?ref=refs/heads/main-x"|' "$wf" > "$mut/branch-prefix.yml"
-{ cat "$wf"; echo '  x: api repos/o/r/contents/f?ref=refs/tags/main"'; } > "$mut/tag-read.yml"
-sed 's|?ref=refs/heads/main"|?ref=main"|' "$wf" > "$mut/bare.yml"
-sed 's|?ref=refs/heads/main"|?ref=refs/heads/main;|' "$wf" > "$mut/no-quote.yml"
+bad_read() { { cat "$wf"; printf '  x: api repos/o/r/contents/f%s\n' "$2"; } > "$mut/$1.yml"; }
+bad_read branch-prefix '?ref=refs/heads/main-x"'
+bad_read tag-read '?ref=refs/tags/main"'
+bad_read bare '?ref=main"'
+bad_read no-quote '?ref=refs/heads/main;'
 # bash joins text after the closing quote into the same word, so the ref would no longer end at main
-sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}|' "$wf" > "$mut/quote-join-a.yml"
-sed '0,\|?ref=refs/heads/main"|s||?ref=refs/heads/main"-x|' "$wf" > "$mut/quote-join-b.yml"
+bad_read quote-join-a '?ref=refs/heads/main"${GITHUB_REF_NAME:+-x}'
+bad_read quote-join-b '?ref=refs/heads/main"-x'
 for m in branch-prefix tag-read bare no-quote quote-join-a quote-join-b; do
   if reads_ok "$mut/$m.yml"; then echo "FAIL: reads check accepts a workflow with a $m read"; fail=$((fail+1))
   else echo "ok: reads check refuses a workflow with a $m read"; pass=$((pass+1)); fi
