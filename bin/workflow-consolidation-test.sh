@@ -96,8 +96,9 @@ case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if
 # PR 2 of 4: ci.yml absorbs hygiene.yml and requirements.yml (REQ-REL-008-AC2). Every moved job
 # keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
 # top-level permissions stay read-only and its one concurrency block is the reviewed one (judge_conc); every required
-# check in .github/policy/required-checks.json is still produced by a top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
-# (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
+# check in .github/policy/required-checks.json is still produced by a top-level job of a workflow on its scope's
+# event. dependabot-auto-merge.yml does NOT move: its events (pull_request only) differ from ci.yml's
+# (advisor, 0051 check 3).
 judge_ci() { python3 - "$1" "$root" <<'PY'
 import glob, json, os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
