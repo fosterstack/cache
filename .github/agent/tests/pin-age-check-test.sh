@@ -5418,5 +5418,74 @@ else
   mutant row-version-passthrough pin-inventory.py '        if not is_pin(m.group(2)):' '        if False:' "rv$RPIDS"
 fi
 
+# --- REQ-SUP-001, step 2 group P2 riders: the shell text of a changed file ----------------------------------------------------------------------------------
+# shf NAME TEXT: bin/NAME.sh holds TEXT at the head -> rc, $work/NAME.out
+shf() { newcase "$1" "$(pyw "bin/$1.sh" "$2")"; runck "$1" '{"times": {}}'; }
+
+CASE="D1: a variable that holds curl, wget, a shell or source/./eval/builtin is that word as a command word, quoted or not: the line that uses it is its own finding"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def found(use, holder):
+    text = "#!/bin/sh\nX=" + holder + "\n" + use + "\n"
+    return any(flat == use for _key, flat, _bashlike in inv.unmeasured_occurrences({"bin/x.sh": text}))
+misses = []
+for holder, use in (("curl", '$X -fsSL https://example.org/t.sh -o t'), ("curl", '"$X" -fsSL https://example.org/t.sh -o t'),
+                    ("wget", '$X https://example.org/t.sh'), ("wget", '"$X" https://example.org/t.sh'),
+                    ("bash", '$X "$SCRIPT"'), ("bash", '"$X" "$SCRIPT"'), ("sh", '$X "$SCRIPT"'), ("sh", '"$X" "$SCRIPT"'),
+                    ("source", '$X "$LIB"'), ("source", '"$X" "$LIB"'), (".", '$X "$LIB"'), (".", '"$X" "$LIB"'),
+                    ("eval", '$X "$CMD"'), ("eval", '"$X" "$CMD"'), ("builtin", '$X source "$LIB"'), ("builtin", '"$X" source "$LIB"')):
+    if not found(use, holder):
+        misses.append((holder, use))
+assert not misses, misses
+PY
+CASE="D1 control: a variable that holds an ordinary command (echo) is no finding on the line that uses it"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+for use in ('$X hello', '"$X" hello'):
+    text = "#!/bin/sh\nX=echo\n" + use + "\n"
+    assert not [f for _k, f, _b in inv.unmeasured_occurrences({"bin/x.sh": text}) if f == use], use
+PY
+
+dyn=0
+for ln in 'bash "$DIR/run.sh"' 'sh $SCRIPT' 'python3 "$S"' 'bash ./missing.sh' 'python3 tools/missing.py' 'sh "$(dirname "$0")/run.sh"'; do
+  dyn=$((dyn+1)); shf "dyn$dyn" $'#!/bin/sh\n'"$ln"$'\n'
+  CASE="D1: a shell or interpreter given a script path that is not a literal, bound repo file fails closed: the file is unmeasured (exit 1): $ln"
+  check test "$rc" -eq 1; check grep -q "FAIL unmeasured:bin/dyn$dyn.sh" "$work/dyn$dyn.out"
+  rtck "dyn$dyn" all
+  CASE="D1: a reviewed_files row for that file does not rule it (exit 1, still unmeasured): $ln"
+  check test "$rc" -eq 1; check grep -q "FAIL unmeasured:bin/dyn$dyn.sh" "$work/rt.out"
+done
+newcase dynlit "$(printf 'import pathlib\npathlib.Path("bin/lit.sh").write_text("echo hi\\n")\npathlib.Path("tools").mkdir()\npathlib.Path("tools/lit.py").write_text("print(1)\\n")\npathlib.Path("bin/dynlit.sh").write_text("#!/bin/sh\\nbash bin/lit.sh\\npython3 tools/lit.py\\n")')"
+runck dynlit '{"times": {}}'
+CASE="D1 control: a shell or python3 given the literal path of a repo file the same commit holds is no finding (exit 0)"
+check test "$rc" -eq 0
+
+hd=0
+for opener in 'bash <<EOF' 'sh -s <<EOF' '. /dev/stdin <<EOF'; do
+  hd=$((hd+1)); shf "hdsh$hd" $'#!/bin/sh\n'"$opener"$'\npython3 "$S"\nEOF\n'
+  CASE="D2: a heredoc body fed to a shell is shell code (its non-literal python3 path fails closed, exit 1): $opener"
+  check test "$rc" -eq 1; check grep -q "FAIL unmeasured:bin/hdsh$hd.sh" "$work/hdsh$hd.out"
+done
+shf hdcat $'#!/bin/sh\ncat <<EOF\npython3 "$S"\nEOF\n'
+CASE="D2: the same body fed to cat is data, not shell code (exit 0)"
+check test "$rc" -eq 0
+shf hdpydata $'#!/bin/sh\npython3 - <<EOF\nprint("run curl later")\nEOF\n'
+CASE="D2: a python3 heredoc body that only prints a word is data (exit 0)"
+check test "$rc" -eq 0
+shf hdpyfetch $'#!/bin/sh\npython3 - <<EOF\nimport urllib.request\nurllib.request.urlopen("https://github.com/o/r/releases/download/v1.0.0/x.tgz")\nEOF\n'
+CASE="D2: a python3 heredoc that urlopens a GitHub release URL is still a finding (exit 1, unmeasured)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/hdpyfetch.sh' "$work/hdpyfetch.out"
+shf execsh $'#!/bin/sh\nfind . -name "*.x" -exec sh -c \'echo "$1"\' _ {} \;\n'
+CASE="D2: find -exec sh -c '...' fails closed (exit 1, unmeasured)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/execsh.sh' "$work/execsh.out"
+shf xargssh $'#!/bin/sh\nprintf "%s\\n" a b | xargs sh -c \'echo "$1"\' _\n'
+CASE="D2: xargs sh -c '...' fails closed (exit 1, unmeasured)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/xargssh.sh' "$work/xargssh.out"
+shf exececho $'#!/bin/sh\nfind . -name "*.x" -exec echo {} \;\nprintf "%s\\n" a b | xargs echo\n'
+CASE="D2 control: find -exec echo and xargs echo are no finding (exit 0)"
+check test "$rc" -eq 0
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
