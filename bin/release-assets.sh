@@ -6,7 +6,7 @@
 set -euo pipefail
 shopt -s nullglob
 if [ -z "${GH_TOKEN:-}" ]; then echo "release-assets: GH_TOKEN is unset" >&2; exit 2; fi
-[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-assets: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
+python3 bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-assets: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 rel="$GITHUB_REF_NAME"
 # Everything is staged under its release name in release-upload/. The apks of the two architectures, and the SBOMs and lock files of the two images,
 # have the same file names, so each is staged under its architecture's or variant's name.
