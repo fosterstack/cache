@@ -2369,7 +2369,8 @@ def _resolve_script(path, text, entries, bases=()):
             if not g:
                 continue
             want = g.group(1)
-            if re.fullmatch(r"\$\{?f\}?", want):          # for f in <committed files>; do gh api …/${f}?ref=main (or ?ref=refs/heads/main)
+            # for f in <committed files>; do gh api …/${f}?ref=main (or ?ref=refs/heads/main)
+            if re.fullmatch(r"\$\{?f\}?", want):
                 lists = re.findall(r"\bfor\s+f\s+in\s+([^;\n]*?)\s*;\s*do\b", text)
                 cands = [x for lst in lists for x in lst.split() if _base(x) == base and entries.get(x) == "file"]
                 if len(cands) == 1:
