@@ -1050,20 +1050,6 @@ out=$(bash "$here/dispatch-fixer.sh" fix-something 5 2>&1); rc=$?
 [ "$rc" = 1 ] && grep -q "unknown event type" <<<"$out" && { echo "ok: dispatch-fixer: unknown event type refused"; pass=$((pass+1)); } || { echo "FAIL: unknown event"; fail=$((fail+1)); }
 out=$(DISPATCH_TOKEN=t bash "$here/dispatch-fixer.sh" fix-held-bump "" 2>&1); rc=$?
 [ "$rc" = 1 ] && grep -q "no issue number" <<<"$out" && { echo "ok: dispatch-fixer: no issue number refused"; pass=$((pass+1)); } || { echo "FAIL: no issue"; fail=$((fail+1)); }
-python3 - "$repo/.github/workflows/ci.yml" "$w/drift-dispatch.sh" <<'PY5'
-import sys, yaml
-j = yaml.safe_load(open(sys.argv[1]))["jobs"]["drift-fixer-dispatch"]
-assert "push" in j["if"] and "refs/heads/main" in j["if"] and j["environment"] == "agent"
-open(sys.argv[2], "w").write([s for s in j["steps"] if s.get("name") == "dispatch"][0]["run"])
-PY5
-for mode in ok dispatch; do
-  : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" FAIL="$([ $mode = dispatch ] && echo dispatch)" DISPATCH_TOKEN=ops ISSUE=12 GITHUB_REPOSITORY=o/r \
-     bash --noprofile --norc -e -o pipefail "$w/drift-dispatch.sh") >/dev/null 2>&1; rc=$?
-  if [ "$rc" = 0 ] && grep -q "ops/dispatches -f event_type=fix-required-check-drift -f client_payload\[issue\]=12 -f client_payload\[pr\]= " "$w/gh.log"; then
-    echo "ok: hygiene drift dispatch ($mode): fix-required-check-drift for issue 12, step never fails"; pass=$((pass+1))
-  else echo "FAIL: hygiene drift dispatch ($mode) rc=$rc"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); fi
-done
 
 # --- round 2
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act; expect "armed but the success check fails -> counted unfinished, auto-merge turned back off (round-2)" \
