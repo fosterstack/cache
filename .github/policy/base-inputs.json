@@ -11,6 +11,7 @@
     "build/locks/melange.lock",
     "build/locks/archive-keys.sha256",
     "build/locks/archive-index.sha256",
-    "build/locks/fips-module.txt"
+    "build/locks/fips-module.txt",
+    ".github/policy/gradle-wrapper-jar-sha256.txt"
   ]
 }
