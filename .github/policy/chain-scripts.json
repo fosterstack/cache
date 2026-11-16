@@ -576,7 +576,7 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object) and main's accepted-items.json, the fourth input; reads and decides, signs and writes nothing",
-      "sha256": "e45caa18a18ca17c34953e93c315dc030786afc212aee0854aa92271fbf36d5e"
+      "sha256": "69c2d5599256c69d82ccf5ccc80994626f49401cd50c8ea87818bf9cc55f771e"
     },
     {
       "path": "bin/build-freeze.sh",
