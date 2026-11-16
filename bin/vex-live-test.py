@@ -756,6 +756,41 @@ def hub_sweep(repository, user, token, opener=None):
         raise RuntimeError("the Docker Hub test repository was not emptied: %d delete failures %s, %d tags left %s" % (len(failures), failures[:3], len(left), left[:5]))
 
 
+def hub_private(repository, user, token, opener=None):
+    """Prove the Docker Hub test repository is private, through the registry API the sweep already uses (the Hub's own API refuses the organization access token).
+    With the user and the token its tag list must answer 200 (a refused login, 401 or 403, raises and is never read as public); with no credential the same tag
+    list must be refused (401, 403 or 404). An anonymous 200 means the repository is public and raises; any other answer raises too."""
+    import base64, urllib.error, urllib.parse
+    if not HUB_REPO.fullmatch(repository or ""):
+        raise ValueError("not a Docker Hub repository name (namespace/name): %r" % (repository,))
+    if not user or not token or any(c.isspace() for c in user):
+        raise ValueError("the Docker Hub test user and the push token are both needed")
+
+    def tag_list_status(headers):
+        q = urllib.parse.urlencode({"service": "registry.docker.io", "scope": "repository:%s:pull" % repository})
+        try:
+            _, _, body = reg_call("https://%s/token?%s" % (REG_AUTH_HOST, q), "GET", headers, opener)
+            doc = json.loads(body)
+            bearer = (doc.get("token") or doc.get("access_token")) if isinstance(doc, dict) else None
+            if not isinstance(bearer, str) or not bearer or any(c.isspace() for c in bearer):
+                raise ValueError("Docker Hub's token service gave no token")
+            return reg_call("https://%s/v2/%s/tags/list?n=1" % (REG_HOST, repository), "GET", {"Authorization": "Bearer " + bearer}, opener)[0]
+        except urllib.error.HTTPError as e:
+            return e.code
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError("Docker Hub registry call failed: %s" % type(e).__name__) from None
+
+    basic = "Basic " + base64.b64encode(("%s:%s" % (user, token)).encode()).decode()
+    got = tag_list_status({"Authorization": basic})
+    if got != 200:
+        raise RuntimeError("Docker Hub refused the test user's own read of %s: HTTP %s" % (repository, got))
+    anon = tag_list_status({})
+    if anon == 200:
+        raise RuntimeError("%s is public on Docker Hub: nothing is pushed" % repository)
+    if anon not in (401, 403, 404):
+        raise RuntimeError("Docker Hub answered the anonymous read of %s with HTTP %s: not a refusal" % (repository, anon))
+
+
 def _selfcheck():
     spec = importlib.util.spec_from_file_location("scout_selfcheck", os.path.join(os.path.dirname(os.path.abspath(__file__)), "scout-selfcheck.py"))
     m = importlib.util.module_from_spec(spec)
@@ -854,6 +889,8 @@ def main(argv=None):
     wi.add_argument("--layout", required=True)
     hs = sub.add_parser("hub-sweep", help="delete every tag of the Docker Hub test repository (DOCKERHUB_TEST_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
     hs.add_argument("--repository", required=True)
+    hp = sub.add_parser("hub-private", help="succeed only when the Docker Hub test repository is private (DOCKERHUB_TEST_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
+    hp.add_argument("--repository", required=True)
     sw = sub.add_parser("scout-valid", help="succeed only for a well-formed Scout GitLab report")
     sw.add_argument("--report", required=True)
     sp = sub.add_parser("scout-pick", help="print the first CVE Scout reports that one of our statements covers (empty when none)")
@@ -884,6 +921,13 @@ def main(argv=None):
             hub_sweep(a.repository, os.environ.get("DOCKERHUB_TEST_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
         except (ValueError, RuntimeError, OSError, KeyError) as e:
             print("::error::Docker Hub sweep: %s" % e, file=sys.stderr)
+            return 1
+        return 0
+    if a.cmd == "hub-private":
+        try:
+            hub_private(a.repository, os.environ.get("DOCKERHUB_TEST_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
+        except (ValueError, RuntimeError, OSError, KeyError) as e:
+            print("::error::Docker Hub visibility: %s" % e, file=sys.stderr)
             return 1
         return 0
     if a.cmd == "scout-valid":
