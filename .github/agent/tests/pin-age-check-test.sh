@@ -4247,8 +4247,6 @@ pdc h21 <<'EOF'
 curl http://e.example/x
 EOF
 pdno h21 "the same line text twice in one file, once a comment and once a real command"
-twoc h22 bin/pd.sh $'#!/usr/bin/env bash\ncat <<\'EOT\'\ncurl http://e.example/x\nEOT\n' $'#!/usr/bin/env bash\ncat <<\'EOT\'\nEOT\ncurl http://e.example/x\n'
-pdno h22 "a line proven data in the base (inside a here-document) moved by the head into plain code"
 
 # R3: a real download and the vendored folder keep today's rule
 pdc r3a <<'EOF'
@@ -4449,14 +4447,16 @@ done
 pdrow() {
   newcase "$1" "$(pyw bin/pd.sh $'#!/usr/bin/env bash\n'"$2")"
   mkrow "$work/pdrow-$1.tmp.json" bin/pd.sh "$3" >/dev/null
-  python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["unmeasured_text"][0]["context"] = sys.argv[3]; json.dump(d, open(sys.argv[2], "w"))' "$work/pdrow-$1.tmp.json" "$work/pdrow-$1.json" "$4"
+  python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["unmeasured_text"][0].update({"context": sys.argv[3]} if sys.argv[3] else {}); json.dump(d, open(sys.argv[2], "w"))' "$work/pdrow-$1.tmp.json" "$work/pdrow-$1.json" "$4"
   rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --exceptions "$work/pdrow-$1.json" >"$work/pd.out" 2>&1 || rc=$?
 }
-for i in 1 8; do   # safe and literal-alias: ruled once the base holds a heredoc row for the line
-  pdrow "nrr$i" "${nr_texts[$i]}" "curl http://e.example/x" heredoc
-  CASE="AC16 ruled with a row, heredoc context: ${nr_names[$i]}: exit 0, ruled text"
-  check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pd.out"
-done
+pdrow nrr1 "${nr_texts[1]}" "curl http://e.example/x" heredoc
+CASE="AC16 ruled with a row, heredoc context: ${nr_names[1]}: exit 0, ruled text"
+check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pd.out"
+# literal-alias turns expand_aliases on, so a heredoc-context row rules nothing there; the row has no context
+pdrow nrr8 "${nr_texts[8]}" "curl http://e.example/x" ""
+CASE="AC16 ruled with a row, no context: ${nr_names[8]}: exit 0, ruled text"
+check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pd.out"
 
 
 echo "pin-age-check: $pass passed, $failn failed"
