@@ -640,7 +640,7 @@ def read_checks(env_name):
     if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
         raise ValueError("required_checks is not a list of objects")
     return checks
-release_only = []
+ruleset, release_only = [], []
 try:
     ruleset = read_checks("PIN_WIRING_POLICY_FILE")
     release_only = read_checks("PIN_WIRING_RELEASE_ONLY_FILE")
@@ -658,10 +658,20 @@ if pol is not None:
 # the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression that could render as one. auditor-review-gate is the App's alone: nothing produces it.
-RESERVED = set(PROTECTED) | {n for c in release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
-PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-gradle", "acceptance-maven")}
+# main's ruleset contexts and the guard's own check are reserved too: a second job under one of those names could add a green of that name
+RESERVED = set(PROTECTED) | {"required-check guard"} | {n for c in ruleset + release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
+# the (job id, job name) pairs that produce a reserved name on main, by workflow file
+PRODUCES = {"ci.yml": tuple((j, j) for j in PROTECTED + ("coverage", "test", "lint", "gosec", "govulncheck", "vendor", "fips140-only",
+                                                          "requirements", "dependency-review")) + (("required-check-guard", "required-check guard"),),
+            "acceptance.yml": (("acceptance-gradle", "acceptance-gradle"), ("acceptance-maven", "acceptance-maven")),
+            "codeql.yml": (("analyze", "analyze (go)"),),
+            "release.yml": (("reproducibility", "reproducibility"),),
+            "scan.yml": (("scan", "scan"), ("reproducibility", "reproducibility"), ("scanner", "scan (${{ matrix.scanner }})")),
+            "stage-reproducibility.yml": (("reproduce", "reproducibility"),),
+            "stage-verify.yml": (("scan", "scan (${{ matrix.scanner }})"),),
+            "supply-chain.yml": (("pin-age", "pin-age"),)}
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
-    produces = jid in PRODUCES.get(wf, ()) and nm == jid
+    produces = (jid, nm) in PRODUCES.get(wf, ())
     return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
 def spells(parts, name):   # parts in order: the first starts name, the last ends it, text between
     # two or more parts (the caller checks); stop is where the last part starts, so a stop before the first part's
@@ -1182,7 +1192,7 @@ case_msg run-changed-names-key "$RUNX" "the allowlist-persona step 8 (persona UA
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
-case_ job-name-expr-spaced    ok  "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
+case_ job-name-expr-spaced    bad "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
 case_ job-matrix-other        ok  "d['jobs']['lint']['strategy'] = {'matrix': {'x': ['1']}}"
 case_ checks-write-job        bad "d['jobs']['lint']['permissions'] = {'checks': 'write'}"
 case_ checks-write-all        bad "d['permissions'] = 'write-all'"
