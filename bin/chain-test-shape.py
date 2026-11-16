@@ -1375,9 +1375,9 @@ CHAIN_SPEC = {   # job -> exact needs, permissions, if and environment
     "sign-check": dict(needs=["build-assemble", "check"], perm=SIGN_PERMISSIONS, if_=SIGN_IF, env="sign"),
     "release-compare": dict(needs=["check", "sign", "sign-check", "sign-rebuild"], perm=PERM_READ, if_=None, env=None),
     "release-verify": dict(needs=["release-compare"], perm=PERM_READ, if_=None, env=None),
-    "release": dict(needs=["release-compare", "release-verify"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role (ruling 1)
-    "sign-release": dict(needs=["build-assemble", "release"], perm={"contents": "read", "id-token": "write", "packages": "write"}, if_=AFTER_IF, env="sign"),
-    "release-evidence": dict(needs=["sign-release"], perm={"contents": "write"}, if_=AFTER_IF, env=None),      # no environment, no KMS role, no identity token (ruling 2)
+    "release": dict(needs=["release-compare", "release-verify", "sign-release"], perm={"contents": "write", "packages": "write"}, if_=AFTER_IF, env="release"),      # no id-token and no KMS role (ruling 1); it needs sign-release, whose signatures it verifies before its first registry login
+    "sign-release": dict(needs=["build-assemble", "release-compare", "release-verify"], perm=SIGN_PERMISSIONS, if_=AFTER_IF, env="sign"),      # runs before release: contents read and id-token write only, no packages write, no registry credential (REQ-REL-011-AC3 (a))
+    "release-evidence": dict(needs=["release"], perm={"contents": "write"}, if_=AFTER_IF, env=None),      # needs release (the publish), attaches what sign-release signed; no environment, no KMS role, no identity token (ruling 2)
 }
 CHAIN = sorted(CHAIN_SPEC)
 RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
@@ -1504,8 +1504,8 @@ def graph(path):
             bad.append("%s names AWS_ROLE_ARN: only the four sign jobs ask for the KMS role" % name)
         if name not in ("sign", "sign-rebuild", "sign-check", "sign-release") and "id-token" in (job.get("permissions") or {}):
             bad.append("%s asks for an identity token: only the four sign jobs of the chain do" % name)
-        if names_secrets({k: v for k, v in job.items() if k != "steps"}) or ("secrets." in json.dumps(job) and name not in ("release", "sign-release")):
-            bad.append("%s names the secrets context (only release and sign-release read the registry credentials)" % name)
+        if names_secrets({k: v for k, v in job.items() if k != "steps"}) or ("secrets." in json.dumps(job) and name != "release"):
+            bad.append("%s names the secrets context (only the release job reads the registry credentials; sign-release holds no secret)" % name)
     for name, job in jobs.items():
         if name in CHAIN_SPEC:
             continue
