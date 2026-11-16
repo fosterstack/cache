@@ -1048,5 +1048,146 @@ class ExclusionBreachReasons(unittest.TestCase):
         self.assertEqual(M._env_breach(doc, ("w", "j", 1)), "the excluded step cannot be found")
 
 
+HOOK_NEW = ["PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "NODE_OPTIONS", "HOME", "PYTHONPATH", "PYTHONSTARTUP",
+            "PYTHONHOME", "PERL5OPT", "RUBYOPT", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy",
+            "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
+            "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO"]
+GATE_PROGRAMS = dict.fromkeys([".github/agent/bin/auditor-review-gate.py", ".github/agent/bin/check-action-pins.py",
+                              "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
+                              "bin/scan-no-workflow-call-test.sh", "bin/audit-record-judge.sh",
+                              "bin/audit-record-prepare.sh", ".github/agent/bin/auditor-signed-commit.py"], "")
+GH_SCRIPT = f"      - uses: actions/github-script@{SHA} # v7.0.1\n        with:\n          script: |\n            %s\n"
+
+
+class StartupHookWrites(unittest.TestCase):
+    """F3b/F3c: a step may not set a startup-hook name by env: or by a write that reaches later steps' environment."""
+
+    def findings(self, workflow, name="w.yml"):
+        d = repo({f".github/workflows/{name}": workflow, **GATE_PROGRAMS})
+        self.addCleanup(shutil.rmtree, d)
+        return run([d])
+
+    def step(self, run_text):
+        return HEAD + "    steps:\n      - run: |\n          " + run_text.replace("\n", "\n          ") + "\n"
+
+    def script(self, js):
+        return HEAD + "    steps:\n" + GH_SCRIPT % js
+
+    def refused(self, workflow, name="w.yml"):
+        code, out = self.findings(workflow, name)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f".github/workflows/{name}", out)
+        self.assertNotIn(" 0 finding(s)", out)
+
+    def accepted(self, workflow):
+        code, out = self.findings(workflow)
+        self.assertEqual(code, 0, out)
+        self.assertIn(" 0 finding(s)", out)
+
+    # ---- R1: the shell routes
+    def test_github_env_forms_refuse_a_startup_hook_name(self):
+        for dest in ('>> $GITHUB_ENV', '>> "$GITHUB_ENV"', '>>"$GITHUB_ENV"', '>> ${GITHUB_ENV}'):
+            with self.subTest(dest=dest):
+                self.refused(self.step(f'echo "BASH_ENV=x" {dest}'))
+
+    def test_set_env_command_refuses_a_startup_hook_name(self):
+        self.refused(self.step('echo "::set-env name=BASH_ENV::x"'))
+
+    def test_each_shell_route_refuses_a_name_in_a_job_of_any_workflow_file(self):
+        self.refused(self.step('echo "BASH_FUNC_foo%%=x" >> "$GITHUB_ENV"'), "other-name.yml")
+        self.refused(self.step('echo "CURL_HOME=/x" >> "$GITHUB_ENV"'))
+        self.refused(self.step('echo "ENV=/x" >> "$GITHUB_ENV"'))
+
+    def test_the_name_may_sit_anywhere_in_the_step_text(self):
+        self.refused(self.step('v=BASH_ENV\necho "$v=x" >> "$GITHUB_ENV"'))
+
+    # ---- R1: the JS routes, in a run step and in github-script
+    def test_export_variable_refuses_a_startup_hook_name(self):
+        js = "core.exportVariable('BASH_ENV', 'x')"
+        self.refused(self.script(js))
+        self.refused(self.step(f"node -e \"{js}\""))
+
+    def test_add_path_is_refused_with_any_argument(self):
+        for js in ("core.addPath('/tmp/bin')", "core.addPath(p)", "core.addPath(`${dir}/bin`)"):
+            with self.subTest(js=js):
+                self.refused(self.script(js))
+                self.refused(self.step(f"node -e \"{js}\""))
+
+    def test_the_js_routes_with_an_r2_name_are_refused(self):
+        self.refused(self.script("core.exportVariable('LD_PRELOAD', '/x.so')"))
+        self.refused(self.script("core.exportVariable('PATH', p)"))
+
+    def test_each_r2_name_group_is_refused_through_github_env(self):
+        for name in ("PATH", "LD_PRELOAD", "NODE_OPTIONS", "HOME", "PYTHONPATH", "PERL5OPT", "RUBYOPT", "HTTPS_PROXY",
+                     "no_proxy", "SSL_CERT_FILE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO"):
+            with self.subTest(name=name):
+                self.refused(self.step(f'echo "{name}=x" >> "$GITHUB_ENV"'))
+
+    # ---- R1: what stays accepted
+    def test_an_unrelated_name_through_the_same_routes_is_accepted(self):
+        self.accepted(self.step('echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"'))
+        self.accepted(self.step('echo "REF=x" >> "$GITHUB_ENV"'))
+        self.accepted(self.script("core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', p)"))
+        self.accepted(self.step('echo "::set-env name=REF::x"'))
+
+    def test_a_name_without_a_route_is_accepted(self):
+        self.accepted(self.step('echo "BASH_ENV is not set here"'))
+        self.accepted(self.step('echo "PATH=$PATH"'))
+
+    def test_a_name_that_is_only_part_of_another_word_is_accepted(self):
+        for word in ("MYENV", "ENVIRONMENT", "XBASH_ENV", "BASH_ENVX"):
+            with self.subTest(word=word):
+                self.accepted(self.step(f'echo "{word}=x" >> "$GITHUB_ENV"'))
+
+    # ---- R2: env keys
+    def env_at(self, level, name):
+        tail = "    steps:\n      - run: echo hi\n"
+        line = f"          {name}: x\n"
+        if level == "step":
+            return HEAD + tail + "        env:\n" + line
+        if level == "job":
+            return HEAD.replace("    runs-on", "    env:\n      " + name + ": x\n    runs-on") + tail
+        return "env:\n  " + name + ": x\n" + HEAD + tail
+
+    def test_every_new_name_is_refused_as_a_step_env_key(self):
+        for name in HOOK_NEW:
+            with self.subTest(name=name):
+                code, out = self.findings(self.env_at("step", name))
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"sets {name}", out)
+
+    def test_some_new_names_are_refused_at_workflow_and_job_level(self):
+        for level in ("workflow", "job"):
+            for name in ("PATH", "LD_PRELOAD", "HOME", "NODE_OPTIONS", "https_proxy", "SSL_CERT_FILE"):
+                with self.subTest(level=level, name=name):
+                    code, out = self.findings(self.env_at(level, name))
+                    self.assertEqual(code, 1, out)
+                    self.assertIn(f"sets {name}", out)
+
+    def test_the_identity_token_file_name_is_not_an_env_finding(self):
+        for level in ("workflow", "job", "step"):
+            with self.subTest(level=level):
+                self.accepted(self.env_at(level, "ANTHROPIC_IDENTITY_TOKEN_FILE"))
+
+    def test_the_old_env_key_refusals_stand(self):
+        for name in ("BASH_ENV", "ENV", "CURL_HOME", "BASH_FUNC_x%%"):
+            with self.subTest(name=name):
+                code, out = self.findings(self.env_at("step", name))
+                self.assertEqual(code, 1, out)
+
+    def test_the_tuple_holds_every_name(self):
+        for name in HOOK_NEW + ["BASH_ENV", "ENV", "CURL_HOME"]:
+            with self.subTest(name=name):
+                self.assertIn(name, M.STARTUP_HOOK_ENV)
+        self.assertNotIn("ANTHROPIC_IDENTITY_TOKEN_FILE", M.STARTUP_HOOK_ENV)
+
+    # ---- R3: the repository's own workflows
+    def test_the_real_tree_has_no_finding(self):
+        root = os.path.abspath(os.path.join(BIN, "..", "..", ".."))
+        code, out = run([root])
+        self.assertEqual(code, 0, out)
+        self.assertIn(" 0 finding(s)", out)
+
+
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()

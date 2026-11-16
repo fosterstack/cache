@@ -3227,6 +3227,32 @@ def job_keys_are_names(rel, doc, bad):
 
 
 STARTUP_HOOK_ENV = ("BASH_ENV", "ENV", "CURL_HOME")
+# the other routes into a later step's environment: the env file, the set-env command and the toolkit's exportVariable; addPath sets PATH
+_ENV_ROUTE = re.compile(r">>\s*[\"']?\$\{?GITHUB_ENV\}?[\"']?|::set-env\b|\bexportVariable\b")
+
+
+def step_texts(steps):
+    """The run text and every `with` value of each step of a `steps` sequence."""
+    for step in steps.value:
+        texts = []
+        if isinstance(step, yaml.MappingNode):
+            for k, v in step.value:
+                if isinstance(k, yaml.ScalarNode) and k.value == "run" and isinstance(v, yaml.ScalarNode):
+                    texts.append(v.value)
+                elif isinstance(k, yaml.ScalarNode) and k.value == "with" and isinstance(v, yaml.MappingNode):
+                    texts += [w.value for _, w in v.value if isinstance(w, yaml.ScalarNode)]
+        yield "\n".join(texts)
+
+
+def check_step_writes(rel, steps, bad):
+    """A step that sets a startup-hook name by a route other than an env key is a finding."""
+    names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
+    for text in step_texts(steps):
+        if re.search(r"\baddPath\b", text):
+            bad.append(f"{rel}: a step calls addPath, which sets PATH for later steps; refused")
+        if _ENV_ROUTE.search(text) and names.search(text):
+            bad.append(f"{rel}: a step sets a name that makes bash, curl or the loader read a file or function, "
+                       f"other than through an env key; refused")
 
 
 def check_file(tree, rel, pins, bad):
@@ -3261,6 +3287,8 @@ def check_file(tree, rel, pins, bad):
                                                                or k.value.startswith("BASH_FUNC_")):
                             bad.append(f"{rel}: an env block sets {k.value}, which makes bash or curl read a file or "
                                        f"function before the step's own commands; refused")
+                        if isinstance(k, yaml.ScalarNode) and k.value == "steps" and isinstance(v, yaml.SequenceNode):
+                            check_step_writes(rel, v, bad)
                         if isinstance(k, yaml.ScalarNode) and k.value == "env" and not isinstance(v, yaml.MappingNode):
                             bad.append(f"{rel}: an env that is not a literal mapping hides the names it sets; refused")
                         stack.append(v)
