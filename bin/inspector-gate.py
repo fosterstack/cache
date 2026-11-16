@@ -74,6 +74,11 @@ def stdlib_version(typ, name, ver):
     return ver
 
 
+def types_cover(ftyp, styps):
+    """Go names collide across ecosystems (a bare stdlib), other names do not: when either side is golang the types must be equal; generic, apk and deb stay interchangeable. No finding type: any."""
+    return ftyp is None or any(t == ftyp or (t != "golang" and ftyp != "golang") for t in styps)
+
+
 def same_pkg(a, b):
     """Names match exactly, or — when one side carries no namespace (busybox
     vs the busybox of another namespace) — by last path segment. Versions must be equal."""
@@ -240,13 +245,13 @@ def vex_index(doc):
 def covered(idx, vid, pkg, image=None, typ=None):
     """image = the scanned image's identity (image_identity(label)); None means the caller has already filtered the statements to
     this image (the panel's tally does, per image), so the scope is not applied a second time.
-    typ = the finding's purl type: a subcomponent of another type never covers it. None: the finding has no type."""
+    typ = the finding's purl type: when it or a subcomponent's is golang, a subcomponent of another type never covers it. None: the finding has no type."""
     if typ is not None:
         pkg = (pkg[0], stdlib_version(typ, *pkg))
     for subs, scope in idx.get(vid, []):
         if image is not None and not in_scope(scope, image):
             continue
-        if not subs or any(typ in (None, *subs[s]) and same_pkg(pkg, s) for s in subs):
+        if not subs or any(types_cover(typ, subs[s]) and same_pkg(pkg, s) for s in subs):
             return True
     return False
 
