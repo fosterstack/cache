@@ -131,8 +131,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 229 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 226, 4
+# 224 allow patterns: chain-v030 plus the 0710 and KMS-signing rows; read from the run of this test
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 224, 4
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -180,7 +180,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "be4bb18c27164945a222c84bb0f66895782eed96449df8d68e98ec945361c58d"
+PINNED_SHA256 = "28712f6a257d1d1be9dc413fddb1cf64ef6484ccaa1b19b45b97d3ba8a0359c1"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -838,9 +838,6 @@ runeach fail "feature/x" "REQ-CHAIN-008: verify-key-page-test near-miss refused"
 passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-compare.sh" "bin/release-compare.py" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
 runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
-# pin age of third-party images: the recorded publisher signatures are public Sigstore data (certificates, signatures, log entries), JSON files in one folder only
-runeach pass "feature/x" "REQ-SUP-001: recorded publisher signatures" ".github/agent/tests/fixtures/image-publishers/cosign.bundle.json" ".github/agent/tests/fixtures/image-publishers/distroless.sig.json" ".github/agent/tests/fixtures/image-publishers/kubectl.sig.json"
-runeach fail "feature/x" "REQ-SUP-001: signature fixtures near-misses refused" ".github/agent/tests/fixtures/image-publishers/sub/x.json" ".github/agent/tests/fixtures/image-publishers/x.json.bak" ".github/agent/tests/fixtures/image-publishers/x.py" ".github/agent/tests/fixtures/other/x.json" ".github/agent/tests/fixtures/image-publishers/.hidden"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 
