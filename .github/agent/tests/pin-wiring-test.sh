@@ -698,7 +698,8 @@ PRODUCES = {"ci.yml": tuple((j, j) for j in PROTECTED + ("coverage", "test", "li
             "stage-reproducibility.yml": (("reproduce", "reproducibility"),),
             "stage-verify.yml": (("scan", "scan (${{ matrix.scanner }})"),),
             "supply-chain.yml": (("pin-age", "pin-age"),)}
-RESERVED = set(PROTECTED) | {"required-check guard"} | {p[1].split(" (")[0] for ps in PRODUCES.values() for p in ps} \
+RESERVED = set(PROTECTED) | {"required-check guard", "auditor-review-gate"} \
+           | {p[1].split(" (")[0] for ps in PRODUCES.values() for p in ps} \
            | {n for c in ruleset + release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
 def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
     produces = (jid, nm) in PRODUCES.get(wf, ())
@@ -894,7 +895,8 @@ elif shape(head_job) != shape(pinned_job):
 if block(b"permissions:", 0) != pinned_permissions:
     bad.append("the workflow permissions are not the pinned text, byte for byte")
 top_keys = {k.encode() for k in json.loads(os.environ["PIN_WIRING_TOP_KEYS"])}
-extra = [line.split(b":")[0] for line in lines if line[:1] not in (b"", b" ", b"#") and line.split(b":")[0] not in top_keys]
+keys = [line.split(b":")[0] for line in lines if line[:1] not in (b"", b" ", b"#")]
+extra = [k for k in keys if k not in top_keys]
 if extra:
     bad.append("the workflow has a top-level key that is not allowed: " + extra[0].decode("utf-8", "replace"))
 print("; ".join(bad) or "ok")
