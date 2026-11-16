@@ -1470,7 +1470,7 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "0e3fd0236fab9b9981af8a7af251e68f9ae6f9d1982a30830117997a8f956528",
+      "sha256": "5fddc30de1ac669468a8adf1ae21b1e818016e48a8845d4159f6ec8bb1db2f40",
       "tools": [
         "at",
         "command",
@@ -1671,11 +1671,12 @@
       ],
       "runs": [
         "bin/apk-tool.py",
+        "bin/release-postverify.py",
         "bin/release-sign-apks.sh"
       ],
       "signs": "other",
-      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (chain-verify.py kms-sign signs each apk's control section with the release KMS key named by RELEASE_KMS_KEY_REF, through the aws CLI, and posts one Rekor entry; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
-      "sha256": "29fc6f44658e2243d51b9118d6cf50c3839e892ccc4ff6d6564b04fde38e8b15",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, runs bin/release-postverify.py --before-publish (the guide's provenance commands on a staged copy, before anything is signed or published), then calls cache's bin/release-sign-apks.sh (chain-verify.py kms-sign signs each apk's control section with the release KMS key named by RELEASE_KMS_KEY_REF, through the aws CLI, and posts one Rekor entry; comparing them with Rebuild's is bin/release-compare.sh's job, which holds no key) and copies each signed apk with its Rekor bundle (REQ-CHAIN-007-AC6); no key file exists and no stored secret is read",
+      "sha256": "dd49691c3128c61c5d6dbdf1a36f710bdad9c259a79d8360dccb594857bf4c86",
       "reads_env": [
         "RELEASE_KMS_KEY_REF"
       ],
@@ -1913,7 +1914,7 @@
       ],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports; the judged verify pipes run without a shell (run_pipe); load_verifier compiles and runs (exec) the sha256-checked bytes of bin/chain-verify.py as a module, to call its bundle_certificate_why on the bundles a listed command names",
-      "sha256": "11762771d533f88e2be5a68bb3187c1dc2a5e528ed3df4400032737e78cb0840"
+      "sha256": "335bf675f94a3d1d43f5c9e32477e14bb15f4c500bb3df4a1890c480ef4ee607"
     },
     {
       "path": "bin/release-metadata.py",
