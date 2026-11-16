@@ -518,7 +518,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
+      "sha256": "ec300f052ad19617739193c0b423da681dcb7016dff88b1115f22a48ff182877",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1917,7 +1917,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "1ec07a4081b97f401351ac6713fe42bd240503db3f471239e4062756b9cbbb3a"
+      "sha256": "e00bc8a1a5e22f8ca02cffdcbea48f41c03ec7884abb656d91432ad73760e256"
     },
     {
       "path": "bin/vex-forms.py",
