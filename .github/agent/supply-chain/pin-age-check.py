@@ -997,26 +997,39 @@ def _live_fetch_line_ok(flat, toolchain=False):
 # REQ-SUP-001-AC16: a reviewed_files row is a review of one whole file and of the files it sources by a literal path,
 # so any edit to them stops the row matching. A word that could run a file anywhere but in a plain line fails closed.
 _PLAIN_SOURCE = re.compile(r"[ \t]*(?:source|\.)[ \t]+([A-Za-z0-9_][A-Za-z0-9_./-]*)[ \t]*")   # matches ". lib.sh", refuses "source $f"
+_SUBSTITUTION = re.compile(r"\$\(((?:[^()]|\([^()]*\))*)\)|`([^`]*)`")
+
+
+def _segments(line):
+    """The commands of line as inv.shell_segments reads them, and those inside each $( ) and backtick pair, even
+    where quoted."""
+    segs = inv.shell_segments(line)[0]
+    for m in _SUBSTITUTION.finditer(line):
+        segs += _segments(m.group(1) or m.group(2) or "")
+    return segs
+
+
 def _sourced(text):
     """The operands of the plain 'source PATH' / '. PATH' lines of text, or None (fails closed) when a word that runs
-    a file is anywhere else: source or . that is no such line or follows a cd, eval, builtin, command (but -v), a
-    shell -c, a command word that is a variable holding such a word or an unquoted variable, or a variable given such
-    a word."""
+    a file is anywhere else, inside a substitution too: source, ., eval or builtin as any word of a command, a plain
+    line aside; a cd before a source; command (but -v); a shell with -c; a command word that is a variable holding
+    such a word or an unquoted variable; or a variable given such a word."""
     ops, cd = [], False
     holders = inv.holder_names(text)
     for line, _body in inv.logical_lines(text):
         if len(line) > inv.MAX_LINE:
             return None
         plain = _PLAIN_SOURCE.fullmatch(line)
-        for seg in inv.shell_segments(line)[0]:
+        for seg in _segments(line):
             words, hidden = inv.command_of(seg)
             clean = [inv.QUOTING.sub("", w) for w in words]
             word = clean[0] if clean else ""
             cd = cd or word == "cd"
             if (hidden or (words and inv.is_holder_word(words[0], holders))
-                    or (word in inv.RUNS_A_FILE and not (plain and word in ("source", ".")))
+                    or (not plain and any(os.path.basename(w) in inv.RUNS_A_FILE for w in clean))
                     or (word == "command" and clean[1:2] not in (["-v"], ["-V"]))
-                    or (word in inv.SHELLS and "-c" in clean) or (words and words[0][0] in "$`")):
+                    or any(os.path.basename(w) in inv.SHELLS and "-c" in clean[i:] for i, w in enumerate(clean))
+                    or (words and words[0][0] in "$`")):
                 return None
         if plain:
             op = os.path.normpath(plain.group(1))
@@ -1026,14 +1039,25 @@ def _sourced(text):
     return ops
 
 
+_SCANNED = {}
+
+
+def _scanned(root, head):
+    """The paths the inventory reads for a download or a run of a file: what a shell may be given and be bound."""
+    key = (root, head)
+    if key not in _SCANNED:
+        found = {**inv.tree_surfaces(root, head), **inv.tree_files(root, head), **inv.tree_scripts(root, head)}
+        _SCANNED[key] = found.keys()
+    return _SCANNED[key]
+
+
 def _runs_bound(root, head, text):
-    """False when a shell or interpreter in text is given a script that is no literal path of a plain file at head."""
+    """False when a shell or interpreter in text is given a script that is no literal path of a file the inventory
+    reads at head."""
+    files = _scanned(root, head)
     for line, _body in inv.logical_lines(text):
-        for seg in inv.shell_segments(line)[0] if len(line) <= inv.MAX_LINE else ():
-            clean = [inv.QUOTING.sub("", w) for w in inv.command_of(seg)[0]]
-            operand = inv.script_operand(clean) if clean and clean[0] in inv.INTERPRETERS else ""
-            if operand and (inv.repo_path(operand) is None or _head_file(root, head, inv.repo_path(operand)) is None):
-                return False
+        if len(line) <= inv.MAX_LINE and any(inv.runs_unbound_file(seg, files) for seg in inv.shell_segments(line)[0]):
+            return False
     return True
 
 
@@ -1057,7 +1081,6 @@ def _hash_files(root, head, path):
         if f in lines:
             continue
         raw = _head_file(root, head, f)
-        # a Python file at the root is read by Python, whose own run-a-file forms the inventory refuses
         ops = [] if raw is not None and f == path and f.endswith(".py") else None
         if raw is not None and ops is None:
             text = raw.decode("utf-8", "replace")
