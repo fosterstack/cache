@@ -47,16 +47,37 @@ check "missing ruleset file = exit 2"             2 "cannot read"               
 check "list without required_checks = exit 2"     2 "no required_checks array"                 "$w/match.json"   "$w/nolist.json"
 
 # REQ-REL-013-AC2: with a second argument the guard also compares release-only-checks.json, entry by entry (context,
-# integration_id, scope), with the seven entries pinned in the script
-ro="$repo/.github/policy/release-only-checks.json"
+# integration_id, scope), with the eight entries pinned in the script (allowlist-pins-auditor is the eighth: off the
+# ruleset, required by release admission). ro8 is the committed list with that entry present exactly once, so the
+# cases below hold whatever the committed file says; the first case checks the committed file itself.
+ro_file="$repo/.github/policy/release-only-checks.json"
+jq -c '.required_checks |= (map(select(.context != "allowlist-pins-auditor"))
+  + [{"context":"allowlist-pins-auditor","integration_id":15368,"scope":"push"}])' "$ro_file" > "$w/ro8.json"
+ro="$w/ro8.json"
 ro_edit() { jq -c "$2" "$ro" > "$w/ro-$1.json"; }
+ro_edit seven   '.required_checks |= map(select(.context != "allowlist-pins-auditor"))'
+ro_edit pctx    '(.required_checks[] | select(.context=="allowlist-pins-auditor") | .context) = "allowlist-pins"'
+ro_edit pid     '(.required_checks[] | select(.context=="allowlist-pins-auditor") | .integration_id) = 5054756'
+ro_edit pscope  '(.required_checks[] | select(.context=="allowlist-pins-auditor") | .scope) = "pull_request"'
 ro_edit id      '(.required_checks[] | select(.context=="auditor-review-gate") | .integration_id) = 15368'
 ro_edit scope   '(.required_checks[] | select(.context=="coverage") | .scope) = "pull_request"'
 ro_edit dropped '.required_checks |= map(select(.context != "allowlist-chain"))'
 ro_edit eighth  '.required_checks += [{"context":"extra-check","integration_id":15368,"scope":"push"}]'
 echo 'not json' > "$w/ro-garbage.json"
 echo '{"comment":["no array"]}' > "$w/ro-nolist.json"
-check "pinned release-only list passes"                0 "release-only list match" "$w/match.json" "$list" "$ro"
+check "pinned release-only list passes"                0 "release-only list match \(8 entries" "$w/match.json" "$list" "$ro"
+check "the committed release-only file holds the eight" 0 "release-only list match \(8 entries" \
+  "$w/match.json" "$list" "$ro_file"
+check "the old seven (no allowlist-pins-auditor) is drift" 1 '^[-+] .*"allowlist-pins-auditor"' \
+  "$w/match.json" "$list" "$w/ro-seven.json"
+check "the old seven is refused saying eight"          1 "not the eight entries pinned" \
+  "$w/match.json" "$list" "$w/ro-seven.json"
+check "pins-auditor context changed is drift"          1 '^[-+] .*"allowlist-pins-auditor"' \
+  "$w/match.json" "$list" "$w/ro-pctx.json"
+check "pins-auditor integration_id changed is drift"   1 '^[-+] .*"allowlist-pins-auditor".*5054756' \
+  "$w/match.json" "$list" "$w/ro-pid.json"
+check "pins-auditor scope changed is drift"            1 '^[-+] .*"allowlist-pins-auditor".*"scope":"pull_request"' \
+  "$w/match.json" "$list" "$w/ro-pscope.json"
 check "a changed integration_id is drift"              1 '^[-+] .*"auditor-review-gate".*5054756' \
   "$w/match.json" "$list" "$w/ro-id.json"
 check "a changed integration_id prints both entries"   1 '^[-+] .*"auditor-review-gate".*15368' \
@@ -78,7 +99,7 @@ check "release-only file without the array = exit 2"   2 "release-only" "$w/matc
 mkdir -p "$w/main" "$w/head/.github/policy"
 cp "$sut" "$w/main/required-check-guard.sh"
 cp "$list" "$w/head/.github/policy/required-checks.json"
-sed 's/5054756/15368/' "$ro" > "$w/head/.github/policy/release-only-checks.json"
+sed 's/5054756/15368/' "$w/ro8.json" > "$w/head/.github/policy/release-only-checks.json"
 out="$(cd "$w/head" && GUARD_RULES_JSON="$w/match.json" bash "$w/main/required-check-guard.sh" \
   .github/policy/required-checks.json .github/policy/release-only-checks.json 2>&1)"; rc=$?
 if [ "$rc" -eq 1 ] && grep -qE '^[-+] .*"auditor-review-gate"' <<<"$out"; then
@@ -225,7 +246,7 @@ else echo "FAIL: the drift step ran the checkout's bin/required-check-guard.sh";
 # The fetch step, run as GitHub runs a step without `shell:` (bash -e): it writes a non-empty file under RUNNER_TEMP
 # and does not run it; it fails when gh fails, prints nothing, or fails after printing.
 cp "$list" "$w/pintree/.github/policy/required-checks.json"
-cp "$ro" "$w/pintree/.github/policy/release-only-checks.json"
+cp "$w/ro8.json" "$w/pintree/.github/policy/release-only-checks.json"
 cat > "$w/pinstub/gh" <<'EOF'
 #!/usr/bin/env bash
 [ -n "${STUB_PRINT:-}" ] && cat "$STUB_PRINT"

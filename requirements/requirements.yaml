@@ -2236,7 +2236,7 @@ requirements:
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-REL-013-AC1
-        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
+        given: the contexts the owner took off the ruleset on Nov 12 2026 (allowlist-persona, allowlist-chain, allowlist-pins-auditor, acceptance-gradle, acceptance-maven (1.2.0), acceptance-maven (1.2.3), coverage, auditor-review-gate), which release admission still requires green
         when: stage admission and the patch release's ready step read the required checks from main
         then: >-
           each reads required-checks.json and release-only-checks.json on its own, and refuses unless that file is an object whose required_checks is a non-empty array;
@@ -2245,7 +2245,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC2
-        given: a pull request or a push to main whose release-only-checks.json is not the seven entries pinned in bin/required-check-guard.sh on main
+        given: a pull request or a push to main whose release-only-checks.json is not the eight entries pinned in bin/required-check-guard.sh on main
         when: the required-check guard runs
         then: >-
           the guard fails and prints each entry that differs;
@@ -2259,7 +2259,16 @@ requirements:
         then: >-
           it refuses a head with no release-only-checks.json (the landing form is judged by its own copy);
           it refuses any job other than the one that produces a reserved name when that job carries the name;
-          the reserved names are the seven above, each by job id, by literal name and by a name with an expression in it
+          the reserved names are the eight above, each by job id, by literal name and by a name with an expression in it
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-013-AC4
+        given: a head whose ci.yml the pin-wiring judge reads as bytes
+        when: it judges the head
+        then: >-
+          it refuses a carriage return, a next-line (U+0085), a line separator (U+2028) or a paragraph separator (U+2029) anywhere in ci.yml, because YAML ends a line at each of them and the judge does not;
+          on the landing path too it requires the required-check-guard job and the top-level keys to be byte for byte those of the landing commit's own ci.yml, with only the checkout's digest and version comment free;
+          it requires the guard suite's step (bash bin/required-check-guard-test.sh) in the allowlist job as it requires that job's other pinned steps
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

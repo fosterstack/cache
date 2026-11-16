@@ -633,7 +633,7 @@ jobs:
             | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
           [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
 
-      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the seven
+      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the eight
       # release-only entries pinned in the guard. The verdict uses THIS tree's lists, so a PR that fixes a stale list
       # goes green on its own run; on push to main the tree is main.
       - name: this tree's policy lists vs the ruleset on main and the pin in main's guard

@@ -11,7 +11,7 @@
 #                                from protected main via the API, never from a checkout
 #
 # Usage: required-check-guard.sh <required-checks.json> [<release-only-checks.json>]
-#   With the second file, its seven entries (the checks release admission requires but the ruleset does not
+#   With the second file, its eight entries (the checks release admission requires but the ruleset does not
 #   list) must also equal PINNED below, whole. ci.yml runs main's copy of this script over a pull request's
 #   files, so a pull request cannot move the pin it is judged by.
 #   The ruleset side is read from `gh api repos/$GITHUB_REPOSITORY/rules/branches/main`
@@ -25,6 +25,7 @@ PINNED='[{"context":"acceptance-gradle","integration_id":15368,"scope":"push"},
 {"context":"acceptance-maven (1.2.3)","integration_id":15368,"scope":"push"},
 {"context":"allowlist-chain","integration_id":15368,"scope":"push"},
 {"context":"allowlist-persona","integration_id":15368,"scope":"push"},
+{"context":"allowlist-pins-auditor","integration_id":15368,"scope":"push"},
 {"context":"auditor-review-gate","integration_id":5054756,"scope":"pull_request"},
 {"context":"coverage","integration_id":15368,"scope":"push"}]'
 list="${1:?usage: required-check-guard.sh <required-checks.json>}"
@@ -64,7 +65,7 @@ if [ -n "${2:-}" ]; then
   if [ "$(jq -cS . <<<"$release_only")" = "$(jq -cS . <<<"$PINNED")" ]; then
     echo "required-check guard: release-only list match ($(jq length <<<"$PINNED") entries, whole)"
   else
-    echo "::error::release-only drift: ${2} is not the seven entries pinned in this script (a change needs the pin changed on main first)." >&2
+    echo "::error::release-only drift: ${2} is not the eight entries pinned in this script (a change needs the pin changed on main first)." >&2
     echo "diff (- pinned only, + ${2} only):"
     diff <(jq -cS '.[]' <<<"$PINNED") <(jq -cS '.[]' <<<"$release_only") | grep -E '^[<>]' | sed -e 's/^</-/' -e 's/^>/+/'
     status=1
