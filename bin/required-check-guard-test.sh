@@ -114,7 +114,8 @@ check "g3-ruleset entry without a scope is drift"                1 '^[-+] .*"con
   "$w/g3-missing-rules.json" "$w/g3-missing-list.json" "$ro"
 check "g3-added ruleset entry is drift"                          1 '^[-+] .*"context":"surprise"' \
   "$w/g3-added-rules.json" "$w/g3-added-list.json" "$ro"
-check "g3-the real list passes the scope comparison"             0 "release-only list match" "$w/match.json" "$list" "$ro"
+check "g3-the real list passes the scope comparison"             0 "release-only list match" \
+  "$w/match.json" "$list" "$ro"
 check "g3-without the second argument no scope is compared"      0 "match \([0-9]+ checks" \
   "$w/g3-flipped-rules.json" "$w/g3-flipped-list.json"
 
@@ -123,21 +124,32 @@ verdict() { # name rc(0 = holds) detail
   if [ "$2" -eq 0 ]; then echo "ok: $1"; pass=$((pass+1)); else echo "FAIL: $1"; echo "    $3"; fail=$((fail+1)); fi
 }
 ciyml="$repo/.github/workflows/ci.yml"
-drift_out="$(GUARD_RULES_JSON="$w/g3-flipped-rules.json" bash "$sut" "$w/g3-flipped-list.json" "$ro" 2>&1 >/dev/null | grep '^::error::scope drift')"
-msg_ok=0; for word in 'context' 'integration ID' 'scope'; do grep -q "$word" <<<"${drift_out#::error::scope drift}" || msg_ok=1; done
+drift_out="$(GUARD_RULES_JSON="$w/g3-flipped-rules.json" bash "$sut" "$w/g3-flipped-list.json" "$ro" 2>&1 >/dev/null \
+  | grep '^::error::scope drift')"
+msg_ok=0
+for word in 'context' 'integration ID' 'scope'; do
+  grep -q "$word" <<<"${drift_out#::error::scope drift}" || msg_ok=1
+done
 verdict "g4-scope drift error names context, integration ID and scope" "$msg_ok" "got: ${drift_out}"
 sed -n '/^# Usage:/,/^# Exit:/p' "$sut" | tr -d '\n#' | tr -s ' ' | grep -q 'context, integration ID and scope'
 verdict "g4-usage says the scope pin compares context, integration ID and scope" "$?" "usage text lacks that phrase"
-guard_comment="$(awk '/^  required-check-guard:/{g=1} g&&/^ *#/{print} g&&/- name: this tree.s policy lists/{exit}' "$ciyml")"
-grep -q 'PINNED_SCOPES' <<<"$guard_comment" && tr -d '\n#' <<<"$guard_comment" | tr -s ' ' | grep -qi "ruleset check list.*PINNED_SCOPES.*main.*first\|PINNED_SCOPES.*first"
-verdict "g4-ci.yml guard comment says a ruleset check list change needs main's PINNED_SCOPES changed first" "$?" "comment: ${guard_comment}"
-adjacent="$(awk '/jq length <<<"\$actual"/{exit} /^fi$/{f=1;next} f&&/^if \[ -n "\$\{2:-\}" \]/{print NR} {f=0}' "$sut")"
-verdict "g4-no two if [ -n \"\${2:-}\" ] blocks are adjacent" "$([ -z "$adjacent" ]; echo $?)" "adjacent block at line(s): ${adjacent}"
+guard_comment="$(awk '/^  required-check-guard:/{g=1} g&&/^ *#/{print}
+  g&&/- name: this tree.s policy lists/{exit}' "$ciyml")"
+grep -q 'PINNED_SCOPES' <<<"$guard_comment" \
+  && tr -d '\n#' <<<"$guard_comment" | tr -s ' ' \
+  | grep -qi "ruleset check list.*PINNED_SCOPES.*main.*first\|PINNED_SCOPES.*first"
+verdict "g4-ci.yml guard comment says a ruleset check list change needs main's PINNED_SCOPES changed first" "$?" \
+  "comment: ${guard_comment}"
+adjacent="$(awk '/jq length <<<"\$actual"/{exit} /^fi$/{f=1;next}
+  f&&/^if \[ -n "\$\{2:-\}" \]/{print NR} {f=0}' "$sut")"
+verdict "g4-no two if [ -n \"\${2:-}\" ] blocks are adjacent" "$([ -z "$adjacent" ]; echo $?)" \
+  "adjacent block at line(s): ${adjacent}"
 scopes_jq="$(grep -A1 'list_scopes=\$(jq' "$sut")"
 grep -q '|| fail2' <<<"$scopes_jq"
 verdict "g4-the list_scopes jq ends with || fail2 like its siblings" "$?" "got: ${scopes_jq}"
 long_comments="$(grep -E '^[[:space:]]*#' "$sut" | awk 'length>120 {print length ": " substr($0,1,60) "..."}')"
-verdict "g4-no comment line of the guard is over 120 characters" "$([ -z "$long_comments" ]; echo $?)" "${long_comments}"
+verdict "g4-no comment line of the guard is over 120 characters" "$([ -z "$long_comments" ]; echo $?)" \
+  "${long_comments}"
 above="$(grep -B3 '^PINNED_SCOPES=' "$sut" | grep '^#')"
 grep -q 'refus' <<<"$above"
 verdict "g4-the comment above PINNED_SCOPES says a moved check is refused" "$?" "comment: ${above}"
@@ -208,7 +220,8 @@ PY
     if [ "$rc" -ne 0 ] && grep -q '^FAIL: g3-every read of main in the job names refs/heads/main' <<<"$out"; then
       echo "ok: ci.yml with a quote-join-${join} read fails the g3 check"; pass=$((pass+1))
     else
-      echo "FAIL: ci.yml with a quote-join-${join} read (rc ${rc}, want non-zero and the g3 FAIL line)"; fail=$((fail+1))
+      echo "FAIL: ci.yml with a quote-join-${join} read (rc ${rc}, want non-zero and the g3 FAIL line)"
+      fail=$((fail+1))
     fi
   done
 fi
@@ -235,7 +248,8 @@ t("job steps are checkout, fetch, run, drift-issue in that order (got %s)" % kin
 f = by.get("fetch", {}).get("run", "")
 t("fetch step: set -euo pipefail, gh api of main's guard into a file under RUNNER_TEMP, then [ -s ] on it",
   bool(re.search(r"^set -euo pipefail$", f, re.M))
-  and bool(re.search(r'gh api "repos/\$\{GITHUB_REPOSITORY\}/contents/bin/required-check-guard\.sh\?ref=refs/heads/main"', f))
+  and bool(re.search(
+      r'gh api "repos/\$\{GITHUB_REPOSITORY\}/contents/bin/required-check-guard\.sh\?ref=refs/heads/main"', f))
   and bool(re.search(r"> " + T, f)) and bool(re.search(r"^\[ -s " + T + r" \]$", f, re.M)))
 r = [l.strip() for l in by.get("run", {}).get("run", "").splitlines() if l.strip() and not l.strip().startswith("#")]
 t("run step: one line, bash on a file under RUNNER_TEMP over the two policy files (got %s)" % r,
