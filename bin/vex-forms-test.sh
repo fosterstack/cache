@@ -842,6 +842,29 @@ r_, got_ = run_with(foreign_, sub_doc(f"pkg:golang/stdlib@{BUILD_GO}"))
 check("R6 a melange.yaml whose Go fetch URIs are all on another host refuses, nothing written",
       r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_,
       (r_.returncode, r_.stderr[-200:]))
+# R8: a YAML scalar's quotes and trailing ' #' comment are read before the host is checked
+def uri_of(arch): return "https://go.dev/dl/go%s.linux-%s.tar.gz" % (BUILD_GO, arch)
+def with_uris(amd, arm): return MEL.replace(uri_of("amd64"), amd).replace(uri_of("arm64"), arm)
+DOC8 = sub_doc(f"pkg:golang/stdlib@{BUILD_GO}")
+KEPT8 = lambda g: [f["filterCriteria"]["vulnerablePackages"][0]["version"]["value"]
+                   for f in g.get(FORMS[0], {}).get("filters", [])]
+AMD, ARM = uri_of("amd64"), uri_of("arm64")
+for what, fmt in (("single-quoted", "'%s'"),
+                  ("double-quoted with a trailing comment", '"%s" # toolchain'),
+                  ("unquoted with a trailing comment", "%s # toolchain")):
+    r_, got_, o_ = run_in_tree(with_uris(fmt % AMD, fmt % ARM), DOC8)
+    check("R8 Go URIs that are %s give the build's version" % what,
+          r_.returncode == 0 and "refused" not in r_.stderr and KEPT8(got_) == [f"go{BUILD_GO}"],
+          (r_.returncode, r_.stderr[-300:]))
+arm_other = ARM.replace(BUILD_GO, OTHER_GO) + " # ARM toolchain"
+r_, got_, o_ = run_in_tree(with_uris(AMD, arm_other), DOC8)
+check("R8 an arm64 URI of another version with a trailing comment makes two versions: refused",
+      r_.returncode == 1 and "names 2 Go versions, not one" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-300:], list(got_)))
+r_, got_, o_ = run_in_tree(with_uris("'%s\"" % AMD, "'%s\"" % ARM), DOC8)
+check("R8 a Go URI with mismatched quotes is not a URI: refused",
+      r_.returncode == 1 and "vex-forms: refused, nothing written" in r_.stderr and not got_,
+      (r_.returncode, r_.stderr[-300:], list(got_)))
 many = {"statements": [scoped("CVE-R6-%d" % i, "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/stdlib@%s.%s.%d" % (_maj, _min, int(_pat) - 1 - i)} for i in range(5)] + [{"@id": f"pkg:golang/stdlib@{BUILD_GO}"}]}]) for i in range(2)]}
 count_open = ("import builtins, io, atexit, sys\n_n = [0]; _o = builtins.open\n"
               "def _op(f, *a, **k):\n    if str(f).endswith('melange.yaml'): _n[0] += 1\n    return _o(f, *a, **k)\n"
