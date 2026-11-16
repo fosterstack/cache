@@ -1700,6 +1700,7 @@
     {
       "path": "bin/release-publish.sh",
       "tools": [
+        "cosign",
         "crane",
         "jq",
         "python3",
@@ -1710,7 +1711,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "8f568f99ac6e0a2abe16191bfac624ee88a9aee1835351f2831c0d16771308b8",
+      "sha256": "0f0c379426fc34d12f57eb465dbb524359bdee809e9ebe5b6bf3bc62aae81dbf",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1765,12 +1766,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: cosign signatures made with the release KMS key (--key RELEASE_KMS_KEY_REF; the step refuses an empty RELEASE_ROLE_ARN or RELEASE_TOKEN_FILE, which the Witness wrapper hands it, and maps them onto AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE itself), each with a Rekor entry, on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "56ab4202d04d0d999541a3266b7836c205cf59999e57a0f53255e11548e1eb03",
-      "reads_env": [
-        "DOCKERHUB_USERNAME",
-        "DOCKERHUB_TOKEN",
-        "GH_TOKEN"
-      ],
+      "sha256": "00b5030a74a4b37be88035654437f4e22d93e1876b3759c3a5f8d236c1ba3d2e",
       "exceptions": [
         {
           "rule": "deny",
@@ -1791,8 +1787,10 @@
     {
       "path": "bin/release-assets.sh",
       "tools": [
+        "cosign",
         "gh",
         "git",
+        "jq",
         "python3"
       ],
       "runs": [
@@ -1800,7 +1798,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "3d124bb7b069fc8e7952e48a2e0013186c5f44700ad8f5c31a2ce3fda72e7ffc",
+      "sha256": "f99b5f8b691b0edd96e989edc947f159e70de6b102071a28daf9176eb0046191",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -2708,20 +2706,6 @@
       "job": "release"
     },
     {
-      "name": "GH_TOKEN",
-      "script": "bin/witnessed.sh",
-      "why": "Release (rule 56, advisor 0386 J row 5): the run's own token, read by gh in this step's script; the wrapper passes its environment on and never reads it",
-      "file": ".github/workflows/release.yml",
-      "job": "sign-release"
-    },
-    {
-      "name": "GH_TOKEN",
-      "script": "bin/release-sign.sh",
-      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
-      "file": ".github/workflows/release.yml",
-      "job": "sign-release"
-    },
-    {
       "name": "DOCKERHUB_USERNAME",
       "script": "bin/witnessed-local.sh",
       "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_USERNAME from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
@@ -2736,20 +2720,6 @@
       "job": "release"
     },
     {
-      "name": "DOCKERHUB_USERNAME",
-      "script": "bin/witnessed.sh",
-      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_USERNAME from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
-      "file": ".github/workflows/release.yml",
-      "job": "sign-release"
-    },
-    {
-      "name": "DOCKERHUB_USERNAME",
-      "script": "bin/release-sign.sh",
-      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
-      "file": ".github/workflows/release.yml",
-      "job": "sign-release"
-    },
-    {
       "name": "DOCKERHUB_TOKEN",
       "script": "bin/witnessed-local.sh",
       "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_TOKEN from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
@@ -2762,20 +2732,6 @@
       "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
       "file": ".github/workflows/release.yml",
       "job": "release"
-    },
-    {
-      "name": "DOCKERHUB_TOKEN",
-      "script": "bin/witnessed.sh",
-      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_TOKEN from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
-      "file": ".github/workflows/release.yml",
-      "job": "sign-release"
-    },
-    {
-      "name": "DOCKERHUB_TOKEN",
-      "script": "bin/release-sign.sh",
-      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
-      "file": ".github/workflows/release.yml",
-      "job": "sign-release"
     },
     {
       "name": "GH_TOKEN",
