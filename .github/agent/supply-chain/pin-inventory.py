@@ -1420,7 +1420,6 @@ _VENDOR_NAMING_FILES = frozenset("""
 .github/agent/tests/auditor-matrix-test.sh
 .github/agent/tests/pin-age-check-test.sh
 .github/agent/tests/pin-audit-test.sh
-.github/agent/tests/pin-wiring-test.sh
 .github/workflows/ci.yml
 bin/assemble-image-test.sh
 bin/build-apk-test.sh
