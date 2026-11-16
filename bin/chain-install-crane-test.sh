@@ -18,6 +18,7 @@ rel="${u#*/download/}"; [ "$rel" != "$u" ] || rel="${u#*/dl/}"
 [ -n "$out" ] && [ -f "${STUB_REL:-/nonexistent}/$rel" ] && cp "${STUB_REL}/$rel" "$out" || exit 22
 STUB
 chmod +x "$stubbin/curl"
+. "$(dirname "$0")/install-scanner-test-lib.sh"   # sutc: a copy of the installer with its TEST-SUBST lines set
 check() { # name expected_rc regex -- run...
   local name="$1" want_rc="$2" re="$3"; shift 3
   local out rc; out="$("$@" 2>&1)"; rc=$?
@@ -33,25 +34,26 @@ for arch in x86_64 aarch64; do
   case "$arch" in x86_64) asset=go-containerregistry_Linux_x86_64.tar.gz ;; aarch64) asset=go-containerregistry_Linux_arm64.tar.gz ;; esac
   mkdir -p "$work/rel/${ver:-v0.0.0}"; echo "not the real crane tarball" > "$work/rel/${ver:-v0.0.0}/$asset"
   check "crane checksum mismatch rejected on $arch" 1 "checksum mismatch.*PIPELINE failure" \
-    env INSTALL_SCANNER_ARCH=$arch PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" crane "$work/bin-$arch"
+    env PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$(sutc $arch)" crane "$work/bin-$arch"
   check "crane download failure rejected on $arch" 1 "download failed.*PIPELINE failure" \
-    env INSTALL_SCANNER_ARCH=$arch PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$sut" crane "$work/bin-$arch"
+    env PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$(sutc $arch)" crane "$work/bin-$arch"
 done
-check "crane unsupported architecture rejected" 1 "unsupported architecture.*PIPELINE failure" env INSTALL_SCANNER_ARCH=mips bash "$sut" crane "$work/bin"
+check "crane unsupported architecture rejected" 1 "unsupported architecture.*PIPELINE failure" \
+  bash "$(sutc mips)" crane "$work/bin"
 # success path: a fixture tarball with a fake crane,
-# and a copy of the script whose pinned x86_64 crane sum is the fixture's real sum
+# and a copy of the script (arch x86_64) whose pinned x86_64 crane sum is the fixture's real sum
 ok_rel="$work/ok-rel/${ver:-v0.0.0}"; ok_src="$work/ok-src"; mkdir -p "$ok_rel" "$ok_src" "$work/ok-bin"
 printf '#!/bin/sh\necho "fake crane 0.0.0"\n' > "$ok_src/crane"; chmod +x "$ok_src/crane"
 tar -czf "$ok_rel/go-containerregistry_Linux_x86_64.tar.gz" -C "$ok_src" crane
 ok_sum=$(sha256sum "$ok_rel/go-containerregistry_Linux_x86_64.tar.gz" | cut -d' ' -f1)
-sut_copy="$work/install-scanner-copy.sh"
-sed -E "s/^(  crane:x86_64\|crane:amd64\) SUM=)[0-9a-f]{64}/\1${ok_sum}/" "$sut" > "$sut_copy"
+sut_copy="$(sutc x86_64)"
+sed -i -E "s/^(  crane:x86_64\|crane:amd64\) SUM=)[0-9a-f]{64}/\1${ok_sum}/" "$sut_copy"
 if grep -q "crane:x86_64|crane:amd64) SUM=${ok_sum}" "$sut_copy"; then
   echo "ok: the pinned crane sum was replaced in the copy"; pass=$((pass+1))
 else echo "FAIL: the pinned crane sum was not replaced in the copy"; fail=$((fail+1)); fi
 # the regex matches "installed crane (pinned, checksum-verified) to /bin" and refuses "the installed crane binary does not start"
 check "crane install succeeds on x86_64" 0 "^installed crane " \
-  env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/ok-rel" bash "$sut_copy" crane "$work/ok-bin"
+  env PATH="$stubbin:$PATH" STUB_REL="$work/ok-rel" bash "$sut_copy" crane "$work/ok-bin"
 if [ -x "$work/ok-bin/crane" ]; then echo "ok: crane is installed and executable"; pass=$((pass+1))
 else echo "FAIL: $work/ok-bin/crane is missing or not executable"; fail=$((fail+1)); fi
 if [[ "$("$work/ok-bin/crane" version 2>&1)" == *"fake crane"* ]]; then

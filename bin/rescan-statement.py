@@ -138,11 +138,12 @@ _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 
 def _sub_purl(sid):
-    """(name, version) of a subcomponent package URL pkg:<type>/[<namespace>/...]<name>[@<version>]. Qualifiers ('?', even empty) and a subpath ('#') are not
+    """(type, name, version) of a subcomponent package URL pkg:<type>/[<namespace>/...]<name>[@<version>].
+    Qualifiers ('?', even empty) and a subpath ('#') are not
     supported: a checksum- or subpath-scoped exception cannot be checked against a finding, so it makes the VEX unreadable. The type must be lower-case
     [a-z][a-z0-9.+-]*, every path segment non-blank (and free of an encoded '/'), and a version given with '@' non-empty; anything else is ValueError (the VEX
-    is unreadable). The name keeps its namespace and its case (percent-decoded: pkg:npm/%40scope/pkg is @scope/pkg); the type is not compared (a generator may
-    call busybox pkg:generic or pkg:apk)."""
+    is unreadable). The name keeps its namespace and its case (percent-decoded: pkg:npm/%40scope/pkg is @scope/pkg); the type is
+    compared with the finding's (_vex_match)."""
     if not isinstance(sid, str) or not sid.startswith("pkg:"):
         raise ValueError("a subcomponent that is not a package URL (%r)" % (sid,))
     if "?" in sid or "#" in sid:
@@ -155,7 +156,7 @@ def _sub_purl(sid):
     segs = [urllib.parse.unquote(x) for x in (head.split("/") if head else []) + [last]]
     if any(not x.strip() or "/" in x for x in segs) or (at and not ver):
         raise ValueError("a subcomponent package URL without a usable package name or version (%r)" % sid)
-    return "/".join(segs), urllib.parse.unquote(ver)
+    return typ, "/".join(segs), urllib.parse.unquote(ver)
 
 
 def _same_package(name, version, sub_name, sub_version):
@@ -263,10 +264,11 @@ def _vex_match(doc, finding, variant, image_repo):
     name@version among them, namespace and case preserved (_same_package). The document was validated first."""
     ids = {i for i in (finding.get("ids") or [finding.get("id")]) if i}
     pkg = (finding.get("package") or "", finding.get("version") or "")
+    ftype = finding.get("type")   # the finding's purl type; None when the scanner gave none
+    fver = _gate.stdlib_version(ftype, pkg[0], pkg[1])
     arch = (finding.get("platform") or "").rpartition("/")[2]
     if not isinstance(finding.get("package") or "", str):
         raise ValueError("a package name that is not a string")
-    versions = _gate.vex_versions(None, *pkg)
     dead = _gate.superseded(doc["statements"])
     for si, st in enumerate(doc["statements"]):
         if st["status"] not in _gate.SUPPRESSING:
@@ -285,10 +287,13 @@ def _vex_match(doc, finding, variant, image_repo):
                 continue   # the repository-wide Go product covers our two image repositories only, never an unreadable or foreign image
             if pp[0] == "oci" and not (image_repo is not None and pp[1] == image_repo and pp[2] in (None, variant) and pp[3] in (None, arch)):
                 continue
-            subs = [_sub_purl(x["@id"]) for x in p.get("subcomponents", [])]
+            subs = []
+            for x in p.get("subcomponents", []):
+                typ, name, ver = _sub_purl(x["@id"])
+                subs.append((typ, name, _gate.stdlib_version(typ, name, ver)))
             if subs and not pkg[0]:
                 continue   # a finding with no package identity never matches a statement that names packages
-            if not subs or any(_same_package(pkg[0], ver, *sub) for ver in versions for sub in subs):
+            if not subs or any(_gate.types_cover(ftype, (t,)) and _same_package(pkg[0], fver, n, sv) for t, n, sv in subs):
                 return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v["name"], "status": st["status"], "product": p.get("@id")}
     return None
 
@@ -494,10 +499,18 @@ def _osv_finding(v, pkg, src, platform):
         "severity": _osv_severity(v),
         "package": pk.get("name"),
         "version": pk.get("version"),
+        "type": _osv_type(pk.get("ecosystem"), pk.get("name")),
         "fixed_in": None,
         "platform": platform,
         "target": src,
     }
+
+
+def _osv_type(ecosystem, name):
+    """the purl type of an OSV ecosystem name: Go is golang, PyPI is pypi"""
+    if not isinstance(ecosystem, str):
+        return "golang" if name == "stdlib" else None
+    return "golang" if ecosystem == "Go" else ecosystem.lower()
 
 
 def _osv_severity(v):

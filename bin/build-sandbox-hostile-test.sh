@@ -20,13 +20,14 @@ exits() {
   if [ "$r" = "$want" ]; then ok; else bad "$ac" "$d (exit $r, wanted $want)"; fi
 }
 
+git_before=$(git -C "$root" status --porcelain -- bin build 2>&1)
 PROBE="$root/bin/chain-sandbox-probe.sh"
 WALLS="read-record write-record read-keydir read-token network"
 mkdir -p "$work/bin" "$work/rt" "$work/tmp"
-# The fixture checkout the probe runs in: the committed bin/ and build/ by link, a Witness record and an archive of
-# its own.
+# The fixture checkout the probe runs in: copies of bin/ and build/ (never links: nothing a run writes may reach the
+# repository), a Witness record and an archive of its own.
 co="$work/co"; mkdir -p "$co/witness-apk" "$co/archive/keys"
-ln -s "$root/bin" "$co/bin"; ln -s "$root/build" "$co/build"
+cp -R "$root/bin" "$co/bin"; cp -R "$root/build" "$co/build"
 printf '{"record": "fixture"}\n' > "$co/witness-apk/apk-collection.local.json"
 : > "$co/archive/keys/wolfi-signing.rsa.pub"
 SENT_TOKEN="SENTINEL-TOKEN-$$-4d1c"
@@ -56,11 +57,20 @@ cat > "$work/bin/sudo" << 'STUB'
 if [ "$1" = rm ]; then for a in "${@:3}"; do chmod -R u+w "$a" 2> /dev/null; done; fi
 exec "$@"
 STUB
-# python3 stub: the net probe (unshare -n python3 bin/net-probe.py) answers the status the case set; any other use is
-# the real python3
+# The helper judges the sealed call against the fixed unshare and melange paths. The python3 stub below runs this
+# copy of the helper, whose one constants line names the stubs, in place of bin/build-apk-helper.py.
+swap='ENV_PATH, UNSHARE_PATH, MELANGE_PATH = "/usr/bin/env", "'$work'/bin/unshare", "'$work'/bin/melange"'
+hits=$(grep -c '^ENV_PATH, UNSHARE_PATH, MELANGE_PATH = ' "$root/bin/build-apk-helper.py")
+[ "$hits" = 1 ] || { echo "FIXTURE SETUP FAILED: helper constants line"; exit 1; }
+sed "s#^ENV_PATH, UNSHARE_PATH, MELANGE_PATH = .*#$swap#" "$root/bin/build-apk-helper.py" > "$work/helper-copy.py"
+t "AC5" "the helper copy differs from build-apk-helper.py in the constants line only" \
+  bash -c "[ \$(diff '$root/bin/build-apk-helper.py' '$work/helper-copy.py' | grep -c '^<') = 1 ]"
+# python3 stub: the net probe (unshare -n python3 bin/net-probe.py) answers the status the case set; the helper is
+# the copy above; any other use is the real python3
 cat > "$work/bin/python3" << STUB
 #!/usr/bin/env bash
 case "\$*" in *net-probe.py*) exit \$(cat "$work/netrc" 2> /dev/null || echo 101);; esac
+case "\$*" in "-I -B bin/build-apk-helper.py "*) exec /usr/bin/python3 -I -B "$work/helper-copy.py" "\${@:4}";; esac
 exec /usr/bin/python3 "\$@"
 STUB
 chmod +x "$work/bin/"*
@@ -208,6 +218,9 @@ setrc 0
 exits "AC5" "RUNNER_TEMP unset is a refusal (exit 2) that leaves no temporary folder" \
   2 bash -c "cd '$co' && env -u RUNNER_TEMP TMPDIR='$work/tmp' bash '$work/probe.sh'"
 t "AC5" "...and the temporary folder is empty" bash -c "[ -z \"\$(ls -A '$work/tmp')\" ]"
+# the repository was not written to: bin/ and build/ show what they showed before the run
+t "AC5" "the run left bin/ and build/ of the repository as they were (git status unchanged)" \
+  bash -c "[ \"\$(git -C '$root' status --porcelain -- bin build 2>&1)\" = \"\$0\" ]" "$git_before"
 
 echo "build-sandbox-hostile-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
