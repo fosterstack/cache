@@ -302,21 +302,35 @@ check(
       "moved INTO vendor/ from outside",
       all(x in sd for x in ("+require a/b v1.1.0", "+OURS()", "+SPACED()", "+MOVED()", "rename from cmd/z.go")), sd)
 check("shown_diff: with the vendor check not required, nothing is left out", r.shown_diff(VDIFF, False) == VDIFF, "")
-check("VENDOR_IS_REQUIRED: the ruleset requires `vendor`, so a module bump's vendored files are left to that check", r.VENDOR_IS_REQUIRED is True, "")
 ran = []
-def gather_diff(diff, required, sha="a" * 40):
+RULES_GOT = []
+def ruleset(*contexts):
+    return [{"type": "required_status_checks", "parameters": {"required_status_checks": [
+        {"context": c, "integration_id": 15368} for c in contexts]}}]
+RULES_VENDOR = ruleset("lint", "vendor")
+RULES_NO_VENDOR = ruleset("lint", "test")
+def gather_diff(diff, required, sha="a" * 40, rules="default"):
+    # required: True/False = main's ruleset lists `vendor` / does not; rules: the answer of the ruleset read itself
+    # (a JSON value, or None for a read that failed), overriding that
     del ran[:]
     d = tempfile.mkdtemp()
     u = os.path.join(d, "u.json")
     json.dump([{"name": "a/b", "from": "1.0.0", "to": "1.1.0", "major": True, "kind": "not-major"}], open(u, "w"))
     class A: pass
     a = A(); a.pr, a.sha, a.base, a.updates, a.out = 7, sha, "main", u, os.path.join(d, "out")
-    saved = (r._run, r.release_notes, r.our_usage, r._gh_json, r.VENDOR_IS_REQUIRED)
+    saved = (r._run, r.release_notes, r.our_usage, r._gh_json)
+    del RULES_GOT[:]
+    if rules == "default":
+        rules = RULES_VENDOR if required else RULES_NO_VENDOR
+    def gh_json(args):
+        if args == ["repos/%s/rules/branches/main" % (os.environ.get("GITHUB_REPOSITORY") or "{owner}/{repo}")]:
+            RULES_GOT.append(args)
+            return rules
+        return [commit("a")]
     r._run = lambda cmd: (ran.append(cmd) or (diff, 0))
-    r._gh_json = lambda args: [commit("a")]
+    r._gh_json = gh_json
     r.release_notes = lambda n, o, nw: ("notes\n", 1)
     r.our_usage = lambda n: "usage\n"
-    r.VENDOR_IS_REQUIRED = required
     try:
         with _gcl.redirect_stdout(_gio.StringIO()), _gcl.redirect_stderr(_gio.StringIO()) as err:
             try:
@@ -326,7 +340,7 @@ def gather_diff(diff, required, sha="a" * 40):
         return code, (open(os.path.join(a.out, "bundle.md")).read()
               if os.path.exists(os.path.join(a.out, "bundle.md")) else None), err.getvalue()
     finally:
-        r._run, r.release_notes, r.our_usage, r._gh_json, r.VENDOR_IS_REQUIRED = saved
+        r._run, r.release_notes, r.our_usage, r._gh_json = saved
 # well over the 20000 the diff used to be cut at
 big = "diff --git a/x b/x\n" + "".join("+line %06d of what the pull request changes\n" % i for i in range(1200))
 code, b, _ = gather_diff(big, False)
@@ -352,6 +366,42 @@ code, b, _ = gather_diff(vend, False)
 check(
       "gather: the same bump while `vendor` is NOT a required check is shown whole, so it is over the limit: no "
       "bundle", code == 3 and b is None, code)
+
+# REQ-DEP-001-AC2: vendored files are given by header only while main's ruleset lists the vendor check, read once at
+# gather time; a read that fails, or a ruleset without vendor, shows them in full
+code, b, _ = gather_diff(vend, True)
+check("gather: main's ruleset lists `vendor` -> a vendored file is given by its header and a count of the lines not shown",
+      code == 0 and "a vendored module file: 1 added and 0 removed line(s) not shown" in b and "yyyy" not in b, code)
+code, b, _ = gather_diff(VDIFF, False)
+check("gather: main's ruleset lists checks but not `vendor` -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "+more()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=[])
+check("gather: main's ruleset has no rules at all -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=[{"type": "pull_request", "parameters": {}}])
+check("gather: main's ruleset has no required_status_checks rule -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=ruleset())
+check("gather: main's ruleset lists an empty set of required checks -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=ruleset("lint") + ruleset("vendor"))
+check("gather: `vendor` listed in a second required_status_checks rule -> vendored files are given by header",
+      code == 0 and "+new()" not in b and "x.go b/vendor/a/b/x.go\n(a vendored module file:" in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=None)
+check("gather: the ruleset read fails -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "+more()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules={"message": "Not Found"})
+check("gather: the ruleset answer is not a list of rules -> vendored files are shown in full",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(VDIFF, True, rules=[{"type": "required_status_checks", "parameters": {}}, "x", None])
+check("gather: a ruleset answer with malformed entries lists no vendor -> shown in full, no crash",
+      code == 0 and "+new()" in b and "not shown" not in b, code)
+code, b, _ = gather_diff(vend, False, rules=None)
+check("gather: the ruleset read fails and the vendored file alone is over the limit -> exit 3, no bundle",
+      code == 3 and b is None, code)
+code, b, _ = gather_diff(VDIFF, True)
+check("gather: the ruleset is read once per gather, as repos/<repo>/rules/branches/main",
+      code == 0 and len(RULES_GOT) == 1, RULES_GOT)
 
 # --- the verdict's commit (REQ-DEP-001-AC2): the diff is GitHub's diff of exactly that commit against main, read by
 # its id
@@ -742,6 +792,14 @@ PY
 mkdir -p "$w/bin" "$w/py/anthropic" "$w/noprog/bin"
 jq -n --slurpfile a "$FIX/pr-99.json" --slurpfile b "$FIX/pr-90.json" --slurpfile c "$FIX/pr-91.json" --slurpfile d "$FIX/pr-400.json" \
   '[($a[0] + {number: 99, headRefOid: "sha99"}), ($b[0] + {number: 90, headRefOid: "sha90"}), ($c[0] + {number: 91, headRefOid: "sha91"}), ($d[0] + {number: 400, headRefOid: "sha400"})]' > "$w/prs-flagged.json"
+# main's ruleset as the stubs answer it: one required status check; RULES_JSON names another file
+RULES_DEFAULT="$w/rules-default.json"
+echo '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"test","integration_id":15368}]}}]' > "$RULES_DEFAULT"
+echo '[{"type":"pull_request","parameters":{}}]' > "$w/rules-none.json"
+echo '[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]' > "$w/rules-empty.json"
+echo '[]' > "$w/rules-norules.json"
+echo 'not json' > "$w/rules-garbage.json"
+export RULES_DEFAULT
 cat > "$w/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
@@ -764,6 +822,8 @@ case "$1 $2" in
     printf -- \
     '--- a/.github/workflows/x.yml\n+++ b/.github/workflows/x.yml\n-      - uses: a/b@v4\n+      - uses: a/b@v7\n' ;;
     *) exit 1 ;; esac ;;
+  # main's ruleset: RULES_JSON (a file), else one required status check; FAIL=rules: the read fails
+  "api repos/o/r/rules/branches/main") fails rules; cat "${RULES_JSON:-$RULES_DEFAULT}" ;;
   "api "*) exit 1 ;;
   "pr merge") if [ "$3" = "--disable-auto" ]; then fails disarm; else fails merge; fi ;;
   "pr view") case "$*" in *headRefOid*) fails head; echo "${HEAD_NOW:-$(printf '%040d' "$3")}" ;; *) fails view;
@@ -997,6 +1057,18 @@ A="$CLEAN" B="$BREAKS" FAIL="issue" act; expect "held issue cannot be created ->
 A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" act; expect "auto-merge cannot be disarmed -> no issue, no check" "-issue create" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" FAIL="merge" act; expect "auto-merge cannot be armed -> no success check; retry (round-1 P1)" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "a reader raises -> no merge, no check" "-pr merge" "-$CHK" ERRORED=1
+# REQ-DEP-001-AC4: arming needs main's ruleset to list at least one required status check, read when arming
+A="$CLEAN" B="$CLEAN" act; expect "ruleset with a required check -> the ruleset is read as repos/o/r/rules/branches/main, then the arm" \
+  "+api repos/o/r/rules/branches/main" "ORDER:rules/branches/main>pr merge --auto" "+pr merge --auto --squash" ERRORED=0
+for rj in none empty norules garbage; do
+  RULES_JSON="$w/rules-$rj.json" A="$CLEAN" B="$CLEAN" act
+  expect "ruleset answer '$rj' lists no required status check -> nothing is armed, no success check, unfinished" \
+    "-pr merge --auto" "-$CHK" ERRORED=1
+done
+A="$CLEAN" B="$CLEAN" FAIL="rules" act; expect "the ruleset cannot be read -> nothing is armed, no success check, unfinished" \
+  "-pr merge --auto" "-$CHK" ERRORED=1
+RULES_JSON="$w/rules-none.json" A="$CLEAN" B="$BREAKS" act; expect "no required check, a hold decision -> the hold still stands (issue and failure check): nothing to arm" \
+  "+issue create" "+$CHK" "-pr merge --auto" ERRORED=0
 A="$CLEAN" B="$CLEAN" FAIL="notes" act; expect "release notes cannot be read -> UNAVAILABLE: no reader, no merge, no check; retried (owner, Oct 1)" "-pr merge" "-$CHK" ERRORED=1
 grep -q "release notes UNAVAILABLE" "$w/run/work/pr-99/bundle.md" 2>/dev/null \
   && { echo "ok: act: the bundle labels the failed read UNAVAILABLE"; pass=$((pass+1)); } || { echo "FAIL: act: unavailable label"; fail=$((fail+1)); }
@@ -1263,6 +1335,8 @@ case "$1 $2" in
               jq -c "${f:-.}" <<<"${HISTORY:-[]}" ;;
   "issue list") echo '[]' ;;
   "issue create"|"issue comment") ;;
+  # main's ruleset: RULES_JSON (a file), else one required status check; RULESFAIL=1: the read fails
+  "api repos/o/r/rules/branches/main") [ "${RULESFAIL:-}" = 1 ] && exit 1; cat "${RULES_JSON:-$RULES_DEFAULT}" ;;
 esac
 EOF
 chmod +x "$w/bin/gh"
@@ -1725,6 +1799,12 @@ heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-acti
 ARMED99=true heal "$LANE_OFF" 0 no "already armed -> nothing to do"
 REARMFAIL=1 heal "$LANE_OFF" 1 yes "the re-arm cannot be made -> the step fails (retry next hour)"
 EVENTSFAIL=1 heal "$LANE_OFF" 1 no "the events cannot be read -> skipped, the step fails"
+for rj in none empty norules garbage; do
+  RULES_JSON="$w/rules-$rj.json" heal "$LANE_OFF" 1 no "heal: ruleset answer '$rj' lists no required status check -> the arm is not put back, the step fails"
+done
+RULESFAIL=1 heal "$LANE_OFF" 1 no "heal: the ruleset cannot be read -> the arm is not put back, the step fails"
+heal "$LANE_OFF" 0 yes "heal: ruleset with a required check -> the arm is put back (the ruleset was read)"
+also "heal: the ruleset is read as repos/o/r/rules/branches/main before the arm" "+api repos/o/r/rules/branches/main"
 PRIOR99=failure EVENTS99="$LANE_OFF" cand "91 none," 0 "a FAILURE verdict is never re-armed"
 grep -q "pr merge --auto" "$w/gh.log" && { echo "FAIL: candidates: a failure verdict was armed"; fail=$((fail+1)); } || { echo "ok: candidates: no arm for a failure verdict"; pass=$((pass+1)); }
 # The step's own filter over events as GitHub records them (issues/N/events of this repository's bumps, Nov 2026):
@@ -1792,6 +1872,16 @@ ARMED90=true settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch that is still arm
 also "settle: nothing to do for an arm that is still on" "-pr merge"
 PRIOR90=success settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch that passed"
 also "settle: a success verdict is left as the act step left it" "-pr merge"
+settle "$BOTH" '90 sha90\n' 0 "ruleset with a required check -> the lane's arm is put back after reading it"
+also "settle: the ruleset is read as repos/o/r/rules/branches/main before the arm" "+api repos/o/r/rules/branches/main" \
+  "+pr merge --auto --squash --match-head-commit sha90 90"
+for rj in none empty norules garbage; do
+  RULES_JSON="$w/rules-$rj.json" settle "$BOTH" '90 sha90\n' 1 \
+    "ruleset answer '$rj' lists no required status check -> the lane's arm is not put back, the step fails"
+  also "settle: no arm without a required status check ('$rj')" "-pr merge --auto"
+done
+RULESFAIL=1 settle "$BOTH" '90 sha90\n' 1 "the ruleset cannot be read -> the lane's arm is not put back, the step fails"
+also "settle: no arm when the ruleset cannot be read" "-pr merge --auto"
 REARMFAIL=1 settle "$BOTH" '90 sha90\n' 1 "the lane's arm cannot be put back -> the step fails"
 PRIOR90=failure ARMED90=true DISARMFAIL=1 settle "$BOTH" '90 sha90\n' 1 \
   "an arm over a failure verdict cannot be turned off -> the step fails"
