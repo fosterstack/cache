@@ -870,15 +870,22 @@ mappings:
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
   - ac: REQ-SUP-001-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-series-rule-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-strict-lookups-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
   - ac: REQ-SUP-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
   - ac: REQ-SUP-001-AC5
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-gh-404-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-strict-lookups-test.sh" }
   - ac: REQ-SUP-001-AC6
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
@@ -904,9 +911,11 @@ mappings:
   - ac: REQ-SUP-001-AC15
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-time-exceptions-test.sh" }
   - ac: REQ-SUP-001-AC16
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/s2-p2-readers-test.sh" }
   - ac: REQ-SUP-001-AC18
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
