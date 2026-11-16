@@ -65,8 +65,8 @@ def fed_env():
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 IFS_OF = {"build": GATE_G, "sign": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
 CHAIN_JOBS = ["build", "sign", "rebuild", "sign-rebuild", "check", "sign-check", "release"]   # the last stage is Release (the ratified rules' name; Q9)
-# the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
-TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\[0-9\]\+\)\?\$ \]\] \|\| '
+# the tag rule (REQ-CHAIN-007-AC14, REQ-CHAIN-004-AC19): vX.Y.Z or a release candidate vX.Y.Z-rcN, decided by bin/build-admit.py tag-ok, the one tag grammar
+TAGLINE = (r'python3 bin/build-admit\.py tag-ok "\$\{GITHUB_REF_NAME:-\}" \|\| '
            r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rcN" >&2; exit 1; \}')
 RC_IF = "${{ !contains(github.ref_name, '-') }}"   # every step after release-verify: a release candidate (a tag with a hyphen) ends after release-verify
 VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order, nothing else (PROPOSED: stage-start takes --rekor-stub for provenance)
