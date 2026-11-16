@@ -716,7 +716,7 @@ The ruleset on main and the committed required-check list shall be compared on e
 |---|---|---|---|---|---|
 | REQ-DEP-002-AC1 | Given any pull request and any push to main; when hygiene runs; then the required-check guard compares main's ruleset with .github/policy/required-checks.json, contexts and integration IDs; any difference fails, and an unreadable side fails, never passes | ci-workflow |  | approved | none mapped |
 | REQ-DEP-002-AC2 | Given the guard refusing main's list; when hygiene runs; then it opens, or updates, one "required-check drift" issue | ci-workflow |  | approved | none mapped |
-| REQ-DEP-002-AC3 | Given the committed list .github/policy/required-checks.json and the jobs of .github/workflows/ci.yml; when the list is read; then it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by the owner's change in the GitHub UI | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-002-AC3 | Given the committed list .github/policy/required-checks.json and the jobs of .github/workflows/ci.yml; when the list is read; then it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by a change in the GitHub UI | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-DEP-003 — Patch and minor bumps merge on green
 
