@@ -3226,7 +3226,12 @@ def job_keys_are_names(rel, doc, bad):
     return True
 
 
-STARTUP_HOOK_ENV = ("BASH_ENV", "ENV", "CURL_HOME")
+# names that make bash, curl, a loader or an interpreter read a file, a program or a proxy before the step's own commands
+STARTUP_HOOK_ENV = (
+    "BASH_ENV", "ENV", "CURL_HOME", "PATH", "HOME",
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "NODE_OPTIONS", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PERL5OPT", "RUBYOPT",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO")
 # the other routes into a later step's environment: the env file, the set-env command and the toolkit's exportVariable; addPath sets PATH
 _ENV_ROUTE = re.compile(r">>\s*[\"']?\$\{?GITHUB_ENV\}?[\"']?|::set-env\b|\bexportVariable\b")
 
