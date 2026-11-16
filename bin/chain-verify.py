@@ -115,13 +115,14 @@ def manifest_date(m, field, required):
         refuse("manifest", "%s is not a date written YYYY-mm-ddTHH:MM:SSZ" % field)
 
 
-def check_manifest(keys_dir):
+def check_manifest(keys_dir, at=None):
     """The release key manifest, checked before anything else is read (handoff 0713 P1): the offline root key's
     signature over the exact
     bytes of the manifest file, then the closed field list, the key (RSA-4096) and its key_id, and the window against
     the clock of this run.
     No time inside a record is trusted (ruling R3), so a revoked_at at or before now refuses the manifest. Returns
-    {key_id, public_key}."""
+    {key_id, public_key}. With `at` (the time a letter was signed, from its Rekor entry) the window is judged at that time, and
+    any revoked_at refuses: a revoked key signs no letter, whenever it was revoked."""
     root_p, man_p, sig_p = (os.path.join(keys_dir, n) for n in MANIFEST_FILES)
     root_raw = read_manifest_file(root_p, "root key file")
     body = read_manifest_file(man_p, "manifest file")
@@ -147,14 +148,14 @@ def check_manifest(keys_dir):
             refuse("manifest", "the signature of the manifest does not verify with the root key")
         m = parse_manifest_body(body)
         key = manifest_key(m, tmp)
-    now = dt.datetime.now(dt.timezone.utc)
+    now = at or dt.datetime.now(dt.timezone.utc)
     start = manifest_date(m, "valid_from", True)
     end, revoked = manifest_date(m, "valid_to", False), manifest_date(m, "revoked_at", False)
     if now < start:
         refuse("manifest", "the key is not yet valid (valid_from %s)" % m["valid_from"])
     if end is not None and now >= end:
         refuse("manifest", "the key has expired (valid_to %s)" % m["valid_to"])
-    if revoked is not None and now >= revoked:
+    if revoked is not None and (at is not None or now >= revoked):
         refuse("manifest", "the key was revoked (revoked_at %s)" % m["revoked_at"])
     return key
 
@@ -1933,6 +1934,12 @@ def release_key_algorithm_guard(who, aws):
     return answer
 
 
+def cmd_manifest_at(a):
+    """The evidence letter's key manifest, the checks of check_manifest at the time the letter was signed."""
+    check_manifest(a.dir, dt.datetime.fromtimestamp(a.at, dt.timezone.utc))
+    print("ok")
+
+
 def cmd_key_ref_check(a):
     release_key_ref_check("key-ref-check")
     if a.algorithm_guard:
@@ -2559,6 +2566,9 @@ def build_parser():
     kc = sub.add_parser("key-ref-check")
     kc.add_argument("--algorithm-guard", action="store_true")
     kc.add_argument("--aws")
+    ma = sub.add_parser("manifest-at")
+    ma.add_argument("--dir", required=True)           # holds release-key-root.pub, release-key-manifest.json and release-key-manifest.sig
+    ma.add_argument("--at", type=int, required=True)  # unix time the letter was signed
     ks = sub.add_parser("kms-sign")
     ks.add_argument("--key-ref", required=True)       # awskms:///<key>
     ks.add_argument("--digest")                       # the sha256 of the signed bytes, 64 lowercase hex (the digest kind: with --out)
@@ -2668,6 +2678,8 @@ def main(argv):
             cmd_sign_record(a)
         elif a.cmd == "key-ref-check":
             cmd_key_ref_check(a)
+        elif a.cmd == "manifest-at":
+            cmd_manifest_at(a)
         elif a.cmd == "sign-records":
             cmd_sign_records(a)
         elif a.cmd == "actions":
