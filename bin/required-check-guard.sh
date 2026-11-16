@@ -63,7 +63,7 @@ expected=$(jq -c '[.required_checks[] | {context, integration_id}] | sort_by(.co
 if [ -n "${2:-}" ]; then
   release_only=$(jq -c '[.required_checks[] | {context, integration_id, scope}] | sort_by(.context)' "$2" 2>/dev/null) \
     || fail2 "release-only list ${2} is missing or has no required_checks array"
-  list_scopes=$(jq -c '[.required_checks[] | {context, integration_id, scope}] | sort_by(.context)' "$list" 2>/dev/null) \
+  list_scopes=$(jq -c '[.required_checks[] | {context,integration_id,scope}] | sort_by(.context)' "$list" 2>/dev/null) \
     || fail2 "${list} is missing or has no required_checks array"
   pinned_scopes=$(jq -c 'sort_by(.context)' <<<"$PINNED_SCOPES")
 fi
@@ -92,7 +92,8 @@ if [ -n "${2:-}" ]; then
   if [ "$(jq -cS . <<<"$list_scopes")" != "$(jq -cS . <<<"$pinned_scopes")" ]; then
     echo "::error::scope drift: context, integration ID or scope in ${list} not pinned; pin on main first." >&2
     echo "diff (- pinned only, + ${list} only):"
-    diff <(jq -cS '.[]' <<<"$pinned_scopes") <(jq -cS '.[]' <<<"$list_scopes") | grep -E '^[<>]' | sed -e 's/^</-/' -e 's/^>/+/'
+    diff <(jq -cS '.[]' <<<"$pinned_scopes") <(jq -cS '.[]' <<<"$list_scopes") \
+      | grep -E '^[<>]' | sed -e 's/^</-/' -e 's/^>/+/'
     status=1
   fi
 fi
