@@ -1967,6 +1967,77 @@ case_ c02-arith-inner-run      bad "$(rb 'x=$(( $(docker run alpine) + 1 ))')"
 case_ c02-workspace-script     bad "$(rb 'bash "${GITHUB_WORKSPACE}/ci-image.sh"')" "printf 'docker run alpine\\n' > ci-image.sh"
 case_ c02-main-copy-bad        bad "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
 case_ c02-main-copy-ok         ok  "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-bad        bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-ok         ok  "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g3-refs-heads-main-x-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main-x" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g3-mainline-ref-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=mainline" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g5-quote-joined-main-x-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main"-x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g5-quote-joined-mainline-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main"line --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g5-quote-joined-main-double-quote-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main""-x" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g3-main-double-ref-copy-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main&ref=x" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-extra-field-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" -X GET -f ref=x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-method-before-bad bad "$(rb 'gh api'\
+' -X GET "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-method-raw-field-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main" --method GET -F ref=x --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
+case_ g6-main-copy-header-bad bad "$(rb 'gh api'\
+' "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=refs/heads/main"'\
+" -H 'Accept: application/vnd.github.raw' --jq .content"\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
 case_ c02-foreign-heredoc-ok   ok  "$(rb "python3 - <<'PY'
           import os
           os.system('docker run alpine')
@@ -2984,6 +3055,14 @@ case_ cov-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
           gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"
           done
           bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ g3-refs-heads-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
+          gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=refs/heads/main" --jq .content'\
+' | base64 -d > "${RUNNER_TEMP}/g.sh"
+          done
+          bash "${RUNNER_TEMP}/g.sh"')" \
+    "mkdir -p bin; printf 'docker run alpine"\
+"@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n'"\
+" > bin/g.sh"
 case_ cov-another-language-script-run-directly-ok ok "$(rb './bin/t')" "mkdir -p bin; printf '#!/usr/bin/env python3\\nprint(1)\\n' > bin/t; chmod +x bin/t"
 case_ cov-scripts-nested-past-the-limit-bad bad "$(rb 'bash bin/a.sh')" "mkdir -p bin; for p in a:b b:c c:d d:e e:f; do printf 'bash bin/%s.sh\\n' \"\${p#*:}\" > bin/\${p%%:*}.sh; done; printf 'echo hi\\n' > bin/f.sh"
 
