@@ -72,6 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read       # read the workflow run behind each bound check (file, event, commit)
       checks: read
       statuses: read
       pull-requests: read # F02: locate the merged PR for PR-scoped checks
@@ -248,7 +249,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest" --paginate \
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=all" --paginate \
             --jq '[.check_runs[] | {name, conclusion, app_id: .app.id, id, head_sha, details_url}]' | jq -s 'add' > /tmp/sha-check-runs.json
           gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/status" \
             --jq '[.statuses[] | {context, state, id}]' > /tmp/sha-statuses.json
@@ -286,18 +287,27 @@ jobs:
                   esac
                 fi
                 hit=
-                while IFS=$'\t' read -r id url; do
-                  if [ -n "$want" ]; then
+                if [ -z "$want" ]; then
+                  hit=$(jq -r --arg c "$ctx" --argjson a "$app" \
+                    '[.[] | select(.name == $c and .app_id == $a)] | sort_by(.id) | last | select(.conclusion == "success") | .id // empty' /tmp/sha-check-runs.json)
+                else
+                  # every run of the name is read; the latest one that qualifies (file, event, commit) decides
+                  while IFS=$'\t' read -r id conclusion url; do
                     run_id=${url#"https://github.com/${GITHUB_REPOSITORY}/actions/runs/"}
                     run_id=${run_id%%/*}
                     [[ "$run_id" =~ ^[0-9]+$ ]] || continue
-                    path=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .path </dev/null) || continue
+                    facts=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '[.path, .event, .head_sha] | @tsv' </dev/null) \
+                      || { echo "::error::cannot read workflow run ${run_id} behind required check '${ctx}'" >&2; exit 1; }
+                    IFS=$'\t' read -r path event head <<<"$facts"
                     [ "$path" = ".github/workflows/${want}" ] || continue
-                  fi
-                  hit=$id; break
-                done < <(jq -r --arg c "$ctx" --argjson a "$app" \
-                  '.[] | select(.name == $c and .app_id == $a and .conclusion == "success") | [.id, .details_url // ""] | @tsv' /tmp/sha-check-runs.json)
-                [ -n "$hit" ] || { echo "::error::required check '${ctx}' (app ${app}) is not green on the tagged commit${want:+ from ${want}}" >&2; exit 1; }
+                    [ "$event" = schedule ] || [ "$event" = workflow_dispatch ] || continue
+                    [ "$head" = "${GITHUB_SHA}" ] || continue
+                    [ "$conclusion" = success ] && hit=$id
+                    break
+                  done < <(jq -r --arg c "$ctx" --argjson a "$app" \
+                    '[.[] | select(.name == $c and .app_id == $a)] | sort_by(-.id) | .[] | [.id, .conclusion // "", .details_url // ""] | @tsv' /tmp/sha-check-runs.json)
+                fi
+                [ -n "$hit" ] || { echo "::error::required check '${ctx}' (app ${app}) is not green on the tagged commit${want:+ from a schedule or dispatch run of ${want}}" >&2; exit 1; }
                 jq -n --arg c "$ctx" --arg id "$hit" --arg sha "${GITHUB_SHA}" \
                   '{context: $c, source: "check-run-on-tagged-sha", evidence_sha: $sha, id: ($id|tonumber), conclusion: "success"}'
                 ;;
