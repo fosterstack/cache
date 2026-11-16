@@ -463,12 +463,15 @@ def _is_vendored(head):
             and new.startswith("b/vendor/") and " " not in new)
 
 
-def vendor_is_required(path=".github/policy/required-checks.json"):
-    """True when main's required-check list (this checkout is main) holds the `vendor` check: the job that regenerates
-    vendor/ from go.mod and go.sum and compares it byte for byte (REQ-VEND-001-AC2, AC3). Unreadable is False."""
+def vendor_is_required(repo):
+    """True when main's ruleset lists the `vendor` check, which re-verifies vendor/ (REQ-VEND-001-AC2, AC3), so the
+    readers are not shown it. A read that fails, or an answer of another shape, is no: vendored files are shown."""
     try:
-        return any(c.get("context") == "vendor" for c in json.load(open(path))["required_checks"])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return any(check.get("context") == "vendor"
+                   for rule in _gh_json(["repos/%s/rules/branches/main" % repo])
+                   if rule.get("type") == "required_status_checks"
+                   for check in rule["parameters"]["required_status_checks"])
+    except (KeyError, TypeError, AttributeError):
         return False
 
 
@@ -528,7 +531,7 @@ def cmd_gather(a):
         sys.stderr.write("gather: could not fetch the diff of %s (PR #%s, rc %s) — no bundle, no review\n"
                          % (a.sha, a.pr, rc))
         sys.exit(3)
-    diff = shown_diff(diff, vendor_is_required())
+    diff = shown_diff(diff, vendor_is_required(repo))
     # the readers cannot be given a binary file's bytes: what they were not shown could merge unread
     if _has_binary(diff):
         sys.stderr.write("gather: the diff of PR #%s names a binary file, whose bytes are not in a diff "
