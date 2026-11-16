@@ -19,7 +19,7 @@ from auditorlib import parsers as P  # noqa: E402
 
 
 def adapt(d):
-    pm = P._panel_module()
+    pm = P.panel_module()
     want = sorted(P.panel_images())
     out = copy.deepcopy(d)
     images = {}
