@@ -892,6 +892,12 @@ class LiveNet:
             out.append((p["number"], items))
         return out
 
+    def _fetch_pull(self, number, base_ref):
+        """The pull request's head and its base branch, fetched from the public repository: no token goes into git's
+        argv (any process can read it there)."""
+        return _run(["git", "-C", self.root, "fetch", "-q", "origin", f"pull/{number}/head", base_ref],
+                    capture_output=True, text=True)
+
 
 
 
