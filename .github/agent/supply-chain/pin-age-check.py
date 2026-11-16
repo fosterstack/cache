@@ -997,97 +997,26 @@ def _live_fetch_line_ok(flat, toolchain=False):
 # REQ-SUP-001-AC16: a reviewed_files row is a review of one whole file and of the files it sources by a literal path,
 # so any edit to them stops the row matching. A word that could run a file anywhere but in a plain line fails closed.
 _PLAIN_SOURCE = re.compile(r"[ \t]*(?:source|\.)[ \t]+([A-Za-z0-9_][A-Za-z0-9_./-]*)[ \t]*")   # matches ". lib.sh", refuses "source $f"
-_WRAPPERS = frozenset(("if", "elif", "while", "until", "then", "do", "else", "!", "time", "exec", "env", "sudo", "nohup",
-    "xargs", "--"))
-_SHELLS = frozenset(("sh", "bash", "dash", "zsh", "ksh", "ash"))
-_RUNS_A_FILE = frozenset(("source", ".", "eval", "builtin"))
-_HEREDOC = re.compile(r"<<-?[ \t]*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")     # matches "python3 - <<'PY'", refuses "x << 2"
-_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=(.*)")
-_QUOTING = re.compile(r"[\"'\\]")
-
-
-def _segments(line):
-    """(commands, open quote): the commands of the text as lists of words, split at ; & | ( ) { } and blank lines
-    outside quotes (and outside ${...} and name=(...)), words at blanks outside quotes, a # word starting a comment; and
-    the quote left open at its end, if any. $'...' keeps its backslashes escaping."""
-    segments, words, word, quote, escaped, param, comment = [], [], "", None, False, None, False
-    for i, ch in enumerate(line):
-        if comment:
-            comment = ch != "\n"
-        elif escaped or (quote and (quote == "'" or ch != "\\")):
-            word, escaped, quote = word + ch, False, None if ch == quote else quote
-        elif ch == "\\":
-            word, escaped = word + ch, True
-        elif ch in "'\"":
-            word, quote = word + ch, ch
-        elif ch == "{" and line[i - 1:i] == "$":
-            word, param = word + ch, "}"
-        elif ch == "(" and word.endswith("="):       # an array: its words are no commands
-            word, param = word + ch, ")"
-        elif param:
-            word, param = word + ch, None if ch == param else param
-        elif ch == "(" and word == "$":              # $( starts a command
-            word = ""
-        elif ch == "#" and not word:
-            comment = True
-        elif ch in " \t\n" or ch in ";&|(){}":
-            if word:
-                words.append(word)
-            word = ""
-            if ch not in " \t" and words:
-                segments.append(words)
-                words = []
-        else:
-            word += ch
-    if word:
-        words.append(word)
-    return segments + ([words] if words else []), quote
-
-
-def _command(words):
-    """(words, hidden): the words from the command word on (assignments and wrappers like if, time, env dropped), and
-    whether an assignment gave a variable a word that runs a file."""
-    hidden = False
-    while words and (_ASSIGNMENT.match(words[0]) or words[0] in _WRAPPERS):
-        m = _ASSIGNMENT.match(words[0])
-        hidden = hidden or bool(m and _QUOTING.sub("", m.group(1)) in _RUNS_A_FILE)
-        words = words[1:]
-    return words, hidden
-
-
-def _logical_lines(text):
-    """The lines of text, a line that leaves a quote open joined with the next ones, and the body of a heredoc left out
-    (data), unless a shell reads it: then its lines are read like any others."""
-    lines, i, heredoc_end = text.split("\n"), 0, None
-    while i < len(lines):
-        line, i = lines[i], i + 1
-        if heredoc_end:
-            heredoc_end = None if line.strip() == heredoc_end else heredoc_end
-            continue
-        while _segments(line)[1] and i < len(lines):
-            line, i = line + "\n" + lines[i], i + 1
-        heredoc = _HEREDOC.search(line)
-        if heredoc and not any(_QUOTING.sub("", w) in _SHELLS for seg in _segments(line)[0]
-                for w in _command(seg)[0][:1]):
-            heredoc_end = heredoc.group(2)
-        yield line
-
-
 def _sourced(text):
     """The operands of the plain 'source PATH' / '. PATH' lines of text, or None (fails closed) when a word that runs
     a file is anywhere else: source or . that is no such line or follows a cd, eval, builtin, command (but -v), a
-    shell -c, a command word that is an unquoted variable, or a variable given such a word."""
+    shell -c, a command word that is a variable holding such a word or an unquoted variable, or a variable given such
+    a word."""
     ops, cd = [], False
-    for line in _logical_lines(text):
+    holders = inv.holder_names(text)
+    for line, _body in inv.logical_lines(text):
+        if len(line) > inv.MAX_LINE:
+            return None
         plain = _PLAIN_SOURCE.fullmatch(line)
-        for seg in _segments(line)[0]:
-            words, hidden = _command(seg)
-            clean = [_QUOTING.sub("", w) for w in words]
+        for seg in inv.shell_segments(line)[0]:
+            words, hidden = inv.command_of(seg)
+            clean = [inv.QUOTING.sub("", w) for w in words]
             word = clean[0] if clean else ""
             cd = cd or word == "cd"
-            if (hidden or (word in _RUNS_A_FILE and not (plain and word in ("source", ".")))
+            if (hidden or (words and inv.is_holder_word(words[0], holders))
+                    or (word in inv.RUNS_A_FILE and not (plain and word in ("source", ".")))
                     or (word == "command" and clean[1:2] not in (["-v"], ["-V"]))
-                    or (word in _SHELLS and "-c" in clean) or (words and words[0][0] in "$`")):
+                    or (word in inv.SHELLS and "-c" in clean) or (words and words[0][0] in "$`")):
                 return None
         if plain:
             op = os.path.normpath(plain.group(1))
@@ -1095,6 +1024,17 @@ def _sourced(text):
                 return None
             ops.append(op)
     return ops
+
+
+def _runs_bound(root, head, text):
+    """False when a shell or interpreter in text is given a script that is no literal path of a plain file at head."""
+    for line, _body in inv.logical_lines(text):
+        for seg in inv.shell_segments(line)[0] if len(line) <= inv.MAX_LINE else ():
+            clean = [inv.QUOTING.sub("", w) for w in inv.command_of(seg)[0]]
+            operand = inv.script_operand(clean) if clean and clean[0] in inv.INTERPRETERS else ""
+            if operand and (inv.repo_path(operand) is None or _head_file(root, head, inv.repo_path(operand)) is None):
+                return False
+    return True
 
 
 _FILES_HASH = {}
@@ -1120,7 +1060,8 @@ def _hash_files(root, head, path):
         # a Python file at the root is read by Python, whose own run-a-file forms the inventory refuses
         ops = [] if raw is not None and f == path and f.endswith(".py") else None
         if raw is not None and ops is None:
-            ops = _sourced(raw.decode("utf-8", "replace"))
+            text = raw.decode("utf-8", "replace")
+            ops = _sourced(text) if _runs_bound(root, head, text) else None
         if ops is None:
             return None
         lines[f] = f + " " + hashlib.sha256(raw).hexdigest()
