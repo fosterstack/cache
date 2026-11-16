@@ -677,7 +677,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/dependabot-reviewer-test.sh"
   },
   {
-   "name": "dependency paths wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor path after the guard",
+   "name": "dependency paths wiring \u2014 reviewer hourly from main, patch/minor arming only for the screened head",
    "run": "bash bin/dependency-lanes-test.sh"
   },
   {
