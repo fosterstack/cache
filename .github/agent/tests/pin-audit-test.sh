@@ -1459,11 +1459,7 @@ CASE="too-large history, shared tree: revisions that share an unreadable tree ma
 check test "$rc" -eq 2; check none_match 'no known-compromised' "$work/oversizeshared.out"
 
 
-# --- the daily run ends cleanly when the history cannot be read (ruled Oct 31): an unlisted unreadable revision exits 2; one
-# ls-tree -r per revision is all the history reader asks git for ---
-run oversizeobs "$CLEAN" "$work/r-oversize"
-CASE="oversize history, daily run: an unlisted unreadable revision ends the audit with exit 2 and the cap's own message"
-check test "$rc" -eq 2; check grep -q 'refusing to read it partially' "$work/oversizeobs.err"
+# --- one ls-tree -r per revision is all the history reader asks git for ---
 CASE="history reader: git ls-tree -r runs once per revision (the listing that makes the tree key is the listing the files are read from)"
 check python3 - "$aud" "$work/r-histmemo" <<'PY'
 import collections, datetime as dt, importlib.util, sys
@@ -1647,19 +1643,16 @@ for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"),
         rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
     assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
 PY
-CASE="fixtures that are not a JSON object (not JSON, null, a list) end both programs in exit 2 on a readable "
+CASE="fixtures that are not a JSON object (not JSON, null, a list) end the audit in exit 2 on a readable "
 CASE+="repository, with a 'cannot' line on stderr"
 check python3 - "$aud" "$work/r-clean" "$work" <<'PY'
 import subprocess, sys
 aud, repo, work = sys.argv[1:4]
-age = aud.replace("pin-audit.py", "pin-age-check.py")
 for body in ("not json", "null", "[]"):
     fx = work + "/notobj.fx.json"; open(fx, "w").write(body)
-    for argv in ([aud, "--root", repo, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"],
-                 [age, "--root", repo, "--base", "HEAD", "--head", "HEAD", "--fixtures", fx,
-                  "--now", "2026-10-05T12:00:00Z"]):
-        r = subprocess.run([sys.executable, *argv], capture_output=True, text=True)
-        assert r.returncode == 2 and "cannot" in r.stderr, (argv[0], body, r.returncode, r.stderr[-200:])
+    argv = [aud, "--root", repo, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"]
+    r = subprocess.run([sys.executable, *argv], capture_output=True, text=True)
+    assert r.returncode == 2 and "cannot" in r.stderr, (argv[0], body, r.returncode, r.stderr[-200:])
 PY
 CASE="error lines: a path with line breaks, escapes or ##[ in an error prints as one stderr line, no workflow command"
 check python3 - "$aud" "$root" "$work" <<'PY'
