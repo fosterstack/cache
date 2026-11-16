@@ -50,7 +50,7 @@ for tag in $(jq -r '.[] | select(.draft == false and .prerelease == false and (.
   mkdir -p "$dir"
   jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$dir/release.json"
   asset "$dir/release.json" release-manifest.json "$dir"
-  jq -e --arg v "${tag#v}" '.version == $v' "$dir/release-manifest.json" > /dev/null ||
+  jq -e --arg v "${tag#v}" '.version == $v' "$dir/release-manifest.json" > /dev/null 2>&1 ||
     die "$tag: release-manifest.json names another version"
   if [ "$tag" != v0.3.0 ] && [ "$(printf '%s\n' v0.3.0 "$tag" | sort -V | head -n 1)" = "$tag" ]; then
     rm -r "$dir"
