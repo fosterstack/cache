@@ -3587,6 +3587,7 @@ name, path, line = sys.argv[1:4]
 body = ("on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: " + line + "\n") if path.endswith(".yml") else ("#!/bin/sh\n" + line + "\n")
 print("import pathlib\nroot = pathlib.Path('.')\n(root / 'vendor/example.test/dep').mkdir(parents=True, exist_ok=True)\n"
       "(root / 'vendor/example.test/dep/install.sh').write_text('go install example.test/tool@v1.2.3\\n')\n"
+      "(root / 'bin').mkdir(exist_ok=True)\n(root / 'bin/vendor-check.sh').write_text('echo ok\\n')   # a literal script operand names a file the tree holds\n"
       "p = root / " + json.dumps(path) + "\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text(" + json.dumps(body) + ")")
 PY
   newcase "vc-$1" "$(cat "$work/vc-$1.py")"; runck "vc-$1" '{"times": {}}'
