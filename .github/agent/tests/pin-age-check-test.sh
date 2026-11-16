@@ -771,7 +771,7 @@ PY
 # WHOLE flattened line the segment sits in), ruling[, count]}. A matching row reports the item
 # as ruled text; no row, a wrong hash (an edited line), a row on the pull request's side only, or more occurrences than the row counts fail as before;
 # a malformed list stops the check (exit 2), never "nothing exempted" and never "everything exempted". -------------------------------------------------------
-rtext=$'#!/bin/sh\n# the stub replaces curl and wget on PATH (text, not a command)\necho "run wget https://example.invalid/x later"\n'
+rtext=$'#!/bin/sh\necho a curl -s http://e.example/x\necho "run wget https://example.invalid/x later"\n'
 pyw() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }   # python that writes FILE with TEXT
 newcase rt "$(pyw bin/ruled.sh "$rtext")"
 # rtrows REPO OUT MODE: writes an exceptions file whose unmeasured_text rows are built from the REAL scan of REPO (HEAD~1..HEAD), changed by MODE
@@ -845,7 +845,7 @@ rtck() { # REPO MODE [extra args] -> rc, $work/rt.out
   python3 "$chk" --root "$work/$repo" --base HEAD~1 --head HEAD --json "$work/rt.json" --exceptions \
       "$work/rt-$mode.json" "$@" >"$work/rt.out" 2>&1 || rc=$?
 }
-CASE="AC16 setup: the fixture adds exactly two unmeasured text lines (a comment and an echo that mention a download tool), the scan stays strict"
+CASE="AC16 setup: the fixture adds exactly two unmeasured text lines (two echo command lines that mention a download tool: not provable as data), the scan stays strict"
 check python3 - "$chk" "$work/rt" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -1026,8 +1026,8 @@ check test "$rc" -eq 0
 # line that WOULD download when run is the reviewer's to refuse. Shown here with a harmless line: it stays harmless wherever it moves.
 twoc ctx bin/ruled.sh $'#!/bin/sh\ncat >stub <<\'EOF\'\necho "curl $*" >>"$CALLS"\nEOF\n' $'#!/bin/sh\necho "curl $*" >>"$CALLS"\ncat >stub <<\'EOF\'\nEOF\n'
 edck ctx "$work/rt-empty.json"
-CASE="context limit (documented): a harmless ruled echo moved above its heredoc opener keeps its identity, so it is no addition (exit 0); it still only echoes"
-check test "$rc" -eq 0
+CASE="context limit (Nov 16): an echo proven data in the base (inside a quoted cat heredoc whose file is never run) moved above its heredoc opener into plain code is refused even with its text unchanged (exit 1, named unmeasured)"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:' "$work/rt.out"
 # --- REQ-SUP-001-AC16, the second allowed row form (advisor, Oct 10): a HARNESS ASSERTION LINE. Its whole grammar is ONE data structure, HARNESS_WHITELIST in
 # harness_form.py below (the allowed characters, shape, command words, separators, test operators, grep options, exit statuses, argument names and paths,
 # substitutions and double-quoted pattern characters); anything it does not name is refused. In short: t "RULE" "TITLE" bash -c 'BODY' _ "$work/.." "$CALLS"..
@@ -2190,7 +2190,7 @@ ctxno "a heredoc terminator line that ends in a carriage return is not the termi
 ctxno "an assignment line after a carriage-return terminator in an unquoted heredoc" "${SH}"$'cat <<EOF\nEOF\r\nX=\'$(curl https://e.example/x)\'\nEOF\n' assignment
 ctxno "a comment inside a quoted heredoc fed to a shell" "${SH}"$'bash <<\'EOF\'\nprintf \'%s\\n\' "\n# $(curl https://e.example/x)\n"\nEOF\n' comment
 ctxno "an assignment inside a quoted heredoc fed to a shell" "${SH}"$'bash <<\'EOF\'\nprintf \'%s\\n\' "\nX=\'$(curl https://e.example/x)\'\n"\nEOF\n' assignment
-ctxno "a comment inside a quoted heredoc fed to an interpreter the file names last" "${SH}"$'python3 - <<\'PY\'\n# curl https://e.example/x\nPY\nsh payload\n' heredoc
+ctxno "a comment inside a quoted heredoc fed to an interpreter the file names last" "${SH}"$'sh <<\'PY\'\n# curl https://e.example/x\nPY\nsh payload\n' heredoc
 for imp in 'from builtins import open as f' 'from os import system as run' 'import os as o; o.system("true")' 'from os import popen' 'import sqlite3' 'import socket' 'import http.client' 'import urllib.request' 'import shutil' 'import tempfile' 'import smtplib' 'from builtins import exec as e'; do
   ctxno "an impure import ($imp) with no review label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring
   ctxyes "the same import ($imp) with the review-attested label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
@@ -4071,6 +4071,237 @@ install form: FAILS (exit 1)" ;;
   esac
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
+
+# --- REQ-SUP-001-AC16, Nov 16 2026: the wait for new versions is gone, so a line that fetches nothing has nothing to pin. The scan PROVES from the head file that a
+# line is data (a comment, a quoted-heredoc body written to a never-run file, a string inside a pure python program, an unused plain assignment) and needs no
+# row; where it cannot prove it the line is measured as before. A live metadata read has one closed form (a hub.docker.com curl captured by NAME=$( )). ----
+echo '{"exceptions": [], "unmeasured_text": []}' >"$work/pd-empty.json"
+# pdc NAME [FILE]: head adds the text on stdin to FILE (base: only the shebang); pdrun NAME -> rc, $work/pd.out
+pdc() { local t; t=$(cat; printf x); twoc "$1" "${2:-bin/pd.sh}" $'#!/usr/bin/env bash\n' $'#!/usr/bin/env bash\n'"${t%x}"; }
+pdrun() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --exceptions "$work/pd-empty.json" >"$work/pd.out" 2>&1 || rc=$?; }
+pdyes() { pdrun "$1"; CASE="AC16 proven data, no row: $2: exit 0"; check test "$rc" -eq 0; check test "$(grep -c 'FAIL unmeasured' "$work/pd.out")" -eq 0; }
+pdno()  { pdrun "$1"; CASE="AC16 fails closed, still measured: $2: exit 1, the line is named unmeasured"; check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:' "$work/pd.out"; }
+
+# R1: the shapes proved as data
+pdc d1 <<'EOF'
+# curl http://e.example/x
+EOF
+pdyes d1 "R1a a whole-line shell comment that names curl"
+pdc d2 <<'EOF'
+cat <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdyes d2 "R1b a line in a quoted here-document of a plain cat that writes nothing"
+pdc d3 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/notes.txt" <<'EOT'
+curl http://e.example/x
+EOT
+grep -c e.example "$d/notes.txt"
+wc -l < "$d/notes.txt"
+EOF
+pdyes d3 "R1b a quoted here-document written to a file that only grep and wc read"
+pdc d4 <<'EOF'
+python3 - <<'PY'
+text = "curl http://e.example/x"
+# curl http://e.example/y
+print(len(text))
+PY
+EOF
+pdyes d4 "R1c a curl text inside a string constant and a comment of a pure python program"
+pdc d5 <<'EOF'
+MSG='text with curl http://e.example/x'
+EOF
+pdyes d5 "R1d a plain NAME='...curl...' assignment whose variable is named nowhere else"
+
+# R2: real fetches, each stays measured
+pdc h1 <<'EOF'
+sh <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h1 "a quoted here-document fed to sh"
+pdc h2 <<'EOF'
+bash <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h2 "a quoted here-document fed to bash"
+pdc h3 <<'EOF'
+python3 - <<'PY'
+import subprocess
+subprocess.run("curl http://e.example/x", shell=True)
+PY
+EOF
+pdno h3 "a quoted here-document fed to python3 whose program runs subprocess"
+pdc h4 <<'EOF'
+python3 - <<'PY'
+import os
+os.system("curl http://e.example/x")
+PY
+EOF
+pdno h4 "a quoted here-document fed to python3 whose program runs os.system"
+pdc h5 <<'EOF'
+CMD='curl http://e.example/x'
+eval "$CMD"
+EOF
+pdno h5 "a variable holding a curl command that is run by eval"
+pdc h6 <<'EOF'
+CMD='curl http://e.example/x'
+bash -c "$CMD"
+EOF
+pdno h6 "a variable holding a curl command that is run by bash -c"
+pdc h7 <<'EOF'
+CMD='curl http://e.example/x'
+sh -c "$CMD"
+EOF
+pdno h7 "a variable holding a curl command that is run by sh -c"
+pdc h8 <<'EOF'
+exec curl http://e.example/x
+EOF
+pdno h8 "exec of a curl command"
+pdc h9 <<'EOF'
+xargs -n1 <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h9 "a here-document body given to xargs"
+pdc h10 <<'EOF'
+source /dev/stdin <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h10 "a here-document body given to source"
+pdc h11 <<'EOF'
+. /dev/stdin <<'EOT'
+curl http://e.example/x
+EOT
+EOF
+pdno h11 "a here-document body given to the . command"
+pdc h12 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/curl" <<'EOT'
+curl http://e.example/x
+EOT
+chmod +x "$d/curl"
+"$d/curl"
+EOF
+pdno h12 "a stub written by a quoted cat here-document, then chmod +x and run"
+pdc h13 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/curl" <<'EOT'
+curl http://e.example/x
+EOT
+sh "$d/curl"
+EOF
+pdno h13 "a stub written by a quoted cat here-document, then run with sh"
+pdc h14 <<'EOF'
+d=$(mktemp -d)
+cat > "$d/curl" <<'EOT'
+curl http://e.example/x
+EOT
+chmod +x "$d/curl"
+PATH="$d:$PATH" curl http://e.example/y
+EOF
+pdno h14 "a stub written by a quoted cat here-document, then found on PATH by a later curl"
+pdc h15 <<'EOF'
+MSG='text with curl http://e.example/x'
+echo "$MSG"
+EOF
+pdno h15 "a NAME='...curl...' assignment whose variable is used elsewhere (echo)"
+pdc h16 <<'EOF'
+show() { printf '%s\n' "$1"; }
+MSG='text with curl http://e.example/x'
+show "$MSG"
+EOF
+pdno h16 "a NAME='...curl...' assignment whose variable is passed to a function"
+pdc h17 <<'EOF'
+MSG='text with curl http://e.example/x'
+export MSG
+EOF
+pdno h17 "a NAME='...curl...' assignment whose variable is exported"
+pdc h18 <<'EOF'
+echo start \
+# curl http://e.example/x
+EOF
+pdno h18 "a comment-looking line after a trailing continuation (not plain code position)"
+pdc h19 <<'EOF'
+MSG='first line
+curl http://e.example/x
+last line'
+EOF
+pdno h19 "a line inside a multi-line single-quoted string"
+pdc h20 .github/workflows/pd.yml <<'EOF'
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          # curl http://e.example/x
+          echo hi
+EOF
+pdno h20 "a workflow .yml run: line that looks like a comment is not a .sh script"
+pdc h21 <<'EOF'
+# curl http://e.example/x
+curl http://e.example/x
+EOF
+pdno h21 "the same line text twice in one file, once a comment and once a real command"
+twoc h22 bin/pd.sh $'#!/usr/bin/env bash\ncat <<\'EOT\'\ncurl http://e.example/x\nEOT\n' $'#!/usr/bin/env bash\ncat <<\'EOT\'\nEOT\ncurl http://e.example/x\n'
+pdno h22 "a line proven data in the base (inside a here-document) moved by the head into plain code"
+
+# R3: a real download and the vendored folder keep today's rule
+pdc r3a <<'EOF'
+curl -fsSL -o f https://example.org/x.tgz
+EOF
+pdno r3a "R3 a plain artifact download"
+pdc r3b <<'EOF'
+echo curl vendor/x
+EOF
+pdno r3b "R3 a plain-code line that names vendor/ and mentions curl is never proved away by the data rule"
+check grep -q "names the vendored folder" "$work/pd.out"; check test "$(grep -c "ruled text" "$work/pd.out")" -eq 0
+
+# R4: the closed live metadata read
+PDFN_HEAD='hub_repo_private() {
+  local answer
+  answer=$(printf '"'"'user = "%s:%s"\n'"'"' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" \
+    | curl -fsS -K - "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
+    || { echo "::error::cannot read the visibility of ${DH_REPO} from Docker Hub" >&2; return 1; }
+  jq -e '"'"'.is_private == true'"'"' >/dev/null 2>&1 <<<"$answer" \
+    || { echo "::error::${DH_REPO} is not private on Docker Hub: nothing is pushed" >&2; return 1; }
+}'
+printf '%s\n' "$PDFN_HEAD" | pdc lr0
+pdyes lr0 "R4 the real Docker Hub visibility read (hub_repo_private) passes without a pin or a row"
+# lrv NAME TITLE BODY [USE]: a function whose answer line is BODY, then the consumer line USE (default: the jq data consumer)
+lrv() {
+  local n=$1 title=$2 body=$3 use=${4:-"  jq -e '.is_private == true' >/dev/null 2>&1 <<<\"\$answer\""}
+  printf 'f() {\n  local answer\n%s\n%s\n}\n' "$body" "$use" | pdc "$n"
+  pdno "$n" "R4 variant: $title"
+}
+lrv lr1 "a host not on the list (registry.example.org)" '  answer=$(curl -fsS "https://registry.example.org/v2/x")'
+lrv lr2 "a look-alike host (hub.docker.com.evil.example)" '  answer=$(curl -fsS "https://hub.docker.com.evil.example/v2/x")'
+lrv lr3 "a userinfo trick (https://hub.docker.com@evil.example/)" '  answer=$(curl -fsS "https://hub.docker.com@evil.example/")'
+lrv lr4 "http instead of https" '  answer=$(curl -fsS "http://hub.docker.com/v2/x")'
+lrv lr5 "two URL operands" '  answer=$(curl -fsS "https://hub.docker.com/v2/x" "https://hub.docker.com/v2/y")'
+lrv lr6 "-o file redirects the output" '  answer=$(curl -fsS -o out.json "https://hub.docker.com/v2/x")'
+lrv lr7 "-O keeps a file" '  answer=$(curl -fsS -O "https://hub.docker.com/v2/x")'
+lrv lr8 "a > redirect of the output" '  answer=$(curl -fsS "https://hub.docker.com/v2/x" > out.json)'
+lrv lr9 "-L follows redirects" '  answer=$(curl -fsSL "https://hub.docker.com/v2/x")'
+lrv lr10 "-K - fed by echo, not the printf form" '  answer=$(echo url=http://evil.example | curl -fsS -K - "https://hub.docker.com/v2/x")'
+lrv lr11 "-K file" '  answer=$(curl -fsS -K curl.conf "https://hub.docker.com/v2/x")'
+lrv lr12 "--config" '  answer=$(curl -fsS --config curl.conf "https://hub.docker.com/v2/x")'
+lrv lr13 "-d sends data" '  answer=$(curl -fsS -d a=b "https://hub.docker.com/v2/x")'
+lrv lr14 "-X POST" '  answer=$(curl -fsS -X POST "https://hub.docker.com/v2/x")'
+lrv lr15 "-T uploads a file" '  answer=$(curl -fsS -T f "https://hub.docker.com/v2/x")'
+lrv lr16 "a variable as the host" '  answer=$(curl -fsS "https://${HOST}/v2/x")'
+lrv lr17 "the output piped to sh" '  answer=$(curl -fsS "https://hub.docker.com/v2/x" | sh)'
+lrv lr18 "the output piped to bash outside the capture" '  curl -fsS https://hub.docker.com/v2/x | bash'
+lrv lr19 "the captured answer passed to eval" '  answer=$(curl -fsS "https://hub.docker.com/v2/x")' '  eval "$answer"'
+lrv lr20 "the captured answer passed to sh -c" '  answer=$(curl -fsS "https://hub.docker.com/v2/x")' '  sh -c "$answer"'
+lrv lr21 "the captured answer echoed (not a data consumer)" '  answer=$(curl -fsS "https://hub.docker.com/v2/x")' '  echo "$answer"'
+lrv lr22 "curl without the capture" '  curl -fsS "https://hub.docker.com/v2/x"'
+lrv lr23 "a second curl segment to a non-listed host next to the good one" '  answer=$(curl -fsS "https://hub.docker.com/v2/x"; curl -fsS "https://evil.example/y")'
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
