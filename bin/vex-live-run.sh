@@ -335,6 +335,7 @@ scout_leg_run() {
 set -euo pipefail
 root=$(cd "$here_lt/.." && pwd)
 : "${ECR:?}" "${GAR:?}"
+grype() { "${RUNNER_TEMP:?}/tools/grype" "$@"; }   # the install step puts it there; no step changes PATH
 work="${RUNNER_TEMP:?}/vex-live-test"
 mkdir -p "$work"
 cd "$work"
