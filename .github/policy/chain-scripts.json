@@ -254,7 +254,8 @@
       "sha256": "405eed3d61856a9d4a27c6fcc51c8adf25c6651f0d5fb62e46bbe6c5491aace0",
       "tools": [
         "at",
-        "git"
+        "git",
+        "script"
       ],
       "runs": [],
       "signs": false,
@@ -2179,7 +2180,8 @@
       "sha256": "2694ef1e128f5d750eab681d13ad209406579ed558b85ba809f180c0f5ca4a24",
       "tools": [
         "at",
-        "python3"
+        "python3",
+        "go"
       ],
       "runs": [
         "bin/rescan-statement.py"
@@ -2305,6 +2307,21 @@
           "line_sha256": "ff294ce6807ee332c3ee39b714f9535237e9f586fd230871e1266f8c246d7f22",
           "count": 1,
           "why": "the fixed env, unshare and melange locations the sealed build is checked against; compared as strings, never searched on PATH"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/build-apk.sh",
+          "why": "a docstring naming the script whose decisions this file holds; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/build-baselayout-apk.sh",
+          "why": "a docstring naming the script whose decisions this file holds; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/assemble-image.sh",
+          "why": "a docstring naming the script whose decisions this file holds; prose, never run from here"
         }
       ]
     },
