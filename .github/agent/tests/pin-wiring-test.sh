@@ -129,8 +129,11 @@ read -r -d '' PIN_WIRING_CHAIN25 <<'JSON' || true
 JSON
 export PIN_WIRING_CHAIN25
 
+# the workflow's allowed top-level keys, for judge and bytes_judge alike
+export PIN_WIRING_TOP_KEYS='["name", "on", "concurrency", "permissions", "jobs"]'
+
 judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" python3 - "$1" <<'PY'
-import sys, os, yaml
+import sys, os, json, re, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
 _text = open(sys.argv[1]).read()
@@ -160,7 +163,7 @@ if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
-for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
+for k in sorted(set(d) - set(json.loads(os.environ["PIN_WIRING_TOP_KEYS"]))):
     bad.append(f"the workflow sets `{k}`")
 # the one reviewed concurrency block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt of a head shares a group with the pull request's other first attempts, so a newer
 # push cancels its older run; every other run (a re-run of any head, a push to main, a merge_group) gets a group of its own per run and attempt, so ci.yml itself never cancels it nor
@@ -818,7 +821,7 @@ TOP
 export PIN_WIRING_GUARD_JOB PIN_WIRING_PERMISSIONS
 
 bytes_judge() { python3 - "$1" "${2:-}" <<'PY'
-import os, sys
+import json, os, sys
 raw = open(sys.argv[1], "rb").read()
 lines = raw.split(b"\n")
 def inert(line):
@@ -860,7 +863,7 @@ elif shape(head_job) != shape(pinned_job):
     bad.append("the required-check-guard job is not the pinned text, byte for byte")
 if block(b"permissions:", 0) != pinned_permissions:
     bad.append("the workflow permissions are not the pinned text, byte for byte")
-top_keys = {b"name", b"on", b"concurrency", b"permissions", b"jobs"}
+top_keys = {k.encode() for k in json.loads(os.environ["PIN_WIRING_TOP_KEYS"])}
 if any(line.split(b":")[0] not in top_keys for line in lines if line[:1] not in (b"", b" ", b"#")):
     bad.append("the workflow has a top-level key beyond name, on, concurrency, permissions, jobs (env, defaults)")
 print("; ".join(bad) or "ok")
