@@ -176,7 +176,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns
 # (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner
 # guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
-PINNED_SHA256 = "0a9beb7c7427223be63dfd76b0ec25d4010642e734f9b7d1afbdf4a0fefb5017"
+PINNED_SHA256 = "34f98f7b15950252b3e634a6bb4b27c12b97da5c13b1e2382c33d575dc8d3d99"
 if rstart and rend:
     import hashlib
     _b = _rawlines
