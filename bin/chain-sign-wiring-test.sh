@@ -2,52 +2,12 @@
 # proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC7, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
 # proves: REQ-CHAIN-004-AC10, REQ-CHAIN-005-AC4 — the Sign job and its signing of the Build and Rebuild records; wording pending the owner's approval where the one-key change makes the approved sentence false
 # proves: REQ-CHAIN-001-AC9
-# The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
-# on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
-#   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
-#               `digests`, with no outputs and no secrets, whose steps are exactly, in order:
-#                 1. actions/checkout (persist-credentials: false, explicit)
-#                 2. actions/download-artifact name witness-build path witness-build (Build's signed Witness record: DATA, never run)
-#                 3. run: bash bin/install-scanner.sh aws-cli    (the aws CLI, pinned by checksum; signatures are made through it,
-#                                                                 so the job installs NO cosign and runs no cosign binary)
-#                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
-#                 5. run: bash bin/with-aws-token.sh sign --check --signer cosign --digests digests.json
-#                         --items witness-build/items.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
-#                         (the filenames are PINNED: `--template` names the committed template, from which `sign --check` makes the
-#                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
-#                          record, compares the digests, THEN signs; the identity token is requested by cosign
-#                          inside its own process and no step ever names it)
-#                 6. actions/upload-artifact name provenance path provenance
-#               Everything else fails closed (rules 52, 52a; 001-AC1..AC3). The four sinks rule 52a names (file, artifact, log,
-#               step output) are each a named mutation. QUESTION FOR THE PARENT: cosign (above) or Witness for Sign's signature?
-#               Cosign is proposed because the provenance is customer-verifiable and rule 53b needs a Rekor entry, which Witness
-#               cannot write (Witness has no Rekor support, rule 53b); the Witness record of Build stays Witness.
-#   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
-#               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
-#   judge_tree  001-AC1 over the tracked files of .github/ and bin/ plus the pinned build configuration, one function per AC1 clause:
-#               only_new_workflow (stage-sign.yml is the only new signing file since v0.2.2; customer-words-edited.yml is the one other added file); listed_signers + direct_signers (every workflow and
-#               composite action matched against the signer table; provenance only in stage-sign.yml, every other signer listed with a
-#               reason in .github/policy/chain-signers.json); stage_grammars (every stage-*.yml over the closed key, env, uses and run-line
-#               grammar, running only scripts listed in .github/policy/chain-scripts.json by path and sha256); listed_scripts (each listed
-#               script scanned as raw text, signing only as its row says; only bin/chain-verify.py `sign` may sign provenance). Three CLOSED
-#               lists keep this from being a text scan: id_token_jobs (.github/policy/id-token-jobs.json: the only jobs that may hold
-#               id-token: write, which keyless signing needs; a << merge key in permissions or an unparsable workflow fails closed),
-#               build_config (.github/policy/build-config-files.json: the build configuration outside bin/ and .github/ pinned by sha256),
-#               frozen_files (.github/policy/legacy-stage-files.json: the eleven legacy
-#               stage files PRs 2-4 rewrite, pinned by sha256; their own findings are left out; the LISTED scripts they run are still
-#               followed, an UNLISTED file they run is never scanned). stdlib_shadows refuses a file or directory under bin/ or .github/
-#               named after a standard-library module; the Sign step and every python3 line of a stage file run isolated (python3 -I).
-#               The real tree is an ordinary `expect ok`. STATED EXCLUSIONS: a command built at run time inside a listed script; a signer
-#               step added to a job already on the id-token list but missing from the signer table (review and the pin checker see it);
-#               keyed signing (outside the keyless model: Release accepts only a Fulcio certificate whose SAN is stage-sign.yml at the tag).
-#   (shared)    the signer table bin/chain-test-signers.json is read by this test and by chain-records-test.sh, so the two cannot
-#               disagree about what a signer is; comments are stripped before matching (a trailing `# verify` exempts nothing).
-# Stated exclusions: a signer reached only through an argv array in script code (exec.exec('cosign', ['sign'])), a python/js
-# script that spawns another program, or a binary downloaded at run time is not seen by a text table; the Sign job's own allowlist
-# and the dry run cover the Sign side. The engine and table are bin/chain-test-signers.py / .json (shared with chain-records-test.sh).
-# Needs python3 with PyYAML (apt: python3-yaml).
-# Modelled on: this repo's bin/workflow-consolidation-test.sh (judge + mutation pattern); in-toto-witness docs/commands.md
-# (witness run / sign flags) and docs/attestors/slsa.md for the signing-call patterns.
+# Static half of the Sign boundary: four judges (judge_sign: the steps of the sign jobs; judge_build: the signing
+# steps of the build jobs; judge_tree: the tracked files of the repository; judge_calls: who may call release.yml
+# and which of its jobs carry the guard), each first shown to pass a known-good fixture and to fail every mutated
+# copy, then applied to the real tree.
+# The signer table is bin/chain-test-signers.json, shared with chain-records-test.sh. Needs python3 with
+# PyYAML.
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
@@ -88,7 +48,6 @@ R_PRINTF_REC = r"printf '%s' \"\$RECORDS\" > rebuild-records\.json"
 R_INSTALL_AWS = r"bash bin/install-scanner\.sh aws-cli"      # KA-2 p4 group 4: the pinned aws CLI, installed in the three jobs that reach KMS
 R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_SIGNSTAGED_RUNNER = r"bash bin/witness-sign-staged\.sh staged/(ubuntu-24\.04|ubuntu-24\.04-arm) signed/(ubuntu-24\.04|ubuntu-24\.04-arm)"      # Check: one tree per runner, each signed on its own
-R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
 # the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
 # the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
 R_REC_BUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
@@ -156,7 +115,6 @@ def judge_sign(path):
         perm = j.get("permissions")
         if not isinstance(perm, dict) or perm.get("id-token") != "write" or any(v == "write" for k, v in perm.items() if k != "id-token"):
             bad.append("AC3: Sign's permissions must be id-token: write and no other write: %s" % perm)
-        order = []
         seq = []
         for s in j.get("steps") or []:
             sn = s.get("name") or s.get("uses") or s.get("run")
@@ -171,15 +129,15 @@ def judge_sign(path):
                 act = m.group(1)
                 if allowed is not None and u.split(" #")[0] not in allowed: bad.append("AC2: step %r uses %s, which is not on the allowed-actions list" % (sn, u.split(" #")[0]))
                 if act == "actions/checkout":
-                    order.append("checkout"); seq.append(("checkout",))
+                    seq.append(("checkout",))
                     if set(w) - {"persist-credentials", "fetch-depth"} or w.get("persist-credentials") != "false":
                         bad.append("AC3: checkout must say persist-credentials: false explicitly (the default writes the job token into .git/config): %s" % w)
                 elif act == "actions/download-artifact":
-                    order.append("download"); seq.append(("download", w.get("name"), w.get("path")))
+                    seq.append(("download", w.get("name"), w.get("path")))
                     if set(w) - {"name", "path"} or ("download", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []):
                         bad.append("AC2: step %r downloads %s; Sign downloads only the records and the artifacts it signs, at the fixed paths (data, never run); sign-rebuild receives no Rebuild apk or image" % (sn, w))
                 elif act == "actions/upload-artifact":
-                    order.append("upload"); seq.append(("upload", w.get("name"), w.get("path")))
+                    seq.append(("upload", w.get("name"), w.get("path")))
                     if ("upload", w.get("name"), w.get("path")) not in EXPECT_STEPS.get(name, []) or set(w) - {"name", "path", "if-no-files-found", "retention-days"}:
                         bad.append("AC3 (artifact sink): step %r uploads %s; only provenance and the signed-witness-* directories may leave Sign" % (sn, w))
                 else:
@@ -189,26 +147,26 @@ def judge_sign(path):
                     bad.append("AC1 run line: step %r has a backslash-newline or a control, non-ASCII or invisible character (str.strip() and bash would read different words)" % sn); continue
                 line = run.strip()
                 if "\n" not in line and re.fullmatch(R_PRINTF, line):
-                    order.append("printf"); seq.append(("printf",))
+                    seq.append(("printf",))
                     if env != {"DIGESTS": "${{ inputs.digests }}"}: bad.append("AC3: the digests step must have exactly env DIGESTS: ${{ inputs.digests }}, found %s" % env)
                 elif "\n" not in line and re.fullmatch(R_PRINTF_REC, line):
-                    order.append("printf"); seq.append(("printfrec",))
+                    seq.append(("printfrec",))
                     if env != {"RECORDS": "${{ inputs.records }}"}: bad.append("AC3: the records step must have exactly env RECORDS: ${{ inputs.records }}, found %s" % env)
                 elif "\n" not in line and re.fullmatch(R_INSTALL_AWS, line):
-                    order.append("install"); seq.append(("install", "aws-cli"))
+                    seq.append(("install", "aws-cli"))
                     if env: bad.append("AC3: step %r passes env" % sn)
                 elif "\n" not in line and re.fullmatch(R_SIGN, line):
-                    order.append("sign"); seq.append(("sign",))
+                    seq.append(("sign",))
                     if env != want_sign_env(): bad.append("W1: the provenance signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
-                    order.append("signstaged"); seq.append(("signstaged",))
+                    seq.append(("signstaged",))
                     if env != want_sign_env(): bad.append("W1: the staged-signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and (m := re.fullmatch(R_SIGNSTAGED_RUNNER, line)) and m.group(1) == m.group(2):
-                    order.append("signstaged"); seq.append(("signstaged", m.group(1)))
+                    seq.append(("signstaged", m.group(1)))
                     if env != want_sign_env(): bad.append("W1: the staged-signing step must have exactly the step env %s (literals; the key reference is the verifier's RELEASE_KEY_REF), found %s" % (want_sign_env(), env))
                 elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line) or re.fullmatch(R_REC_CHECK, line)):
                     kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild" if re.fullmatch(R_REC_REBUILD, line) else "check"
-                    order.append("records"); seq.append(("records", kind))
+                    seq.append(("records", kind))
                     if env: bad.append("AC3: the records step passes env %s" % sorted(env))
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
@@ -221,6 +179,9 @@ def judge_sign(path):
     return bad
 
 SIGN_JOBS = ("sign", "sign-rebuild", "sign-check", "sign-release")
+APK_RUN = "bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
+APK_STEP = "apk under Witness"
+
 def judge_build(path):
     if not os.path.exists(path): return []
     try: d, text = load(path)
@@ -229,7 +190,9 @@ def judge_build(path):
     wf_env = d.get("env") or {}
     for jn, j in (d.get("jobs") or {}).items():
         steps = j.get("steps") or []
-        signs = [s for s in steps if signer_calls(yaml.dump(s, width=10**6))]
+        # bin/witnessed-local.sh is Build's signer: it signs each building step's record with a throwaway key
+        signs = [s for s in steps
+                 if signer_calls(yaml.dump(s, width=10**6)) or "bin/witnessed-local.sh" in str(s.get("run"))]
         if not signs: continue
         job_blob = yaml.dump([j.get("env") or {}, j.get("secrets") or {}, wf_env], width=10**6)
         sign_job = jn in SIGN_JOBS and j.get("environment") == "sign"      # Sign's four jobs run in the environment sign (REQ-CHAIN-001-AC9); no other job that signs has an environment
@@ -238,44 +201,25 @@ def judge_build(path):
         for s in steps:
             if re.search(r"GITHUB_ENV", str(s.get("run") or "")) and re.search(r"secrets\.|github\.token|toJSON|ACTIONS_ID_TOKEN|\$\{\{", str(s.get("run") or "") + yaml.dump(s.get("env") or {}, width=10**6)):
                 bad.append("002-AC4: job %s writes a secret or token into GITHUB_ENV in a job that signs" % jn)
+        named_once = [x.get("name") for x in steps].count(APK_STEP) == 1
         for s in signs:
-            blob = yaml.dump(s, width=10**6); nm = s.get("name") or s.get("uses")
-            if re.search(r"secrets\.|secrets\[|github\.token|toJSON|secrets\b", blob):
+            nm = s.get("name") or s.get("uses")
+            # the one binding 002-AC4 allows: the run's own read-only token, on job apk's apk step only:
+            # the step name occurs once in the job and its run command is the one in stage-build.yml
+            env = dict(s.get("env") or {})
+            is_apk_step = jn == "apk" and nm == APK_STEP and named_once
+            if is_apk_step and str(s.get("run")).strip() == APK_RUN and env.get("GH_TOKEN") == "${{ github.token }}":
+                del env["GH_TOKEN"]
+            blob = yaml.dump({**s, "env": env}, width=10**6)
+            if re.search(r"secrets\.|secrets\[|github\.token|toJSON|secrets\b", blob) or "GH_TOKEN" in env:
                 bad.append("002-AC4: signing step %r takes a secret or the job token" % nm)
             for fm in re.finditer(r"--(annotation|certificate-[a-z-]+|oidc-[a-z-]+|fulcio-oidc-client-id|signer-fulcio-[a-z-]+)[ =]+\S*\$\{\{", blob):
                 bad.append("002-AC4: signing step %r puts an expression into %s" % (nm, fm.group(1)))
     return bad
 
-# FROZEN LEGACY FILES: the eleven legacy stage files PRs 2-4 rewrite on chain-v030, pinned by sha256 in .github/policy/legacy-stage-files.json
-# a PR that rewrites a legacy file removes its row AND its pinned entry; adding or changing an entry here is a reviewed edit and is
-# refused by every other case (advisor ruling, Oct 10: the list is a pre-existing residual that can only shrink). Copied from the list at ae15a44.
-LEGACY_PINNED = {}     # PR 4 rewrote the last legacy stage file (stage-promote.yml) and deleted legacy-stage-files.json; the list can only shrink, so it stays empty
-LEGACY_EXPECTED = set(LEGACY_PINNED)
 def sha256_of(path):
     import hashlib
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
-
-def frozen_files(base, bad):
-    """The repo paths of the listed legacy files whose bytes match the list (their own findings are left out). No list: nothing is frozen.
-    The list must name exactly the eleven legacy paths, all under .github/workflows/; a listed file that is missing is a finding, one
-    whose bytes differ is judged in full."""
-    p = os.path.join(base, ".github/policy/legacy-stage-files.json")
-    if not os.path.exists(p): return set()
-    try: listed = {r["path"]: r["sha256"] for r in _cts.jload(p)["files"]}
-    except Exception as ex: bad.append("AC1: legacy-stage-files.json is malformed (%s)" % ex); return set()
-    outside = sorted(x for x in listed if not re.fullmatch(r"\.github/workflows/[\w.-]+\.ya?ml", x) or ".." in x)
-    if outside: bad.append("AC1: legacy-stage-files.json lists a path outside .github/workflows/: %s" % outside); return set()
-    if set(listed) != LEGACY_EXPECTED:
-        bad.append("AC1: legacy-stage-files.json does not list exactly the eleven legacy stage files: %s" % sorted(set(listed) ^ LEGACY_EXPECTED)); return set()
-    rehashed = sorted(x for x, h in listed.items() if h != LEGACY_PINNED[x])
-    if rehashed: bad.append("AC1: legacy hash is not the one this suite pins (the list can only shrink): %s" % rehashed); return set()
-    frozen = set()
-    for x, want in sorted(listed.items()):
-        f = os.path.join(base, x)
-        if not os.path.isfile(f): bad.append("AC1: legacy file missing: %s: update legacy-stage-files.json or delete it" % x)
-        elif sha256_of(f) != want: bad.append("AC1: legacy file changed (judged in full): %s" % x)
-        else: frozen.add(x)
-    return frozen
 
 # BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): pinned by sha256
 BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".grype.yaml", ".ko.yaml", ".githooks/*")
@@ -444,7 +388,7 @@ def release_calls(f, rel, bad):
             if jn not in SIGN_JOBS or not c[1]: calls.append(c)
     return calls
 
-def direct_signers(base, files, frozen, allowed, bad):
+def direct_signers(base, files, allowed, bad):
     """001-AC1: "no other workflow, composite action ... signs provenance" (each workflow and composite action matched by the signer table)."""
     wfdir = os.path.join(base, ".github/workflows")
     disc = []
@@ -453,25 +397,25 @@ def direct_signers(base, files, frozen, allowed, bad):
     called, judged = set(), set()
     for f in found:
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
-        if os.path.relpath(f, base) in frozen: continue
         judged.add(rel)
         for e, pv, line in (release_calls(f, rel, bad) if rel == "release.yml" else signer_calls(open(f).read()) + decoded_signer_calls(f, rel, bad)):
             called.add((rel, e["name"]))
             if pv: bad.append("AC1: %s signs provenance (%s: %s); only the jobs %s of release.yml may" % (rel, e["name"], line[:80], ", ".join(SIGN_JOBS)))
             elif e["name"] not in allowed.get(rel, set()): bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
     # rc-2 signing review R5: a listed signer must be one the tree can use: its file exists, and a file this judge reads makes that call
-    # (a pre-authorisation of a signer that must never return is the opposite of the allowlist; the legacy frozen files are not read, so their rows are not judged)
+    # (a pre-authorisation of a signer that must never return is the opposite of the allowlist)
     for rel, tools in sorted(allowed.items()):
-        # a row must name a file this judge READS, spelled the one way it keys it (a workflow by its bare name, any other judged file by its path from the root); a legacy
-        # frozen file is not read, so its row is not judged either way. A path alias, a directory, a file the judge never reads (not YAML, or stage-sign.yml itself) or a
+        # a row must name a file this judge READS, spelled the one way it keys it (a workflow by its bare
+        # name, any other judged file by its path from the root). A path alias, a directory, a file the judge
+        # never reads (not YAML, or stage-sign.yml itself) or a
         # different case on a case-insensitive disk would otherwise skip the unused-row check below (Codex astra on #638)
         rs = str(rel)
-        if rs not in judged and rs not in frozen and (".github/workflows/" + rs) not in frozen:
+        if rs not in judged:
             bad.append("AC1: chain-signers.json lists %s, which is not a file this judge reads (a workflow is named by its bare name, any other file by its path from the root; remove the row)" % rel); continue
         if rel in judged:
             bad += ["AC1: chain-signers.json lists %r for %s, but that file makes no such call (remove the row)" % (t, rel) for t in sorted(tools, key=str) if (rel, t) not in called]
 
-def stage_grammars(base, files, frozen, rows, envn, bad):
+def stage_grammars(base, files, rows, envn, bad):
     """001-AC1: "every chain job of release.yml is judged over a closed set of keys" (keys, env names, uses, run lines). Returns what each stage runs.
     The one release file is release.yml. A fixture tree may keep its chain-job fixtures in stage-*.yml files (the real tree has none: AC1 below refuses one):
     their jobs are judged as chain jobs of release.yml, the file the grammar knows."""
@@ -483,14 +427,14 @@ def stage_grammars(base, files, frozen, rows, envn, bad):
         try: d = yload(open(f).read()) or {}
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
         if rel == "release.yml": docs[rel], path = d, os.path.relpath(f, base)
-        elif os.path.relpath(f, base) not in frozen: fixture_jobs.update(d.get("jobs") or {}); fixture_keys.update({k: v for k, v in d.items() if k != "jobs"})
+        else: fixture_jobs.update(d.get("jobs") or {}); fixture_keys.update({k: v for k, v in d.items() if k != "jobs"})
     if fixture_jobs and "release.yml" not in docs:
         docs["release.yml"], path = {"jobs": {}}, ".github/workflows/release.yml"
     for rel, d in docs.items():
         d = dict(fixture_keys, **dict(d, jobs=dict(d.get("jobs") or {}, **fixture_jobs)))
         e, r = _cts.stage_grammar(rel, d, rows, envn, path)
-        if path not in frozen: bad += ["AC1 grammar: " + x for x in e]
-        ran[rel] = set(r)                      # the LISTED scripts a frozen file runs are still followed (unlisted ones are never scanned)
+        bad += ["AC1 grammar: " + x for x in e]
+        ran[rel] = set(r)
     return ran
 
 def listed_scripts(base, rows, ran, bad):
@@ -518,24 +462,23 @@ def listed_scripts(base, rows, ran, bad):
 
 def judge_tree(base):
     """REQ-CHAIN-001-AC1 over a tree, one function per clause, plus the closed lists that keep the rule from being a text scan:
-    frozen legacy files (legacy-stage-files.json), pinned build configuration (build-config-files.json), the jobs that may hold
+    pinned build configuration (build-config-files.json), the jobs that may hold
     id-token: write (id-token-jobs.json), the signer table with chain-signers.json, and the stage grammar over chain-scripts.json."""
     bad = []
     bad_utf8 = _cts.non_utf8_yaml(base)         # final batch R-f: a file that is not UTF-8 is named and the judge stops (never a traceback)
     if bad_utf8: return ["AC1: %s is not valid UTF-8 (it cannot be read, so it cannot be judged)" % x for x in bad_utf8]
     wfdir = os.path.join(base, ".github/workflows")
     files = sorted(glob.glob(wfdir + "/*.yml") + glob.glob(wfdir + "/*.yaml"))
-    frozen = frozen_files(base, bad)          # their OWN findings are left out; the listed scripts they run are still followed
     only_new_workflow(files, bad)
-    direct_signers(base, files, frozen, listed_signers(base, bad), bad)
+    direct_signers(base, files, listed_signers(base, bad), bad)
     build_config(base, bad)
     stdlib_shadows(base, bad)
     compiled_code(base, bad)
     merge_keys(base, files, bad)
-    id_token_jobs(base, files, bad)           # every workflow, frozen ones included (their jobs are listed)
+    id_token_jobs(base, files, bad)
     rows, errs, envn = _cts.load_scripts(base)
     bad += ["AC1: " + e for e in errs]
-    listed_scripts(base, rows, stage_grammars(base, files, frozen, rows, envn, bad), bad)
+    listed_scripts(base, rows, stage_grammars(base, files, rows, envn, bad), bad)
     return bad
 
 SIGN_GUARD = "inputs.mode!='snapshot'&&github.event_name=='push'&&startsWith(github.ref,'refs/tags/v')&&startsWith(github.workflow_ref,format('{0}/.github/workflows/release.yml@',github.repository))"
@@ -893,11 +836,11 @@ EOF
 mutate() {
   python3 - "$good" "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml" "$2" "$3" <<'PY' || { failn=$((failn + 1)); echo "FAIL mutation $1 did not apply to the fixture"; return 1; }
 import re, sys
-t = open(sys.argv[1]).read()
+t = open(sys.argv[1], encoding="utf-8").read()
 rep = sys.argv[4].replace("\\n", "\n").replace("\\t", "\t")
 n = re.sub(sys.argv[3], (lambda m: m.expand(rep)) if re.search(r"\\[1-9]", rep) else (lambda m: rep), t, count=1, flags=re.S)      # \1 in the replacement is the pattern's group
 if n == t: sys.exit(1)
-open(sys.argv[2], "w").write(n)
+open(sys.argv[2], "w", encoding="utf-8").write(n)
 PY
 }
 caught() { # LABEL regex replacement
@@ -989,9 +932,11 @@ FXD_46=${FXD_46//@@SIGNLINE@@/$SIGNLINE}
 caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "$FXD_46"
 caught "AC1 a job with two permissions: keys (the second the benign one)" '    permissions:\n      contents: read\n      id-token: write' '    permissions: write-all\n    permissions:\n      contents: read\n      id-token: write'
 caught "AC1 two top-level permissions: keys (the second the benign one)" 'permissions:\n  contents: read\njobs' "permissions: write-all\npermissions:\n  contents: read\njobs"
-caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
-caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh aws-cli' 'run: '$'\u00a0''bash bin/install-scanner.sh aws-cli'
-caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE"$'\u200b'
+# UTF-8 bytes, not $'\u...': bash leaves \u as text under LC_ALL=C
+NBSP=$(printf '\xc2\xa0'); ZWSP=$(printf '\xe2\x80\x8b')
+caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE$NBSP"
+caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh aws-cli' "run: ${NBSP}bash bin/install-scanner.sh aws-cli"
+caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE$ZWSP"
 okmut() { if mutate "$1" "$2" "$3"; then expect ok "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi; }
 caught "AC1 Sign judge: runs-on ubuntu-. is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.'
 caught "AC1 Sign judge: runs-on ubuntu-24..04 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-24..04'
@@ -1111,6 +1056,50 @@ for j in release build-apk persona-uat-rc; do
   printf '%s\n' "jobs:" "  $j:" "    runs-on: ubuntu-24.04" "    environment: sign" "    steps:" "$SIGNSTEP" > "$work/build-notsign-$j.yml"
   expect caught "002-AC4 the $j job signs in the environment sign (only Sign's four jobs may)" build "$work/build-notsign-$j.yml"
 done
+# 002-AC4: the one binding a signing step may take: GH_TOKEN with the run token, on job apk's apk step
+bfix() {  # bfix FILE JOB STEP-NAME ENV-LINE... : one job whose one step runs bin/witnessed-local.sh with that env
+  local f=$1 job=$2 step=$3; shift 3
+  printf '%s\n' "jobs:" "  $job:" "    runs-on: ubuntu-24.04" "    steps:" "      - name: $step" "        env:" > "$f"
+  printf '          %s\n' "$@" >> "$f"
+  printf '%s\n' "        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh" >> "$f"
+}
+TOK='GH_TOKEN: ${{ github.token }}'
+bfix "$work/tok-ok.yml" apk "apk under Witness" "$TOK"
+expect ok "002-AC4 the one allowed binding, on the apk step of job apk" build "$work/tok-ok.yml"
+bfix "$work/tok-name.yml" apk "apk under Witness" 'OTHER: ${{ github.token }}'
+expect caught "002-AC4 the job token under another env name" build "$work/tok-name.yml"
+bfix "$work/tok-secret.yml" apk "apk under Witness" 'GH_TOKEN: ${{ secrets.X }}'
+expect caught "002-AC4 GH_TOKEN carrying a secret" build "$work/tok-secret.yml"
+bfix "$work/tok-literal.yml" apk "apk under Witness" 'GH_TOKEN: not-the-run-token'
+expect caught "002-AC4 GH_TOKEN with a literal value" build "$work/tok-literal.yml"
+bfix "$work/tok-gh-secret.yml" apk "apk under Witness" 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
+expect caught "002-AC4 GH_TOKEN with secrets.GITHUB_TOKEN" build "$work/tok-gh-secret.yml"
+bfix "$work/tok-step.yml" apk "snapshot-apk under Witness" "$TOK"
+expect caught "002-AC4 the binding on another step of job apk" build "$work/tok-step.yml"
+bfix "$work/tok-job.yml" other "apk under Witness" "$TOK"
+expect caught "002-AC4 the binding in a job not named apk" build "$work/tok-job.yml"
+{ printf '%s\n' "jobs:" "  apk:" "    runs-on: ubuntu-24.04" "    env:" "      $TOK" "    steps:"
+  printf '%s\n' "      - name: apk under Witness" "        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh"
+} > "$work/tok-jobenv.yml"
+expect caught "002-AC4 the binding in the job-level env of apk" build "$work/tok-jobenv.yml"
+{ printf '%s\n' "env:" "  $TOK"; cat "$work/tok-ok.yml"; } > "$work/tok-wfenv.yml"
+expect caught "002-AC4 the binding in the workflow-level env" build "$work/tok-wfenv.yml"
+bfix "$work/tok-two.yml" apk "apk under Witness" "$TOK" 'K: ${{ secrets.KEY }}'
+expect caught "002-AC4 the allowed binding plus a second env name with a secret" build "$work/tok-two.yml"
+# the allowance is for one step: the real apk command, named once; another command or a repeated name is refused
+RUN_APK='bash bin/witnessed-local.sh apk bin/build-stage-apk.sh'
+run_fix() {  # run_fix FILE RUN : tok-ok.yml with its run command replaced
+  # the regex drops "        run: bash x" (a step's run line) and keeps "          run: bash x" (nested deeper)
+  grep -v '^        run: ' "$work/tok-ok.yml" > "$1"; printf '%s\n' "        run: $2" >> "$1"
+}
+run_fix "$work/tok-snapshot-run.yml" 'bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh'
+expect caught "002-AC4 the binding on the apk step name with a snapshot command" build "$work/tok-snapshot-run.yml"
+run_fix "$work/tok-cosign-run.yml" 'cosign sign --yes img'
+expect caught "002-AC4 the binding on the apk step name with a cosign sign command" build "$work/tok-cosign-run.yml"
+{ cat "$work/tok-ok.yml"
+  printf '%s\n' "      - name: apk under Witness" "        env:" "          $TOK" "        run: $RUN_APK"
+} > "$work/tok-twice.yml"
+expect caught "002-AC4 the binding on two steps both named apk under Witness" build "$work/tok-twice.yml"
 # 001-AC1 (advisor decision, Oct 9, replaces the script-reach scan): the tree judge on fixture trees. A stage file may only run what
 # .github/policy/chain-scripts.json lists (path + sha256); a listed script may use only its tools and start only its `runs`.
 gen() { judge gen "$1" > /dev/null; }
@@ -3059,20 +3048,30 @@ expect caught "003-AC5 a step-level reference to a stage file" calls "$d"
 # parallel may write to (bin/__pycache__).
 tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .github/ and bin/ of REPO (default: the real tree)
   local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
-  # .github/ and bin/, plus the build configuration the build tooling reads outside them (pinned in .github/policy/build-config-files.json)
-  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .grype.yaml .ko.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+  # .github/ and bin/, the build configuration outside them (pinned in .github/policy/build-config-files.json) and every
+  # tracked YAML file anywhere: the judge reads each one to see whether it is a workflow or an action
+  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore build .githooks \
+      ':(icase,glob)**/*.yml' ':(icase,glob)**/*.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"
+  echo "$d"
+}
 # a tracked file deleted in the working tree would make the copy silently partial: fail clearly instead (CI checks out every tracked file)
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 REAL=$(tracked_copy real)
 expect ok "the real release.yml's signing steps take nothing from a secret (002-AC4: the Build jobs sign with the throwaway key, no stored credential)" build "$REAL/.github/workflows/release.yml"
+# Build's signer is bin/witnessed-local.sh: a step that runs it is judged, so a secret on that step is caught
+bsign="    runs-on: ubuntu-24.04\n    steps:\n      - name: build under Witness\n"
+printf 'jobs:\n  b:\n%b        run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh\n' \
+  "$bsign" > "$work/build-clean.yml"
+printf 'jobs:\n  b:\n%b        env:\n          K: ${{ secrets.SOME_KEY }}\n'\
+'        run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh\n' \
+  "$bsign" > "$work/build-secret.yml"
+expect ok "002-AC4 a step that runs bin/witnessed-local.sh with no secret passes the Build judge" \
+  build "$work/build-clean.yml"
+expect caught "002-AC4 a secret on the step that runs bin/witnessed-local.sh" build "$work/build-secret.yml"
 expect ok "the real tree: only scan.yml and main-candidate-rescan.yml call release.yml, in snapshot mode; no stage file is called; every sign job and release carries the guard (003-AC5)" calls "$REAL"
-# FROZEN LEGACY FILES (REQ-CHAIN-003 notes): the eleven legacy stage files PRs 2-4 rewrite on chain-v030 are listed with the sha256 of their
-# bytes in .github/policy/legacy-stage-files.json; the tree judge leaves out the findings OF a listed file whose bytes match (it still reads
-# them to see which scripts they run), and judges everything else in full. So the real tree is an ordinary `expect ok`. A file whose bytes
-# differ is judged in full; when the last legacy file is rewritten, deleting the list leaves this same case judging the whole tree.
 label="the real tree: only customer-words-edited.yml and persona-uat.yml are new and only the sign jobs of release.yml sign provenance"
-expect ok "$label (the eleven frozen legacy stage files left out by sha256)" tree "$REAL"
+expect ok "$label" tree "$REAL"
 # every probe is a copy of the real tree with ONE change; the tree judge must fail it and name the changed file
 SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
 probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the copy)
@@ -3099,8 +3098,9 @@ probe vendorbytes vendor-provenance.py "an edit of bin/vendor-provenance.py with
 probe vendorruns "bin/vendor-provenance.py: " "bin/vendor-provenance.py starting another program it does not list (the row says it runs none)" \
   "printf '\nimport subprocess\nsubprocess.run([\"bash\", \"bin/sneak.sh\"])\n' >> bin/vendor-provenance.py; printf 'echo x\n' > bin/sneak.sh; rehash bin/vendor-provenance.py"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
-# a LISTED script that a frozen file runs, turned into a provenance signer with its row and sha256 updated
-probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
+# a LISTED script that a stage file runs, turned into a provenance signer with its row and sha256 updated
+probe hoststep bin/chain-hostile-step.sh \
+  "bin/chain-hostile-step.sh (run by stage-build.yml) made a provenance signer, its row and sha256 updated" \
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
 # Opus r4 B1 (second belt): a file in bin/ named after a standard-library module would shadow it for any script run from bin/ without -I
 probe stdjson   "bin/json.py" "a new bin/json.py that signs on import" "printf 'import os\nos.system(\"cosign attest-blob --yes --type slsaprovenance --predicate p.json x\")\n' > bin/json.py"
@@ -3330,6 +3330,10 @@ G=grep; printf 'x | %s --quiet y\n' "$G" > "$work/qp1.sh"; printf 'printf x \\\n
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
+mkdir -p "$g/docs"; printf 'key: value\n' > "$g/docs/ordinary.yaml"; ( cd "$g" && git add docs/ordinary.yaml )
+if [ -f "$(tracked_copy ordinary "$g")/docs/ordinary.yaml" ]; then
+  pass=$((pass + 1)); echo "ok   001-AC1 an ordinary tracked YAML file is in the tracked copy"
+else failn=$((failn + 1)); echo "FAIL 001-AC1 an ordinary tracked YAML file is missing from the tracked copy"; fi
 # (Codex #249 r6 R8; PR 2: admission is the first step of Build's first job, so the tag guard is that job's own gate G) every release.yml job after build-freeze up to release that
 # is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build-freeze, which carries the gate G (a v* tag PUSH, a dry run, or the snapshot mode), directly or through
 # its needs. check-govulncheck builds govulncheck from the committed module for the Check job: it needs nothing of Build, and it holds no credential (contents read only, no environment,
@@ -3569,7 +3573,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='487db5a945dee0249fb321c36f7cec362f150e19ffec5bd1a982312d023cfa6d'
+FX_PIN='ad7b978ed4ff59e6c505cc25b18ca7393265bfc417bf0e3193ae084cbcb88f87'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -5302,9 +5306,7 @@ hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
 # ---- F4 (cache#586 round 1): witness-sign-staged.sh signs exactly the list the records step printed, and refuses anything else ----
 # A stub verifier (it holds the one signing function, sign-record) records what it is asked to sign; a stub token fetcher stands in for the network.
-wsdir="$work/wsst"; mkdir -p "$wsdir/fakebin"
-printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "$WS_LOG.args"\nwhile [ $# -gt 0 ]; do case "$1" in -f) echo "$2" >> "$WS_LOG" ;; -o) o="$2" ;; esac; shift; done\nmkdir -p "$(dirname "$o")"; echo signed > "$o"\n' > "$wsdir/fakebin/witness"
-chmod +x "$wsdir/fakebin/witness"
+wsdir="$work/wsst"; mkdir -p "$wsdir"
 ws_tree() { # NAME -> a fresh tree with the helper, stubs and a two-record staged set; prints the path
   local t="$wsdir/$1"; mkdir -p "$t/bin" "$t/staged/witness-build" "$t/staged/witness-apk-ubuntu-24.04"
   cp "$root/bin/witness-sign-staged.sh" "$root/bin/with-aws-token.sh" "$t/bin/"
@@ -5319,6 +5321,10 @@ if a[:1] == ["sign-record"]:      # the one signing function: log the payload it
     open(o, "w").write("signed\n")
 if a[:2] == ["policy", "make"]:
     open(a[a.index("--out") + 1], "w").write("{}")
+# the self-check: log the record it is handed; a file named verify-fails makes it refuse
+if a[:1] == ["verify"]:
+    open(os.environ["WS_LOG"] + ".verify", "a").write(a[a.index("--record") + 1] + "\n")
+    sys.exit(1 if os.path.exists("verify-fails") else 0)
 PYSTUB
   echo '{}' > "$t/staged/witness-build/build-collection.payload"; echo '{}' > "$t/staged/witness-build/digests.json"
   echo '{}' > "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"
@@ -5328,11 +5334,23 @@ PYSTUB
 }
 ws_run() { # TREE -> exit code; the signed list lands in TREE/log
   mkdir -p "$1/rt"
-  ( cd "$1" && rm -f log log.args && env -i PATH="$wsdir/fakebin:$PATH" WS_LOG="$1/log" GITHUB_REF=refs/tags/v0.3.0-rc1 ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL=http://x/?a=b RUNNER_TEMP="$1/rt" AWS_ROLE_ARN=arn:aws:iam::111122223333:role/release-signing AWS_REGION=us-east-1 RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing bash bin/witness-sign-staged.sh staged signed ) > "$1/out" 2>&1
+  ( cd "$1" && rm -f log log.verify && env -i PATH="$PATH" WS_LOG="$1/log" GITHUB_REF=refs/tags/v0.3.0-rc1 \
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL=http://x/?a=b RUNNER_TEMP="$1/rt" \
+      AWS_ROLE_ARN=arn:aws:iam::111122223333:role/release-signing AWS_REGION=us-east-1 \
+      RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing \
+      bash bin/witness-sign-staged.sh staged signed ) > "$1/out" 2>&1
 }
 wsok() { # LABEL TREE: signs exactly the two planned payloads
   local rc=0; ws_run "$2" || rc=$?
-  if [ "$rc" = 0 ] && [ "$(sort "$2/log" | tr '\n' ' ')" = "staged/witness-apk-ubuntu-24.04/apk-collection.payload staged/witness-build/build-collection.payload " ] && [ -f "$2/signed/witness-build/digests.json" ]; then pass=$((pass + 1)); echo "ok   $1"
+  local want_log="staged/witness-apk-ubuntu-24.04/apk-collection.payload "
+  want_log+="staged/witness-build/build-collection.payload "
+  local want_ver="signed/witness-apk-ubuntu-24.04/apk-collection.json "
+  want_ver+="signed/witness-build/build-collection.json "
+  if [ "$rc" = 0 ] \
+     && [ "$(sort "$2/log" | tr '\n' ' ')" = "$want_log" ] \
+     && [ "$(sort "$2/log.verify" | tr '\n' ' ')" = "$want_ver" ] \
+     && [ -f "$2/signed/witness-build/digests.json" ]; then
+    pass=$((pass + 1)); echo "ok   $1"
   else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc signed=[$(cat "$2/log" 2>/dev/null | tr '\n' ' ')] $(head -c 300 "$2/out")"; fi
 }
 wsno() { # LABEL TREE: refused (non-zero) and the fake witness was never asked to sign anything
@@ -5340,7 +5358,17 @@ wsno() { # LABEL TREE: refused (non-zero) and the fake witness was never asked t
   if [ "$rc" != 0 ] && [ ! -s "$2/log" ]; then pass=$((pass + 1)); echo "ok   $1 (refused: $(head -c 120 "$2/out" | tr '\n' ' '))"
   else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc signed=[$(cat "$2/log" 2>/dev/null | tr '\n' ' ')]"; fi
 }
-t=$(ws_tree good); wsok "F4 the helper signs exactly the planned payloads and copies the data files" "$t"
+t=$(ws_tree good)
+wsok "F4 the helper signs exactly the planned payloads, copies the data files and verifies each signed record once" "$t"
+t=$(ws_tree verifyfail); touch "$t/verify-fails"; rc=0; ws_run "$t" || rc=$?
+if [ "$rc" != 0 ] && [ "$(wc -l < "$t/log")" = 1 ] && [ "$(wc -l < "$t/log.verify")" = 1 ]; then
+  pass=$((pass + 1))
+  echo "ok   F4 a failed verify stops the helper: non-zero exit, no record signed after it"
+else
+  failn=$((failn + 1))
+  echo "FAIL F4 a failed verify did not stop the helper: rc=$rc signed=[$(tr '\n' ' ' < "$t/log")]" \
+    "verified=[$(tr '\n' ' ' < "$t/log.verify")]"
+fi
 t=$(ws_tree extra); echo '{}' > "$t/staged/witness-build/evil-collection.payload"; wsno "F4 a staged payload that is not on the plan is refused before any signing" "$t"
 t=$(ws_tree emptydir); mkdir -p "$t/staged/witness-evil"; wsno "F4 an unplanned EMPTY record directory is refused" "$t"
 t=$(ws_tree hiddenroot); echo x > "$t/staged/.hidden"; wsno "F4 a hidden entry in the staged root is refused" "$t"
@@ -5361,9 +5389,11 @@ else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $
 
 # ---- KA-2 p4 group 3 (ruling of 2026-11-03T14:05Z, Q3): bin/with-aws-token.sh adds `--aws "$RUNNER_TEMP/aws-cli/aws" --public-key build/keys/release.rsa.pub` to sign and sign-record only (literal), and
 # REFUSES (exit 2, before the token is fetched and before any call) a caller that already passes --aws or --public-key to either. A stub verifier records its argv; the stage judge is not loosened.
-wr_run() { # WRAPPER-FILE ARGS... : runs the wrapper in a throw-away tree with a stub verifier; sets WR_RC, WR_ARGV (what the verifier was called with), WR_OUT, WR_RT (its RUNNER_TEMP)
+# WRAPPER-FILE ARGS... : runs the wrapper in a throw-away tree with a stub verifier; sets WR_RC, WR_FETCHES (token
+# fetches), WR_ARGV (what the verifier was called with), WR_OUT, WR_RT (its RUNNER_TEMP)
+wr_run() {
   local d="$wsdir/wr-$RANDOM$RANDOM"; mkdir -p "$d/bin" "$d/rt"; cp "$1" "$d/bin/with-aws-token.sh"; shift
-  echo "echo '{\"value\":\"tok\"}'" > "$d/bin/loopback-get.sh"
+  echo "echo fetch >> fetches; echo '{\"value\":\"tok\"}'" > "$d/bin/loopback-get.sh"
   cat > "$d/bin/chain-verify.py" <<'WRSTUB'
 import os, sys
 open(os.environ["WR_LOG"], "a").write(" ".join(sys.argv[1:]) + "\n")
@@ -5371,12 +5401,17 @@ WRSTUB
   WR_RC=0; WR_RT="$d/rt"
   ( cd "$d" && env -i PATH="$PATH" WR_LOG="$d/argv" RUNNER_TEMP="$d/rt" ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL='http://x/?a=b' AWS_ROLE_ARN=arn:aws:iam::111122223333:role/release-signing \
       AWS_REGION=us-east-1 RELEASE_KMS_KEY_REF=awskms:///alias/fosterstack-release-signing bash bin/with-aws-token.sh "$@" > "$d/out" 2>&1 ) || WR_RC=$?
-  WR_ARGV=$(cat "$d/argv" 2> /dev/null || true); WR_OUT=$(cat "$d/out" 2> /dev/null || true)
+  WR_FETCHES=$(cat "$d/fetches" 2> /dev/null | wc -l)
+  WR_ARGV=$(cat "$d/argv" 2> /dev/null || true)
+  WR_OUT=$(cat "$d/out" 2> /dev/null || true)
 }
 wr_battery() { # WRAPPER-FILE : prints one "name rc-ok" line per case: the six behaviours of the wrapper (the caller counts the failures)
   local w=$1 opts bad=0
   wr_run "$w" sign-record --payload p --out o --template t; opts="--aws $WR_RT/aws-cli/aws --public-key build/keys/release.rsa.pub"
-  [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "sign-record --payload p --out o --template t $opts" ] || { echo "sign-record is not called with the two options appended exactly once: rc=$WR_RC [$WR_ARGV]"; bad=1; }
+  [ "$WR_RC" = 0 ] && [ "$WR_FETCHES" = 1 ] \
+    && [ "$WR_ARGV" = "sign-record --payload p --out o --template t $opts" ] \
+    || { echo "sign-record is not called with the two options appended exactly once: rc=$WR_RC [$WR_ARGV]"
+         bad=1; }
   wr_run "$w" sign --check --signer cosign; opts="--aws $WR_RT/aws-cli/aws --public-key build/keys/release.rsa.pub"
   [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "sign --check --signer cosign $opts" ] || { echo "sign is not called with the two options appended exactly once: rc=$WR_RC [$WR_ARGV]"; bad=1; }
   wr_run "$w" kms-sign --digest abc
@@ -5384,9 +5419,15 @@ wr_battery() { # WRAPPER-FILE : prints one "name rc-ok" line per case: the six b
   wr_run "$w" kms-sign --aws /own/aws --public-key own.pub
   [ "$WR_RC" = 0 ] && [ "$WR_ARGV" = "kms-sign --aws /own/aws --public-key own.pub" ] || { echo "kms-sign is refused its own --aws or --public-key: rc=$WR_RC [$WR_ARGV]"; bad=1; }
   wr_run "$w" sign-record --payload p --aws /own/aws --out o
-  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && grep -q -e '--aws' <<< "$WR_OUT" || { echo "a caller-passed --aws to sign-record is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
+  [ "$WR_RC" = 2 ] && [ "$WR_FETCHES" = 0 ] && [ -z "$WR_ARGV" ] && grep -q -e '--aws' <<< "$WR_OUT" \
+    || { echo "a caller-passed --aws to sign-record is not refused with exit 2 before any call:" \
+              "rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"
+         bad=1; }
   wr_run "$w" sign --check --public-key=own.pub
-  [ "$WR_RC" = 2 ] && [ -z "$WR_ARGV" ] && grep -q -e '--public-key' <<< "$WR_OUT" || { echo "a caller-passed --public-key=... to sign is not refused with exit 2 before any call: rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"; bad=1; }
+  [ "$WR_RC" = 2 ] && [ "$WR_FETCHES" = 0 ] && [ -z "$WR_ARGV" ] && grep -q -e '--public-key' <<< "$WR_OUT" \
+    || { echo "a caller-passed --public-key=... to sign is not refused with exit 2 before any call:" \
+              "rc=$WR_RC [$WR_ARGV] $(echo "$WR_OUT" | head -c 120)"
+         bad=1; }
   return $bad
 }
 wr_msg=$(wr_battery "$root/bin/with-aws-token.sh") && wr_rc=0 || wr_rc=$?
@@ -5400,9 +5441,11 @@ wr_mutant() { # LABEL SED-EXPRESSION : the wrapper with one change must fail the
 }
 wr_mutant "the wrapper drops --aws" 's#--aws "\$RUNNER_TEMP/aws-cli/aws" ##'
 wr_mutant "the wrapper appends for a third subcommand (kms-sign)" 's/sign-record|sign) extra=/sign-record|sign|kms-sign) extra=/'
+wr_mutant "the token is fetched before a caller's option is refused" \
+  's#^case "\${1:-}" in sign-record|sign|kms-sign) ;;#sh bin/loopback-get.sh\n&#'
 wr_mutant "a caller-passed --aws is accepted" 's/--aws|--aws=\*|--public-key|--public-key=\*)/--no-such-flag)/'
 
-EXPECT=2271
+EXPECT=2289
 if [ -e "$work/judge-dead" ]; then
   failn=$((failn + 1))
   echo "FAIL the persistent judge died, was silent or leaked state between cases (see the line above)"

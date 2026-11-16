@@ -3,7 +3,7 @@
     "The base inputs of the image (rules 61 and 62; advisor Oct 12): there is no base image and no image recipe file; apko assembles the image from committed locks.",
     "A file listed here is a base input of the image, not a pinned item: pin-age-check.py reads this list and does not count it as one. The names are cache-ce's: the apko base lock of each",
     "variant, the melange lock, the Wolfi archive key and index records, and the fips module record. The recipes (build/apko*.yaml, build/melange*.yaml) declare the",
-    "build and are build inputs, not base signals. A path listed here that is not on main yet is the cache lane's to land (known-red entry KR-BASE-LOCKS)."
+    "build and are build inputs, not base signals."
   ],
   "base_inputs": [
     "build/locks/apko.base.lock.json",
@@ -11,7 +11,6 @@
     "build/locks/melange.lock",
     "build/locks/archive-keys.sha256",
     "build/locks/archive-index.sha256",
-    "build/locks/fips-module.txt",
-    ".github/policy/gradle-wrapper-jar-sha256.txt"
+    "build/locks/fips-module.txt"
   ]
 }

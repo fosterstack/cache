@@ -87,3 +87,5 @@ unmapped:
     reason: "the file_pins rows were removed with the age hold (owner, Nov 11 2026); no test declares the reworded criterion"
   - ac: REQ-SUP-001-AC35
     reason: "the test file no longer declares this criterion after the age check was removed (owner, Nov 11 2026); no test proves it"
+  - ac: REQ-REL-010-AC5
+    reason: "no test proves it yet: the automatic VEX patch release is decided in release.yml decide, which the section 1 fix removes; section 3 amends the AC to what remains and the test for that text is credited then"
