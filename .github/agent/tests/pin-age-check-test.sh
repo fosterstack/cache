@@ -1940,6 +1940,45 @@ have = [(r["file"], r["form"], r["key"], r["line"]) for r in rows]
 assert len(have) == len(set(have)) == len(want) == 20, (len(have), len(set(have)), len(want))
 assert set(have) == want, sorted(set(have) ^ want)
 PY
+CASE="plain-constants: the three ruling constants hold none of the internal words"
+check python3 - "$chk" <<'PY'
+import importlib.util, re, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor\s+reading)\b", re.I)
+bad = {n: WORDS.findall(getattr(ac, n)) for n in ("GO_RULING", "LOOPBACK_RULING", "PINNED_FETCH_RULING")}
+assert not any(bad.values()), bad
+PY
+CASE="plain-rows: committed rows that begin with a constant hold none of the internal words"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, re, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor\s+reading)\b", re.I)
+consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
+rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
+assert rows
+bad = [(r["file"], r["line"][:12], WORDS.findall(r["ruling"])) for r in rows if WORDS.search(r["ruling"])]
+assert not bad, bad
+PY
+CASE="plain-count: 21 committed rows begin with the three constants together"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
+rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
+assert len(rows) == 21, len(rows)
+PY
+CASE="plain-old-prefixes: no committed row begins with an old prefix"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
+import json, sys
+OLD = ("pinned toolchain fetch, advisor reading Oct 16", "loopback fetch, advisor reading Oct 17",
+       "pinned fetch, advisor reading Oct 17")
+rows = json.load(open(sys.argv[1]))["unmeasured_text"]
+rows = [r["line"][:12] for r in rows if r["ruling"].startswith(OLD)]
+assert not rows, rows
+PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
