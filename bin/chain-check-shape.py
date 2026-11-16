@@ -185,7 +185,7 @@ def exact_steps(label, steps, want, what):
 def arm_job(j):
     """REQ-CHAIN-006-AC1 (advisor 0385): the one second job, check-arm64: runs-on the literal ubuntu-24.04-arm, permissions exactly contents read
     only (no identity token), no other key (no if, needs, env, strategy, container), and EXACTLY these steps in this order: a digest-pinned checkout without
-    persisted credentials, the checksum-pinned Witness install, the digest-pinned downloads of witness-build, digests (into witness-build), dist and images, the one
+    persisted credentials, the checksum-pinned Witness install, the checksum-pinned Go install (check-artifacts.sh calls go), the digest-pinned downloads of witness-build, digests (into witness-build), dist and images, the one
     witnessed step `bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh`, and the digest-pinned upload of witness-check-arm64 carrying witness-arm64."""
     bad = []
     if not isinstance(j, dict):
@@ -197,9 +197,9 @@ def arm_job(j):
     if j.get("permissions") != {"contents": "read"}:
         bad.append("check-arm64 permissions must be exactly contents read (no identity token: its record is made with the local helper and signed by Sign; REQ-REL-011-AC1): %s" % j.get("permissions"))
     steps = j.get("steps") or []
-    want = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("down", x) for x in ARM_DOWNLOADS] + \
+    want = [("checkout", None), ("run", "bash bin/install-scanner.sh witness"), ("run", GO_INSTALL)] + [("down", x) for x in ARM_DOWNLOADS] + \
            [("run", "bash bin/witnessed-local.sh %s %s" % (ARM_STEP, ARM_TARGET)), ("rec", "records-arm64"), ("up", ("witness-check-arm64", "witness-arm64")), ("up", ("check-results-arm64", "check-results"))]
-    bad += exact_steps("check-arm64", steps, want, "checkout, Witness install, five downloads, the arm64 witnessed step, the records output step, the two uploads")
+    bad += exact_steps("check-arm64", steps, want, "checkout, Witness install, Go install, five downloads, the arm64 witnessed step, the records output step, the two uploads")
     if j.get("outputs") != {"records-arm64": "${{ steps.records-arm64.outputs.records-arm64 }}"}:
         bad.append("check-arm64 must expose exactly the output records-arm64 from its records-arm64 step: %s" % j.get("outputs"))
     return bad
