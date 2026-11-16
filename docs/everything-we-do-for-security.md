@@ -57,8 +57,8 @@ vulnerability); this page is what we do.
 - **The Go toolchain stays on the newest patch of a supported minor.** A daily job
   proposes the bump when a newer supported release exists
   ([freshness job](../.github/workflows/go-freshness.yml)).
-- **Go vulnerability analysis on every change.** `govulncheck` runs on every pull
-  request and push; `gosec` and CodeQL read the code ([CI](../.github/workflows/ci.yml),
+- **Go vulnerability analysis and code scanning.** `govulncheck` runs on every pull
+  request and push; CodeQL reads the code on every pull request ([CI](../.github/workflows/ci.yml),
   [CodeQL](../.github/workflows/codeql.yml)).
 - **Posture is measured in public.** OpenSSF Scorecard runs weekly and its badge is
   on the README ([Scorecard](../.github/workflows/scorecard.yml)).
@@ -112,7 +112,7 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
   and the digests must be equal ([reproducibility stage](../.github/workflows/stage-reproducibility.yml)).
 - **A FIPS variant.** A `-fips` build uses Go's FIPS 140-3 validated cryptographic
   module, announces itself at startup, and the whole test suite runs in
-  `fips140=only` mode on every commit ([SECURITY.md](../SECURITY.md#approved-only-cryptography)).
+  `fips140=only` mode on every pull request ([SECURITY.md](../SECURITY.md#approved-only-cryptography)).
 - **Approved-only cryptography is checked by lint too.** A lint rule denies the
   third-party cryptographic packages we name, such as `golang.org/x/crypto`, so code
   reaches for the validated module instead ([`.golangci.yml`](../.golangci.yml)).
@@ -123,7 +123,7 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
   the repository, each scanner blocks at every severity including unknown, and
   nothing hard-codes a name or a count ([scanner list](../.github/policy/scanners.json),
   [SECURITY.md](../SECURITY.md#nothing-ships-with-a-known-cve)).
-- **Scanned on every pull request.** The pull request gate builds the same image the
+- **Scanned on every pull request.** The scan builds the same image the
   release would ship and scans it ([scan workflow](../.github/workflows/scan.yml)).
 - **Four scanners, every day.** The daily rescan builds main's candidate and scans
   it with four independent scanners, Grype, Docker Scout, Amazon Inspector and
