@@ -58,7 +58,7 @@ vulnerability); this page is what we do.
   proposes the bump when a newer supported release exists
   ([freshness job](../.github/workflows/go-freshness.yml)).
 - **Go vulnerability analysis and code scanning.** `govulncheck` runs on every pull
-  request and push; `gosec` and CodeQL read the code on every pull request ([CI](../.github/workflows/ci.yml),
+  request and push; CodeQL reads the code on every pull request ([CI](../.github/workflows/ci.yml),
   [CodeQL](../.github/workflows/codeql.yml)).
 - **Posture is measured in public.** OpenSSF Scorecard runs weekly and its badge is
   on the README ([Scorecard](../.github/workflows/scorecard.yml)).
