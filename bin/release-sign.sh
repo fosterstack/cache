@@ -14,7 +14,7 @@ case "${RELEASE_TOKEN_FILE:-}" in ?*) ;; *) echo "release-sign: RELEASE_TOKEN_FI
 export AWS_ROLE_ARN="$RELEASE_ROLE_ARN" AWS_WEB_IDENTITY_TOKEN_FILE="$RELEASE_TOKEN_FILE"
 # the reference is one word of plain characters, so nothing else can reach cosign as part of it
 [[ "$RELEASE_KMS_KEY_REF" =~ ^awskms:///[A-Za-z0-9/_+=,.@:-]+$ ]] && [[ ! "$RELEASE_KMS_KEY_REF" =~ ^awskms:///[a]lias/?$ ]] || { echo "release-sign: RELEASE_KMS_KEY_REF is not a KMS key reference" >&2; exit 1; }
-[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
+python3 bin/build-admit.py tag-ok --final "${GITHUB_REF_NAME:-}" || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 # the one key-reference check (bin/chain-verify.py key-ref-check): the job's reference is the release key's, byte for byte, and the key lists RSASSA_PKCS1_V1_5_SHA_256 (the KA-0 guard: cosign signs with the first algorithm the key lists);
 # exit 2 before anything is made or signed (the tag check above runs no tool).
 python3 -I -B bin/chain-verify.py key-ref-check --algorithm-guard --aws "$RUNNER_TEMP/aws-cli/aws" || exit $?
