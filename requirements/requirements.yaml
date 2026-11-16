@@ -3002,6 +3002,12 @@ requirements:
         then: "the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the release manager's plain form for a tool download: exact version and checksum"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC29
+        given: "acceptance.yml run with an image-ref (release-chain mode)"
+        when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
+        then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the release manager's plain form for an image: pinned by digest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
       - id: REQ-SUP-001-AC30
         given: "the repository (workflows, scripts, tests, docs and configuration)"
         when: "it is read"
@@ -3017,7 +3023,7 @@ requirements:
       - id: REQ-SUP-001-AC33
         given: "the workflow supply-chain.yml and the required-check list .github/policy/required-checks.json"
         when: "they are read"
-        then: "the context pin-age stays in the list, and the job named pin-age runs only the pin scan of the moved versions and the advisory report on them (pin-audit.py --report-only), never a measurement of how long a version has been public; no job holds actions: write; dropping the context name is a later change of the ruleset, which is the owner's"
+        then: "the context pin-age stays in the list, and the job named pin-age runs only the pin scan of the moved versions and the advisory report on them (pin-audit.py --report-only), never a measurement of how long a version has been public; no job holds actions: write except release.yml's decide job, which starts the full suite on a head that has no run (REQ-REL-013-AC6); dropping the context name is a later change of the ruleset, which is the owner's"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
