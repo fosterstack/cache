@@ -4,6 +4,8 @@
 # difference and names the image and both digests. Credentials are passed by standard input only. A target version tag that already shows another
 # digest is refused before anything is pushed. Only a final release reaches this step (a release candidate stops after release-verify, REQ-CHAIN-007-AC14):
 # it gets its exact vX.Y.Z tag and also moves the floating tags of REQ-REL-009-AC11 (:X.Y every time, :X and :latest only when this is the highest released version).
+# It pushes only what sign-release signed (REQ-CHAIN-007-AC22): before its first registry login every handed-over signature, with its Rekor entry, is verified against the public
+# release key and the digest it names; after the push the verified signatures and attestations are attached to each digest on both registries.
 set -euo pipefail
 for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN; do
   if [ -z "${!name:-}" ]; then echo "release-publish: $name is unset" >&2; exit 2; fi
@@ -30,6 +32,31 @@ for pair in "production:$prod" "fips:$fips"; do
   python3 bin/release-layout.py "images/$v" "${pair#*:}"
 done
 
+# REQ-CHAIN-007-AC22: sign-release's hand-over, release-evidence/registry/<host>/<hex>.{payload,sig,bundle,attestation.bundle}. Each item is there, carries a Rekor entry, verifies against the
+# public release key, and names the digest about to be pushed (the payload's docker-manifest-digest and its docker-reference host, the attestation's subject), else the step stops
+# here, before any login, naming the item. The transparency log is checked, never turned off.
+key=build/keys/release.rsa.pub
+atype=https://fosterstack.com/attestations/release-manifest/v1
+refuse() { echo "release-publish: $1" >&2; exit 1; }
+for host in ghcr.io docker.io; do
+  for pair in "production:$prod" "fips:$fips"; do
+    v="${pair%%:*}"; hex="${pair#*:sha256:}"
+    base="release-evidence/registry/$host/$hex"
+    for x in payload sig bundle attestation.bundle; do
+      [ -f "$base.$x" ] && [ ! -L "$base.$x" ] || refuse "no signature from sign-release for the $v image $hex on $host: $base.$x is missing"
+    done
+    for x in bundle attestation.bundle; do
+      jq -e '(.verificationMaterial.tlogEntries // []) | length > 0' "$base.$x" > /dev/null || refuse "the $v image $hex on $host: $base.$x has no Rekor entry"
+    done
+    cosign verify-blob --key "$key" --bundle "$base.bundle" "$base.payload" > /dev/null || refuse "the signature of the $v image $hex on $host does not verify ($base.bundle)"
+    jq -e --arg d "sha256:$hex" --arg ref "$host/$repo" '.critical.image["docker-manifest-digest"] == $d and .critical.identity["docker-reference"] == $ref and .critical.type == "cosign container image signature"' "$base.payload" > /dev/null \
+      || refuse "the payload of the $v image $hex on $host does not name the digest and registry about to be pushed ($base.payload)"
+    cosign verify-blob-attestation --key "$key" --bundle "$base.attestation.bundle" --type "$atype" --digest "$hex" --digestAlg sha256 > /dev/null || refuse "the attestation of the $v image $hex on $host does not verify ($base.attestation.bundle)"
+    jq -e --arg h "$hex" --arg n "$host/$repo" --arg t "$atype" '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == $t and (.subject | length) == 1 and .subject[0].digest.sha256 == $h and .subject[0].name == $n' "$base.attestation.bundle" > /dev/null \
+      || refuse "the attestation of the $v image $hex on $host does not name that digest ($base.attestation.bundle)"
+  done
+done
+
 digest_of() {
   local out
   if out=$(crane digest "$1" 2>&1); then printf '%s\n' "$out"
@@ -42,7 +69,9 @@ digest_of() {
 DOCKER_CONFIG=$(mktemp -d)
 [ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || { echo "release-publish: no private credential directory: refusing to log in" >&2; exit 1; }
 export DOCKER_CONFIG
-trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+attach=$(mktemp -d)
+[ -n "$attach" ] && [ -d "$attach" ] || { echo "release-publish: no private directory for the signatures: refusing to log in" >&2; exit 1; }
+trap 'rm -rf "$DOCKER_CONFIG" "$attach"' EXIT
 crane auth login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"
 crane auth login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"
 
@@ -102,6 +131,16 @@ for host in ghcr.io docker.io; do
     crane push "images/${entry%%:*}" "$ref"
     got=$(digest_of "$ref")
     if [ "$got" != "$want" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $want" >&2; exit 1; fi
+  done
+  # the verified signature and attestation of each image go to its digest on this host, the same files verified above: the signature is the one of the verified bundle
+  for pair in "production:$prod" "fips:$fips"; do
+    hex="${pair#*:sha256:}"; base="release-evidence/registry/$host/$hex"
+    jq -j '.messageSignature.signature' "$base.bundle" > "$attach/sig"
+    jq -c '.dsseEnvelope' "$base.attestation.bundle" > "$attach/att"
+    cosign attach signature --payload "$base.payload" --signature "$attach/sig" "$host/$repo@sha256:$hex"
+    # the Docker Hub mirror's referrer is best-effort with a loud warning, never a silent skip (referrer support there varies); GHCR is authoritative (REQ-CHAIN-007-AC8)
+    if [ "$host" = ghcr.io ]; then cosign attach attestation --attestation "$attach/att" "$host/$repo@sha256:$hex"
+    else cosign attach attestation --attestation "$attach/att" "$host/$repo@sha256:$hex" || echo "::warning::could not attach the manifest referrer on $host/$repo@sha256:$hex: the GHCR referrer is authoritative"; fi
   done
   if [ "$final" = 1 ]; then
     # decided again now, not from the reading made before the exact tags were pushed
