@@ -98,7 +98,7 @@ jobs:
           FORCE: ${{ inputs.force }}
         # A verdict is the App's LATEST dependabot-reviewer check on the head: success or failure; neutral or none is
         # read this hour. A success counts only with this reviewer's version as its external_id (the version printed
-        # by bin/dependabot-reviewer-version.sh, over five files): an older reviewer may have read less than the whole
+        # by bin/dependabot-reviewer-version.sh, over four files): an older reviewer may have read less than the whole
         # diff, and its success is no verdict, so the head is read as a head with none is.
         # No reader is called for a merge of main whose diff against main is the passed head's, byte for byte: the same
         # change was read.
