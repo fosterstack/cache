@@ -311,7 +311,7 @@ def could_render_reserved(nm, wf):   # a plain `${{ matrix.a.b }}` stands for an
     if any("${{" in p or "}}" in p for p in parts):
         return True
     # a bound context is not judged in another file: admission refuses a check run of that name from there; in its own file it is
-    return len(parts) > 1 and any(spells(parts, r) for r in RESERVED if not bound_elsewhere(r, wf))
+    return len(parts) > 1 and any(spells(parts, r) for r in RESERVED | EXEMPTIBLE if not bound_elsewhere(r, wf))
 def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
     return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
@@ -444,13 +444,13 @@ permissions:
 TOP
 export PIN_WIRING_GUARD_JOB PIN_WIRING_PERMISSIONS
 
-bytes_judge() { python3 - "$1" "${2:-}" <<'PY'
+bytes_judge() { python3 - "$1" <<'PY'
 import os, sys
 raw = open(sys.argv[1], "rb").read()
 lines = raw.split(b"\n")
 def inert(line):
     return line.strip(b" ") == b"" or line.lstrip(b" ").startswith(b"#")
-def block(header, indent, lines=lines):   # the header line and what is under it, up to the next line at its own indent or less
+def block(header, indent):   # the header line and what is under it, up to the next line at its own indent or less
     starts = [i for i, line in enumerate(lines) if line == header]
     if len(starts) != 1:
         return None
@@ -472,9 +472,6 @@ def shape(job):   # Dependabot moves the checkout's digest and its version comme
     return b"\n".join(kept)
 bad = []
 pinned_job, pinned_permissions = os.environ["PIN_WIRING_GUARD_JOB"].encode(), os.environ["PIN_WIRING_PERMISSIONS"].encode()
-if sys.argv[2]:   # the landing path: the pinned text is the landing commit's own ci.yml
-    landing = open(sys.argv[2], "rb").read().split(b"\n")
-    pinned_job, pinned_permissions = block(b"  required-check-guard:", 2, landing) or b"x", block(b"permissions:", 0, landing) or b"x"
 # YAML ends a line at each of these four, this judge only at LF: a step could hide behind the freed comment
 if any(b in raw for b in (b"\r", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")):
     bad.append("ci.yml has a carriage return, a next-line, a line separator or a paragraph separator")
@@ -490,14 +487,14 @@ sys.exit(1 if bad else 0)
 PY
 }
 
-LANDING_COMMIT=6a36b066b38cc9820be4db2f516057026df30b99   # chain-v030's commit; the landing section below reads it, too
+LANDING_COMMIT=6a36b066b38cc9820be4db2f516057026df30b99   # chain-v030's commit; the refusal case below reads it
 
 # judge mode, for the trusted review gate: judge the ci.yml of one commit of the current repo, read as a git
 # object (never checked out, never run), and nothing else
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  # the landing form (chain-v030) has no release-only list: a commit without one is judged with an empty list
+  # a commit without a release-only list is judged with an empty one, which the judge refuses for the missing entries
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" \
     2> /dev/null \
     || echo '{"required_checks": []}' > "$work/head-release-only.json"
@@ -505,18 +502,10 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
-  # Two exact forms are accepted: main's own (judged here) or the landing form, chain-v030's ci.yml, judged by
-  # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
   export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
   export PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json"
-  if main_out=$(judge "$work/head-ci.yml" && bytes_judge "$work/head-ci.yml"); then exit 0; fi
-  landing="$here/.github/agent/tests/pin-wiring-landing.sh"
-  [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
-  # the landing form's guard job and top-level keys are judged against the landing commit's own ci.yml, read as a git object
-  if land_out=$({ bash "$landing" && git show "$LANDING_COMMIT:.github/workflows/ci.yml" > "$work/landing-ci.yml" \
-                  && bytes_judge "$work/head-ci.yml" "$work/landing-ci.yml"; } 2>&1); then exit 0; fi
-  printf '%s\nthe landing form also refuses it: %s\n' "$main_out" "$land_out"
-  exit 1
+  judge "$work/head-ci.yml" && bytes_judge "$work/head-ci.yml"
+  exit $?
 fi
 
 case_() {  # case_ <name> <expect ok|bad> <python edit of the parsed copy, or empty>
@@ -1094,19 +1083,8 @@ done
 bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@$old/@$new/"
 bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
 bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
-# a head and a landing file that both lack the guard job must not pass as "same pinned text" (empty == empty)
-sed "$guard"'{/^  drift-fixer-dispatch:$/!d}' "$here/.github/workflows/ci.yml" > "$work/no-guard-head.yml"
-cp "$work/no-guard-head.yml" "$work/no-guard-landing.yml"
-if out=$(bytes_judge "$work/no-guard-head.yml" "$work/no-guard-landing.yml")
-then failn=$((failn+1)); echo "FAIL landing-bytes-both-without-guard → ok, want bad ($out)"
-else pass=$((pass+1)); echo "PASS landing-bytes-both-without-guard → bad ($out)"; fi
-
-# ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
-# The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
-# pin-wiring-landing.sh accepts: it is chain-v030's own pin-wiring-test.sh, byte for byte (checked below).
-# The cases read chain-v030 as git objects at ONE pinned commit, the one the copy was taken from, so a later
-# push to chain-v030 cannot turn main red; the re-copy before the landing moves the pin. The follow-up after
-# the landing deletes this section.
+# ---- chain-v030's ci.yml is refused: the judge has one form, main's own ----------------------------------------
+# read as git objects at one pinned commit, so a later push to chain-v030 cannot turn main red
 landing_ref=""
 if git cat-file -e "$LANDING_COMMIT^{commit}" 2> /dev/null; then landing_ref=$LANDING_COMMIT; fi
 git_commit() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c; }
@@ -1133,83 +1111,13 @@ lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty>: jud
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS landing:$1 -> $got"
   else failn=$((failn+1)); echo "FAIL landing:$1 -> $got, want $2 ($out)"; fi
 }
-lbcase() {  # <name> <ok|bad> <python edit of the BYTES b of chain-v030's ci.yml; g0, g1 = span of its required-check-guard job> [nocov]
-  local r="$work/landb-$1"; rm -rf "$r"; mkdir -p "$r/.github/policy" "$r/test-evidence" "$r/tools/govulncheck"
-  git archive "$landing_ref" .github/workflows | tar -x -C "$r"
-  git show "$landing_ref:.github/policy/required-checks.json" > "$r/.github/policy/required-checks.json"
-  git show "$landing_ref:test-evidence/suite-floors.json" > "$r/test-evidence/suite-floors.json"
-  git show "$landing_ref:tools/govulncheck/go.mod" > "$r/tools/govulncheck/go.mod"
-  python3 - "$r/.github/workflows/ci.yml" "$3" <<'PYB'
-import sys
-p = sys.argv[1]
-b = open(p, "rb").read()
-lines = b.split(b"\n")
-g0 = b.index(b"  required-check-guard:\n")
-g1 = g0 + 1
-rest = b[g0:].split(b"\n")
-n = 1
-while n < len(rest) and (rest[n].strip() == b"" or rest[n].startswith(b"   ") or rest[n].lstrip().startswith(b"#")):
-    n += 1
-while rest[n - 1].strip() == b"" or rest[n - 1].lstrip().startswith(b"#"):
-    n -= 1
-g1 = g0 + len(b"\n".join(rest[:n])) + 1
-exec(sys.argv[2])
-open(p, "wb").write(b)
-PYB
-  if [ "${4:-}" = nocov ]; then
-    python3 - "$r/.github/policy/required-checks.json" <<'PYC'
-import json, sys
-d = json.load(open(sys.argv[1]))
-d["required_checks"] = [c for c in d["required_checks"] if c["context"] != "coverage"]
-json.dump(d, open(sys.argv[1], "w"), indent=2)
-PYC
-  fi
-  ( cd "$r" && git init -q . && git add -A && git_commit )
-  head=$(cd "$r" && git rev-parse HEAD)
-  # the temp repo lacks the landing commit the judge reads: borrow the clone's objects for this one command
-  if out=$(cd "$r" && GIT_ALTERNATE_OBJECT_DIRECTORIES="$(cd "$here" && cd "$(git rev-parse --git-common-dir)" && pwd)/objects" PIN_WIRING_JUDGE_GIT="$head" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1)
-  then got=ok; else got=bad; fi
-  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS landing-bytes:$1 -> $got"
-  else failn=$((failn+1)); echo "FAIL landing-bytes:$1 -> $got, want $2 ($out)"; fi
-}
 if [ -z "$landing_ref" ]; then
   failn=$((failn+1)); echo "FAIL landing form: commit $LANDING_COMMIT is not in this clone (CI fetches every branch)"
 else
-  J='d["jobs"]'
-  WF_CONC='d["concurrency"] = {"group": "ci-pr", "cancel-in-progress": "true"}'
-  COUNTING='[s for j in d["jobs"].values() for s in (j.get("steps") or [])'
-  COUNTING+=' if "chain-hostile-test.sh" in (s.get("run") or "") and "suite-guard-run.py run" in s["run"]][0]'
-  # the landing judge reads the new layout: the old ci.yml has `concurrency` on a job
   lcase chain-v030-old-layout-refused          bad ""
   # one judge: its refusal never speaks of a second form
   case "$out" in *landing*) failn=$((failn+1)); echo "FAIL judge-refusal-names-no-landing -> the refusal mentions landing ($out)";;
     *) pass=$((pass+1)); echo "PASS judge-refusal-names-no-landing";; esac
-  lcase wrong-workflow-concurrency             bad "$WF_CONC"
-  lcase job-concurrency-on-lint                bad "$J['lint']['concurrency'] = {'group': 'x'}"
-  lcase live-test-group-cancels                bad "$J['live-test']['concurrency']['cancel-in-progress'] = 'true'"
-  lcase shard-step-deleted                     bad "$J['allowlist-chain-2']['steps'].pop()"
-  lcase shard-step-if-false                    bad "$J['allowlist-chain-3']['steps'][-1]['if'] = 'false'"
-  lcase gate-if-removed                        bad "$J['allowlist-chain'].pop('if')"
-  lcase gate-needs-a-shard-short               bad "$J['allowlist-chain']['needs'] = $J['allowlist-chain']['needs'][:3]"
-  lcase counting-step-or-true                  bad "x = $COUNTING; x['run'] += ' || true'"
-  lcase counting-step-env                      bad "x = $COUNTING; x['env'] = {'PINS_DRY': '1'}"
-  lcase persona-step-removed                   bad "$J['allowlist-persona']['steps'].pop()"
-  lcase pins-auditor-step-removed              bad "$J['allowlist-pins-auditor']['steps'].pop()"
-  # the single-job allowlist-chain of full-suite.yml (it left ci.yml) inside chain-v030's ci.yml fits neither form
-  MAIN="m = yaml.load(open('$here/.github/workflows/full-suite.yml'), Loader=yaml.BaseLoader)"
-  SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; "
-  SINGLE+="$J['allowlist-chain'] = m['jobs']['allowlist-chain']"
-  lcase mixed-single-job-chain                 bad "$SINGLE"
-  # the landing form is also held to main's pinned guard job half and top-level half, taken from the landing commit's own ci.yml
-  GUARD_TRUE='b = b[:g0] + b"  required-check-guard:\n    name: required-check guard\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n" + b[g1:]'
-  lbcase guard-run-true                        bad "$GUARD_TRUE"
-  lbcase guard-run-true-coverage-removed       bad "$GUARD_TRUE" nocov
-  # the landing judge reads the new layout: the old ci.yml is refused whatever the digest
-  lbcase guard-digest-moved-old-layout-refused bad 'b = b[:g0] + b[g0:g1].replace(b"3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", b"0123456789abcdef0123456789abcdef01234567 # v7.0.2") + b[g1:]'
-  lbcase guard-permissions-changed             bad 'b = b[:g0] + b[g0:g1].replace(b"      issues: write", b"      issues: write\n      actions: write", 1) + b[g1:]'
-  lbcase guard-extra-step                      bad 'b = b[:g0] + b[g0:g1].replace(b"      - name: guard regressions (offline fixtures)", b"      - run: true\n\n      - name: guard regressions (offline fixtures)", 1) + b[g1:]'
-  lbcase top-level-env-added                   bad 'b = b.replace(b"\njobs:\n", b"\nenv:\n  X: y\n\njobs:\n", 1)'
-  # the landing judge follows the new layout and is no longer a copy of chain-v030's
 fi
 
 echo "pin-wiring: $pass passed, $failn failed"
