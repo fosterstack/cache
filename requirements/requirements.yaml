@@ -1701,7 +1701,7 @@ requirements:
       - id: REQ-DEP-001-AC2
         given: an open Dependabot pull request into main with no verdict on its head yet, whatever its updates are (patch, minor, major, flagged) and whoever pushed commits onto it
         when: the reviewer runs
-        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit, or one that names a changed binary file, whose bytes a diff does not carry, gives no bundle and no verdict; a file under vendor/ is given by its header line and a count of the lines not shown); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
+        then: "it is a candidate, and for it the reviewer gathers, with no model involved: the pull request's commits, each one GitHub does not report as Dependabot's own (author dependabot[bot], committed and signed by GitHub, one parent) marked so; the whole diff of that exact head commit against main, read from GitHub by the commit's full id, never cut (a diff over the readers' limit, or one that names a changed binary file, whose bytes a diff does not carry, gives no bundle and no verdict; only while main's ruleset lists the vendor check, read once at gather time, a file under vendor/ is given by its header line and a count of the lines not shown; when that read fails, or the ruleset does not list vendor, vendored files are shown in full); and, for every update, the upstream release notes for every version between old and new and every line in our workflows and modules that uses the dependency; a read of the commits, release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never \"none found\"; when the pull request's commits no longer end at that commit, nothing is gathered and nothing is judged"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC3
@@ -1713,7 +1713,7 @@ requirements:
       - id: REQ-DEP-001-AC4
         given: both readers' findings
         when: the reviewer decides
-        then: "the decision is mechanical: no \"breaks us\" from either reader, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
+        then: "the decision is mechanical: no \"breaks us\" from either reader, arms squash auto-merge, which merges only once every required check is green, and only when main's ruleset lists at least one required status check (read when arming; none listed, or a read that fails, arms nothing); any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC5
@@ -1761,7 +1761,7 @@ requirements:
       - id: REQ-DEP-001-AC12
         given: a reviewer run that took one or more heads up for review
         when: its act step and its cancellation cleanup have ended, whether the run finished, failed or was cancelled
-        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head whose every update is a plain patch or minor (none major, flagged or unparsed) that was armed when the reviewer took it up (the auto-merge workflow arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head; a head with a success verdict is left as the act step left it; the verdict is read as REQ-DEP-001-AC14 reads it, so a success of another version, or with no version, is no verdict: such a head whose review did not finish is armed again as it was, never left disarmed; a lookup or a write that fails fails the run"
+        then: "for each of those heads whose pull request is still open and still has that commit as its head: one that carries the failure verdict has any armed auto-merge turned off; a head whose every update is a plain patch or minor (none major, flagged or unparsed) that was armed when the reviewer took it up (the auto-merge workflow arms those), and that has no verdict or a neutral one and no arm after the act step, is armed again for that exact head, only when main's ruleset lists at least one required status check; a head with a success verdict is left as the act step left it; the verdict is read as REQ-DEP-001-AC14 reads it, so a success of another version, or with no version, is no verdict: such a head whose review did not finish is armed again as it was, never left disarmed; a lookup or a write that fails fails the run"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC13
@@ -1792,7 +1792,7 @@ requirements:
       - id: REQ-DEP-003-AC1
         given: a Dependabot patch or minor pull request
         when: the auto-merge job runs
-        then: it gets squash auto-merge armed, so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
+        then: it gets squash auto-merge armed only when main's ruleset lists at least one required status check (read when arming; none listed, or a read that fails, arms nothing), so it merges only when every required check is green; a major is left to the reviewer; the reviewer leaves that arm on while it reads the bump, and an arm its act step turned off because the review did not finish is put back (REQ-DEP-001-AC12)
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
@@ -2196,8 +2196,9 @@ requirements:
     title: Release admission requires the checks the ruleset does not list
     statement: >
       Release admission and the patch release's ready step shall require the checks of
-      .github/policy/release-only-checks.json together with those of required-checks.json.
-    source: [.github/policy/release-only-checks.json, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+      .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
+      shall be refused by the pin-wiring judge on every pull request.
+    source: [.github/policy/release-only-checks.json, .github/agent/tests/pin-wiring-test.sh, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
     tier: community
     introduced: v0.3.0
     origin: the owner's trim of the ruleset (Nov 12 2026)
@@ -2212,13 +2213,22 @@ requirements:
           the requirement is the two lists together
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-REL-013-AC2
+        given: a head whose release-only-checks.json is not the eight entries pinned in the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) on main
+        when: the judge judges the head
+        then: >-
+          it refuses and prints each entry that differs;
+          each entry is compared whole: its context, its integration_id and its scope;
+          the pin is main's copy of the judge, so a change to the file and to the judge in one pull request is still refused
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
       - id: REQ-REL-013-AC3
         given: a head whose workflows are judged by the pin-wiring judge
         when: it judges the head
         then: >-
-          it refuses a head with no release-only-checks.json (the landing form is judged by its own copy);
+          it refuses a head with no release-only-checks.json; only the landing form, which the judge hands to its own copy, may have none;
           it refuses any job other than the one that produces a reserved name when that job carries the name;
-          the reserved names are the eight above, each by job id, by literal name and by a name with an expression in it
+          the reserved names are the eight entries pinned by REQ-REL-013-AC2, never the head's own lists, each by job id, by literal name and by a name with an expression in it
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC4
@@ -2900,9 +2910,9 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC33
-        given: "the workflow supply-chain.yml and the required-check list .github/policy/required-checks.json"
-        when: "they are read"
-        then: "the context pin-age stays in the list, and the job named pin-age runs only the pin scan of the moved versions and the advisory report on them (pin-audit.py --report-only), never a measurement of how long a version has been public; no job holds actions: write; dropping the context name is a later change of the ruleset, which is the owner's"
+        given: "the workflow supply-chain.yml"
+        when: "it is read"
+        then: "the job named pin-age runs only the pin scan of the moved versions and the advisory report on them (pin-audit.py --report-only), never a measurement of how long a version has been public; no job holds actions: write; dropping the context name is a later change of the ruleset, which is the owner's"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
