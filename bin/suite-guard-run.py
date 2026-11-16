@@ -83,10 +83,17 @@ COUNTING = re.compile(r"(?:CHAIN_TEST_REQUIRE_NETCUT=1 )?python3 -I bin/suite-gu
 
 
 def required_contexts(root):
-    """The required-check contexts of ROOT/.github/policy/required-checks.json, or None when the file cannot be read (then no counting step is trusted)."""
+    """The contexts of ROOT/.github/policy/required-checks.json and, where the tree has one, release-only-checks.json (release admission requires both), or None when a file cannot be read (then no counting step is trusted)."""
+    policy = os.path.join(root, ".github", "policy")
+    files = [os.path.join(policy, "required-checks.json")]
+    if os.path.exists(os.path.join(policy, "release-only-checks.json")):
+        files.append(os.path.join(policy, "release-only-checks.json"))
     try:
-        with open(os.path.join(root, ".github", "policy", "required-checks.json")) as f:
-            return {c["context"] for c in json.load(f)["required_checks"]}
+        contexts = set()
+        for path in files:
+            with open(path) as f:
+                contexts |= {c["context"] for c in json.load(f)["required_checks"]}
+        return contexts
     except Exception:
         return None
 
