@@ -450,17 +450,17 @@
     {
       "file": ".github/agent/tests/pin-audit-go-major-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/pin-audit-go-major-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "39151fc73c55b5582000fdede799b75aba6472d6ad1c925697ca2db24bb677ff"
+      "body-sha256": "e085cd574f4e3ac8a2319fe54cbba1bebbd8868b33780a2fe246c256dae6a22f"
     },
     {
       "file": ".github/agent/tests/pip-pin-test.sh",
       "ruling": "text, not a command: a comment in .github/agent/tests/pip-pin-test.sh that names the tool | text, not a command: a line of a quoted here-document in .github/agent/tests/pip-pin-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body",
-      "body-sha256": "902a2085eec1801c582213de456caba298dd1536806d46e560561d6a2bd9cefd"
+      "body-sha256": "2bf93b6fa66cc6b58dde737b412f801cdbb64c60244d1cc4ff11e466db402664"
     },
     {
       "file": ".github/agent/tests/s2-p2-strict-lookups-test.sh",
       "ruling": "text, not a command: a line of a quoted here-document in .github/agent/tests/s2-p2-strict-lookups-test.sh (data for python or a fixture, nothing the shell runs), bound by the sha256 of the whole body | text, not a command: a comment in .github/agent/tests/s2-p2-strict-lookups-test.sh that names the tool",
-      "body-sha256": "0ef9f41852581d875ca9d10abdd5ca7c22cf0403c93b8f4587956a32c8f38b73"
+      "body-sha256": "d3c4da9a13d2b3131c8804ef59ae773aa4ad90e9bcd02f47b0e3a128d80a471d"
     },
     {
       "file": "bin/acceptance-k8s-smoke.py",
