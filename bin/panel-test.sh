@@ -123,6 +123,18 @@ check("a per-image statement filters only its own image (Codex r2 B2) and matche
       [f["image"] for f in v["findings"]] == ["fips-amd64"] and [c["image"] for c in v["vex_covered"]] == ["production-amd64", "production-amd64"],
       ([f["image"] for f in v["findings"]], v["vex_covered"]))
 
+# a version written %2541 is the text %41 after ONE decode (not "A" after two); one statement whose product covers both
+# images feeds both indexes, so a second decode applied per image over the shared statement shows in either
+vexd = os.path.join(tempfile.mkdtemp(), "d.json")
+json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0010"}, "status": "not_affected",
+    "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
+                  "subcomponents": [{"@id": "pkg:generic/tzdata@%2541"}]}]}]}, open(vexd, "w"))
+idx2 = P.load_vex(vexd)
+got = {img: {k: [sorted(subs) for subs, _ in e] for k, e in idx2[img].items()}
+       for img in ("production-amd64", "fips-amd64")}
+check("a purl version written %2541 loads as the version %41 in both images' indexes, never decoded twice",
+      all(g == {"CVE-2099-0010": [[("tzdata", "%41")]]} for g in got.values()), got)
+
 # --- the same exact scope grammar as the PR gate (inspector-gate.py::scope_of; cache#548 rulings): a product whose qualifiers are not exactly
 # repository_url/variant/arch, lower-case, once each, non-blank, with known values covers NO image, so the finding stays on every image
 R = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
