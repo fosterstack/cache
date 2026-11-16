@@ -2198,7 +2198,7 @@ requirements:
       Release admission and the patch release's ready step shall require the checks of
       .github/policy/release-only-checks.json together with those of required-checks.json, and a change to that list
       shall be refused by the pin-wiring judge on every pull request.
-    source: [.github/policy/release-only-checks.json, .github/agent/tests/pin-wiring-test.sh, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
+    source: [.github/policy/release-only-checks.json, .github/workflows/stage-admission.yml, .github/workflows/release.yml]
     tier: community
     introduced: v0.3.0
     origin: the owner's trim of the ruleset (Nov 12 2026)
@@ -2214,7 +2214,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-013-AC2
-        given: a head whose release-only-checks.json is not the eight entries pinned in the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) on main
+        given: a head whose release-only-checks.json is not the eight entries pinned in the pin-wiring judge on main
         when: the judge judges the head
         then: >-
           it refuses and prints each entry that differs;
