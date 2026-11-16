@@ -762,7 +762,7 @@ cat > "$w/bin/gh" <<'EOF'
 echo "gh $*" >> "$GH_LOG"
 fails() { case " ${FAIL:-} " in *" $1 "*) exit 1 ;; esac; }
 case "$1 $2" in
-  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$LIST" | tr -d '\n' ;;
+  "api repos/o/r/contents/.github/policy/required-checks.json?ref=refs/heads/main") base64 < "$LIST" | tr -d '\n' ;;
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) fails gate ;; *) fails check ;; esac ;;
   "api repos/fosterstack/ops/dispatches") fails dispatch ;;
   # cancellation cleanup lookups: success, or CANCELA_JSON through the step's own filter
@@ -1270,7 +1270,7 @@ case "$1 $2" in
               if [ -n "${EVENTS99_JSON:-}" ]; then f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done;
                 jq -r "$f" <<<"$EVENTS99_JSON"
               else printf '%b' "${EVENTS99:-}"; fi ;;
-  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
+  "api repos/o/r/contents/.github/policy/required-checks.json?ref=refs/heads/main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") case "$*" in *name=auditor-review-gate*) [ "${GATEFAIL:-}" = 1 ] && exit 1; : ;; *)
     [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   # the review gate's own check on a head (the App's latest): GATE99, none unless set; no gate check on any other head
@@ -1821,7 +1821,7 @@ also "settle: nothing to turn off, nothing armed" "-pr merge"
 settle "$BOTH" '90 sha90\n' 0 \
   "a lane-armed patch whose review did not finish (no verdict) and that the act step disarmed"
 also "settle: the lane's arm is put back for exactly that head, after the required-check guard; the major stays off" \
-  "+pr merge --auto --squash --match-head-commit sha90 90" "+required-checks.json\?ref=main" "-match-head-commit sha99"
+  "+pr merge --auto --squash --match-head-commit sha90 90" "+required-checks.json\?ref=refs/heads/main" "-match-head-commit sha99"
 PRIOR90=neutral settle "$BOTH" '90 sha90\n' 0 "a lane-armed patch left neutral by an unfinished review"
 also "settle: the lane's arm is put back over a neutral too" "+pr merge --auto --squash --match-head-commit sha90 90"
 settle "$BOTH" '' 0 "an unfinished patch the lane had NOT armed (not in lane-arms.txt)"
@@ -1852,7 +1852,7 @@ REARM90="+pr merge --auto --squash --match-head-commit sha90 90"
 PRIOR90_JSON=$(verdicts "[$OLD_OK]") settle "$BOTH" '90 sha90\n' 0 \
   "a lane-armed patch whose review did not finish, its newest check a success of another version"
 also "settle: a success of another version is no verdict: the lane's arm is put back, after the guard" "$REARM90" \
-  "+required-checks.json\?ref=main"
+  "+required-checks.json\?ref=refs/heads/main"
 PRIOR90_JSON=$(verdicts '[["success"]]') settle "$BOTH" '90 sha90\n' 0 \
   "a lane-armed patch whose review did not finish, its newest check an unversioned success"
 also "settle: an unversioned success is no verdict: the lane's arm is put back" "$REARM90"
@@ -1942,6 +1942,10 @@ streak '[{"databaseId":499,"conclusion":"failure"},{"databaseId":498,"conclusion
 streak '[{"databaseId":499,"conclusion":"failure"}]' no "only two runs so far: no issue"
 RUNLIST=fail streak '[]' no "history unreadable: nothing decided, step does not fail"
 
+# a tag named main must not answer a read of main's files: the workflow's reads name the branch ref
+wf="$repo/.github/workflows/dependabot-reviewer.yml"; bare=$(grep -c '?ref=main' "$wf"); full=$(grep -c '?ref=refs/heads/main' "$wf")
+if [ "$bare" -eq 0 ] && [ "$full" -eq 3 ]; then echo "ok: workflow reads of main name ?ref=refs/heads/main, never ?ref=main"; pass=$((pass+1))
+else echo "FAIL: workflow reads of main name ?ref=refs/heads/main, never ?ref=main (found $bare bare ?ref=main, $full ?ref=refs/heads/main; want 0 and 3)"; fail=$((fail+1)); fi
 echo "----"
 echo "dependabot-reviewer act step: ${pass} passed, ${fail} failed"
 [ "$py_rc" -eq 0 ] && [ "$fail" -eq 0 ]
