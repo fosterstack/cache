@@ -210,7 +210,6 @@ ACTIONS = {
     "actions/cache": "node: restores/saves one directory (restore and save subactions; REQ-REL-004-AC8); no image run",
     "actions/checkout": "node: git checkout",
     "actions/create-github-app-token": "node: mints a token",
-    "actions/dependency-review-action": "node: GitHub API diff review",
     "actions/download-artifact": "node: artifact download",
     "actions/github-script": "node: `script` is script text we write (the run: class; review pass)",
     "actions/setup-go": "node: installs the Go toolchain by version (a binary, outside this check)",
