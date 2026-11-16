@@ -385,12 +385,12 @@
     {
       "file": ".github/agent/bin/auditor-manifest.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/auditor-manifest.py (python runs it, no shell reads it): reads the endoflife.date API",
-      "body-sha256": "977af7ef4626ad598639b3f6e257da8a0dd057e7436a3b6ff2b265d8f202d9e1"
+      "body-sha256": "2ae5bd7d7b01c2acac90528a31e93c1309c46c83bba53a6d0746542b51cefefa"
     },
     {
       "file": ".github/agent/bin/auditor-panel.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/auditor-panel.py (python runs it, no shell reads it): reads the OSV API and asks the Actions identity-token endpoint",
-      "body-sha256": "c9ea40601b420405d5c268e9562b8263f446718ad1b909d503ee3647834dc6e6"
+      "body-sha256": "8ac021278c6227b2dafc628f5bcfb7bd325791f8dab94ab6b1641cacef4835d5"
     },
     {
       "file": ".github/agent/bin/check-action-pins.py",
@@ -400,7 +400,7 @@
     {
       "file": ".github/agent/bin/tests/system_path_allowlist.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/system_path_allowlist.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "10a9e1db9c37a479212bbbf8c198d9c169f0adc3773641352eacca62b101b50b"
+      "body-sha256": "e616dc6d2a90f7f08b17738a02acd8ffedfb184f69476a2d946ba8cfffae19d1"
     },
     {
       "file": ".github/agent/bin/tests/test_check_action_pins.py",
@@ -410,7 +410,7 @@
     {
       "file": ".github/agent/bin/tests/test_cov_manifest.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_cov_manifest.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "0ac316d7b69bae3d3c042de74c53ffa26bc7a79c9064726dca0f0a4225753a62"
+      "body-sha256": "89e7de3c53bf56d23986b6dfcb79e68e076b43f6b08912c541c3f0d5d899fb7d"
     },
     {
       "file": ".github/agent/bin/tests/test_fs_guard.py",
@@ -420,7 +420,7 @@
     {
       "file": ".github/agent/bin/tests/test_panel_io.py",
       "ruling": "text, not a command: Python source of .github/agent/bin/tests/test_panel_io.py (python runs it, no shell reads it): a string, name or docstring that mentions the tool, no request is made",
-      "body-sha256": "f5b20e52bd1853cc5f8fe8bf8dfeb5a2bc7062e9a6ac6645c2846d897f2ff7be"
+      "body-sha256": "389bfe7a0f038660c843318c3e1a3ad4ee7c660587810d249ffa57baca683f18"
     },
     {
       "file": ".github/agent/bin/tests/test_pin_plain_forms.py",
