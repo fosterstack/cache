@@ -522,6 +522,7 @@ mappings:
       - { type: shell-test, ref: "bin/full-suite-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/full-suite-wiring-test.sh" }
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+      - { type: shell-test, ref: "bin/admission-evidence-test.sh" }
   - ac: REQ-CI-001-AC8
     evidence:
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
@@ -935,6 +936,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC28
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC29
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-SUP-001-AC30
