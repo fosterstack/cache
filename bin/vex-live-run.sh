@@ -276,14 +276,10 @@ scout_leg() {
   return "$rc"
 }
 
-# Nothing is pushed to Docker Hub unless its API says the test repository is private (is_private exactly true).
+# Nothing is pushed to Docker Hub unless the registry proves the test repository private: readable with the job's user and push token, refused without them.
 hub_repo_private() {
-  local answer
-  answer=$(printf 'user = "%s:%s"\n' "$DOCKERHUB_TEST_USERNAME" "$DOCKERHUB_TEST_PUSH_TOKEN" \
-    | curl -fsS -K - "https://hub.docker.com/v2/repositories/${DH_REPO}/") \
-    || { echo "::error::cannot read the visibility of ${DH_REPO} from Docker Hub" >&2; return 1; }
-  jq -e '.is_private == true' >/dev/null 2>&1 <<<"$answer" \
-    || { echo "::error::${DH_REPO} is not private on Docker Hub: nothing is pushed" >&2; return 1; }
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" hub-private --repository "$DH_REPO" \
+    || { echo "::error::${DH_REPO} is not proven private on Docker Hub: nothing is pushed" >&2; return 1; }
 }
 
 # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as an attestation made by our index tool, in the Docker Hub test repository; (2) our production image
