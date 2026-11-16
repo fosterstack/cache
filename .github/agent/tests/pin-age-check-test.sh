@@ -1794,7 +1794,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596": "printf -v FETCH %s curl",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 (", "build-container install, advisor reading Oct 19: ", "pinned fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch (", "loopback fetch (", "build-container install, advisor reading Oct 19: ", "pinned fetch ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1941,6 +1941,45 @@ rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"
 have = [(r["file"], r["form"], r["key"], r["line"]) for r in rows]
 assert len(have) == len(set(have)) == len(want) == 20, (len(have), len(set(have)), len(want))
 assert set(have) == want, sorted(set(have) ^ want)
+PY
+CASE="plain-constants: the three ruling constants hold none of the internal words"
+check python3 - "$chk" <<'PY'
+import importlib.util, re, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor\s+reading)\b", re.I)
+bad = {n: WORDS.findall(getattr(ac, n)) for n in ("GO_RULING", "LOOPBACK_RULING", "PINNED_FETCH_RULING")}
+assert not any(bad.values()), bad
+PY
+CASE="plain-rows: committed rows that begin with a constant hold none of the internal words"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, re, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+WORDS = re.compile(r"\b(orchestrator|lane|ruling|seat|owner|advisor\s+reading)\b", re.I)
+consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
+rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
+assert rows
+bad = [(r["file"], r["line"][:12], WORDS.findall(r["ruling"])) for r in rows if WORDS.search(r["ruling"])]
+assert not bad, bad
+PY
+CASE="plain-count: 21 committed rows begin with the three constants together"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1])
+ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+consts = (ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING)
+rows = [r for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["ruling"].startswith(consts)]
+assert len(rows) == 21, len(rows)
+PY
+CASE="plain-old-prefixes: no committed row begins with an old prefix"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
+import json, sys
+OLD = ("pinned toolchain fetch, advisor reading Oct 16", "loopback fetch, advisor reading Oct 17",
+       "pinned fetch, advisor reading Oct 17")
+rows = json.load(open(sys.argv[1]))["unmeasured_text"]
+rows = [r["line"][:12] for r in rows if r["ruling"].startswith(OLD)]
+assert not rows, rows
 PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
@@ -3752,7 +3791,7 @@ check test "$rc" -eq 1
 
 # REQ-SUP-001-AC23: the second honored fetch shape, the Go toolchain tarball the refresh job archives (rule 12: Go kept in the archive; the committed recipe pins the file and its
 # sha256, which the job verifies before storing). Honored only under its own ruling text, only for ONE curl with the fixed flags and the single operand https://go.dev/dl/ followed by one variable.
-GOP='pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): '
+GOP='pinned toolchain fetch (the recipe pin is verified before storing): '
 GOFIX='-q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f"'
 for v in "go-ok:curl $GOFIX \"https://go.dev/dl/\$f\" || die \"could not download the Go toolchain\" 1:0" \
          "go-ok-braced:curl $GOFIX \"https://go.dev/dl/\${f}\":0" \
@@ -3822,7 +3861,7 @@ check test "$rc" -eq 1
 
 # REQ-SUP-001-AC25: the third honored fetch shape, the single line of bin/loopback-get.sh that starts the fetch program for a loopback or token request. The checker pins the
 # file and the sha256 of the whole line (as the ruling's only allowance), so any edit, any other file and any other line under the prefix rule nothing.
-LRP='loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): '
+LRP='loopback fetch (REQ-SUP-001-AC25): '
 LL="curl -q -g --noproxy '*' --proto \"=\$proto\" --max-redirs 0 \"\$@\" \"\$url\" || exit \$?"
 for v in "lr-ok:bin/loopback-get.sh:$LL:0" \
          "lr-other-file:bin/fetch.sh:$LL:1" \
@@ -3884,7 +3923,7 @@ check test "$rc" -eq 1
 
 # REQ-SUP-001-AC26: nineteen script lines the checker pins by file and by the sha256 of the whole line (the assets of our own release, the pinned client image pull, and the
 # fourteen localhost request lines of the four acceptance scripts), honored under one prefix. Anything else under the prefix, any edit, any other file rules nothing.
-PFP='pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+PFP='pinned fetch (REQ-SUP-001-AC26): '
 mkrowpf() { # OUT FILE LINE PREFIX: like mkrowp, for the gh release form too (its key is the hash of the whole line)
   python3 - "$@" <<'PY'
 import hashlib, json, re, sys
