@@ -78,7 +78,7 @@ for n in fscache fscache-fips; do
 done
 
 # Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed; the bind also
-# lists the files of each layout docker may be given (REQ-SUP-001-AC33).
+# lists the files of each layout docker may be given (REQ-SUP-001-AC39).
 python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
 
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image

@@ -49,10 +49,10 @@ AWSCLI_VER=2.39.3
 GO_VER=1.27.4
 # crane copies the exact image bytes by digest in the Release stage (rules 16 and 64 of the release rules: the copy tool is pinned by checksum, no build step) and reads the digest of the
 # latest release's image in the weekly persona job (rule 61: no image builder). The two sums are the sha256 of the Linux release tarballs of google/go-containerregistry v0.22.1, equal to the
-# release's checksums.txt and to the downloaded files (Oct 11 2026). The version is written only in the two literal release URLs of the crane arm below (no version variable): the pin-age scan measures those URLs.
+# release's checksums.txt and to the downloaded files (Oct 11 2026). The version is written only in the two literal release URLs of the crane arm below (no version variable): the pin scan names those URLs.
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
-die() { pipeline_fail "$@"; }   # the plain-text failure word of the pinned Go fetch line (pin-age honours that line shape, REQ-SUP-001-AC23)
+die() { pipeline_fail "$@"; }   # the plain-text failure word of the pinned Go fetch line (the pin scan honours that line shape, REQ-SUP-001-AC23)
 
 case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|docker-scout-1.0.9|docker-scout-1.2.2|docker-scout-1.3.0|docker-scout-1.4.1|docker-scout-1.5.2|docker-scout-1.6.4|docker-scout-1.7.0|docker-scout-1.8.0|docker-scout-1.9.3|docker-scout-1.10.0|docker-scout-1.11.0|docker-scout-1.12.0|docker-scout-1.14.0|docker-scout-1.15.1|docker-scout-1.16.3|docker-scout-1.17.1|docker-scout-1.18.4|docker-scout-1.19.0|docker-scout-1.20.4|docker-scout-1.21.0|docker-scout-1.22.0|docker-scout-1.23.1|cosign|witness|go|crane|aws-cli|govulncheck) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck)" ;; esac
 
@@ -194,7 +194,7 @@ case "$TOOL" in
     "${DEST}/docker-scout" docker-cli-plugin-metadata >/dev/null || pipeline_fail "docker-scout does not run after install"
     ;;
   cosign)
-    # the release URL below names the pinned version literally (pin-age dates a download from its URL); the install tests fail when COSIGN_VER and that URL disagree
+    # the release URL below names the pinned version literally (the pin scan names a download from its URL); the install tests fail when COSIGN_VER and that URL disagree
     # the release provenance signer (v0.3.0 rule 52): a single binary; cosign asks for the OIDC token inside its own process
     case "$arch" in
       x86_64|amd64) curl -fsSL -o "$tmp/cosign" "https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64" || pipeline_fail "download failed: cosign v${COSIGN_VER}" ;;
@@ -205,7 +205,7 @@ case "$TOOL" in
     "${DEST}/cosign" version >/dev/null || pipeline_fail "cosign does not run after install"
     ;;
   witness)
-    # the release URL below names the pinned version literally (pin-age dates a download from its URL); the install tests fail when WITNESS_VER and that URL disagree
+    # the release URL below names the pinned version literally (the pin scan names a download from its URL); the install tests fail when WITNESS_VER and that URL disagree
     # the step signer of the release chain (rule 68): a release tarball holding the witness binary
     case "$arch" in
       x86_64|amd64) curl -fsSL -o "$tmp/w.tgz" "https://github.com/in-toto/witness/releases/download/v0.12.0/witness_0.12.0_linux_amd64.tar.gz" || pipeline_fail "download failed: witness v${WITNESS_VER}" ;;
@@ -260,8 +260,9 @@ case "$TOOL" in
     install -m 0755 "$tmp/govulncheck" "${DEST}/govulncheck" || pipeline_fail "install failed for govulncheck"
     ;;
   crane)
-    # the digest reader of the weekly persona job (the chain's pinned tool; no image builder): a release tarball holding the crane binary, verified against the pinned sum.
-    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (no version variable and no base-URL hook)
+    # the digest reader of the weekly persona job (the chain's pinned tool; no buildx): a release tarball holding the crane binary, verified against the pinned sum.
+    # each release asset is written out in full, with its version: the pin scan names a literal release URL
+    # (no version variable and no base-URL hook)
     case "$arch" in
       x86_64|amd64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
       *) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
@@ -272,7 +273,7 @@ case "$TOOL" in
     ;;
   aws-cli)
     # the AWS CLI v2 zip, pinned by checksum, installed under RUNNER_TEMP/aws-cli (job-local; no destination argument; nothing in /usr/local) and checked to be the pinned version
-    # the release URL names the pinned version literally (pin-age dates a download from its URL)
+    # the release URL names the pinned version literally (the pin scan names a download from its URL)
     test -n "${RUNNER_TEMP:-}" || pipeline_fail "aws-cli needs RUNNER_TEMP (it installs under RUNNER_TEMP/aws-cli and takes no destination)"
     AWSDIR="${RUNNER_TEMP}/aws-cli"
     curl -fsSL -o "$tmp/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.39.3.zip" || pipeline_fail "download failed: aws-cli v${AWSCLI_VER}"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""evidence-letter.py: the monthly evidence letter (REQ-REL-013).
+"""evidence-letter.py: the monthly evidence letter (REQ-REL-014).
 
 Makes one letter from a template out of the assets of the releases published in a month. Every fact in it is read
 from those assets; the fetch step has already checked the assets' signatures. Any missing or malformed asset makes

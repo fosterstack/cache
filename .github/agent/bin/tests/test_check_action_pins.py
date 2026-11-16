@@ -880,10 +880,10 @@ class LiteralRunnerMatrix(unittest.TestCase):
         self.assertNotIn("runs-on", out)
 
 
-# main's gate workflow (the passed-audit record judge)
-GATE_A = "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f"
+# main's gate workflow (the passed-audit record judge, and the sweep that judges a green Dependabot head again)
+GATE_A = "30ab1b01d956e176e777c859b77b233ee1444abec869a8e1121473b98c001c89"
 # the gate workflow with the merge queue judge (cache#542)
-GATE_B = "3f7127c8f61aefc9a8394050cb705f4e5b5cc042d6e779276f88e36e2662dcdc"
+GATE_B = "b44b6315aed32ba75af8f37bad42e785dfcf40b4f73a2846dd12dd6995153a6a"
 # the edits from main's gate workflow to the change's (old text, new text); the repository carries the change's copy,
 # so main's copy is made by undoing them
 QUEUE_HUNKS = (
@@ -1091,35 +1091,16 @@ concurrency:
 '''),
     ),
     (
-        (r'''            # head) and publish only if it has turned to success, so a head that still fails is not
-            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
-            last="$(GH_TOKEN="$APP_TOKEN" gh api '''
-        r'''"repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) '''
-        r'''| last
-                    | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
-'''),
-        (r'''            # head) and publish only if it has turned to success, so a head that still fails is not
-            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
-            last="$(GH_TOKEN="$APP_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" '''
-        r'''\
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) '''
-        r'''| last
-                    | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
-'''),
-    ),
-    (
         (r'''            fi
-            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} '''
-        r'''${sha:0:7}: still failure"; continue; fi
+            if [ "$last" = "$conclusion" ]; then echo "PR #${n} '''
+        r'''${sha:0:7}: still ${conclusion}"; continue; fi
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f '''
         r'''name=auditor-review-gate -f head_sha="$sha" \
               -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
 '''),
         (r'''            fi
-            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} '''
-        r'''${sha:0:7}: still failure"; continue; fi
+            if [ "$last" = "$conclusion" ]; then echo "PR #${n} '''
+        r'''${sha:0:7}: still ${conclusion}"; continue; fi
             # a head that is the tip of a live merge queue branch is the queue publisher's (same '''
         r'''check name and SHA);
             # a head can become one while it is judged, so the branches are read here, right before '''
@@ -1354,6 +1335,16 @@ def _index_info(listing):
         mode, sha, _stage = meta.split()
         out += mode + b" " + sha + b"\t" + path + b"\0"
     return out
+
+
+class ExclusionBreachReasons(unittest.TestCase):
+    def test_two_yaml_documents_are_refused(self):
+        why = M._token_url_breach(HEAD + "---\n" + HEAD, "w", [], ("w", "j", 0))
+        self.assertEqual(why, "the file does not hold exactly one YAML document")
+
+    def test_a_step_past_the_end_of_the_job_cannot_be_found(self):
+        doc = M.yaml.compose(HEAD + "    steps:\n      - run: true\n", Loader=M.StrLoader)
+        self.assertEqual(M._env_breach(doc, ("w", "j", 1)), "the excluded step cannot be found")
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)

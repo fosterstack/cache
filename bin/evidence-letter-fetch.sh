@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The monthly evidence letter (REQ-REL-013): downloads what bin/evidence-letter.py reads, and checks it against the
+# The monthly evidence letter (REQ-REL-014): downloads what bin/evidence-letter.py reads, and checks it against the
 # release's own signatures first, so the letter never states a file nobody signed.
 #   arguments: the month YYYY-MM (it must be over), then the output folder
 #   (GH_TOKEN set; REPO defaults to fosterstack/cache)

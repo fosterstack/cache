@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The check of a monthly evidence letter's signature, and of the files it vouches for (REQ-REL-013), in one place.
+# The check of a monthly evidence letter's signature, and of the files it vouches for (REQ-REL-014), in one place.
 # Callers make the policy (bin/evidence-letter-publish.sh before it signs, the daily presence check once per run, the
 # fetch once per release); the key is the one in that policy, which was checked against the offline root when the
 # policy was made, and the log is the one pinned log. Never an identity, never the ignored log.

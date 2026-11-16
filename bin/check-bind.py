@@ -10,7 +10,7 @@ binds each file Check is about to judge to the digest Build recorded:
     must be one of those blobs;
   - DIR/archives (with --archives): exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64, of one version), each hashing to the
     digest the list holds under archive-linux-ARCH / archive-fips-linux-ARCH.
-With --members-out DIR (REQ-SUP-001-AC33) it also writes DIR/production.members and DIR/fips.members: oci-layout, index.json and the blobs the index and
+With --members-out DIR (REQ-SUP-001-AC39) it also writes DIR/production.members and DIR/fips.members: oci-layout, index.json and the blobs the index and
 the child manifests name, one path per line. The caller archives those files only, never the whole directory: a root manifest.json, a stray archive
 or an unreferenced blob in the layout stays out of what the container engine reads.
 Any difference exits 1 naming the item; nothing is written (but the member lists, after a layout has been bound)."""
@@ -45,7 +45,7 @@ def bind_layout(images, variant, digest, members_out=None):
         children = chain_items.check_layout(images, variant, digest)
     except Refuse as e:
         fail("%s: the layout %s/%s is not the image Build recorded (%s): %s" % (key, images, variant, digest, e.reason))
-    for own in ("oci-layout", "index.json"):    # REQ-SUP-001-AC33: the two top-level files are the layout's own regular files, not links
+    for own in ("oci-layout", "index.json"):    # REQ-SUP-001-AC39: the two top-level files are the layout's own regular files, not links
         if os.path.islink(os.path.join(images, variant, own)) or not os.path.isfile(os.path.join(images, variant, own)):
             fail("%s: %s/%s is not a regular file of the layout" % (key, variant, own))
     blobs = os.path.join(images, variant, "blobs", "sha256")
@@ -61,7 +61,7 @@ def bind_layout(images, variant, digest, members_out=None):
             fail("%s: the blob %s does not hash to its name (the layout is not the digest Build recorded)" % (key, e.name))
         names.add(e.name)
     members = {digest}
-    # REQ-SUP-001-AC33: a descriptor beyond the two linux children (buildkit's provenance manifest, say) is judged by the scan, not here; what is archived for it is its
+    # REQ-SUP-001-AC39: a descriptor beyond the two linux children (buildkit's provenance manifest, say) is judged by the scan, not here; what is archived for it is its
     # manifest blob and that manifest's config and layers, and the layout must hold each of them (the blobs the index points to)
     try:
         with open(os.path.join(blobs, digest.split(":", 1)[1]), "rb") as f:
@@ -105,7 +105,7 @@ def bind_layout(images, variant, digest, members_out=None):
             if d.split(":", 1)[1] not in names:
                 fail("%s: the linux/%s manifest names %s, which the layout does not hold" % (key, arch, d))
         members.update([child] + wanted)
-    if members_out:                     # REQ-SUP-001-AC33: the files of the layout the caller may archive, and nothing else of it
+    if members_out:                     # REQ-SUP-001-AC39: the files of the layout the caller may archive, and nothing else of it
         listing = ["oci-layout", "index.json"] + ["blobs/sha256/" + d.split(":", 1)[1] for d in sorted(members)]
         try:
             with open(os.path.join(members_out, variant + ".members"), "w") as f:

@@ -17,7 +17,7 @@ case "$suite:$what" in
   *) echo "acceptance-serve: unknown suite or action: $suite $what" >&2; exit 2 ;;
 esac
 [ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is unset" >&2; exit 2; }
-# the image is named by content (REQ-SUP-001-AC30): name@sha256:<64 hex> or an image ID sha256:<64 hex>; a tag is refused (ASCII classes only)
+# the image is named by content (REQ-SUP-001-AC37): name@sha256:<64 hex> or an image ID sha256:<64 hex>; a tag is refused (ASCII classes only)
 export LC_ALL=C
 # the hex and the classes below are matched exactly, whatever the caller's shell options
 shopt -u nocasematch

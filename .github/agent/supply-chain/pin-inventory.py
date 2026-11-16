@@ -249,9 +249,9 @@ def _kernel_lock_items(path, text):
             continue
         m = _KERNEL_ROW.match(row)
         if not m:
-            raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its age cannot be judged")
+            raise RuntimeError(f"{path}:{n}: a lock row is not '<name>=<version> sha256:<64 hex>': its pin is not named")
         if not is_pin(m.group(2)):
-            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its age cannot be judged")
+            raise RuntimeError(f"{path}:{n}: the row version {m.group(2)!r} is not a pin: its pin is not named")
         if (m.group(1), m.group(2)) in seen:
             raise RuntimeError(f"{path}:{n}: the row {m.group(1)}={m.group(2)} appears twice: a duplicate row is an error")
         seen.add((m.group(1), m.group(2)))
@@ -266,8 +266,10 @@ def _kernel_lock_items(path, text):
 
 
 def _persona_tool_items(path, text):
-    """One image item per entry of the persona UAT tools file ({"<tool>": "<image>@sha256:<digest>", ...}). A file that is not JSON, not an object, or holds a value that is not a string is
-    an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept as a tag-only item, so the age check fails it."""
+    """One image item per entry of the persona UAT tools file ({"<tool>": "<image>@sha256:<digest>", ...}).
+    A file that is not JSON, not an object, or holds a value that is not a string is
+    an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept
+    as a tag-only item, so the pin scan fails it."""
     def pairs(kv):
         d = {}
         for k, v in kv:
@@ -298,7 +300,7 @@ def _image_item(ref, label=""):
     m = DIGEST.search(ref)
     if m:
         return Item("image", _strip_tag(ref[:m.start()].rstrip("@")), m.group(0), label)
-    return Item("image", ref, "", label)  # tag only: kept so the age check can fail it
+    return Item("image", ref, "", label)  # tag only: kept so the pin scan can fail it
 
 
 MAX_LINE = 4000

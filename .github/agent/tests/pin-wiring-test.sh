@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
+# proves: REQ-SCAN-015-AC2, REQ-REL-013-AC3, REQ-REL-013-AC4 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the split form of allowlist-chain is accepted only exactly (the chain-split cases)
 # proves: REQ-CI-005-AC2 — a counting step is accepted only in exactly its form (the count-step cases)
 # proves: REQ-REL-004-AC1 — the pull-request gate's govulncheck job judges the way Check does: it is accepted only in exactly its form (the govulncheck-gate cases)
+# proves: REQ-REL-013-AC3 — the eight release-only names belong to the jobs that produce them (the reserved cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -15,7 +16,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_FLOORS_FILE="${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_FLOORS_FILE="${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}" PIN_WIRING_RELEASE_ONLY_FILE="${PIN_WIRING_RELEASE_ONLY_FILE:-$here/.github/policy/release-only-checks.json}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -109,7 +110,7 @@ for k in sorted(set(job) - {"name", "runs-on", "steps"}):
 if job.get("runs-on") != "ubuntu-latest":
     bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
-        "bash .github/agent/tests/pin-wiring-test.sh",  # this test's own step, too
+        "bash .github/agent/tests/pin-wiring-test.sh", "bash bin/required-check-guard-test.sh",  # this test's own step, too, and the guard suite's
         "bash .github/agent/tests/auditor-matrix-test.sh", "bash .github/agent/tests/auditor-labels-test.sh"}  # REQ-CI-005: their counting steps, split out of the parser-tests block (cache#705 round 1)
 seen = set()
 for st in job.get("steps", []):
@@ -445,11 +446,11 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/vex-forms-test.sh"
   },
   {
-   "name": "the monthly evidence letter \u2014 made from the release assets, refused on any mismatch (REQ-REL-013)",
+   "name": "the monthly evidence letter \u2014 made from the release assets, refused on any mismatch (REQ-REL-014)",
    "run": "bash bin/evidence-letter-test.sh"
   },
   {
-   "name": "the monthly evidence letter's jobs \u2014 key, no overwrite, closed, presence (REQ-REL-013-AC9 to AC11)",
+   "name": "the monthly evidence letter's jobs \u2014 key, no overwrite, closed, presence (REQ-REL-014-AC9 to AC11)",
    "run": "bash bin/evidence-letter-job-test.sh"
   },
   {
@@ -741,24 +742,31 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/rescan-current-only-test.sh"
   },
   {
-   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception",
+   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)",
    "run": "bash bin/panel-wiring-test.sh"
   },
   {
-   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md",
+   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md (advisor 0084)",
    "run": "bash .github/agent/tests/k8s-harness-fence-test.sh"
   },
   {
-   "name": "the pin age check \u2014 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)",
+   "name": "the pin scan \u2014 names every moved version, passes only a pin it can read (REQ-SUP-001 AC2)",
    "run": "bash .github/agent/tests/pin-age-check-test.sh"
   },
   {
-   "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)",
+   "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in '''
+r'''exceptions (REQ-SUP-001 AC5-AC10)",
    "run": "bash .github/agent/tests/pin-audit-test.sh"
   },
   {
-   "name": "where the supply-chain checks run \u2014 Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)",
+   "name": "where the supply-chain checks run \u2014 the PR job's read-only token, one writer per '''
+r'''job (REQ-SUP-001 AC4)",
    "run": "bash .github/agent/tests/supply-chain-wiring-test.sh"
+  },
+  {
+   "name": "no wait for new versions \u2014 no text of it, Dependabot proposes at once, the pin-age '''
+r'''context stays, no job holds actions write (REQ-SUP-001 AC30, AC32, AC33)",
+   "run": "bash .github/agent/tests/release-age-gone-test.sh"
   }
  ]
 }''')
@@ -836,41 +844,67 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {jid} steps are not exactly the judged list (same steps, other number or order)")
         else:
             bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why)})")
-# the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
-# and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
+# the required-check policy (release admission reads it): required-checks.json (the ruleset's list) and release-only-checks.json (admission's extra
+# list) are each a readable JSON object whose required_checks is a list of objects; together they have unique contexts and exactly one correct entry
+# (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed). The eight release-only entries
+# are pinned whole in bin/required-check-guard.sh, not here.
 PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
-try:
-    pol = json.load(open(os.environ["PIN_WIRING_POLICY_FILE"]))["required_checks"]
-    if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
+def read_checks(env_name):
+    checks = json.load(open(os.environ[env_name]))["required_checks"]
+    if not isinstance(checks, list) or not all(isinstance(c, dict) for c in checks):
         raise ValueError("required_checks is not a list of objects")
+    return checks
+release_only = []
+try:
+    ruleset = read_checks("PIN_WIRING_POLICY_FILE")
+    release_only = read_checks("PIN_WIRING_RELEASE_ONLY_FILE")
+    pol = ruleset + release_only
 except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
-    bad.append(f"required-checks.json is unreadable or malformed ({type(e).__name__})")
+    bad.append(f"required-checks.json or release-only-checks.json is unreadable or malformed ({type(e).__name__})")
 if pol is not None:
     ctxs = [c.get("context") for c in pol]
     for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
-        bad.append(f"required-checks.json lists the context {dup} more than once")
+        bad.append(f"required-checks.json and release-only-checks.json list the context {dup} more than once")
     for jid in PROTECTED:
         if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
-            bad.append(f"required-checks.json does not have exactly one entry {jid} (integration 15368, scope push)")
-# the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
+            bad.append(f"required-checks.json and release-only-checks.json do not have exactly one entry {jid} (integration 15368, scope push)")
+# the protected jobs and the release-only contexts are reserved check names: no job but the one that produces a name may carry it (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
-# name may be an expression or come from a matrix (its rendered name cannot be judged).
-def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
-    nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
-    if "${{" not in nm:
+# name may be an expression that could render as one. auditor-review-gate is the App's alone: nothing produces it.
+RESERVED = set(PROTECTED) | {n for c in release_only for n in (str(c.get("context")), str(c.get("context")).split(" (")[0])}
+PRODUCES = {"ci.yml": PROTECTED + ("coverage",), "acceptance.yml": ("acceptance-gradle", "acceptance-maven")}
+def takes_reserved(wf, jid, nm):   # a matrix job renders as "<name> (<value>)", so the part before " (" or an expression counts too
+    produces = jid in PRODUCES.get(wf, ()) and nm == jid
+    return not produces and any(n in RESERVED or re.split(r" \(|\$\{\{", n)[0] in RESERVED for n in (jid, str(nm)))
+def spells(parts, name):   # parts in order: the first starts name, the last ends it, text between
+    # two or more parts (the caller checks); stop is where the last part starts, so a stop before the first part's
+    # end means the two overlap
+    stop = len(name) - len(parts[-1])
+    if not name.startswith(parts[0]) or not name.endswith(parts[-1]) or stop < len(parts[0]):
+        return False
+    at = len(parts[0])
+    for part in parts[1:-1]:
+        found = name.find(part, at, stop)
+        if found < 0:
+            return False
+        at = found + len(part)
+    return True
+def could_render_reserved(nm):   # a plain `${{ matrix.a.b }}` stands for any text; any other expression is refused (fail closed)
+    plain = r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}"
+    parts = re.split(plain, str(nm))[::2]
+    if any("${{" in p or "}}" in p for p in parts):
         return True
-    rest = re.sub(r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}", "", nm)
-    return "${{" not in rest and "}}" not in rest and bool(re.search(r"[ (]", rest))
+    return len(parts) > 1 and any(spells(parts, r) for r in RESERVED)
 def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
     return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
     if not isinstance(j_, dict):
         continue
     nm = j_.get("name", jid_)
-    if jid_ not in PROTECTED and (nm in PROTECTED or jid_ in PROTECTED):
-        bad.append(f"the job {jid_} produces the protected check name {nm}")
-    if jid_ not in PROTECTED and not name_disjoint(nm):
+    if takes_reserved("ci.yml", jid_, nm):
+        bad.append(f"the job {jid_} produces the reserved check name {nm}")
+    if could_render_reserved(nm):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
     if writes_checks(j_.get("permissions")):
         bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
@@ -894,9 +928,9 @@ for _f in sorted(os.listdir(_wdir)):
         bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
     for _jid, _j in _jobs.items():
         _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
-        if _jid in PROTECTED or _nm in PROTECTED:
-            bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
-        elif not name_disjoint(_nm):
+        if takes_reserved(_f, _jid, _nm):
+            bad.append(f"{_f}: the job {_jid} takes the reserved check name {_nm}")
+        elif could_render_reserved(_nm):
             bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
         if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
             bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
@@ -938,18 +972,105 @@ else:
 sys.exit(1 if bad else 0)
 PY
 }
+# The byte pins (cache#930 round 9): the whole required-check-guard job, and the workflow's top level, read as raw
+# bytes of the file, never parsed. A trailing comment or blank line under a block is not part of it.
+IFS= read -r -d '' PIN_WIRING_GUARD_JOB <<'JOB' || true
+  required-check-guard:
+    name: required-check guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Main's guard, fetched and never taken from this tree: nothing of the checkout runs in this job, so a pull
+      # request cannot reach the verdict. The guard's own regressions run in the allowlist job.
+      - name: fetch main's guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/contents/bin/required-check-guard.sh?ref=main" --jq '.content' \
+            | base64 -d > "${RUNNER_TEMP}/required-check-guard.sh"
+          [ -s "${RUNNER_TEMP}/required-check-guard.sh" ]
+
+      # One call of main's guard over this tree's two lists, read as data: the ruleset comparison, and the eight
+      # release-only entries pinned in the guard. The verdict uses THIS tree's lists, so a PR that fixes a stale list
+      # goes green on its own run; on push to main the tree is main.
+      - name: this tree's policy lists vs the ruleset on main and the pin in main's guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          bash "${RUNNER_TEMP}/required-check-guard.sh"
+          .github/policy/required-checks.json .github/policy/release-only-checks.json
+JOB
+IFS= read -r -d '' PIN_WIRING_PERMISSIONS <<'TOP' || true
+permissions:
+  contents: read
+  pull-requests: read   # the allowlist job's merge-queue lookup (a block on that job would end its plain-job trust)
+TOP
+export PIN_WIRING_GUARD_JOB PIN_WIRING_PERMISSIONS
+
+bytes_judge() { python3 - "$1" <<'PY'
+import os, sys
+raw = open(sys.argv[1], "rb").read()
+lines = raw.split(b"\n")
+def inert(line):
+    return line.strip(b" ") == b"" or line.lstrip(b" ").startswith(b"#")
+def block(header, indent):   # the header line and what is under it, up to the next line at its own indent or less
+    starts = [i for i, line in enumerate(lines) if line == header]
+    if len(starts) != 1:
+        return None
+    end = starts[0] + 1
+    while end < len(lines) and (inert(lines[end]) or len(lines[end]) - len(lines[end].lstrip(b" ")) > indent):
+        end += 1
+    while inert(lines[end - 1]):
+        end -= 1
+    return b"\n".join(lines[starts[0]:end]) + b"\n"
+CHECKOUT = b"      - uses: actions/checkout@"
+def shape(job):   # Dependabot moves the checkout's digest and its version comment: any 40 lower-case hex stands for it
+    kept = []
+    for line in job.split(b"\n"):
+        digest, rest = line[len(CHECKOUT):len(CHECKOUT) + 40], line[len(CHECKOUT) + 40:]
+        if line.startswith(CHECKOUT) and all(c in b"0123456789abcdef" for c in digest) and len(digest) == 40 \
+                and rest[:2] in (b"", b" #"):
+            line = CHECKOUT + b"<40 hex>"
+        kept.append(line)
+    return b"\n".join(kept)
+bad = []
+pinned_job, pinned_permissions = os.environ["PIN_WIRING_GUARD_JOB"].encode(), os.environ["PIN_WIRING_PERMISSIONS"].encode()
+# YAML ends a line at each of these four, this judge only at LF: a step could hide behind the freed comment
+if any(b in raw for b in (b"\r", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")):
+    bad.append("ci.yml has a carriage return, a next-line, a line separator or a paragraph separator")
+if shape(block(b"  required-check-guard:", 2) or b"") != shape(pinned_job):
+    bad.append("the required-check-guard job is not the pinned text, byte for byte")
+if block(b"permissions:", 0) != pinned_permissions:
+    bad.append("the workflow permissions are not the pinned text, byte for byte")
+top_keys = {b"name", b"on", b"concurrency", b"permissions", b"jobs"}
+if any(line.split(b":")[0] not in top_keys for line in lines if line[:1] not in (b"", b" ", b"#")):
+    bad.append("the workflow has a top-level key beyond name, on, concurrency, permissions, jobs (env, defaults)")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+
 # judge mode, for the trusted review gate: judge the ci.yml of one commit of the current repo, read as a git
 # object (never checked out, never run), and nothing else
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  # a commit without a release-only list is judged with an empty list, which the judge refuses
+  git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/release-only-checks.json" > "$work/head-release-only.json" \
+    2> /dev/null \
+    || echo '{"required_checks": []}' > "$work/head-release-only.json"
   mkdir -p "$work/head-wf"
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
   git show "${PIN_WIRING_JUDGE_GIT}:test-evidence/suite-floors.json" > "$work/head-floors.json" 2> /dev/null || echo '{}' > "$work/head-floors.json"     # REQ-CI-005: the floors file of the judged commit, as the policy file is
   git show "${PIN_WIRING_JUDGE_GIT}:tools/govulncheck/go.mod" > "$work/head-gomod" || { echo "pin-wiring: no tools/govulncheck/go.mod at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_FLOORS_FILE="$work/head-floors.json" judge "$work/head-ci.yml" || exit 1
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_FLOORS_FILE="$work/head-floors.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/head-release-only.json" judge "$work/head-ci.yml" || exit 1
+  bytes_judge "$work/head-ci.yml" || { echo "pin-wiring: the required-check-guard job or the top of the head's ci.yml is not the pinned text" >&2; exit 1; }
   gvgate_judge "$work/head-ci.yml" "$work/head-gomod" || { echo "pin-wiring: the govulncheck job of the head's ci.yml is not the Check-equivalent form (REQ-REL-004-AC1)" >&2; exit 1; }
   exit 0
 fi
@@ -1041,6 +1162,12 @@ for sfx in matrix labels; do
   case_ "auditor-$sfx-env"      bad "$sel['env'] = {'A': 'b'}"
   case_ "auditor-$sfx-timeout"  bad "$sel['timeout-minutes'] = '5'"
 done
+gs='[s for s in '"$steps"' if (s.get("run") or "").strip() in ("bash bin/required-check-guard-test.sh", "python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json required-check-guard-test.sh bin/required-check-guard-test.sh")][0]'
+case_ guard-suite-step-removed  bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() not in ('bash bin/required-check-guard-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json required-check-guard-test.sh bin/required-check-guard-test.sh')]"
+case_ guard-suite-if-false      bad "$gs['if'] = 'false'"
+case_ guard-suite-continue      bad "$gs['continue-on-error'] = 'true'"
+case_ guard-suite-shell         bad "$gs['shell'] = \"bash -c 'true' {0}\""
+case_ guard-suite-workdir       bad "$gs['working-directory'] = 'bin'"
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
 fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
@@ -1149,10 +1276,10 @@ case_ chain-verify-no-netcut bad "[s for s in $csteps if 'chain-verify-test.sh' 
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
 # does nothing else; exit 1 and the reasons when it fails
-gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
+gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty> [shell edit of the policy tree]
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
-  mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
+  mkdir -p "$r/.github/policy"; cp "$here"/.github/policy/*-checks.json "$r/.github/policy/"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/tools/govulncheck"; cp "$here/tools/govulncheck/go.mod" "$r/tools/govulncheck/go.mod"      # the pin the govulncheck-gate judge reads at the judged commit
   mkdir -p "$r/test-evidence"; cp "$here/test-evidence/suite-floors.json" "$r/test-evidence/suite-floors.json"     # REQ-CI-005: the judge reads the floors file of the judged commit
@@ -1170,15 +1297,16 @@ exec(edit)
 yaml.safe_dump(d, open(p, "w"), sort_keys=False)
 PY
   fi
+  [ -z "${4:-}" ] || ( cd "$r" && eval "$4" )
   ( cd "$r" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
   if out=$(cd "$r" && PIN_WIRING_JUDGE_GIT="$(cd "$r" && git rev-parse HEAD)" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS git:$1 → $got"
   else failn=$((failn+1)); echo "FAIL git:$1 → $got, want $2 ($out)"; fi
 }
 gitcase the-real-ci-at-a-commit   ok  ""
-WRAP="w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() in ('bash bin/inspector-gate-test.sh', 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh')][0]; w['run'] = 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
-gitcase counting-step-at-a-commit ok  "$WRAP"
-GIT_FLOORS_EDIT="d.pop('inspector-gate-test.sh')" gitcase counting-step-unfloored-at-that-commit bad "$WRAP"     # the floors file of the judged commit decides, not the checkout's
+# ci.yml already carries inspector-gate-test.sh as a counting step; no edit, so the bytes stay the pinned ones
+gitcase counting-step-at-a-commit ok  ""
+GIT_FLOORS_EDIT="d.pop('inspector-gate-test.sh')" gitcase counting-step-unfloored-at-that-commit bad ""     # the floors file of the judged commit decides, not the checkout's
 # the policy at the commit is read too: a missing split entry is refused (and so is a missing file, above)
 
 # the govulncheck-gate judge runs in judge mode too, over the head's own ci.yml (the trusted gate path)
@@ -1186,6 +1314,12 @@ GVJ="[j for j in [d['jobs']['govulncheck']]][0]['steps']"
 gitcase govulncheck-gate-old-step-at-a-commit  bad "$GVJ[-1]['run'] = 'govulncheck ./...'"
 gitcase govulncheck-gate-no-installer-at-a-commit  bad "$GVJ[:] = [s for s in $GVJ if s.get('run') != 'bash bin/install-scanner.sh go']"
 gitcase govulncheck-gate-extra-step-at-a-commit  bad "$GVJ.insert(3, {'run': 'cp /bin/true /usr/local/bin/fscache-go/bin/govulncheck'})"
+# main's own form needs release-only-checks.json: a head without it, or one that drops a protected entry, is refused
+RO=.github/policy/release-only-checks.json
+gitcase no-release-only-at-a-commit    bad "" "rm $RO"
+gitcase release-only-drops-chain-at-a-commit bad "" \
+  "jq '.required_checks |= map(select(.context != \"allowlist-chain\"))' $RO > ro.tmp && mv ro.tmp $RO"
+
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
 gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
@@ -1317,7 +1451,7 @@ then pass=$((pass+1)); echo "PASS chain-split-grype-installer-with-consumers →
 # a half-done split: one shard job is gone, so a suite would run in no shard (the old case here replaced a shard with a copy of the aggregate and failed on the YAML alias it created, not on the split)
 case_ chain-shard-missing         bad "del d['jobs']['allowlist-chain-4']"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
-PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.startswith('bin/')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
+PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.endswith('.sh')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
 case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
 case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
 case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, dict(ps[ix('bash bin/vex-index-test.sh </dev/null')]))"
@@ -1352,6 +1486,50 @@ case_msg allowlist-uses-setup-python-other-owner "d['jobs']['allowlist']['steps'
 case_msg allowlist-uses-setup-python-commit-placeholder "d['jobs']['allowlist']['steps'][7]['uses'] = 'actions/setup-python@<commit>'" "the allowlist step 8 (set up Python for the workflow-permission check) is not a judged action step"
 case_msg allowlist-uses-extra-action-step "d['jobs']['allowlist']['steps'].insert(3, {'name': 'x', 'uses': 'actions/cache@0123456789abcdef0123456789abcdef01234567'})" "the allowlist step 4 (x) is not a judged action step"
 case_msg allowlist-uses-checkout-tag "s = d['jobs']['allowlist']['steps'][0]; s.pop('name', None); s['uses'] = 'actions/checkout@v4'" "the allowlist step 1 (actions/checkout@v4) is not a judged action step"
+# Gate 6 sits in main's list, right after patch-decide (cache#669 landed): a second copy, or one moved or weakened, is
+# refused
+G6="${PA}g6 = {'name': 'gate 6 of the release process \\u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)', 'run': 'bash bin/audit-record-test.sh'}; "
+case_ g6-at-start                 bad "${G6}ps.insert(0, g6)"
+case_ g6-at-end                   bad "${G6}ps.append(g6)"
+case_ g6-before-patch-decide      bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh'), g6)"
+case_ g6-twice                    bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/patch-decide-test.sh') + 1, dict(g6))"
+case_ g6-or-true                  bad "${G6}g6['run'] += ' || true'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-renamed                  bad "${G6}g6['name'] = 'x'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-continue                 bad "${G6}g6['continue-on-error'] = 'true'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-env                      bad "${G6}g6['env'] = {'X': '1'}; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-other-script             bad "${G6}g6['run'] = 'bash bin/other-test.sh'; ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6)"
+case_ g6-and-another-step         bad "${G6}ps.insert(ix('bash bin/patch-decide-test.sh') + 1, g6); ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+# the no-hold suite step sits in main's list (cache#884), judged strictly like every other step: once, last, as written
+PA+="gone = 'bash .github/agent/tests/release-age-gone-test.sh'; "
+case_ pa-nohold-removed           bad "${PA}"'del ps[ix(gone)]'
+case_ pa-nohold-twice             bad "${PA}"'ps.append(dict(ps[ix(gone)]))'
+case_ pa-nohold-at-start          bad "${PA}"'ps.insert(0, ps.pop(ix(gone)))'
+case_ pa-nohold-renamed           bad "${PA}"'ps[ix(gone)]["name"] = "x"'
+case_ pa-nohold-or-true           bad "${PA}"'ps[ix(gone)]["run"] += " || true"'
+case_ pa-nohold-continue          bad "${PA}"'ps[ix(gone)]["continue-on-error"] = "true"'
+case_ pa-nohold-env               bad "${PA}"'ps[ix(gone)]["env"] = {"X": "1"}'
+case_ pa-nohold-if-false          bad "${PA}"'ps[ix(gone)]["if"] = "false"'
+# carried from cache#901 (its cases that are not the transition form), against main's list: a step dropped, moved,
+# weakened or added anywhere is refused
+case_ pa-nohold-unnamed           bad "${PA}"'ps[ix(gone)].pop("name")'
+case_ pa-nohold-before-last       bad "${PA}"'ps.insert(len(ps) - 2, ps.pop(ix(gone)))'
+case_ pa-nohold-another-step-after  bad "${PA}"'ps.append({"name": "x", "run": "true"})'
+case_ pa-nohold-another-step-before bad "${PA}"'ps.insert(ix(gone), {"name": "x", "run": "true"})'
+case_ pa-pin-audit-run-or-true    bad "${PA}ps[ix('bash .github/agent/tests/pin-audit-test.sh')]['run'] += ' || true'"
+case_ pa-pin-age-run-other        bad "${PA}ps[ix('bash .github/agent/tests/pin-age-check-test.sh')]['run'] = 'true'"
+case_ pa-supply-chain-wiring-env  bad "${PA}ps[ix('bash .github/agent/tests/supply-chain-wiring-test.sh')]['env'] = \
+{'X': '1'}"
+case_ pa-first-dropped            bad "${PA}del ps[0]"
+case_ pa-patch-decide-dropped     bad "${PA}del ps[ix('bash bin/patch-decide-test.sh')]"
+case_ pa-audit-record-dropped     bad "${PA}del ps[ix('bash bin/audit-record-test.sh')]"
+case_ pa-audit-record-popped      bad "${PA}ps.pop(ix('bash bin/audit-record-test.sh'))"
+case_ pa-patch-decide-audit-record-swapped bad "${PA}i = ix('bash bin/patch-decide-test.sh'); j = ix('bash \
+bin/audit-record-test.sh'); ps[i], ps[j] = ps[j], ps[i]"
+case_ pa-pin-age-to-start         bad "${PA}ps.insert(0, ps.pop(ix('bash .github/agent/tests/pin-age-check-test.sh')))"
+case_ pa-first-two-swapped        bad "${PA}ps[0], ps[1] = ps[1], ps[0]"
+case_ pa-patch-decide-or-true     bad "${PA}ps[ix('bash bin/patch-decide-test.sh')]['run'] += ' || true'"
+case_ pa-audit-record-or-true     bad "${PA}ps[ix('bash bin/audit-record-test.sh')]['run'] += ' || true'"
+case_ pa-panel-test-or-true       bad "${PA}ps[ix('bash bin/panel-test.sh')]['run'] += ' || true'"
 RUNX="d['jobs']['allowlist-persona']['steps'][-1]['run'] += ' || true'"
 case_msg run-changed-names-step "$RUNX" "the allowlist-persona step 8 ("
 case_msg run-changed-names-key  "$RUNX" "differs in: run"
@@ -1497,9 +1675,104 @@ WF
   if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
 done
 
-# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
+# the eight release-only names are reserved (REQ-REL-013-AC3): no job but the one that produces each may carry it,
+# by job id, by literal name or by a name with an expression; auditor-review-gate is the App's alone, so no Actions
+# job may carry it
+reserved_wf() {  # <name> <jobs of an extra workflow zz.yml>
+  rm -rf "$work/rs-$1"; mkdir -p "$work/rs-$1"; cp "$here"/.github/workflows/*.y*ml "$work/rs-$1/"
+  printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n%s' "$2" > "$work/rs-$1/zz.yml"
+}
+JOB='    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n'
+for mut in "gate-name|  zz:\n    name: auditor-review-gate\n" "gate-id|  auditor-review-gate:\n" \
+  "gate-expr|  zz:\n    name: 'auditor-review-gate (\${{ matrix.v }})'\n" "coverage-name|  zz:\n    name: coverage\n" \
+  "coverage-id|  coverage:\n" "gradle-name|  zz:\n    name: acceptance-gradle\n" "gradle-id|  acceptance-gradle:\n" \
+  "maven-literal|  zz:\n    name: acceptance-maven (1.2.0)\n" "maven-id|  acceptance-maven:\n" \
+  "maven-expr|  zz:\n    name: 'acceptance-maven (\${{ matrix.v }})'\n" \
+  "chain-expr|  zz:\n    name: 'allowlist-chain (\${{ matrix.v }})'\n" \
+  "persona-expr|  zz:\n    name: 'allowlist-persona (\${{ matrix.v }})'\n"; do
+  reserved_wf "${mut%%|*}" "$(printf "${mut#*|}${JOB}")"
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml")
+  then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then
+    pass=$((pass+1)); echo "PASS reserved-${mut%%|*} → bad"
+  else
+    failn=$((failn+1)); echo "FAIL reserved-${mut%%|*} → $got, want bad ($out)"
+  fi
+done
+# a producer of one reserved name carrying another's, and the names inside ci.yml
+rm -rf "$work/rs-swapped"; mkdir -p "$work/rs-swapped"; cp "$here"/.github/workflows/*.y*ml "$work/rs-swapped/"
+python3 - "$work/rs-swapped/acceptance.yml" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+assert "  acceptance-maven:\n    name: acceptance-maven\n" in t
+old = "  acceptance-maven:\n    name: acceptance-maven\n"
+open(sys.argv[1], "w").write(t.replace(old, "  acceptance-maven:\n    name: acceptance-gradle\n", 1))
+PY
+if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-swapped" judge "$here/.github/workflows/ci.yml")
+then got=ok; else got=bad; fi
+if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS reserved-producer-swapped → bad"
+else failn=$((failn+1)); echo "FAIL reserved-producer-swapped → $got, want bad ($out)"; fi
+ZZ="{'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+case_ reserved-gate-in-ci          bad "d['jobs']['zz'] = dict($ZZ, name='auditor-review-gate')"
+case_ reserved-gate-id-in-ci       bad "d['jobs']['auditor-review-gate'] = $ZZ"
+case_ reserved-maven-in-ci         bad "d['jobs']['zz'] = dict($ZZ, name='acceptance-maven')"
+case_ reserved-maven-expr-in-ci    bad "d['jobs']['zz'] = dict($ZZ, name='acceptance-maven (\${{ matrix.v }})')"
+case_ reserved-gradle-id-in-ci     bad "d['jobs']['acceptance-gradle'] = $ZZ"
+case_ reserved-coverage-expr-in-ci bad "d['jobs']['lint']['name'] = 'coverage (\${{ matrix.v }})'"
+case_ reserved-pins-auditor-in-ci bad "d['jobs']['zz'] = dict($ZZ, name='allowlist-pins-auditor')"
+case_ reserved-pins-auditor-id-renamed bad "d['jobs']['pins'] = d['jobs'].pop('allowlist-pins-auditor')"
+
+# a name with an expression that could render as a reserved name is refused (REQ-REL-013-AC3), except in the job
+# that produces it
+RS='${{ matrix.target.scanner }} ${{ matrix.target.release }} ${{ matrix.target.variant }}'
+RT='{scanner: grype, release: a, variant: b}'
+MX='    strategy:\n      matrix:\n        t: [acceptance-maven]\n'
+for mut in "exprname-tool|  zz:\n    name: '\${{ matrix.tool }} (1.2.0)'\n    strategy:\n      matrix:\n        tool: [acceptance-maven]\n|bad" \
+  "exprname-prefix|  zz:\n    name: 'acceptance-\${{ matrix.t }} (1.2.0)'\n${MX}|bad" \
+  "exprname-version|  zz:\n    name: '\${{ matrix.t }} (1.2.3)'\n${MX}|bad" \
+  "exprname-suffix|  zz:\n    name: 'auditor-review-gate\${{ matrix.s }}'\n    strategy:\n      matrix:\n        s: ['']\n|bad" \
+  "exprname-alone|  zz:\n    name: '\${{ matrix.n }}'\n    strategy:\n      matrix:\n        n: [coverage]\n|bad" \
+  "exprname-ok-os|  zz:\n    name: 'build \${{ matrix.os }} (1.2.0)'\n    strategy:\n      matrix:\n        os: [ubuntu]\n|ok" \
+  "exprname-ok-scan|  zz:\n    name: 'scan (\${{ matrix.scanner }})'\n    strategy:\n      matrix:\n        scanner: [grype]\n|ok" \
+  "exprname-bang|  zz:\n    name: '\${{ matrix.n }}!'\n    strategy:\n      matrix:\n        n: [x]\n|ok" \
+  "exprname-ok-rescan|  zz:\n    name: '${RS}'\n    strategy:\n      matrix:\n        target: [${RT}]\n|ok"; do
+  want="${mut##*|}"; body="${mut%|*}"
+  reserved_wf "${mut%%|*}" "$(printf "${body#*|}${JOB}")"
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-${mut%%|*}" judge "$here/.github/workflows/ci.yml")
+  then got=ok; else got=bad; fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass+1)); echo "PASS ${mut%%|*} → $got"
+  else
+    failn=$((failn+1)); echo "FAIL ${mut%%|*} → $got, want $want ($out)"
+  fi
+done
+
+# REQ-REL-013-AC3: 64 plain matrix expressions with no text between and a final "!" (in no reserved name) cannot render
+# as a reserved name, so the judge says ok; the old matcher backtracked on that name for over 30 s, so the only time
+# bound is the timeout 10 of timed_judge, and a slow runner cannot turn the check red
+timed_judge() {  # <workflow copy name>: sets got (ok|bad), ms and out; the judge runs under timeout 10
+  local t0; t0=$(date +%s%N)
+  # a subshell, so that timeout can kill the judge
+  if out=$(here="$here" PIN_WIRING_WORKFLOWS_DIR="$work/rs-$1" \
+    PIN_WIRING_POLICY_FILE="$here/.github/policy/required-checks.json" \
+    PIN_WIRING_RELEASE_ONLY_FILE="$here/.github/policy/release-only-checks.json" timeout 10 \
+    bash -c "$(declare -f judge); judge \"\$1\"" _ "$here/.github/workflows/ci.yml" 2>&1)
+  then got=ok; else got=bad; fi
+  ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+}
+expr64=""; for _ in $(seq 64); do expr64+='${{ matrix.a.b }}'; done
+reserved_wf exprname-64-plain "$(printf '  zz:\n    name: %s!\n%b' "$expr64" "$JOB")"
+timed_judge exprname-64-plain
+if [ "$got" = ok ]; then
+  pass=$((pass+1)); echo "PASS exprname-64-plain-then-bang → ok in ${ms} ms"
+else
+  failn=$((failn+1)); echo "FAIL exprname-64-plain-then-bang → $got in ${ms} ms, want ok ($out)"
+fi
+
+# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission
+# reads them); allowlist-chain is in release-only-checks.json, so these edit that file
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
-  python3 - "$here/.github/policy/required-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
+  python3 - "$here/.github/policy/release-only-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); rc = d["required_checks"]
 e = [c for c in rc if c["context"] == "allowlist-chain"][0]
@@ -1513,7 +1786,13 @@ elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
 if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
 else: json.dump(d, open(sys.argv[2], "w"))
 PY
-  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
+  if out=$(PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml")
+  then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then
+    pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"
+  else
+    failn=$((failn+1)); echo "FAIL policy-$mut accepted"
+  fi
 done
 
 gvgate_ci="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}/ci.yml"
@@ -1543,6 +1822,122 @@ gvgate_mut "install-and-copy" 'govulncheck@v1.7.0' 'govulncheck@v1.7.0 && cp /bi
 gvgate_mut "planted-binary-step" '      - name: govulncheck (the same judgment as Check)' '      - name: plant
         run: cp /bin/true /usr/local/bin/fscache-go/bin/govulncheck
       - name: govulncheck (the same judgment as Check)'
+
+python3 - "$here/.github/policy" "$work/pol-in-both" <<'PY'
+import json, sys
+req = json.load(open(sys.argv[1] + "/required-checks.json"))
+rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
+req["required_checks"].append([c for c in rel["required_checks"] if c["context"] == "allowlist-chain"][0])
+json.dump(req, open(sys.argv[2] + "-required.json", "w"))
+PY
+if out=$(PIN_WIRING_POLICY_FILE="$work/pol-in-both-required.json" judge "$here/.github/workflows/ci.yml"); then
+  failn=$((failn+1)); echo "FAIL policy-in-both accepted"
+else pass=$((pass+1)); echo "PASS policy-in-both → bad ($out)"; fi
+
+# allowlist-pins-auditor is off the ruleset (owner, Nov 12) and is the eighth release-only entry: like the other
+# protected jobs, exactly one entry {allowlist-pins-auditor, 15368, push} must stand across the two lists.
+# pol_pa <name> <where: release|required|neither|both|bad-id|bad-scope|bad-ctx>: copies of the two committed lists
+# with that entry placed as named (the committed files are normalised first, so the cases hold on any data).
+pol_pa() {
+  python3 - "$here/.github/policy" "$work/pol-pa-$1" "$2" <<'PY'
+import json, sys
+req = json.load(open(sys.argv[1] + "/required-checks.json"))
+rel = json.load(open(sys.argv[1] + "/release-only-checks.json"))
+for d in (req, rel):
+    d["required_checks"] = [c for c in d["required_checks"] if c["context"] != "allowlist-pins-auditor"]
+e = {"context": "allowlist-pins-auditor", "integration_id": 15368, "scope": "push"}
+w = sys.argv[3]
+if w == "bad-id": e["integration_id"] = 5054756
+if w == "bad-scope": e["scope"] = "pull_request"
+if w == "bad-ctx": e["context"] = "allowlist-pins"
+if w in ("release", "both", "bad-id", "bad-scope", "bad-ctx"): rel["required_checks"].append(dict(e))
+if w in ("required", "both"): req["required_checks"].append(dict(e))
+json.dump(req, open(sys.argv[2] + "-required.json", "w")); json.dump(rel, open(sys.argv[2] + "-release.json", "w"))
+PY
+}
+for pa in "release ok" "required ok" "neither bad" "both bad" "bad-id bad" "bad-scope bad" "bad-ctx bad"; do
+  set -- $pa; pol_pa "$1" "$1"
+  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-pa-$1-required.json" PIN_WIRING_RELEASE_ONLY_FILE="$work/pol-pa-$1-release.json" \
+       judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS policy-pins-auditor-$1 → $got"
+  else failn=$((failn+1)); echo "FAIL policy-pins-auditor-$1 → $got, want $2 ($out)"; fi
+done
+# the committed lists carry it exactly once (the wiring of the real data)
+if out=$(judge "$here/.github/workflows/ci.yml") && python3 - "$here/.github/policy" <<'PY'
+import json, sys
+n = sum(1 for f in ("required-checks.json", "release-only-checks.json")
+        for c in json.load(open(sys.argv[1] + "/" + f))["required_checks"]
+        if c == {"context": "allowlist-pins-auditor", "integration_id": 15368, "scope": "push"})
+sys.exit(0 if n == 1 else 1)
+PY
+then pass=$((pass+1)); echo "PASS policy-pins-auditor-committed-once → ok"
+else failn=$((failn+1)); echo "FAIL policy-pins-auditor-committed-once → want one entry across the committed lists ($out)"; fi
+# in release-only it is also refused when the head's release-only list lacks it and the required list lacks it too,
+# at a commit (main's form)
+gitcase release-only-lacks-pins-auditor-at-a-commit bad "" \
+  "jq '.required_checks |= map(select(.context != \"allowlist-pins-auditor\"))' $RO > ro.tmp && mv ro.tmp $RO && jq '.required_checks |= map(select(.context != \"allowlist-pins-auditor\"))' .github/policy/required-checks.json > rc.tmp && mv rc.tmp .github/policy/required-checks.json"
+
+# the name stays reserved without the policy entry: no job of another workflow may take it
+reserved_wf pins-auditor-name "$(printf "  zz:\n    name: allowlist-pins-auditor\n${JOB}")"
+if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/rs-pins-auditor-name" judge "$here/.github/workflows/ci.yml")
+then failn=$((failn+1)); echo "FAIL reserved-pins-auditor-name → ok, want bad ($out)"
+else pass=$((pass+1)); echo "PASS reserved-pins-auditor-name → bad"; fi
+
+# ---- byte pins: the whole required-check-guard job and the top-level env/defaults/permissions ----------------
+# bcase_ <name> <ok|bad> <sed script or empty>: the real ci.yml, edited as bytes by sed, judged by bytes_judge.
+bcase_() {
+  local f="$work/$1.yml"
+  cp "$here/.github/workflows/ci.yml" "$f"
+  if [ -n "$3" ]; then sed -i -e "$3" "$f"; fi
+  if out=$(bytes_judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
+}
+
+guard='/^  required-check-guard:$/,/^  drift-issue:$/'
+guard_head='/^  required-check-guard:$/,/^    steps:$/'
+bcase_ the-real-bytes          ok  ""
+bcase_ job-env-key             bad "$guard_head"'s/^    steps:$/    env:\n      X: "1"\n    steps:/'
+bcase_ step-before-guard       bad "$guard"'{/^    steps:$/a\      - run: echo first
+}'
+path_step='      - run: hook=GITHUB_'"'PATH'"'; echo X=1 >> "${!hook}"'
+bcase_ github-path-built       bad "$guard"'s/^    steps:$/&\n'"$path_step"'/'
+bcase_ top-level-env-key       bad 's/^permissions:$/env:\n  X: "1"\n\npermissions:/'
+bcase_ top-level-defaults-key  bad 's/^permissions:$/defaults:\n  run:\n    shell: bash\n\npermissions:/'
+bcase_ top-level-permissions   bad '/^permissions:$/a\  issues: write'
+bcase_ job-pipe-minus          bad "$guard"'s/^        run: |$/        run: |-/'
+bcase_ job-permissions-changed bad "$guard_head"'s/^      contents: read\b/      contents: write/'
+bcase_ job-comment-changed     bad "$guard"'s/^      # Main'"'"'s guard, fetched/      # main'"'"'s guard, fetched/'
+# the checkout digest and its `# vX.Y.Z` comment are what Dependabot rewrites: both stand for any value on this line
+old=3d3c42e5aac5ba805825da76410c181273ba90b1
+new=abababababababababababababababababababab
+ck="$guard{/^      - uses: actions\/checkout@/{"
+bcase_ checkout-digest-and-comment-bumped ok  "${ck}s/@$old/@$new/;s/# v7.0.1/# v7.1.0/}}"
+bcase_ checkout-digest-bumped-no-comment  ok  "${ck}s/@$old/@$new/;s/ # v7.0.1\$//}}"
+bcase_ checkout-comment-only-changed      ok  "${ck}s/# v7.0.1/# v8.0.0/}}"
+bcase_ checkout-tag-ref                   bad "${ck}s/@$old # v7.0.1/@v4/}}"
+bcase_ checkout-short-digest              bad "${ck}s/@$old/@${new:0:39}/}}"
+bcase_ checkout-upper-digest              bad "${ck}s/@$old/@${new^^}/}}"
+bcase_ checkout-other-action-name         bad "${ck}s/actions\/checkout@/evil\/checkout@/}}"
+bcase_ checkout-literal-marker            bad "${ck}s/@$old/@<commit>/}}"
+bcase_ checkout-indent-changed            bad "${ck}s/^      - /       - /}}"
+bcase_ second-uses-line-in-job            bad "$guard{/^    steps:\$/a\\      - uses: actions/checkout@$new
+}"
+# YAML ends a line at CR, U+0085, U+2028 and U+2029; bytes_judge splits on LF only, so a step can hide after them
+bcase_ checkout-comment-plain-bump         ok  "${ck}s/# v7.0.1/# v7.1.0/}}"
+for b in cr:$'\r' nel:$'\xc2\x85' ls:$'\xe2\x80\xa8' ps:$'\xe2\x80\xa9'; do
+  bcase_ "checkout-comment-has-${b%%:*}" bad "${ck}s/# v7.0.1/# v7.0.1${b#*:}      - run: echo hidden/}}"
+  bcase_ "after-guard-comment-line-has-${b%%:*}" bad "s/^  drift-issue:\$/    # note${b#*:}      - run: echo hidden\n&/"
+done
+bcase_ other-job-checkout-bumped          ok  "/^  test:\$/,/^  vendor:\$/s/@$old/@$new/"
+bcase_ other-job-go-version    ok  '/^  test:$/,/^  vendor:$/s/go-version: '"'1.27'/go-version: '1.26'/"
+bcase_ other-job-comment       ok  '/^  test:$/a\    # a note'
+# a head without the guard job must not pass as "same pinned text" (empty == empty)
+sed "$guard"'{/^  drift-issue:$/!d}' "$here/.github/workflows/ci.yml" > "$work/no-guard-head.yml"
+if out=$(bytes_judge "$work/no-guard-head.yml")
+then failn=$((failn+1)); echo "FAIL bytes-without-guard → ok, want bad ($out)"
+else pass=$((pass+1)); echo "PASS bytes-without-guard → bad ($out)"; fi
+
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

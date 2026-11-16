@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-013-AC5, REQ-REL-013-AC9, REQ-REL-013-AC10, REQ-REL-013-AC11
+# proves: REQ-REL-014-AC5, REQ-REL-014-AC9, REQ-REL-014-AC10, REQ-REL-014-AC11
 # The jobs of the monthly evidence letter (owner Oct 27): .github/workflows/evidence-letter.yml,
 # bin/evidence-letter-fetch.sh, bin/evidence-letter-publish.sh, bin/evidence-letter-verify.sh and
 # bin/evidence-letter-present.sh. Offline: cosign, gh, date and the Check-record verifier are stand-ins that record

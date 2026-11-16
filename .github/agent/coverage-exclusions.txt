@@ -66,9 +66,8 @@
 .github/agent/tests/unit-shard-sum.py  the gate's unit-shard checker (test infrastructure; proves the shards ran every test exactly once), exercised by coverage-shard-test.sh's cases
 .github/agent/tests/report-lint.py  test infrastructure: the report lint (uniqueness + GFM render), exercised by the matrix suite's rpt-* cases
 .github/agent/supply-chain/pin-inventory.py  supply-chain CI tool (REQ-SUP-001), not auditor code: proved end to end by .github/agent/tests/pin-age-check-test.sh and pin-audit-test.sh, which run the real program (a subprocess, so statements are not measured here)
-.github/agent/supply-chain/pin-age-check.py  supply-chain CI tool (REQ-SUP-001), not auditor code: proved end to end by .github/agent/tests/pin-age-check-test.sh (121+ cases against a stub gh and fixtures; subprocess, so statements are not measured here)
+.github/agent/supply-chain/pin-age-check.py  supply-chain CI tool (REQ-SUP-001), not auditor code: proved end to end by .github/agent/tests/pin-age-check-test.sh (cases against git repositories built per case; subprocess, so statements are not measured here)
 .github/agent/supply-chain/pin-audit.py  supply-chain CI tool (REQ-SUP-001), not auditor code: proved end to end by .github/agent/tests/pin-audit-test.sh (fixtures, a recording gh, real git repositories; subprocess, so statements are not measured here)
-.github/agent/supply-chain/tag_observer.py  supply-chain CI tool (REQ-SUP-001), shared verbatim with the ops repo, not auditor code: exercised by .github/agent/tests/pin-audit-test.sh
 .github/agent/tests/gh-map-stub.py  test double for gh used by the supply-chain shell tests (test code)
 .github/agent/bin/tests/fs_guard.py  test helper (the audit-hook and os.* tripwire that fails any unit test touching a real system path; test code, not auditor code; exercised by test_fs_guard.py)
 .github/agent/bin/tests/test_fs_guard.py  unit test (test code — the Go gate does not measure _test.go either)

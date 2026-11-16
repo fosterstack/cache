@@ -73,7 +73,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "fa99405a70d2b1ee73abb8c5465762d32e71f98b0a126b3af38db5ee2e8bdacc",
+      "sha256": "f6aa344542fabfce2a0efe3d4db7ba5062bfa64d258bec4a3c1108f7eb2a0024",
       "tools": [
         "at",
         "aws",
@@ -255,7 +255,7 @@
     },
     {
       "path": "bin/install-build-tools.sh",
-      "sha256": "4703b2ee829fa12247e1abd1c1fcdaeacece6fb495a1a172e100a58505ae4267",
+      "sha256": "cc282add565dd40e0af44063b785cc91865e98e3f0c3240cae2cc12a3e609fed",
       "tools": [
         "at",
         "command",
@@ -528,7 +528,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the owner's SSH signature of a release tag and calls gh for GET-only reads",
-      "sha256": "072f4b221ab0bba9b2f6310a6bb89da676225f6805bd8fc9abcbe3e0e62ac96b",
+      "sha256": "47e9f972094b0ad821fdfc64647251bad395abe08fe877ee1d10cec585bf17d6",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -561,22 +561,25 @@
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): main's copy, read from origin/main by bin/build-admit.py and run on the tagged commit's sha, tag and tag object; reads the record branch with gh GET only and writes nothing",
-      "sha256": "1e682fdcf7becf915e9e7b7b4d23cbe9de462c13e6674819cf0b4582e211d485"
+      "sha256": "5c3740b8be3b26bc1b368a625d24fd2b12e25bc02a7cdb845d32d2a07b3f48be"
     },
     {
       "path": "bin/audit-record.py",
       "tools": [
         "python3",
         "at",
+        "bash",
         "gh",
+        "git",
         "make"
       ],
       "runs": [
-        "bin/admission-tag-signer.py"
+        "bin/admission-tag-signer.py",
+        "bin/dependabot-reviewer-version.sh"
       ],
       "signs": false,
       "reason": "gate 7 (REQ-REL-012-AC7): the judge's decision over data the wrapper fetched (the record, the writers policy, the tag object); reads and decides, signs and writes nothing",
-      "sha256": "e029e81a2ce6cf016613fbed69beeb00121b6a126fbf4d78135ac07b77be9a1f"
+      "sha256": "8932f8c746d986bb3c8e03b0861e0bf8af8bf229258eeb1a11038ae1932f97a9"
     },
     {
       "path": "bin/build-freeze.sh",
@@ -943,7 +946,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "5f021d2ae72110ec0ac030d9a216a9c0fd4da01c33591282441b150315ce77f0",
+      "sha256": "e5f697a27e8a6db848b72acb8ec80dae17afc0eeb20436360747920299f74eb3",
       "tools": [
         "curl",
         "docker",
@@ -963,7 +966,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "1bd55a2be1e76399546deb4379e01a142993c0c215a8e215b580911a591617d0",
+      "sha256": "0a3a4713d57678f33c5c03026ae99611ce11274573c70cece3261247a989e53c",
       "tools": [
         "bash",
         "docker",
@@ -1049,7 +1052,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "c1c96768f690f949da407538f664c7b35b4b80d3b9139c4baa3ccfb985d04f14",
+      "sha256": "5f9f0a8cf6965709460c0133afc5600db1354febcfa2f24ac43e1b8d9b5e2885",
       "tools": [
         "at",
         "awk",
@@ -1153,7 +1156,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "ef70a1c5a204629bc7a96d82c9043012b185c53b98938f07f59cb377c0ddacf6",
+      "sha256": "8476266c213860e4a1bfc4178a902c6fd0c0bf3f05661764aceb415d211e10ce",
       "tools": [
         "awk",
         "bash",
@@ -1466,7 +1469,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "27093e3c59ebd2f42dec74c96ec30d803e81a82bf474301062b94ece902f1a2a",
+      "sha256": "768f5c12a5fc355a4b465ae6e010e6a65f8ce01e9e436a7700cad1546a7a5aec",
       "tools": [
         "curl",
         "docker",
@@ -2007,7 +2010,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "6a40993c22bf4ab912f3eaea4f6412fe381c5b4d889a1e6e74ba55c59e22e6ac",
+      "sha256": "f0ffd76c1662f7ebc00ae05b1913ebfad8de72a1e9b21765cf74dfb668d4262f",
       "tools": [
         "at",
         "curl",
@@ -2078,7 +2081,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "a96e9a2b761815592516e642fccb8fba6453a724716cccca4442a76abe78e8c3",
+      "sha256": "fea57852865d28fecbd9f25f62666db9240194219cbd82171f70d1dde1acaf54",
       "tools": [],
       "runs": [
         "bin/chain_items.py"

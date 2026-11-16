@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6
+# proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7, REQ-CHAIN-001-AC6, REQ-REL-012-AC7, REQ-REL-009-AC6, REQ-REL-013-AC1
 #
 # Build's first action: bin/build-admit.py keeps every check the old stage-admission.yml made, none dropped.
 # Needs: bash, git >= 2.34, ssh-keygen, gpg, jq, openssl, python3 + PyYAML. Offline: the git repos, the
@@ -295,6 +295,7 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   printf \
       '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}]}\n' \
       > .github/policy/required-checks.json
+  printf '{"required_checks":[{"context":"rel-only","integration_id":15368,"scope":"push"}]}\n' > .github/policy/release-only-checks.json
   cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
   # gate 7: main's judge, its helper and the writers policy (build-admit.py reads them from origin/main, never from the tagged commit)
   cp "$root/bin/audit-record.py" "$root/bin/audit-record-judge.sh" bin/; cp "$root/.github/policy/audit-writers.json" .github/policy/
@@ -337,7 +338,8 @@ import json, sys
 d, sha, ph = sys.argv[1:4]
 def w(path, obj): open(d + "/" + path.replace("/", "_") + ".json", "w").write(json.dumps(obj))
 w("repos/fosterstack/cache/commits/%s/check-runs" % sha,
-  {"check_runs": [{"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 11, "head_sha": sha}]})
+  {"check_runs": [{"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 11, "head_sha": sha},
+                  {"name": "rel-only", "conclusion": "success", "app": {"id": 15368}, "id": 15, "head_sha": sha}]})
 w("repos/fosterstack/cache/commits/%s/status" % sha, {"statuses": [{"context": "legacy", "state": "success", "id": 5}]})
 w("repos/fosterstack/cache/commits/%s/pulls" % sha,
   [{"number": 7, "merge_commit_sha": sha, "base": {"ref": "main"}, "merged_at": "2026-10-01T00:00:00Z", "head": {"sha": ph}}])
@@ -494,13 +496,13 @@ if [ -f "$W/c/repo/admission.json" ]; then
       "AC4 admission.json is not canonical"
   jq -e '.tag=="v0.3.0" and .sha=="'"$SHAC"'" and (.tag_signature.method=="owner-ssh") and (.tag_signature.principal|length>0)
          and (.tag_signature.key_fingerprint|startswith("SHA256:")) and (.commit_signature=="owner-ssh")
-         and (.required_checks|length==2) and (.informational_statuses|length==1) and .baseline_version=="v0.3.0"
+         and (.required_checks|length==3) and (.informational_statuses|length==1) and .baseline_version=="v0.3.0"
          and (.baseline=="requirements/releases/v0.3.0.yaml") and (.run.id==1) and (.run.attempt==1)' "$A" > /dev/null \
     && ok \
-        "AC4 admission.json records the tag, sha, signer evidence, every verified check with its source, the informational statuses, the baseline and the run" \
+        "AC4 admission.json records the tag, sha, signer evidence, the three verified checks (ci, review and the release-only rel-only) with their sources, the informational statuses, the baseline and the run" \
         || bad "AC4 admission.json content: $(head -c 300 "$A")"
-  jq -e '[.required_checks[].source]|sort==["check-run-on-merged-pr-head","check-run-on-tagged-sha"]' "$A" > /dev/null && ok \
-      "AC4 push-scoped and pull_request-scoped checks are recorded with their evidence source" || bad "AC4 required_checks sources"
+  jq -e '[.required_checks[].source]|sort==["check-run-on-merged-pr-head","check-run-on-tagged-sha","check-run-on-tagged-sha"]' "$A" > /dev/null && ok \
+      "AC4 the three checks are recorded with their evidence source: ci and rel-only on the tagged sha, review on the merged PR head" || bad "AC4 required_checks sources"
   ! grep -rq SENTINEL-GH-TOKEN "$A" "$W/c/out" "$W/c/err" && ok "AC4 the GitHub token appears in no output or evidence" || bad \
       "AC4 the token leaked into output"
   cp "$A" "$W/c/first.json";
@@ -771,6 +773,28 @@ python3 - "$W/c/repo/admission.json" <<'PY' 2> /dev/null && ok "AC4 required-che
 import json, sys
 d = json.load(open(sys.argv[1])); assert d["informational_statuses"] and all(c["conclusion"] == "success" for c in d["required_checks"])
 PY
+# ---- release-only-checks.json: admission requires its contexts green too (REQ-REL-013-AC1) ---------------------------------------------
+ro_edit() { # ro_edit red|missing|wrong-app : change the rel-only check-run of the tagged commit; ci stays green
+  python3 - "$W/c/gh/repos_fosterstack_cache_commits_${SHAC}_check-runs.json" "$1" <<'PY'
+import json, sys
+f, mode = sys.argv[1:3]; j = json.load(open(f))
+if mode == "missing": j["check_runs"] = [c for c in j["check_runs"] if c["name"] != "rel-only"]
+for c in j["check_runs"]:
+    if c["name"] == "rel-only" and mode == "red": c["conclusion"] = "failure"
+    if c["name"] == "rel-only" and mode == "wrong-app": c["app"]["id"] = 99
+json.dump(j, open(f, "w"))
+PY
+}
+fresh; run_admit; expect_ok "AC1 release-only: every context of required-checks.json and of release-only-checks.json green, admission succeeds"
+for m in "red|a red release-only check" "missing|a release-only check that did not run" "wrong-app|a release-only check from another app than the pinned integration"; do
+  IFS='|' read -r mode label <<< "$m"; fresh; ro_edit "$mode"; run_admit
+  expect_refuse "AC1 release-only: $label is refused at required-checks and names the check" required-checks rel-only
+done
+fresh; edit_gh failed; run_admit; expect_refuse "AC1 release-only: a red context of required-checks.json still refuses while the release-only one is green" required-checks ci
+fresh; G checkout -q main; G rm -q .github/policy/release-only-checks.json
+G -c user.signingkey="$W/keys/owner" commit -q -S -m "no release-only policy"; G push -q origin main 2> /dev/null; G fetch -q origin
+G checkout -q --detach v0.3.0; run_admit
+expect_refuse "AC1 release-only: release-only-checks.json missing on origin/main (present in the tagged commit) is refused at policy-from-main" policy-from-main release-only
 # ---- baseline -------------------------------------------------------------------------------------------------------------------------------
 base_edit() { # base_edit PYCODE : edit requirements/releases/v0.3.0.yaml on main, re-sign, re-tag
   (cd "$W/c/repo" && G checkout -q main && python3 - "$1" <<'PY'
@@ -1018,6 +1042,6 @@ wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # a skipped or added case fails the suite
-EXPECT_TOTAL=186
+EXPECT_TOTAL=192
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

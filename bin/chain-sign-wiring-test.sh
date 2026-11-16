@@ -2870,7 +2870,7 @@ listletter() { python3 - "$1/.github/policy/id-token-jobs.json" <<'PY'
 import json, sys
 p = sys.argv[1]; j = json.load(open(p))
 j["jobs"].append({"workflow": "evidence-letter.yml", "job": "sign",
-                  "reason": "the monthly evidence letter's one signing job (REQ-REL-013-AC9)"})
+                  "reason": "the monthly evidence letter's one signing job (REQ-REL-014-AC9)"})
 json.dump(j, open(p, "w"))
 PY
 }

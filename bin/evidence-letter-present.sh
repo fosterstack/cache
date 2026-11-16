@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The daily presence check of the monthly evidence letter (REQ-REL-013, the owner's Oct 3 amendment): from the 3rd
+# The daily presence check of the monthly evidence letter (REQ-REL-014, the owner's Oct 3 amendment): from the 3rd
 # of each month, once a letter has been published at all, last month's letter and its bundle must be on one
 # published release, and every copy must verify (bin/evidence-letter-verify.sh: the release key and the pinned
 # log, no identity). A miss ends here with one plain line, and a failed scheduled run is reported. It reads only;

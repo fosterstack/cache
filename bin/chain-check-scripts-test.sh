@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC30, REQ-SUP-001-AC33, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
+# proves: REQ-SUP-001-AC37, REQ-SUP-001-AC39, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
 # Behaviour of the Check scripts (bin/check-*.sh, bin/witnessed-local.sh). Each runs in a throw-away tree with
 # fake tools first on PATH (grype, osv-scanner, docker, the download stub, cosign, witness, ...), so the scripts carry no
 # test-only code path. No network, no Docker, no keys.
@@ -653,7 +653,7 @@ resetf() { rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"; st production "$GOO
 resetf; want_ok "AC6 fips active with the validated module v1.0.0 and production off: exit 0" "${FIPS[@]}"
 if [ -f "$fx/out/fips-result.json" ] && jq -e '(.images | length) == 2' "$fx/out/fips-result.json" > /dev/null 2>&1 && ! grep -q 5247 "$fx/out/fips-result.json"; then ok "AC6 the result lists both images and does not report the certificate number (it is a documented mapping, not something a binary reports)"; else bad "AC6 fips-result.json shape, or it reports the certificate number"; fi
 if [ "$(grep -c '^docker run' "$work/log" 2> /dev/null || echo 0)" = 2 ] && [ -f "$work/fakedir/removed" ] && [ "$(wc -l < "$work/fakedir/removed")" -ge 2 ]; then ok "AC6 both candidate images were started and both containers removed"; else bad "AC6 each candidate must be started (docker run) and removed"; fi
-# ---- REQ-SUP-001-AC33: docker load gets the layout's named members only (the three Check scripts that load a candidate) --------------------
+# ---- REQ-SUP-001-AC39: docker load gets the layout's named members only (the three Check scripts that load a candidate) --------------------
 orphan=$(printf orphan | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
 plant_stray() { # LAYOUT: a root manifest.json (docker would read a layout holding one as a docker-save archive), a stray tar and a hash-valid blob nothing names
   printf '[{"Config":"blobs/sha256/%s","RepoTags":null,"Layers":[]}]' "$(printf '%064d' 1)" > "$1/manifest.json"; printf 'a layer of somebody else' > "$1/fake.tar"; printf orphan > "$1/blobs/sha256/$orphan"
@@ -1427,7 +1427,7 @@ for suite in gradle egress k8s; do
 done
 rm -f "$fx/bin/acceptance-"{gradle,gradle-capped,egress,k8s}.sh
 rm -f "$fx/bin/acceptance-serve.sh"
-# ---- REQ-SUP-001-AC30: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
+# ---- REQ-SUP-001-AC37: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
 srv="$work/srv"; mkdir -p "$srv/bin" "$srv/fakedir"; cp "$root/bin/acceptance-serve.sh" "$srv/bin/"; printf '#!/bin/sh\nexit 0\n' > "$srv/bin/loopback-get.sh"
 H64=$(printf '%064d' 7); UP64=$(printf 'A%.0s' $(seq 1 64))
 serve() { # serve REF -> rc, out; the fake docker logs what ran
