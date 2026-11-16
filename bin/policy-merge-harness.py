@@ -84,7 +84,7 @@ for full, empty in (("required-checks.json", "release-only-checks.json"),
     short = merged is not None and len(merged) < len(want)
     report(rc not in (0, 99) and not short, f"{empty} empty beside two objects in {full} is refused",
            f"exit {rc}, merged {len(merged) if merged is not None else None} contexts")
-# the seven release-only contexts are pinned in the guard alone, never copied into a consumer
+# the eight release-only contexts are pinned in the guard alone, never copied into a consumer
 copied = [c for c in contexts(f"{pol}/release-only-checks.json") if c in step["run"]]
 report(not copied, "the step holds no copy of the release-only contexts", copied)
 sys.exit(1 if failed else 0)
