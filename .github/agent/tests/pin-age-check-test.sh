@@ -1773,7 +1773,7 @@ open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
 PY
 python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null
 check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] == 0, r" "$hfm/e.json"
-CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts; the 151 plain rows that used to carry a comment, heredoc or pystring context are a separate pinned set (exactly 151, one sha256 over their sorted file, key, line triples): they rest on review, and a change to that set is a change to this pin"
+CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python code), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts; the 151 plain rows that used to carry a comment, heredoc or pystring context are a separate pinned set (exactly 151, one sha256 over their sorted file, key, line triples): they rest on review, and a change to that set is a change to this pin"
 check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" "$chk" <<'PY'
 import hashlib, importlib.util, json, re, shlex, subprocess, sys
 H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
