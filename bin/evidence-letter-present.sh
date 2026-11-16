@@ -29,25 +29,23 @@ jq -c --arg md "$md" '.[] | select([.assets[].name] | (index($md) != null and in
 # The policy of a copy that carries the root-signed key manifest: the key it lists for the letter's month, not
 # today's. Prints the policy path; else one line and exit 1.
 key_policy() {
-  local release=$1 dir=$2 name id
+  local release=$1 dir=$2 name id signed refusal
   for name in release-key-manifest.json release-key-manifest.sig; do
     id=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id' <<< "$release")
     [ -n "$id" ] || { echo "the release carries no $name"; return 1; }
     gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$dir/$name"
   done
-  base64 -d "$dir/release-key-manifest.sig" > "$dir/manifest.sig" 2> /dev/null ||
-    { echo "the key manifest signature is not base64"; return 1; }
-  openssl dgst -sha256 -verify .github/policy/release-key-root.pub -signature "$dir/manifest.sig" \
-    "$dir/release-key-manifest.json" > /dev/null 2>&1 ||
-    { echo "the key manifest is not signed by the root key"; return 1; }
   # the key's window meets the date the letter was SIGNED (the bundle's Rekor time), not the month it is about and not the
-  # release's unsigned published_at; a bundle with no readable Rekor time has no signed date and is refused. A revoked key is refused
+  # release's unsigned published_at. Only the inclusionPromise (the signed entry timestamp) signs integratedTime, so a bundle
+  # without one has no signed date; the verification of the bundle that follows covers the time read here, and a failure there ends the run.
+  jq -e '.verificationMaterial.tlogEntries[0].inclusionPromise | type == "object"' "$dir/$md.bundle" > /dev/null 2>&1 ||
+    { echo "the bundle holds no inclusionPromise: its Rekor time is not signed"; return 1; }
   signed=$(jq -r '.verificationMaterial.tlogEntries[0].integratedTime // empty' "$dir/$md.bundle" 2> /dev/null) || signed=
   [[ "$signed" =~ ^[0-9]+$ ]] || { echo "the bundle holds no readable Rekor time: no signed date"; return 1; }
-  signed=$(date -u -d "@$signed" +%Y-%m-%dT%H:%M:%SZ)
-  jq -e --arg s "$signed" '.revoked_at == null and .valid_from <= $s and (.valid_to == null or .valid_to > $s)' \
-    "$dir/release-key-manifest.json" > /dev/null ||
-    { echo "the key manifest lists no usable key for $month"; return 1; }
+  # the checks of chain-verify.py check_manifest (root signature, closed fields, RSA-4096, key_id, window, no revocation) at that time
+  cp .github/policy/release-key-root.pub "$dir/release-key-root.pub"
+  refusal=$(python3 -I bin/chain-verify.py manifest-at --dir "$dir" --at "$signed" 2>&1 > /dev/null) ||
+    { echo "the key manifest is refused: ${refusal#refused at manifest: }"; return 1; }
   jq '{release_key: {public_key: .public_key}}' "$dir/release-key-manifest.json" > "$dir/policy.json"
   echo "$dir/policy.json"
 }
