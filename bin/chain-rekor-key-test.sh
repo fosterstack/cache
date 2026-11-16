@@ -729,7 +729,7 @@ except SystemExit:
     bad("--rekor-stub is not accepted by the parser")
 
 print("pass=%d fail=%d" % (passed, failed))
-EXPECT = 159
+EXPECT = 161
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
     sys.exit(1)
