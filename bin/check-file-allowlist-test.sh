@@ -130,8 +130,8 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 232 allow patterns: main's (with ^bin/dependabot-reviewer-version\.sh$, without the tag observer's), plus the chain's forms that main's lines do not already match
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 232, 6
+# 233 allow patterns: main's (with ^bin/dependabot-reviewer-version\.sh$ and ^bin/policy-merge-harness\.py$, without the tag observer's), plus the chain's forms that main's lines do not already match
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 233, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -179,7 +179,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
 # the script text outside the v0.3.0 region; history is in git
-PINNED_SHA256 = "f41cf15aac2d47d8a8739d4eed8bf6556b8734ddeac235d8b9bf6e4bb53837e6"
+PINNED_SHA256 = "91649394346faf15d556f8423e28ba97323d2eab74e842d6f8b7330d96c2d3b2"
 if rstart and rend:
     import hashlib
     _b = _rawlines
