@@ -49,11 +49,12 @@ check "list without required_checks = exit 2"     2 "no required_checks array"  
 # REQ-REL-013-AC2: with a second argument the guard also compares release-only-checks.json, entry by entry (context,
 # integration_id, scope), with the eight entries pinned in the script (allowlist-pins-auditor is the eighth: off the
 # ruleset, required by release admission). ro8 is the committed list with that entry present exactly once, so the
-# cases below hold whatever the committed file says; the first case checks the committed file itself.
+# cases below hold whatever the committed file says; the first case checks the committed file itself. The acceptance
+# contexts take the pinned "acceptance / <job>" names here, because the pin moves on main before the committed file does.
 ro_file="$repo/.github/policy/release-only-checks.json"
 jq -c '.required_checks |= (map(select(.context != "allowlist-pins-auditor"))
   + [{"context":"allowlist-pins-auditor","integration_id":15368,"scope":"push"}])
-  | .required_checks[].context |= sub("^(acceptance / )?acceptance-"; "acceptance / acceptance-")' "$ro_file" > "$w/ro8.json"
+  | .required_checks[].context |= sub("^acceptance-"; "acceptance / acceptance-")' "$ro_file" > "$w/ro8.json"
 ro="$w/ro8.json"
 ro_edit() { jq -c "$2" "$ro" > "$w/ro-$1.json"; }
 ro_edit seven   '.required_checks |= map(select(.context != "allowlist-pins-auditor"))'
@@ -96,10 +97,9 @@ check "release-only file not JSON = exit 2"            2 "release-only" "$w/matc
 check "release-only file without the array = exit 2"   2 "release-only" "$w/match.json" "$list" "$w/ro-nolist.json"
 
 # cache#928: the three acceptance checks are pinned as the called workflow names them ("acceptance / <job>"), not bare.
-# ro_acc builds a list from ro8 with the three entries' contexts set here, whatever the committed file says.
 ro_acc() { # name gradle maven120 maven123
-  jq -c --arg a "$2" --arg b "$3" --arg c "$4" '.required_checks |= (map(select(.context | test("^(acceptance / )?acceptance-") | not))
-    + [$a, $b, $c] | map(if type == "string" then {"context":., "integration_id":15368, "scope":"push"} else . end))' \
+  jq -c --arg a "$2" --arg b "$3" --arg c "$4" '.required_checks |= (map(select(.context | startswith("acceptance") | not))
+    + ([$a, $b, $c] | map({context: ., integration_id: 15368, scope: "push"})))' \
     "$ro" > "$w/ro-$1.json"
 }
 ro_acc accnew  "acceptance / acceptance-gradle" "acceptance / acceptance-maven (1.2.0)" "acceptance / acceptance-maven (1.2.3)"
