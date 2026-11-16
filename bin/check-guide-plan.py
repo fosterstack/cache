@@ -45,8 +45,17 @@ SAFE = re.compile(r"[A-Za-z0-9._:/@+-]+")
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")
 
 
+KEY = "release.rsa.pub"
+KEY_PATH = "build/keys/" + KEY       # Check takes the release key from the tagged checkout, no new download
+PROVENANCE = "provenance.bundle.json"   # Sign's output: release-verify holds it
+# the four files release-sign makes after publishing: their commands run in postverify, which fails the run on a missing operand
+AFTER_PUBLISH = {"production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json"}
+
+
 def fill(word):
-    """The marker word with the local placeholders filled (an operand is judged as the file it names in Check)."""
+    """The marker word with the local placeholders filled and the release key taken from build/keys/ (an operand is judged
+    as the file it names in Check)."""
+    word = KEY_PATH if word == KEY else word
     return MARK.sub(lambda m: values[m.group(1)] if m.group(1) in LOCAL else m.group(0), word)
 
 
@@ -55,26 +64,44 @@ def not_local(word):
     return bool(word) and "://" not in word and not os.path.isfile(fill(word))
 
 
-def classify(segs, files):
-    """("run", "") | ("registry", why) | ("later", why) for a judged command: it runs, needs a registry image, or
-    has a file operand that is not a local file (release-postverify runs it on the staged copy before publishing)."""
-    registry, nonlocal_ = [], []
+def file_words(segs, files):
+    """Every file a judged command names: its --key and --bundle values, its verify operands and the files a jq reads, and the image marks."""
+    names, registry = [], []
     for s in segs:
         if s[0] == "jq":
             continue
         flags, operands, _ = judge_mod.read_verify(s)
-        nonlocal_ += [v for f, v in flags if f in ("--key", "--bundle") and not_local(v)]
+        names += [v for f, v in flags if f in ("--key", "--bundle")]
         for w in operands:
-            if w in IMAGE_MARKS:
-                registry.append(w)
-            elif not_local(w) or not w:
-                nonlocal_.append(w)
-    nonlocal_ += [w for w in files or [] if not_local(w)]
+            (registry if w in IMAGE_MARKS else names).append(w)
+    return names + list(files or []), registry
+
+
+def after_publish(segs):
+    """True for one verify-blob of a file in AFTER_PUBLISH against its own .bundle: the pair is named whole, so a lookalike is not one."""
+    if len(segs) != 1:
+        return False
+    flags, operands, _ = judge_mod.read_verify(segs[0])
+    bundles = [v for f, v in flags if f == "--bundle"]
+    return len(bundles) == 1 and len(operands) == 1 and operands[0] in AFTER_PUBLISH and bundles[0] == operands[0] + ".bundle"
+
+
+def classify(c, segs, files):
+    """(place, why): "registry" for a command that needs a registry, else the place that runs it: "check", "release-verify" or "postverify".
+    The commands on provenance.bundle.json, which Check does not hold, run in release-verify, and the four SBOM and lock verifications run in postverify;
+    every other command runs here, so a file it names that is not a local file is a fault, never a later check."""
+    names, registry = file_words(segs, files)
     if registry:
         return "registry", "it verifies the image reference %s" % ", ".join(registry)
-    if nonlocal_:
-        return "later", "its operand %s is not a local file" % ", ".join(nonlocal_)
-    return "run", ""
+    if PROVENANCE in names and not_local(PROVENANCE):
+        return "release-verify", "its file %s is Sign's output, release-verify holds it" % PROVENANCE
+    if after_publish(segs):
+        return "postverify", "its files are made by release-sign after publishing"
+    missing = [w for w in names if not w or not_local(w)]
+    if missing:
+        fail("the operand %s of the guide command `%s` is not a local file at Check, and no later stage is named for it"
+             % (", ".join(sorted(set(missing))) or "(empty)", c))
+    return "check", ""
 
 
 excused = {}
@@ -110,18 +137,18 @@ for c in cmds:
             fail("the command `%s` uses <%s>, a defined placeholder that neither Check nor Release can substitute "
                  "(unsupported placeholder; unsubstituted placeholder): listed as not-run or not, it is refused"
                  % (c, u))
-    kind, why = classify(segs, files)
+    kind, why = classify(c, segs, files)
     if c in excused:
         if kind != "registry":
-            fail("the cannot-run entry `%s` is not an image-reference command: a runnable command is run, and a "
-                 "file command is run by postverify; only an image-reference command is listed" % c)
-        plan.append({"command": c, "run": None, "reason": excused[c]})
+            fail("the cannot-run entry `%s` is not an image-reference command: a file command is run at its place "
+                 "(%s); only an image-reference command is listed" % (c, kind))
+        plan.append({"command": c, "run": None, "place": "postverify", "reason": excused[c]})
         continue
     if kind == "registry":
         fail("unlisted command needs a registry: `%s` (%s); Check holds the candidate as a file, so it is never run: "
              "list it exactly, with its reason, in %s" % (c, why, listpath))
-    if kind == "later":
-        plan.append({"command": c, "run": None, "reason": "run by postverify before publishing: " + why})
+    if kind != "check":
+        plan.append({"command": c, "run": None, "place": kind, "reason": "run by %s: %s" % (kind, why)})
         continue
     run = c
     for u in sorted(set(PH.findall(c))):
@@ -131,7 +158,8 @@ for c in cmds:
         if not SAFE.fullmatch(v) or (u == "TAG" and not TAG.fullmatch(v)):
             fail("the candidate value for <%s> is not a plain reference: %r" % (u, v))
         run = run.replace("<%s>" % u, v)
-    plan.append({"command": c, "run": run, "reason": None})
+    run = re.sub(r"(?<![\w./-])%s(?![\w.-])" % re.escape(KEY), KEY_PATH, run)
+    plan.append({"command": c, "run": run, "place": "check", "reason": None})
 with open(planpath, "w") as f:
     for p in plan:
         f.write(json.dumps(p) + "\n")
