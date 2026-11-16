@@ -391,6 +391,8 @@ jobs:
         run: bash bin/audit-record-test.sh
       - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
         run: bash bin/admission-tag-signer-test.sh
+      - name: admission's evidence for a promotion check — the producing file's schedule or dispatch run on the tagged commit, the latest qualifying run (REQ-CI-001-AC7)
+        run: bash bin/admission-evidence-test.sh
 
       - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
         run: bash bin/release-patch-wiring-test.sh
@@ -453,7 +455,7 @@ jobs:
     uses: ./.github/workflows/acceptance.yml
     permissions:
       contents: read
-      packages: read   # the called jobs ask for it (release mode pulls the private candidates package); a caller ceiling below it fails the call
+      packages: read   # acceptance.yml's jobs ask for it (release mode pulls the private candidates package); a caller ceiling below it fails the call
 
 
   # REQ-CI-001-AC6: a failed scheduled run opens a fix item (an issue with a fixed title and label, or a comment on the open one) and blocks nothing;
