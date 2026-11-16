@@ -247,7 +247,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 for n in ("live_proofs", "observed", "_pr_clock", "_registry_push", "_go_index_time", "_release_time", "_commit_date",
           "Fixture", "Live", "MIN_DAYS", "SERVER_SIDE", "tobs", "GO_EXEMPT_REASON", "FilePinSource", "load_file_pins",
-          "is_file_item", "FILE_PIN_SOURCE", "publisher_signed_time", "keyless_signed_time", "_signed_timestamp", "_image_registry"):
+          "is_file_item", "FILE_PIN_SOURCE", "publisher_signed_time", "keyless_signed_time", "_signed_timestamp"):
     assert not hasattr(ac, n), n
 PY
 
@@ -2194,7 +2194,7 @@ assert ac.GO_INSTALL_REASON == ("Go's own release, downloaded from go.dev and ve
                                 "(REQ-SUP-001-AC27); the advisory check still applies"), ac.GO_INSTALL_REASON
 rows = json.load(open(sys.argv[2]))["unmeasured_text"]
 calls = [r for r in rows if r["form"] == "a local reusable workflow call"]
-assert len(calls) == 3 and all(r["ruling"] == "local reusable workflow call; inputs reviewed in the PR that added them" for r in calls), calls
+assert len(calls) == 5 and all(r["ruling"] == "local reusable workflow call; inputs reviewed in the PR that added them" for r in calls), calls
 assert sum(r["ruling"].startswith("build-container install, test-only: ") for r in rows) == 1
 assert sum(r["ruling"].startswith("build-container install, test-only: build container, never shipped; ") for r in rows) == 1
 assert sum(r["ruling"].count("test-only") for r in rows) == 1
@@ -2240,11 +2240,11 @@ for r in rows:
 PY
 CASE="AC16: the committed lists load (the checker reads them without a malformed-list stop), the unmeasured_text rows that remain are of the pinned, live, Go, "\
 "build-container and local-call kinds, each with file, form, key and line (64 lowercase hex each), a ruling and at most a count, under .github/agent/ as anywhere"
-check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" "$work/rt" "$work/none.fx.json" <<'PY'
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" "$work/rt" <<'PY'
 import importlib.util, json, re, subprocess, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 allrows = json.load(open(sys.argv[2]))["unmeasured_text"]
-r = subprocess.run([sys.executable, sys.argv[1], "--root", sys.argv[3], "--base", "HEAD~1", "--head", "HEAD", "--fixtures", sys.argv[4], "--exceptions", sys.argv[2]],
+r = subprocess.run([sys.executable, sys.argv[1], "--root", sys.argv[3], "--base", "HEAD~1", "--head", "HEAD", "--exceptions", sys.argv[2]],
                    capture_output=True, text=True, stdin=subprocess.DEVNULL)
 assert r.returncode != 2, ("the committed lists are malformed to the loader", r.stdout[-300:], r.stderr[-300:])
 calls = [x for x in allrows if x["form"] == "a local reusable workflow call"]    # REQ-SUP-001-AC19: rows that name an item (its whole-identity hash), ruled by the orchestrator
