@@ -438,6 +438,26 @@ st s_probe_if "AC2 an extra condition on a probe step" "probe" \
     "$PROBE_R" '      - name: sandbox wall probe\n        if: ${{ inputs.mode != '"'snapshot'"' && github.event_name == '"'push'"' }}\n        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json\n'
 st s_probe_ifs "AC2 an extra condition on the snapshot probe step" "probe" \
     "$PROBE_S" '      - name: sandbox wall probe (snapshot)\n        if: ${{ inputs.mode == '"'snapshot'"' && always() }}\n        run: bash bin/chain-sandbox-probe.sh snapshot-apk-collection.local.json\n'
+st s_probe_bothr "AC2 both probe steps carry the release condition (twice in a release build, never in a snapshot build)" "probe" "$PROBE_S" \
+    '      - name: sandbox wall probe (snapshot)\n'"$PROBE_RIF"'        run: bash bin/chain-sandbox-probe.sh snapshot-apk-collection.local.json\n'
+st s_probe_boths "AC2 both probe steps carry the snapshot condition (twice in a snapshot build, never in a release build)" "probe" "$PROBE_R" \
+    '      - name: sandbox wall probe\n'"$PROBE_SIF"'        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json\n'
+# the real apk job: for every mode value exactly one of the two probe steps has a true condition (not zero, not two)
+if python3 - "$root" <<'PY'
+import re, sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1] + "/.github/workflows/release.yml"))["jobs"]
+ifs = [st.get("if") for st in jobs["build-apk"]["steps"] if str(st.get("name") or "").startswith("sandbox wall probe")]
+assert len(ifs) == 2, "the apk job has %d sandbox wall probe steps, not 2" % len(ifs)
+def true(cond, mode):
+    e = re.fullmatch(r"\$\{\{ (inputs\.mode (?:==|!=) 'snapshot') \}\}", str(cond))
+    assert e, "the condition %r is not an exact mode comparison" % cond
+    return eval(e.group(1).replace("inputs.mode", repr(mode)))
+for mode in ("release", "snapshot", "other"):
+    n = sum(true(c, mode) for c in ifs)
+    assert n == 1, "in mode %s the probe runs %d times" % (mode, n)
+PY
+then ok "AC2 the apk job's two sandbox wall probe steps run exactly once in every mode"
+else bad "AC2 the apk job's sandbox wall probe steps do not run exactly once in every mode"; fi
 st s_probe_alw  "AC2 the probe step runs always()" "probe" \
     "$PROBE_R" '      - name: sandbox wall probe\n        if: always()\n        run: bash bin/chain-sandbox-probe.sh apk-collection.local.json\n'
 st s_probe_run  "AC2 the probe step runs another script" "probe" 'run: bash bin/chain-sandbox-probe.sh apk-collection' 'run: bash bin/chain-hostile-step.sh apk-collection'
@@ -3732,7 +3752,7 @@ if [ "$rc" = 1 ] \
 else
   bad "AC7 release-publish.sh with a wrong registry digest: exit $rc, pushes $pushes: ${out:0:140}"
 fi
-EXPECT=1346
+EXPECT=1349
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
