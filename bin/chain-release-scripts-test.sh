@@ -881,8 +881,13 @@ def one_line(se): return len(se.strip().split("\n")) == 1 and se.startswith("rel
 RA2 = open(os.path.join(BIN, "release-apks.sh")).read()
 CALL = "python3 -I -B bin/release-postverify.py --before-publish"
 check(CALL in RA2 and RA2.count("release-postverify.py") == 1, "R2 release-apks.sh runs `%s`" % CALL)
-check(CALL in RA2 and "release-sign-apks" in RA2 and RA2.index(CALL) < RA2.index("release-sign-apks"), "R2 release-apks.sh runs the pre-publish pass before release-sign-apks")
-check(CALL in RA2 and not re.search(r"cosign|sign", RA2[:RA2.index(CALL)].replace("release-apks", "")) if CALL in RA2 else False, "R2 nothing in release-apks.sh signs before the pre-publish pass")
+RL = [l for l in RA2.split("\n") if not l.lstrip().startswith("#")]      # code lines only, no comments
+ci = next((i for i, l in enumerate(RL) if CALL in l), None)
+si = next((i for i, l in enumerate(RL) if "release-sign-apks.sh --build-dir" in l), None)
+di = next((i for i, l in enumerate(RL) if "apk-tool.py digest" in l), None)      # the first digest comparison is the pre-signing check
+check(ci is not None and si is not None and ci < si, "R2 release-apks.sh runs the pre-publish pass before the release-sign-apks.sh --build-dir line")
+check(ci is not None and si is not None and di is not None and di < ci < si, "R2 the pass comes after the attested-digest check and before the signing command")
+check(ci is not None and not [l for l in RL[:ci] if re.search(r"cosign|release-sign-apks|kms-sign", l)], "R2 no command line of release-apks.sh signs before the pre-publish pass")
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY); L = log(t)
 iv = next((i for i, l in enumerate(L) if l.startswith("cosign verify-blob-attestation")), None); isg = next((i for i, l in enumerate(L) if l.startswith("release-sign-apks")), None)
 check(rc == 0 and iv is not None and isg is not None and iv < isg, "R2 a good release-apks run verifies the provenance (cosign verify-blob-attestation) before release-sign-apks runs", "rc=%s iv=%s isg=%s %s" % (rc, iv, isg, first(se)))
