@@ -3288,7 +3288,10 @@ _SET_ENV = re.compile(r"::set-env\s+name=([A-Za-z_][A-Za-z0-9_]*)::")
 
 
 def _arguments(words):
-    """The arguments of a command's words after its name, without its redirections."""
+    """The arguments of a command's words after its name, without its one redirection; None when two words start with `>`,
+    since a quoted `>` word looks like a redirection once the quotes are off."""
+    if sum(bool(re.match(r"[0-9]*>", w)) for w in words[1:]) != 1:
+        return None
     args, rest = [], iter(words[1:])
     for w in rest:
         if re.fullmatch(r"[0-9]*>>?", w):
@@ -3327,8 +3330,8 @@ def step_write_findings(where, text):
     whose name is not literal text."""
     names = re.compile(r"(?<![A-Za-z0-9_])(?:(?:" + "|".join(STARTUP_HOOK_ENV) + r")(?![A-Za-z0-9_])|BASH_FUNC_)")
     found = []
+    writes = env_writes(text)             # read as written: bash keeps a backslash-newline inside single quotes
     text = re.sub(r"\\\n", "", text)
-    writes = env_writes(text)
     unread = collections.Counter(_ENV_ROUTE.findall(text))
     unread.subtract(route for _, route in writes)
     if path := _PATH_ROUTE.search(text):
