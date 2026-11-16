@@ -1986,7 +1986,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "b1f62c0772335ddcfd3003c58172a66cd18ce4feab6bee8d2a92e40958dd62d9",
+      "sha256": "ebc1c7f769b21ac26f5e70478db4feb5a1b7b31cda2d040953ab5712d95f435e",
       "tools": [
         "at",
         "curl",
