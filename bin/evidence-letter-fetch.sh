@@ -28,15 +28,38 @@ asset() { # asset RELEASE.JSON NAME FOLDER: downloads the release's asset of tha
   gh api "repos/$repo/releases/assets/$id" -H "Accept: application/octet-stream" > "$3/$2"
 }
 
-# the release's date is the published_at of its signed release-manifest.json, never the API's unsigned one; a final
-# release with no readable manifest date has no signed date, and the fetch refuses
-mkdir -p "$out/dates"
+verify_signed() { # verify_signed TAG DIR: the release's release-files.sha256 verifies, and lists the manifest in DIR; one line on any failure
+  local tag=$1 dir=$2 refusal
+  refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
+    --tag "$tag" --out "$dir/policy.json" 2>&1 > /dev/null) ||
+    die "$tag: no release policy: $(head -n 1 <<< "$refusal")"
+  refusal=$(bash bin/evidence-letter-verify.sh "$dir/policy.json" "$dir/release-files.sha256" 2>&1) ||
+    die "$tag: ${refusal#evidence-letter-verify: }"
+  grep -qxF "$(sha256sum "$dir/release-manifest.json" | cut -d' ' -f1)  release-manifest.json" "$dir/release-files.sha256" ||
+    die "$tag: release-manifest.json is not the file the signed release-files.sha256 lists"
+}
+
+# the release's date is the published_at of its release-manifest.json once that file is verified against the signed
+# release-files.sha256, never the API's unsigned one; a final release from v0.3.0 on with no verified manifest date
+# has no signed date, and the fetch refuses. A release below v0.3.0 has no signed files and is never selected: its
+# manifest must still name its own tag's version, so the tag alone (the API's word) does not place it
 : > "$out/dates.jsonl"
 for tag in $(jq -r '.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
     | .tag_name' "$out/releases.json"); do
-  jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$out/dates/$tag.json"
-  asset "$out/dates/$tag.json" release-manifest.json "$out/dates"
-  jq -ce --arg t "$tag" '{tag_name: $t, published_at: (.published_at | if type == "string" then . else error("no date") end)}' "$out/dates/release-manifest.json" \
+  dir="$out/rel/$tag"
+  mkdir -p "$dir"
+  jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$dir/release.json"
+  asset "$dir/release.json" release-manifest.json "$dir"
+  jq -e --arg v "${tag#v}" '.version == $v' "$dir/release-manifest.json" > /dev/null ||
+    die "$tag: release-manifest.json names another version"
+  if [ "$tag" != v0.3.0 ] && [ "$(printf '%s\n' v0.3.0 "$tag" | sort -V | head -n 1)" = "$tag" ]; then
+    rm -r "$dir"
+    continue
+  fi
+  asset "$dir/release.json" release-files.sha256 "$dir"
+  asset "$dir/release.json" release-files.sha256.bundle "$dir"
+  verify_signed "$tag" "$dir"
+  jq -ce --arg t "$tag" '{tag_name: $t, published_at: (.published_at | if type == "string" then . else error("no date") end)}' "$dir/release-manifest.json" \
     >> "$out/dates.jsonl" 2> /dev/null || die "$tag: release-manifest.json holds no readable published_at: no signed date"
 done
 tags=$(jq -rs --arg m "$month" '
@@ -46,36 +69,21 @@ tags=$(jq -rs --arg m "$month" '
     else [$final[] | select(.published_at < ($m + "-01"))] | sort_by(.published_at) | .[-1:] end
   | .[].tag_name' "$out/dates.jsonl")
 
-verify() { # verify TAG FOLDER: the checks above, one line on any failure
-  local tag=$1 dir=$2 name refusal
-  refusal=$(python3 -I bin/chain-verify.py policy make --template .github/policy/release-policy.template.json \
-    --tag "$tag" --out "$dir/policy.json" 2>&1 > /dev/null) ||
-    die "$tag: no release policy: $(head -n 1 <<< "$refusal")"
-  refusal=$(bash bin/evidence-letter-verify.sh "$dir/policy.json" "$dir/release-files.sha256" 2>&1) ||
-    die "$tag: ${refusal#evidence-letter-verify: }"
-  for name in release-manifest.json fosterstack-cache.openvex.json; do
-    grep -qxF "$(sha256sum "$dir/$name" | cut -d' ' -f1)  $name" "$dir/release-files.sha256" ||
-      die "$tag: $name is not the file the signed release-files.sha256 lists"
-  done
-  python3 -I bin/chain-verify.py check-list --policy "$dir/policy.json" --digests "$dir/digests.json" \
-    --dir "$dir/witness-check" > /dev/null 2> "$dir/refusal" ||
-    die "$tag: the Check records: $(head -n 1 "$dir/refusal")"
-}
-
 for tag in $tags; do
   dir="$out/rel/$tag"
-  mkdir -p "$dir"
-  jq --arg t "$tag" '.[] | select(.tag_name == $t)' "$out/releases.json" > "$dir/release.json"
-  for name in release-manifest.json fosterstack-cache.openvex.json release-files.sha256 \
-      release-files.sha256.bundle digests.json; do
+  for name in fosterstack-cache.openvex.json digests.json; do
     asset "$dir/release.json" "$name" "$dir"
   done
+  grep -qxF "$(sha256sum "$dir/fosterstack-cache.openvex.json" | cut -d' ' -f1)  fosterstack-cache.openvex.json" "$dir/release-files.sha256" ||
+    die "$tag: fosterstack-cache.openvex.json is not the file the signed release-files.sha256 lists"
   for step in scanners acceptance runtime arm64; do
     asset "$dir/release.json" "$step-collection.json" "$dir"
     mkdir -p "$dir/witness-check/witness-$step"
     cat "$dir/$step-collection.json" > "$dir/witness-check/witness-$step/$step-collection.json"
   done
-  verify "$tag" "$dir"
+  python3 -I bin/chain-verify.py check-list --policy "$dir/policy.json" --digests "$dir/digests.json" \
+    --dir "$dir/witness-check" > /dev/null 2> "$dir/refusal" ||
+    die "$tag: the Check records: $(head -n 1 "$dir/refusal")"
 done
 # published advisories of a public repository are readable without a token; all pages.
 # A refusal (403, 404) ends the letter.
