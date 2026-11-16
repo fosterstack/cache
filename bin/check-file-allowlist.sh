@@ -120,6 +120,7 @@ ALLOW_PATTERNS=(
   '^bin/acceptance-maven-413-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'
+  '^bin/admission-evidence-test\.sh$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
   '^bin/persona-uat(-agent|-provider)?\.py$'
