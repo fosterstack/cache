@@ -284,5 +284,8 @@ case "$TOOL" in
     case "$got" in "aws-cli/${AWSCLI_VER} "*) ;; *) pipeline_fail "the installed aws CLI reports '${got}', not aws-cli/${AWSCLI_VER}" ;; esac
     DEST="$AWSDIR"
     ;;
+  *)
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|cosign|witness|go|crane|aws-cli|govulncheck)"
+    ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"
