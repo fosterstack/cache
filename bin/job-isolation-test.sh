@@ -699,7 +699,7 @@ mutate "a new job in scan.yml references secrets.DOCKERHUB_TOKEN" '
 edit("scan.yml", lambda s: s.rstrip("\n") + "\n\n  leak:\n    runs-on: ubuntu-latest\n    steps:\n      - name: leak\n        env:\n          K: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: echo x\n")'
 want_msg="is a read-only probe holder and holds packages: write"
 mutate "main-candidate-rescan.yml panel-scout (a probe holder) is granted packages: write" '
-edit("main-candidate-rescan.yml", lambda s: in_job(s, "panel-scout", r"packages: read[^\n]*", "packages: write", regex=True))'
+edit("main-candidate-rescan.yml", lambda s: in_job(s, "panel-scout", r"(    permissions:\n      contents: read\n)", r"\1      packages: write\n", regex=True))'
 want_msg="is a read-only probe holder and runs a login for a push"
 mutate "release.yml live-test (a probe holder) runs crane auth login" '
 edit("release.yml", lambda s: in_job(s, "live-test", r"(    steps:\n)", r"\1      - name: mutant\n        run: crane auth login index.docker.io -u x -p y\n", regex=True))'
