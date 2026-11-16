@@ -1021,7 +1021,7 @@ afail "FIPS-001-AC2 the forced-standard build claiming the validated module fail
 afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" FAKE_FORCED_NOTE=off -- "${ART[@]}"
 for nsrc in 1 2 125 128; do
   arun FAKE_NOSHELL_RC=$nsrc -- "${ART[@]}"
-  if [ "$rc" = 1 ]; then ok "PLAT-003-AC1 a docker run that fails with $nsrc is not 'no shell': the check fails"; else bad "PLAT-003-AC1 docker exit $nsrc passed as no shell: rc=$rc ${out:0:100}"; fi
+  if [ "$rc" = 1 ]; then ok "PLAT-003-AC1 a failing docker run with $nsrc is not 'no shell': the check fails"; else bad "PLAT-003-AC1 docker exit $nsrc passed as no shell: rc=$rc ${out:0:100}"; fi
 done
 aok "PLAT-003-AC1 docker exit 126 (found, not executable) means no shell" FAKE_NOSHELL_RC=126 -- "${ART[@]}"
 afail "PLAT-003-AC1 a shell at /bin/sh in the production image fails naming production" production FAKE_SHELL="production:/bin/sh" -- "${ART[@]}"
