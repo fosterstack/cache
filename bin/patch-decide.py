@@ -1156,22 +1156,23 @@ def _bound_file(context, table):
     return None
 
 
+def _verdict(run):
+    if run.get("status") != "completed":
+        return "wait"
+    return "ok" if run.get("conclusion") == "success" else "red"
+
+
 def _evidence(req, mine, table, sha):
     """"ok", "wait" or "red" for one required check. A release-only check counts only from the run admission accepts: its
-    file's workflow, a schedule or workflow_dispatch run, on the tagged commit; the latest such run decides."""
+    file's workflow, a schedule or workflow_dispatch run, on the tagged commit. For either kind the latest run decides."""
     workflow = _bound_file(req["context"], table) if req.get("release_only") else None
-    if workflow is None:
-        if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
-            return "ok"
-        return "wait" if not mine or any(r.get("status") != "completed" for r in mine) else "red"
     mine = sorted(mine, key=lambda r: r.get("id", 0))
+    if workflow is None:
+        return _verdict(mine[-1]) if mine else "wait"
     qualifying = [r for r in mine if r.get("path") == ".github/workflows/" + workflow
                   and r.get("event") in QUALIFYING_EVENTS and sha in (None, r.get("head_sha"))]
     if qualifying:
-        latest = qualifying[-1]
-        if latest.get("status") != "completed":
-            return "wait"
-        return "ok" if latest.get("conclusion") == "success" else "red"
+        return _verdict(qualifying[-1])
     return "wait" if not mine or any(r.get("status") != "completed" for r in mine) else "red"
 
 
